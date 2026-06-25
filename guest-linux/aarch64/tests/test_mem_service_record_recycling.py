@@ -8,6 +8,7 @@ REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
 SERVICE_C = SERVICE_DIR / "mem_service.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
+SERVICE_CORE_H = SERVICE_DIR / "mem_service_core.h"
 SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
 SERVICE_INTERNAL_H = SERVICE_DIR / "mem_service_internal.h"
 SERVICE_CLUSTER_PAYLOAD_CONTRACT_H = (
@@ -24,6 +25,16 @@ SERVICE_QWEN3_RECORDS_H = SERVICE_DIR / "mem_service_qwen3_records.h"
 SERVICE_RECORDS_C = SERVICE_DIR / "mem_service_records.c"
 SERVICE_KEYS_C = SERVICE_DIR / "mem_service_keys.c"
 SERVICE_KEYS_H = SERVICE_DIR / "mem_service_keys.h"
+SERVICE_DAEMON_C = SERVICE_DIR / "mem_service_daemon.c"
+SERVICE_DAEMON_H = SERVICE_DIR / "mem_service_daemon.h"
+SERVICE_WIRE_H = SERVICE_DIR / "mem_service_wire.h"
+SERVICE_CLIENT_C = SERVICE_DIR / "mem_service_client.c"
+SERVICE_CLIENT_H = SERVICE_DIR / "mem_service_client.h"
+SERVICE_WIRE_CLIENT_C = SERVICE_DIR / "mem_service_wire_client.c"
+SERVICE_WIRE_CLIENT_H = SERVICE_DIR / "mem_service_wire_client.h"
+SERVICE_WIRE_PAYLOAD_H = SERVICE_DIR / "mem_service_wire_payload.h"
+SERVICE_WIRE_SCHEMA_H = SERVICE_DIR / "mem_service_wire_schema.h"
+SERVICE_DAEMON_RUNTIME_TEST = ROOT / "tests" / "test_mem_service_daemon_runtime.py"
 SERVICE_OBJECT_REFS_C = SERVICE_DIR / "mem_service_object_refs.c"
 SERVICE_OBJECT_REFS_H = SERVICE_DIR / "mem_service_object_refs.h"
 SERVICE_OBMM_OBJECTS_C = SERVICE_DIR / "mem_service_obmm_objects.c"
@@ -75,6 +86,18 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         build_script = BUILD_INITRAMFS.read_text()
         run_app = RUN_APP.read_text()
         components_readme = COMPONENTS_README.read_text()
+        cli_source = (CLI_DIR / "mem_service.c").read_text()
+        cli_makefile = (CLI_DIR / "Makefile").read_text()
+        release_manifest = (CLI_DIR / "release-manifest.txt").read_text()
+        config_schema = (CLI_DIR / "configs" / "mem_service.conf.schema").read_text()
+        config_example = (CLI_DIR / "configs" / "mem_service.example.conf").read_text()
+        deploy_manifest = (CLI_DIR / "deploy" / "linqu_mem_service.service").read_text()
+        serving_example = (
+            CLI_DIR / "examples" / "mem_service_serving_example.c"
+        ).read_text()
+        pretraining_example = (
+            CLI_DIR / "examples" / "mem_service_pretraining_example.c"
+        ).read_text()
 
         self.assertIn("Components do not install guest binaries directly", components_readme)
         self.assertIn(
@@ -111,6 +134,18 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_DAEMON_SRC="$ROOT_DIR/components/mem_service/mem_service_daemon.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_client.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_WIRE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_wire_client.c"',
             build_script,
         )
         self.assertIn(
@@ -175,6 +210,42 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn('MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"', build_script)
         self.assertIn(
+            'MEM_SERVICE_QWEN3_CLI_BIN="$OUT_DIR/linqu_mem_service_qwen3"',
+            build_script,
+        )
+        self.assertIn(
+            '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" '
+            '"$MEM_SERVICE_CLIENT_SRC" '
+            '"$MEM_SERVICE_WIRE_CLIENT_SRC" '
+            '"$MEM_SERVICE_METADATA_SRC" '
+            '"$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" '
+            '"$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"',
+            build_script,
+        )
+        self.assertIn(
+            "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT",
+            build_script,
+        )
+        self.assertIn(
+            '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" '
+            '"$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" '
+            '"$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" '
+            '"$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" '
+            '"$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" '
+            '"$MEM_SERVICE_WIRE_CLIENT_SRC" '
+            '"$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" '
+            '"$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" '
+            '"$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" '
+            '"$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" '
+            '"$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" '
+            '"$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" '
+            '"$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" '
+            '"$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" '
+            '"$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" '
+            '"$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"',
+            build_script,
+        )
+        self.assertIn(
             '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
@@ -182,11 +253,266 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("linqu_mem_service", run_app)
         self.assertIn("linqu_mem_service=1", run_app)
         self.assertIn("run_binary \"linqu_mem_service\" /bin/linqu_mem_service --smoke", run_app)
+        self.assertIn(
+            'run_binary "linqu_mem_service_wire_fixtures" '
+            "/bin/linqu_mem_service wire-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_wire_schema_fixtures" '
+            "/bin/linqu_mem_service wire-schema-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_store_fixtures" '
+            "/bin/linqu_mem_service store-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_config_fixtures" '
+            "/bin/linqu_mem_service config-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_metrics_export_fixtures" '
+            "/bin/linqu_mem_service metrics-export-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_client_retry_fixtures" '
+            "/bin/linqu_mem_service client-retry-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_release_fixtures" '
+            "/bin/linqu_mem_service release-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_qwen3" /bin/linqu_mem_service_qwen3 --inspect-qwen3',
+            run_app,
+        )
         self.assertTrue((CLI_DIR / "mem_service.c").exists())
         self.assertTrue((CLI_DIR / "Makefile").exists())
+        self.assertIn('#include "components/mem_service/mem_service_core.h"', cli_source)
+        self.assertIn('#include "components/mem_service/mem_service_daemon.h"', cli_source)
+        self.assertIn('#include "components/mem_service/mem_service_wire_client.h"', cli_source)
+        self.assertIn('strcmp(argv[1], "wire-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "wire-schema")', cli_source)
+        self.assertIn('strcmp(argv[1], "wire-schema-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "store-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "config-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "metrics-export-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "release-manifest")', cli_source)
+        self.assertIn('strcmp(argv[1], "release-fixtures")', cli_source)
+        self.assertIn("run_wire_schema_manifest", cli_source)
+        self.assertIn("run_wire_schema_fixture_check", cli_source)
+        self.assertIn("render_metrics_prometheus_text", cli_source)
+        self.assertIn("run_metrics_export_fixture_check", cli_source)
+        self.assertIn("run_client_retry_fixture_check", cli_source)
+        self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8516U", cli_source)
+        self.assertIn(
+            "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x560b762fU",
+            cli_source,
+        )
+        self.assertIn("run_release_manifest", cli_source)
+        self.assertIn("run_release_fixture_check", cli_source)
+        self.assertIn('strcmp(argv[1], "serve")', cli_source)
+        self.assertIn('option_value(argc, argv, "--config")', cli_source)
+        self.assertIn('option_value(argc, argv, "--store")', cli_source)
+        self.assertIn("load_mem_service_config", cli_source)
+        self.assertIn("MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U", cli_source)
+        self.assertIn("mem_service_run_unix_daemon_with_store", cli_source)
+        self.assertIn('strcmp(argv[1], "health")', cli_source)
+        self.assertIn('strcmp(argv[1], "ready")', cli_source)
+        self.assertIn('strcmp(argv[1], "status")', cli_source)
+        self.assertIn('strcmp(argv[1], "list-records")', cli_source)
+        self.assertIn('strcmp(argv[1], "metrics")', cli_source)
+        self.assertIn('strcmp(argv[1], "metrics-export")', cli_source)
+        self.assertIn("lingqu_mem_service_request_count", cli_source)
+        self.assertIn("--max-attempts", cli_source)
+        self.assertIn("--retry-backoff-ms", cli_source)
+        self.assertIn("--retry-timeouts", cli_source)
+        self.assertIn('strcmp(argv[1], "export-snapshot")', cli_source)
+        self.assertIn('strcmp(argv[1], "export-snapshot-page")', cli_source)
+        self.assertIn('strcmp(argv[1], "export-snapshot-to")', cli_source)
+        self.assertIn('strcmp(argv[1], "restore-snapshot")', cli_source)
+        self.assertIn('strcmp(argv[1], "put-object")', cli_source)
+        self.assertIn('strcmp(argv[1], "get-object")', cli_source)
+        self.assertIn('strcmp(argv[1], "inspect-object")', cli_source)
+        self.assertIn('strcmp(argv[1], "register-prefix")', cli_source)
+        self.assertIn('strcmp(argv[1], "lookup-prefix")', cli_source)
+        self.assertIn('strcmp(argv[1], "publish-kv")', cli_source)
+        self.assertIn('strcmp(argv[1], "resolve-kv")', cli_source)
+        self.assertIn('strcmp(argv[1], "publish-runtime-handoff")', cli_source)
+        self.assertIn('strcmp(argv[1], "resolve-runtime-handoff")', cli_source)
+        self.assertIn('strcmp(argv[1], "register-execution-artifact")', cli_source)
+        self.assertIn('strcmp(argv[1], "query-execution-artifact")', cli_source)
+        self.assertIn('strcmp(argv[1], "register-training-artifact")', cli_source)
+        self.assertIn('strcmp(argv[1], "query-training-artifact")', cli_source)
+        self.assertIn("#ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT", cli_source)
+        self.assertIn('#include "components/llm_infer/llm_infer.h"', cli_source)
+        self.assertIn("linqu_mem_service_core", cli_makefile)
+        self.assertIn("linqu_mem_service_qwen3", cli_makefile)
+        self.assertIn("MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt", cli_makefile)
+        self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt", cli_makefile)
+        self.assertIn("MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema", cli_makefile)
+        self.assertIn("MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf", cli_makefile)
+        self.assertIn("MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service", cli_makefile)
+        self.assertIn("MEM_SERVICE_CLIENT_EXAMPLES :=", cli_makefile)
+        self.assertIn("examples/mem_service_serving_example.c", cli_makefile)
+        self.assertIn("examples/mem_service_pretraining_example.c", cli_makefile)
+        self.assertIn("INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples", cli_makefile)
+        self.assertIn("INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config", cli_makefile)
+        self.assertIn("INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy", cli_makefile)
+        self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
+        self.assertIn("MEM_SERVICE_CLIENT_SDK_SRCS :=", cli_makefile)
+        self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
+        self.assertIn("$(MEM_SERVICE_CONFIG_EXAMPLE)", cli_makefile)
+        self.assertIn("$(MEM_SERVICE_DEPLOY_MANIFEST)", cli_makefile)
+        self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
+        self.assertIn("^client_retry_policy=explicit-max-attempts-backoff$$", cli_makefile)
+        self.assertIn("install-smoke: install", cli_makefile)
+        self.assertIn("print-release-manifest", cli_makefile)
+        self.assertIn("print-wire-schema", cli_makefile)
+        self.assertIn("wire_schema_manifest_checksum=0x560b762f", release_manifest)
+        self.assertIn("config_schema_version=1", release_manifest)
+        self.assertIn("config_schema=share/lingqu/mem_service/config/mem_service.conf.schema", release_manifest)
+        self.assertIn("config_example=share/lingqu/mem_service/config/mem_service.example.conf", release_manifest)
+        self.assertIn("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service", release_manifest)
+        self.assertIn("metrics_export_format=prometheus-text", release_manifest)
+        self.assertIn("client_retry_policy=explicit-max-attempts-backoff", release_manifest)
+        self.assertIn("client_api=pretraining-refs-v1", release_manifest)
+        self.assertIn("operation=metrics:5", release_manifest)
+        self.assertIn("operation=export_snapshot:6", release_manifest)
+        self.assertIn("operation=export_snapshot_page:7", release_manifest)
+        self.assertIn("operation=restore_snapshot:8", release_manifest)
+        self.assertIn("operation=restore_snapshot_page:9", release_manifest)
+        self.assertIn("operation=inspect_object:18", release_manifest)
+        self.assertIn(
+            "example_source=share/lingqu/mem_service/examples/"
+            "mem_service_serving_example.c",
+            release_manifest,
+        )
+        self.assertIn(
+            "example_source=share/lingqu/mem_service/examples/"
+            "mem_service_pretraining_example.c",
+            release_manifest,
+        )
+        self.assertIn("examples=2", cli_source)
+        self.assertIn("config_artifacts=3", cli_source)
+        self.assertIn("metrics_export_formats=1", cli_source)
+        self.assertIn("client_retry_policies=1", cli_source)
+        self.assertIn("client_api_profiles=1", cli_source)
+        self.assertIn("operation_count=22", (CLI_DIR / "wire-schema.txt").read_text())
+        self.assertIn("mem_service_config_schema_version=1", config_schema)
+        self.assertIn("field=listen type=string", config_schema)
+        self.assertIn("field=store type=string", config_schema)
+        self.assertIn("field=backend type=enum values=snapshot", config_schema)
+        self.assertIn("field=auth_mode type=enum values=none", config_schema)
+        self.assertIn("listen=unix:/tmp/linqu_mem_service.sock", config_example)
+        self.assertIn("store=/tmp/linqu_mem_service.store", config_example)
+        self.assertIn("backend=snapshot", config_example)
+        self.assertIn("auth_mode=none", config_example)
+        self.assertIn(
+            "ExecStart=/usr/bin/linqu_mem_service serve --config "
+            "/etc/lingqu/mem_service/mem_service.conf",
+            deploy_manifest,
+        )
+        self.assertIn('#include "mem_service_client.h"', serving_example)
+        self.assertIn("mem_service_client_register_prefix_entry", serving_example)
+        self.assertIn("mem_service_client_publish_kv_segment", serving_example)
+        self.assertIn("mem_service_client_publish_runtime_handoff", serving_example)
+        self.assertIn("mem_service_client_register_execution_artifact", serving_example)
+        self.assertIn("mem_service_wire_client_options_init", serving_example)
+        self.assertIn("mem_service_client_init_with_options", serving_example)
+        self.assertIn("retry_backoff_ms = 10", serving_example)
+        self.assertIn("retry_on_timeout = 1", serving_example)
+        self.assertIn("idempotency_key", serving_example)
+        self.assertNotIn("mem_service_daemon", serving_example)
+        self.assertNotIn("mem_service_core", serving_example)
+        self.assertIn('#include "mem_service_client.h"', pretraining_example)
+        self.assertIn("mem_service_client_training_ref", pretraining_example)
+        self.assertIn("mem_service_client_publish_dataset_shard", pretraining_example)
+        self.assertIn("mem_service_client_resolve_dataset_shard", pretraining_example)
+        self.assertIn("mem_service_client_publish_sample_batch", pretraining_example)
+        self.assertIn("mem_service_client_resolve_sample_batch", pretraining_example)
+        self.assertIn("mem_service_client_publish_checkpoint", pretraining_example)
+        self.assertIn("mem_service_client_resolve_checkpoint", pretraining_example)
+        self.assertIn("mem_service_client_publish_gradient_bucket", pretraining_example)
+        self.assertIn("mem_service_client_resolve_gradient_bucket", pretraining_example)
+        self.assertIn("mem_service_client_publish_optimizer_state", pretraining_example)
+        self.assertIn("mem_service_client_resolve_optimizer_state", pretraining_example)
+        self.assertNotIn("mem_service_client_register_training_artifact", pretraining_example)
+        self.assertIn("mem_service_wire_client_options_init", pretraining_example)
+        self.assertIn("mem_service_client_init_with_options", pretraining_example)
+        self.assertIn("retry_backoff_ms = 10", pretraining_example)
+        self.assertIn("retry_on_timeout = 1", pretraining_example)
+        self.assertIn("idempotency_key", pretraining_example)
+        self.assertIn("dataset-shard", pretraining_example)
+        self.assertIn("sample-batch", pretraining_example)
+        self.assertIn("checkpoint", pretraining_example)
+        self.assertIn("gradient-bucket", pretraining_example)
+        self.assertIn("optimizer-state", pretraining_example)
+        self.assertNotIn("mem_service_daemon", pretraining_example)
+        self.assertNotIn("mem_service_core", pretraining_example)
+        core_sources = re.search(
+            r"MEM_SERVICE_CORE_SRCS :=(?P<body>.*?)MEM_SERVICE_QWEN3_ADAPTER_SRCS :=",
+            cli_makefile,
+            re.S,
+        )
+        self.assertIsNotNone(core_sources)
+        self.assertNotIn("LLM_INFER", core_sources.group("body"))
+        self.assertNotIn("MEM_SERVICE_QWEN3", core_sources.group("body"))
+        self.assertNotIn("$(MEM_SERVICE)", core_sources.group("body"))
+        self.assertIn("$(MEM_SERVICE_DAEMON)", core_sources.group("body"))
+        self.assertIn("$(MEM_SERVICE_CLIENT)", core_sources.group("body"))
+        self.assertIn("$(MEM_SERVICE_WIRE_CLIENT)", core_sources.group("body"))
+        self.assertIn("MEM_SERVICE_QWEN3_ADAPTER_SRCS", cli_makefile)
+        self.assertIn("$(LLM_INFER)", cli_makefile)
+        self.assertIn("-DMEM_SERVICE_ENABLE_QWEN3_INSPECT", cli_makefile)
+        self.assertTrue(SERVICE_DAEMON_C.exists())
+        self.assertTrue(SERVICE_DAEMON_H.exists())
+        self.assertTrue(SERVICE_WIRE_H.exists())
+        self.assertTrue(SERVICE_CLIENT_C.exists())
+        self.assertTrue(SERVICE_CLIENT_H.exists())
+        self.assertTrue(SERVICE_WIRE_CLIENT_C.exists())
+        self.assertTrue(SERVICE_WIRE_CLIENT_H.exists())
+        self.assertTrue(SERVICE_WIRE_PAYLOAD_H.exists())
+        self.assertTrue(SERVICE_WIRE_SCHEMA_H.exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.c").exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.h").exists())
+        self.assertTrue((CLI_DIR / "release-manifest.txt").exists())
+        self.assertIn("mem_service_release_manifest_version=1", release_manifest)
+        self.assertIn("core_binary=bin/linqu_mem_service", release_manifest)
+        self.assertIn("public_header=include/lingqu/mem_service/mem_service_client.h", release_manifest)
+        self.assertIn("client_source=src/lingqu/mem_service/mem_service_client.c", release_manifest)
+        self.assertIn("operation=query_training_artifact:97", release_manifest)
+        self.assertIn("status=internal:10", release_manifest)
         self.assertFalse((ROOT / "apps" / "mem_service_demo").exists())
+
+    def test_pretraining_worker_runtime_gate_covers_restart_and_conflict(self):
+        daemon_runtime_test = SERVICE_DAEMON_RUNTIME_TEST.read_text()
+
+        self.assertIn(
+            "test_pretraining_workers_publish_resolve_and_recover_refs",
+            daemon_runtime_test,
+        )
+        self.assertIn("mem_service_pretraining_worker", daemon_runtime_test)
+        self.assertIn("mem_service_client_publish_dataset_shard", daemon_runtime_test)
+        self.assertIn("mem_service_client_publish_sample_batch", daemon_runtime_test)
+        self.assertIn("mem_service_client_publish_checkpoint", daemon_runtime_test)
+        self.assertIn("mem_service_client_publish_gradient_bucket", daemon_runtime_test)
+        self.assertIn("mem_service_client_publish_optimizer_state", daemon_runtime_test)
+        self.assertIn("pretraining_worker=worker0 ok", daemon_runtime_test)
+        self.assertIn("pretraining_worker=worker1 ok", daemon_runtime_test)
+        self.assertIn("pretraining_worker=resolve ok", daemon_runtime_test)
+        self.assertIn("pretraining_worker=conflict ok", daemon_runtime_test)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_STALE_REF", daemon_runtime_test)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH", daemon_runtime_test)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT", daemon_runtime_test)
+        self.assertIn("idempotency_conflict_count", daemon_runtime_test)
 
     def test_record_caps_support_long_decode_runs(self):
         header = SERVICE_H.read_text()
@@ -202,6 +528,378 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIsNotNone(cluster_records)
         self.assertGreaterEqual(int(max_records.group(1)), 1024)
         self.assertGreaterEqual(int(cluster_records.group(1)), 1024)
+
+    def test_mem_service_has_stable_wire_and_unix_daemon_boundary(self):
+        wire = SERVICE_WIRE_H.read_text()
+        client = SERVICE_CLIENT_H.read_text()
+        client_source = SERVICE_CLIENT_C.read_text()
+        wire_client = SERVICE_WIRE_CLIENT_H.read_text()
+        wire_client_source = SERVICE_WIRE_CLIENT_C.read_text()
+        wire_payload = SERVICE_WIRE_PAYLOAD_H.read_text()
+        wire_schema = SERVICE_WIRE_SCHEMA_H.read_text()
+        daemon = SERVICE_DAEMON_C.read_text()
+        daemon_header = SERVICE_DAEMON_H.read_text()
+        service_header = SERVICE_H.read_text()
+        cli_source = (CLI_DIR / "mem_service.c").read_text()
+
+        self.assertIn("#define MEM_SERVICE_WIRE_MAGIC", wire)
+        self.assertIn("#define MEM_SERVICE_WIRE_VERSION 1U", wire)
+        self.assertIn("#define MEM_SERVICE_WIRE_HEADER_LEN 48U", wire)
+        self.assertIn("struct mem_service_wire_header", wire)
+        for operation in (
+            "MEM_SERVICE_WIRE_OP_HEALTH",
+            "MEM_SERVICE_WIRE_OP_READY",
+            "MEM_SERVICE_WIRE_OP_STATUS",
+            "MEM_SERVICE_WIRE_OP_LIST_RECORDS",
+            "MEM_SERVICE_WIRE_OP_PUT_OBJECT",
+            "MEM_SERVICE_WIRE_OP_GET_OBJECT",
+            "MEM_SERVICE_WIRE_OP_REGISTER_PREFIX_ENTRY",
+            "MEM_SERVICE_WIRE_OP_LOOKUP_PREFIX_ENTRY",
+            "MEM_SERVICE_WIRE_OP_PUBLISH_KV_SEGMENT",
+            "MEM_SERVICE_WIRE_OP_RESOLVE_KV_SEGMENT",
+            "MEM_SERVICE_WIRE_OP_PUBLISH_RUNTIME_HANDOFF",
+            "MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF",
+            "MEM_SERVICE_WIRE_OP_REGISTER_EXECUTION_ARTIFACT",
+            "MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT",
+            "MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT",
+            "MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT",
+        ):
+            self.assertIn(operation, wire)
+        for status in (
+            "MEM_SERVICE_WIRE_STATUS_OK",
+            "MEM_SERVICE_WIRE_STATUS_NOT_FOUND",
+            "MEM_SERVICE_WIRE_STATUS_STALE_REF",
+            "MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH",
+            "MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT",
+            "MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING",
+            "MEM_SERVICE_WIRE_STATUS_INVALID_SESSION",
+            "MEM_SERVICE_WIRE_STATUS_TIMEOUT",
+            "MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED",
+            "MEM_SERVICE_WIRE_STATUS_UNSUPPORTED",
+            "MEM_SERVICE_WIRE_STATUS_INTERNAL",
+        ):
+            self.assertIn(status, wire)
+        self.assertIn("MEM_SERVICE_DEFAULT_UNIX_SOCKET", wire_client)
+        self.assertIn("struct mem_service_client", client)
+        self.assertIn("struct mem_service_client_record", client)
+        self.assertIn("struct mem_service_client_object", client)
+        self.assertIn("struct mem_service_client_block_entry", client)
+        self.assertIn("struct mem_service_client_artifact", client)
+        self.assertIn("struct mem_service_client_training_ref", client)
+        self.assertIn("struct mem_service_client_training_ref_query", client)
+        self.assertIn("mem_service_client_health", client)
+        self.assertIn("mem_service_client_put_object", client)
+        self.assertIn("mem_service_client_register_prefix_entry", client)
+        self.assertIn("mem_service_client_publish_kv_segment", client)
+        self.assertIn("mem_service_client_publish_runtime_handoff", client)
+        self.assertIn("mem_service_client_register_execution_artifact", client)
+        self.assertIn("mem_service_client_register_training_artifact", client)
+        self.assertIn("mem_service_client_publish_dataset_shard", client)
+        self.assertIn("mem_service_client_resolve_dataset_shard", client)
+        self.assertIn("mem_service_client_publish_sample_batch", client)
+        self.assertIn("mem_service_client_resolve_sample_batch", client)
+        self.assertIn("mem_service_client_publish_checkpoint", client)
+        self.assertIn("mem_service_client_resolve_checkpoint", client)
+        self.assertIn("mem_service_client_publish_gradient_bucket", client)
+        self.assertIn("mem_service_client_resolve_gradient_bucket", client)
+        self.assertIn("mem_service_client_publish_optimizer_state", client)
+        self.assertIn("mem_service_client_resolve_optimizer_state", client)
+        self.assertIn("struct mem_service_wire_client_options", client)
+        self.assertIn("mem_service_client_init_with_options", client)
+        self.assertIn("mem_service_wire_client_options_init", client_source)
+        self.assertIn('#include "mem_service_wire_client.h"', client_source)
+        self.assertIn('#include "mem_service_wire_payload.h"', client_source)
+        self.assertIn("mem_service_send_unix_request_with_options", client_source)
+        self.assertIn("mem_service_client_publish_training_ref", client_source)
+        self.assertIn("mem_service_client_resolve_training_ref", client_source)
+        self.assertIn("mem_service_wire_payload_append_field", client_source)
+        self.assertIn("mem_service_wire_payload_get_string", client_source)
+        self.assertNotIn('#include "mem_service_daemon.h"', client_source)
+        self.assertNotIn('#include "mem_service_core.h"', client_source)
+        self.assertIn("mem_service_wire_status_name", wire_client)
+        self.assertIn("mem_service_default_unix_socket_spec", wire_client)
+        self.assertIn("mem_service_send_unix_request", wire_client)
+        self.assertIn("mem_service_send_unix_request_with_options", wire_client)
+        self.assertIn("struct mem_service_wire_client_options", wire_client)
+        self.assertIn("MEM_SERVICE_WIRE_CLIENT_DEFAULT_MAX_ATTEMPTS", wire_client)
+        self.assertIn("MEM_SERVICE_WIRE_CLIENT_MAX_ATTEMPTS", wire_client)
+        self.assertIn("max_attempts", wire_client)
+        self.assertIn("retry_backoff_ms", wire_client)
+        self.assertIn("retry_on_timeout", wire_client)
+        self.assertIn("mem_service_wire_client_options_init", wire_client)
+        self.assertIn("const char *payload_in", wire_client)
+        self.assertIn("mem_service_send_unix_request", wire_client_source)
+        self.assertIn("mem_service_send_unix_request_with_options", wire_client_source)
+        self.assertIn("SO_RCVTIMEO", wire_client_source)
+        self.assertIn("SO_SNDTIMEO", wire_client_source)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_TIMEOUT", wire_client_source)
+        self.assertIn("mem_service_client_effective_max_attempts", wire_client_source)
+        self.assertIn("mem_service_client_should_retry", wire_client_source)
+        self.assertIn("mem_service_client_sleep_ms", wire_client_source)
+        self.assertIn("nanosleep", wire_client_source)
+        self.assertIn("const char *payload_in", wire_client_source)
+        self.assertIn("socket(AF_UNIX, SOCK_STREAM, 0)", wire_client_source)
+        self.assertIn("connect(fd", wire_client_source)
+        self.assertIn("mem_service_client_read_full", wire_client_source)
+        self.assertIn("mem_service_client_write_full", wire_client_source)
+        self.assertNotIn('#include "mem_service_core.h"', wire_client_source)
+        self.assertIn("struct mem_service_wire_payload_view", wire_payload)
+        self.assertIn("struct mem_service_wire_payload_field", wire_payload)
+        self.assertIn("MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING", wire_payload)
+        self.assertIn("MEM_SERVICE_WIRE_PAYLOAD_FIELD_U32", wire_payload)
+        self.assertIn("MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64", wire_payload)
+        self.assertIn("mem_service_wire_payload_get_string", wire_payload)
+        self.assertIn("mem_service_wire_payload_get_u64_checked", wire_payload)
+        self.assertIn("mem_service_wire_payload_get_u32", wire_payload)
+        self.assertIn("mem_service_wire_payload_append_field", wire_payload)
+        self.assertIn("mem_service_wire_payload_validate_schema", wire_payload)
+        self.assertIn("#define MEM_SERVICE_WIRE_SCHEMA_VERSION 1U", wire_schema)
+        self.assertIn("struct mem_service_wire_operation_schema", wire_schema)
+        self.assertIn("struct mem_service_wire_payload_oneof", wire_schema)
+        self.assertIn("mem_service_wire_schema_for_operation", wire_schema)
+        self.assertIn("mem_service_wire_schema_validate_payload", wire_schema)
+        self.assertIn("mem_service_wire_object_put_fields", wire_schema)
+        self.assertIn("mem_service_wire_artifact_query_fields", wire_schema)
+        self.assertIn("mem_service_wire_kv_resolve_oneofs", wire_schema)
+        self.assertIn('"key"', wire_schema)
+        self.assertIn('"block_hash"', wire_schema)
+        self.assertIn('#include "mem_service_wire_payload.h"', daemon)
+        self.assertIn('#include "mem_service_wire_schema.h"', daemon)
+        self.assertIn(
+            '#include "components/mem_service/mem_service_wire_payload.h"',
+            cli_source,
+        )
+        self.assertIn("--timeout-ms", cli_source)
+        self.assertIn("parse_client_options", cli_source)
+        self.assertIn("mem_service_send_unix_request_with_options", cli_source)
+        self.assertIn("mem_service_wire_payload_append_field", cli_source)
+        self.assertIn("mem_service_run_unix_daemon", daemon_header)
+        self.assertIn("mem_service_run_unix_daemon_with_store", daemon_header)
+        self.assertIn("mem_service_run_wire_fixture_check", daemon_header)
+        self.assertIn("mem_service_run_store_fixture_check", daemon_header)
+        self.assertNotIn("mem_service_send_unix_request", daemon_header)
+        self.assertNotIn("mem_service_client_", daemon_header)
+        self.assertIn('#include "mem_service_core.h"', daemon)
+        self.assertIn("socket(AF_UNIX, SOCK_STREAM, 0)", daemon)
+        self.assertIn("bind(server_fd", daemon)
+        self.assertIn("listen(server_fd, 16)", daemon)
+        self.assertIn("accept(server_fd", daemon)
+        self.assertIn("sigaction(SIGINT", daemon)
+        self.assertIn("sigaction(SIGTERM", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_OP_HEALTH", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_OP_READY", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_OP_STATUS", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_OP_LIST_RECORDS", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_UNSUPPORTED", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH", daemon)
+        self.assertIn("mem_service_init(&svc, true, true, true)", daemon)
+        self.assertIn('#include "mem_service_record_table.h"', daemon)
+        self.assertIn("mem_service_read_payload", daemon)
+        self.assertIn("mem_service_put_object", daemon)
+        self.assertIn("mem_service_get_object", daemon)
+        self.assertIn("mem_service_inspect_object", daemon)
+        self.assertIn("mem_service_export_snapshot", daemon)
+        self.assertIn("mem_service_export_snapshot_page", daemon)
+        self.assertIn("mem_service_restore_snapshot", daemon)
+        self.assertIn("mem_service_restore_snapshot_page", daemon)
+        self.assertIn("mem_service_register_prefix", daemon)
+        self.assertIn("mem_service_lookup_prefix", daemon)
+        self.assertIn("mem_service_publish_kv", daemon)
+        self.assertIn("mem_service_resolve_kv", daemon)
+        self.assertIn("mem_service_store_artifact", daemon)
+        self.assertIn("mem_service_query_artifact", daemon)
+        self.assertIn("mem_service_status", daemon)
+        self.assertIn("mem_service_list_records", daemon)
+        self.assertIn("mem_service_record_kind_name", daemon)
+        self.assertIn("record_count=%zu", daemon)
+        self.assertIn('MEM_SERVICE_STORE_MAGIC "mem_service_store_v1"', daemon)
+        self.assertIn("mem_service_load_store", daemon)
+        self.assertIn("mem_service_save_store", daemon)
+        self.assertIn("mem_service_operation_mutates", daemon)
+        self.assertIn("durable_store_save_failed", daemon)
+        self.assertIn("record_begin", daemon)
+        self.assertIn("MEM_SERVICE_RECORD_RUNTIME_HANDOFF", daemon)
+        self.assertIn("MEM_SERVICE_RECORD_EXECUTION_ARTIFACT", daemon)
+        self.assertIn("MEM_SERVICE_RECORD_TRAINING_ARTIFACT", daemon)
+        self.assertIn("MEM_SERVICE_WIRE_STATUS_STALE_REF", daemon)
+        self.assertIn("mem_service_run_wire_fixture_check", daemon)
+        self.assertIn("mem_service_run_store_fixture_check", daemon)
+        self.assertIn("mem_service_wire_schema_for_operation", daemon)
+        self.assertIn("mem_service_wire_schema_validate_payload", daemon)
+        self.assertNotIn("mem_service_object_put_schema", daemon)
+        self.assertNotIn("mem_service_artifact_query_schema", daemon)
+        self.assertIn("mem_service_wire_payload_view_from_cstr(payload)", daemon)
+        self.assertIn("offsetof(struct mem_service_wire_header, request_id)", daemon)
+        for fixture_name in (
+            "health_request",
+            "ready_request",
+            "status_request",
+            "list_records_request",
+            "put_object_request",
+            "get_object_request",
+            "register_prefix_request",
+            "lookup_prefix_request",
+            "publish_kv_request",
+            "resolve_kv_request",
+            "publish_runtime_handoff_request",
+            "resolve_runtime_handoff_request",
+            "register_execution_artifact_request",
+            "query_execution_artifact_request",
+            "register_training_artifact_request",
+            "query_training_artifact_request",
+            "metrics_request",
+            "export_snapshot_request",
+            "export_snapshot_page_request",
+            "inspect_object_request",
+            "restore_snapshot_request",
+            "restore_snapshot_page_request",
+        ):
+            self.assertIn(fixture_name, daemon)
+        for response_fixture_name in (
+            "health_response",
+            "ready_response",
+            "put_object_response",
+            "get_object_response",
+            "register_prefix_response",
+            "lookup_prefix_response",
+            "publish_kv_response",
+            "resolve_kv_response",
+            "publish_runtime_handoff_response",
+            "resolve_runtime_handoff_response",
+            "register_execution_artifact_response",
+            "query_execution_artifact_response",
+            "register_training_artifact_response",
+            "query_training_artifact_response",
+            "status_response",
+            "list_records_response",
+            "metrics_response",
+            "export_snapshot_response",
+            "export_snapshot_page_response",
+            "inspect_object_response",
+            "restore_snapshot_response",
+            "restore_snapshot_page_response",
+        ):
+            self.assertIn(response_fixture_name, daemon)
+        for checksum in (
+            "0x4e6f0ab1U",
+            "0x099d6fbeU",
+            "0x8a6bc143U",
+            "0x112e24c8U",
+            "0xab96fa3cU",
+            "0x7b036ca5U",
+            "0x9bdd9444U",
+            "0x3e772698U",
+            "0xe44a9059U",
+            "0xf601bf3fU",
+            "0x70ed07a5U",
+            "0x7ccb46a2U",
+            "0x663437afU",
+            "0xa2b94d99U",
+            "0xe87e631eU",
+            "0x4f16a0c9U",
+            "0x29d62b8bU",
+            "0x2c6ac21eU",
+            "0x6454ba82U",
+            "0x8d9812a7U",
+            "0xde8843f2U",
+            "0x3f4609a1U",
+            "0x3ae50a76U",
+            "0x3fc9bd20U",
+            "0xabb21009U",
+            "0x1b337d88U",
+            "0xa5654285U",
+            "0xdaa065aeU",
+            "0xfe23a8a2U",
+            "0xe54d9bffU",
+            "0xf5e0bc47U",
+        ):
+            self.assertIn(checksum, daemon)
+        self.assertIn("MEM_SERVICE_METRIC_LATENCY_BUCKET_COUNT", service_header)
+        self.assertIn("MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS", service_header)
+        self.assertIn("struct mem_service_idempotency_record", service_header)
+        self.assertIn("idempotency_key", wire_schema)
+        self.assertIn("idempotency_key", client)
+        self.assertIn("idempotency_key", client_source)
+        self.assertIn("--idempotency-key", cli_source)
+        self.assertIn("append_idempotency_payload_field", cli_source)
+        self.assertIn("mem_service_try_idempotency_replay", daemon)
+        self.assertIn("mem_service_store_import_idempotency", daemon)
+        self.assertIn("mem_service_save_idempotency_record", daemon)
+        self.assertIn("mem_service_append_snapshot_idempotency_text", daemon)
+        self.assertIn("idempotency_begin", daemon)
+        self.assertIn("response_line=", daemon)
+        self.assertIn("idempotency_replay_count", daemon)
+        self.assertIn("idempotency_conflict_count", daemon)
+        self.assertIn("request_latency_total_ms", daemon)
+        self.assertIn("request_latency_le_1ms_count", daemon)
+        self.assertIn("request_latency_gt_100ms_count", daemon)
+        self.assertIn("payload_fixtures=%zu", daemon)
+        self.assertIn("response_fixtures=%zu", daemon)
+        self.assertIn("mem_service_expect_response_fixture", daemon)
+        self.assertIn('mem_service_expect_u32("op_status", MEM_SERVICE_WIRE_OP_STATUS, 3)', daemon)
+        self.assertIn(
+            'mem_service_expect_u32("op_list_records", MEM_SERVICE_WIRE_OP_LIST_RECORDS, 4)',
+            daemon,
+        )
+        self.assertIn('mem_service_expect_u32("op_metrics", MEM_SERVICE_WIRE_OP_METRICS, 5)', daemon)
+        self.assertIn(
+            'mem_service_expect_u32("op_export_snapshot",',
+            daemon,
+        )
+        self.assertIn(
+            'mem_service_expect_u32("op_export_snapshot_page",',
+            daemon,
+        )
+        self.assertIn(
+            'mem_service_expect_u32("op_restore_snapshot",',
+            daemon,
+        )
+        self.assertIn(
+            'mem_service_expect_u32("op_restore_snapshot_page",',
+            daemon,
+        )
+        self.assertIn(
+            'mem_service_expect_u32("op_inspect_object",',
+            daemon,
+        )
+        self.assertIn("mem_service_record_operation_metrics", daemon)
+        self.assertIn("mem_service_payload_get_string", daemon)
+        self.assertIn('status=stopped', daemon)
+        self.assertNotIn("qwen3", daemon.lower())
+
+    def test_qwen3_record_kinds_are_adapter_aliases_not_core_enum_names(self):
+        header = SERVICE_H.read_text()
+        core_header = SERVICE_CORE_H.read_text()
+        qwen3_header = SERVICE_QWEN3_H.read_text()
+        cluster_read = SERVICE_CLUSTER_READ_C.read_text()
+        cluster_observe = SERVICE_CLUSTER_OBSERVE_C.read_text()
+
+        self.assertIn('#include "mem_service.h"', core_header)
+        self.assertNotIn("qwen3", core_header.lower())
+        self.assertNotIn("MEM_SERVICE_RECORD_QWEN3", header)
+        self.assertIn("MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT = 9", header)
+        self.assertIn("MEM_SERVICE_RECORD_MODEL_ENGRAM_HISTORY = 10", header)
+        self.assertIn("MEM_SERVICE_RECORD_MODEL_ENGRAM_CANDIDATES = 11", header)
+        self.assertIn("MEM_SERVICE_RECORD_MODEL_ENGRAM_SELECTED = 12", header)
+        self.assertIn("MEM_SERVICE_RECORD_MODEL_ENGRAM_STATE = 13", header)
+        self.assertIn("MEM_SERVICE_RECORD_RUNTIME_HANDOFF = 14", header)
+        self.assertIn("MEM_SERVICE_RECORD_EXECUTION_ARTIFACT = 15", header)
+        self.assertIn("MEM_SERVICE_RECORD_TRAINING_ARTIFACT = 16", header)
+        self.assertIn(
+            "#define MEM_SERVICE_RECORD_QWEN3_TOKEN_RESULT "
+            "MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT",
+            qwen3_header,
+        )
+        self.assertIn(
+            "#define MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE "
+            "MEM_SERVICE_RECORD_MODEL_ENGRAM_STATE",
+            qwen3_header,
+        )
+        self.assertIn("MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT", cluster_observe)
+        self.assertIn("MEM_SERVICE_RECORD_TRAINING_ARTIFACT", cluster_read)
+        self.assertIn("MEM_SERVICE_RECORD_TRAINING_ARTIFACT", cluster_observe)
+        self.assertNotIn("MEM_SERVICE_RECORD_QWEN3", cluster_read)
+        self.assertNotIn("MEM_SERVICE_RECORD_QWEN3", cluster_observe)
 
     def test_internal_runtime_contract_is_split_from_service_main(self):
         source = SERVICE_C.read_text()

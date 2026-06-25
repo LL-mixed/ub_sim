@@ -370,11 +370,14 @@ int mem_service_publish_observe_cluster(struct mem_service *svc,
                        rec->kind == MEM_SERVICE_RECORD_KVCACHE_OBJECT ||
                        rec->kind == MEM_SERVICE_RECORD_HIDDEN_RANGE_INPUT ||
                        rec->kind == MEM_SERVICE_RECORD_HIDDEN_RANGE_OUTPUT ||
-                       rec->kind == MEM_SERVICE_RECORD_QWEN3_TOKEN_RESULT ||
-                       rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_HISTORY ||
-                       rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_CANDIDATES ||
-                       rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_SELECTED ||
-                       rec->kind == MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE) {
+                       rec->kind == MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT ||
+                       rec->kind == MEM_SERVICE_RECORD_MODEL_ENGRAM_HISTORY ||
+                       rec->kind == MEM_SERVICE_RECORD_MODEL_ENGRAM_CANDIDATES ||
+                       rec->kind == MEM_SERVICE_RECORD_MODEL_ENGRAM_SELECTED ||
+                       rec->kind == MEM_SERVICE_RECORD_MODEL_ENGRAM_STATE ||
+                       rec->kind == MEM_SERVICE_RECORD_RUNTIME_HANDOFF ||
+                       rec->kind == MEM_SERVICE_RECORD_EXECUTION_ARTIFACT ||
+                       rec->kind == MEM_SERVICE_RECORD_TRAINING_ARTIFACT) {
                 printf("[mem_service] stage db_service_cluster_observe owner=node%d kind=%s key=%s offset=0x%016" PRIx64 " bytes=%" PRIu64 " checksum=0x%016" PRIx64 " version=%" PRIu64 "\n",
                        i + 1,
                        mem_service_object_kind_name(rec->object_payload_kind),

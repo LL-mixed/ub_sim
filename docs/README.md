@@ -23,6 +23,8 @@ Current validation entry points:
   - host-core dataplane microbenchmark benefit report for W5 GVA/GSVA, including expanded legacy PA-to-UBA resolver baselines (`linear`, `direct`, `indexed`, `cached`)
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
+- [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)
+  - assessment of whether `mem_service` can be independently released/deployed, current component capabilities, blockers, and the service-productization plan for LLM serving and pretraining integration
 - [drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md](drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md)
   - draft design for combining CPU-side engram policy, OBMM shmem pool transport, and simpler-backed Qwen3 0.6B forward in an 8-node simulation path
 - [plans/2026-05-22-paper-engram-alignment-plan.md](plans/2026-05-22-paper-engram-alignment-plan.md)
@@ -31,6 +33,8 @@ Current validation entry points:
   - Chinese explanation of the Engram paper concepts and the paper-aligned repo design plan
 - [plans/2026-05-27-w5-shortpath-approximate-hidden-match-plan.md](plans/2026-05-27-w5-shortpath-approximate-hidden-match-plan.md)
   - plan for adding an opt-in approximate hidden-state match path to W5 shortpath while preserving exact-match correctness
+- [plans/2026-06-25-mem-service-independent-service-plan.md](plans/2026-06-25-mem-service-independent-service-plan.md)
+  - implementation and evaluation plan for turning `mem_service` into an independently releasable/deployable service for LLM serving and pretraining integration
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)

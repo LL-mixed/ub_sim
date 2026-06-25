@@ -1,0 +1,26 @@
+mem_service_config_schema_version=1
+format=text-kv
+required=listen
+optional=store
+optional=node_id
+optional=cluster_id
+optional=storage_root
+optional=backend
+optional=max_records
+optional=max_payload_bytes
+optional=retention
+optional=auth_mode
+optional=metrics_mode
+optional=adapter_enablement
+field=listen type=string description=service endpoint, currently unix:<path>
+field=store type=string description=snapshot store path for committed metadata and completed idempotency records
+field=node_id type=string description=stable deployment node identity
+field=cluster_id type=string description=stable deployment cluster identity
+field=storage_root type=string description=base directory for future durable catalog and payload block backends
+field=backend type=enum values=snapshot description=current durable backend selector
+field=max_records type=u64 description=deployment record-capacity expectation
+field=max_payload_bytes type=u64 description=deployment wire-payload capacity expectation
+field=retention type=string description=retention policy label
+field=auth_mode type=enum values=none description=current local deployment auth mode
+field=metrics_mode type=enum values=text-kv description=current metrics export mode
+field=adapter_enablement type=enum values=core,qwen3 description=enabled adapter surface

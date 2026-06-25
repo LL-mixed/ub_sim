@@ -16,11 +16,14 @@ enum mem_service_record_kind {
     MEM_SERVICE_RECORD_HIDDEN_RANGE_INPUT = 6,
     MEM_SERVICE_RECORD_HIDDEN_RANGE_OUTPUT = 7,
     MEM_SERVICE_RECORD_LAYER_RANGE_PLACEMENT = 8,
-    MEM_SERVICE_RECORD_QWEN3_TOKEN_RESULT = 9,
-    MEM_SERVICE_RECORD_QWEN3_ENGRAM_HISTORY = 10,
-    MEM_SERVICE_RECORD_QWEN3_ENGRAM_CANDIDATES = 11,
-    MEM_SERVICE_RECORD_QWEN3_ENGRAM_SELECTED = 12,
-    MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE = 13,
+    MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT = 9,
+    MEM_SERVICE_RECORD_MODEL_ENGRAM_HISTORY = 10,
+    MEM_SERVICE_RECORD_MODEL_ENGRAM_CANDIDATES = 11,
+    MEM_SERVICE_RECORD_MODEL_ENGRAM_SELECTED = 12,
+    MEM_SERVICE_RECORD_MODEL_ENGRAM_STATE = 13,
+    MEM_SERVICE_RECORD_RUNTIME_HANDOFF = 14,
+    MEM_SERVICE_RECORD_EXECUTION_ARTIFACT = 15,
+    MEM_SERVICE_RECORD_TRAINING_ARTIFACT = 16,
 };
 
 enum mem_service_kvcache_state {
@@ -32,6 +35,10 @@ enum mem_service_kvcache_state {
 
 #define MEM_SERVICE_MAX_RECORDS 1024U
 #define MEM_SERVICE_MAX_GROUP_MEMBERS 4U
+#define MEM_SERVICE_METRIC_LATENCY_BUCKET_COUNT 6U
+#define MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS 64U
+#define MEM_SERVICE_IDEMPOTENCY_KEY_LEN 96U
+#define MEM_SERVICE_IDEMPOTENCY_RESPONSE_LEN 4096U
 
 struct mem_service_record {
     bool in_use;
@@ -41,6 +48,10 @@ struct mem_service_record {
     char prefix_group[64];
     char group_id[64];
     char block_hash[96];
+    char session_id[64];
+    char model_key[64];
+    char artifact_kind[64];
+    char artifact_id[96];
     uint32_t placement_node;
     uint32_t placement_level;
     uint64_t hot_segment_id;
@@ -59,12 +70,77 @@ struct mem_service_record {
     char member_block_hashes[MEM_SERVICE_MAX_GROUP_MEMBERS][96];
 };
 
+struct mem_service_metrics {
+    uint64_t request_count;
+    uint64_t ok_count;
+    uint64_t error_count;
+    uint64_t not_found_count;
+    uint64_t stale_ref_count;
+    uint64_t checksum_mismatch_count;
+    uint64_t version_conflict_count;
+    uint64_t invalid_model_binding_count;
+    uint64_t invalid_session_count;
+    uint64_t timeout_count;
+    uint64_t capacity_exceeded_count;
+    uint64_t unsupported_count;
+    uint64_t internal_count;
+    uint64_t fail_closed_count;
+    uint64_t health_count;
+    uint64_t ready_count;
+    uint64_t status_count;
+    uint64_t list_records_count;
+    uint64_t metrics_count;
+    uint64_t export_snapshot_count;
+    uint64_t export_snapshot_page_count;
+    uint64_t restore_snapshot_count;
+    uint64_t restore_snapshot_page_count;
+    uint64_t put_object_count;
+    uint64_t get_object_count;
+    uint64_t inspect_object_count;
+    uint64_t get_object_hit_count;
+    uint64_t get_object_miss_count;
+    uint64_t register_prefix_count;
+    uint64_t lookup_prefix_count;
+    uint64_t prefix_lookup_hit_count;
+    uint64_t prefix_lookup_miss_count;
+    uint64_t publish_kv_count;
+    uint64_t resolve_kv_count;
+    uint64_t kv_resolve_hit_count;
+    uint64_t kv_resolve_miss_count;
+    uint64_t publish_runtime_handoff_count;
+    uint64_t resolve_runtime_handoff_count;
+    uint64_t register_execution_artifact_count;
+    uint64_t query_execution_artifact_count;
+    uint64_t register_training_artifact_count;
+    uint64_t query_training_artifact_count;
+    uint64_t artifact_query_hit_count;
+    uint64_t artifact_query_miss_count;
+    uint64_t idempotency_replay_count;
+    uint64_t idempotency_conflict_count;
+    uint64_t request_latency_total_ms;
+    uint64_t request_latency_max_ms;
+    uint64_t request_latency_bucket_counts[MEM_SERVICE_METRIC_LATENCY_BUCKET_COUNT];
+};
+
+struct mem_service_idempotency_record {
+    bool in_use;
+    char key[MEM_SERVICE_IDEMPOTENCY_KEY_LEN];
+    uint32_t operation;
+    uint32_t request_checksum;
+    uint32_t status;
+    uint32_t response_len;
+    char response[MEM_SERVICE_IDEMPOTENCY_RESPONSE_LEN];
+};
+
 struct mem_service {
     bool shmem_ready;
     bool urma_ready;
     bool block_ready;
     size_t record_count;
+    struct mem_service_metrics metrics;
     struct mem_service_record records[MEM_SERVICE_MAX_RECORDS];
+    struct mem_service_idempotency_record
+        idempotency_records[MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS];
 };
 
 struct mem_service_object_payload_view {

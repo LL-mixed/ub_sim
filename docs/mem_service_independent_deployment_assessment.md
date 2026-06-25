@@ -1,0 +1,635 @@
+# mem_service Independent Deployment Assessment
+
+## 1. 结论
+
+当前 `mem_service` 可以作为 guest-side link-time component、standalone guest core smoke app、最小 Unix-socket service process、最小 object/prefix/KV/runtime handoff/execution artifact/training artifact RPC service，以及 Qwen3 adapter inspect app 独立存在，但还不能作为可独立发布、独立部署、面向任意 LLM serving 或 pretraining 系统协同工作的通用 Memory Service。
+
+更准确的状态是：
+
+| 维度 | 当前状态 | 判断 |
+| --- | --- | --- |
+| 组件独立性 | 已从 `llm_infer` app 中拆出 `components/mem_service`，并有 model-neutral `mem_service_core.h` | 成立 |
+| guest 独立 app | `apps/mem_service` 可构建 core-only `/bin/linqu_mem_service` 和 Qwen3 adapter `/bin/linqu_mem_service_qwen3` | 成立 |
+| W5/LLM 协同 | 已支持 Qwen3 range/KV/engram/object handoff 路径 | 成立，但偏 Qwen3/W5 验证路径 |
+| 独立发布 | 已有最小 release manifest CLI、wire schema manifest CLI、config schema/example、systemd-like deployment manifest、源 manifest、pretraining client API profile、Makefile `install-smoke`、public header/client source/SDK examples/schema/config/deploy manifest 安装布局；仍缺稳定 package、ABI/API version policy、host daemon artifact、升级/回滚和完整发布门禁 | 部分成立 |
+| 独立部署 | 已有 `serve --config`、`serve`/`health`/`ready`、`status`/`list-records`/`metrics`/`metrics-export`/`inspect-object`/`export-snapshot`/`export-snapshot-page`/`export-snapshot-to`/`restore-snapshot` 最小 admin、object/prefix/KV/runtime handoff/execution artifact/training artifact Unix-socket RPC 闭环，共享 text key/value payload helper、public operation schema contract、lightweight Unix RPC client transport、typed C client wrapper 与 schema fixture gate，以及 `--store` 最小 metadata/ref restart/online restore recovery；写路径已有最小 `idempotency_key` replay/conflict 语义，completed idempotency record 会随 `--store` 和 full snapshot 持久化并支持跨重启 replay/conflict，`metrics` 已包含最小请求 latency histogram 和 idempotency replay/conflict 计数，`metrics-export --format prometheus-text` 已能导出 Prometheus text exposition，`restore-snapshot` 已能对大 snapshot 走事务化分页恢复，仍缺 HTTP scrape/service-manager metrics smoke、append-only durable idempotency log、host service-manager smoke 和产品级 durable backend | 部分成立 |
+| 任意 LLM serving/pretraining 协同 | LLM serving 与 pretraining 的最小 artifact 语义已有 RPC，外部进程可链接 typed C client + lightweight transport 而不链接 daemon/server/core；当前已有可安装 serving/pretraining SDK examples、pretraining dataset/sample/checkpoint/gradient/optimizer helper、显式 timeout、opt-in retry/backoff/timeout-retry、最小 mutation idempotency key 和 `--store` 跨重启 replay/conflict，并通过两进程 daemon smoke；pretraining worker runtime gate 已覆盖多 worker publish/resolve、checkpoint restart、stale/checksum fail-closed 和 idempotency conflict；binary typed schema、retry/idempotency compatibility matrix、完整集成矩阵、durable catalog、release-grade deployment contract 还缺 | 部分成立 |
+
+所以当前不能把它宣传为“可独立部署的 mem service 产品”。它已经具备成为独立服务的核心雏形，但仍处在 simulator guest component + W5 integration component 阶段。
+
+## 2. 已经具备的独立能力
+
+### 2.1 独立组件边界
+
+源码已经位于：
+
+```text
+guest-linux/aarch64/components/mem_service/
+```
+
+对外入口是：
+
+```text
+guest-linux/aarch64/components/mem_service/mem_service.h
+guest-linux/aarch64/components/mem_service/mem_service_qwen3.h
+guest-linux/aarch64/components/mem_service/lingqu_object_service.h
+```
+
+`mem_service.h` 已经暴露基础 metadata/object API：
+
+```text
+mem_service_init
+mem_service_bootstrap_kvcache
+mem_service_update_prefix_metadata
+mem_service_get_prefix_group_metadata
+mem_service_apply_block_result
+mem_service_rebind_block_view
+mem_service_handoff_block_owner
+mem_service_cluster_fetch_record
+mem_service_publish_observe_cluster
+mem_service_obmm_service_v0_publish_resolve
+mem_service_obmm_service_v0_ensure_cluster_runtime
+mem_service_get_record
+mem_service_record_to_lingqu_obmm_ref
+```
+
+这说明它不是单纯嵌在某个 W5 app 里的静态函数集合，已经有明确的 C component API。
+
+### 2.2 独立 guest CLI
+
+当前有正式 app：
+
+```text
+guest-linux/aarch64/apps/mem_service/
+```
+
+入口二进制是：
+
+```text
+/bin/linqu_mem_service
+```
+
+CLI 当前支持：
+
+```text
+linqu_mem_service --smoke
+linqu_mem_service --self-test
+linqu_mem_service wire-fixtures
+linqu_mem_service wire-schema
+linqu_mem_service wire-schema-fixtures
+linqu_mem_service store-fixtures
+linqu_mem_service release-manifest
+linqu_mem_service release-fixtures
+linqu_mem_service serve --listen unix:<path>
+linqu_mem_service serve --listen unix:<path> --store <path>
+linqu_mem_service health --connect unix:<path>
+linqu_mem_service ready --connect unix:<path>
+linqu_mem_service status --connect unix:<path>
+linqu_mem_service list-records --connect unix:<path>
+linqu_mem_service put-object --connect unix:<path> --key <key> ...
+linqu_mem_service get-object --connect unix:<path> --key <key>
+linqu_mem_service publish-kv --connect unix:<path> --request-id <id> --prefix-group <group> --group-id <id> --block-hash <hash> ...
+linqu_mem_service resolve-kv --connect unix:<path> --block-hash <hash>
+linqu_mem_service register-prefix --connect unix:<path> --request-id <id> --prefix-group <group> --group-id <id> --block-hash <hash> ...
+linqu_mem_service lookup-prefix --connect unix:<path> --request-id <id> --prefix-group <group>
+linqu_mem_service publish-runtime-handoff --connect unix:<path> --key <key> ...
+linqu_mem_service resolve-runtime-handoff --connect unix:<path> --key <key>
+linqu_mem_service register-execution-artifact --connect unix:<path> --key <key> ...
+linqu_mem_service query-execution-artifact --connect unix:<path> --key <key>
+linqu_mem_service register-training-artifact --connect unix:<path> --key <key> ...
+linqu_mem_service query-training-artifact --connect unix:<path> --key <key>
+linqu_mem_service_qwen3 --inspect-qwen3
+```
+
+`--smoke` 覆盖基础流程：
+
+```text
+init
+bootstrap kvcache
+apply block result
+update prefix metadata
+get prefix group metadata
+get record
+validate prefix/group/block relation
+```
+
+`--inspect-qwen3` 覆盖 Qwen3 topology inspection：
+
+```text
+model_key
+pipeline nodes
+layer ranges
+hidden bytes
+decode hidden bytes
+kv bytes per token
+```
+
+这说明它能作为 guest 中的独立 app 被启动和验证。
+
+当前还具备最小发布布局：
+
+```text
+guest-linux/aarch64/apps/mem_service/release-manifest.txt
+linqu_mem_service release-manifest
+linqu_mem_service release-fixtures
+make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr
+```
+
+该布局会安装 core daemon binary、public headers、client SDK source、serving
+和 pretraining SDK examples、release manifest、wire schema manifest、config
+schema/example 和 deployment manifest，但还
+不是完整 package/deploy/upgrade contract。
+
+### 2.3 最小 service process 和 wire contract
+
+当前已新增模型无关服务边界：
+
+```text
+guest-linux/aarch64/components/mem_service/mem_service_wire.h
+guest-linux/aarch64/components/mem_service/mem_service_daemon.h
+guest-linux/aarch64/components/mem_service/mem_service_daemon.c
+```
+
+`mem_service_wire.h` 固定了：
+
+```text
+magic
+version
+header_len
+request_id
+operation
+flags
+payload_len
+payload_checksum
+status
+error_code
+server_time_ms
+```
+
+并预留了模型无关 operation：
+
+```text
+Health / Ready
+Status / ListRecords
+PutObject / GetObject
+RegisterPrefixEntry / LookupPrefixEntry
+PublishKvSegment / ResolveKvSegment
+PublishRuntimeHandoff / ResolveRuntimeHandoff
+RegisterExecutionArtifact / QueryExecutionArtifact
+RegisterTrainingArtifact / QueryTrainingArtifact
+```
+
+当前已实现的可运行 operation 是：
+
+```text
+Health
+Ready
+Status / ListRecords
+PutObject / GetObject
+RegisterPrefixEntry / LookupPrefixEntry
+PublishKvSegment / ResolveKvSegment
+PublishRuntimeHandoff / ResolveRuntimeHandoff
+RegisterExecutionArtifact / QueryExecutionArtifact
+RegisterTrainingArtifact / QueryTrainingArtifact
+```
+
+runtime handoff、execution artifact、training artifact 现在已经通过同一 envelope 做最小 key/value payload 存取，并在查询侧支持 `expected_version` 和 `expected_checksum`。版本或 checksum 不匹配会 fail closed 为 `STALE_REF` 或 `CHECKSUM_MISMATCH`，不会隐式 fallback 到本地路径。
+
+### 2.4 W5 运行时协同能力
+
+`mem_service_qwen3.h` 暴露的能力已经覆盖 W5/Qwen3 runtime 协同路径：
+
+```text
+range input wait/view
+scheduler work item wait
+range output publish
+KV state publish/resolve
+terminal token publish/wait
+shortpath terminal publish
+engram candidate publish/wait
+engram selected token wait
+engram history/state wait
+decode round barrier
+```
+
+这些能力已经能服务当前 W5 decode 验证，包括：
+
+```text
+prefix metadata
+KV state object
+hidden range handoff
+terminal token object
+engram candidates/history/state
+OBMM object ref projection
+cluster observe
+SPSC descriptor exchange
+```
+
+所以它已经不是“只能本地存 JSON/metadata”的小工具，而是 W5 runtime object handoff 的关键服务组件。
+
+### 2.5 测试覆盖
+
+当前 Python tests 已覆盖一批结构约束：
+
+```text
+guest-linux/aarch64/tests/test_mem_service_record_recycling.py
+```
+
+覆盖点包括：
+
+```text
+CLI/app layout
+record capacity
+runtime contract split
+compiler annotations split
+cluster payload/read/runtime/queue/observe split
+object flow split
+Qwen3 runtime flow split
+record recycling policy
+KV payload sizing
+object-ref naming
+no demo naming regression
+```
+
+这对“组件边界不再退回 demo/W5 私有代码”是有价值的。
+
+## 3. 为什么还不能独立发布部署
+
+### 3.1 service process 还只是最小闭环
+
+当前 `/bin/linqu_mem_service` 已有长期运行的 Unix-socket daemon 入口：
+
+```text
+linqu_mem_service serve --listen unix:<path>
+linqu_mem_service serve --listen unix:<path> --store <path>
+```
+
+客户端已有：
+
+```text
+linqu_mem_service health --connect unix:<path>
+linqu_mem_service ready --connect unix:<path>
+linqu_mem_service status --connect unix:<path>
+linqu_mem_service list-records --connect unix:<path>
+```
+
+并且已经能通过同一 wire envelope 做 object/prefix/KV/runtime handoff/execution artifact/training artifact 最小业务 round-trip。仍缺少：
+
+```text
+runtime config reload
+host service-manager deployment smoke
+HTTP scrape/service-manager metrics smoke
+product-grade restore admission, rollback, and quarantine policy
+graceful shutdown flush policy
+multi-client concurrency policy
+```
+
+因此它现在能证明“服务进程形态、wire 基础、object/prefix/KV/runtime/execution/training 最小业务 RPC 成立，并且 committed metadata/ref 与 completed idempotency record 可通过 `--store` 跨重启恢复”，还不能证明“其他 LLM serving 或 pretraining system 已完成产品级协同”。
+
+### 3.2 wire API 还没有发布级 typed payload schema
+
+当前 `mem_service_wire.h` 已经定义了稳定 envelope、operation IDs 和错误模型，`mem_service_wire_client.c/h` 已经把 Unix-socket request helper、default endpoint 和 status name helper 从 daemon 中拆出为轻量 client transport，外部 client 可以不链接 daemon/server/core；`mem_service_client.c/h` 已经在该 transport 上提供最小 typed C wrapper，覆盖 object、prefix、KV、runtime handoff、execution artifact、generic training artifact 的 request/response 结构体，并额外提供 dataset/sample/checkpoint/gradient/optimizer-state pretraining helper。`mem_service_wire_payload.h` 已经把 CLI 和 daemon 的 text key/value payload 读写、整数解析和 schema 校验收敛到共享 helper，`mem_service_wire_schema.h` 已经把当前 operation payload schema 提升成 public contract。`linqu_mem_service wire-schema` 会从 public schema table 生成 `apps/mem_service/wire-schema.txt`，`wire-schema-fixtures` 冻结当前 manifest length/checksum、22 个 operation、100 个字段和 1 个 oneof selector。`mem_service_daemon.c` 已能处理 `Health`/`Ready`、`Status`/`ListRecords`/`Metrics`/`InspectObject`/`ExportSnapshot`/`ExportSnapshotPage`/`RestoreSnapshot`/`RestoreSnapshotPage`、object、prefix、KV、runtime handoff、execution artifact、training artifact 最小 RPC；runtime/execution/training artifact query 已支持 expected session/model/kind/id/version/checksum fail-closed 校验；object/prefix/KV/runtime handoff/execution artifact/training artifact 写路径已支持可选 `idempotency_key`，重复相同 operation/payload replay 首次响应，重复 key 搭配不同 payload fail-closed 为 `version_conflict`；completed idempotency record 会随 `--store` 和 full `export-snapshot` 持久化，重启或 full snapshot restore 后仍能 replay/conflict。`linqu_mem_service wire-fixtures` 现在会校验 header size/offset、operation/status 数值、checksum 算法、header init 行为、22 个当前 RPC 的 canonical request payload 长度/checksum、当前 request schema、22 个真实 handler response 长度/checksum，以及最小 idempotency replay/conflict 行为；`store-fixtures` 覆盖 idempotency save/load 后的 replay/conflict。
+
+缺少：
+
+```text
+binary typed payload schema
+runtime handoff binary typed request/response schema
+execution/pretraining binary typed request/response schema
+retry/idempotency compatibility matrix
+append-only durable idempotency log and compatibility matrix
+cross-version compatibility tests
+old/new schema manifest compatibility matrix
+```
+
+这意味着它已经不是纯 in-process API，也不再是散落在 CLI/daemon 里的临时 parser、daemon 私有 schema 或必须链接 daemon 的 client helper；它已经具备最小 object/prefix/KV/runtime/execution/pretraining RPC、request/response payload corpus、lightweight client transport、typed C client wrapper、pretraining SDK helper、共享 payload helper、public operation schema contract 和最小 wire fixture gate。但它还不是完整“独立部署后供其他进程/节点进行 runtime/execution/pretraining 协同”的发布级 typed service API。
+
+### 3.3 持久化边界还不是产品级
+
+当前 guest `mem_service` 的 public state 是进程内 `struct mem_service`：
+
+```text
+record_count
+records[MEM_SERVICE_MAX_RECORDS]
+```
+
+它已经能做 runtime metadata/object handoff，并且 `linqu_mem_service store-fixtures` 与 `linqu_mem_service serve --store <path>` 已能把 committed metadata/ref snapshot 保存到本地文件并在重启时恢复。独立 Memory Service 仍需要更强的 durable contract：
+
+```text
+durable namespace
+durable metadata catalog
+payload block store
+snapshot/restore
+crash recovery
+compaction
+retention
+quarantine
+audit log
+schema migration
+```
+
+Rust 侧已有 `sim-memory` / durable store / prefix cache / execution artifact 相关模型；guest `mem_service` 当前只有最小 snapshot recovery，还没有接入产品级 durable catalog、audit log、payload block backend、schema migration。
+
+### 3.4 模型无关边界还没有完全闭合
+
+当前已经把 Qwen3 相关实现放进 `mem_service_qwen3*.c/h`，并且 core CLI 已经可以不链接 `llm_infer.c`、Qwen3 adapter 源或 guest runtime 聚合源独立构建。`mem_service.h` 也已经改为 `MEM_SERVICE_RECORD_MODEL_*` 通用 record kind，Qwen3 名称只在 `mem_service_qwen3.h` 中作为 adapter alias 存在。
+
+剩余的模型边界问题主要是 adapter CLI 和 runtime flow 仍明显带 Qwen3/W5 验证痕迹：
+
+```text
+linqu_mem_service_qwen3 --inspect-qwen3
+mem_service_qwen3*.c/h
+```
+
+这对当前验证没问题，但对独立服务而言还不够。通用 Memory Service 应该暴露模型无关核心对象：
+
+```text
+model_binding
+tensor_artifact
+kv_segment
+prefix_entry
+runtime_handoff
+execution_artifact
+training_sample
+optimizer_state_ref
+checkpoint_ref
+```
+
+Qwen3 应该只是 adapter/plugin，不应该泄漏成核心服务命名。
+
+### 3.5 serving/pretraining 协同 contract 不完整
+
+当前对 inference serving 的支持强于 pretraining。已覆盖较多 decode runtime 对象：
+
+```text
+KV state
+prefix metadata
+range hidden handoff
+terminal token
+engram state
+```
+
+现在已经有最小外部 client 证据：
+
+```text
+mem_service_serving_example.c:
+  prefix/KV/runtime handoff/execution artifact publish/query
+
+mem_service_pretraining_example.c:
+  dataset shard/sample batch/checkpoint/gradient bucket/optimizer state
+  typed SDK publish/resolve helper over training artifact RPC
+
+test_pretraining_workers_publish_resolve_and_recover_refs:
+  external worker0/worker1 clients publish typed training refs through daemon
+  typed resolve succeeds before and after --store restart
+  stale version and checksum mismatch fail closed
+  duplicate idempotency key with different payload returns version_conflict
+```
+
+这些示例和 runtime gate 只链接 `mem_service_client.c` 和
+`mem_service_wire_client.c`，测试中作为独立进程连接
+`linqu_mem_service serve`，证明服务已经不是只能 in-process 调用的
+component。
+
+但 pretraining 和 serving 的产品级协同仍至少需要：
+
+```text
+dedicated binary typed schema for dataset/sample/checkpoint/gradient/optimizer
+training step barriers
+replay/audit records
+checkpoint lifecycle
+multi-writer consistency
+model/session/tokenizer mismatch negative matrix
+```
+
+这些还没有形成 release-grade public API、wire protocol 或测试矩阵。
+
+### 3.6 发布工程缺口
+
+当前缺少独立发布所需的工程面：
+
+```text
+versioned artifact
+install layout
+config file schema
+deployment manifest
+compatibility matrix
+release tests
+upgrade/downgrade policy
+observability contract
+security/auth boundary
+resource quota
+```
+
+所以即使代码能编译，也还不能称为可独立发布。
+
+## 4. 可以如何定位当前 mem_service
+
+当前推荐定位：
+
+```text
+mem_service is a guest-side Lingqu memory/object metadata component.
+It can run standalone smoke/inspect validation, and it can be linked by
+LLM inference guest apps to provide prefix/KV/object handoff for W5.
+It is not yet a standalone deployable memory service daemon.
+```
+
+中文表述：
+
+```text
+mem_service 当前是 guest 内的 Lingqu memory/object metadata 组件，
+具备独立 app 验证能力，也能支撑 W5/LLM inference 的 prefix/KV/object
+handoff；但还不是可以独立发布部署、被任意 serving/pretraining 系统远程调用的
+通用 Memory Service。
+```
+
+## 5. 补齐路线
+
+### Phase 1: 固化 service boundary
+
+目标：把“组件 API”固化成“服务 API”。
+
+需要做：
+
+1. 定义 `mem_service_core.h`，只包含模型无关对象和 metadata API。
+2. 把 Qwen3 record kind 从 core public enum 中抽出，改成 adapter-owned kind namespace。
+3. 定义通用对象类型：
+   ```text
+   prefix_entry
+   kv_segment
+   tensor_artifact
+   runtime_handoff
+   execution_artifact
+   memory_record
+   training_artifact
+   ```
+4. 给所有 public structs 加 version/size 字段，形成 ABI 兼容基础。
+5. 增加 `linqu_mem_service --self-test`，覆盖 core API，不依赖 Qwen3。
+
+完成标准：
+
+```text
+apps/mem_service can build and run core smoke without linking llm_infer.
+Qwen3 inspect remains available through adapter mode, not required by core smoke.
+```
+
+### Phase 2: 补齐业务 RPC
+
+目标：把当前 `serve`/`health`/`ready` 生命周期闭环补成可被其他进程用于业务协同的服务 API。
+
+需要做：
+
+1. 为当前 `mem_service_wire.h` 和 `wire-schema.txt` 增加 old/new compatibility fixtures；request/response golden corpus 已由 `wire-fixtures` 覆盖，当前 operation/field manifest 已由 `wire-schema-fixtures` 覆盖。
+2. 增加 typed request/response payload schema：
+   ```text
+   PutObject
+   GetObject
+   PublishKvSegment
+   ResolveKvSegment
+   RegisterPrefixEntry
+   LookupPrefixEntry
+   PublishRuntimeHandoff
+   ResolveRuntimeHandoff
+   RegisterExecutionArtifact
+   QueryExecutionArtifact
+   ```
+3. 实现并测试业务 operation：
+   ```text
+   PutObject / GetObject
+   RegisterPrefixEntry / LookupPrefixEntry
+   PublishKvSegment / ResolveKvSegment
+   ```
+4. 增加 observability/admin endpoint：
+   ```text
+   /metrics
+   linqu_mem_service status          # current minimal read-only admin
+   linqu_mem_service list-records    # current minimal read-only admin
+   linqu_mem_service metrics         # current minimal read-only admin
+   linqu_mem_service metrics-export  # current minimal Prometheus text exporter
+   linqu_mem_service inspect-object  # current minimal read-only admin
+   linqu_mem_service export-snapshot # current minimal read-only admin, bounded by wire payload size
+   linqu_mem_service export-snapshot-page # current minimal read-only admin, paginated by record slot
+   linqu_mem_service export-snapshot-to # current minimal page assembly path
+   linqu_mem_service restore-snapshot # current transactional paged restore for large snapshots
+   ```
+
+完成标准：
+
+```text
+LLM serving app can run as a separate process and call mem_service through RPC.
+No in-process linking is required for the serving app to publish/resolve KV and prefix entries.
+```
+
+### Phase 3: durable backend
+
+目标：让服务重启后不丢关键 metadata 和 payload refs。
+
+需要做：
+
+1. 引入 durable catalog backend。
+2. 引入 payload block backend。
+3. 定义 snapshot/restore。
+4. 定义 append-only audit log。
+5. 定义 schema migration。
+6. 定义 retention/quarantine/trust policy。
+
+完成标准：
+
+```text
+publish prefix/KV/object refs
+restart mem_service
+resolve the same refs
+verify checksum/version/provenance
+```
+
+### Phase 4: serving integration
+
+目标：支持独立 LLM serving 系统使用它。
+
+需要做：
+
+1. 定义 serving session namespace。
+2. 定义 model binding contract。当前 runtime/execution/training artifact query 已有最小 expected model binding fail-closed 校验，后续还需要扩展到 tokenizer/precision/parallelism/shape 等发布级绑定。
+3. 定义 prefix cache API。
+4. 定义 KV segment API。
+5. 定义 runtime tensor handoff API。
+6. 定义 stale/fail-closed behavior。
+7. 给 llm serving 做独立 client library。
+
+完成标准：
+
+```text
+serving process A publishes prefix/KV/runtime refs
+serving process B resolves and consumes them
+stale refs fail closed
+all refs carry model/session/version/checksum metadata
+```
+
+### Phase 5: pretraining integration
+
+目标：支持训练系统，而不只是 decode serving。
+
+需要做：
+
+1. 定义 dataset shard refs。
+2. 定义 tokenized sample refs。
+3. 定义 activation checkpoint refs。
+4. 定义 gradient bucket refs。
+5. 定义 optimizer state refs。
+6. 定义 training step barrier。
+7. 定义 replay/audit records。
+8. 定义 checkpoint retention and GC。
+
+完成标准：
+
+```text
+pretraining worker can publish and resolve dataset/sample/checkpoint/gradient refs
+restart does not lose committed metadata
+multi-worker conflict is deterministic
+audit log can reconstruct a training step's inputs and outputs
+```
+
+## 6. 建议的发布门禁
+
+独立发布前至少需要这些门禁：
+
+| 门禁 | 必须证明 |
+| --- | --- |
+| core build | `mem_service` core 不链接 `llm_infer` 也能编译和 self-test |
+| adapter build | Qwen3 adapter 单独编译，通过 inspect 和 W5 decode tests |
+| daemon smoke | `linqu_mem_service serve` 可启动、health ready、graceful shutdown |
+| RPC contract | client/server round trip 覆盖 object、prefix、KV、runtime handoff |
+| durability | snapshot/restart 后 refs 可解析，checksum/version 不变 |
+| stale safety | stale/mismatched refs fail closed |
+| serving integration | 独立 serving process 通过 RPC 使用 prefix/KV/object refs |
+| pretraining integration | 训练 worker 可发布/解析 sample/checkpoint/gradient refs |
+| observability | metrics、audit log、structured errors 可用于定位问题 |
+
+## 7. 当前最应该先做的事
+
+Phase 1 core split 已经完成：`mem_service_core.h` 存在，core CLI 不链接 `llm_infer`，Qwen3 inspect 已进入 adapter-only binary。Phase 2/3 的生命周期、业务最小闭环、最小只读 admin 和最小 restart recovery 也已经开始：`linqu_mem_service serve`、`health`、`ready`、`status`、`list-records`、object、prefix、KV 可以通过 Unix socket 使用同一套 wire envelope，`serve --store` 可以恢复 committed metadata/ref snapshot。
+
+接下来优先级最高的是 Phase 2 和 Phase 3，不是继续堆 Qwen3/W5 特例。
+
+最小可执行切片：
+
+1. 增加 response wire golden fixtures 和 compatibility tests。
+2. 把当前 key/value wire payload 从 request golden corpus 推进到 typed encode/decode helpers，并收紧兼容策略。
+3. 扩展业务 RPC：
+   ```text
+PublishRuntimeHandoff
+ResolveRuntimeHandoff
+RegisterExecutionArtifact
+QueryExecutionArtifact
+RegisterTrainingArtifact
+QueryTrainingArtifact
+   ```
+4. 写 client CLI 和 Python contract tests。
+
+完成这一步后，才能说：
+
+```text
+mem_service can be deployed as a standalone service for LLM serving integration.
+```
+
+pretraining 协同还需要 Phase 5 的训练对象和一致性语义补齐。

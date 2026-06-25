@@ -1,3 +1,4 @@
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -586,6 +587,17 @@ def test_mem_service_has_component_and_cli_entrypoints():
     component_dir = ROOT / "components" / "mem_service"
     app_dir = ROOT / "apps" / "mem_service"
     readme = (component_dir / "README.md").read_text()
+    app_makefile = (app_dir / "Makefile").read_text()
+    app_source = (app_dir / "mem_service.c").read_text()
+    release_manifest = (app_dir / "release-manifest.txt").read_text()
+    wire_schema_manifest = (app_dir / "wire-schema.txt").read_text()
+    config_schema = (app_dir / "configs" / "mem_service.conf.schema").read_text()
+    config_example = (app_dir / "configs" / "mem_service.example.conf").read_text()
+    deploy_manifest = (app_dir / "deploy" / "linqu_mem_service.service").read_text()
+    serving_example = (app_dir / "examples" / "mem_service_serving_example.c").read_text()
+    pretraining_example = (
+        app_dir / "examples" / "mem_service_pretraining_example.c"
+    ).read_text()
 
     assert 'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"' in build_script
     assert 'MEM_SERVICE_CLUSTER_UTILS_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_utils.c"' in build_script
@@ -596,6 +608,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_CLUSTER_OBSERVE_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_observe.c"' in build_script
     assert 'MEM_SERVICE_OBMM_OBJECT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_object_flow.c"' in build_script
     assert 'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"' in build_script
+    assert 'MEM_SERVICE_DAEMON_SRC="$ROOT_DIR/components/mem_service/mem_service_daemon.c"' in build_script
+    assert 'MEM_SERVICE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_client.c"' in build_script
+    assert 'MEM_SERVICE_WIRE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_wire_client.c"' in build_script
     assert 'MEM_SERVICE_KEYS_SRC="$ROOT_DIR/components/mem_service/mem_service_keys.c"' in build_script
     assert 'MEM_SERVICE_OBJECT_REFS_SRC="$ROOT_DIR/components/mem_service/mem_service_object_refs.c"' in build_script
     assert 'MEM_SERVICE_OBMM_OBJECTS_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_objects.c"' in build_script
@@ -612,15 +627,198 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"' in build_script
     assert 'MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"' in build_script
     assert 'MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"' in build_script
+    assert 'MEM_SERVICE_QWEN3_CLI_BIN="$OUT_DIR/linqu_mem_service_qwen3"' in build_script
     assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
-    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
+    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
+    assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in build_script
+    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
     assert "standalone demo" not in readme
     assert "linqu_mem_service" in build_script
+    assert "linqu_mem_service_qwen3" in build_script
     assert "linqu_mem_service" in run_app
     assert "linqu_mem_service=1" in run_app
+    assert "linqu_mem_service_qwen3" in run_app
+    assert "linqu_mem_service_wire_fixtures" in run_app
+    assert "/bin/linqu_mem_service wire-fixtures" in run_app
+    assert "linqu_mem_service_wire_schema_fixtures" in run_app
+    assert "/bin/linqu_mem_service wire-schema-fixtures" in run_app
+    assert "linqu_mem_service_config_fixtures" in run_app
+    assert "/bin/linqu_mem_service config-fixtures" in run_app
+    assert "linqu_mem_service_metrics_export_fixtures" in run_app
+    assert "/bin/linqu_mem_service metrics-export-fixtures" in run_app
+    assert "linqu_mem_service_client_retry_fixtures" in run_app
+    assert "/bin/linqu_mem_service client-retry-fixtures" in run_app
+    assert "linqu_mem_service_release_fixtures" in run_app
+    assert "/bin/linqu_mem_service release-fixtures" in run_app
     assert (app_dir / "mem_service.c").exists()
     assert (app_dir / "Makefile").exists()
+    assert (app_dir / "release-manifest.txt").exists()
+    assert (app_dir / "wire-schema.txt").exists()
+    assert (app_dir / "configs" / "mem_service.conf.schema").exists()
+    assert (app_dir / "configs" / "mem_service.example.conf").exists()
+    assert (app_dir / "deploy" / "linqu_mem_service.service").exists()
+    assert (app_dir / "examples" / "mem_service_serving_example.c").exists()
+    assert (app_dir / "examples" / "mem_service_pretraining_example.c").exists()
+    assert "linqu_mem_service_core" in app_makefile
+    assert "linqu_mem_service_qwen3" in app_makefile
+    assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_makefile
+    assert "MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt" in app_makefile
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt" in app_makefile
+    assert "MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema" in app_makefile
+    assert "MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf" in app_makefile
+    assert "MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service" in app_makefile
+    assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
+    assert "examples/mem_service_serving_example.c" in app_makefile
+    assert "examples/mem_service_pretraining_example.c" in app_makefile
+    assert "INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples" in app_makefile
+    assert "INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config" in app_makefile
+    assert "INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy" in app_makefile
+    assert "MEM_SERVICE_PUBLIC_HEADERS :=" in app_makefile
+    assert "$(ROOT)/components/mem_service/mem_service_client.h" in app_makefile
+    assert "$(ROOT)/components/mem_service/mem_service_wire_schema.h" in app_makefile
+    assert "MEM_SERVICE_CLIENT_SDK_SRCS :=" in app_makefile
+    assert "$(ROOT)/components/mem_service/mem_service_client.c" in app_makefile
+    assert "$(ROOT)/components/mem_service/mem_service_wire_client.c" in app_makefile
+    assert "$(MEM_SERVICE_CONFIG_SCHEMA)" in app_makefile
+    assert "$(MEM_SERVICE_CONFIG_EXAMPLE)" in app_makefile
+    assert "$(MEM_SERVICE_DEPLOY_MANIFEST)" in app_makefile
+    assert "^metrics_export_format=prometheus-text$$" in app_makefile
+    assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
+    assert "install-smoke: install" in app_makefile
+    assert "print-release-manifest" in app_makefile
+    assert "print-wire-schema" in app_makefile
+    core_sources = re.search(
+        r"MEM_SERVICE_CORE_SRCS :=(?P<body>.*?)MEM_SERVICE_QWEN3_ADAPTER_SRCS :=",
+        app_makefile,
+        re.S,
+    )
+    assert core_sources is not None
+    assert "LLM_INFER" not in core_sources.group("body")
+    assert "MEM_SERVICE_QWEN3" not in core_sources.group("body")
+    assert "$(MEM_SERVICE)" not in core_sources.group("body")
+    assert "$(MEM_SERVICE_DAEMON)" in core_sources.group("body")
+    assert "$(MEM_SERVICE_CLIENT)" in core_sources.group("body")
+    assert "$(MEM_SERVICE_WIRE_CLIENT)" in core_sources.group("body")
+    assert '#include "components/mem_service/mem_service_daemon.h"' in app_source
+    assert '#include "components/mem_service/mem_service_wire_client.h"' in app_source
+    assert 'strcmp(argv[1], "wire-fixtures")' in app_source
+    assert 'strcmp(argv[1], "wire-schema")' in app_source
+    assert 'strcmp(argv[1], "wire-schema-fixtures")' in app_source
+    assert 'strcmp(argv[1], "config-fixtures")' in app_source
+    assert 'strcmp(argv[1], "metrics-export-fixtures")' in app_source
+    assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
+    assert 'strcmp(argv[1], "serve")' in app_source
+    assert 'option_value(argc, argv, "--config")' in app_source
+    assert "load_mem_service_config" in app_source
+    assert "MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U" in app_source
+    assert 'strcmp(argv[1], "release-manifest")' in app_source
+    assert 'strcmp(argv[1], "release-fixtures")' in app_source
+    assert "run_release_manifest" in app_source
+    assert "run_release_fixture_check" in app_source
+    assert "run_wire_schema_manifest" in app_source
+    assert "run_wire_schema_fixture_check" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8516U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x560b762fU" in app_source
+    assert 'strcmp(argv[1], "health")' in app_source
+    assert 'strcmp(argv[1], "ready")' in app_source
+    assert 'strcmp(argv[1], "metrics")' in app_source
+    assert 'strcmp(argv[1], "metrics-export")' in app_source
+    assert "render_metrics_prometheus_text" in app_source
+    assert "lingqu_mem_service_request_count" in app_source
+    assert "--max-attempts" in app_source
+    assert "--retry-backoff-ms" in app_source
+    assert "--retry-timeouts" in app_source
+    assert 'strcmp(argv[1], "export-snapshot")' in app_source
+    assert 'strcmp(argv[1], "export-snapshot-page")' in app_source
+    assert 'strcmp(argv[1], "export-snapshot-to")' in app_source
+    assert 'strcmp(argv[1], "restore-snapshot")' in app_source
+    assert 'strcmp(argv[1], "put-object")' in app_source
+    assert 'strcmp(argv[1], "get-object")' in app_source
+    assert 'strcmp(argv[1], "inspect-object")' in app_source
+    assert 'strcmp(argv[1], "register-prefix")' in app_source
+    assert 'strcmp(argv[1], "lookup-prefix")' in app_source
+    assert 'strcmp(argv[1], "publish-kv")' in app_source
+    assert 'strcmp(argv[1], "resolve-kv")' in app_source
+    assert 'strcmp(argv[1], "publish-runtime-handoff")' in app_source
+    assert 'strcmp(argv[1], "resolve-runtime-handoff")' in app_source
+    assert 'strcmp(argv[1], "register-execution-artifact")' in app_source
+    assert 'strcmp(argv[1], "query-execution-artifact")' in app_source
+    assert 'strcmp(argv[1], "register-training-artifact")' in app_source
+    assert 'strcmp(argv[1], "query-training-artifact")' in app_source
+    assert "#ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_source
+    assert "mem_service_release_manifest_version=1" in release_manifest
+    assert "core_binary=bin/linqu_mem_service" in release_manifest
+    assert "public_header=include/lingqu/mem_service/mem_service_client.h" in release_manifest
+    assert "client_source=src/lingqu/mem_service/mem_service_client.c" in release_manifest
+    assert (
+        "example_source=share/lingqu/mem_service/examples/"
+        "mem_service_serving_example.c"
+    ) in release_manifest
+    assert (
+        "example_source=share/lingqu/mem_service/examples/"
+        "mem_service_pretraining_example.c"
+    ) in release_manifest
+    assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
+    assert "wire_schema_manifest_len=8516" in release_manifest
+    assert "wire_schema_manifest_checksum=0x560b762f" in release_manifest
+    assert "config_schema_version=1" in release_manifest
+    assert "config_schema=share/lingqu/mem_service/config/mem_service.conf.schema" in release_manifest
+    assert "config_example=share/lingqu/mem_service/config/mem_service.example.conf" in release_manifest
+    assert "deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service" in release_manifest
+    assert "metrics_export_format=prometheus-text" in release_manifest
+    assert "client_retry_policy=explicit-max-attempts-backoff" in release_manifest
+    assert "client_api=pretraining-refs-v1" in release_manifest
+    assert "operation=metrics:5" in release_manifest
+    assert "operation=export_snapshot:6" in release_manifest
+    assert "operation=export_snapshot_page:7" in release_manifest
+    assert "operation=restore_snapshot:8" in release_manifest
+    assert "operation=restore_snapshot_page:9" in release_manifest
+    assert "operation=inspect_object:18" in release_manifest
+    assert "operation=query_training_artifact:97" in release_manifest
+    assert "status=internal:10" in release_manifest
+    assert "mem_service_wire_schema_manifest_version=1" in wire_schema_manifest
+    assert "operation_count=22" in wire_schema_manifest
+    assert "operation=metrics:5" in wire_schema_manifest
+    assert "operation=export_snapshot:6" in wire_schema_manifest
+    assert "operation=export_snapshot_page:7" in wire_schema_manifest
+    assert "operation=restore_snapshot:8" in wire_schema_manifest
+    assert "operation=restore_snapshot_page:9" in wire_schema_manifest
+    assert "operation=inspect_object:18" in wire_schema_manifest
+    assert "field_count=100" in wire_schema_manifest
+    assert "oneof_field=resolve_kv_segment.0.block_hash" in wire_schema_manifest
+    assert "mem_service_config_schema_version=1" in config_schema
+    assert "field=listen type=string" in config_schema
+    assert "field=store type=string" in config_schema
+    assert "field=backend type=enum values=snapshot" in config_schema
+    assert "listen=unix:/tmp/linqu_mem_service.sock" in config_example
+    assert "store=/tmp/linqu_mem_service.store" in config_example
+    assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest
+    assert '#include "mem_service_client.h"' in serving_example
+    assert "mem_service_client_register_prefix_entry" in serving_example
+    assert "mem_service_client_publish_kv_segment" in serving_example
+    assert "mem_service_client_publish_runtime_handoff" in serving_example
+    assert "mem_service_client_register_execution_artifact" in serving_example
+    assert "mem_service_serving_example=ok" in serving_example
+    assert '#include "mem_service_client.h"' in pretraining_example
+    assert "mem_service_client_training_ref" in pretraining_example
+    assert "mem_service_client_publish_dataset_shard" in pretraining_example
+    assert "mem_service_client_resolve_dataset_shard" in pretraining_example
+    assert "mem_service_client_publish_sample_batch" in pretraining_example
+    assert "mem_service_client_resolve_sample_batch" in pretraining_example
+    assert "mem_service_client_publish_checkpoint" in pretraining_example
+    assert "mem_service_client_resolve_checkpoint" in pretraining_example
+    assert "mem_service_client_publish_gradient_bucket" in pretraining_example
+    assert "mem_service_client_resolve_gradient_bucket" in pretraining_example
+    assert "mem_service_client_publish_optimizer_state" in pretraining_example
+    assert "mem_service_client_resolve_optimizer_state" in pretraining_example
+    assert "mem_service_client_register_training_artifact" not in pretraining_example
+    assert "dataset-shard" in pretraining_example
+    assert "sample-batch" in pretraining_example
+    assert "checkpoint" in pretraining_example
+    assert "gradient-bucket" in pretraining_example
+    assert "optimizer-state" in pretraining_example
+    assert "mem_service_pretraining_example=ok" in pretraining_example
     assert not (ROOT / "apps" / "mem_service_demo").exists()
     assert "test_mem_service_record_recycling.py" in readme
     assert (component_dir / "mem_service.c").exists()
@@ -639,6 +837,13 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (component_dir / "mem_service_obmm_object_flow.c").exists()
     assert (component_dir / "mem_service_obmm_object_flow.h").exists()
     assert (component_dir / "mem_service_metadata.c").exists()
+    assert (component_dir / "mem_service_daemon.c").exists()
+    assert (component_dir / "mem_service_daemon.h").exists()
+    assert (component_dir / "mem_service_client.c").exists()
+    assert (component_dir / "mem_service_client.h").exists()
+    assert (component_dir / "mem_service_wire.h").exists()
+    assert (component_dir / "mem_service_wire_client.c").exists()
+    assert (component_dir / "mem_service_wire_client.h").exists()
     assert (component_dir / "mem_service_keys.c").exists()
     assert (component_dir / "mem_service_keys.h").exists()
     assert (component_dir / "mem_service_object_refs.c").exists()
@@ -646,6 +851,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (component_dir / "mem_service_obmm_objects.c").exists()
     assert (component_dir / "mem_service_obmm_objects.h").exists()
     assert (component_dir / "mem_service.h").exists()
+    assert (component_dir / "mem_service_core.h").exists()
     assert (component_dir / "mem_service_qwen3_records.c").exists()
     assert (component_dir / "mem_service_qwen3_runtime.c").exists()
     assert (component_dir / "mem_service_qwen3_decode_barrier.c").exists()

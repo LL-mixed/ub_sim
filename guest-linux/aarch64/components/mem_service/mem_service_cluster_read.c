@@ -448,7 +448,7 @@ bool mem_service_slot_find_record(const struct mem_service_cluster_slot *slot,
                                             offsetof(struct mem_service_record, kind),
                                         sizeof(kind));
         if (kind < MEM_SERVICE_RECORD_PREFIX_GROUP ||
-            kind > MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE) {
+            kind > MEM_SERVICE_RECORD_TRAINING_ARTIFACT) {
             return false;
         }
         mem_service_copy_from_mapped_volatile(record_key,
@@ -577,7 +577,7 @@ bool mem_service_slot_find_record_by_obmm_object_backing(
                                             offsetof(struct mem_service_record, kind),
                                         sizeof(kind));
         if (kind < MEM_SERVICE_RECORD_PREFIX_GROUP ||
-            kind > MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE) {
+            kind > MEM_SERVICE_RECORD_TRAINING_ARTIFACT) {
             return false;
         }
         if (kind != record_kind) {

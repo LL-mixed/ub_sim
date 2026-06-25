@@ -2274,11 +2274,21 @@ fn qwen3_object_registry_path_in_dir(
     ))
 }
 
+#[cfg(test)]
 fn qwen3_object_registry_path(object_ref: &LingquObmmObjectRefWire) -> PathBuf {
     qwen3_object_registry_path_in_dir(&qwen3_object_registry_dir(), object_ref)
 }
 
 fn qwen3_object_registry_put(
+    object_ref: &LingquObmmObjectRefWire,
+    payload: &[u8],
+) -> Result<(), String> {
+    let dir = qwen3_object_registry_dir();
+    qwen3_object_registry_put_to_dir(&dir, object_ref, payload)
+}
+
+fn qwen3_object_registry_put_to_dir(
+    registry_dir: &Path,
     object_ref: &LingquObmmObjectRefWire,
     payload: &[u8],
 ) -> Result<(), String> {
@@ -2296,14 +2306,13 @@ fn qwen3_object_registry_put(
             object_ref.payload_checksum
         ));
     }
-    let dir = qwen3_object_registry_dir();
-    fs::create_dir_all(&dir).map_err(|err| {
+    fs::create_dir_all(registry_dir).map_err(|err| {
         format!(
             "qwen3_object_registry_create_failed:{}:{err}",
-            dir.display()
+            registry_dir.display()
         )
     })?;
-    let path = qwen3_object_registry_path(object_ref);
+    let path = qwen3_object_registry_path_in_dir(registry_dir, object_ref);
     let tmp_path = path.with_extension(format!(
         "tmp.{}.{}",
         std::process::id(),
@@ -3308,6 +3317,25 @@ pub fn qwen3_publish_object_registry_payload(
     key: &str,
     payload: &[u8],
 ) -> Result<LingquObmmObjectRefWire, String> {
+    let registry_dir = qwen3_object_registry_dir();
+    qwen3_publish_object_registry_payload_to_dir(
+        &registry_dir,
+        object_kind,
+        owner_entity,
+        producer_entity,
+        key,
+        payload,
+    )
+}
+
+pub fn qwen3_publish_object_registry_payload_to_dir(
+    registry_dir: &Path,
+    object_kind: u16,
+    owner_entity: u32,
+    producer_entity: u32,
+    key: &str,
+    payload: &[u8],
+) -> Result<LingquObmmObjectRefWire, String> {
     if key.trim().is_empty() {
         return Err("qwen3_object_registry_key_missing".to_string());
     }
@@ -3324,7 +3352,7 @@ pub fn qwen3_publish_object_registry_payload(
         payload.len() as u64,
         qwen3_dense_reference_range_object_payload_checksum(payload),
     );
-    qwen3_object_registry_put(&object_ref, payload)?;
+    qwen3_object_registry_put_to_dir(registry_dir, &object_ref, payload)?;
     Ok(object_ref)
 }
 
@@ -3467,6 +3495,26 @@ pub fn qwen3_publish_engram_state_registry_payload(
 ) -> Result<LingquObmmObjectRefWire, String> {
     let payload = qwen3_engram_state_manifest_payload(table_ref, indices_ref, gate_weight_ref)?;
     qwen3_publish_object_registry_payload(
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        owner_entity,
+        producer_entity,
+        key,
+        &payload,
+    )
+}
+
+pub fn qwen3_publish_engram_state_registry_payload_to_dir(
+    registry_dir: &Path,
+    owner_entity: u32,
+    producer_entity: u32,
+    key: &str,
+    table_ref: &LingquObmmObjectRefWire,
+    indices_ref: &LingquObmmObjectRefWire,
+    gate_weight_ref: &LingquObmmObjectRefWire,
+) -> Result<LingquObmmObjectRefWire, String> {
+    let payload = qwen3_engram_state_manifest_payload(table_ref, indices_ref, gate_weight_ref)?;
+    qwen3_publish_object_registry_payload_to_dir(
+        registry_dir,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
         owner_entity,
         producer_entity,

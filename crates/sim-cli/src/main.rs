@@ -86,7 +86,9 @@ use sim_uapi::{
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
     qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
     qwen3_paper_engram_state_manifest_payload, qwen3_publish_engram_state_registry_payload,
-    qwen3_publish_object_registry_payload, qwen3_validate_engram_state_object_service_payload,
+    qwen3_publish_engram_state_registry_payload_to_dir, qwen3_publish_object_registry_payload,
+    qwen3_publish_object_registry_payload_to_dir,
+    qwen3_validate_engram_state_object_service_payload,
     qwen3_validate_engram_state_registry_payload, LocalGuestUapiSurface,
     Qwen3EngramStateRegistryValidation, Qwen3PaperEngramStateGateRef,
     Qwen3PaperEngramStateTableRef, UapiCommand, UapiDescriptor, UapiResponse,
@@ -12205,50 +12207,43 @@ fn publish_w5_engram_state_ref_from_object_service(
         )
         .with_context(|| format!("resolve gate object {}", gate.object_key))?;
 
-    let previous_registry_dir = env::var_os(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
-    env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, registry_dir);
-    let publish_result = (|| -> anyhow::Result<_> {
-        let table_ref = qwen3_publish_object_registry_payload(
-            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
-            owner_entity,
-            producer_entity,
-            &engram_state.table.object_key,
-            &table_payload,
-        )
-        .map_err(anyhow::Error::msg)?;
-        let indices_ref = qwen3_publish_object_registry_payload(
-            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
-            owner_entity,
-            producer_entity,
-            &engram_state.indices.object_key,
-            &indices_payload,
-        )
-        .map_err(anyhow::Error::msg)?;
-        let gate_ref = qwen3_publish_object_registry_payload(
-            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
-            owner_entity,
-            producer_entity,
-            &gate.object_key,
-            &gate_payload,
-        )
-        .map_err(anyhow::Error::msg)?;
-        let state_ref = qwen3_publish_engram_state_registry_payload(
-            owner_entity,
-            producer_entity,
-            &engram_state.state_id,
-            &table_ref,
-            &indices_ref,
-            &gate_ref,
-        )
-        .map_err(anyhow::Error::msg)?;
-        Ok(state_ref)
-    })();
-    if let Some(previous) = previous_registry_dir {
-        env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, previous);
-    } else {
-        env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
-    }
-    let state_ref = publish_result?;
+    let table_ref = qwen3_publish_object_registry_payload_to_dir(
+        registry_dir,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+        owner_entity,
+        producer_entity,
+        &engram_state.table.object_key,
+        &table_payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let indices_ref = qwen3_publish_object_registry_payload_to_dir(
+        registry_dir,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+        owner_entity,
+        producer_entity,
+        &engram_state.indices.object_key,
+        &indices_payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let gate_ref = qwen3_publish_object_registry_payload_to_dir(
+        registry_dir,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        owner_entity,
+        producer_entity,
+        &gate.object_key,
+        &gate_payload,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let state_ref = qwen3_publish_engram_state_registry_payload_to_dir(
+        registry_dir,
+        owner_entity,
+        producer_entity,
+        &engram_state.state_id,
+        &table_ref,
+        &indices_ref,
+        &gate_ref,
+    )
+    .map_err(anyhow::Error::msg)?;
     Ok(W5EngramStateRefPublication {
         state_ref_hex: qwen3_obmm_object_ref_wire_to_hex(&state_ref),
         engram_state_id: engram_state.state_id,
@@ -16615,8 +16610,10 @@ mod tests {
         W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
         W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
         QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_TERMINAL_LOGITS, QWEN3_ENGRAM_DEFAULT_NO_REPEAT_NGRAM_SIZE,
         QWEN3_TOKENIZER_PROJECTION_DEFAULT_FILE_NAME, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
@@ -29262,9 +29259,15 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                     .into_owned()
             })
             .collect::<Vec<_>>();
-        for kind in ["kind0015", "kind0016", "kind0017", "kind0018"] {
+        for kind in [
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        ] {
+            let kind = format!("kind{kind:04x}");
             assert!(
-                registry_entries.iter().any(|entry| entry.contains(kind)),
+                registry_entries.iter().any(|entry| entry.contains(&kind)),
                 "missing registry entry kind {kind}: {registry_entries:?}"
             );
         }
@@ -29293,11 +29296,17 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                     .into_owned()
             })
             .collect::<Vec<_>>();
-        for kind in ["kind0015", "kind0016", "kind0017", "kind0018"] {
+        for kind in [
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
+        ] {
+            let kind = format!("kind{kind:04x}");
             assert!(
                 bootstrap_registry_entries
                     .iter()
-                    .any(|entry| entry.contains(kind)),
+                    .any(|entry| entry.contains(&kind)),
                 "missing bootstrap registry entry kind {kind}: {bootstrap_registry_entries:?}"
             );
         }

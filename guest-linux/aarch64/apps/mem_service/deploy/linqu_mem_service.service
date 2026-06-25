@@ -1,0 +1,12 @@
+[Unit]
+Description=Lingqu Memory Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

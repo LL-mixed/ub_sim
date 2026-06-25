@@ -1,0 +1,132 @@
+mem_service_wire_schema_manifest_version=1
+wire_schema_version=1
+wire_payload_format=text-kv
+operation_count=22
+field_count=100
+oneof_count=1
+oneof_field_count=2
+operation=health:1 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=ready:2 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=status:3 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=list_records:4 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=metrics:5 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=export_snapshot:6 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=export_snapshot_page:7 schema_version=1 payload_format=text-kv fields=2 oneofs=0
+field=export_snapshot_page.start_index type=u64 required=0
+field=export_snapshot_page.max_records type=u64 required=0
+operation=restore_snapshot:8 schema_version=1 payload_format=text-kv fields=0 oneofs=0
+operation=restore_snapshot_page:9 schema_version=1 payload_format=text-kv fields=4 oneofs=0
+field=restore_snapshot_page.action type=string required=1
+field=restore_snapshot_page.page_index type=u64 required=0
+field=restore_snapshot_page.expected_records type=u64 required=0
+field=restore_snapshot_page.complete type=u32 required=0
+operation=put_object:16 schema_version=1 payload_format=text-kv fields=8 oneofs=0
+field=put_object.key type=string required=1
+field=put_object.owner type=u32 required=0
+field=put_object.payload_kind type=u32 required=0
+field=put_object.backing_offset type=u64 required=0
+field=put_object.backing_len type=u64 required=0
+field=put_object.checksum type=u64 required=0
+field=put_object.version type=u64 required=0
+field=put_object.idempotency_key type=string required=0
+operation=get_object:17 schema_version=1 payload_format=text-kv fields=1 oneofs=0
+field=get_object.key type=string required=1
+operation=inspect_object:18 schema_version=1 payload_format=text-kv fields=1 oneofs=0
+field=inspect_object.key type=string required=1
+operation=register_prefix_entry:32 schema_version=1 payload_format=text-kv fields=10 oneofs=0
+field=register_prefix_entry.request_id type=string required=1
+field=register_prefix_entry.prefix_group type=string required=1
+field=register_prefix_entry.group_id type=string required=1
+field=register_prefix_entry.block_hash type=string required=1
+field=register_prefix_entry.placement_node type=u32 required=0
+field=register_prefix_entry.placement_level type=u32 required=0
+field=register_prefix_entry.hot_segment_id type=u64 required=0
+field=register_prefix_entry.state type=string required=0
+field=register_prefix_entry.result_segment_id type=u64 required=0
+field=register_prefix_entry.idempotency_key type=string required=0
+operation=lookup_prefix_entry:33 schema_version=1 payload_format=text-kv fields=2 oneofs=0
+field=lookup_prefix_entry.request_id type=string required=1
+field=lookup_prefix_entry.prefix_group type=string required=1
+operation=publish_kv_segment:48 schema_version=1 payload_format=text-kv fields=10 oneofs=0
+field=publish_kv_segment.request_id type=string required=1
+field=publish_kv_segment.prefix_group type=string required=1
+field=publish_kv_segment.group_id type=string required=1
+field=publish_kv_segment.block_hash type=string required=1
+field=publish_kv_segment.placement_node type=u32 required=0
+field=publish_kv_segment.placement_level type=u32 required=0
+field=publish_kv_segment.hot_segment_id type=u64 required=0
+field=publish_kv_segment.state type=string required=0
+field=publish_kv_segment.result_segment_id type=u64 required=0
+field=publish_kv_segment.idempotency_key type=string required=0
+operation=resolve_kv_segment:49 schema_version=1 payload_format=text-kv fields=2 oneofs=1
+field=resolve_kv_segment.key type=string required=0
+field=resolve_kv_segment.block_hash type=string required=0
+oneof=resolve_kv_segment.0 field_count=2
+oneof_field=resolve_kv_segment.0.key
+oneof_field=resolve_kv_segment.0.block_hash
+operation=publish_runtime_handoff:64 schema_version=1 payload_format=text-kv fields=13 oneofs=0
+field=publish_runtime_handoff.key type=string required=1
+field=publish_runtime_handoff.session_id type=string required=0
+field=publish_runtime_handoff.request_id type=string required=0
+field=publish_runtime_handoff.model_key type=string required=0
+field=publish_runtime_handoff.artifact_kind type=string required=0
+field=publish_runtime_handoff.artifact_id type=string required=0
+field=publish_runtime_handoff.owner type=u32 required=0
+field=publish_runtime_handoff.payload_kind type=u32 required=0
+field=publish_runtime_handoff.backing_offset type=u64 required=0
+field=publish_runtime_handoff.backing_len type=u64 required=0
+field=publish_runtime_handoff.checksum type=u64 required=0
+field=publish_runtime_handoff.version type=u64 required=0
+field=publish_runtime_handoff.idempotency_key type=string required=0
+operation=resolve_runtime_handoff:65 schema_version=1 payload_format=text-kv fields=7 oneofs=0
+field=resolve_runtime_handoff.key type=string required=1
+field=resolve_runtime_handoff.expected_session_id type=string required=0
+field=resolve_runtime_handoff.expected_model_key type=string required=0
+field=resolve_runtime_handoff.expected_artifact_kind type=string required=0
+field=resolve_runtime_handoff.expected_artifact_id type=string required=0
+field=resolve_runtime_handoff.expected_version type=u64 required=0
+field=resolve_runtime_handoff.expected_checksum type=u64 required=0
+operation=register_execution_artifact:80 schema_version=1 payload_format=text-kv fields=13 oneofs=0
+field=register_execution_artifact.key type=string required=1
+field=register_execution_artifact.session_id type=string required=0
+field=register_execution_artifact.request_id type=string required=0
+field=register_execution_artifact.model_key type=string required=0
+field=register_execution_artifact.artifact_kind type=string required=0
+field=register_execution_artifact.artifact_id type=string required=0
+field=register_execution_artifact.owner type=u32 required=0
+field=register_execution_artifact.payload_kind type=u32 required=0
+field=register_execution_artifact.backing_offset type=u64 required=0
+field=register_execution_artifact.backing_len type=u64 required=0
+field=register_execution_artifact.checksum type=u64 required=0
+field=register_execution_artifact.version type=u64 required=0
+field=register_execution_artifact.idempotency_key type=string required=0
+operation=query_execution_artifact:81 schema_version=1 payload_format=text-kv fields=7 oneofs=0
+field=query_execution_artifact.key type=string required=1
+field=query_execution_artifact.expected_session_id type=string required=0
+field=query_execution_artifact.expected_model_key type=string required=0
+field=query_execution_artifact.expected_artifact_kind type=string required=0
+field=query_execution_artifact.expected_artifact_id type=string required=0
+field=query_execution_artifact.expected_version type=u64 required=0
+field=query_execution_artifact.expected_checksum type=u64 required=0
+operation=register_training_artifact:96 schema_version=1 payload_format=text-kv fields=13 oneofs=0
+field=register_training_artifact.key type=string required=1
+field=register_training_artifact.session_id type=string required=0
+field=register_training_artifact.request_id type=string required=0
+field=register_training_artifact.model_key type=string required=0
+field=register_training_artifact.artifact_kind type=string required=0
+field=register_training_artifact.artifact_id type=string required=0
+field=register_training_artifact.owner type=u32 required=0
+field=register_training_artifact.payload_kind type=u32 required=0
+field=register_training_artifact.backing_offset type=u64 required=0
+field=register_training_artifact.backing_len type=u64 required=0
+field=register_training_artifact.checksum type=u64 required=0
+field=register_training_artifact.version type=u64 required=0
+field=register_training_artifact.idempotency_key type=string required=0
+operation=query_training_artifact:97 schema_version=1 payload_format=text-kv fields=7 oneofs=0
+field=query_training_artifact.key type=string required=1
+field=query_training_artifact.expected_session_id type=string required=0
+field=query_training_artifact.expected_model_key type=string required=0
+field=query_training_artifact.expected_artifact_kind type=string required=0
+field=query_training_artifact.expected_artifact_id type=string required=0
+field=query_training_artifact.expected_version type=u64 required=0
+field=query_training_artifact.expected_checksum type=u64 required=0

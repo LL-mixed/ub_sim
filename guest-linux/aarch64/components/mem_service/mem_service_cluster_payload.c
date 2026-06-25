@@ -82,6 +82,10 @@ void mem_service_build_compact_summary(
             summary->hidden_range_count += 1;
         } else if (rec->kind == MEM_SERVICE_RECORD_LAYER_RANGE_PLACEMENT) {
             summary->hidden_range_count += 1;
+        } else if (rec->kind == MEM_SERVICE_RECORD_RUNTIME_HANDOFF ||
+                   rec->kind == MEM_SERVICE_RECORD_EXECUTION_ARTIFACT ||
+                   rec->kind == MEM_SERVICE_RECORD_TRAINING_ARTIFACT) {
+            continue;
         } else {
             summary->flags &= (uint16_t)~(MEM_SERVICE_COMPACT_PREFIX_STATE_READY |
                                           MEM_SERVICE_COMPACT_PREFIX_VIEW_READY);
