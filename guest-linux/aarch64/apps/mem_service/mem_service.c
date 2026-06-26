@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "components/mem_service/mem_service_core.h"
+#include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_daemon.h"
 #include "components/mem_service/mem_service_wire_client.h"
 #include "components/mem_service/mem_service_wire_payload.h"
@@ -19,10 +20,10 @@
 #endif
 
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_VERSION 1U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8516U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x560b762fU
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 22U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 100U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8695U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8a8ca3c4U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 23U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 102U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
@@ -37,13 +38,14 @@ static void usage(const char *argv0)
     printf(" [release-manifest] [release-fixtures]");
     printf(" [serve [--config <path>] [--listen unix:%s] [--store <path>]]",
            MEM_SERVICE_DEFAULT_UNIX_SOCKET);
-    printf(" [health|ready|status|list-records|metrics|metrics-export|export-snapshot|export-snapshot-page|export-snapshot-to|restore-snapshot [--connect unix:%s] [--timeout-ms <ms>] [--max-attempts <n>] [--retry-backoff-ms <ms>] [--retry-timeouts]]",
+    printf(" [health|ready|status|list-records|metrics|metrics-export|audit-log|export-snapshot|export-snapshot-page|export-snapshot-to|restore-snapshot [--connect unix:%s] [--timeout-ms <ms>] [--max-attempts <n>] [--retry-backoff-ms <ms>] [--retry-timeouts]]",
            MEM_SERVICE_DEFAULT_UNIX_SOCKET);
     printf(" [metrics-export accepts --format prometheus-text]");
     printf(" [put-object|get-object|inspect-object|register-prefix|lookup-prefix|publish-kv|resolve-kv]");
     printf(" [publish-runtime-handoff|resolve-runtime-handoff]");
     printf(" [register-execution-artifact|query-execution-artifact]");
     printf(" [register-training-artifact|query-training-artifact]");
+    printf(" [commit-training-step|resolve-training-step]");
     printf(" [mutating commands accept --idempotency-key <key>]");
 #ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT
     printf(" [--inspect-qwen3]");
@@ -481,6 +483,7 @@ static int run_release_manifest(void)
     printf("metrics_export_format=prometheus-text\n");
     printf("client_retry_policy=explicit-max-attempts-backoff\n");
     printf("client_api=pretraining-refs-v1\n");
+    printf("client_api=pretraining-step-commit-v1\n");
     printf("public_header=include/lingqu/mem_service/mem_service.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_core.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_client.h\n");
@@ -504,6 +507,7 @@ static int run_release_manifest(void)
     printf("operation=restore_snapshot:%u\n", MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT);
     printf("operation=restore_snapshot_page:%u\n",
            MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE);
+    printf("operation=audit_log:%u\n", MEM_SERVICE_WIRE_OP_AUDIT_LOG);
     printf("operation=put_object:%u\n", MEM_SERVICE_WIRE_OP_PUT_OBJECT);
     printf("operation=get_object:%u\n", MEM_SERVICE_WIRE_OP_GET_OBJECT);
     printf("operation=inspect_object:%u\n", MEM_SERVICE_WIRE_OP_INSPECT_OBJECT);
@@ -566,6 +570,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT != 8U ||
         MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE != 9U ||
+        MEM_SERVICE_WIRE_OP_AUDIT_LOG != 10U ||
         MEM_SERVICE_WIRE_OP_PUT_OBJECT != 16U ||
         MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT != 97U) {
         fprintf(stderr, "mem_service release-fixtures: operation id mismatch\n");
@@ -587,8 +592,8 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "metrics_export_formats=1 client_retry_policies=1 "
-           "client_api_profiles=1 "
-           "operations=22 statuses=11 "
+           "client_api_profiles=2 "
+           "operations=23 statuses=11 "
            "schema_manifest_len=%u schema_manifest_checksum=0x%08x\n",
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN,
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM);
@@ -1482,6 +1487,31 @@ static int run_export_snapshot_page(int argc, char **argv)
                                       payload);
 }
 
+static int run_audit_log(int argc, char **argv)
+{
+    char payload[160] = "";
+
+    if (append_optional_payload_field(payload,
+                                      sizeof(payload),
+                                      argc,
+                                      argv,
+                                      "--start-sequence",
+                                      "start_sequence") != 0 ||
+        append_optional_payload_field(payload,
+                                      sizeof(payload),
+                                      argc,
+                                      argv,
+                                      "--max-events",
+                                      "max_events") != 0) {
+        return 2;
+    }
+    return run_client_payload_command(argc,
+                                      argv,
+                                      MEM_SERVICE_WIRE_OP_AUDIT_LOG,
+                                      "audit-log",
+                                      payload);
+}
+
 static int write_snapshot_records_from_page(FILE *file, const char *response)
 {
     const char *records = strstr(response, "record_begin\n");
@@ -2204,6 +2234,80 @@ static int run_query_training_artifact(int argc, char **argv)
                                       payload);
 }
 
+static int append_training_step_commit_payload(char *payload,
+                                               size_t payload_len,
+                                               int argc,
+                                               char **argv)
+{
+    if (append_required_payload_field(payload, payload_len, argc, argv, "--key", "key") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--session-id", "session_id") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--request-id", "request_id") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--model-key", "model_key") != 0 ||
+        append_payload_field(payload,
+                             payload_len,
+                             "artifact_kind",
+                             MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND) != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--artifact-id", "artifact_id") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--owner", "owner") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--payload-kind", "payload_kind") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--backing-offset", "backing_offset") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--backing-len", "backing_len") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--checksum", "checksum") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--version", "version") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--idempotency-key", "idempotency_key") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int append_training_step_query_payload(char *payload,
+                                              size_t payload_len,
+                                              int argc,
+                                              char **argv)
+{
+    if (append_required_payload_field(payload, payload_len, argc, argv, "--key", "key") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--expected-session-id", "expected_session_id") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--expected-model-key", "expected_model_key") != 0 ||
+        append_payload_field(payload,
+                             payload_len,
+                             "expected_artifact_kind",
+                             MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND) != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--expected-artifact-id", "expected_artifact_id") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--expected-version", "expected_version") != 0 ||
+        append_required_payload_field(payload, payload_len, argc, argv, "--expected-checksum", "expected_checksum") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int run_commit_training_step(int argc, char **argv)
+{
+    char payload[768] = "";
+
+    if (append_training_step_commit_payload(payload, sizeof(payload), argc, argv) != 0) {
+        return 2;
+    }
+    return run_client_payload_command(argc,
+                                      argv,
+                                      MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+                                      "commit-training-step",
+                                      payload);
+}
+
+static int run_resolve_training_step(int argc, char **argv)
+{
+    char payload[512] = "";
+
+    if (append_training_step_query_payload(payload, sizeof(payload), argc, argv) != 0) {
+        return 2;
+    }
+    return run_client_payload_command(argc,
+                                      argv,
+                                      MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT,
+                                      "resolve-training-step",
+                                      payload);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 ||
@@ -2268,6 +2372,9 @@ int main(int argc, char **argv)
                                           "metrics",
                                           NULL);
     }
+    if (strcmp(argv[1], "audit-log") == 0) {
+        return run_audit_log(argc, argv);
+    }
     if (strcmp(argv[1], "metrics-export") == 0) {
         return run_metrics_export(argc, argv);
     }
@@ -2325,6 +2432,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "query-training-artifact") == 0) {
         return run_query_training_artifact(argc, argv);
+    }
+    if (strcmp(argv[1], "commit-training-step") == 0) {
+        return run_commit_training_step(argc, argv);
+    }
+    if (strcmp(argv[1], "resolve-training-step") == 0) {
+        return run_resolve_training_step(argc, argv);
     }
     if (strcmp(argv[1], "--inspect-qwen3") == 0) {
 #ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT

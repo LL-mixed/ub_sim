@@ -312,6 +312,7 @@ int mem_service_init(struct mem_service *svc,
     svc->shmem_ready = shmem_ready;
     svc->urma_ready = urma_ready;
     svc->block_ready = block_ready;
+    svc->audit_next_sequence = 1U;
     if (!svc->shmem_ready || !svc->urma_ready || !svc->block_ready) {
         return -1;
     }

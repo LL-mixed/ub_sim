@@ -59,8 +59,10 @@ static void mem_service_record_operation_metrics(
     enum mem_service_wire_operation operation,
     enum mem_service_wire_status status,
     uint64_t latency_ms);
+static bool mem_service_status_is_fail_closed(enum mem_service_wire_status status);
 static bool mem_service_operation_mutates(enum mem_service_wire_operation operation,
                                           const char *payload);
+static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc);
 static const char *mem_service_record_kind_name(enum mem_service_record_kind kind);
 static struct mem_service_idempotency_record *mem_service_find_idempotency_record(
     struct mem_service *svc,
@@ -71,8 +73,10 @@ static struct mem_service_idempotency_record *mem_service_alloc_idempotency_reco
 struct mem_service_store_import_state {
     struct mem_service_record record;
     struct mem_service_idempotency_record idempotency;
+    struct mem_service_audit_event audit;
     bool in_record;
     bool in_idempotency;
+    bool in_audit;
 };
 
 static int mem_service_expect_u64(const char *name, uint64_t actual, uint64_t expected)
@@ -383,6 +387,7 @@ int mem_service_run_wire_fixture_check(void)
          "action=cancel\n",
          14,
          0xfe23a8a2U},
+        {"audit_log_request", MEM_SERVICE_WIRE_OP_AUDIT_LOG, "", 0, 0x00000000U},
     };
     const struct mem_service_wire_response_fixture response_fixtures[] = {
         {"health_response",
@@ -401,8 +406,8 @@ int mem_service_run_wire_fixture_check(void)
          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT,
          fixtures[17].payload,
          MEM_SERVICE_WIRE_STATUS_OK,
-         36,
-         0x3fc9bd20U},
+         78,
+         0x4c66d23cU},
         {"export_snapshot_page_response",
          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT_PAGE,
          fixtures[18].payload,
@@ -515,8 +520,14 @@ int mem_service_run_wire_fixture_check(void)
          MEM_SERVICE_WIRE_OP_METRICS,
          fixtures[16].payload,
          MEM_SERVICE_WIRE_STATUS_OK,
-         1320,
-         0xf5e0bc47U},
+         1338,
+         0x802c9350U},
+        {"audit_log_response",
+         MEM_SERVICE_WIRE_OP_AUDIT_LOG,
+         fixtures[22].payload,
+         MEM_SERVICE_WIRE_STATUS_OK,
+         108,
+         0xaac8ac2bU},
     };
     const struct mem_service_wire_payload_fixture *runtime_fixture = NULL;
     const struct mem_service_wire_payload_fixture *training_query_fixture = NULL;
@@ -590,6 +601,9 @@ int mem_service_run_wire_fixture_check(void)
     failures += mem_service_expect_u32("op_restore_snapshot_page",
                                        MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
                                        9);
+    failures += mem_service_expect_u32("op_audit_log",
+                                       MEM_SERVICE_WIRE_OP_AUDIT_LOG,
+                                       10);
     failures += mem_service_expect_u32("op_put_object", MEM_SERVICE_WIRE_OP_PUT_OBJECT, 16);
     failures += mem_service_expect_u32("op_get_object", MEM_SERVICE_WIRE_OP_GET_OBJECT, 17);
     failures += mem_service_expect_u32("op_inspect_object",
@@ -904,6 +918,47 @@ static bool mem_service_payload_get_string(const char *payload,
     return mem_service_wire_payload_get_string(&view, name, out, out_len);
 }
 
+static bool mem_service_payload_get_header_string(const char *payload,
+                                                  const char *name,
+                                                  char *out,
+                                                  size_t out_len)
+{
+    size_t name_len;
+    const char *cursor;
+
+    if (name == NULL || out == NULL || out_len == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if (payload == NULL) {
+        return false;
+    }
+    name_len = strlen(name);
+    cursor = payload;
+    while (cursor != NULL && *cursor != '\0') {
+        const char *line_end = strchr(cursor, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - cursor) : strlen(cursor);
+        const char *equals = memchr(cursor, '=', line_len);
+
+        if (equals == NULL) {
+            return false;
+        }
+        if ((size_t)(equals - cursor) == name_len &&
+            strncmp(cursor, name, name_len) == 0) {
+            size_t value_len = line_len - name_len - 1U;
+
+            if (value_len >= out_len) {
+                value_len = out_len - 1U;
+            }
+            memcpy(out, equals + 1, value_len);
+            out[value_len] = '\0';
+            return out[0] != '\0';
+        }
+        cursor = line_end ? line_end + 1 : NULL;
+    }
+    return false;
+}
+
 static uint64_t mem_service_payload_get_u64(const char *payload,
                                             const char *name,
                                             uint64_t default_value)
@@ -1216,6 +1271,73 @@ static int mem_service_store_import_idempotency(
     return 0;
 }
 
+static int mem_service_parse_store_audit_field(struct mem_service_audit_event *event,
+                                               const char *name,
+                                               const char *value)
+{
+    if (strcmp(name, "sequence") == 0) {
+        event->sequence = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "monotonic_ms") == 0) {
+        event->monotonic_ms = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "operation") == 0) {
+        event->operation = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "status") == 0) {
+        event->status = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "request_checksum") == 0) {
+        event->request_checksum = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "response_checksum") == 0) {
+        event->response_checksum = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "idempotency_replay") == 0) {
+        event->idempotency_replay = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "key") == 0) {
+        mem_service_copy_store_string(event->key, sizeof(event->key), value);
+    } else if (strcmp(name, "session_id") == 0) {
+        mem_service_copy_store_string(event->session_id,
+                                      sizeof(event->session_id),
+                                      value);
+    } else if (strcmp(name, "model_key") == 0) {
+        mem_service_copy_store_string(event->model_key, sizeof(event->model_key), value);
+    } else if (strcmp(name, "artifact_kind") == 0) {
+        mem_service_copy_store_string(event->artifact_kind,
+                                      sizeof(event->artifact_kind),
+                                      value);
+    } else if (strcmp(name, "artifact_id") == 0) {
+        mem_service_copy_store_string(event->artifact_id,
+                                      sizeof(event->artifact_id),
+                                      value);
+    } else if (strcmp(name, "idempotency_key") == 0) {
+        mem_service_copy_store_string(event->idempotency_key,
+                                      sizeof(event->idempotency_key),
+                                      value);
+    } else if (strcmp(name, "version") == 0) {
+        event->version = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "checksum") == 0) {
+        event->checksum = mem_service_parse_u64_value(value, 0);
+    }
+    return 0;
+}
+
+static int mem_service_store_import_audit(struct mem_service *svc,
+                                          const struct mem_service_audit_event *event)
+{
+    size_t slot_index;
+
+    if (svc == NULL || event == NULL || event->sequence == 0 ||
+        event->operation == 0) {
+        return -1;
+    }
+    slot_index = (size_t)((event->sequence - 1U) % MEM_SERVICE_MAX_AUDIT_EVENTS);
+    svc->audit_events[slot_index] = *event;
+    svc->audit_events[slot_index].in_use = true;
+    if (event->sequence >= svc->audit_next_sequence) {
+        svc->audit_next_sequence = event->sequence + 1U;
+    }
+    if (svc->audit_event_count < MEM_SERVICE_MAX_AUDIT_EVENTS) {
+        svc->audit_event_count += 1U;
+    }
+    return 0;
+}
+
 static int mem_service_import_store_line(struct mem_service *svc,
                                          const char *line,
                                          struct mem_service_store_import_state *state)
@@ -1230,7 +1352,7 @@ static int mem_service_import_store_line(struct mem_service *svc,
         return 0;
     }
     if (strcmp(line, "record_begin") == 0) {
-        if (state->in_record || state->in_idempotency) {
+        if (state->in_record || state->in_idempotency || state->in_audit) {
             return -1;
         }
         memset(&state->record, 0, sizeof(state->record));
@@ -1248,7 +1370,7 @@ static int mem_service_import_store_line(struct mem_service *svc,
         return 0;
     }
     if (strcmp(line, "idempotency_begin") == 0) {
-        if (state->in_record || state->in_idempotency) {
+        if (state->in_record || state->in_idempotency || state->in_audit) {
             return -1;
         }
         memset(&state->idempotency, 0, sizeof(state->idempotency));
@@ -1265,6 +1387,24 @@ static int mem_service_import_store_line(struct mem_service *svc,
         state->in_idempotency = false;
         return 0;
     }
+    if (strcmp(line, "audit_begin") == 0) {
+        if (state->in_record || state->in_idempotency || state->in_audit) {
+            return -1;
+        }
+        memset(&state->audit, 0, sizeof(state->audit));
+        state->audit.in_use = true;
+        state->in_audit = true;
+        return 0;
+    }
+    if (strcmp(line, "audit_end") == 0) {
+        if (!state->in_audit ||
+            mem_service_store_import_audit(svc, &state->audit) != 0) {
+            return -1;
+        }
+        memset(&state->audit, 0, sizeof(state->audit));
+        state->in_audit = false;
+        return 0;
+    }
     if (!mem_service_parse_line_field(line, name, sizeof(name), value, sizeof(value))) {
         return -1;
     }
@@ -1273,6 +1413,9 @@ static int mem_service_import_store_line(struct mem_service *svc,
     }
     if (state->in_idempotency) {
         return mem_service_parse_store_idempotency_field(&state->idempotency, name, value);
+    }
+    if (state->in_audit) {
+        return mem_service_parse_store_audit_field(&state->audit, name, value);
     }
     return 0;
 }
@@ -1312,7 +1455,10 @@ static int mem_service_import_snapshot_text(struct mem_service *svc,
         }
         cursor = newline + 1;
     }
-    return saw_magic && !state.in_record && !state.in_idempotency ? 0 : -1;
+    return saw_magic && !state.in_record && !state.in_idempotency &&
+                   !state.in_audit
+               ? 0
+               : -1;
 }
 
 static int mem_service_import_snapshot_records_text(struct mem_service *svc,
@@ -1352,7 +1498,7 @@ static int mem_service_import_snapshot_records_text(struct mem_service *svc,
         }
         cursor = newline + 1;
     }
-    if (state.in_record || state.in_idempotency) {
+    if (state.in_record || state.in_idempotency || state.in_audit) {
         return -1;
     }
     if (records_imported_out != NULL) {
@@ -1396,7 +1542,7 @@ static int mem_service_load_store(struct mem_service *svc, const char *store_pat
         }
     }
     fclose(file);
-    return state.in_record || state.in_idempotency ? -1 : 0;
+    return state.in_record || state.in_idempotency || state.in_audit ? -1 : 0;
 }
 
 static int mem_service_save_record(FILE *file, const struct mem_service_record *record)
@@ -1510,11 +1656,75 @@ static int mem_service_save_idempotency_record(
     return fprintf(file, "idempotency_end\n") < 0 ? -1 : 0;
 }
 
+static const struct mem_service_audit_event *mem_service_find_audit_sequence(
+    const struct mem_service *svc,
+    uint64_t sequence)
+{
+    size_t i;
+
+    if (svc == NULL || sequence == 0) {
+        return NULL;
+    }
+    for (i = 0; i < MEM_SERVICE_MAX_AUDIT_EVENTS; ++i) {
+        const struct mem_service_audit_event *event = &svc->audit_events[i];
+
+        if (event->in_use && event->sequence == sequence) {
+            return event;
+        }
+    }
+    return NULL;
+}
+
+static int mem_service_save_audit_event(FILE *file,
+                                        const struct mem_service_audit_event *event)
+{
+    if (event == NULL || !event->in_use) {
+        return 0;
+    }
+    return fprintf(file,
+                   "audit_begin\n"
+                   "sequence=%" PRIu64 "\n"
+                   "monotonic_ms=%" PRIu64 "\n"
+                   "operation=%u\n"
+                   "status=%u\n"
+                   "request_checksum=%u\n"
+                   "response_checksum=%u\n"
+                   "idempotency_replay=%u\n"
+                   "key=%s\n"
+                   "session_id=%s\n"
+                   "model_key=%s\n"
+                   "artifact_kind=%s\n"
+                   "artifact_id=%s\n"
+                   "idempotency_key=%s\n"
+                   "version=%" PRIu64 "\n"
+                   "checksum=%" PRIu64 "\n"
+                   "audit_end\n",
+                   event->sequence,
+                   event->monotonic_ms,
+                   event->operation,
+                   event->status,
+                   event->request_checksum,
+                   event->response_checksum,
+                   event->idempotency_replay,
+                   event->key,
+                   event->session_id,
+                   event->model_key,
+                   event->artifact_kind,
+                   event->artifact_id,
+                   event->idempotency_key,
+                   event->version,
+                   event->checksum) < 0
+               ? -1
+               : 0;
+}
+
 static int mem_service_save_store(const struct mem_service *svc, const char *store_path)
 {
     char tmp_path[512];
     FILE *file;
     size_t i;
+    uint64_t first_sequence = 1;
+    uint64_t sequence;
 
     if (store_path == NULL || store_path[0] == '\0') {
         return 0;
@@ -1532,9 +1742,13 @@ static int mem_service_save_store(const struct mem_service *svc, const char *sto
     }
     if (fprintf(file,
                 "%s\n"
-                "record_count=%zu\n",
+                "record_count=%zu\n"
+                "audit_next_sequence=%" PRIu64 "\n"
+                "audit_event_count=%" PRIu64 "\n",
                 MEM_SERVICE_STORE_MAGIC,
-                svc->record_count) < 0) {
+                svc->record_count,
+                svc->audit_next_sequence,
+                svc->audit_event_count) < 0) {
         fclose(file);
         unlink(tmp_path);
         return -1;
@@ -1548,6 +1762,19 @@ static int mem_service_save_store(const struct mem_service *svc, const char *sto
     }
     for (i = 0; i < MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS; ++i) {
         if (mem_service_save_idempotency_record(file, &svc->idempotency_records[i]) != 0) {
+            fclose(file);
+            unlink(tmp_path);
+            return -1;
+        }
+    }
+    if (svc->audit_next_sequence > MEM_SERVICE_MAX_AUDIT_EVENTS + 1U) {
+        first_sequence = svc->audit_next_sequence - MEM_SERVICE_MAX_AUDIT_EVENTS;
+    }
+    for (sequence = first_sequence; sequence < svc->audit_next_sequence; ++sequence) {
+        const struct mem_service_audit_event *event =
+            mem_service_find_audit_sequence(svc, sequence);
+
+        if (event != NULL && mem_service_save_audit_event(file, event) != 0) {
             fclose(file);
             unlink(tmp_path);
             return -1;
@@ -2519,6 +2746,50 @@ static int mem_service_append_snapshot_idempotency_text(
                                             "idempotency_end\n");
 }
 
+static int mem_service_append_snapshot_audit_text(
+    char *response,
+    size_t response_len,
+    size_t *used,
+    const struct mem_service_audit_event *event)
+{
+    return mem_service_append_snapshot_text(
+        response,
+        response_len,
+        used,
+        "audit_begin\n"
+        "sequence=%" PRIu64 "\n"
+        "monotonic_ms=%" PRIu64 "\n"
+        "operation=%u\n"
+        "status=%u\n"
+        "request_checksum=%u\n"
+        "response_checksum=%u\n"
+        "idempotency_replay=%u\n"
+        "key=%s\n"
+        "session_id=%s\n"
+        "model_key=%s\n"
+        "artifact_kind=%s\n"
+        "artifact_id=%s\n"
+        "idempotency_key=%s\n"
+        "version=%" PRIu64 "\n"
+        "checksum=%" PRIu64 "\n"
+        "audit_end\n",
+        event->sequence,
+        event->monotonic_ms,
+        event->operation,
+        event->status,
+        event->request_checksum,
+        event->response_checksum,
+        event->idempotency_replay,
+        event->key,
+        event->session_id,
+        event->model_key,
+        event->artifact_kind,
+        event->artifact_id,
+        event->idempotency_key,
+        event->version,
+        event->checksum);
+}
+
 static bool mem_service_has_record_at_or_after(const struct mem_service *svc,
                                                size_t start_index)
 {
@@ -2546,9 +2817,13 @@ static enum mem_service_wire_status mem_service_export_snapshot(struct mem_servi
     if (mem_service_append_snapshot_text(response,
                                          response_len,
                                          &used,
-                                         "%s\nrecord_count=%zu\n",
+                                         "%s\nrecord_count=%zu\n"
+                                         "audit_next_sequence=%" PRIu64 "\n"
+                                         "audit_event_count=%" PRIu64 "\n",
                                          MEM_SERVICE_STORE_MAGIC,
-                                         svc->record_count) != 0) {
+                                         svc->record_count,
+                                         svc->audit_next_sequence,
+                                         svc->audit_event_count) != 0) {
         return MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
     }
     for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
@@ -2572,6 +2847,25 @@ static enum mem_service_wire_status mem_service_export_snapshot(struct mem_servi
                                                          &used,
                                                          record) != 0) {
             return MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
+        }
+    }
+    if (svc->audit_event_count > 0) {
+        uint64_t first_sequence = mem_service_audit_first_sequence(svc);
+        uint64_t sequence;
+
+        for (sequence = first_sequence; sequence < svc->audit_next_sequence; ++sequence) {
+            const struct mem_service_audit_event *event =
+                mem_service_find_audit_sequence(svc, sequence);
+
+            if (event == NULL) {
+                continue;
+            }
+            if (mem_service_append_snapshot_audit_text(response,
+                                                       response_len,
+                                                       &used,
+                                                       event) != 0) {
+                return MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
+            }
         }
     }
     return MEM_SERVICE_WIRE_STATUS_OK;
@@ -2688,7 +2982,11 @@ static enum mem_service_wire_status mem_service_restore_snapshot(struct mem_serv
     memcpy(svc->idempotency_records,
            restored.idempotency_records,
            sizeof(svc->idempotency_records));
+    memset(svc->audit_events, 0, sizeof(svc->audit_events));
+    memcpy(svc->audit_events, restored.audit_events, sizeof(svc->audit_events));
     svc->record_count = restored.record_count;
+    svc->audit_next_sequence = restored.audit_next_sequence;
+    svc->audit_event_count = restored.audit_event_count;
     snprintf(response,
              response_len,
              "status=ok\nrestored=1\nrecord_count=%zu\n",
@@ -2801,7 +3099,10 @@ static enum mem_service_wire_status mem_service_restore_snapshot_page_commit(
            mem_service_restore_snapshot_stage.svc.records,
            sizeof(svc->records));
     memset(svc->idempotency_records, 0, sizeof(svc->idempotency_records));
+    memset(svc->audit_events, 0, sizeof(svc->audit_events));
     svc->record_count = mem_service_restore_snapshot_stage.svc.record_count;
+    svc->audit_next_sequence = 1U;
+    svc->audit_event_count = 0;
     snprintf(response,
              response_len,
              "status=ok\nrestored=1\nrecord_count=%zu\n",
@@ -2868,6 +3169,7 @@ static enum mem_service_wire_status mem_service_metrics(struct mem_service *svc,
              "status_count=%" PRIu64 "\n"
              "list_records_count=%" PRIu64 "\n"
              "metrics_count=%" PRIu64 "\n"
+             "audit_log_count=%" PRIu64 "\n"
              "export_snapshot_count=%" PRIu64 "\n"
              "export_snapshot_page_count=%" PRIu64 "\n"
              "restore_snapshot_count=%" PRIu64 "\n"
@@ -2922,6 +3224,7 @@ static enum mem_service_wire_status mem_service_metrics(struct mem_service *svc,
              m->status_count,
              m->list_records_count,
              m->metrics_count,
+             m->audit_log_count,
              m->export_snapshot_count,
              m->export_snapshot_page_count,
              m->restore_snapshot_count,
@@ -2960,6 +3263,136 @@ static enum mem_service_wire_status mem_service_metrics(struct mem_service *svc,
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
+static const char *mem_service_operation_name(enum mem_service_wire_operation operation)
+{
+    const struct mem_service_wire_operation_schema *schema =
+        mem_service_wire_schema_for_operation(operation);
+
+    return schema != NULL ? schema->name : "unknown";
+}
+
+static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc)
+{
+    if (svc == NULL || svc->audit_event_count == 0 ||
+        svc->audit_next_sequence == 0) {
+        return 1U;
+    }
+    if (svc->audit_next_sequence <= svc->audit_event_count) {
+        return 1U;
+    }
+    return svc->audit_next_sequence - svc->audit_event_count;
+}
+
+static enum mem_service_wire_status mem_service_audit_log(struct mem_service *svc,
+                                                          const char *payload,
+                                                          char *response,
+                                                          size_t response_len)
+{
+    struct mem_service_wire_payload_view view =
+        mem_service_wire_payload_view_from_cstr(payload);
+    uint64_t start_sequence =
+        mem_service_wire_payload_get_u64(&view, "start_sequence", 0);
+    uint64_t max_events = mem_service_wire_payload_get_u64(&view, "max_events", 16);
+    uint64_t first_sequence = mem_service_audit_first_sequence(svc);
+    uint64_t sequence;
+    uint64_t next_sequence;
+    uint64_t emitted = 0;
+    size_t used = 0;
+
+    if (max_events == 0) {
+        max_events = 16;
+    }
+    if (max_events > 32) {
+        max_events = 32;
+    }
+    if (start_sequence == 0 || start_sequence < first_sequence) {
+        start_sequence = first_sequence;
+    }
+    next_sequence = start_sequence;
+    if (mem_service_append_snapshot_text(response,
+                                         response_len,
+                                         &used,
+                                         "audit_log=1\n"
+                                         "retained_events=%" PRIu64 "\n"
+                                         "first_sequence=%" PRIu64 "\n"
+                                         "start_sequence=%" PRIu64 "\n",
+                                         svc->audit_event_count,
+                                         first_sequence,
+                                         start_sequence) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
+    }
+    for (sequence = start_sequence;
+         sequence < svc->audit_next_sequence && emitted < max_events;
+         ++sequence) {
+        const struct mem_service_audit_event *event =
+            mem_service_find_audit_sequence(svc, sequence);
+
+        if (event == NULL) {
+            continue;
+        }
+        if (mem_service_append_snapshot_text(
+                response,
+                response_len,
+                &used,
+                "audit_begin\n"
+                "sequence=%" PRIu64 "\n"
+                "monotonic_ms=%" PRIu64 "\n"
+                "operation=%u\n"
+                "operation_name=%s\n"
+                "status=%u\n"
+                "status_name=%s\n"
+                "request_checksum=%u\n"
+                "response_checksum=%u\n"
+                "idempotency_replay=%u\n"
+                "key=%s\n"
+                "session_id=%s\n"
+                "model_key=%s\n"
+                "artifact_kind=%s\n"
+                "artifact_id=%s\n"
+                "idempotency_key=%s\n"
+                "version=%" PRIu64 "\n"
+                "checksum=%" PRIu64 "\n"
+                "audit_end\n",
+                event->sequence,
+                event->monotonic_ms,
+                event->operation,
+                mem_service_operation_name(
+                    (enum mem_service_wire_operation)event->operation),
+                event->status,
+                mem_service_wire_status_name(
+                    (enum mem_service_wire_status)event->status),
+                event->request_checksum,
+                event->response_checksum,
+                event->idempotency_replay,
+                event->key,
+                event->session_id,
+                event->model_key,
+                event->artifact_kind,
+                event->artifact_id,
+                event->idempotency_key,
+                event->version,
+                event->checksum) != 0) {
+            return MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
+        }
+        emitted += 1U;
+        next_sequence = sequence + 1U;
+    }
+    if (mem_service_append_snapshot_text(response,
+                                         response_len,
+                                         &used,
+                                         "events_emitted=%" PRIu64 "\n"
+                                         "next_sequence=%" PRIu64 "\n"
+                                         "complete=%u\n",
+                                         emitted,
+                                         next_sequence,
+                                         next_sequence >= svc->audit_next_sequence
+                                             ? 1U
+                                             : 0U) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
+    }
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
 static enum mem_service_wire_status mem_service_dispatch_operation(
     struct mem_service *svc,
     enum mem_service_wire_operation operation,
@@ -2992,6 +3425,8 @@ static enum mem_service_wire_status mem_service_dispatch_operation(
         return mem_service_restore_snapshot(svc, payload, response, response_len);
     case MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE:
         return mem_service_restore_snapshot_page(svc, payload, response, response_len);
+    case MEM_SERVICE_WIRE_OP_AUDIT_LOG:
+        return mem_service_audit_log(svc, payload, response, response_len);
     case MEM_SERVICE_WIRE_OP_PUT_OBJECT:
         return mem_service_put_object(svc, payload, response, response_len);
     case MEM_SERVICE_WIRE_OP_GET_OBJECT:
@@ -3047,6 +3482,15 @@ static enum mem_service_wire_status mem_service_dispatch_operation(
     }
 }
 
+static bool mem_service_status_is_fail_closed(enum mem_service_wire_status status)
+{
+    return status == MEM_SERVICE_WIRE_STATUS_STALE_REF ||
+           status == MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH ||
+           status == MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT ||
+           status == MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING ||
+           status == MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+}
+
 static void mem_service_record_status_metrics(struct mem_service_metrics *metrics,
                                               enum mem_service_wire_status status)
 {
@@ -3062,23 +3506,18 @@ static void mem_service_record_status_metrics(struct mem_service_metrics *metric
         break;
     case MEM_SERVICE_WIRE_STATUS_STALE_REF:
         metrics->stale_ref_count += 1U;
-        metrics->fail_closed_count += 1U;
         break;
     case MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH:
         metrics->checksum_mismatch_count += 1U;
-        metrics->fail_closed_count += 1U;
         break;
     case MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT:
         metrics->version_conflict_count += 1U;
-        metrics->fail_closed_count += 1U;
         break;
     case MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING:
         metrics->invalid_model_binding_count += 1U;
-        metrics->fail_closed_count += 1U;
         break;
     case MEM_SERVICE_WIRE_STATUS_INVALID_SESSION:
         metrics->invalid_session_count += 1U;
-        metrics->fail_closed_count += 1U;
         break;
     case MEM_SERVICE_WIRE_STATUS_TIMEOUT:
         metrics->timeout_count += 1U;
@@ -3095,6 +3534,9 @@ static void mem_service_record_status_metrics(struct mem_service_metrics *metric
     case MEM_SERVICE_WIRE_STATUS_OK:
     default:
         break;
+    }
+    if (mem_service_status_is_fail_closed(status)) {
+        metrics->fail_closed_count += 1U;
     }
 }
 
@@ -3147,6 +3589,9 @@ static void mem_service_record_operation_metrics(
         break;
     case MEM_SERVICE_WIRE_OP_METRICS:
         metrics->metrics_count += 1U;
+        break;
+    case MEM_SERVICE_WIRE_OP_AUDIT_LOG:
+        metrics->audit_log_count += 1U;
         break;
     case MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT:
         metrics->export_snapshot_count += 1U;
@@ -3281,7 +3726,10 @@ static bool mem_service_payload_get_idempotency_key(const char *payload,
         return false;
     }
     key[0] = '\0';
-    return mem_service_payload_get_string(payload, "idempotency_key", key, key_len);
+    return mem_service_payload_get_header_string(payload,
+                                                 "idempotency_key",
+                                                 key,
+                                                 key_len);
 }
 
 static uint32_t mem_service_idempotency_request_checksum(const char *payload)
@@ -3391,6 +3839,141 @@ static void mem_service_complete_idempotency_record(
     record->response_len = (uint32_t)response_len;
 }
 
+static void mem_service_payload_get_audit_string(const char *payload,
+                                                 const char *primary_name,
+                                                 const char *fallback_name,
+                                                 char *out,
+                                                 size_t out_len)
+{
+    if (out == NULL || out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (payload == NULL) {
+        return;
+    }
+    if (primary_name != NULL &&
+        mem_service_payload_get_header_string(payload, primary_name, out, out_len)) {
+        return;
+    }
+    if (fallback_name != NULL) {
+        (void)mem_service_payload_get_header_string(payload,
+                                                    fallback_name,
+                                                    out,
+                                                    out_len);
+    }
+}
+
+static uint64_t mem_service_payload_get_audit_u64(const char *payload,
+                                                  const char *primary_name,
+                                                  const char *fallback_name)
+{
+    char value[64];
+
+    value[0] = '\0';
+    if (payload == NULL) {
+        return 0;
+    }
+    if (primary_name != NULL &&
+        mem_service_payload_get_header_string(payload,
+                                              primary_name,
+                                              value,
+                                              sizeof(value))) {
+        return mem_service_parse_u64_value(value, 0);
+    }
+    if (fallback_name != NULL &&
+        mem_service_payload_get_header_string(payload,
+                                              fallback_name,
+                                              value,
+                                              sizeof(value))) {
+        return mem_service_parse_u64_value(value, 0);
+    }
+    return 0;
+}
+
+static bool mem_service_should_audit_operation(enum mem_service_wire_operation operation,
+                                               const char *payload,
+                                               enum mem_service_wire_status status)
+{
+    return mem_service_operation_mutates(operation, payload) ||
+           mem_service_status_is_fail_closed(status);
+}
+
+static bool mem_service_append_audit_event(struct mem_service *svc,
+                                           enum mem_service_wire_operation operation,
+                                           const char *payload,
+                                           enum mem_service_wire_status status,
+                                           const char *response,
+                                           bool idempotency_replay)
+{
+    struct mem_service_audit_event *event;
+    uint64_t sequence;
+    size_t slot_index;
+
+    if (svc == NULL ||
+        !mem_service_should_audit_operation(operation, payload, status)) {
+        return false;
+    }
+    if (svc->audit_next_sequence == 0) {
+        svc->audit_next_sequence = 1U;
+    }
+    sequence = svc->audit_next_sequence;
+    slot_index = (size_t)((sequence - 1U) % MEM_SERVICE_MAX_AUDIT_EVENTS);
+    event = &svc->audit_events[slot_index];
+    memset(event, 0, sizeof(*event));
+    event->in_use = true;
+    event->sequence = sequence;
+    event->monotonic_ms = mem_service_monotonic_ms();
+    event->operation = (uint32_t)operation;
+    event->status = (uint32_t)status;
+    event->request_checksum = mem_service_idempotency_request_checksum(payload);
+    event->response_checksum =
+        mem_service_wire_checksum(response != NULL ? response : "",
+                                  response != NULL ? strlen(response) : 0);
+    event->idempotency_replay = idempotency_replay ? 1U : 0U;
+    mem_service_payload_get_audit_string(payload,
+                                         "key",
+                                         NULL,
+                                         event->key,
+                                         sizeof(event->key));
+    mem_service_payload_get_audit_string(payload,
+                                         "session_id",
+                                         "expected_session_id",
+                                         event->session_id,
+                                         sizeof(event->session_id));
+    mem_service_payload_get_audit_string(payload,
+                                         "model_key",
+                                         "expected_model_key",
+                                         event->model_key,
+                                         sizeof(event->model_key));
+    mem_service_payload_get_audit_string(payload,
+                                         "artifact_kind",
+                                         "expected_artifact_kind",
+                                         event->artifact_kind,
+                                         sizeof(event->artifact_kind));
+    mem_service_payload_get_audit_string(payload,
+                                         "artifact_id",
+                                         "expected_artifact_id",
+                                         event->artifact_id,
+                                         sizeof(event->artifact_id));
+    mem_service_payload_get_audit_string(payload,
+                                         "idempotency_key",
+                                         NULL,
+                                         event->idempotency_key,
+                                         sizeof(event->idempotency_key));
+    event->version = mem_service_payload_get_audit_u64(payload,
+                                                       "version",
+                                                       "expected_version");
+    event->checksum = mem_service_payload_get_audit_u64(payload,
+                                                        "checksum",
+                                                        "expected_checksum");
+    svc->audit_next_sequence += 1U;
+    if (svc->audit_event_count < MEM_SERVICE_MAX_AUDIT_EVENTS) {
+        svc->audit_event_count += 1U;
+    }
+    return true;
+}
+
 static enum mem_service_wire_status mem_service_handle_operation(
     struct mem_service *svc,
     enum mem_service_wire_operation operation,
@@ -3404,6 +3987,7 @@ static enum mem_service_wire_status mem_service_handle_operation(
     uint64_t latency_ms;
     struct mem_service_idempotency_record *pending_idempotency = NULL;
     bool idempotency_handled = false;
+    bool audit_appended = false;
     enum mem_service_wire_status status =
         mem_service_try_idempotency_replay(svc,
                                            operation,
@@ -3424,10 +4008,18 @@ static enum mem_service_wire_status mem_service_handle_operation(
                                                 payload,
                                                 status,
                                                 response);
+    }
+
+    audit_appended = mem_service_append_audit_event(svc,
+                                                    operation,
+                                                    payload,
+                                                    status,
+                                                    response,
+                                                    idempotency_handled);
+    if (audit_appended && store_path != NULL &&
+        mem_service_save_store(svc, store_path) != 0) {
         if (status == MEM_SERVICE_WIRE_STATUS_OK &&
-            mem_service_operation_mutates(operation, payload) &&
-            store_path != NULL &&
-            mem_service_save_store(svc, store_path) != 0) {
+            mem_service_operation_mutates(operation, payload)) {
             status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
             snprintf(response, response_len, "durable_store_save_failed\n");
             mem_service_complete_idempotency_record(pending_idempotency,
@@ -3435,6 +4027,12 @@ static enum mem_service_wire_status mem_service_handle_operation(
                                                     payload,
                                                     status,
                                                     response);
+            (void)mem_service_append_audit_event(svc,
+                                                 operation,
+                                                 payload,
+                                                 status,
+                                                 response,
+                                                 idempotency_handled);
         }
     }
 

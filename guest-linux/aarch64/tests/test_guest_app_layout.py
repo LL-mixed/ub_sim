@@ -718,11 +718,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_release_fixture_check" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8516U" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x560b762fU" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8695U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8a8ca3c4U" in app_source
     assert 'strcmp(argv[1], "health")' in app_source
     assert 'strcmp(argv[1], "ready")' in app_source
     assert 'strcmp(argv[1], "metrics")' in app_source
+    assert 'strcmp(argv[1], "audit-log")' in app_source
     assert 'strcmp(argv[1], "metrics-export")' in app_source
     assert "render_metrics_prometheus_text" in app_source
     assert "lingqu_mem_service_request_count" in app_source
@@ -746,6 +747,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "query-execution-artifact")' in app_source
     assert 'strcmp(argv[1], "register-training-artifact")' in app_source
     assert 'strcmp(argv[1], "query-training-artifact")' in app_source
+    assert 'strcmp(argv[1], "commit-training-step")' in app_source
+    assert 'strcmp(argv[1], "resolve-training-step")' in app_source
     assert "#ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_source
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "core_binary=bin/linqu_mem_service" in release_manifest
@@ -760,8 +763,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "mem_service_pretraining_example.c"
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
-    assert "wire_schema_manifest_len=8516" in release_manifest
-    assert "wire_schema_manifest_checksum=0x560b762f" in release_manifest
+    assert "wire_schema_manifest_len=8695" in release_manifest
+    assert "wire_schema_manifest_checksum=0x8a8ca3c4" in release_manifest
     assert "config_schema_version=1" in release_manifest
     assert "config_schema=share/lingqu/mem_service/config/mem_service.conf.schema" in release_manifest
     assert "config_example=share/lingqu/mem_service/config/mem_service.example.conf" in release_manifest
@@ -769,7 +772,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "metrics_export_format=prometheus-text" in release_manifest
     assert "client_retry_policy=explicit-max-attempts-backoff" in release_manifest
     assert "client_api=pretraining-refs-v1" in release_manifest
+    assert "client_api=pretraining-step-commit-v1" in release_manifest
     assert "operation=metrics:5" in release_manifest
+    assert "operation=audit_log:10" in release_manifest
     assert "operation=export_snapshot:6" in release_manifest
     assert "operation=export_snapshot_page:7" in release_manifest
     assert "operation=restore_snapshot:8" in release_manifest
@@ -778,14 +783,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=query_training_artifact:97" in release_manifest
     assert "status=internal:10" in release_manifest
     assert "mem_service_wire_schema_manifest_version=1" in wire_schema_manifest
-    assert "operation_count=22" in wire_schema_manifest
+    assert "operation_count=23" in wire_schema_manifest
     assert "operation=metrics:5" in wire_schema_manifest
+    assert "operation=audit_log:10" in wire_schema_manifest
     assert "operation=export_snapshot:6" in wire_schema_manifest
     assert "operation=export_snapshot_page:7" in wire_schema_manifest
     assert "operation=restore_snapshot:8" in wire_schema_manifest
     assert "operation=restore_snapshot_page:9" in wire_schema_manifest
     assert "operation=inspect_object:18" in wire_schema_manifest
-    assert "field_count=100" in wire_schema_manifest
+    assert "field_count=102" in wire_schema_manifest
     assert "oneof_field=resolve_kv_segment.0.block_hash" in wire_schema_manifest
     assert "mem_service_config_schema_version=1" in config_schema
     assert "field=listen type=string" in config_schema
@@ -1562,9 +1568,17 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
     assert [path for path in docs_files if "demo" in path.lower()] == []
     assert "guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test" not in tracked_apps
     assert [path for path in tracked_runtime_source if "demo" in path.lower()] == []
+    allowed_mem_service_release_artifacts = {
+        "guest-linux/aarch64/apps/mem_service/configs/mem_service.conf.schema",
+        "guest-linux/aarch64/apps/mem_service/configs/mem_service.example.conf",
+        "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.service",
+        "guest-linux/aarch64/apps/mem_service/release-manifest.txt",
+        "guest-linux/aarch64/apps/mem_service/wire-schema.txt",
+    }
     assert [
         path
         for path in tracked_apps
-        if Path(path).name != "Makefile"
+        if path not in allowed_mem_service_release_artifacts
+        and Path(path).name != "Makefile"
         and Path(path).suffix not in {".c", ".h", ".md"}
     ] == []

@@ -51,6 +51,12 @@ static const struct mem_service_wire_payload_field
 };
 
 static const struct mem_service_wire_payload_field
+    mem_service_wire_audit_log_fields[] = {
+        {"start_sequence", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
+        {"max_events", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
+};
+
+static const struct mem_service_wire_payload_field
     mem_service_wire_restore_snapshot_page_fields[] = {
         {"action", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, true},
         {"page_index", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
@@ -198,6 +204,15 @@ static const struct mem_service_wire_operation_schema
          mem_service_wire_restore_snapshot_page_fields,
          sizeof(mem_service_wire_restore_snapshot_page_fields) /
              sizeof(mem_service_wire_restore_snapshot_page_fields[0]),
+         NULL,
+         0},
+        {MEM_SERVICE_WIRE_OP_AUDIT_LOG,
+         "audit_log",
+         MEM_SERVICE_WIRE_SCHEMA_VERSION,
+         MEM_SERVICE_WIRE_SCHEMA_FORMAT_TEXT_KV,
+         mem_service_wire_audit_log_fields,
+         sizeof(mem_service_wire_audit_log_fields) /
+             sizeof(mem_service_wire_audit_log_fields[0]),
          NULL,
          0},
         {MEM_SERVICE_WIRE_OP_PUT_OBJECT,

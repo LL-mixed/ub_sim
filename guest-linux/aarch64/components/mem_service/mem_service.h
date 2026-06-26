@@ -39,6 +39,7 @@ enum mem_service_kvcache_state {
 #define MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS 64U
 #define MEM_SERVICE_IDEMPOTENCY_KEY_LEN 96U
 #define MEM_SERVICE_IDEMPOTENCY_RESPONSE_LEN 4096U
+#define MEM_SERVICE_MAX_AUDIT_EVENTS 256U
 
 struct mem_service_record {
     bool in_use;
@@ -90,6 +91,7 @@ struct mem_service_metrics {
     uint64_t status_count;
     uint64_t list_records_count;
     uint64_t metrics_count;
+    uint64_t audit_log_count;
     uint64_t export_snapshot_count;
     uint64_t export_snapshot_page_count;
     uint64_t restore_snapshot_count;
@@ -132,15 +134,37 @@ struct mem_service_idempotency_record {
     char response[MEM_SERVICE_IDEMPOTENCY_RESPONSE_LEN];
 };
 
+struct mem_service_audit_event {
+    bool in_use;
+    uint64_t sequence;
+    uint64_t monotonic_ms;
+    uint32_t operation;
+    uint32_t status;
+    uint32_t request_checksum;
+    uint32_t response_checksum;
+    uint32_t idempotency_replay;
+    char key[96];
+    char session_id[64];
+    char model_key[64];
+    char artifact_kind[64];
+    char artifact_id[96];
+    char idempotency_key[MEM_SERVICE_IDEMPOTENCY_KEY_LEN];
+    uint64_t version;
+    uint64_t checksum;
+};
+
 struct mem_service {
     bool shmem_ready;
     bool urma_ready;
     bool block_ready;
     size_t record_count;
+    uint64_t audit_next_sequence;
+    uint64_t audit_event_count;
     struct mem_service_metrics metrics;
     struct mem_service_record records[MEM_SERVICE_MAX_RECORDS];
     struct mem_service_idempotency_record
         idempotency_records[MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS];
+    struct mem_service_audit_event audit_events[MEM_SERVICE_MAX_AUDIT_EVENTS];
 };
 
 struct mem_service_object_payload_view {

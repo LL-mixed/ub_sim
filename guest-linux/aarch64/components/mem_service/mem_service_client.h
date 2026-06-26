@@ -11,6 +11,7 @@
 #define MEM_SERVICE_CLIENT_KEY_LEN 96U
 #define MEM_SERVICE_CLIENT_ID_LEN 64U
 #define MEM_SERVICE_CLIENT_STATE_LEN 32U
+#define MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND "training-step-commit"
 
 struct mem_service_client {
     const char *connect_spec;
@@ -305,6 +306,17 @@ int mem_service_client_publish_optimizer_state(
     struct mem_service_client_record *record_out,
     enum mem_service_wire_status *status_out);
 int mem_service_client_resolve_optimizer_state(
+    const struct mem_service_client *client,
+    const struct mem_service_client_training_ref_query *query,
+    struct mem_service_client_record *record_out,
+    enum mem_service_wire_status *status_out);
+
+int mem_service_client_commit_training_step(
+    const struct mem_service_client *client,
+    const struct mem_service_client_training_ref *ref,
+    struct mem_service_client_record *record_out,
+    enum mem_service_wire_status *status_out);
+int mem_service_client_resolve_training_step(
     const struct mem_service_client *client,
     const struct mem_service_client_training_ref_query *query,
     struct mem_service_client_record *record_out,

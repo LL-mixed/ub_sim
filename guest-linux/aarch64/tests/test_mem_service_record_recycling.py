@@ -98,6 +98,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         pretraining_example = (
             CLI_DIR / "examples" / "mem_service_pretraining_example.c"
         ).read_text()
+        client_header = SERVICE_CLIENT_H.read_text()
 
         self.assertIn("Components do not install guest binaries directly", components_readme)
         self.assertIn(
@@ -311,9 +312,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("render_metrics_prometheus_text", cli_source)
         self.assertIn("run_metrics_export_fixture_check", cli_source)
         self.assertIn("run_client_retry_fixture_check", cli_source)
-        self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8516U", cli_source)
+        self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8695U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x560b762fU",
+            "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8a8ca3c4U",
             cli_source,
         )
         self.assertIn("run_release_manifest", cli_source)
@@ -329,6 +330,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "status")', cli_source)
         self.assertIn('strcmp(argv[1], "list-records")', cli_source)
         self.assertIn('strcmp(argv[1], "metrics")', cli_source)
+        self.assertIn('strcmp(argv[1], "audit-log")', cli_source)
         self.assertIn('strcmp(argv[1], "metrics-export")', cli_source)
         self.assertIn("lingqu_mem_service_request_count", cli_source)
         self.assertIn("--max-attempts", cli_source)
@@ -351,6 +353,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "query-execution-artifact")', cli_source)
         self.assertIn('strcmp(argv[1], "register-training-artifact")', cli_source)
         self.assertIn('strcmp(argv[1], "query-training-artifact")', cli_source)
+        self.assertIn('strcmp(argv[1], "commit-training-step")', cli_source)
+        self.assertIn('strcmp(argv[1], "resolve-training-step")', cli_source)
         self.assertIn("#ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT", cli_source)
         self.assertIn('#include "components/llm_infer/llm_infer.h"', cli_source)
         self.assertIn("linqu_mem_service_core", cli_makefile)
@@ -373,10 +377,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("$(MEM_SERVICE_DEPLOY_MANIFEST)", cli_makefile)
         self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
         self.assertIn("^client_retry_policy=explicit-max-attempts-backoff$$", cli_makefile)
+        self.assertIn("^client_api=pretraining-step-commit-v1$$", cli_makefile)
         self.assertIn("install-smoke: install", cli_makefile)
         self.assertIn("print-release-manifest", cli_makefile)
         self.assertIn("print-wire-schema", cli_makefile)
-        self.assertIn("wire_schema_manifest_checksum=0x560b762f", release_manifest)
+        self.assertIn("wire_schema_manifest_checksum=0x8a8ca3c4", release_manifest)
         self.assertIn("config_schema_version=1", release_manifest)
         self.assertIn("config_schema=share/lingqu/mem_service/config/mem_service.conf.schema", release_manifest)
         self.assertIn("config_example=share/lingqu/mem_service/config/mem_service.example.conf", release_manifest)
@@ -384,7 +389,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("metrics_export_format=prometheus-text", release_manifest)
         self.assertIn("client_retry_policy=explicit-max-attempts-backoff", release_manifest)
         self.assertIn("client_api=pretraining-refs-v1", release_manifest)
+        self.assertIn("client_api=pretraining-step-commit-v1", release_manifest)
         self.assertIn("operation=metrics:5", release_manifest)
+        self.assertIn("operation=audit_log:10", release_manifest)
         self.assertIn("operation=export_snapshot:6", release_manifest)
         self.assertIn("operation=export_snapshot_page:7", release_manifest)
         self.assertIn("operation=restore_snapshot:8", release_manifest)
@@ -404,8 +411,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("config_artifacts=3", cli_source)
         self.assertIn("metrics_export_formats=1", cli_source)
         self.assertIn("client_retry_policies=1", cli_source)
-        self.assertIn("client_api_profiles=1", cli_source)
-        self.assertIn("operation_count=22", (CLI_DIR / "wire-schema.txt").read_text())
+        self.assertIn("client_api_profiles=2", cli_source)
+        self.assertIn("operation_count=23", (CLI_DIR / "wire-schema.txt").read_text())
+        self.assertIn("field_count=102", (CLI_DIR / "wire-schema.txt").read_text())
+        self.assertIn("operation=audit_log:10", (CLI_DIR / "wire-schema.txt").read_text())
         self.assertIn("mem_service_config_schema_version=1", config_schema)
         self.assertIn("field=listen type=string", config_schema)
         self.assertIn("field=store type=string", config_schema)
@@ -444,6 +453,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_client_resolve_gradient_bucket", pretraining_example)
         self.assertIn("mem_service_client_publish_optimizer_state", pretraining_example)
         self.assertIn("mem_service_client_resolve_optimizer_state", pretraining_example)
+        self.assertIn("mem_service_client_commit_training_step", pretraining_example)
+        self.assertIn("mem_service_client_resolve_training_step", pretraining_example)
+        self.assertIn("MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND", pretraining_example)
+        self.assertIn("MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND", client_header)
+        self.assertIn('"training-step-commit"', client_header)
+        self.assertIn("mem_service_client_commit_training_step", client_header)
+        self.assertIn("mem_service_client_resolve_training_step", client_header)
         self.assertNotIn("mem_service_client_register_training_artifact", pretraining_example)
         self.assertIn("mem_service_wire_client_options_init", pretraining_example)
         self.assertIn("mem_service_client_init_with_options", pretraining_example)
@@ -505,9 +521,19 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_client_publish_checkpoint", daemon_runtime_test)
         self.assertIn("mem_service_client_publish_gradient_bucket", daemon_runtime_test)
         self.assertIn("mem_service_client_publish_optimizer_state", daemon_runtime_test)
+        self.assertIn("mem_service_client_commit_training_step", daemon_runtime_test)
+        self.assertIn("mem_service_client_resolve_training_step", daemon_runtime_test)
+        self.assertIn("test_cli_training_step_commit_barrier_round_trips_fail_closed",
+                      daemon_runtime_test)
+        self.assertIn("test_audit_log_tracks_training_step_commit_and_fail_closed_after_restart",
+                      daemon_runtime_test)
+        self.assertIn("audit_log_count", daemon_runtime_test)
         self.assertIn("pretraining_worker=worker0 ok", daemon_runtime_test)
         self.assertIn("pretraining_worker=worker1 ok", daemon_runtime_test)
+        self.assertIn("pretraining_worker=commit-step ok", daemon_runtime_test)
         self.assertIn("pretraining_worker=resolve ok", daemon_runtime_test)
+        self.assertIn("pretraining_worker=step-conflict ok", daemon_runtime_test)
+        self.assertIn("training-step-commit", daemon_runtime_test)
         self.assertIn("pretraining_worker=conflict ok", daemon_runtime_test)
         self.assertIn("MEM_SERVICE_WIRE_STATUS_STALE_REF", daemon_runtime_test)
         self.assertIn("MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH", daemon_runtime_test)
@@ -753,6 +779,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "inspect_object_request",
             "restore_snapshot_request",
             "restore_snapshot_page_request",
+            "audit_log_request",
         ):
             self.assertIn(fixture_name, daemon)
         for response_fixture_name in (
@@ -778,6 +805,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "inspect_object_response",
             "restore_snapshot_response",
             "restore_snapshot_page_response",
+            "audit_log_response",
         ):
             self.assertIn(response_fixture_name, daemon)
         for checksum in (
@@ -805,13 +833,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "0x3f4609a1U",
             "0x3ae50a76U",
             "0x3fc9bd20U",
+            "0x4c66d23cU",
             "0xabb21009U",
             "0x1b337d88U",
             "0xa5654285U",
             "0xdaa065aeU",
             "0xfe23a8a2U",
             "0xe54d9bffU",
-            "0xf5e0bc47U",
+            "0x802c9350U",
+            "0xaac8ac2bU",
         ):
             self.assertIn(checksum, daemon)
         self.assertIn("MEM_SERVICE_METRIC_LATENCY_BUCKET_COUNT", service_header)

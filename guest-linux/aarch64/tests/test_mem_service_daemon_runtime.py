@@ -236,6 +236,28 @@ class MemServiceDaemonRuntimeTests(unittest.TestCase):
             "        .has_expected_checksum = true,\n"
             "        .expected_checksum = 999,\n"
             "    };\n"
+            "    struct mem_service_client_training_ref step_commit = {\n"
+            "        .key = \"training/run/global-step-0/commit\",\n"
+            "        .idempotency_key = \"training/run/global-step-0/commit/v6\",\n"
+            "        .session_id = \"run\",\n"
+            "        .request_id = \"global-step-0\",\n"
+            "        .model_key = \"model-a\",\n"
+            "        .artifact_id = \"global-step-0\",\n"
+            "        .has_checksum = true,\n"
+            "        .checksum = 1000,\n"
+            "        .has_version = true,\n"
+            "        .version = 6,\n"
+            "    };\n"
+            "    struct mem_service_client_training_ref_query step_query = {\n"
+            "        .key = \"training/run/global-step-0/commit\",\n"
+            "        .expected_session_id = \"run\",\n"
+            "        .expected_model_key = \"model-a\",\n"
+            "        .expected_artifact_id = \"global-step-0\",\n"
+            "        .has_expected_version = true,\n"
+            "        .expected_version = 6,\n"
+            "        .has_expected_checksum = true,\n"
+            "        .expected_checksum = 1000,\n"
+            "    };\n"
             "\n"
             "    if (argc != 2) {\n"
             "        return fail(\"missing socket spec\");\n"
@@ -280,6 +302,9 @@ class MemServiceDaemonRuntimeTests(unittest.TestCase):
             "    if (expect_ok(mem_service_client_publish_checkpoint(&client, &training_ref, &record, &status), status, \"publish_checkpoint\") != 0) return 1;\n"
             "    if (expect_ok(mem_service_client_resolve_checkpoint(&client, &training_query, &record, &status), status, \"resolve_checkpoint\") != 0) return 1;\n"
             "    if (record.version != 5 || record.object_payload_checksum != 999) return fail(\"training artifact mismatch\");\n"
+            "    if (expect_ok(mem_service_client_commit_training_step(&client, &step_commit, &record, &status), status, \"commit_training_step\") != 0) return 1;\n"
+            "    if (expect_ok(mem_service_client_resolve_training_step(&client, &step_query, &record, &status), status, \"resolve_training_step\") != 0) return 1;\n"
+            "    if (strcmp(record.artifact_kind, MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND) != 0 || record.version != 6 || record.object_payload_checksum != 1000) return fail(\"training step commit mismatch\");\n"
             "    printf(\"typed_client_roundtrip=ok\\n\");\n"
             "    return 0;\n"
             "}\n"
@@ -572,6 +597,48 @@ static int publish_optimizer_state(const struct mem_service_client *client)
                          ref.checksum);
 }
 
+static int commit_training_step(const struct mem_service_client *client,
+                                uint64_t checksum,
+                                enum mem_service_wire_status expected_status)
+{
+    struct mem_service_client_record record;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    int rc;
+    struct mem_service_client_training_ref ref = {
+        .key = "training/run-b/global-step-0010/commit",
+        .idempotency_key = "pretrain/run-b/global-step-10/commit/v6",
+        .session_id = "run-b",
+        .request_id = "global-step-10",
+        .model_key = "qwen3-14b-pretrain",
+        .artifact_id = "global-step-0010",
+        .has_owner = true,
+        .owner = 0,
+        .has_payload_kind = true,
+        .payload_kind = 15,
+        .has_backing_offset = true,
+        .backing_offset = 81920,
+        .has_backing_len = true,
+        .backing_len = 64,
+        .has_checksum = true,
+        .checksum = checksum,
+        .has_version = true,
+        .version = 6,
+    };
+
+    rc = mem_service_client_commit_training_step(client, &ref, &record, &status);
+    if (expected_status != MEM_SERVICE_WIRE_STATUS_OK) {
+        return expect_status(rc, status, expected_status, "commit_training_step");
+    }
+    if (expect_ok(rc, status, "commit_training_step") != 0) {
+        return 1;
+    }
+    return expect_record(&record,
+                         ref.key,
+                         MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND,
+                         ref.version,
+                         checksum);
+}
+
 static int resolve_training_ref(const struct mem_service_client *client,
                                 const char *key,
                                 const char *artifact_id,
@@ -641,10 +708,65 @@ static int resolve_all(const struct mem_service_client *client)
                              "optimizer-state",
                              5,
                              5005,
-                             mem_service_client_resolve_optimizer_state) != 0) {
+                             mem_service_client_resolve_optimizer_state) != 0 ||
+        resolve_training_ref(client,
+                             "training/run-b/global-step-0010/commit",
+                             "global-step-0010",
+                             MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND,
+                             6,
+                             6006,
+                             mem_service_client_resolve_training_step) != 0) {
         return 1;
     }
     return 0;
+}
+
+static int resolve_step_bad_version(const struct mem_service_client *client)
+{
+    struct mem_service_client_record record;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    struct mem_service_client_training_ref_query query = {
+        .key = "training/run-b/global-step-0010/commit",
+        .expected_session_id = "run-b",
+        .expected_model_key = "qwen3-14b-pretrain",
+        .expected_artifact_id = "global-step-0010",
+        .has_expected_version = true,
+        .expected_version = 99,
+        .has_expected_checksum = true,
+        .expected_checksum = 6006,
+    };
+
+    return expect_status(mem_service_client_resolve_training_step(client,
+                                                                  &query,
+                                                                  &record,
+                                                                  &status),
+                         status,
+                         MEM_SERVICE_WIRE_STATUS_STALE_REF,
+                         "resolve_step_bad_version");
+}
+
+static int resolve_step_bad_checksum(const struct mem_service_client *client)
+{
+    struct mem_service_client_record record;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    struct mem_service_client_training_ref_query query = {
+        .key = "training/run-b/global-step-0010/commit",
+        .expected_session_id = "run-b",
+        .expected_model_key = "qwen3-14b-pretrain",
+        .expected_artifact_id = "global-step-0010",
+        .has_expected_version = true,
+        .expected_version = 6,
+        .has_expected_checksum = true,
+        .expected_checksum = 6666,
+    };
+
+    return expect_status(mem_service_client_resolve_training_step(client,
+                                                                  &query,
+                                                                  &record,
+                                                                  &status),
+                         status,
+                         MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH,
+                         "resolve_step_bad_checksum");
 }
 
 static int resolve_bad_version(const struct mem_service_client *client)
@@ -727,6 +849,10 @@ int main(int argc, char **argv)
             publish_optimizer_state(&client) != 0) {
             return 1;
         }
+    } else if (strcmp(mode, "commit-step") == 0) {
+        if (commit_training_step(&client, 6006, MEM_SERVICE_WIRE_STATUS_OK) != 0) {
+            return 1;
+        }
     } else if (strcmp(mode, "resolve") == 0) {
         if (resolve_all(&client) != 0) {
             return 1;
@@ -737,6 +863,14 @@ int main(int argc, char **argv)
         }
     } else if (strcmp(mode, "bad-checksum") == 0) {
         if (resolve_bad_checksum(&client) != 0) {
+            return 1;
+        }
+    } else if (strcmp(mode, "step-bad-version") == 0) {
+        if (resolve_step_bad_version(&client) != 0) {
+            return 1;
+        }
+    } else if (strcmp(mode, "step-bad-checksum") == 0) {
+        if (resolve_step_bad_checksum(&client) != 0) {
             return 1;
         }
     } else if (strcmp(mode, "conflict") == 0) {
@@ -750,6 +884,19 @@ int main(int argc, char **argv)
                                  3,
                                  3003,
                                  mem_service_client_resolve_gradient_bucket) != 0) {
+            return 1;
+        }
+    } else if (strcmp(mode, "step-conflict") == 0) {
+        if (commit_training_step(&client,
+                                 6666,
+                                 MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT) != 0 ||
+            resolve_training_ref(&client,
+                                 "training/run-b/global-step-0010/commit",
+                                 "global-step-0010",
+                                 MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND,
+                                 6,
+                                 6006,
+                                 mem_service_client_resolve_training_step) != 0) {
             return 1;
         }
     } else {
@@ -951,6 +1098,218 @@ int main(int argc, char **argv)
             self.assertEqual(parsed_metrics["fail_closed_count"], 1)
         finally:
             self._stop_server(proc)
+
+    def test_cli_training_step_commit_barrier_round_trips_fail_closed(self):
+        proc = self._start_server()
+        commit_args = [
+            "commit-training-step",
+            "--connect",
+            f"unix:{self.socket}",
+            "--key",
+            "training/cli-run/global-step-0002/commit",
+            "--session-id",
+            "cli-run",
+            "--request-id",
+            "global-step-2",
+            "--model-key",
+            "qwen3-14b-pretrain",
+            "--artifact-id",
+            "global-step-0002",
+            "--backing-len",
+            "64",
+            "--checksum",
+            "2222",
+            "--version",
+            "2",
+            "--idempotency-key",
+            "pretrain/cli-run/global-step-2/commit/v2",
+        ]
+        resolve_args = [
+            "resolve-training-step",
+            "--connect",
+            f"unix:{self.socket}",
+            "--key",
+            "training/cli-run/global-step-0002/commit",
+            "--expected-session-id",
+            "cli-run",
+            "--expected-model-key",
+            "qwen3-14b-pretrain",
+            "--expected-artifact-id",
+            "global-step-0002",
+            "--expected-version",
+            "2",
+            "--expected-checksum",
+            "2222",
+        ]
+        stale_args = [
+            "resolve-training-step",
+            "--connect",
+            f"unix:{self.socket}",
+            "--key",
+            "training/cli-run/global-step-0002/commit",
+            "--expected-session-id",
+            "cli-run",
+            "--expected-model-key",
+            "qwen3-14b-pretrain",
+            "--expected-artifact-id",
+            "global-step-0002",
+            "--expected-version",
+            "3",
+            "--expected-checksum",
+            "2222",
+        ]
+        conflict_args = [
+            "commit-training-step",
+            "--connect",
+            f"unix:{self.socket}",
+            "--key",
+            "training/cli-run/global-step-0002/commit",
+            "--session-id",
+            "cli-run",
+            "--request-id",
+            "global-step-2",
+            "--model-key",
+            "qwen3-14b-pretrain",
+            "--artifact-id",
+            "global-step-0002",
+            "--backing-len",
+            "64",
+            "--checksum",
+            "3333",
+            "--version",
+            "2",
+            "--idempotency-key",
+            "pretrain/cli-run/global-step-2/commit/v2",
+        ]
+        try:
+            committed = self._run_client(*commit_args)
+            self.assertEqual(committed.returncode, 0, committed.stderr + committed.stdout)
+            self.assertIn("status=ok", committed.stdout)
+            self.assertIn("artifact_kind=training-step-commit", committed.stdout)
+            self.assertIn("version=2", committed.stdout)
+            self.assertIn("object_payload_checksum=2222", committed.stdout)
+
+            resolved = self._run_client(*resolve_args)
+            self.assertEqual(resolved.returncode, 0, resolved.stderr + resolved.stdout)
+            self.assertIn("status=ok", resolved.stdout)
+            self.assertIn("artifact_kind=training-step-commit", resolved.stdout)
+
+            stale = self._run_client(*stale_args)
+            self.assertNotEqual(stale.returncode, 0, stale.stdout)
+            self.assertIn("status=stale_ref", stale.stdout)
+
+            conflict = self._run_client(*conflict_args)
+            self.assertNotEqual(conflict.returncode, 0, conflict.stdout)
+            self.assertIn("status=version_conflict", conflict.stdout)
+        finally:
+            self._stop_server(proc)
+
+    def test_audit_log_tracks_training_step_commit_and_fail_closed_after_restart(self):
+        first = self._start_server()
+        commit_args = [
+            "commit-training-step",
+            "--connect",
+            f"unix:{self.socket}",
+            "--key",
+            "training/audit-run/global-step-0003/commit",
+            "--session-id",
+            "audit-run",
+            "--request-id",
+            "global-step-3",
+            "--model-key",
+            "qwen3-14b-pretrain",
+            "--artifact-id",
+            "global-step-0003",
+            "--checksum",
+            "3003",
+            "--version",
+            "3",
+            "--idempotency-key",
+            "pretrain/audit-run/global-step-3/commit/v3",
+        ]
+        stale_args = [
+            "resolve-training-step",
+            "--connect",
+            f"unix:{self.socket}",
+            "--key",
+            "training/audit-run/global-step-0003/commit",
+            "--expected-session-id",
+            "audit-run",
+            "--expected-model-key",
+            "qwen3-14b-pretrain",
+            "--expected-artifact-id",
+            "global-step-0003",
+            "--expected-version",
+            "4",
+            "--expected-checksum",
+            "3003",
+        ]
+        audit_args = [
+            "audit-log",
+            "--connect",
+            f"unix:{self.socket}",
+            "--start-sequence",
+            "1",
+            "--max-events",
+            "8",
+        ]
+        try:
+            committed = self._run_client(*commit_args)
+            self.assertEqual(committed.returncode, 0, committed.stderr + committed.stdout)
+            self.assertIn("status=ok", committed.stdout)
+
+            stale = self._run_client(*stale_args)
+            self.assertNotEqual(stale.returncode, 0, stale.stdout)
+            self.assertIn("status=stale_ref", stale.stdout)
+
+            audit = self._run_client(*audit_args)
+            self.assertEqual(audit.returncode, 0, audit.stderr + audit.stdout)
+            self.assertIn("status=ok", audit.stdout)
+            self.assertIn("audit_log=1", audit.stdout)
+            self.assertIn("operation_name=register_training_artifact", audit.stdout)
+            self.assertIn("operation_name=query_training_artifact", audit.stdout)
+            self.assertIn("status_name=ok", audit.stdout)
+            self.assertIn("status_name=stale_ref", audit.stdout)
+            self.assertIn("artifact_kind=training-step-commit", audit.stdout)
+            self.assertIn("artifact_id=global-step-0003", audit.stdout)
+            self.assertIn("idempotency_key=pretrain/audit-run/global-step-3/commit/v3",
+                          audit.stdout)
+            self.assertIn("events_emitted=2", audit.stdout)
+
+            metrics = self._run_client("metrics", "--connect", f"unix:{self.socket}")
+            self.assertEqual(metrics.returncode, 0, metrics.stderr + metrics.stdout)
+            parsed_metrics = self._parse_metrics(metrics.stdout)
+            self.assertEqual(parsed_metrics["audit_log_count"], 1)
+            self.assertEqual(parsed_metrics["stale_ref_count"], 1)
+            self.assertEqual(parsed_metrics["fail_closed_count"], 1)
+        finally:
+            self._stop_server(first)
+
+        store_text = self.store.read_text()
+        self.assertIn("audit_begin", store_text)
+        self.assertIn("operation=96", store_text)
+        self.assertIn("operation=97", store_text)
+        self.assertIn("status=0", store_text)
+        self.assertIn("status=2", store_text)
+        self.assertIn("artifact_kind=training-step-commit", store_text)
+        self.assertIn("artifact_id=global-step-0003", store_text)
+
+        second = self._start_server()
+        try:
+            audit_after_restart = self._run_client(*audit_args)
+            self.assertEqual(audit_after_restart.returncode,
+                             0,
+                             audit_after_restart.stderr + audit_after_restart.stdout)
+            self.assertIn("status=ok", audit_after_restart.stdout)
+            self.assertIn("events_emitted=2", audit_after_restart.stdout)
+            self.assertIn("operation_name=register_training_artifact",
+                          audit_after_restart.stdout)
+            self.assertIn("operation_name=query_training_artifact",
+                          audit_after_restart.stdout)
+            self.assertIn("artifact_kind=training-step-commit",
+                          audit_after_restart.stdout)
+        finally:
+            self._stop_server(second)
 
     def test_daemon_store_survives_restart_for_object_refs(self):
         first = self._start_server()
@@ -1304,9 +1663,9 @@ int main(int argc, char **argv)
         self.assertIn("public_headers=8", fixtures.stdout)
         self.assertIn("client_sources=2", fixtures.stdout)
         self.assertIn("examples=2", fixtures.stdout)
-        self.assertIn("operations=22", fixtures.stdout)
-        self.assertIn("schema_manifest_len=8516", fixtures.stdout)
-        self.assertIn("schema_manifest_checksum=0x560b762f", fixtures.stdout)
+        self.assertIn("operations=23", fixtures.stdout)
+        self.assertIn("schema_manifest_len=8695", fixtures.stdout)
+        self.assertIn("schema_manifest_checksum=0x8a8ca3c4", fixtures.stdout)
 
         manifest = self._run_client("release-manifest")
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
@@ -1317,10 +1676,10 @@ int main(int argc, char **argv)
         fixtures = self._run_client("wire-schema-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("manifest_len=8516", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x560b762f", fixtures.stdout)
-        self.assertIn("operations=22", fixtures.stdout)
-        self.assertIn("fields=100", fixtures.stdout)
+        self.assertIn("manifest_len=8695", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x8a8ca3c4", fixtures.stdout)
+        self.assertIn("operations=23", fixtures.stdout)
+        self.assertIn("fields=102", fixtures.stdout)
 
         manifest = self._run_client("wire-schema")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1353,6 +1712,12 @@ int main(int argc, char **argv)
             self.assertEqual(worker1.returncode, 0, worker1.stderr + worker1.stdout)
             self.assertIn("pretraining_worker=worker1 ok", worker1.stdout)
 
+            commit_step = self._run_pretraining_worker(worker, "commit-step")
+            self.assertEqual(commit_step.returncode,
+                             0,
+                             commit_step.stderr + commit_step.stdout)
+            self.assertIn("pretraining_worker=commit-step ok", commit_step.stdout)
+
             resolved = self._run_pretraining_worker(worker, "resolve")
             self.assertEqual(resolved.returncode, 0, resolved.stderr + resolved.stdout)
             self.assertIn("pretraining_worker=resolve ok", resolved.stdout)
@@ -1369,6 +1734,20 @@ int main(int argc, char **argv)
                              bad_checksum.stderr + bad_checksum.stdout)
             self.assertIn("pretraining_worker=bad-checksum ok", bad_checksum.stdout)
 
+            step_bad_version = self._run_pretraining_worker(worker, "step-bad-version")
+            self.assertEqual(step_bad_version.returncode,
+                             0,
+                             step_bad_version.stderr + step_bad_version.stdout)
+            self.assertIn("pretraining_worker=step-bad-version ok",
+                          step_bad_version.stdout)
+
+            step_bad_checksum = self._run_pretraining_worker(worker, "step-bad-checksum")
+            self.assertEqual(step_bad_checksum.returncode,
+                             0,
+                             step_bad_checksum.stderr + step_bad_checksum.stdout)
+            self.assertIn("pretraining_worker=step-bad-checksum ok",
+                          step_bad_checksum.stdout)
+
             records = self._run_client("list-records", "--connect", f"unix:{self.socket}")
             self.assertEqual(records.returncode, 0, records.stderr + records.stdout)
             self.assertIn("kind_name=training_artifact", records.stdout)
@@ -1377,28 +1756,34 @@ int main(int argc, char **argv)
             self.assertIn("key=training/run-b/worker-1/gradient-bucket-0010",
                           records.stdout)
             self.assertIn("key=training/run-b/checkpoint-0010", records.stdout)
+            self.assertIn("key=training/run-b/global-step-0010/commit",
+                          records.stdout)
 
             metrics = self._run_client("metrics", "--connect", f"unix:{self.socket}")
             self.assertEqual(metrics.returncode, 0, metrics.stderr + metrics.stdout)
             parsed_metrics = self._parse_metrics(metrics.stdout)
-            self.assertEqual(parsed_metrics["register_training_artifact_count"], 5)
-            self.assertEqual(parsed_metrics["query_training_artifact_count"], 7)
-            self.assertEqual(parsed_metrics["stale_ref_count"], 1)
-            self.assertEqual(parsed_metrics["checksum_mismatch_count"], 1)
-            self.assertEqual(parsed_metrics["fail_closed_count"], 2)
+            self.assertEqual(parsed_metrics["register_training_artifact_count"], 6)
+            self.assertEqual(parsed_metrics["query_training_artifact_count"], 10)
+            self.assertEqual(parsed_metrics["stale_ref_count"], 2)
+            self.assertEqual(parsed_metrics["checksum_mismatch_count"], 2)
+            self.assertEqual(parsed_metrics["fail_closed_count"], 4)
         finally:
             self._stop_server(first)
 
         store_text = self.store.read_text()
-        self.assertIn("record_count=5", store_text)
+        self.assertIn("record_count=6", store_text)
         self.assertIn("key=training/run-b/worker-0/dataset-shard-0000", store_text)
         self.assertIn("key=training/run-b/worker-1/sample-batch-0010", store_text)
         self.assertIn("key=training/run-b/worker-1/gradient-bucket-0010", store_text)
         self.assertIn("key=training/run-b/checkpoint-0010", store_text)
         self.assertIn("key=training/run-b/worker-1/optimizer-state-0010", store_text)
+        self.assertIn("key=training/run-b/global-step-0010/commit", store_text)
+        self.assertIn("artifact_kind=training-step-commit", store_text)
         self.assertIn("key=pretrain/run-b/w1/gradient/v3", store_text)
+        self.assertIn("key=pretrain/run-b/global-step-10/commit/v6", store_text)
         self.assertIn("status=0", store_text)
         self.assertIn("response_line=artifact_kind=gradient-bucket", store_text)
+        self.assertIn("response_line=artifact_kind=training-step-commit", store_text)
 
         second = self._start_server()
         try:
@@ -1413,13 +1798,19 @@ int main(int argc, char **argv)
             self.assertEqual(conflict.returncode, 0, conflict.stderr + conflict.stdout)
             self.assertIn("pretraining_worker=conflict ok", conflict.stdout)
 
+            step_conflict = self._run_pretraining_worker(worker, "step-conflict")
+            self.assertEqual(step_conflict.returncode,
+                             0,
+                             step_conflict.stderr + step_conflict.stdout)
+            self.assertIn("pretraining_worker=step-conflict ok", step_conflict.stdout)
+
             metrics = self._run_client("metrics", "--connect", f"unix:{self.socket}")
             self.assertEqual(metrics.returncode, 0, metrics.stderr + metrics.stdout)
             parsed_metrics = self._parse_metrics(metrics.stdout)
-            self.assertEqual(parsed_metrics["query_training_artifact_count"], 6)
-            self.assertEqual(parsed_metrics["version_conflict_count"], 1)
-            self.assertEqual(parsed_metrics["idempotency_conflict_count"], 1)
-            self.assertEqual(parsed_metrics["fail_closed_count"], 1)
+            self.assertEqual(parsed_metrics["query_training_artifact_count"], 8)
+            self.assertEqual(parsed_metrics["version_conflict_count"], 2)
+            self.assertEqual(parsed_metrics["idempotency_conflict_count"], 2)
+            self.assertEqual(parsed_metrics["fail_closed_count"], 2)
         finally:
             self._stop_server(second)
 
@@ -1581,8 +1972,8 @@ int main(int argc, char **argv)
                              pretraining_result.stderr + pretraining_result.stdout)
             self.assertIn("mem_service_pretraining_example=ok",
                           pretraining_result.stdout)
-            self.assertIn("artifacts=5", pretraining_result.stdout)
-            self.assertIn("last_kind=optimizer-state", pretraining_result.stdout)
+            self.assertIn("artifacts=6", pretraining_result.stdout)
+            self.assertIn("last_kind=training-step-commit", pretraining_result.stdout)
         finally:
             self._stop_server(proc)
 
@@ -1650,7 +2041,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertTrue(manifest.exists())
             self.assertTrue(wire_schema.exists())
             self.assertIn("core_binary=bin/linqu_mem_service", manifest.read_text())
-            self.assertIn("wire_schema_manifest_checksum=0x560b762f", manifest.read_text())
+            self.assertIn("wire_schema_manifest_checksum=0x8a8ca3c4", manifest.read_text())
             self.assertIn("mem_service_serving_example.c", manifest.read_text())
             self.assertIn("mem_service_pretraining_example.c", manifest.read_text())
             self.assertEqual(wire_schema.read_text(), WIRE_SCHEMA_MANIFEST.read_text())

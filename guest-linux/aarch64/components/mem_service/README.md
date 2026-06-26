@@ -23,7 +23,8 @@ a Qwen3 adapter inspect build:
 - `mem_service_client.c` and `mem_service_client.h` contain the model-neutral
   typed C client wrapper for object, prefix, KV, runtime handoff, execution
   artifact, generic training artifact RPC, and pretraining-specific
-  dataset/sample/checkpoint/gradient/optimizer-state helpers. External
+  dataset/sample/checkpoint/gradient/optimizer-state plus training-step
+  commit helpers. External
   serving/pretraining clients can link this unit plus
   `mem_service_wire_client.c` without linking the daemon, record core, or Qwen3
   adapter.
@@ -34,12 +35,13 @@ a Qwen3 adapter inspect build:
 - `apps/mem_service/examples/mem_service_pretraining_example.c` is the
   installable pretraining SDK smoke client. It uses only the pretraining typed
   client API to publish/query dataset shard, sample batch, checkpoint, gradient
-  bucket, and optimizer-state training refs through a standalone daemon.
+  bucket, optimizer-state, and training-step commit refs through a standalone
+  daemon.
 - `tests/test_mem_service_daemon_runtime.py` includes a pretraining worker
   runtime gate that compiles an external client and verifies worker0/worker1
-  publish, typed resolve, checkpoint restart recovery, stale/checksum
-  fail-closed behavior, and idempotency conflict through `linqu_mem_service
-  serve --store`.
+  publish, typed resolve, global-step commit marker, checkpoint restart
+  recovery, stale/checksum fail-closed behavior, and idempotency conflict
+  through `linqu_mem_service serve --store`.
 - `mem_service_wire_payload.h` contains the shared text key/value payload
   reader, writer, and schema validator used by both the CLI client and daemon
   fixture gate. It is a compatibility helper for the current minimal payload
@@ -226,7 +228,9 @@ Keep the implementation layers separated:
   payload schemas, and
   object/prefix/KV/runtime
   handoff/execution/training artifact
-  request/response payloads plus SDK-level pretraining typed wrappers. The
+  request/response payloads plus SDK-level pretraining typed wrappers,
+  including the fixed `training-step-commit` artifact kind used as the current
+  minimal global-step committed marker. The
   lightweight client transport and typed client
   also expose explicit timeout plus opt-in max-attempts/backoff/timeout-retry
   controls for deployed callers, and mutating object/prefix/KV/runtime/
@@ -235,8 +239,8 @@ Keep the implementation layers separated:
   explicitly and use idempotency keys for all mutating calls. The
   `wire-fixtures`
   CLI freezes the current envelope layout, operation/status IDs, checksum
-  values, header initialization behavior, 22 canonical request payload
-  fixtures, 22 real handler response fixtures for the current RPC surface, and
+  values, header initialization behavior, 23 canonical request payload
+  fixtures, 23 real handler response fixtures for the current RPC surface, and
   the current request schema checks, including minimal in-process idempotency
   replay/conflict behavior.
   The `wire-schema` CLI emits the checked-in release schema manifest, and
@@ -247,21 +251,26 @@ Keep the implementation layers separated:
   can now carry expected session, model, artifact kind, artifact id, version,
   and checksum bindings; mismatches fail closed with stable wire status codes.
   The `store-fixtures` CLI freezes the current minimum save/load path for
-  committed metadata/object-ref records and completed idempotency records.
+  committed metadata/object-ref records, completed idempotency records, and
+  bounded audit records.
   `serve --store <path>` uses that path for restart recovery, including
-  cross-restart replay/conflict behavior for completed idempotency keys; it
-  does not make Memory Service own durable payload bytes. Full
-  `export-snapshot`/`restore-snapshot` carries idempotency records when the
-  snapshot fits in the wire payload; paged snapshot export remains record-only.
+  cross-restart replay/conflict behavior for completed idempotency keys and
+  retained audit events; it does not make Memory Service own durable payload
+  bytes. Full `export-snapshot`/`restore-snapshot` carries idempotency and
+  audit records when the snapshot fits in the wire payload; paged snapshot
+  export remains record-only.
   The `status`, `list-records`,
-  `metrics`, `inspect-object`, `export-snapshot`, `export-snapshot-page`,
-  `export-snapshot-to`, `restore-snapshot`, and `metrics-export` commands
+  `metrics`, `audit-log`, `inspect-object`, `export-snapshot`,
+  `export-snapshot-page`, `export-snapshot-to`, `restore-snapshot`, and
+  `metrics-export` commands
   expose the current minimal admin surface, including page assembly and
   transactional paged restore for large snapshots plus fixed request-latency
   histogram, idempotency replay/conflict counters, and Prometheus text metrics
-  export; HTTP scrape/service-manager metrics smoke, append-only durable
-  idempotency log, compatibility matrix, product-grade restore policy, and
-  product-grade durable migration remain deployment work. This layer must stay
+  export. The current `audit-log` RPC exposes a bounded retained ring for
+  mutating and fail-closed operations, persisted in `--store` and full
+  snapshots; HTTP scrape/service-manager metrics smoke, append-only durable
+  idempotency/audit log, compatibility matrix, product-grade restore policy,
+  and product-grade durable migration remain deployment work. This layer must stay
   model-neutral and
   callable by external
   serving/pretraining processes.

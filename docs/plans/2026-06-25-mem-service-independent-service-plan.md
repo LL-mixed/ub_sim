@@ -10,7 +10,7 @@
 2. 可以作为长期运行的 service process 部署。
 3. 可以被其他进程通过稳定 API 调用，而不是只能被静态链接进 guest app。
 4. 可以服务 LLM inference serving 的 prefix cache、KV cache、runtime object handoff、execution artifact lookup。
-5. 可以服务 pretraining 的 dataset/sample/checkpoint/gradient/optimizer-state metadata 协同。
+5. 可以服务 pretraining 的 dataset/sample/checkpoint/gradient/optimizer-state metadata 协同和 global-step committed-state 协同。
 6. 具备 durable metadata、payload ref、audit、restart/recovery、version compatibility 和 observability。
 7. Qwen3/W5 只是 adapter 和验证 workload，不再定义服务边界。
 
@@ -29,11 +29,11 @@
 | model-neutral core record kinds | `mem_service.h` 使用 `MEM_SERVICE_RECORD_MODEL_*`，Qwen3 名称只在 adapter header 中做 alias | 已有 |
 | wire envelope | `mem_service_wire.h` 定义 versioned header、operation IDs、payload checksum、stable status/error code | 已有最小版本 |
 | lightweight RPC client transport | `mem_service_wire_client.c/h` 提供 Unix-socket request helper、default endpoint、stable status name、显式 timeout、opt-in max-attempts/backoff/timeout-retry 控制；外部 client 可不链接 daemon/server/core | 已有最小版本 |
-| typed C client API | `mem_service_client.c/h` 提供 object、prefix、KV、runtime handoff、execution artifact、generic training artifact 的 typed request/response wrapper，并提供 dataset/sample/checkpoint/gradient/optimizer-state pretraining helper；同时透传 transport timeout/retry options；测试证明外部 client 只链接 client + wire client 即可连通 daemon | 已有最小版本 |
+| typed C client API | `mem_service_client.c/h` 提供 object、prefix、KV、runtime handoff、execution artifact、generic training artifact 的 typed request/response wrapper，并提供 dataset/sample/checkpoint/gradient/optimizer-state 和 training-step commit pretraining helper；同时透传 transport timeout/retry options；测试证明外部 client 只链接 client + wire client 即可连通 daemon | 已有最小版本 |
 | serving SDK example | `examples/mem_service_serving_example.c` 只链接 client + wire client，显式配置 timeout/retry/backoff，并通过 idempotency key 安全发布 prefix/KV/runtime handoff/execution artifact | 已有最小两进程 smoke |
-| pretraining SDK/example/runtime gate | `examples/mem_service_pretraining_example.c` 只链接 client + wire client，显式配置 timeout/retry/backoff，并通过 pretraining typed helper 和 idempotency key 发布 dataset/sample/checkpoint/gradient/optimizer-state training refs；`test_pretraining_workers_publish_resolve_and_recover_refs` 编译外部 worker client，覆盖 worker0/worker1 多进程 publish、typed resolve、checkpoint restart recovery、stale/checksum fail-closed 和 idempotency conflict | 已有最小多进程证据 |
-| wire fixture gate | `linqu_mem_service wire-fixtures` 校验 header size/offset、operation/status 数值、22 个 canonical request payload 长度/checksum、22 个真实 handler response 长度/checksum 和 header init | 已有 request/response corpus |
-| wire schema manifest | `linqu_mem_service wire-schema` 生成 `apps/mem_service/wire-schema.txt`；`wire-schema-fixtures` 冻结 manifest length/checksum、22 个 operation、100 个字段、1 个 oneof selector | 已有最小兼容 manifest |
+| pretraining SDK/example/runtime gate | `examples/mem_service_pretraining_example.c` 只链接 client + wire client，显式配置 timeout/retry/backoff，并通过 pretraining typed helper 和 idempotency key 发布 dataset/sample/checkpoint/gradient/optimizer-state training refs 以及 `training-step-commit` committed marker；`test_pretraining_workers_publish_resolve_and_recover_refs` 编译外部 worker client，覆盖 worker0/worker1 多进程 publish、typed resolve、global-step commit marker、checkpoint restart recovery、stale/checksum fail-closed 和 idempotency conflict；`test_cli_training_step_commit_barrier_round_trips_fail_closed` 覆盖 CLI commit/resolve/stale/conflict | 已有最小多进程证据 |
+| wire fixture gate | `linqu_mem_service wire-fixtures` 校验 header size/offset、operation/status 数值、23 个 canonical request payload 长度/checksum、23 个真实 handler response 长度/checksum 和 header init | 已有 request/response corpus |
+| wire schema manifest | `linqu_mem_service wire-schema` 生成 `apps/mem_service/wire-schema.txt`；`wire-schema-fixtures` 冻结 manifest length/checksum、23 个 operation、102 个字段、1 个 oneof selector | 已有最小兼容 manifest |
 | artifact query binding | runtime handoff、execution artifact、training artifact query 支持 `expected_session_id`、`expected_model_key`、`expected_artifact_kind`、`expected_artifact_id`、`expected_version`、`expected_checksum` fail-closed 校验 | 已有最小上下文绑定 |
 | store fixture gate | `linqu_mem_service store-fixtures` 校验 metadata/ref snapshot save/load/recover，以及 `--store` 格式中的 idempotency replay/conflict 恢复 | 已有最小版本 |
 | service process | `linqu_mem_service serve --listen unix:<path> [--store <path>]` | 已有最小 Unix-socket daemon 和 metadata/ref snapshot recovery |
@@ -44,7 +44,9 @@
 | runtime handoff RPC | `linqu_mem_service publish-runtime-handoff/resolve-runtime-handoff --connect unix:<path>` | 已有最小 key/value payload 版本 |
 | execution artifact RPC | `linqu_mem_service register-execution-artifact/query-execution-artifact --connect unix:<path>` | 已有最小 key/value payload 版本 |
 | training artifact RPC | `linqu_mem_service register-training-artifact/query-training-artifact --connect unix:<path>` | 已有最小 key/value payload 版本 |
+| training-step commit CLI | `linqu_mem_service commit-training-step/resolve-training-step --connect unix:<path>` 固定 `artifact_kind=training-step-commit`，要求 session/model/artifact/version/checksum/idempotency key，默认 fail-closed | 已有最小 committed marker 版本 |
 | metrics RPC/export | `linqu_mem_service metrics --connect unix:<path>` 暴露 request/status/operation hit-miss/fail-closed、idempotency replay/conflict 和 latency histogram 计数；`metrics-export --format prometheus-text` 可把同一 RPC 输出转换为 Prometheus text exposition | 已有最小观测导出版本 |
+| audit-log RPC | `linqu_mem_service audit-log --connect unix:<path>` 暴露 bounded retained audit ring，覆盖 mutating operation 和 fail-closed status，记录 operation/status/request checksum/response checksum/idempotency replay/session/model/artifact/version/checksum，并随 `--store` 和 full snapshot 持久化；runtime test 覆盖 training-step commit、stale fail-closed、metrics 计数和重启后查询 | 已有最小审计版本 |
 | mutation idempotency | object/prefix/KV/runtime handoff/execution artifact/training artifact 写路径支持可选 `idempotency_key`；重复相同 operation/payload replay 首次响应，重复 key 搭配不同 payload fail-closed 为 `version_conflict`；`wire-fixtures` 覆盖进程内 replay/conflict，`store-fixtures` 覆盖 save/load replay/conflict，daemon runtime test 在允许 Unix socket bind 的环境覆盖 `serve --store` 跨重启 replay/conflict | 已有最小持久化版本 |
 | Qwen3 inspect CLI | `/bin/linqu_mem_service_qwen3 --inspect-qwen3` | 已有 |
 | W5 Qwen3 runtime handoff | `mem_service_qwen3*.c/h` | 已有 |
@@ -52,18 +54,18 @@
 | structural tests | `guest-linux/aarch64/tests/test_mem_service_record_recycling.py` | 已有 |
 | independent deployment assessment | `docs/mem_service_independent_deployment_assessment.md` | 已有 |
 | config/deploy contract | `serve --config <path>` 支持 text key/value config；`config-fixtures` 校验 schema 约束；发布布局包含 config schema、example config 和 systemd-like deployment manifest | 已有最小版本 |
-| release manifest CLI | `linqu_mem_service release-manifest` 和 `release-fixtures` 冻结 core binary、public headers、client SDK sources、SDK examples、config/deploy artifacts、metrics export format、client retry policy、pretraining client API profile、wire/schema versions、schema manifest checksum、operation/status IDs | 已有最小版本 |
+| release manifest CLI | `linqu_mem_service release-manifest` 和 `release-fixtures` 冻结 core binary、public headers、client SDK sources、SDK examples、config/deploy artifacts、metrics export format、client retry policy、pretraining refs 与 pretraining step commit client API profiles、wire/schema versions、schema manifest checksum、operation/status IDs | 已有最小版本 |
 | install layout smoke | `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr` 安装 binary/header/client source/SDK examples/release manifest/wire schema manifest/config/deploy artifacts 并校验布局 | 已有最小版本 |
 
 当前主要缺口：
 
 | 缺口 | 对用户的影响 |
 | --- | --- |
-| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store` idempotency 跨重启 replay/conflict、最小 admin、最小 metrics、Prometheus text metrics export、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot` 和最小 restart recovery，但还缺 retry/idempotency compatibility matrix、append-only durable idempotency log、HTTP scrape/service-manager metrics smoke 和产品级 restore/durable policy |
-| wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，以及 22 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus；还缺 binary/typed payload schema、跨版本 compatibility fixtures |
-| durable service backend 仍是最小 snapshot | 已能通过 `serve --store` 恢复 committed metadata/ref；还缺产品级 durable catalog、audit log、payload block backend、migration |
+| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot` 和最小 restart recovery，但还缺 retry/idempotency compatibility matrix、append-only durable idempotency/audit log、HTTP scrape/service-manager metrics smoke 和产品级 restore/durable policy |
+| wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，以及 23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus；还缺 binary/typed payload schema、跨版本 compatibility fixtures |
+| durable service backend 仍是最小 snapshot | 已能通过 `serve --store` 恢复 committed metadata/ref、completed idempotency record 和 retained audit event；还缺产品级 durable catalog、append-only audit log、payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
-| pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state pretraining helper、可安装 pretraining example，以及外部 worker runtime test 覆盖多 worker publish/resolve、checkpoint restart、stale/checksum fail-closed 和 idempotency conflict；训练系统还缺专用 binary typed schema、global-step commit barrier、audit/replay record 和产品级多 worker 一致性 |
+| pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum、append-only audit/replay record 和产品级多 worker 一致性 |
 | release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、config schema、example config、systemd-like deployment manifest、SDK examples、Prometheus text metrics export manifest entry 和 install-smoke；还缺完整版本兼容包、升级/回滚、host service-manager smoke 和 HTTP/采集器观测门禁 |
 
 ## 3. 目标架构
@@ -229,7 +231,7 @@ existing W5/Qwen3 tests remain green
    UNSUPPORTED
    INTERNAL
    ```
-5. 定义 typed payload schema。当前 object/prefix/KV/runtime/execution/training 已有 key/value 文本 payload，CLI 和 daemon 已共享 `mem_service_wire_payload.h` 做字段读写、整数解析和 schema 校验，`mem_service_wire_schema.h` 已把当前 operation payload schema 从 daemon 私有数组提升为 public contract，`wire-schema` 已生成可安装的 `wire-schema.txt`，`wire-schema-fixtures` 已冻结 manifest length/checksum、22 个 operation、100 个字段和 1 个 oneof selector，并且 `wire-fixtures` 已冻结 22 个当前 RPC 的 canonical request payload 长度/checksum、当前 request schema 与真实 handler response 长度/checksum；runtime/execution/training artifact query 已支持 expected session/model/kind/id/version/checksum 的 fail-closed 校验；下一步要收紧为可兼容 typed schema：
+5. 定义 typed payload schema。当前 object/prefix/KV/runtime/execution/training 已有 key/value 文本 payload，CLI 和 daemon 已共享 `mem_service_wire_payload.h` 做字段读写、整数解析和 schema 校验，`mem_service_wire_schema.h` 已把当前 operation payload schema 从 daemon 私有数组提升为 public contract，`wire-schema` 已生成可安装的 `wire-schema.txt`，`wire-schema-fixtures` 已冻结 manifest length/checksum、23 个 operation、102 个字段和 1 个 oneof selector，并且 `wire-fixtures` 已冻结 23 个当前 RPC 的 canonical request payload 长度/checksum、当前 request schema 与真实 handler response 长度/checksum；runtime/execution/training artifact query 已支持 expected session/model/kind/id/version/checksum 的 fail-closed 校验；下一步要收紧为可兼容 typed schema：
    - object payload request/response。
    - prefix entry request/response。
    - KV segment request/response。
@@ -241,7 +243,8 @@ existing W5/Qwen3 tests remain green
    - 相同 `idempotency_key`、相同 operation 和相同 payload 会 replay 首次响应，不重新执行 mutation。
    - 相同 `idempotency_key` 搭配不同 operation 或 payload 会 fail-closed 为 `version_conflict`。
    - 当前 `--store` 和 full `export-snapshot` 会保存 completed idempotency record；`store-fixtures` 覆盖 save/load 后 replay/conflict，daemon runtime 测试在允许 Unix socket bind 的环境覆盖 `serve --store` 重启后的 replay/conflict。
-   - 后续还要补 append-only durable idempotency log、retry/idempotency compatibility matrix 和 old/new compatibility matrix。
+   - 当前 `audit-log` 已有 bounded retained ring，覆盖 mutating operation 和 fail-closed status，并随 `--store` 和 full snapshot 持久化。
+   - 后续还要补 append-only durable idempotency/audit log、retry/idempotency compatibility matrix 和 old/new compatibility matrix。
 7. 定义 compatibility rules：
    - minor version backward compatible。
    - major version requires explicit negotiation。
@@ -528,12 +531,14 @@ adapter W5 path remains functional
    gradient_bucket_ref
    optimizer_state_ref
    model_checkpoint_ref
+   training_step_commit_ref
    scheduler_barrier_ref
    ```
 3. 定义 multi-writer semantics：
    ```text
    worker-owned refs
-   global-step commit barrier
+   minimal global-step committed marker exists via training-step-commit
+   release-grade global-step commit barrier/quorum
    conflict deterministic
    immutable payload refs
    mutable index records via version CAS
@@ -555,21 +560,25 @@ adapter W5 path remains functional
    publish_gradient_bucket
    publish_optimizer_state
    commit_training_step
+   resolve_training_step
    resolve_checkpoint
    ```
    当前已有 `apps/mem_service/examples/mem_service_pretraining_example.c`
    作为最小 SDK 示例，使用 `publish_dataset_shard`、
    `publish_sample_batch`、`publish_checkpoint`、
-   `publish_gradient_bucket`、`publish_optimizer_state` 及对应 resolve helper
+   `publish_gradient_bucket`、`publish_optimizer_state`、`commit_training_step`
+   及对应 resolve helper
    覆盖 dataset shard、sample batch、checkpoint、gradient bucket、optimizer
-   state 的两进程 publish/query smoke。当前
+   state、training-step commit marker 的两进程 publish/query smoke。当前
    `test_pretraining_workers_publish_resolve_and_recover_refs` 还会编译一个
    外部 pretraining worker client，覆盖 worker0/worker1 多进程
-   publish、typed resolve、checkpoint restart recovery、stale/checksum
-   fail-closed 和 idempotency conflict。下一步仍需要把 SDK typed helper
+   publish、typed resolve、global-step committed marker、checkpoint restart
+   recovery、stale/checksum fail-closed 和 idempotency conflict；
+   `test_cli_training_step_commit_barrier_round_trips_fail_closed` 覆盖
+   CLI commit/resolve/stale/conflict。下一步仍需要把 SDK typed helper
    背后的 text artifact envelope 提升为发布级 typed schema，并补
-   global-step commit barrier、audit/replay records 和产品级多 worker
-   一致性。
+   release-grade global-step commit barrier/quorum、audit/replay records
+   和产品级多 worker 一致性。
 
 新增测试：
 
@@ -684,12 +693,12 @@ linqu_mem_service health/ready can call the service over the wire envelope
 business RPC operations are encoded for object/prefix/KV/runtime/execution/training minimal paths
 no binary typed object/prefix/KV/pretraining payload schema
 lightweight Unix RPC client transport exists without linking daemon/server/core
-typed C client wrappers exist for object/prefix/KV/runtime/execution/training RPC and pretraining dataset/sample/checkpoint/gradient/optimizer helpers without linking daemon/server/core
+typed C client wrappers exist for object/prefix/KV/runtime/execution/training RPC and pretraining dataset/sample/checkpoint/gradient/optimizer/training-step commit helpers without linking daemon/server/core
 installable serving/pretraining SDK examples prove minimal two-process RPC smoke against the daemon
 pretraining worker runtime gate proves typed multi-worker publish/resolve, checkpoint restart, stale/checksum fail-closed, and idempotency conflict
 shared text key/value payload helper, public operation schema contract, and request schema fixture gate exist
 wire-schema CLI and checked-in wire-schema.txt freeze the current operation/field manifest
-minimal --store snapshot exists and carries completed idempotency records, but no production durable catalog/audit/block backend
+minimal --store snapshot exists and carries completed idempotency records plus bounded audit records, but no production durable catalog/append-only audit/block backend
 minimal release manifest CLI, wire schema manifest, config/deploy artifacts, SDK examples, and install-smoke layout exist
 no retry/idempotency compatibility matrix, model/session mismatch matrix, or product-grade multi-worker pretraining commit/audit matrix
 ```

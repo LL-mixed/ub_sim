@@ -1,8 +1,8 @@
 mem_service_wire_schema_manifest_version=1
 wire_schema_version=1
 wire_payload_format=text-kv
-operation_count=22
-field_count=100
+operation_count=23
+field_count=102
 oneof_count=1
 oneof_field_count=2
 operation=health:1 schema_version=1 payload_format=text-kv fields=0 oneofs=0
@@ -20,6 +20,9 @@ field=restore_snapshot_page.action type=string required=1
 field=restore_snapshot_page.page_index type=u64 required=0
 field=restore_snapshot_page.expected_records type=u64 required=0
 field=restore_snapshot_page.complete type=u32 required=0
+operation=audit_log:10 schema_version=1 payload_format=text-kv fields=2 oneofs=0
+field=audit_log.start_sequence type=u64 required=0
+field=audit_log.max_events type=u64 required=0
 operation=put_object:16 schema_version=1 payload_format=text-kv fields=8 oneofs=0
 field=put_object.key type=string required=1
 field=put_object.owner type=u32 required=0

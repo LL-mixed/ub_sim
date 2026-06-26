@@ -1071,3 +1071,31 @@ int mem_service_client_resolve_optimizer_state(
                                                    record_out,
                                                    status_out);
 }
+
+int mem_service_client_commit_training_step(
+    const struct mem_service_client *client,
+    const struct mem_service_client_training_ref *ref,
+    struct mem_service_client_record *record_out,
+    enum mem_service_wire_status *status_out)
+{
+    return mem_service_client_publish_training_ref(
+        client,
+        MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND,
+        ref,
+        record_out,
+        status_out);
+}
+
+int mem_service_client_resolve_training_step(
+    const struct mem_service_client *client,
+    const struct mem_service_client_training_ref_query *query,
+    struct mem_service_client_record *record_out,
+    enum mem_service_wire_status *status_out)
+{
+    return mem_service_client_resolve_training_ref(
+        client,
+        MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND,
+        query,
+        record_out,
+        status_out);
+}

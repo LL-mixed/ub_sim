@@ -218,6 +218,31 @@ int main(int argc, char **argv)
             .publish = mem_service_client_publish_optimizer_state,
             .resolve = mem_service_client_resolve_optimizer_state,
         },
+        {
+            .artifact_kind = MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND,
+            .ref = {
+                .key = "training/run-a/global-step-0001/commit",
+                .idempotency_key = "training/run-a/global-step-0001/commit/v6",
+                .session_id = "run-a",
+                .request_id = "global-step-1",
+                .model_key = "qwen3-14b-pretrain",
+                .artifact_id = "global-step-0001",
+                .has_owner = true,
+                .owner = 0,
+                .has_payload_kind = true,
+                .payload_kind = 15,
+                .has_backing_offset = true,
+                .backing_offset = 18874368,
+                .has_backing_len = true,
+                .backing_len = 64,
+                .has_checksum = true,
+                .checksum = 0x15161718,
+                .has_version = true,
+                .version = 6,
+            },
+            .publish = mem_service_client_commit_training_step,
+            .resolve = mem_service_client_resolve_training_step,
+        },
     };
     size_t i;
 
