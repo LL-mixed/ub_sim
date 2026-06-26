@@ -1748,6 +1748,7 @@ int main(int argc, char **argv)
         self.assertIn("durable_backends=1", fixtures.stdout)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=1", fixtures.stdout)
+        self.assertIn("host_artifacts=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
@@ -2599,6 +2600,17 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
 
             self.assertTrue((destdir / "usr" / "bin" / "linqu_mem_service").exists())
             self.assertTrue(
+                (
+                    destdir
+                    / "usr"
+                    / "share"
+                    / "lingqu"
+                    / "mem_service"
+                    / "host"
+                    / "linqu_mem_service_host"
+                ).exists()
+            )
+            self.assertTrue(
                 (destdir / "usr" / "include" / "lingqu" / "mem_service" / "mem_service_client.h").exists()
             )
             self.assertTrue(
@@ -2655,6 +2667,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertTrue(compat_baseline.exists())
             self.assertTrue(compat_old_new_matrix.exists())
             self.assertIn("core_binary=bin/linqu_mem_service", manifest.read_text())
+            self.assertIn(
+                "host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "host_daemon_artifact_smoke=host-artifact-smoke",
+                manifest.read_text(),
+            )
             self.assertIn("wire_schema_manifest_checksum=0xce883650", manifest.read_text())
             self.assertIn("compat_matrix_checksum=0x8b4219c5", manifest.read_text())
             self.assertIn("compat_baseline_checksum=0xdc6376da", manifest.read_text())

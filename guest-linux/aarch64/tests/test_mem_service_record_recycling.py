@@ -431,6 +431,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples", cli_makefile)
         self.assertIn("INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config", cli_makefile)
         self.assertIn("INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy", cli_makefile)
+        self.assertIn("INSTALL_HOSTDIR := $(INSTALL_DATADIR)/host", cli_makefile)
+        self.assertIn("linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)", cli_makefile)
+        self.assertIn("host-artifact-smoke: linqu_mem_service_host", cli_makefile)
         self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
         self.assertIn("MEM_SERVICE_CLIENT_SDK_SRCS :=", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
@@ -444,6 +447,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^compat_baseline_checksum=0xdc6376da$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix_checksum=0x56f8e4c3$$", cli_makefile)
+        self.assertIn("^host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host$$", cli_makefile)
+        self.assertIn("^host_daemon_artifact_smoke=host-artifact-smoke$$", cli_makefile)
         self.assertIn("^deployment_smoke=deployment-fixtures$$", cli_makefile)
         self.assertIn(
             "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$",
@@ -472,6 +477,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("compat_baseline_checksum=0xdc6376da", release_manifest)
         self.assertIn("compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt", release_manifest)
         self.assertIn("compat_old_new_matrix_checksum=0x56f8e4c3", release_manifest)
+        self.assertIn(
+            "host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host",
+            release_manifest,
+        )
+        self.assertIn("host_daemon_artifact_smoke=host-artifact-smoke", release_manifest)
         self.assertIn("deployment_smoke=deployment-fixtures", release_manifest)
         self.assertIn(
             "service_manager_lifecycle=serve-config-ready-scrape-sigterm",
@@ -512,6 +522,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             release_manifest,
         )
         self.assertIn("examples=2", cli_source)
+        self.assertIn("host_artifacts=1", cli_source)
         self.assertIn("config_artifacts=3", cli_source)
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("durable_catalogs=1", cli_source)

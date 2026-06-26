@@ -689,6 +689,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples" in app_makefile
     assert "INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config" in app_makefile
     assert "INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy" in app_makefile
+    assert "INSTALL_HOSTDIR := $(INSTALL_DATADIR)/host" in app_makefile
+    assert "linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)" in app_makefile
+    assert "host-artifact-smoke: linqu_mem_service_host" in app_makefile
     assert "MEM_SERVICE_PUBLIC_HEADERS :=" in app_makefile
     assert "$(ROOT)/components/mem_service/mem_service_client.h" in app_makefile
     assert "$(ROOT)/components/mem_service/mem_service_wire_schema.h" in app_makefile
@@ -706,6 +709,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^compat_baseline_checksum=0xdc6376da$$" in app_makefile
     assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
     assert "^compat_old_new_matrix_checksum=0x56f8e4c3$$" in app_makefile
+    assert "^host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host$$" in app_makefile
+    assert "^host_daemon_artifact_smoke=host-artifact-smoke$$" in app_makefile
     assert "^deployment_smoke=deployment-fixtures$$" in app_makefile
     assert "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$" in app_makefile
     assert "^service_manager_shutdown=signal-clean-stop$$" in app_makefile
@@ -813,6 +818,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "#ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_source
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "core_binary=bin/linqu_mem_service" in release_manifest
+    assert (
+        "host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host"
+        in release_manifest
+    )
+    assert "host_daemon_artifact_smoke=host-artifact-smoke" in release_manifest
     assert "public_header=include/lingqu/mem_service/mem_service_client.h" in release_manifest
     assert "client_source=src/lingqu/mem_service/mem_service_client.c" in release_manifest
     assert (

@@ -67,7 +67,7 @@
 | durable service backend 仍是最小 snapshot+journal + storage-root layout + sealed local block | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；`serve --config storage_root=<dir>` 已能创建 `catalog/manifest.txt`、`blocks/`、`quarantine/`，并在省略 `store` 时派生 `catalog/store.snapshot` 完成重启恢复；`payload_block_backend=sealed-local-block-v1` 已支持 `payload_inline` 和 server-side `payload_path` 文件摄取写入 `blocks/<checksum>.block`，可绕开 4096B wire payload 限制处理本地大文件 payload，object/artifact 读取时重新校验长度/checksum，损坏则 `checksum_mismatch` fail-closed 并 best-effort quarantine；还缺产品级 durable catalog、journal truncation/atomicity policy、remote/chunked sealed payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new runtime compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
 | pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实 host/systemd service-manager smoke 和真实采集器观测门禁 |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、host daemon artifact、systemd-like deployment manifest、`deployment-fixtures`、`host-artifact-smoke`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实 host/systemd service-manager smoke 和真实采集器观测门禁 |
 
 ## 3. 目标架构
 
@@ -613,12 +613,13 @@ audit can reconstruct a training step's inputs and outputs
    protocol schema/golden fixtures
    metrics export format
    deployment examples
+   host daemon artifact
    ```
    当前已有最小 manifest：`apps/mem_service/release-manifest.txt` 和
    `linqu_mem_service release-manifest`，冻结 core binary、public headers、
    client SDK sources、wire/schema versions、wire schema manifest checksum、
    config/deploy artifacts、Prometheus text metrics export format、explicit
-   client retry policy、operation IDs 和 status IDs。
+   client retry policy、operation IDs、status IDs 和 host daemon artifact。
 2. 定义 install layout：
    ```text
    bin/
@@ -630,8 +631,8 @@ audit can reconstruct a training step's inputs and outputs
    当前已有最小 install smoke：
    `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir>
    PREFIX=/usr`，安装 core binary、public headers、client SDK source、
-   SDK examples、release manifest、wire schema manifest、config schema/example
-   和 deployment manifest。
+   SDK examples、release manifest、wire schema manifest、config schema/example、
+   deployment manifest 和 host daemon artifact。
 3. 定义 deployment manifests：
    ```text
    guest initramfs entry
@@ -921,11 +922,12 @@ Recommended order:
 8. Extend the minimal release artifact layout into deployable package gates:
    the current config schema, example config, service unit manifest, `/metrics`
    response envelope, and TCP metrics listener contract are installed and
-   fixture-checked, and a portable lifecycle smoke now covers config startup,
-   ready/health, HTTP scrape, SIGTERM stop, and socket cleanup. Remaining work
-   is protocol compatibility bundle, upgrade/rollback smoke, real host/systemd
-   service-manager smoke, external collector integration smoke, and
-   metrics/admin output compatibility.
+   fixture-checked, a host daemon artifact is installed under the release
+   data directory and checked by `host-artifact-smoke`, and a portable
+   lifecycle smoke now covers config startup, ready/health, HTTP scrape,
+   SIGTERM stop, and socket cleanup. Remaining work is protocol compatibility
+   bundle, upgrade/rollback smoke, real host/systemd service-manager smoke,
+   external collector integration smoke, and metrics/admin output compatibility.
 
 ## 7. Completion Definition
 

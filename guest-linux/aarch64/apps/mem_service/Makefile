@@ -1,6 +1,8 @@
 ROOT := ../..
 CC = aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -static
+HOST_CC ?= cc
+HOST_CFLAGS ?= -O2 -Wall -Wextra
 INCLUDES := -I$(ROOT) -I$(ROOT)/.. -I$(ROOT)/libs/obmm_queue -I$(ROOT)/apps/obmm_queue
 
 MEM_SERVICE := $(ROOT)/components/mem_service/mem_service.c
@@ -48,6 +50,7 @@ INSTALL_DATADIR := $(DESTDIR)$(PREFIX)/share/lingqu/mem_service
 INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples
 INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config
 INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy
+INSTALL_HOSTDIR := $(INSTALL_DATADIR)/host
 
 MEM_SERVICE_PUBLIC_HEADERS := \
 	$(ROOT)/components/mem_service/mem_service.h \
@@ -107,7 +110,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all install install-smoke print-release-manifest print-wire-schema print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -119,6 +122,14 @@ linqu_mem_service_core: $(MEM_SERVICE_CORE_SRCS)
 
 linqu_mem_service_qwen3: $(MEM_SERVICE_QWEN3_ADAPTER_SRCS)
 	$(CC) $(CFLAGS) -DMEM_SERVICE_ENABLE_QWEN3_INSPECT $(INCLUDES) $^ -lm -o $@
+
+linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)
+	$(HOST_CC) $(HOST_CFLAGS) $(INCLUDES) $^ -lm -o $@
+
+host-artifact-smoke: linqu_mem_service_host
+	./linqu_mem_service_host --smoke
+	./linqu_mem_service_host release-fixtures
+	./linqu_mem_service_host deployment-fixtures
 
 print-release-manifest:
 	@cat $(MEM_SERVICE_RELEASE_MANIFEST)
@@ -135,9 +146,10 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: linqu_mem_service $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST)
-	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR)
+install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST)
+	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
+	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
 	cp $(MEM_SERVICE_PUBLIC_HEADERS) $(INSTALL_INCLUDEDIR)/
 	cp $(MEM_SERVICE_CLIENT_SDK_SRCS) $(INSTALL_SRCDIR)/
 	cp $(MEM_SERVICE_CLIENT_EXAMPLES) $(INSTALL_EXAMPLEDIR)/
@@ -152,6 +164,7 @@ install: linqu_mem_service $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SC
 
 install-smoke: install
 	test -x $(INSTALL_BINDIR)/linqu_mem_service
+	test -x $(INSTALL_HOSTDIR)/linqu_mem_service_host
 	test -f $(INSTALL_INCLUDEDIR)/mem_service_client.h
 	test -f $(INSTALL_INCLUDEDIR)/mem_service_wire.h
 	test -f $(INSTALL_SRCDIR)/mem_service_client.c
@@ -168,6 +181,8 @@ install-smoke: install
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^core_binary=bin/linqu_mem_service$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0xce883650$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -234,4 +249,4 @@ install-smoke: install
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 
 clean:
-	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
+	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3 linqu_mem_service_host

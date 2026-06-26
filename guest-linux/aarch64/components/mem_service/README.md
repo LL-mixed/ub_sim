@@ -286,12 +286,13 @@ Keep the implementation layers separated:
   lifecycle smoke covers config startup, ready/health, HTTP scrape, SIGTERM
   stop, and socket cleanup. `storage_root` now creates the current durable
   catalog layout (`catalog/manifest.txt`, `blocks/`, `quarantine/`) and derives
-  `catalog/store.snapshot` when `store` is omitted; payload blocks are still a
-  layout-only contract, not a sealed block backend. Real host/systemd
-  service-manager smoke, external collector integration smoke, old-server
-  runtime-binary certification, product-grade restore policy, payload
-  ownership, atomic durable catalog, and product-grade durable migration remain
-  deployment work.
+  `catalog/store.snapshot` when `store` is omitted; `sealed-local-block-v1`
+  writes inline and server-side `payload_path` payloads into
+  `blocks/<checksum>.block` and verifies them on read. Remote/chunked sealed
+  payload blocks, real host/systemd service-manager smoke, external collector
+  integration smoke, old-server runtime-binary certification, product-grade
+  restore policy, payload ownership, atomic durable catalog, and product-grade
+  durable migration remain deployment work.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
@@ -301,10 +302,10 @@ Keep the implementation layers separated:
   headers, client SDK sources, SDK examples, release manifest, wire schema
   manifest, compatibility matrix, v1 compatibility baseline, old/new
   schema-profile matrix, config schema/example, systemd-like deployment
-  manifest, deployment fixture, Prometheus text metrics export format,
-  `metrics_listen` config, `/metrics` scrape path contract, TCP metrics listener
-  contract, service-manager lifecycle contract, durable catalog layout contract,
-  and explicit client retry policy.
+  manifest, host daemon artifact, deployment fixture, `host-artifact-smoke`,
+  Prometheus text metrics export format, `metrics_listen` config, `/metrics`
+  scrape path contract, TCP metrics listener contract, service-manager lifecycle
+  contract, durable catalog layout contract, and explicit client retry policy.
   They are not yet a full package, real host/systemd service-manager smoke,
   upgrade policy, or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,

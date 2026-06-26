@@ -1564,6 +1564,8 @@ static int run_release_manifest(void)
     printf("service_name=linqu_mem_service\n");
     printf("core_binary=bin/linqu_mem_service\n");
     printf("qwen3_adapter_binary_optional=bin/linqu_mem_service_qwen3\n");
+    printf("host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host\n");
+    printf("host_daemon_artifact_smoke=host-artifact-smoke\n");
     printf("default_endpoint=%s\n", mem_service_default_unix_socket_spec());
     printf("wire_version=%u\n", MEM_SERVICE_WIRE_VERSION);
     printf("wire_header_len=%u\n", MEM_SERVICE_WIRE_HEADER_LEN);
@@ -1738,6 +1740,7 @@ static int run_release_fixture_check(void)
     }
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
+           "host_artifacts=1 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
