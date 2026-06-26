@@ -306,16 +306,22 @@ Keep the implementation layers separated:
   cross-version migration.
   `deployment-fixtures` validates the current
   systemd-like service manifest and `/metrics` Prometheus HTTP response
-  envelope, while `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real
-  HTTP scrape listener covered by runtime tests. The portable service-manager
-  lifecycle smoke covers config startup, ready/health, HTTP scrape, collector
-  metrics parse, SIGTERM stop, and socket cleanup. `storage_root` now creates the current durable
+  envelope, and `alert-rules` emits the checked-in Prometheus alert rules for
+  service-down, error, fail-closed, checksum-mismatch, and latency signals.
+  `alert-fixtures` freezes the current alert rule count, length, and checksum.
+  `alert-integration-fixtures` checks those rules against the current exported
+  Prometheus text/http metric names with a synthetic `/metrics` payload; it is
+  not a real Prometheus/Alertmanager deployment smoke.
+  `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real HTTP scrape
+  listener covered by runtime tests. The portable service-manager lifecycle
+  smoke covers config startup, ready/health, HTTP scrape, collector metrics
+  parse, SIGTERM stop, and socket cleanup. `storage_root` now creates the current durable
   catalog layout (`catalog/manifest.txt`, `blocks/`, `quarantine/`) and derives
   `catalog/store.snapshot` when `store` is omitted; `sealed-local-block-v1`
   writes inline and server-side `payload_path` payloads into
   `blocks/<checksum>.block` and verifies them on read. Remote/chunked sealed
   payload blocks, real systemd environment smoke, production collector/alert
-  integration smoke, old-server runtime-binary certification, product-grade
+  environment integration smoke, old-server runtime-binary certification, product-grade
   restore policy, payload ownership, atomic durable catalog, and product-grade
   durable migration remain deployment work.
   This layer must stay model-neutral and
@@ -335,12 +341,13 @@ Keep the implementation layers separated:
   `installed-host-service-manager-smoke`, Prometheus text metrics export format,
   Prometheus metric prefix/type contract, `metrics_listen` config, `/metrics`
   scrape path contract, collector scrape contract, TCP metrics listener
-  contract, service-manager lifecycle contract, durable catalog layout
-  contract, current-version-only upgrade/rollback gate, and explicit client
+  contract, Prometheus alert rules artifact, synthetic alert integration
+  fixture, service-manager lifecycle contract, durable catalog layout contract,
+  current-version-only upgrade/rollback gate, and explicit client
   retry policy.
   They are not yet a full package, real systemd environment smoke,
-  cross-version upgrade/rollback smoke, production collector/alert integration
-  gate, or old-server runtime-binary compatibility bundle.
+  cross-version upgrade/rollback smoke, production collector/alert environment
+  integration gate, or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
   and guest handoff timing. This layer can depend on guest runtime facilities.
 - Model adapters: Qwen3 range/KV/engram placement and payload sizing. New model

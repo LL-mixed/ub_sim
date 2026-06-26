@@ -91,6 +91,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         release_manifest = (CLI_DIR / "release-manifest.txt").read_text()
         admin_output_schema = (CLI_DIR / "admin-output-schema.txt").read_text()
         upgrade_rollback_policy = (CLI_DIR / "upgrade-rollback-policy.txt").read_text()
+        alert_rules = (
+            CLI_DIR / "deploy" / "linqu_mem_service.prometheus-alerts.yml"
+        ).read_text()
         api_abi_policy = (CLI_DIR / "api-abi-policy.txt").read_text()
         config_schema = (CLI_DIR / "configs" / "mem_service.conf.schema").read_text()
         config_example = (CLI_DIR / "configs" / "mem_service.example.conf").read_text()
@@ -311,6 +314,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             run_app,
         )
         self.assertIn(
+            'run_binary "linqu_mem_service_alert_fixtures" '
+            "/bin/linqu_mem_service alert-fixtures",
+            run_app,
+        )
+        self.assertIn(
+            'run_binary "linqu_mem_service_alert_integration_fixtures" '
+            "/bin/linqu_mem_service alert-integration-fixtures",
+            run_app,
+        )
+        self.assertIn(
             'run_binary "linqu_mem_service_client_retry_fixtures" '
             "/bin/linqu_mem_service client-retry-fixtures",
             run_app,
@@ -361,6 +374,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "admin-output-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "upgrade-rollback-policy")', cli_source)
         self.assertIn('strcmp(argv[1], "upgrade-rollback-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "alert-rules")', cli_source)
+        self.assertIn('strcmp(argv[1], "alert-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "alert-integration-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-policy")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-fixtures")', cli_source)
@@ -385,6 +401,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_admin_output_fixture_check", cli_source)
         self.assertIn("render_upgrade_rollback_policy", cli_source)
         self.assertIn("run_upgrade_rollback_fixture_check", cli_source)
+        self.assertIn("render_alert_rules", cli_source)
+        self.assertIn("run_alert_fixture_check", cli_source)
         self.assertIn("run_compat_matrix", cli_source)
         self.assertIn("run_compat_fixture_check", cli_source)
         self.assertIn("run_compat_baseline_v1", cli_source)
@@ -420,9 +438,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1659U", cli_source)
+        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1729U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcf4c65bbU",
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0a027330U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U", cli_source)
@@ -488,6 +506,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf", cli_makefile)
         self.assertIn("MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service", cli_makefile)
         self.assertIn("MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service", cli_makefile)
+        self.assertIn(
+            "MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml",
+            cli_makefile,
+        )
         self.assertIn("MEM_SERVICE_CLIENT_EXAMPLES :=", cli_makefile)
         self.assertIn("examples/mem_service_serving_example.c", cli_makefile)
         self.assertIn("examples/mem_service_pretraining_example.c", cli_makefile)
@@ -512,7 +534,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^upgrade_rollback_policy_checksum=0xcf4c65bb$$", cli_makefile)
+        self.assertIn("^upgrade_rollback_policy_checksum=0x0a027330$$", cli_makefile)
         self.assertIn("^upgrade_policy=current-version-only$$", cli_makefile)
         self.assertIn("^rollback_policy=current-version-only$$", cli_makefile)
         self.assertIn("^old_server_runtime_binary=not-certified$$", cli_makefile)
@@ -538,6 +560,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^collector_integration_smoke=installed-host-collector-smoke$$", cli_makefile)
         self.assertIn("^collector_scrape_contract=prometheus-text-http-v0.0.4$$", cli_makefile)
         self.assertIn(
+            "^alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml$$",
+            cli_makefile,
+        )
+        self.assertIn("^alert_rules_checksum=0xbdff2246$$", cli_makefile)
+        self.assertIn("^alert_rule_count=5$$", cli_makefile)
+        self.assertIn("^alert_integration_smoke=alert-integration-fixtures$$", cli_makefile)
+        self.assertIn(
             "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$",
             cli_makefile,
         )
@@ -556,6 +585,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("print-wire-schema", cli_makefile)
         self.assertIn("print-admin-output-schema", cli_makefile)
         self.assertIn("print-upgrade-rollback-policy", cli_makefile)
+        self.assertIn("print-alert-rules", cli_makefile)
         self.assertIn("print-api-abi-policy", cli_makefile)
         self.assertIn("print-compat-matrix", cli_makefile)
         self.assertIn("print-compat-baseline-v1", cli_makefile)
@@ -569,7 +599,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt",
             release_manifest,
         )
-        self.assertIn("upgrade_rollback_policy_checksum=0xcf4c65bb", release_manifest)
+        self.assertIn("upgrade_rollback_policy_checksum=0x0a027330", release_manifest)
         self.assertIn("upgrade_policy=current-version-only", release_manifest)
         self.assertIn("rollback_policy=current-version-only", release_manifest)
         self.assertIn("old_server_runtime_binary=not-certified", release_manifest)
@@ -599,6 +629,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("collector_smoke=collector-fixtures", release_manifest)
         self.assertIn("collector_integration_smoke=installed-host-collector-smoke", release_manifest)
         self.assertIn("collector_scrape_contract=prometheus-text-http-v0.0.4", release_manifest)
+        self.assertIn(
+            "alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml",
+            release_manifest,
+        )
+        self.assertIn("alert_rules_checksum=0xbdff2246", release_manifest)
+        self.assertIn("alert_rule_count=5", release_manifest)
+        self.assertIn("alert_rules_gate=alert-fixtures", release_manifest)
+        self.assertIn("alert_integration_smoke=alert-integration-fixtures", release_manifest)
         self.assertIn(
             "service_manager_lifecycle=serve-config-ready-scrape-sigterm",
             release_manifest,
@@ -643,6 +681,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("host_service_manager_smokes=1", cli_source)
         self.assertIn("collector_smokes=1", cli_source)
+        self.assertIn("alert_rule_artifacts=1", cli_source)
+        self.assertIn("alert_integration_smokes=1", cli_source)
+        self.assertIn("alert_rules_checksum=0x%08x", cli_source)
         self.assertIn("api_abi_policies=1", cli_source)
         self.assertIn("admin_output_schemas=1", cli_source)
         self.assertIn("admin_output_schema_checksum=0x%08x", cli_source)
@@ -674,6 +715,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             upgrade_rollback_policy,
         )
         self.assertIn("required_gate=install-smoke", upgrade_rollback_policy)
+        self.assertIn("alert: LingquMemServiceDown", alert_rules)
+        self.assertIn(
+            "increase(lingqu_mem_service_fail_closed_count[5m]) > 0",
+            alert_rules,
+        )
+        self.assertIn(
+            "increase(lingqu_mem_service_checksum_mismatch_count[5m]) > 0",
+            alert_rules,
+        )
+        self.assertIn("lingqu_mem_service_request_latency_max_ms > 100", alert_rules)
         self.assertIn("mem_service_api_abi_policy_version=1", api_abi_policy)
         self.assertIn("client_api_version=1", api_abi_policy)
         self.assertIn("client_abi_version=1", api_abi_policy)
@@ -813,6 +864,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.h").exists())
         self.assertTrue((CLI_DIR / "admin-output-schema.txt").exists())
         self.assertTrue((CLI_DIR / "upgrade-rollback-policy.txt").exists())
+        self.assertTrue(
+            (CLI_DIR / "deploy" / "linqu_mem_service.prometheus-alerts.yml").exists()
+        )
         self.assertTrue((CLI_DIR / "api-abi-policy.txt").exists())
         self.assertTrue((CLI_DIR / "compat-baseline-v1.txt").exists())
         self.assertTrue((CLI_DIR / "compat-matrix.txt").exists())

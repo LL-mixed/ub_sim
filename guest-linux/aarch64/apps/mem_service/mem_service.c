@@ -32,8 +32,12 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1659U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcf4c65bbU
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1729U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0a027330U
+#define MEM_SERVICE_ALERT_RULES_VERSION 1U
+#define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
+#define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
+#define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
@@ -55,6 +59,7 @@ static void usage(const char *argv0)
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
+    printf(" [alert-rules] [alert-fixtures] [alert-integration-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
@@ -782,6 +787,14 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
+                                "required_gate=alert-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=alert-integration-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
                                 "required_gate=release-fixtures\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
@@ -857,6 +870,8 @@ static int run_upgrade_rollback_fixture_check(void)
         strstr(policy, "new_client_old_server=not-certified-without-runtime-binary\n") ==
             NULL ||
         strstr(policy, "required_gate=admin-output-fixtures\n") == NULL ||
+        strstr(policy, "required_gate=alert-fixtures\n") == NULL ||
+        strstr(policy, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(policy, "required_gate=install-smoke\n") == NULL) {
         fprintf(stderr,
                 "mem_service upgrade-rollback-fixtures: required policy missing\n");
@@ -868,7 +883,7 @@ static int run_upgrade_rollback_fixture_check(void)
     printf("mem_service upgrade-rollback-fixtures: status=ok policy_version=%u "
            "policy_len=%u policy_checksum=0x%08x "
            "upgrade_policy=current-version-only "
-           "rollback_policy=current-version-only required_gates=14\n",
+           "rollback_policy=current-version-only required_gates=16\n",
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
@@ -2156,6 +2171,14 @@ static int run_release_manifest(void)
     printf("collector_smoke=collector-fixtures\n");
     printf("collector_integration_smoke=installed-host-collector-smoke\n");
     printf("collector_scrape_contract=prometheus-text-http-v0.0.4\n");
+    printf("alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml\n");
+    printf("alert_rules_format=prometheus-rules-yaml\n");
+    printf("alert_rules_len=%u\n", MEM_SERVICE_ALERT_RULES_EXPECTED_LEN);
+    printf("alert_rules_checksum=0x%08x\n",
+           MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM);
+    printf("alert_rule_count=%u\n", MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT);
+    printf("alert_rules_gate=alert-fixtures\n");
+    printf("alert_integration_smoke=alert-integration-fixtures\n");
     printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
     printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
@@ -2281,6 +2304,12 @@ static int run_release_fixture_check(void)
                 "mem_service release-fixtures: upgrade/rollback policy fixture missing\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_ALERT_RULES_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM == 0U ||
+        MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT != 5U) {
+        fprintf(stderr, "mem_service release-fixtures: alert rules fixture missing\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U ||
         MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM == 0U) {
         fprintf(stderr, "mem_service release-fixtures: compat matrix fixture missing\n");
@@ -2329,6 +2358,8 @@ static int run_release_fixture_check(void)
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "
+           "alert_rule_artifacts=1 alert_rules=%u "
+           "alert_integration_smokes=1 "
            "api_abi_policies=1 "
            "admin_output_schemas=1 "
            "upgrade_rollback_policies=1 "
@@ -2344,10 +2375,12 @@ static int run_release_fixture_check(void)
            "admin_output_schema_checksum=0x%08x "
            "upgrade_rollback_policy_len=%u "
            "upgrade_rollback_policy_checksum=0x%08x "
+           "alert_rules_len=%u alert_rules_checksum=0x%08x "
            "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
            "compat_baseline_len=%u compat_baseline_checksum=0x%08x "
            "compat_old_new_matrix_len=%u "
            "compat_old_new_matrix_checksum=0x%08x\n",
+           MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT,
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN,
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM,
            MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN,
@@ -2356,6 +2389,8 @@ static int run_release_fixture_check(void)
            MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM,
+           MEM_SERVICE_ALERT_RULES_EXPECTED_LEN,
+           MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
@@ -3994,6 +4029,386 @@ static int run_collector_fixture_check(void)
     return 0;
 }
 
+static int render_alert_rules(char *rules, size_t rules_len, size_t *used_out)
+{
+    size_t used = 0;
+
+    if (rules == NULL || rules_len == 0) {
+        return -1;
+    }
+    rules[0] = '\0';
+    if (append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "# linqu mem_service prometheus alert rules\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "# contract_version: %u\n",
+                                MEM_SERVICE_ALERT_RULES_VERSION) != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "groups:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "- name: lingqu_mem_service.rules\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "  rules:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "  - alert: LingquMemServiceDown\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    expr: up{job=\"linqu_mem_service\"} == 0\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    for: 1m\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    labels:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      severity: critical\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      service: linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    annotations:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      summary: linqu_mem_service scrape target is down\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      runbook: check service manager, socket path, and metrics listener\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "  - alert: LingquMemServiceErrorRate\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    expr: increase(lingqu_mem_service_error_count[5m]) > 0\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    for: 5m\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    labels:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      severity: warning\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      service: linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    annotations:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      summary: mem_service returned non-ok RPC statuses\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      runbook: inspect audit-log and recent client errors\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "  - alert: LingquMemServiceFailClosed\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    expr: increase(lingqu_mem_service_fail_closed_count[5m]) > 0\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    for: 1m\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    labels:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      severity: critical\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      service: linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    annotations:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      summary: mem_service fail-closed path is active\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      runbook: check stale_ref, checksum_mismatch, and binding counters\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "  - alert: LingquMemServiceChecksumMismatch\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    expr: increase(lingqu_mem_service_checksum_mismatch_count[5m]) > 0\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    for: 1m\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    labels:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      severity: critical\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      service: linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    annotations:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      summary: mem_service detected a corrupt payload or ref\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      runbook: quarantine corrupt block and verify producer checksums\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "  - alert: LingquMemServiceHighLatency\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    expr: lingqu_mem_service_request_latency_max_ms > 100\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    for: 5m\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    labels:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      severity: warning\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      service: linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    annotations:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      summary: mem_service max request latency exceeded 100 ms\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      runbook: inspect storage backend, socket backlog, and client retry load\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static size_t alert_rule_count(const char *rules)
+{
+    const char *cursor = rules;
+    size_t count = 0;
+
+    if (rules == NULL) {
+        return 0;
+    }
+    while ((cursor = strstr(cursor, "  - alert: ")) != NULL) {
+        ++count;
+        cursor += strlen("  - alert: ");
+    }
+    return count;
+}
+
+static int run_alert_rules(void)
+{
+    char rules[8192];
+    size_t used = 0;
+
+    if (render_alert_rules(rules, sizeof(rules), &used) != 0) {
+        fprintf(stderr, "mem_service alert-rules: render failed\n");
+        return 1;
+    }
+    (void)used;
+    fputs(rules, stdout);
+    return 0;
+}
+
+static int run_alert_fixture_check(void)
+{
+    char rules[8192];
+    size_t used = 0;
+    size_t rule_count;
+    uint32_t checksum;
+    int failures = 0;
+
+    if (render_alert_rules(rules, sizeof(rules), &used) != 0) {
+        fprintf(stderr, "mem_service alert-fixtures: render failed\n");
+        return 1;
+    }
+    rule_count = alert_rule_count(rules);
+    checksum = mem_service_wire_checksum(rules, used);
+    if (rule_count != MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT) {
+        fprintf(stderr,
+                "mem_service alert-fixtures: rule count actual=%zu expected=%u\n",
+                rule_count,
+                MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT);
+        failures -= 1;
+    }
+    if (used != MEM_SERVICE_ALERT_RULES_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service alert-fixtures: rules len actual=%zu expected=%u\n",
+                used,
+                MEM_SERVICE_ALERT_RULES_EXPECTED_LEN);
+        failures -= 1;
+    }
+    if (checksum != MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service alert-fixtures: rules checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM);
+        failures -= 1;
+    }
+    if (strstr(rules, "alert: LingquMemServiceDown\n") == NULL ||
+        strstr(rules, "lingqu_mem_service_fail_closed_count") == NULL ||
+        strstr(rules, "lingqu_mem_service_checksum_mismatch_count") == NULL ||
+        strstr(rules, "lingqu_mem_service_request_latency_max_ms") == NULL ||
+        strstr(rules, "severity: critical\n") == NULL) {
+        fprintf(stderr, "mem_service alert-fixtures: required alert missing\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service alert-fixtures: status=ok format=prometheus-rules-yaml "
+           "rules=%u rules_len=%u rules_checksum=0x%08x\n",
+           MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT,
+           MEM_SERVICE_ALERT_RULES_EXPECTED_LEN,
+           MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM);
+    return 0;
+}
+
+static int run_alert_integration_fixture_check(void)
+{
+    static const char sample_metrics[] =
+        "request_count=11\n"
+        "error_count=1\n"
+        "fail_closed_count=1\n"
+        "checksum_mismatch_count=1\n"
+        "request_latency_max_ms=101\n";
+    char rules[8192];
+    char response[4096];
+    const char *body;
+    size_t used = 0;
+
+    if (render_alert_rules(rules, sizeof(rules), &used) != 0) {
+        fprintf(stderr, "mem_service alert-integration-fixtures: rules render failed\n");
+        return 1;
+    }
+    if (render_metrics_http_response("GET",
+                                     "/metrics",
+                                     sample_metrics,
+                                     response,
+                                     sizeof(response)) != 0) {
+        fprintf(stderr,
+                "mem_service alert-integration-fixtures: metrics render failed\n");
+        return 1;
+    }
+    body = collector_http_response_body(response);
+    if (body == NULL ||
+        !collector_http_response_has_header(response, "HTTP/1.1 200 OK\r\n") ||
+        !collector_metric_type_present(body,
+                                       "lingqu_mem_service_error_count",
+                                       "counter") ||
+        !collector_metric_type_present(body,
+                                       "lingqu_mem_service_fail_closed_count",
+                                       "counter") ||
+        !collector_metric_type_present(body,
+                                       "lingqu_mem_service_checksum_mismatch_count",
+                                       "counter") ||
+        !collector_metric_type_present(body,
+                                       "lingqu_mem_service_request_latency_max_ms",
+                                       "gauge")) {
+        fprintf(stderr,
+                "mem_service alert-integration-fixtures: metrics contract missing\n");
+        return 1;
+    }
+    if (strstr(rules, "up{job=\"linqu_mem_service\"} == 0") == NULL ||
+        strstr(rules, "increase(lingqu_mem_service_error_count[5m]) > 0") == NULL ||
+        strstr(rules, "increase(lingqu_mem_service_fail_closed_count[5m]) > 0") ==
+            NULL ||
+        strstr(rules,
+               "increase(lingqu_mem_service_checksum_mismatch_count[5m]) > 0") ==
+            NULL ||
+        strstr(rules, "lingqu_mem_service_request_latency_max_ms > 100") == NULL) {
+        fprintf(stderr,
+                "mem_service alert-integration-fixtures: alert expression missing\n");
+        return 1;
+    }
+    if (!collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_error_count",
+                                         1) ||
+        !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_fail_closed_count",
+                                         1) ||
+        !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_checksum_mismatch_count",
+                                         1) ||
+        !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_request_latency_max_ms",
+                                         101)) {
+        fprintf(stderr,
+                "mem_service alert-integration-fixtures: metric values missing\n");
+        return 1;
+    }
+    printf("mem_service alert-integration-fixtures: status=ok "
+           "collector=prometheus-text-http alert_rules=5 referenced_metrics=4 "
+           "synthetic_targets=1\n");
+    return 0;
+}
+
 static int run_metrics_export(int argc, char **argv)
 {
     const char *format = option_value(argc, argv, "--format");
@@ -4986,6 +5401,15 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "collector-fixtures") == 0) {
         return run_collector_fixture_check();
+    }
+    if (strcmp(argv[1], "alert-rules") == 0) {
+        return run_alert_rules();
+    }
+    if (strcmp(argv[1], "alert-fixtures") == 0) {
+        return run_alert_fixture_check();
+    }
+    if (strcmp(argv[1], "alert-integration-fixtures") == 0) {
+        return run_alert_integration_fixture_check();
     }
     if (strcmp(argv[1], "deployment-fixtures") == 0) {
         return run_deployment_fixture_check();

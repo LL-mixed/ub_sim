@@ -44,6 +44,7 @@ MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema
 MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf
 MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service
 MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service
+MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml
 
 PREFIX ?= /usr/local
 DESTDIR ?=
@@ -114,7 +115,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -135,6 +136,8 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host release-fixtures
 	./linqu_mem_service_host admin-output-fixtures
 	./linqu_mem_service_host upgrade-rollback-fixtures
+	./linqu_mem_service_host alert-fixtures
+	./linqu_mem_service_host alert-integration-fixtures
 	./linqu_mem_service_host api-abi-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
@@ -151,6 +154,9 @@ print-admin-output-schema:
 print-upgrade-rollback-policy:
 	@cat $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY)
 
+print-alert-rules:
+	@cat $(MEM_SERVICE_ALERT_RULES)
+
 print-api-abi-policy:
 	@cat $(MEM_SERVICE_API_ABI_POLICY)
 
@@ -163,7 +169,7 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST)
+install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
 	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
@@ -182,6 +188,7 @@ install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST
 	cp $(MEM_SERVICE_CONFIG_EXAMPLE) $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	cp $(MEM_SERVICE_DEPLOY_MANIFEST) $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	cp $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
+	cp $(MEM_SERVICE_ALERT_RULES) $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 
 install-smoke: install
 	test -x $(INSTALL_BINDIR)/linqu_mem_service
@@ -204,6 +211,7 @@ install-smoke: install
 	test -f $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
+	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^core_binary=bin/linqu_mem_service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -216,8 +224,8 @@ install-smoke: install
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_len=1659$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0xcf4c65bb$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_len=1729$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0x0a027330$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -249,6 +257,13 @@ install-smoke: install
 	grep -q '^collector_smoke=collector-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^collector_integration_smoke=installed-host-collector-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^collector_scrape_contract=prometheus-text-http-v0.0.4$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules_format=prometheus-rules-yaml$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules_len=1733$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules_checksum=0xbdff2246$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rule_count=5$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules_gate=alert-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_integration_smoke=alert-integration-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_shutdown=signal-clean-stop$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -285,6 +300,8 @@ install-smoke: install
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^new_client_old_server=not-certified-without-runtime-binary$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^required_gate=alert-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^required_gate=alert-integration-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=install-smoke$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^mem_service_api_abi_policy_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
@@ -317,6 +334,9 @@ install-smoke: install
 	grep -q '^metrics_listen=tcp:127.0.0.1:9900$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	grep -q '^ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
+	grep -q '^  - alert: LingquMemServiceDown$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
+	grep -q '^    expr: increase(lingqu_mem_service_fail_closed_count\[5m\]) > 0$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
+	grep -q '^    expr: lingqu_mem_service_request_latency_max_ms > 100$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 
 clean:
 	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3 linqu_mem_service_host

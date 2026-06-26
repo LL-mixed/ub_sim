@@ -724,6 +724,8 @@ run_default_actions() {
     run_binary "linqu_mem_service_deployment_fixtures" /bin/linqu_mem_service deployment-fixtures || rc=$?
     run_binary "linqu_mem_service_admin_output_fixtures" /bin/linqu_mem_service admin-output-fixtures || rc=$?
     run_binary "linqu_mem_service_upgrade_rollback_fixtures" /bin/linqu_mem_service upgrade-rollback-fixtures || rc=$?
+    run_binary "linqu_mem_service_alert_fixtures" /bin/linqu_mem_service alert-fixtures || rc=$?
+    run_binary "linqu_mem_service_alert_integration_fixtures" /bin/linqu_mem_service alert-integration-fixtures || rc=$?
     run_binary "linqu_mem_service_client_retry_fixtures" /bin/linqu_mem_service client-retry-fixtures || rc=$?
     run_binary "linqu_mem_service_api_abi_fixtures" /bin/linqu_mem_service api-abi-fixtures || rc=$?
     run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures || rc=$?
@@ -817,6 +819,8 @@ run_single_action() {
       run_binary "linqu_mem_service_deployment_fixtures" /bin/linqu_mem_service deployment-fixtures &&
       run_binary "linqu_mem_service_admin_output_fixtures" /bin/linqu_mem_service admin-output-fixtures &&
       run_binary "linqu_mem_service_upgrade_rollback_fixtures" /bin/linqu_mem_service upgrade-rollback-fixtures &&
+      run_binary "linqu_mem_service_alert_fixtures" /bin/linqu_mem_service alert-fixtures &&
+      run_binary "linqu_mem_service_alert_integration_fixtures" /bin/linqu_mem_service alert-integration-fixtures &&
       run_binary "linqu_mem_service_client_retry_fixtures" /bin/linqu_mem_service client-retry-fixtures &&
       run_binary "linqu_mem_service_api_abi_fixtures" /bin/linqu_mem_service api-abi-fixtures &&
       run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures &&
