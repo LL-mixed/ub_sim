@@ -67,7 +67,7 @@
 | durable service backend 仍是最小 snapshot+journal | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；还缺产品级 durable catalog、journal truncation/atomicity policy、payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new runtime compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
 | pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、host service-manager smoke 和真实采集器观测门禁 |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实 host/systemd service-manager smoke 和真实采集器观测门禁 |
 
 ## 3. 目标架构
 
@@ -920,9 +920,11 @@ Recommended order:
 8. Extend the minimal release artifact layout into deployable package gates:
    the current config schema, example config, service unit manifest, `/metrics`
    response envelope, and TCP metrics listener contract are installed and
-   fixture-checked; remaining work is protocol compatibility bundle,
-   upgrade/rollback smoke, host service-manager smoke, external collector
-   integration smoke, and metrics/admin output compatibility.
+   fixture-checked, and a portable lifecycle smoke now covers config startup,
+   ready/health, HTTP scrape, SIGTERM stop, and socket cleanup. Remaining work
+   is protocol compatibility bundle, upgrade/rollback smoke, real host/systemd
+   service-manager smoke, external collector integration smoke, and
+   metrics/admin output compatibility.
 
 ## 7. Completion Definition
 

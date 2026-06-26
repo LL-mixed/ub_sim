@@ -707,6 +707,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
     assert "^compat_old_new_matrix_checksum=0x5130ec56$$" in app_makefile
     assert "^deployment_smoke=deployment-fixtures$$" in app_makefile
+    assert "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$" in app_makefile
+    assert "^service_manager_shutdown=signal-clean-stop$$" in app_makefile
     assert "^durable_backend=snapshot+journal$$" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
     assert "^metrics_http_listener=tcp-ipv4$$" in app_makefile
@@ -825,6 +827,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt" in release_manifest
     assert "compat_old_new_matrix_checksum=0x5130ec56" in release_manifest
     assert "deployment_smoke=deployment-fixtures" in release_manifest
+    assert "service_manager_lifecycle=serve-config-ready-scrape-sigterm" in release_manifest
+    assert "service_manager_shutdown=signal-clean-stop" in release_manifest
     assert "durable_backend=snapshot+journal" in release_manifest
     assert "durable_journal=store-path.journal" in release_manifest
     assert "metrics_listen_config=metrics_listen" in release_manifest

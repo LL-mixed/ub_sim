@@ -963,17 +963,24 @@ int main(int argc, char **argv)
         finally:
             listener.close()
 
-    def _start_server(self, metrics_port: int | None = None) -> subprocess.Popen:
-        cmd = [
-            str(self.binary),
-            "serve",
-            "--listen",
-            f"unix:{self.socket}",
-            "--store",
-            str(self.store),
-        ]
-        if metrics_port is not None:
-            cmd.extend(["--metrics-listen", f"tcp:127.0.0.1:{metrics_port}"])
+    def _start_server(
+        self,
+        metrics_port: int | None = None,
+        config_path: Path | None = None,
+    ) -> subprocess.Popen:
+        if config_path is not None:
+            cmd = [str(self.binary), "serve", "--config", str(config_path)]
+        else:
+            cmd = [
+                str(self.binary),
+                "serve",
+                "--listen",
+                f"unix:{self.socket}",
+                "--store",
+                str(self.store),
+            ]
+            if metrics_port is not None:
+                cmd.extend(["--metrics-listen", f"tcp:127.0.0.1:{metrics_port}"])
         proc = subprocess.Popen(
             cmd,
             cwd=REPO_ROOT,
@@ -1038,6 +1045,18 @@ int main(int argc, char **argv)
                 proc.stdout.close()
             if proc.stderr is not None:
                 proc.stderr.close()
+
+    def _stop_server_and_collect(self, proc: subprocess.Popen) -> tuple[str, str, int]:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate(timeout=3)
+        else:
+            stdout, stderr = proc.communicate(timeout=1)
+        return stdout, stderr, proc.returncode
 
     def test_client_timeout_option_fails_closed_against_silent_peer(self):
         silent_socket = self.root / "silent.sock"
@@ -1710,6 +1729,7 @@ int main(int argc, char **argv)
         self.assertIn("schema_manifest_checksum=0x8a8ca3c4", fixtures.stdout)
         self.assertIn("durable_backends=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
+        self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1767,6 +1787,43 @@ int main(int argc, char **argv)
             self.assertIn("method_not_allowed\n", wrong_method)
         finally:
             self._stop_server(proc)
+
+    def test_service_manager_lifecycle_runs_config_ready_scrape_and_shutdown(self):
+        metrics_port = self._free_tcp_port()
+        config_path = self.root / "mem_service.conf"
+        config_path.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"store={self.store}\n"
+            "backend=snapshot+journal\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+            f"metrics_listen=tcp:127.0.0.1:{metrics_port}\n"
+            "adapter_enablement=core\n"
+        )
+        proc = self._start_server(config_path=config_path)
+        stdout = ""
+        stderr = ""
+        rc = None
+        try:
+            health = self._run_client("health", "--connect", f"unix:{self.socket}")
+            self.assertEqual(health.returncode, 0, health.stderr + health.stdout)
+            self.assertIn("status=ok", health.stdout)
+
+            scraped = self._http_metrics_request(metrics_port)
+            self.assertIn("HTTP/1.1 200 OK\r\n", scraped)
+            self.assertRegex(scraped, r"lingqu_mem_service_health_count [1-9][0-9]*\n")
+
+            stdout, stderr, rc = self._stop_server_and_collect(proc)
+            self.assertEqual(rc, 0, stderr + stdout)
+            self.assertIn("status=ready", stdout)
+            self.assertIn(f"listen=unix:{self.socket}", stdout)
+            self.assertIn(f"store={self.store}", stdout)
+            self.assertIn(f"metrics_listen=tcp:127.0.0.1:{metrics_port}", stdout)
+            self.assertIn("status=stopped", stdout)
+            self.assertFalse(self.socket.exists(), "service socket should be removed on shutdown")
+        finally:
+            if proc.poll() is None:
+                self._stop_server(proc)
 
     def test_compat_matrix_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("compat-fixtures")
@@ -2218,6 +2275,11 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("durable_backend=snapshot+journal", manifest.read_text())
             self.assertIn("durable_journal=store-path.journal", manifest.read_text())
             self.assertIn("deployment_smoke=deployment-fixtures", manifest.read_text())
+            self.assertIn(
+                "service_manager_lifecycle=serve-config-ready-scrape-sigterm",
+                manifest.read_text(),
+            )
+            self.assertIn("service_manager_shutdown=signal-clean-stop", manifest.read_text())
             self.assertIn("metrics_listen_config=metrics_listen", manifest.read_text())
             self.assertIn("metrics_http_listener=tcp-ipv4", manifest.read_text())
             self.assertIn("metrics_scrape_path=/metrics", manifest.read_text())

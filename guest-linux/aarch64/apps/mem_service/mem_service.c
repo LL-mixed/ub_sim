@@ -1591,6 +1591,8 @@ static int run_release_manifest(void)
     printf("config_example=share/lingqu/mem_service/config/mem_service.example.conf\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
     printf("deployment_smoke=deployment-fixtures\n");
+    printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
+    printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
@@ -1730,7 +1732,8 @@ static int run_release_fixture_check(void)
     }
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
-           "deployment_smokes=1 durable_backends=1 "
+           "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
+           "durable_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
            "client_retry_policies=1 "

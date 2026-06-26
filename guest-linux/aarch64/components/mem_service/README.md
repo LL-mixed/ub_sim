@@ -280,10 +280,12 @@ Keep the implementation layers separated:
   matrix for all 23 operations. `deployment-fixtures` validates the current
   systemd-like service manifest and `/metrics` Prometheus HTTP response
   envelope, while `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real
-  HTTP scrape listener covered by runtime tests. Real host service-manager
-  smoke, external collector integration smoke, old-server runtime-binary
-  certification, product-grade restore policy, payload ownership, atomic
-  durable catalog, and product-grade durable migration remain deployment work.
+  HTTP scrape listener covered by runtime tests. The portable service-manager
+  lifecycle smoke covers config startup, ready/health, HTTP scrape, SIGTERM
+  stop, and socket cleanup. Real host/systemd service-manager smoke, external
+  collector integration smoke, old-server runtime-binary certification,
+  product-grade restore policy, payload ownership, atomic durable catalog, and
+  product-grade durable migration remain deployment work.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
@@ -295,9 +297,10 @@ Keep the implementation layers separated:
   schema-profile matrix, config schema/example, systemd-like deployment
   manifest, deployment fixture, Prometheus text metrics export format,
   `metrics_listen` config, `/metrics` scrape path contract, TCP metrics listener
-  contract, and explicit client retry policy.
-  They are not yet a full package, host service-manager smoke, upgrade policy,
-  or old-server runtime-binary compatibility bundle.
+  contract, service-manager lifecycle contract, and explicit client retry
+  policy.
+  They are not yet a full package, real host/systemd service-manager smoke,
+  upgrade policy, or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
   and guest handoff timing. This layer can depend on guest runtime facilities.
 - Model adapters: Qwen3 range/KV/engram placement and payload sizing. New model

@@ -444,6 +444,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix_checksum=0x5130ec56$$", cli_makefile)
         self.assertIn("^deployment_smoke=deployment-fixtures$$", cli_makefile)
+        self.assertIn(
+            "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$",
+            cli_makefile,
+        )
+        self.assertIn("^service_manager_shutdown=signal-clean-stop$$", cli_makefile)
         self.assertIn("^durable_backend=snapshot+journal$$", cli_makefile)
         self.assertIn("^metrics_listen_config=metrics_listen$$", cli_makefile)
         self.assertIn("^metrics_http_listener=tcp-ipv4$$", cli_makefile)
@@ -464,6 +469,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt", release_manifest)
         self.assertIn("compat_old_new_matrix_checksum=0x5130ec56", release_manifest)
         self.assertIn("deployment_smoke=deployment-fixtures", release_manifest)
+        self.assertIn(
+            "service_manager_lifecycle=serve-config-ready-scrape-sigterm",
+            release_manifest,
+        )
+        self.assertIn("service_manager_shutdown=signal-clean-stop", release_manifest)
         self.assertIn("durable_backend=snapshot+journal", release_manifest)
         self.assertIn("durable_journal=store-path.journal", release_manifest)
         self.assertIn("metrics_listen_config=metrics_listen", release_manifest)
@@ -496,6 +506,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("examples=2", cli_source)
         self.assertIn("config_artifacts=3", cli_source)
+        self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("metrics_export_formats=1", cli_source)
         self.assertIn("metrics_http_listeners=1", cli_source)
         self.assertIn("client_retry_policies=1", cli_source)

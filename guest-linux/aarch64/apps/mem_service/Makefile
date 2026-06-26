@@ -183,6 +183,8 @@ install-smoke: install
 	grep -q '^config_example=share/lingqu/mem_service/config/mem_service.example.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^deployment_smoke=deployment-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^service_manager_shutdown=signal-clean-stop$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_export_format=prometheus-text$$' $(INSTALL_DATADIR)/release-manifest.txt
