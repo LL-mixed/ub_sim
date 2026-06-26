@@ -275,7 +275,11 @@ static int mem_service_client_append_object_payload(
                                                payload_len,
                                                "version",
                                                object->has_version,
-                                               object->version) != 0) {
+                                               object->version) != 0 ||
+        mem_service_client_append_optional_string(payload,
+                                                  payload_len,
+                                                  "payload_inline",
+                                                  object->payload_inline) != 0) {
         return -1;
     }
     return 0;
@@ -403,7 +407,11 @@ static int mem_service_client_append_artifact_payload(
                                                payload_len,
                                                "version",
                                                artifact->has_version,
-                                               artifact->version) != 0) {
+                                               artifact->version) != 0 ||
+        mem_service_client_append_optional_string(payload,
+                                                  payload_len,
+                                                  "payload_inline",
+                                                  artifact->payload_inline) != 0) {
         return -1;
     }
     return 0;
@@ -457,7 +465,7 @@ static int mem_service_client_publish_artifact(
     struct mem_service_client_record *record_out,
     enum mem_service_wire_status *status_out)
 {
-    char payload[768] = "";
+    char payload[1024] = "";
 
     if (mem_service_client_append_artifact_payload(payload,
                                                    sizeof(payload),
@@ -478,7 +486,7 @@ static int mem_service_client_query_artifact(
     struct mem_service_client_record *record_out,
     enum mem_service_wire_status *status_out)
 {
-    char payload[512] = "";
+    char payload[1024] = "";
 
     if (mem_service_client_append_artifact_query_payload(payload,
                                                          sizeof(payload),
@@ -524,6 +532,7 @@ static int mem_service_client_publish_training_ref(
     artifact.checksum = ref->checksum;
     artifact.has_version = ref->has_version;
     artifact.version = ref->version;
+    artifact.payload_inline = ref->payload_inline;
     return mem_service_client_publish_artifact(
         client,
         MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,

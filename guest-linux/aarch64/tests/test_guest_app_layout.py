@@ -701,18 +701,18 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
     assert "^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$" in app_makefile
-    assert "^compat_matrix_checksum=0xfb80227e$$" in app_makefile
+    assert "^compat_matrix_checksum=0x1ab0e2e8$$" in app_makefile
     assert "^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$" in app_makefile
-    assert "^compat_baseline_checksum=0x32f075cf$$" in app_makefile
+    assert "^compat_baseline_checksum=0x06798bcf$$" in app_makefile
     assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
-    assert "^compat_old_new_matrix_checksum=0x5130ec56$$" in app_makefile
+    assert "^compat_old_new_matrix_checksum=0xbc3d2fab$$" in app_makefile
     assert "^deployment_smoke=deployment-fixtures$$" in app_makefile
     assert "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$" in app_makefile
     assert "^service_manager_shutdown=signal-clean-stop$$" in app_makefile
     assert "^durable_backend=snapshot+journal$$" in app_makefile
     assert "^durable_catalog=storage-root-v1$$" in app_makefile
     assert "^durable_catalog_manifest=catalog/manifest.txt$$" in app_makefile
-    assert "^payload_block_backend=layout-only$$" in app_makefile
+    assert "^payload_block_backend=sealed-local-block-v1$$" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
     assert "^metrics_http_listener=tcp-ipv4$$" in app_makefile
     assert "^metrics_scrape_path=/metrics$$" in app_makefile
@@ -772,15 +772,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_metrics_http_response" in app_source
     assert "run_deployment_fixture_check" in app_source
     assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U" in app_source
-    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xfb80227eU" in app_source
+    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x1ab0e2e8U" in app_source
     assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1208U" in app_source
-    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x32f075cfU" in app_source
+    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x06798bcfU" in app_source
     assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1590U" in app_source
-    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x5130ec56U" in app_source
+    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xbc3d2fabU" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8695U" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8a8ca3c4U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8961U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8c27baeeU" in app_source
     assert 'strcmp(argv[1], "health")' in app_source
     assert 'strcmp(argv[1], "ready")' in app_source
     assert 'strcmp(argv[1], "metrics")' in app_source
@@ -825,18 +825,18 @@ def test_mem_service_has_component_and_cli_entrypoints():
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
     assert "compat_matrix=share/lingqu/mem_service/compat-matrix.txt" in release_manifest
-    assert "compat_matrix_checksum=0xfb80227e" in release_manifest
+    assert "compat_matrix_checksum=0x1ab0e2e8" in release_manifest
     assert "compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt" in release_manifest
-    assert "compat_baseline_checksum=0x32f075cf" in release_manifest
+    assert "compat_baseline_checksum=0x06798bcf" in release_manifest
     assert "compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt" in release_manifest
-    assert "compat_old_new_matrix_checksum=0x5130ec56" in release_manifest
+    assert "compat_old_new_matrix_checksum=0xbc3d2fab" in release_manifest
     assert "deployment_smoke=deployment-fixtures" in release_manifest
     assert "service_manager_lifecycle=serve-config-ready-scrape-sigterm" in release_manifest
     assert "service_manager_shutdown=signal-clean-stop" in release_manifest
     assert "durable_backend=snapshot+journal" in release_manifest
     assert "durable_catalog=storage-root-v1" in release_manifest
     assert "durable_catalog_manifest=catalog/manifest.txt" in release_manifest
-    assert "payload_block_backend=layout-only" in release_manifest
+    assert "payload_block_backend=sealed-local-block-v1" in release_manifest
     assert "durable_journal=store-path.journal" in release_manifest
     assert "metrics_listen_config=metrics_listen" in release_manifest
     assert "metrics_http_listener=tcp-ipv4" in release_manifest
@@ -844,7 +844,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "metrics_http_content_type=text/plain; version=0.0.4" in release_manifest
     assert "mem_service_compat_matrix_version=1" in compat_matrix
     assert "wire_version_current=1" in compat_matrix
-    assert "wire_schema_manifest_checksum=0x8a8ca3c4" in compat_matrix
+    assert "wire_schema_manifest_checksum=0x8c27baee" in compat_matrix
     assert "idempotency_conflict_status=version_conflict" in compat_matrix
     assert "idempotency_persistence=store-journal-and-full-snapshot" in compat_matrix
     assert "audit_log_persistence=store-journal-and-full-snapshot" in compat_matrix
@@ -859,8 +859,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "certified_pair=current-v1-client->old-v1-schema-profile" in compat_old_new
     assert "not_certified_pair=current-v1-client->old-v1-runtime-binary" in compat_old_new
     assert "certification_limit=old-server-runtime-binary-not-certified" in compat_old_new
-    assert "wire_schema_manifest_len=8695" in release_manifest
-    assert "wire_schema_manifest_checksum=0x8a8ca3c4" in release_manifest
+    assert "wire_schema_manifest_len=8961" in release_manifest
+    assert "wire_schema_manifest_checksum=0x8c27baee" in release_manifest
     assert "config_schema_version=1" in release_manifest
     assert "config_schema=share/lingqu/mem_service/config/mem_service.conf.schema" in release_manifest
     assert "config_example=share/lingqu/mem_service/config/mem_service.example.conf" in release_manifest
@@ -887,7 +887,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=restore_snapshot:8" in wire_schema_manifest
     assert "operation=restore_snapshot_page:9" in wire_schema_manifest
     assert "operation=inspect_object:18" in wire_schema_manifest
-    assert "field_count=102" in wire_schema_manifest
+    assert "field_count=106" in wire_schema_manifest
     assert "oneof_field=resolve_kv_segment.0.block_hash" in wire_schema_manifest
     assert "mem_service_config_schema_version=1" in config_schema
     assert "field=listen type=string" in config_schema

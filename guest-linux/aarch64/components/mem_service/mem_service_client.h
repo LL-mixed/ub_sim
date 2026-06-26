@@ -12,6 +12,7 @@
 #define MEM_SERVICE_CLIENT_ID_LEN 64U
 #define MEM_SERVICE_CLIENT_STATE_LEN 32U
 #define MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND "training-step-commit"
+#define MEM_SERVICE_CLIENT_PAYLOAD_KIND_SEALED_LOCAL_BLOCK 64U
 
 struct mem_service_client {
     const char *connect_spec;
@@ -57,6 +58,7 @@ struct mem_service_client_object {
     uint64_t checksum;
     bool has_version;
     uint64_t version;
+    const char *payload_inline;
 };
 
 struct mem_service_client_block_entry {
@@ -101,6 +103,7 @@ struct mem_service_client_artifact {
     uint64_t checksum;
     bool has_version;
     uint64_t version;
+    const char *payload_inline;
 };
 
 struct mem_service_client_artifact_query {
@@ -134,6 +137,7 @@ struct mem_service_client_training_ref {
     uint64_t checksum;
     bool has_version;
     uint64_t version;
+    const char *payload_inline;
 };
 
 struct mem_service_client_training_ref_query {

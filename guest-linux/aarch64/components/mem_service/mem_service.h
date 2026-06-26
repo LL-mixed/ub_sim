@@ -40,6 +40,7 @@ enum mem_service_kvcache_state {
 #define MEM_SERVICE_IDEMPOTENCY_KEY_LEN 96U
 #define MEM_SERVICE_IDEMPOTENCY_RESPONSE_LEN 4096U
 #define MEM_SERVICE_MAX_AUDIT_EVENTS 256U
+#define MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK 64U
 
 struct mem_service_record {
     bool in_use;

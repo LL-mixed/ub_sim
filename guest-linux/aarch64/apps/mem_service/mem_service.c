@@ -20,22 +20,22 @@
 #endif
 
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_VERSION 1U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8695U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8a8ca3c4U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8961U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8c27baeeU
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 23U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 102U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 106U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
 #define MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xfb80227eU
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x1ab0e2e8U
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
 #define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1208U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x32f075cfU
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x06798bcfU
 #define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1590U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x5130ec56U
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xbc3d2fabU
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -1597,7 +1597,7 @@ static int run_release_manifest(void)
     printf("durable_backend=snapshot+journal\n");
     printf("durable_catalog=storage-root-v1\n");
     printf("durable_catalog_manifest=catalog/manifest.txt\n");
-    printf("payload_block_backend=layout-only\n");
+    printf("payload_block_backend=sealed-local-block-v1\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
     printf("metrics_export_format=prometheus-text\n");
@@ -2783,7 +2783,7 @@ static const char *snapshot_path_arg(int argc, char **argv, const char *option_n
 
 static int run_put_object(int argc, char **argv)
 {
-    char payload[512] = "";
+    char payload[1024] = "";
 
     if (append_required_payload_field(payload, sizeof(payload), argc, argv, "--key", "key") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--owner", "owner") != 0 ||
@@ -2792,6 +2792,7 @@ static int run_put_object(int argc, char **argv)
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backing-len", "backing_len") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--checksum", "checksum") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--version", "version") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-inline", "payload_inline") != 0 ||
         append_idempotency_payload_field(payload, sizeof(payload), argc, argv) != 0) {
         return 2;
     }
@@ -3487,6 +3488,7 @@ static int append_artifact_payload(char *payload,
         append_optional_payload_field(payload, payload_len, argc, argv, "--backing-len", "backing_len") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--checksum", "checksum") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--version", "version") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--payload-inline", "payload_inline") != 0 ||
         append_idempotency_payload_field(payload, payload_len, argc, argv) != 0) {
         return -1;
     }
@@ -3512,7 +3514,7 @@ static int append_artifact_query_payload(char *payload,
 
 static int run_publish_runtime_handoff(int argc, char **argv)
 {
-    char payload[768] = "";
+    char payload[1024] = "";
 
     if (append_artifact_payload(payload, sizeof(payload), argc, argv) != 0) {
         return 2;
@@ -3540,7 +3542,7 @@ static int run_resolve_runtime_handoff(int argc, char **argv)
 
 static int run_register_execution_artifact(int argc, char **argv)
 {
-    char payload[768] = "";
+    char payload[1024] = "";
 
     if (append_artifact_payload(payload, sizeof(payload), argc, argv) != 0) {
         return 2;
@@ -3568,7 +3570,7 @@ static int run_query_execution_artifact(int argc, char **argv)
 
 static int run_register_training_artifact(int argc, char **argv)
 {
-    char payload[768] = "";
+    char payload[1024] = "";
 
     if (append_artifact_payload(payload, sizeof(payload), argc, argv) != 0) {
         return 2;
@@ -3614,6 +3616,7 @@ static int append_training_step_commit_payload(char *payload,
         append_optional_payload_field(payload, payload_len, argc, argv, "--backing-len", "backing_len") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--checksum", "checksum") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--version", "version") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--payload-inline", "payload_inline") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--idempotency-key", "idempotency_key") != 0) {
         return -1;
     }
@@ -3642,7 +3645,7 @@ static int append_training_step_query_payload(char *payload,
 
 static int run_commit_training_step(int argc, char **argv)
 {
-    char payload[768] = "";
+    char payload[1024] = "";
 
     if (append_training_step_commit_payload(payload, sizeof(payload), argc, argv) != 0) {
         return 2;

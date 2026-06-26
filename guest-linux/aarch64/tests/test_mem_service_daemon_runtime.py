@@ -27,6 +27,14 @@ def _tmp_parent() -> Path:
     return Path(tempfile.gettempdir())
 
 
+def _fnv1a64(data: bytes) -> int:
+    value = 1469598103934665603
+    for byte in data:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return value
+
+
 @unittest.skipUnless(shutil.which("cc"), "host cc is required")
 class MemServiceWireClientBuildTests(unittest.TestCase):
     def test_wire_and_typed_clients_build_without_daemon_or_core(self):
@@ -40,6 +48,12 @@ class MemServiceWireClientBuildTests(unittest.TestCase):
                 '#include "components/mem_service/mem_service_client.h"\n'
                 "int main(void) {\n"
                 "    struct mem_service_client client;\n"
+                "    struct mem_service_client_object object = {\n"
+                "        .key = \"sealed-object\",\n"
+                "        .has_payload_kind = true,\n"
+                "        .payload_kind = MEM_SERVICE_CLIENT_PAYLOAD_KIND_SEALED_LOCAL_BLOCK,\n"
+                "        .payload_inline = \"sealed-payload\",\n"
+                "    };\n"
                 "    struct mem_service_wire_client_options options = {\n"
                 "        .timeout_ms = 25,\n"
                 "    };\n"
@@ -48,7 +62,9 @@ class MemServiceWireClientBuildTests(unittest.TestCase):
                 "    const char *spec = mem_service_default_unix_socket_spec();\n"
                 "    mem_service_client_init_with_options(&client, spec, &options);\n"
                 "    return status != 0 && client.connect_spec == spec && "
-                "client.wire_options.timeout_ms == 25 ? 0 : 1;\n"
+                "client.wire_options.timeout_ms == 25 && object.payload_inline != 0 && "
+                "object.payload_kind == MEM_SERVICE_CLIENT_PAYLOAD_KIND_SEALED_LOCAL_BLOCK "
+                "? 0 : 1;\n"
                 "}\n"
             )
             cmd = [
@@ -1725,8 +1741,8 @@ int main(int argc, char **argv)
         self.assertIn("examples=2", fixtures.stdout)
         self.assertIn("compat_artifacts=3", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
-        self.assertIn("schema_manifest_len=8695", fixtures.stdout)
-        self.assertIn("schema_manifest_checksum=0x8a8ca3c4", fixtures.stdout)
+        self.assertIn("schema_manifest_len=8961", fixtures.stdout)
+        self.assertIn("schema_manifest_checksum=0x8c27baee", fixtures.stdout)
         self.assertIn("durable_backends=1", fixtures.stdout)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=1", fixtures.stdout)
@@ -1735,11 +1751,11 @@ int main(int argc, char **argv)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
-        self.assertIn("compat_matrix_checksum=0xfb80227e", fixtures.stdout)
+        self.assertIn("compat_matrix_checksum=0x1ab0e2e8", fixtures.stdout)
         self.assertIn("compat_baseline_len=1208", fixtures.stdout)
-        self.assertIn("compat_baseline_checksum=0x32f075cf", fixtures.stdout)
+        self.assertIn("compat_baseline_checksum=0x06798bcf", fixtures.stdout)
         self.assertIn("compat_old_new_matrix_len=1590", fixtures.stdout)
-        self.assertIn("compat_old_new_matrix_checksum=0x5130ec56", fixtures.stdout)
+        self.assertIn("compat_old_new_matrix_checksum=0xbc3d2fab", fixtures.stdout)
 
         manifest = self._run_client("release-manifest")
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
@@ -1751,7 +1767,7 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("layout=storage-root-v1", fixtures.stdout)
-        self.assertIn("payload_block_backend=layout-only", fixtures.stdout)
+        self.assertIn("payload_block_backend=sealed-local-block-v1", fixtures.stdout)
 
     def test_deployment_fixtures_cli_validates_service_and_metrics_scrape_contract(self):
         fixtures = self._run_client("deployment-fixtures")
@@ -1878,7 +1894,7 @@ int main(int argc, char **argv)
         self.assertIn("layout=storage-root-v1", manifest)
         self.assertIn(f"store_path={store_path}", manifest)
         self.assertIn(f"journal_path={journal_path}", manifest)
-        self.assertIn("payload_block_backend=layout-only", manifest)
+        self.assertIn("payload_block_backend=sealed-local-block-v1", manifest)
         self.assertIn("corrupt_payload_policy=quarantine-fail-closed", manifest)
         self.assertTrue(store_path.exists())
         self.assertTrue(journal_path.exists())
@@ -1902,15 +1918,156 @@ int main(int argc, char **argv)
         finally:
             self._stop_server(proc)
 
+    def test_storage_root_payload_inline_block_validates_and_fail_closes(self):
+        storage_root = self.root / "payload-root"
+        config_path = self.root / "mem_service.payload.conf"
+        object_payload = b"sealed-object-payload-v1"
+        artifact_payload = b"sealed-training-payload-v1"
+        object_checksum = _fnv1a64(object_payload)
+        artifact_checksum = _fnv1a64(artifact_payload)
+        object_block = storage_root / "blocks" / f"{object_checksum:016x}.block"
+        artifact_block = storage_root / "blocks" / f"{artifact_checksum:016x}.block"
+        quarantine_dir = storage_root / "quarantine"
+
+        config_path.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"storage_root={storage_root}\n"
+            "backend=snapshot+journal\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+            "adapter_enablement=core\n"
+        )
+        proc = self._start_server(config_path=config_path)
+        try:
+            put = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "sealed-object",
+                "--version",
+                "12",
+                "--backing-len",
+                str(len(object_payload)),
+                "--checksum",
+                str(object_checksum),
+                "--payload-inline",
+                object_payload.decode("ascii"),
+            )
+            self.assertEqual(put.returncode, 0, put.stderr + put.stdout)
+            self.assertTrue(object_block.exists())
+            self.assertEqual(object_block.read_bytes(), object_payload)
+
+            got = self._run_client(
+                "get-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "sealed-object",
+            )
+            self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+            self.assertIn("object_payload_kind=64", got.stdout)
+            self.assertIn(f"object_backing_len={len(object_payload)}", got.stdout)
+            self.assertIn(f"object_payload_checksum={object_checksum}", got.stdout)
+
+            register = self._run_client(
+                "register-training-artifact",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "training/run-c/checkpoint-0001",
+                "--session-id",
+                "run-c",
+                "--model-key",
+                "model-c",
+                "--artifact-kind",
+                "checkpoint",
+                "--artifact-id",
+                "checkpoint-0001",
+                "--version",
+                "3",
+                "--backing-len",
+                str(len(artifact_payload)),
+                "--checksum",
+                str(artifact_checksum),
+                "--payload-inline",
+                artifact_payload.decode("ascii"),
+            )
+            self.assertEqual(register.returncode, 0, register.stderr + register.stdout)
+            self.assertTrue(artifact_block.exists())
+            self.assertEqual(artifact_block.read_bytes(), artifact_payload)
+
+            query = self._run_client(
+                "query-training-artifact",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "training/run-c/checkpoint-0001",
+                "--expected-session-id",
+                "run-c",
+                "--expected-model-key",
+                "model-c",
+                "--expected-artifact-kind",
+                "checkpoint",
+                "--expected-artifact-id",
+                "checkpoint-0001",
+                "--expected-version",
+                "3",
+                "--expected-checksum",
+                str(artifact_checksum),
+            )
+            self.assertEqual(query.returncode, 0, query.stderr + query.stdout)
+            self.assertIn("object_payload_kind=64", query.stdout)
+
+            object_block.write_bytes(b"corrupt-object")
+            bad_get = self._run_client(
+                "get-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "sealed-object",
+            )
+            self.assertNotEqual(bad_get.returncode, 0, bad_get.stderr + bad_get.stdout)
+            self.assertIn("status=checksum_mismatch", bad_get.stdout)
+            self.assertFalse(object_block.exists())
+            self.assertTrue(list(quarantine_dir.glob(f"{object_checksum:016x}.bad.*")))
+
+            artifact_block.write_bytes(b"corrupt-artifact")
+            bad_query = self._run_client(
+                "query-training-artifact",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "training/run-c/checkpoint-0001",
+                "--expected-session-id",
+                "run-c",
+                "--expected-model-key",
+                "model-c",
+                "--expected-artifact-kind",
+                "checkpoint",
+                "--expected-artifact-id",
+                "checkpoint-0001",
+                "--expected-version",
+                "3",
+                "--expected-checksum",
+                str(artifact_checksum),
+            )
+            self.assertNotEqual(bad_query.returncode, 0, bad_query.stderr + bad_query.stdout)
+            self.assertIn("status=checksum_mismatch", bad_query.stdout)
+            self.assertFalse(artifact_block.exists())
+            self.assertTrue(list(quarantine_dir.glob(f"{artifact_checksum:016x}.bad.*")))
+        finally:
+            self._stop_server(proc)
+
     def test_compat_matrix_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("compat-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("matrix_version=1", fixtures.stdout)
         self.assertIn("matrix_len=1887", fixtures.stdout)
-        self.assertIn("matrix_checksum=0xfb80227e", fixtures.stdout)
+        self.assertIn("matrix_checksum=0x1ab0e2e8", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
-        self.assertIn("fields=102", fixtures.stdout)
+        self.assertIn("fields=106", fixtures.stdout)
         self.assertIn("statuses=11", fixtures.stdout)
 
         matrix = self._run_client("compat-matrix")
@@ -1923,7 +2080,7 @@ int main(int argc, char **argv)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("baseline_version=1", fixtures.stdout)
         self.assertIn("baseline_len=1208", fixtures.stdout)
-        self.assertIn("baseline_checksum=0x32f075cf", fixtures.stdout)
+        self.assertIn("baseline_checksum=0x06798bcf", fixtures.stdout)
         self.assertIn("old_client_new_server=v1", fixtures.stdout)
         self.assertIn("new_client_old_server=not-certified", fixtures.stdout)
 
@@ -1936,7 +2093,7 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("matrix_len=1590", fixtures.stdout)
-        self.assertIn("matrix_checksum=0x5130ec56", fixtures.stdout)
+        self.assertIn("matrix_checksum=0xbc3d2fab", fixtures.stdout)
         self.assertIn("old_payloads=23", fixtures.stdout)
         self.assertIn("current_payloads=23", fixtures.stdout)
         self.assertIn("old_server_runtime_binary=not-in-tree", fixtures.stdout)
@@ -1958,10 +2115,10 @@ int main(int argc, char **argv)
         fixtures = self._run_client("wire-schema-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("manifest_len=8695", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x8a8ca3c4", fixtures.stdout)
+        self.assertIn("manifest_len=8961", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x8c27baee", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
-        self.assertIn("fields=102", fixtures.stdout)
+        self.assertIn("fields=106", fixtures.stdout)
 
         manifest = self._run_client("wire-schema")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -2345,14 +2502,15 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertTrue(compat_baseline.exists())
             self.assertTrue(compat_old_new_matrix.exists())
             self.assertIn("core_binary=bin/linqu_mem_service", manifest.read_text())
-            self.assertIn("wire_schema_manifest_checksum=0x8a8ca3c4", manifest.read_text())
-            self.assertIn("compat_matrix_checksum=0xfb80227e", manifest.read_text())
-            self.assertIn("compat_baseline_checksum=0x32f075cf", manifest.read_text())
-            self.assertIn("compat_old_new_matrix_checksum=0x5130ec56", manifest.read_text())
+            self.assertIn("wire_schema_manifest_checksum=0x8c27baee", manifest.read_text())
+            self.assertIn("compat_matrix_checksum=0x1ab0e2e8", manifest.read_text())
+            self.assertIn("compat_baseline_checksum=0x06798bcf", manifest.read_text())
+            self.assertIn("compat_old_new_matrix_checksum=0xbc3d2fab", manifest.read_text())
             self.assertIn("durable_backend=snapshot+journal", manifest.read_text())
             self.assertIn("durable_catalog=storage-root-v1", manifest.read_text())
             self.assertIn("durable_catalog_manifest=catalog/manifest.txt", manifest.read_text())
-            self.assertIn("payload_block_backend=layout-only", manifest.read_text())
+            self.assertIn("payload_block_backend=sealed-local-block-v1",
+                          manifest.read_text())
             self.assertIn("durable_journal=store-path.journal", manifest.read_text())
             self.assertIn("deployment_smoke=deployment-fixtures", manifest.read_text())
             self.assertIn(

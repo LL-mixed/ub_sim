@@ -37,6 +37,7 @@ static const struct mem_service_wire_payload_field
         {"checksum", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
         {"version", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
         {"idempotency_key", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
+        {"payload_inline", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
 };
 
 static const struct mem_service_wire_payload_field
@@ -117,6 +118,7 @@ static const struct mem_service_wire_payload_field
         {"checksum", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
         {"version", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
         {"idempotency_key", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
+        {"payload_inline", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
 };
 
 static const struct mem_service_wire_payload_field
