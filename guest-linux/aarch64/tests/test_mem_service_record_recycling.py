@@ -417,23 +417,25 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_compat_baseline_fixture_check", cli_source)
         self.assertIn("run_compat_old_new_matrix", cli_source)
         self.assertIn("run_compat_old_new_fixture_check", cli_source)
+        self.assertIn('strcmp(argv[1], "compat-runtime-fixtures")', cli_source)
+        self.assertIn("mem_service_run_compat_runtime_fixture_check", cli_source)
         self.assertIn('strcmp(argv[1], "deployment-fixtures")', cli_source)
         self.assertIn("MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U", cli_source)
         self.assertIn("render_metrics_http_response", cli_source)
         self.assertIn("run_deployment_fixture_check", cli_source)
-        self.assertIn("MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U", cli_source)
+        self.assertIn("MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1923U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x8b4219c5U",
+            "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xaf88a8a1U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1208U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xdc6376daU",
+            "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x2bbfe8e5U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1590U", cli_source)
+        self.assertIn("MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1732U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x56f8e4c3U",
+            "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xf04db094U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U", cli_source)
@@ -446,14 +448,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1868U", cli_source)
+        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1906U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xed7a1646U",
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x779d1487U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3125U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3163U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa00c3f8cU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x8fe45488U",
             cli_source,
         )
         self.assertIn(
@@ -568,6 +570,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)", cli_makefile)
         self.assertIn("host-artifact-smoke: linqu_mem_service_host", cli_makefile)
         self.assertIn("./linqu_mem_service_host upgrade-rollback-runtime-fixtures", cli_makefile)
+        self.assertIn("./linqu_mem_service_host compat-runtime-fixtures", cli_makefile)
         self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
         self.assertIn("MEM_SERVICE_CLIENT_SDK_SRCS :=", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
@@ -583,17 +586,18 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xa00c3f8c$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x8fe45488$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
         self.assertIn("^native_package_format=deb$$", cli_makefile)
         self.assertIn("^native_package_gate=package-deb-smoke$$", cli_makefile)
-        self.assertIn("^upgrade_rollback_policy_checksum=0xed7a1646$$", cli_makefile)
+        self.assertIn("^upgrade_rollback_policy_checksum=0x779d1487$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
             cli_makefile,
         )
+        self.assertIn("^compat_runtime_gate=compat-runtime-fixtures$$", cli_makefile)
         self.assertIn("^upgrade_policy=current-version-only$$", cli_makefile)
         self.assertIn("^rollback_policy=current-version-only$$", cli_makefile)
         self.assertIn("^old_server_runtime_binary=not-certified$$", cli_makefile)
@@ -604,11 +608,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^client_abi_version=1$$", cli_makefile)
         self.assertIn("^client_record_abi_size=744$$", cli_makefile)
         self.assertIn("^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$", cli_makefile)
-        self.assertIn("^compat_matrix_checksum=0x8b4219c5$$", cli_makefile)
+        self.assertIn("^compat_matrix_checksum=0xaf88a8a1$$", cli_makefile)
         self.assertIn("^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$", cli_makefile)
-        self.assertIn("^compat_baseline_checksum=0xdc6376da$$", cli_makefile)
+        self.assertIn("^compat_baseline_checksum=0x2bbfe8e5$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$", cli_makefile)
-        self.assertIn("^compat_old_new_matrix_checksum=0x56f8e4c3$$", cli_makefile)
+        self.assertIn("^compat_old_new_matrix_checksum=0xf04db094$$", cli_makefile)
         self.assertIn("^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$", cli_makefile)
         self.assertIn("^host_daemon_artifact_smoke=host-artifact-smoke$$", cli_makefile)
         self.assertIn("^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$", cli_makefile)
@@ -661,7 +665,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0xa00c3f8c", release_manifest)
+        self.assertIn("package_manifest_checksum=0x8fe45488", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -682,11 +686,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "native_package_runtime=not-executed-cross-compiled-arm64",
             release_manifest,
         )
-        self.assertIn("upgrade_rollback_policy_checksum=0xed7a1646", release_manifest)
+        self.assertIn("upgrade_rollback_policy_checksum=0x779d1487", release_manifest)
         self.assertIn(
             "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures",
             release_manifest,
         )
+        self.assertIn("compat_runtime_gate=compat-runtime-fixtures", release_manifest)
         self.assertIn("upgrade_policy=current-version-only", release_manifest)
         self.assertIn("rollback_policy=current-version-only", release_manifest)
         self.assertIn("old_server_runtime_binary=not-certified", release_manifest)
@@ -696,11 +701,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("client_abi_version=1", release_manifest)
         self.assertIn("client_record_abi_size=744", release_manifest)
         self.assertIn("compat_matrix=share/lingqu/mem_service/compat-matrix.txt", release_manifest)
-        self.assertIn("compat_matrix_checksum=0x8b4219c5", release_manifest)
+        self.assertIn("compat_matrix_checksum=0xaf88a8a1", release_manifest)
         self.assertIn("compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt", release_manifest)
-        self.assertIn("compat_baseline_checksum=0xdc6376da", release_manifest)
+        self.assertIn("compat_baseline_checksum=0x2bbfe8e5", release_manifest)
         self.assertIn("compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt", release_manifest)
-        self.assertIn("compat_old_new_matrix_checksum=0x56f8e4c3", release_manifest)
+        self.assertIn("compat_old_new_matrix_checksum=0xf04db094", release_manifest)
         self.assertIn(
             "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host",
             release_manifest,
@@ -841,12 +846,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             package_manifest,
         )
         self.assertIn("installed_file_count=28", package_manifest)
-        self.assertIn("required_gate_count=16", package_manifest)
+        self.assertIn("required_gate_count=17", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn(
             "required_gate=upgrade-rollback-runtime-fixtures",
             package_manifest,
         )
+        self.assertIn("required_gate=compat-runtime-fixtures", package_manifest)
         self.assertIn("required_gate=package-tarball-smoke", package_manifest)
         self.assertIn("required_gate=package-deb-smoke", package_manifest)
         self.assertIn("cross_version_upgrade=not-certified", package_manifest)

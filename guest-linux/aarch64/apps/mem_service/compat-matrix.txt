@@ -43,6 +43,7 @@ compat_test=config-fixtures
 compat_test=metrics-export-fixtures
 compat_test=deployment-fixtures
 compat_test=client-retry-fixtures
+compat_test=compat-runtime-fixtures
 compat_test=release-fixtures
 compat_test=daemon-runtime
 release_gate=install-smoke

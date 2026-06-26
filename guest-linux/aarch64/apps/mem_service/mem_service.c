@@ -32,30 +32,30 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1868U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xed7a1646U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1906U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x779d1487U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3125U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa00c3f8cU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3163U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x8fe45488U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 28U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 16U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 17U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x8b4219c5U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1923U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xaf88a8a1U
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
 #define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1208U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xdc6376daU
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1590U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x56f8e4c3U
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x2bbfe8e5U
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1732U
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xf04db094U
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -74,6 +74,7 @@ static void usage(const char *argv0)
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
     printf(" [compat-old-new-matrix] [compat-old-new-fixtures]");
+    printf(" [compat-runtime-fixtures]");
     printf(" [release-manifest] [release-fixtures]");
     printf(" [serve [--config <path>] [--listen unix:%s] [--store <path>]"
            " [--metrics-listen tcp:127.0.0.1:9900]]",
@@ -780,6 +781,10 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
+                                "required_gate=compat-runtime-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
                                 "required_gate=compat-old-new-fixtures\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
@@ -894,6 +899,7 @@ static int run_upgrade_rollback_fixture_check(void)
             NULL ||
         strstr(policy, "required_gate=admin-output-fixtures\n") == NULL ||
         strstr(policy, "required_gate=upgrade-rollback-runtime-fixtures\n") == NULL ||
+        strstr(policy, "required_gate=compat-runtime-fixtures\n") == NULL ||
         strstr(policy, "required_gate=alert-fixtures\n") == NULL ||
         strstr(policy, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(policy, "required_gate=package-fixtures\n") == NULL ||
@@ -908,7 +914,7 @@ static int run_upgrade_rollback_fixture_check(void)
     printf("mem_service upgrade-rollback-fixtures: status=ok policy_version=%u "
            "policy_len=%u policy_checksum=0x%08x "
            "upgrade_policy=current-version-only "
-           "rollback_policy=current-version-only required_gates=18\n",
+           "rollback_policy=current-version-only required_gates=19\n",
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
@@ -1125,6 +1131,10 @@ static int render_compat_matrix(char *matrix, size_t matrix_len, size_t *used_ou
         append_wire_schema_line(matrix,
                                 matrix_len,
                                 &used,
+                                "compat_test=compat-runtime-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
                                 "compat_test=release-fixtures\n") != 0 ||
         append_wire_schema_line(matrix,
                                 matrix_len,
@@ -1242,6 +1252,7 @@ static int run_compat_fixture_check(void)
         strstr(matrix, "idempotency_persistence=store-journal-and-full-snapshot\n") == NULL ||
         strstr(matrix, "audit_log_persistence=store-journal-and-full-snapshot\n") == NULL ||
         strstr(matrix, "compat_test=journal-fixtures\n") == NULL ||
+        strstr(matrix, "compat_test=compat-runtime-fixtures\n") == NULL ||
         strstr(matrix,
                "snapshot_paged_restore_state=records-only-clears-idempotency-audit\n") ==
             NULL ||
@@ -1781,11 +1792,19 @@ static int render_compat_old_new_matrix(char *matrix,
         append_wire_schema_line(matrix,
                                 matrix_len,
                                 &used,
+                                "case=old-client-current-server:runtime-compatible\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
                                 "case=current-client-old-schema-profile:schema-compatible\n") != 0 ||
         append_wire_schema_line(matrix,
                                 matrix_len,
                                 &used,
                                 "case=current-client-current-server:wire-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "case=current-client-current-server:compat-runtime-fixtures\n") != 0 ||
         append_wire_schema_line(matrix,
                                 matrix_len,
                                 &used,
@@ -1834,6 +1853,10 @@ static int render_compat_old_new_matrix(char *matrix,
                                 matrix_len,
                                 &used,
                                 "evidence=compat-old-new-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "evidence=compat-runtime-fixtures\n") != 0 ||
         append_wire_schema_line(matrix,
                                 matrix_len,
                                 &used,
@@ -1975,9 +1998,12 @@ static int run_compat_old_new_fixture_check(void)
         strstr(matrix,
                "certified_pair=current-v1-client->old-v1-schema-profile\n") == NULL ||
         strstr(matrix,
+               "case=old-client-current-server:runtime-compatible\n") == NULL ||
+        strstr(matrix,
                "not_certified_pair=current-v1-client->old-v1-runtime-binary\n") ==
             NULL ||
-        strstr(matrix, "evidence=compat-old-new-fixtures\n") == NULL) {
+        strstr(matrix, "evidence=compat-old-new-fixtures\n") == NULL ||
+        strstr(matrix, "evidence=compat-runtime-fixtures\n") == NULL) {
         fprintf(stderr,
                 "mem_service compat-old-new-fixtures: required matrix rule missing\n");
         failures -= 1;
@@ -2361,6 +2387,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "required_gate=compat-runtime-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate=deployment-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2485,6 +2515,7 @@ static int run_package_fixture_check(void)
         strstr(manifest, "artifact_gate=package-tarball-smoke\n") == NULL ||
         strstr(manifest, "native_package_gate=package-deb-smoke\n") == NULL ||
         strstr(manifest, "required_gate=upgrade-rollback-runtime-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=compat-runtime-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=not-certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
@@ -2557,6 +2588,7 @@ static int run_release_manifest(void)
     printf("old_server_runtime_binary=not-certified\n");
     printf("upgrade_rollback_gate=upgrade-rollback-fixtures\n");
     printf("upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures\n");
+    printf("compat_runtime_gate=compat-runtime-fixtures\n");
     printf("client_api_version=%u\n", MEM_SERVICE_CLIENT_API_VERSION);
     printf("client_abi_version=%u\n", MEM_SERVICE_CLIENT_ABI_VERSION);
     printf("client_record_abi_size=%u\n", MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
@@ -2731,7 +2763,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 28U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 16U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 17U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -2790,6 +2822,7 @@ static int run_release_fixture_check(void)
            "admin_output_schemas=1 "
            "upgrade_rollback_policies=1 "
            "upgrade_rollback_runtime_smokes=1 "
+           "compat_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -5888,6 +5921,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "compat-old-new-fixtures") == 0) {
         return run_compat_old_new_fixture_check();
+    }
+    if (strcmp(argv[1], "compat-runtime-fixtures") == 0) {
+        return mem_service_run_compat_runtime_fixture_check();
     }
     if (strcmp(argv[1], "package-manifest") == 0) {
         return run_package_manifest();

@@ -2970,6 +2970,315 @@ int mem_service_run_upgrade_rollback_runtime_fixture_check(void)
     return 0;
 }
 
+int mem_service_run_compat_runtime_fixture_check(void)
+{
+    static const char old_object_payload[] =
+        "key=compat-old-object\n"
+        "version=1\n"
+        "checksum=101\n"
+        "backing_len=64\n"
+        "idempotency_key=compat-old-object-v1\n";
+    static const char old_object_conflict_payload[] =
+        "key=compat-old-object\n"
+        "version=1\n"
+        "checksum=202\n"
+        "backing_len=64\n"
+        "idempotency_key=compat-old-object-v1\n";
+    static const char old_object_query[] =
+        "key=compat-old-object\n";
+    static const char old_runtime_payload[] =
+        "key=runtime/compat-old/session-a/range-0\n"
+        "session_id=compat-session-a\n"
+        "model_key=compat-model\n"
+        "artifact_kind=hidden-range\n"
+        "artifact_id=range-0\n"
+        "checksum=7707\n"
+        "version=7\n"
+        "idempotency_key=compat-old-runtime-range-0-v7\n";
+    static const char current_runtime_query[] =
+        "key=runtime/compat-old/session-a/range-0\n"
+        "expected_session_id=compat-session-a\n"
+        "expected_model_key=compat-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7707\n";
+    static const char bad_model_query[] =
+        "key=runtime/compat-old/session-a/range-0\n"
+        "expected_session_id=compat-session-a\n"
+        "expected_model_key=wrong-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7707\n";
+    static const char stale_runtime_query[] =
+        "key=runtime/compat-old/session-a/range-0\n"
+        "expected_session_id=compat-session-a\n"
+        "expected_model_key=compat-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=8\n"
+        "expected_checksum=7707\n";
+    static const char checksum_runtime_query[] =
+        "key=runtime/compat-old/session-a/range-0\n"
+        "expected_session_id=compat-session-a\n"
+        "expected_model_key=compat-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7708\n";
+    static const char current_execution_payload[] =
+        "key=execution/compat-current/session-a/logits-0\n"
+        "session_id=compat-session-a\n"
+        "request_id=req-current-0\n"
+        "model_key=compat-model\n"
+        "artifact_kind=logits\n"
+        "artifact_id=logits-0\n"
+        "owner=2\n"
+        "payload_kind=3\n"
+        "backing_offset=64\n"
+        "backing_len=256\n"
+        "checksum=8808\n"
+        "version=8\n"
+        "future_optional_field=ignored\n"
+        "idempotency_key=compat-current-execution-logits-0-v8\n";
+    static const char old_execution_query[] =
+        "key=execution/compat-current/session-a/logits-0\n";
+    static const char old_training_payload[] =
+        "key=training/compat-run/global-step-42/commit\n"
+        "session_id=compat-run\n"
+        "model_key=compat-model\n"
+        "artifact_kind=training-step-commit\n"
+        "artifact_id=global-step-42\n"
+        "checksum=4242\n"
+        "version=42\n"
+        "idempotency_key=compat-old-training-step-42-v42\n";
+    static const char current_training_query[] =
+        "key=training/compat-run/global-step-42/commit\n"
+        "expected_session_id=compat-run\n"
+        "expected_model_key=compat-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=42\n"
+        "expected_checksum=4242\n";
+    static struct mem_service server;
+    char old_object_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char old_object_replay[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char old_object_conflict[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char old_object_get[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char old_runtime_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char current_runtime_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char fail_closed_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char current_execution_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char old_execution_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char old_training_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char current_training_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    enum mem_service_wire_status old_object_status;
+    enum mem_service_wire_status old_object_replay_status;
+    enum mem_service_wire_status old_object_conflict_status;
+    enum mem_service_wire_status old_object_get_status;
+    enum mem_service_wire_status old_runtime_status;
+    enum mem_service_wire_status current_runtime_status;
+    enum mem_service_wire_status bad_model_status;
+    enum mem_service_wire_status stale_runtime_status;
+    enum mem_service_wire_status checksum_runtime_status;
+    enum mem_service_wire_status current_execution_status;
+    enum mem_service_wire_status old_execution_status;
+    enum mem_service_wire_status old_training_status;
+    enum mem_service_wire_status current_training_status;
+    int failures = 0;
+
+    if (mem_service_init(&server, true, true, true) != 0) {
+        fprintf(stderr, "mem_service compat-runtime-fixtures: init failed\n");
+        return 1;
+    }
+
+    old_object_status = mem_service_handle_operation(&server,
+                                                     MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                                     old_object_payload,
+                                                     old_object_response,
+                                                     sizeof(old_object_response),
+                                                     NULL,
+                                                     NULL);
+    old_object_replay_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                     old_object_payload,
+                                     old_object_replay,
+                                     sizeof(old_object_replay),
+                                     NULL,
+                                     NULL);
+    old_object_conflict_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                     old_object_conflict_payload,
+                                     old_object_conflict,
+                                     sizeof(old_object_conflict),
+                                     NULL,
+                                     NULL);
+    old_object_get_status = mem_service_handle_operation(&server,
+                                                        MEM_SERVICE_WIRE_OP_GET_OBJECT,
+                                                        old_object_query,
+                                                        old_object_get,
+                                                        sizeof(old_object_get),
+                                                        NULL,
+                                                        NULL);
+    if (old_object_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_object_replay_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strcmp(old_object_response, old_object_replay) != 0 ||
+        old_object_conflict_status != MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT ||
+        old_object_get_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(old_object_get, "version=1\n") == NULL ||
+        strstr(old_object_get, "object_payload_checksum=101\n") == NULL) {
+        fprintf(stderr,
+                "mem_service compat-runtime-fixtures: old object path mismatch\n");
+        failures -= 1;
+    }
+
+    old_runtime_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_PUBLISH_RUNTIME_HANDOFF,
+                                     old_runtime_payload,
+                                     old_runtime_response,
+                                     sizeof(old_runtime_response),
+                                     NULL,
+                                     NULL);
+    current_runtime_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     current_runtime_query,
+                                     current_runtime_response,
+                                     sizeof(current_runtime_response),
+                                     NULL,
+                                     NULL);
+    bad_model_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     bad_model_query,
+                                     fail_closed_response,
+                                     sizeof(fail_closed_response),
+                                     NULL,
+                                     NULL);
+    stale_runtime_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     stale_runtime_query,
+                                     fail_closed_response,
+                                     sizeof(fail_closed_response),
+                                     NULL,
+                                     NULL);
+    checksum_runtime_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     checksum_runtime_query,
+                                     fail_closed_response,
+                                     sizeof(fail_closed_response),
+                                     NULL,
+                                     NULL);
+    if (old_runtime_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        current_runtime_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(current_runtime_response, "artifact_kind=hidden-range\n") == NULL ||
+        strstr(current_runtime_response, "version=7\n") == NULL ||
+        strstr(current_runtime_response, "object_payload_checksum=7707\n") == NULL ||
+        bad_model_status != MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING ||
+        stale_runtime_status != MEM_SERVICE_WIRE_STATUS_STALE_REF ||
+        checksum_runtime_status != MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH) {
+        fprintf(stderr,
+                "mem_service compat-runtime-fixtures: runtime path mismatch\n");
+        failures -= 1;
+    }
+
+    current_execution_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_REGISTER_EXECUTION_ARTIFACT,
+                                     current_execution_payload,
+                                     current_execution_response,
+                                     sizeof(current_execution_response),
+                                     NULL,
+                                     NULL);
+    old_execution_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT,
+                                     old_execution_query,
+                                     old_execution_response,
+                                     sizeof(old_execution_response),
+                                     NULL,
+                                     NULL);
+    if (current_execution_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_execution_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(old_execution_response, "artifact_kind=logits\n") == NULL ||
+        strstr(old_execution_response, "version=8\n") == NULL ||
+        strstr(old_execution_response, "object_payload_checksum=8808\n") == NULL) {
+        fprintf(stderr,
+                "mem_service compat-runtime-fixtures: current execution path mismatch\n");
+        failures -= 1;
+    }
+
+    old_training_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+                                     old_training_payload,
+                                     old_training_response,
+                                     sizeof(old_training_response),
+                                     NULL,
+                                     NULL);
+    current_training_status =
+        mem_service_handle_operation(&server,
+                                     MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT,
+                                     current_training_query,
+                                     current_training_response,
+                                     sizeof(current_training_response),
+                                     NULL,
+                                     NULL);
+    if (old_training_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        current_training_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(current_training_response,
+               "artifact_kind=training-step-commit\n") == NULL ||
+        strstr(current_training_response, "version=42\n") == NULL ||
+        strstr(current_training_response, "object_payload_checksum=4242\n") == NULL) {
+        fprintf(stderr,
+                "mem_service compat-runtime-fixtures: pretraining path mismatch\n");
+        failures -= 1;
+    }
+
+    if (server.metrics.idempotency_replay_count != 1U ||
+        server.metrics.idempotency_conflict_count != 1U ||
+        server.metrics.invalid_model_binding_count != 1U ||
+        server.metrics.stale_ref_count != 1U ||
+        server.metrics.checksum_mismatch_count != 1U ||
+        server.metrics.fail_closed_count != 4U ||
+        server.audit_event_count != 9U) {
+        fprintf(stderr,
+                "mem_service compat-runtime-fixtures: metrics/audit mismatch "
+                "replay=%" PRIu64 " conflict=%" PRIu64 " invalid_model=%" PRIu64
+                " stale=%" PRIu64 " checksum=%" PRIu64 " fail_closed=%" PRIu64
+                " audit=%" PRIu64 "\n",
+                server.metrics.idempotency_replay_count,
+                server.metrics.idempotency_conflict_count,
+                server.metrics.invalid_model_binding_count,
+                server.metrics.stale_ref_count,
+                server.metrics.checksum_mismatch_count,
+                server.metrics.fail_closed_count,
+                server.audit_event_count);
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+
+    printf("mem_service compat-runtime-fixtures: status=ok "
+           "old_v1_client_current_server=runtime-compatible "
+           "current_v1_client_current_server=runtime-compatible "
+           "serving_paths=object,runtime-handoff,execution-artifact "
+           "pretraining_commits=1 idempotency_replay=%" PRIu64
+           " idempotency_conflict=%" PRIu64 " fail_closed=%" PRIu64
+           " old_server_runtime_binary=not-in-tree\n",
+           server.metrics.idempotency_replay_count,
+           server.metrics.idempotency_conflict_count,
+           server.metrics.fail_closed_count);
+    return 0;
+}
+
 int mem_service_run_durable_catalog_fixture_check(void)
 {
     char storage_root[160];
