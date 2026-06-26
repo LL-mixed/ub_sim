@@ -8,6 +8,12 @@
 #include "mem_service_wire.h"
 #include "mem_service_wire_client.h"
 
+#define MEM_SERVICE_CLIENT_API_VERSION 1U
+#define MEM_SERVICE_CLIENT_ABI_VERSION 1U
+#define MEM_SERVICE_CLIENT_API_COMPATIBILITY "source-compatible-within-v1"
+#define MEM_SERVICE_CLIENT_ABI_COMPATIBILITY \
+    "wire-header-and-client-record-layout-stable-within-v1"
+#define MEM_SERVICE_CLIENT_RECORD_ABI_SIZE 744U
 #define MEM_SERVICE_CLIENT_KEY_LEN 96U
 #define MEM_SERVICE_CLIENT_ID_LEN 64U
 #define MEM_SERVICE_CLIENT_STATE_LEN 32U
@@ -42,6 +48,12 @@ struct mem_service_client_record {
     uint64_t object_backing_len;
     uint64_t object_payload_checksum;
 };
+
+typedef char mem_service_client_record_size_must_match_abi[
+    (sizeof(struct mem_service_client_record) ==
+     MEM_SERVICE_CLIENT_RECORD_ABI_SIZE)
+        ? 1
+        : -1];
 
 struct mem_service_client_object {
     const char *key;

@@ -15,6 +15,7 @@ REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
 CLI_SOURCE = ROOT / "apps" / "mem_service" / "mem_service.c"
 WIRE_SCHEMA_MANIFEST = ROOT / "apps" / "mem_service" / "wire-schema.txt"
+API_ABI_POLICY = ROOT / "apps" / "mem_service" / "api-abi-policy.txt"
 COMPAT_MATRIX = ROOT / "apps" / "mem_service" / "compat-matrix.txt"
 COMPAT_BASELINE_V1 = ROOT / "apps" / "mem_service" / "compat-baseline-v1.txt"
 COMPAT_OLD_NEW_MATRIX = ROOT / "apps" / "mem_service" / "compat-old-new-matrix.txt"
@@ -66,7 +67,11 @@ class MemServiceWireClientBuildTests(unittest.TestCase):
                 "    return status != 0 && client.connect_spec == spec && "
                 "client.wire_options.timeout_ms == 25 && object.payload_inline != 0 && "
                 "object.payload_path != 0 && "
-                "object.payload_kind == MEM_SERVICE_CLIENT_PAYLOAD_KIND_SEALED_LOCAL_BLOCK "
+                "object.payload_kind == MEM_SERVICE_CLIENT_PAYLOAD_KIND_SEALED_LOCAL_BLOCK && "
+                "MEM_SERVICE_CLIENT_API_VERSION == 1 && "
+                "MEM_SERVICE_CLIENT_ABI_VERSION == 1 && "
+                "sizeof(struct mem_service_client_record) == "
+                "MEM_SERVICE_CLIENT_RECORD_ABI_SIZE "
                 "? 0 : 1;\n"
                 "}\n"
             )
@@ -1754,6 +1759,9 @@ int main(int argc, char **argv)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
         self.assertIn("collector_smokes=1", fixtures.stdout)
+        self.assertIn("api_abi_policies=1", fixtures.stdout)
+        self.assertIn("api_abi_policy_len=875", fixtures.stdout)
+        self.assertIn("api_abi_policy_checksum=0x743f84b8", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1767,6 +1775,18 @@ int main(int argc, char **argv)
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, expected)
+
+    def test_api_abi_policy_cli_matches_checked_in_contract(self):
+        fixtures = self._run_client("api-abi-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("policy_len=875", fixtures.stdout)
+        self.assertIn("policy_checksum=0x743f84b8", fixtures.stdout)
+        self.assertIn("client_record_abi_size=744", fixtures.stdout)
+
+        policy = self._run_client("api-abi-policy")
+        self.assertEqual(policy.returncode, 0, policy.stderr + policy.stdout)
+        self.assertEqual(policy.stdout, API_ABI_POLICY.read_text())
 
     def test_durable_catalog_fixtures_cli_validates_storage_root_layout(self):
         fixtures = self._run_client("durable-catalog-fixtures")
@@ -2751,6 +2771,9 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "release-manifest.txt"
             )
             wire_schema = destdir / "usr" / "share" / "lingqu" / "mem_service" / "wire-schema.txt"
+            api_abi_policy = (
+                destdir / "usr" / "share" / "lingqu" / "mem_service" / "api-abi-policy.txt"
+            )
             compat_matrix = (
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "compat-matrix.txt"
             )
@@ -2781,6 +2804,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertTrue(manifest.exists())
             self.assertTrue(wire_schema.exists())
+            self.assertTrue(api_abi_policy.exists())
             self.assertTrue(compat_matrix.exists())
             self.assertTrue(compat_baseline.exists())
             self.assertTrue(compat_old_new_matrix.exists())
@@ -2795,6 +2819,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("wire_schema_manifest_checksum=0xce883650", manifest.read_text())
+            self.assertIn("api_abi_policy_checksum=0x743f84b8", manifest.read_text())
+            self.assertIn("client_api_version=1", manifest.read_text())
+            self.assertIn("client_abi_version=1", manifest.read_text())
+            self.assertIn("client_record_abi_size=744", manifest.read_text())
             self.assertIn("compat_matrix_checksum=0x8b4219c5", manifest.read_text())
             self.assertIn("compat_baseline_checksum=0xdc6376da", manifest.read_text())
             self.assertIn("compat_old_new_matrix_checksum=0x56f8e4c3", manifest.read_text())
@@ -2833,6 +2861,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 host_deploy_manifest.read_text(),
             )
             self.assertEqual(wire_schema.read_text(), WIRE_SCHEMA_MANIFEST.read_text())
+            self.assertEqual(api_abi_policy.read_text(), API_ABI_POLICY.read_text())
             self.assertEqual(compat_matrix.read_text(), COMPAT_MATRIX.read_text())
             self.assertEqual(compat_baseline.read_text(), COMPAT_BASELINE_V1.read_text())
             self.assertEqual(

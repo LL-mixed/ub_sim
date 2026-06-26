@@ -591,6 +591,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     app_source = (app_dir / "mem_service.c").read_text()
     release_manifest = (app_dir / "release-manifest.txt").read_text()
     wire_schema_manifest = (app_dir / "wire-schema.txt").read_text()
+    api_abi_policy = (app_dir / "api-abi-policy.txt").read_text()
     compat_matrix = (app_dir / "compat-matrix.txt").read_text()
     compat_baseline = (app_dir / "compat-baseline-v1.txt").read_text()
     compat_old_new = (app_dir / "compat-old-new-matrix.txt").read_text()
@@ -657,6 +658,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service collector-fixtures" in run_app
     assert "linqu_mem_service_client_retry_fixtures" in run_app
     assert "/bin/linqu_mem_service client-retry-fixtures" in run_app
+    assert "linqu_mem_service_api_abi_fixtures" in run_app
+    assert "/bin/linqu_mem_service api-abi-fixtures" in run_app
     assert "linqu_mem_service_compat_fixtures" in run_app
     assert "/bin/linqu_mem_service compat-fixtures" in run_app
     assert "linqu_mem_service_compat_baseline_fixtures" in run_app
@@ -669,6 +672,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (app_dir / "Makefile").exists()
     assert (app_dir / "release-manifest.txt").exists()
     assert (app_dir / "wire-schema.txt").exists()
+    assert (app_dir / "api-abi-policy.txt").exists()
     assert (app_dir / "compat-matrix.txt").exists()
     assert (app_dir / "compat-baseline-v1.txt").exists()
     assert (app_dir / "compat-old-new-matrix.txt").exists()
@@ -683,6 +687,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_makefile
     assert "MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt" in app_makefile
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt" in app_makefile
+    assert "MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX := compat-old-new-matrix.txt" in app_makefile
@@ -711,6 +716,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)" in app_makefile
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
+    assert "^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$" in app_makefile
+    assert "^api_abi_policy_checksum=0x743f84b8$$" in app_makefile
+    assert "^client_api_version=1$$" in app_makefile
+    assert "^client_abi_version=1$$" in app_makefile
+    assert "^client_record_abi_size=744$$" in app_makefile
     assert "^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$" in app_makefile
     assert "^compat_matrix_checksum=0x8b4219c5$$" in app_makefile
     assert "^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$" in app_makefile
@@ -736,6 +746,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "install-smoke: install" in app_makefile
     assert "print-release-manifest" in app_makefile
     assert "print-wire-schema" in app_makefile
+    assert "print-api-abi-policy" in app_makefile
     assert "print-compat-matrix" in app_makefile
     assert "print-compat-baseline-v1" in app_makefile
     assert "print-compat-old-new-matrix" in app_makefile
@@ -763,6 +774,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "deployment-fixtures")' in app_source
     assert 'strcmp(argv[1], "durable-catalog-fixtures")' in app_source
     assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
+    assert 'strcmp(argv[1], "api-abi-policy")' in app_source
+    assert 'strcmp(argv[1], "api-abi-fixtures")' in app_source
     assert 'strcmp(argv[1], "compat-matrix")' in app_source
     assert 'strcmp(argv[1], "compat-fixtures")' in app_source
     assert 'strcmp(argv[1], "compat-baseline-v1")' in app_source
@@ -785,6 +798,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_compat_baseline_fixture_check" in app_source
     assert "run_compat_old_new_matrix" in app_source
     assert "run_compat_old_new_fixture_check" in app_source
+    assert "render_api_abi_policy" in app_source
+    assert "run_api_abi_fixture_check" in app_source
     assert "MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U" in app_source
     assert "render_metrics_http_response" in app_source
     assert "run_collector_fixture_check" in app_source
@@ -800,6 +815,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_wire_schema_fixture_check" in app_source
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U" in app_source
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xce883650U" in app_source
+    assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U" in app_source
+    assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U" in app_source
     assert 'strcmp(argv[1], "health")' in app_source
     assert 'strcmp(argv[1], "ready")' in app_source
     assert 'strcmp(argv[1], "metrics")' in app_source
@@ -848,6 +865,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "mem_service_pretraining_example.c"
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
+    assert "api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt" in release_manifest
+    assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
+    assert "client_api_version=1" in release_manifest
+    assert "client_abi_version=1" in release_manifest
+    assert "client_record_abi_size=744" in release_manifest
     assert "compat_matrix=share/lingqu/mem_service/compat-matrix.txt" in release_manifest
     assert "compat_matrix_checksum=0x8b4219c5" in release_manifest
     assert "compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt" in release_manifest
@@ -869,6 +891,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "metrics_http_listener=tcp-ipv4" in release_manifest
     assert "metrics_scrape_path=/metrics" in release_manifest
     assert "metrics_http_content_type=text/plain; version=0.0.4" in release_manifest
+    assert "mem_service_api_abi_policy_version=1" in api_abi_policy
+    assert "client_api_version=1" in api_abi_policy
+    assert "client_abi_version=1" in api_abi_policy
+    assert "client_record_abi_size=744" in api_abi_policy
+    assert "old_client_new_server_policy=compatible-within-v1" in api_abi_policy
+    assert (
+        "new_client_old_server_policy=not-certified-without-runtime-binary"
+        in api_abi_policy
+    )
     assert "mem_service_compat_matrix_version=1" in compat_matrix
     assert "wire_version_current=1" in compat_matrix
     assert "wire_schema_manifest_checksum=0xce883650" in compat_matrix
@@ -888,6 +919,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "certification_limit=old-server-runtime-binary-not-certified" in compat_old_new
     assert "wire_schema_manifest_len=9220" in release_manifest
     assert "wire_schema_manifest_checksum=0xce883650" in release_manifest
+    assert "api_abi_policy_len=875" in release_manifest
+    assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
     assert "config_schema_version=1" in release_manifest
     assert "config_schema=share/lingqu/mem_service/config/mem_service.conf.schema" in release_manifest
     assert "config_example=share/lingqu/mem_service/config/mem_service.example.conf" in release_manifest
@@ -1701,6 +1734,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
     assert "guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test" not in tracked_apps
     assert [path for path in tracked_runtime_source if "demo" in path.lower()] == []
     allowed_mem_service_release_artifacts = {
+        "guest-linux/aarch64/apps/mem_service/api-abi-policy.txt",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.conf.schema",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.example.conf",
         "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.service",

@@ -34,6 +34,7 @@ MEM_SERVICE_QWEN3 := $(ROOT)/components/mem_service/mem_service_qwen3.c
 LLM_INFER := $(ROOT)/components/llm_infer/llm_infer.c
 MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt
 MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt
+MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt
 MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt
 MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt
 MEM_SERVICE_COMPAT_OLD_NEW_MATRIX := compat-old-new-matrix.txt
@@ -111,7 +112,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -130,6 +131,7 @@ linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)
 host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host --smoke
 	./linqu_mem_service_host release-fixtures
+	./linqu_mem_service_host api-abi-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
 
@@ -138,6 +140,9 @@ print-release-manifest:
 
 print-wire-schema:
 	@cat $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST)
+
+print-api-abi-policy:
+	@cat $(MEM_SERVICE_API_ABI_POLICY)
 
 print-compat-matrix:
 	@cat $(MEM_SERVICE_COMPAT_MATRIX)
@@ -148,7 +153,7 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST)
+install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST)
 	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
@@ -157,6 +162,7 @@ install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST
 	cp $(MEM_SERVICE_CLIENT_EXAMPLES) $(INSTALL_EXAMPLEDIR)/
 	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(INSTALL_DATADIR)/release-manifest.txt
 	cp $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(INSTALL_DATADIR)/wire-schema.txt
+	cp $(MEM_SERVICE_API_ABI_POLICY) $(INSTALL_DATADIR)/api-abi-policy.txt
 	cp $(MEM_SERVICE_COMPAT_MATRIX) $(INSTALL_DATADIR)/compat-matrix.txt
 	cp $(MEM_SERVICE_COMPAT_BASELINE_V1) $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	cp $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(INSTALL_DATADIR)/compat-old-new-matrix.txt
@@ -176,6 +182,7 @@ install-smoke: install
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/wire-schema.txt
+	test -f $(INSTALL_DATADIR)/api-abi-policy.txt
 	test -f $(INSTALL_DATADIR)/compat-matrix.txt
 	test -f $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	test -f $(INSTALL_DATADIR)/compat-old-new-matrix.txt
@@ -189,6 +196,14 @@ install-smoke: install
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0xce883650$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^api_abi_policy_len=875$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^api_abi_policy_checksum=0x743f84b8$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_record_abi_size=744$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_api_compatibility=source-compatible-within-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_abi_compatibility=wire-header-and-client-record-layout-stable-within-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix_len=1887$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix_checksum=0x8b4219c5$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -233,6 +248,12 @@ install-smoke: install
 	grep -q '^operation_count=23$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^field_count=110$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^oneof_field=resolve_kv_segment.0.block_hash$$' $(INSTALL_DATADIR)/wire-schema.txt
+	grep -q '^mem_service_api_abi_policy_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
+	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
+	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
+	grep -q '^client_record_abi_size=744$$' $(INSTALL_DATADIR)/api-abi-policy.txt
+	grep -q '^old_client_new_server_policy=compatible-within-v1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
+	grep -q '^new_client_old_server_policy=not-certified-without-runtime-binary$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^mem_service_compat_matrix_version=1$$' $(INSTALL_DATADIR)/compat-matrix.txt
 	grep -q '^wire_version_current=1$$' $(INSTALL_DATADIR)/compat-matrix.txt
 	grep -q '^wire_schema_manifest_checksum=0xce883650$$' $(INSTALL_DATADIR)/compat-matrix.txt

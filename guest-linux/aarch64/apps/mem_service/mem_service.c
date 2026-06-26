@@ -28,6 +28,9 @@
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
 #define MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U
+#define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
+#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
+#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U
 #define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x8b4219c5U
@@ -45,6 +48,7 @@ static void usage(const char *argv0)
     printf(" [store-fixtures] [journal-fixtures] [config-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [durable-catalog-fixtures]");
+    printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
     printf(" [compat-old-new-matrix] [compat-old-new-fixtures]");
@@ -344,6 +348,217 @@ static int run_wire_schema_fixture_check(void)
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT,
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT,
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT);
+    return 0;
+}
+
+static int render_api_abi_policy(char *policy, size_t policy_len, size_t *used_out)
+{
+    size_t used = 0;
+
+    if (policy == NULL || policy_len == 0) {
+        return -1;
+    }
+    policy[0] = '\0';
+    if (append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "mem_service_api_abi_policy_version=%u\n",
+                                MEM_SERVICE_API_ABI_POLICY_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_api_version=%u\n",
+                                MEM_SERVICE_CLIENT_API_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_abi_version=%u\n",
+                                MEM_SERVICE_CLIENT_ABI_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_api_compatibility=%s\n",
+                                MEM_SERVICE_CLIENT_API_COMPATIBILITY) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_abi_compatibility=%s\n",
+                                MEM_SERVICE_CLIENT_ABI_COMPATIBILITY) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_record_abi_size=%u\n",
+                                MEM_SERVICE_CLIENT_RECORD_ABI_SIZE) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_record_actual_size=%zu\n",
+                                sizeof(struct mem_service_client_record)) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_key_len=%u\n",
+                                MEM_SERVICE_CLIENT_KEY_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_id_len=%u\n",
+                                MEM_SERVICE_CLIENT_ID_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "client_state_len=%u\n",
+                                MEM_SERVICE_CLIENT_STATE_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_version_min=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_version_current=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_version_max=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_header_len=%u\n",
+                                MEM_SERVICE_WIRE_HEADER_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_schema_version=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_payload_format=text-kv\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "unknown_field_policy=ignored_when_optional\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_field_policy=missing_required_field_fails_schema\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "operation_id_policy=stable-within-v1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "status_code_policy=stable-within-v1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "old_client_new_server_policy=compatible-within-v1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "new_client_old_server_policy=not-certified-without-runtime-binary\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "upgrade_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "rollback_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "binary_typed_schema=not-yet\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_api_abi_policy(void)
+{
+    char policy[4096];
+    size_t used = 0;
+
+    if (render_api_abi_policy(policy, sizeof(policy), &used) != 0) {
+        fprintf(stderr, "mem_service api-abi-policy: render failed\n");
+        return 1;
+    }
+    (void)used;
+    fputs(policy, stdout);
+    return 0;
+}
+
+static int run_api_abi_fixture_check(void)
+{
+    char policy[4096];
+    size_t used = 0;
+    uint32_t checksum;
+    int failures = 0;
+
+    if (render_api_abi_policy(policy, sizeof(policy), &used) != 0) {
+        fprintf(stderr, "mem_service api-abi-fixtures: render failed\n");
+        return 1;
+    }
+    checksum = mem_service_wire_checksum(policy, used);
+    if (used != MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service api-abi-fixtures: policy len actual=%zu expected=%u\n",
+                used,
+                MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN);
+        failures -= 1;
+    }
+    if (checksum != MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service api-abi-fixtures: policy checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM);
+        failures -= 1;
+    }
+    if (MEM_SERVICE_CLIENT_API_VERSION != 1U ||
+        MEM_SERVICE_CLIENT_ABI_VERSION != 1U ||
+        MEM_SERVICE_CLIENT_RECORD_ABI_SIZE !=
+            sizeof(struct mem_service_client_record) ||
+        MEM_SERVICE_WIRE_VERSION != 1U ||
+        MEM_SERVICE_WIRE_HEADER_LEN != 48U ||
+        MEM_SERVICE_WIRE_SCHEMA_VERSION != 1U) {
+        fprintf(stderr, "mem_service api-abi-fixtures: version/layout mismatch\n");
+        failures -= 1;
+    }
+    if (strstr(policy, "old_client_new_server_policy=compatible-within-v1\n") ==
+            NULL ||
+        strstr(policy,
+               "new_client_old_server_policy=not-certified-without-runtime-binary\n") ==
+            NULL ||
+        strstr(policy, "upgrade_policy=current-version-only\n") == NULL ||
+        strstr(policy, "rollback_policy=current-version-only\n") == NULL) {
+        fprintf(stderr, "mem_service api-abi-fixtures: required policy missing\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service api-abi-fixtures: status=ok policy_version=%u "
+           "policy_len=%u policy_checksum=0x%08x client_api_version=%u "
+           "client_abi_version=%u client_record_abi_size=%u\n",
+           MEM_SERVICE_API_ABI_POLICY_VERSION,
+           MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN,
+           MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM,
+           MEM_SERVICE_CLIENT_API_VERSION,
+           MEM_SERVICE_CLIENT_ABI_VERSION,
+           MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
     return 0;
 }
 
@@ -1576,6 +1791,17 @@ static int run_release_manifest(void)
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN);
     printf("wire_schema_manifest_checksum=0x%08x\n",
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM);
+    printf("api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt\n");
+    printf("api_abi_policy_len=%u\n", MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN);
+    printf("api_abi_policy_checksum=0x%08x\n",
+           MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM);
+    printf("client_api_version=%u\n", MEM_SERVICE_CLIENT_API_VERSION);
+    printf("client_abi_version=%u\n", MEM_SERVICE_CLIENT_ABI_VERSION);
+    printf("client_record_abi_size=%u\n", MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
+    printf("client_api_compatibility=%s\n",
+           MEM_SERVICE_CLIENT_API_COMPATIBILITY);
+    printf("client_abi_compatibility=%s\n",
+           MEM_SERVICE_CLIENT_ABI_COMPATIBILITY);
     printf("compat_matrix=share/lingqu/mem_service/compat-matrix.txt\n");
     printf("compat_matrix_len=%u\n", MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN);
     printf("compat_matrix_checksum=0x%08x\n",
@@ -1697,9 +1923,21 @@ static int run_release_fixture_check(void)
         fprintf(stderr, "mem_service release-fixtures: wire_schema_version mismatch\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_CLIENT_API_VERSION != 1U ||
+        MEM_SERVICE_CLIENT_ABI_VERSION != 1U ||
+        MEM_SERVICE_CLIENT_RECORD_ABI_SIZE !=
+            sizeof(struct mem_service_client_record)) {
+        fprintf(stderr, "mem_service release-fixtures: api/abi policy mismatch\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM == 0U) {
         fprintf(stderr, "mem_service release-fixtures: schema manifest fixture missing\n");
+        failures -= 1;
+    }
+    if (MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM == 0U) {
+        fprintf(stderr, "mem_service release-fixtures: api/abi policy fixture missing\n");
         failures -= 1;
     }
     if (MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U ||
@@ -1750,6 +1988,7 @@ static int run_release_fixture_check(void)
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "
+           "api_abi_policies=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -1757,12 +1996,15 @@ static int run_release_fixture_check(void)
            "client_api_profiles=2 compat_artifacts=3 "
            "operations=23 statuses=11 "
            "schema_manifest_len=%u schema_manifest_checksum=0x%08x "
+           "api_abi_policy_len=%u api_abi_policy_checksum=0x%08x "
            "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
            "compat_baseline_len=%u compat_baseline_checksum=0x%08x "
            "compat_old_new_matrix_len=%u "
            "compat_old_new_matrix_checksum=0x%08x\n",
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN,
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM,
+           MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN,
+           MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
@@ -3885,6 +4127,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "client-retry-fixtures") == 0) {
         return run_client_retry_fixture_check();
+    }
+    if (strcmp(argv[1], "api-abi-policy") == 0) {
+        return run_api_abi_policy();
+    }
+    if (strcmp(argv[1], "api-abi-fixtures") == 0) {
+        return run_api_abi_fixture_check();
     }
     if (strcmp(argv[1], "compat-matrix") == 0) {
         return run_compat_matrix();

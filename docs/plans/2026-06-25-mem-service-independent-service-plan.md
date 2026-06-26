@@ -54,20 +54,21 @@
 | structural tests | `guest-linux/aarch64/tests/test_mem_service_record_recycling.py` | 已有 |
 | independent deployment assessment | `docs/mem_service_independent_deployment_assessment.md` | 已有 |
 | config/deploy contract | `serve --config <path>` 支持 text key/value config；`config-fixtures` 校验 schema 约束；发布布局包含 config schema、example config 和 systemd-like deployment manifest | 已有最小版本 |
-| release manifest CLI | `linqu_mem_service release-manifest` 和 `release-fixtures` 冻结 core binary、public headers、client SDK sources、SDK examples、config/deploy artifacts、metrics export format、client retry policy、pretraining refs 与 pretraining step commit client API profiles、wire/schema versions、schema manifest checksum、operation/status IDs | 已有最小版本 |
+| release manifest CLI | `linqu_mem_service release-manifest` 和 `release-fixtures` 冻结 core binary、public headers、client SDK sources、SDK examples、config/deploy artifacts、API/ABI policy artifact、metrics export format、client retry policy、pretraining refs 与 pretraining step commit client API profiles、wire/schema versions、schema manifest checksum、operation/status IDs | 已有最小版本 |
+| API/ABI policy CLI | `linqu_mem_service api-abi-policy` 和 `api-abi-fixtures` 冻结 client API/ABI version、public record ABI size、wire/header/schema version、old/new policy、upgrade/rollback policy，并随 install layout 发布 | 已有最小版本 |
 | compat matrix CLI | `linqu_mem_service compat-matrix`、`compat-fixtures`、`compat-baseline-v1`、`compat-baseline-fixtures`、`compat-old-new-matrix` 和 `compat-old-new-fixtures` 冻结当前 wire/schema、release layout、retry、idempotency、audit、snapshot、journal 兼容规则，old-v1-client 到 current-server 的最小兼容 baseline，以及覆盖 23 个 operation 的 v1 old/new schema-profile matrix，并随 install layout 发布 | 已有 schema-profile 版本 |
-| install layout smoke | `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr` 安装 binary/header/client source/SDK examples/release manifest/wire schema manifest/compat matrix/v1 baseline/old-new schema-profile matrix/config/deploy/host deploy artifacts 并校验布局 | 已有最小版本 |
+| install layout smoke | `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr` 安装 binary/header/client source/SDK examples/release manifest/wire schema manifest/API-ABI policy/compat matrix/v1 baseline/old-new schema-profile matrix/config/deploy/host deploy artifacts 并校验布局 | 已有最小版本 |
 
 当前主要缺口：
 
 | 缺口 | 对用户的影响 |
 | --- | --- |
-| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、`serve --metrics-listen tcp:<ipv4>:<port>` 真实 HTTP listener、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 release compat matrix、v1 baseline 和 old/new schema-profile matrix，但还缺 retry/idempotency old/new runtime compatibility matrix、真实采集器集成门禁和产品级 restore/durable policy |
+| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、`serve --metrics-listen tcp:<ipv4>:<port>` 真实 HTTP listener、collector fixture、installed-host collector smoke、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 API/ABI policy、最小 release compat matrix、v1 baseline 和 old/new schema-profile matrix，但还缺 retry/idempotency old/new runtime compatibility matrix、生产级采集器/告警集成门禁和产品级 restore/durable policy |
 | wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus，以及覆盖 23 个 operation 的 old-minimal/current-plus-future schema-profile compatibility fixtures；还缺 binary/typed payload schema、旧 server runtime binary 组合测试和跨版本 compatibility fixtures |
 | durable service backend 仍是最小 snapshot+journal + storage-root layout + sealed local block | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；`serve --config storage_root=<dir>` 已能创建 `catalog/manifest.txt`、`blocks/`、`quarantine/`，并在省略 `store` 时派生 `catalog/store.snapshot` 完成重启恢复；`payload_block_backend=sealed-local-block-v1` 已支持 `payload_inline` 和 server-side `payload_path` 文件摄取写入 `blocks/<checksum>.block`，可绕开 4096B wire payload 限制处理本地大文件 payload，object/artifact 读取时重新校验长度/checksum，损坏则 `checksum_mismatch` fail-closed 并 best-effort quarantine；还缺产品级 durable catalog、journal truncation/atomicity policy、remote/chunked sealed payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new runtime compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
 | pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、host daemon artifact、systemd-like deployment manifest、host systemd-like deployment manifest、`deployment-fixtures`、`host-artifact-smoke`、`installed-host-service-manager-smoke`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实系统 systemd 环境门禁和真实采集器观测门禁 |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、API/ABI policy artifact、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、host daemon artifact、systemd-like deployment manifest、host systemd-like deployment manifest、`deployment-fixtures`、`api-abi-fixtures`、`host-artifact-smoke`、`installed-host-service-manager-smoke`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、collector scrape contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实系统 systemd 环境门禁和生产级采集器/告警门禁 |
 
 ## 3. 目标架构
 
@@ -922,15 +923,16 @@ Recommended order:
    gradient, and optimizer-state helpers into release-grade typed wire/schema
    contracts.
 8. Extend the minimal release artifact layout into deployable package gates:
-   the current config schema, example config, service unit manifest, `/metrics`
-   response envelope, and TCP metrics listener contract are installed and
+   the current config schema, example config, service unit manifest, API/ABI
+   policy artifact, `/metrics` response envelope, and TCP metrics listener contract are installed and
    fixture-checked, a host daemon artifact is installed under `libexec`,
    checked by `host-artifact-smoke`, and exercised through the installed host
    service unit by `installed-host-service-manager-smoke`; a portable lifecycle
-   smoke now covers config startup, ready/health, HTTP scrape, SIGTERM stop,
-   and socket cleanup. Remaining work is protocol compatibility bundle,
-   upgrade/rollback smoke, real systemd environment smoke, external collector
-   integration smoke, and metrics/admin output compatibility.
+   smoke now covers config startup, ready/health, HTTP scrape, collector
+   metrics parse, SIGTERM stop, and socket cleanup. Remaining work is protocol
+   compatibility bundle, upgrade/rollback smoke, real systemd environment
+   smoke, production collector/alert integration smoke, and metrics/admin
+   output compatibility.
 
 ## 7. Completion Definition
 
