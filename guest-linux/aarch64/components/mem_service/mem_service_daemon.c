@@ -14,6 +14,7 @@
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -28,6 +29,8 @@
 #define MEM_SERVICE_TCP_SPEC_PREFIX "tcp:"
 #define MEM_SERVICE_STORE_MAGIC "mem_service_store_v1"
 #define MEM_SERVICE_JOURNAL_MAGIC "mem_service_journal_v1"
+#define MEM_SERVICE_DURABLE_CATALOG_MAGIC "mem_service_durable_catalog_v1"
+#define MEM_SERVICE_DURABLE_CATALOG_MANIFEST "manifest.txt"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
 
 static const uint64_t mem_service_latency_bucket_limits_ms
@@ -1535,6 +1538,180 @@ static int mem_service_make_journal_path(const char *store_path,
                : -1;
 }
 
+static int mem_service_join_path(char *out,
+                                 size_t out_len,
+                                 const char *base,
+                                 const char *name)
+{
+    size_t base_len;
+    const char *separator = "/";
+
+    if (out == NULL || out_len == 0 || base == NULL || base[0] == '\0' ||
+        name == NULL || name[0] == '\0') {
+        return -1;
+    }
+    base_len = strlen(base);
+    if (base_len > 0 && base[base_len - 1U] == '/') {
+        separator = "";
+    }
+    return snprintf(out, out_len, "%s%s%s", base, separator, name) < (int)out_len
+               ? 0
+               : -1;
+}
+
+static int mem_service_ensure_dir(const char *path)
+{
+    struct stat st;
+
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+    if (mkdir(path, 0755) == 0) {
+        return 0;
+    }
+    if (errno != EEXIST) {
+        return -1;
+    }
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    return S_ISDIR(st.st_mode) ? 0 : -1;
+}
+
+static bool mem_service_path_is_dir(const char *path)
+{
+    struct stat st;
+
+    return path != NULL && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int mem_service_make_catalog_path(const char *storage_root,
+                                         const char *name,
+                                         char *path,
+                                         size_t path_len)
+{
+    char catalog_dir[512];
+
+    if (mem_service_join_path(catalog_dir,
+                              sizeof(catalog_dir),
+                              storage_root,
+                              "catalog") != 0) {
+        return -1;
+    }
+    return mem_service_join_path(path, path_len, catalog_dir, name);
+}
+
+static int mem_service_prepare_durable_catalog_layout(const char *storage_root)
+{
+    char catalog_dir[512];
+    char block_dir[512];
+    char quarantine_dir[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_join_path(catalog_dir,
+                              sizeof(catalog_dir),
+                              storage_root,
+                              "catalog") != 0 ||
+        mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0) {
+        return -1;
+    }
+    if (mem_service_ensure_dir(storage_root) != 0 ||
+        mem_service_ensure_dir(catalog_dir) != 0 ||
+        mem_service_ensure_dir(block_dir) != 0 ||
+        mem_service_ensure_dir(quarantine_dir) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int mem_service_write_durable_catalog_manifest(const char *storage_root,
+                                                      const char *store_path)
+{
+    char manifest_path[512];
+    char catalog_dir[512];
+    char block_dir[512];
+    char quarantine_dir[512];
+    char journal_path[512];
+    char tmp_path[512];
+    FILE *file;
+    int write_rc;
+
+    if (storage_root == NULL || storage_root[0] == '\0') {
+        return 0;
+    }
+    if (store_path == NULL || store_path[0] == '\0') {
+        return -1;
+    }
+    if (mem_service_make_catalog_path(storage_root,
+                                      MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
+                                      manifest_path,
+                                      sizeof(manifest_path)) != 0 ||
+        mem_service_join_path(catalog_dir,
+                              sizeof(catalog_dir),
+                              storage_root,
+                              "catalog") != 0 ||
+        mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0 ||
+        snprintf(tmp_path,
+                 sizeof(tmp_path),
+                 "%s.tmp.%ld",
+                 manifest_path,
+                 (long)getpid()) >= (int)sizeof(tmp_path)) {
+        return -1;
+    }
+    file = fopen(tmp_path, "w");
+    if (file == NULL) {
+        return -1;
+    }
+    write_rc = fprintf(file,
+                       "%s\n"
+                       "layout=storage-root-v1\n"
+                       "catalog_dir=%s\n"
+                       "block_dir=%s\n"
+                       "quarantine_dir=%s\n"
+                       "store_path=%s\n"
+                       "journal_path=%s\n"
+                       "store_magic=%s\n"
+                       "journal_magic=%s\n"
+                       "payload_block_backend=layout-only\n"
+                       "corrupt_payload_policy=quarantine-fail-closed\n",
+                       MEM_SERVICE_DURABLE_CATALOG_MAGIC,
+                       catalog_dir,
+                       block_dir,
+                       quarantine_dir,
+                       store_path,
+                       journal_path,
+                       MEM_SERVICE_STORE_MAGIC,
+                       MEM_SERVICE_JOURNAL_MAGIC);
+    if (fclose(file) != 0 || write_rc < 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, manifest_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
 static int mem_service_load_store(struct mem_service *svc, const char *store_path)
 {
     FILE *file;
@@ -2176,6 +2353,98 @@ int mem_service_run_journal_fixture_check(void)
            loaded_audit_events,
            journal_only.audit_event_count,
            journal_only.metrics.idempotency_replay_count);
+    return 0;
+}
+
+int mem_service_run_durable_catalog_fixture_check(void)
+{
+    char storage_root[160];
+    char catalog_dir[192];
+    char block_dir[192];
+    char quarantine_dir[192];
+    char manifest_path[224];
+    char store_path[224];
+    char journal_path[240];
+
+    snprintf(storage_root,
+             sizeof(storage_root),
+             "/tmp/linqu_mem_service_catalog_fixture_%ld",
+             (long)getpid());
+    if (mem_service_join_path(catalog_dir,
+                              sizeof(catalog_dir),
+                              storage_root,
+                              "catalog") != 0 ||
+        mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        mem_service_make_catalog_path(storage_root,
+                                      MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
+                                      manifest_path,
+                                      sizeof(manifest_path)) != 0 ||
+        mem_service_make_catalog_path(storage_root,
+                                      "store.snapshot",
+                                      store_path,
+                                      sizeof(store_path)) != 0 ||
+        mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service durable-catalog-fixtures: path setup failed\n");
+        return 1;
+    }
+
+    unlink(manifest_path);
+    unlink(store_path);
+    unlink(journal_path);
+    rmdir(quarantine_dir);
+    rmdir(block_dir);
+    rmdir(catalog_dir);
+    rmdir(storage_root);
+
+    if (mem_service_prepare_durable_catalog_layout(storage_root) != 0 ||
+        mem_service_write_durable_catalog_manifest(storage_root, store_path) != 0) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: catalog prepare failed\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (!mem_service_path_is_dir(catalog_dir) ||
+        !mem_service_path_is_dir(block_dir) ||
+        !mem_service_path_is_dir(quarantine_dir) ||
+        !mem_service_file_contains(manifest_path,
+                                   MEM_SERVICE_DURABLE_CATALOG_MAGIC) ||
+        !mem_service_file_contains(manifest_path, "layout=storage-root-v1") ||
+        !mem_service_file_contains(manifest_path, "payload_block_backend=layout-only") ||
+        !mem_service_file_contains(manifest_path,
+                                   "corrupt_payload_policy=quarantine-fail-closed") ||
+        !mem_service_file_contains(manifest_path, store_path) ||
+        !mem_service_file_contains(manifest_path, journal_path)) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: catalog content mismatch\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    unlink(manifest_path);
+    rmdir(quarantine_dir);
+    rmdir(block_dir);
+    rmdir(catalog_dir);
+    rmdir(storage_root);
+    printf("mem_service durable-catalog-fixtures: status=ok layout=storage-root-v1 "
+           "manifest=%s store=%s payload_block_backend=layout-only\n",
+           MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
+           "catalog/store.snapshot");
     return 0;
 }
 
@@ -4759,9 +5028,11 @@ static int mem_service_handle_metrics_http_client(int client_fd, struct mem_serv
     return status == MEM_SERVICE_WIRE_STATUS_OK ? 0 : -1;
 }
 
-int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
-                                                       const char *store_path,
-                                                       const char *metrics_listen_spec)
+int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
+    const char *listen_spec,
+    const char *store_path,
+    const char *metrics_listen_spec,
+    const char *storage_root)
 {
     struct mem_service svc;
     struct sockaddr_un addr;
@@ -4781,8 +5052,20 @@ int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
         fprintf(stderr, "mem_service serve: init failed\n");
         return 1;
     }
+    if (mem_service_prepare_durable_catalog_layout(storage_root) != 0) {
+        fprintf(stderr,
+                "mem_service serve: durable catalog layout failed root=%s\n",
+                storage_root != NULL ? storage_root : "");
+        return 1;
+    }
     if (mem_service_load_durable_store(&svc, store_path) != 0) {
         fprintf(stderr, "mem_service serve: store load failed path=%s\n", store_path);
+        return 1;
+    }
+    if (mem_service_write_durable_catalog_manifest(storage_root, store_path) != 0) {
+        fprintf(stderr,
+                "mem_service serve: durable catalog manifest failed root=%s\n",
+                storage_root != NULL ? storage_root : "");
         return 1;
     }
     server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -4832,6 +5115,9 @@ int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
     }
     if (metrics_fd >= 0) {
         printf(" metrics_listen=%s", metrics_listen_spec);
+    }
+    if (storage_root != NULL && storage_root[0] != '\0') {
+        printf(" storage_root=%s", storage_root);
     }
     printf("\n");
     fflush(stdout);
@@ -4895,6 +5181,17 @@ int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
     unlink(path);
     printf("mem_service serve: status=stopped\n");
     return rc;
+}
+
+int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
+                                                       const char *store_path,
+                                                       const char *metrics_listen_spec)
+{
+    return mem_service_run_unix_daemon_with_store_metrics_and_catalog(
+        listen_spec,
+        store_path,
+        metrics_listen_spec,
+        NULL);
 }
 
 int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *store_path)

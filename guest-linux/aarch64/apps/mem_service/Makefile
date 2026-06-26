@@ -186,6 +186,9 @@ install-smoke: install
 	grep -q '^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_shutdown=signal-clean-stop$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^durable_catalog=storage-root-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^durable_catalog_manifest=catalog/manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^payload_block_backend=layout-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_export_format=prometheus-text$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_listen_config=metrics_listen$$' $(INSTALL_DATADIR)/release-manifest.txt

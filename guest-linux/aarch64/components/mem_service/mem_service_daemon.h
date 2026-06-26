@@ -6,8 +6,14 @@ int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *
 int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
                                                        const char *store_path,
                                                        const char *metrics_listen_spec);
+int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
+    const char *listen_spec,
+    const char *store_path,
+    const char *metrics_listen_spec,
+    const char *storage_root);
 int mem_service_run_wire_fixture_check(void);
 int mem_service_run_store_fixture_check(void);
 int mem_service_run_journal_fixture_check(void);
+int mem_service_run_durable_catalog_fixture_check(void);
 
 #endif

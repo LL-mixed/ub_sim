@@ -64,10 +64,10 @@
 | --- | --- |
 | service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、`serve --metrics-listen tcp:<ipv4>:<port>` 真实 HTTP listener、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 release compat matrix、v1 baseline 和 old/new schema-profile matrix，但还缺 retry/idempotency old/new runtime compatibility matrix、真实采集器集成门禁和产品级 restore/durable policy |
 | wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus，以及覆盖 23 个 operation 的 old-minimal/current-plus-future schema-profile compatibility fixtures；还缺 binary/typed payload schema、旧 server runtime binary 组合测试和跨版本 compatibility fixtures |
-| durable service backend 仍是最小 snapshot+journal | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；还缺产品级 durable catalog、journal truncation/atomicity policy、payload block backend、migration |
+| durable service backend 仍是最小 snapshot+journal + storage-root layout | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；`serve --config storage_root=<dir>` 已能创建 `catalog/manifest.txt`、`blocks/`、`quarantine/`，并在省略 `store` 时派生 `catalog/store.snapshot` 完成重启恢复；还缺产品级 durable catalog、journal truncation/atomicity policy、sealed payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new runtime compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
 | pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实 host/systemd service-manager smoke 和真实采集器观测门禁 |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、真实 host/systemd service-manager smoke 和真实采集器观测门禁 |
 
 ## 3. 目标架构
 
@@ -327,7 +327,7 @@ linqu_mem_service can put/get object and publish/resolve prefix/KV over Unix soc
    store               # current minimal optional field
    node_id             # current schema-only field
    cluster_id          # current schema-only field
-   storage_root        # current schema-only field
+   storage_root        # current storage-root catalog layout and derived store field
    backend             # current schema validates snapshot and snapshot+journal
    max_records         # current schema validates u64
    max_payload_bytes   # current schema validates u64
@@ -700,7 +700,7 @@ installable serving/pretraining SDK examples prove minimal two-process RPC smoke
 pretraining worker runtime gate proves typed multi-worker publish/resolve, checkpoint restart, stale/checksum fail-closed, and idempotency conflict
 shared text key/value payload helper, public operation schema contract, and request schema fixture gate exist
 wire-schema CLI and checked-in wire-schema.txt freeze the current operation/field manifest
-minimal --store snapshot+journal exists and carries completed idempotency records plus bounded audit records, but no production durable catalog/block backend or journal truncation/atomicity policy
+minimal --store snapshot+journal exists and carries completed idempotency records plus bounded audit records; storage_root layout manifest and derived store recovery exist, but no production durable catalog/sealed block backend or journal truncation/atomicity policy
 minimal release manifest CLI, wire schema manifest, compat matrix, v1 baseline, old/new schema-profile matrix, config/deploy artifacts, SDK examples, and install-smoke layout exist
 no retry/idempotency old/new runtime compatibility matrix, model/session mismatch matrix, or product-grade multi-worker pretraining commit/audit matrix
 ```
@@ -905,7 +905,8 @@ Recommended order:
    `export-snapshot-to`/`restore-snapshot`/`metrics-export` commands are the
    minimal admin slice, including page assembly, transactional paged restore,
    and Prometheus text export.
-5. Add durable catalog only after RPC contracts are stable enough to test.
+5. Extend the current storage-root catalog layout into a product durable
+   catalog after RPC contracts are stable enough to test.
 6. Promote the current `mem_service_client.c/h` typed C API into a
    release-grade serving/pretraining SDK:
    stable headers, retry/idempotency compatibility fixtures, package metadata,

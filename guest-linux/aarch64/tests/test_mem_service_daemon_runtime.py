@@ -1728,6 +1728,8 @@ int main(int argc, char **argv)
         self.assertIn("schema_manifest_len=8695", fixtures.stdout)
         self.assertIn("schema_manifest_checksum=0x8a8ca3c4", fixtures.stdout)
         self.assertIn("durable_backends=1", fixtures.stdout)
+        self.assertIn("durable_catalogs=1", fixtures.stdout)
+        self.assertIn("payload_block_backends=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
@@ -1743,6 +1745,13 @@ int main(int argc, char **argv)
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, expected)
+
+    def test_durable_catalog_fixtures_cli_validates_storage_root_layout(self):
+        fixtures = self._run_client("durable-catalog-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("layout=storage-root-v1", fixtures.stdout)
+        self.assertIn("payload_block_backend=layout-only", fixtures.stdout)
 
     def test_deployment_fixtures_cli_validates_service_and_metrics_scrape_contract(self):
         fixtures = self._run_client("deployment-fixtures")
@@ -1824,6 +1833,74 @@ int main(int argc, char **argv)
         finally:
             if proc.poll() is None:
                 self._stop_server(proc)
+
+    def test_storage_root_catalog_derives_store_and_recovers_object(self):
+        storage_root = self.root / "durable-root"
+        config_path = self.root / "mem_service.catalog.conf"
+        store_path = storage_root / "catalog" / "store.snapshot"
+        journal_path = storage_root / "catalog" / "store.snapshot.journal"
+        manifest_path = storage_root / "catalog" / "manifest.txt"
+        config_path.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"storage_root={storage_root}\n"
+            "backend=snapshot+journal\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+            "adapter_enablement=core\n"
+        )
+        proc = self._start_server(config_path=config_path)
+        try:
+            put = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "catalog-object",
+                "--version",
+                "11",
+                "--checksum",
+                "11011",
+                "--backing-len",
+                "256",
+            )
+            self.assertEqual(put.returncode, 0, put.stderr + put.stdout)
+        finally:
+            stdout, stderr, rc = self._stop_server_and_collect(proc)
+        self.assertEqual(rc, 0, stderr + stdout)
+        self.assertIn(f"store={store_path}", stdout)
+        self.assertIn(f"storage_root={storage_root}", stdout)
+        self.assertTrue((storage_root / "catalog").is_dir())
+        self.assertTrue((storage_root / "blocks").is_dir())
+        self.assertTrue((storage_root / "quarantine").is_dir())
+        self.assertTrue(manifest_path.exists())
+        manifest = manifest_path.read_text()
+        self.assertIn("mem_service_durable_catalog_v1", manifest)
+        self.assertIn("layout=storage-root-v1", manifest)
+        self.assertIn(f"store_path={store_path}", manifest)
+        self.assertIn(f"journal_path={journal_path}", manifest)
+        self.assertIn("payload_block_backend=layout-only", manifest)
+        self.assertIn("corrupt_payload_policy=quarantine-fail-closed", manifest)
+        self.assertTrue(store_path.exists())
+        self.assertTrue(journal_path.exists())
+        self.assertIn("key=catalog-object", store_path.read_text())
+
+        proc = self._start_server(config_path=config_path)
+        try:
+            recovered = self._run_client(
+                "get-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "catalog-object",
+            )
+            self.assertEqual(recovered.returncode,
+                             0,
+                             recovered.stderr + recovered.stdout)
+            self.assertIn("status=ok", recovered.stdout)
+            self.assertIn("version=11", recovered.stdout)
+            self.assertIn("object_payload_checksum=11011", recovered.stdout)
+        finally:
+            self._stop_server(proc)
 
     def test_compat_matrix_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("compat-fixtures")
@@ -2273,6 +2350,9 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("compat_baseline_checksum=0x32f075cf", manifest.read_text())
             self.assertIn("compat_old_new_matrix_checksum=0x5130ec56", manifest.read_text())
             self.assertIn("durable_backend=snapshot+journal", manifest.read_text())
+            self.assertIn("durable_catalog=storage-root-v1", manifest.read_text())
+            self.assertIn("durable_catalog_manifest=catalog/manifest.txt", manifest.read_text())
+            self.assertIn("payload_block_backend=layout-only", manifest.read_text())
             self.assertIn("durable_journal=store-path.journal", manifest.read_text())
             self.assertIn("deployment_smoke=deployment-fixtures", manifest.read_text())
             self.assertIn(

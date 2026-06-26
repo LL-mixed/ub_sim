@@ -44,6 +44,7 @@ static void usage(const char *argv0)
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [config-fixtures]");
     printf(" [metrics-export-fixtures] [deployment-fixtures]");
+    printf(" [durable-catalog-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
     printf(" [compat-old-new-matrix] [compat-old-new-fixtures]");
@@ -1594,6 +1595,9 @@ static int run_release_manifest(void)
     printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
     printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
+    printf("durable_catalog=storage-root-v1\n");
+    printf("durable_catalog_manifest=catalog/manifest.txt\n");
+    printf("payload_block_backend=layout-only\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
     printf("metrics_export_format=prometheus-text\n");
@@ -1733,7 +1737,7 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
-           "durable_backends=1 "
+           "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
            "client_retry_policies=1 "
@@ -1959,9 +1963,11 @@ static int append_idempotency_payload_field(char *payload,
 struct mem_service_cli_config {
     bool has_listen;
     bool has_store;
+    bool has_storage_root;
     bool has_metrics_listen;
     char listen[160];
     char store[512];
+    char storage_root[512];
     char metrics_listen[160];
 };
 
@@ -2037,6 +2043,15 @@ static int apply_config_field(struct mem_service_cli_config *config,
         config->has_store = true;
         return 0;
     }
+    if (strcmp(name, "storage_root") == 0) {
+        if (copy_config_value(config->storage_root,
+                              sizeof(config->storage_root),
+                              value) != 0) {
+            return -1;
+        }
+        config->has_storage_root = true;
+        return 0;
+    }
     if (strcmp(name, "metrics_listen") == 0) {
         if (strncmp(value, "tcp:", 4) != 0 ||
             copy_config_value(config->metrics_listen,
@@ -2068,7 +2083,6 @@ static int apply_config_field(struct mem_service_cli_config *config,
     }
     if (strcmp(name, "node_id") == 0 ||
         strcmp(name, "cluster_id") == 0 ||
-        strcmp(name, "storage_root") == 0 ||
         strcmp(name, "retention") == 0) {
         return value[0] != '\0' ? 0 : -1;
     }
@@ -2222,9 +2236,11 @@ static int run_config_fixture_check(void)
     if (load_mem_service_config(valid_path, &config, false) != 0 ||
         !config.has_listen ||
         !config.has_store ||
+        !config.has_storage_root ||
         !config.has_metrics_listen ||
         strcmp(config.listen, "unix:/tmp/linqu_mem_service_fixture.sock") != 0 ||
         strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0 ||
+        strcmp(config.storage_root, "/tmp/linqu_mem_service_fixture") != 0 ||
         strcmp(config.metrics_listen, "tcp:127.0.0.1:9900") != 0) {
         failures -= 1;
     }
@@ -2237,11 +2253,37 @@ static int run_config_fixture_check(void)
         fprintf(stderr, "mem_service config-fixtures: failed\n");
         return 1;
     }
-    printf("mem_service config-fixtures: status=ok schema_version=%u listen=%s store=%s\n",
+    printf("mem_service config-fixtures: status=ok schema_version=%u listen=%s store=%s "
+           "storage_root=%s\n",
            MEM_SERVICE_CONFIG_SCHEMA_VERSION,
            "unix:/tmp/linqu_mem_service_fixture.sock",
-           "/tmp/linqu_mem_service_fixture.store");
+           "/tmp/linqu_mem_service_fixture.store",
+           "/tmp/linqu_mem_service_fixture");
     return 0;
+}
+
+static int derive_store_from_storage_root(char *out,
+                                          size_t out_len,
+                                          const char *storage_root)
+{
+    size_t root_len;
+    const char *separator = "/";
+
+    if (out == NULL || out_len == 0 || storage_root == NULL ||
+        storage_root[0] == '\0') {
+        return -1;
+    }
+    root_len = strlen(storage_root);
+    if (root_len > 0 && storage_root[root_len - 1U] == '/') {
+        separator = "";
+    }
+    return snprintf(out,
+                    out_len,
+                    "%s%scatalog/store.snapshot",
+                    storage_root,
+                    separator) < (int)out_len
+               ? 0
+               : -1;
 }
 
 static int run_serve(int argc, char **argv)
@@ -2253,8 +2295,11 @@ static int run_serve(int argc, char **argv)
     const char *listen_spec = mem_service_default_unix_socket_spec();
     const char *store_path = NULL;
     const char *metrics_listen_spec = NULL;
+    const char *storage_root = NULL;
+    char derived_store[512];
     struct mem_service_cli_config config;
 
+    derived_store[0] = '\0';
     if ((config_path == NULL && option_present(argc, argv, "--config")) ||
         parse_socket_arg(argc, argv, "--listen", &listen_spec) != 0) {
         return 2;
@@ -2265,8 +2310,21 @@ static int run_serve(int argc, char **argv)
         }
         listen_spec = config.has_listen ? config.listen : listen_spec;
         store_path = config.has_store ? config.store : NULL;
+        storage_root = config.has_storage_root ? config.storage_root : NULL;
         metrics_listen_spec =
             config.has_metrics_listen ? config.metrics_listen : metrics_listen_spec;
+        if (store_path == NULL && storage_root != NULL &&
+            derive_store_from_storage_root(derived_store,
+                                           sizeof(derived_store),
+                                           storage_root) != 0) {
+            fprintf(stderr,
+                    "mem_service: failed to derive store from storage_root=%s\n",
+                    storage_root);
+            return 2;
+        }
+        if (store_path == NULL && derived_store[0] != '\0') {
+            store_path = derived_store;
+        }
     }
     if (listen_override != NULL) {
         listen_spec = listen_override;
@@ -2277,9 +2335,10 @@ static int run_serve(int argc, char **argv)
     if (metrics_listen_override != NULL) {
         metrics_listen_spec = metrics_listen_override;
     }
-    return mem_service_run_unix_daemon_with_store_and_metrics(listen_spec,
-                                                             store_path,
-                                                             metrics_listen_spec);
+    return mem_service_run_unix_daemon_with_store_metrics_and_catalog(listen_spec,
+                                                                     store_path,
+                                                                     metrics_listen_spec,
+                                                                     storage_root);
 }
 
 static int run_client_status(int argc,
@@ -3639,6 +3698,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "deployment-fixtures") == 0) {
         return run_deployment_fixture_check();
+    }
+    if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
+        return mem_service_run_durable_catalog_fixture_check();
     }
     if (strcmp(argv[1], "client-retry-fixtures") == 0) {
         return run_client_retry_fixture_check();

@@ -191,6 +191,7 @@ Build and validation entrypoints:
 - `apps/mem_service` builds `/bin/linqu_mem_service` for core smoke/self-test,
   wire fixture validation, store/journal fixture validation, Unix-socket
   `serve`, optional `serve --store` metadata/ref snapshot+journal recovery,
+  `serve --config` storage-root catalog layout and derived store recovery,
   `health`, `ready`,
   `status`, `list-records`,
   `put-object`, `get-object`,
@@ -199,6 +200,7 @@ Build and validation entrypoints:
   `register-execution-artifact`, `query-execution-artifact`,
   `register-training-artifact`, `query-training-artifact`,
   `wire-schema`, `wire-schema-fixtures`, `journal-fixtures`,
+  `durable-catalog-fixtures`,
   `compat-old-new-matrix`, `compat-old-new-fixtures`, `release-manifest`, and
   `release-fixtures`, and
   `/bin/linqu_mem_service_qwen3` for Qwen3 topology inspection.
@@ -282,10 +284,14 @@ Keep the implementation layers separated:
   envelope, while `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real
   HTTP scrape listener covered by runtime tests. The portable service-manager
   lifecycle smoke covers config startup, ready/health, HTTP scrape, SIGTERM
-  stop, and socket cleanup. Real host/systemd service-manager smoke, external
-  collector integration smoke, old-server runtime-binary certification,
-  product-grade restore policy, payload ownership, atomic durable catalog, and
-  product-grade durable migration remain deployment work.
+  stop, and socket cleanup. `storage_root` now creates the current durable
+  catalog layout (`catalog/manifest.txt`, `blocks/`, `quarantine/`) and derives
+  `catalog/store.snapshot` when `store` is omitted; payload blocks are still a
+  layout-only contract, not a sealed block backend. Real host/systemd
+  service-manager smoke, external collector integration smoke, old-server
+  runtime-binary certification, product-grade restore policy, payload
+  ownership, atomic durable catalog, and product-grade durable migration remain
+  deployment work.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
@@ -297,8 +303,8 @@ Keep the implementation layers separated:
   schema-profile matrix, config schema/example, systemd-like deployment
   manifest, deployment fixture, Prometheus text metrics export format,
   `metrics_listen` config, `/metrics` scrape path contract, TCP metrics listener
-  contract, service-manager lifecycle contract, and explicit client retry
-  policy.
+  contract, service-manager lifecycle contract, durable catalog layout contract,
+  and explicit client retry policy.
   They are not yet a full package, real host/systemd service-manager smoke,
   upgrade policy, or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,

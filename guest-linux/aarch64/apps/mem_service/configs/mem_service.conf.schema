@@ -17,7 +17,7 @@ field=listen type=string description=service endpoint, currently unix:<path>
 field=store type=string description=snapshot store path; append-only idempotency/audit journal uses <store>.journal
 field=node_id type=string description=stable deployment node identity
 field=cluster_id type=string description=stable deployment cluster identity
-field=storage_root type=string description=base directory for future durable catalog and payload block backends
+field=storage_root type=string description=base directory for durable catalog manifest, derived store, block layout, and quarantine layout
 field=backend type=enum values=snapshot,snapshot+journal description=current durable backend selector
 field=max_records type=u64 description=deployment record-capacity expectation
 field=max_payload_bytes type=u64 description=deployment wire-payload capacity expectation

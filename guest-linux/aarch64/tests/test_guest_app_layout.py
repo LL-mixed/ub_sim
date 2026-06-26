@@ -710,6 +710,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$" in app_makefile
     assert "^service_manager_shutdown=signal-clean-stop$$" in app_makefile
     assert "^durable_backend=snapshot+journal$$" in app_makefile
+    assert "^durable_catalog=storage-root-v1$$" in app_makefile
+    assert "^durable_catalog_manifest=catalog/manifest.txt$$" in app_makefile
+    assert "^payload_block_backend=layout-only$$" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
     assert "^metrics_http_listener=tcp-ipv4$$" in app_makefile
     assert "^metrics_scrape_path=/metrics$$" in app_makefile
@@ -741,6 +744,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "config-fixtures")' in app_source
     assert 'strcmp(argv[1], "metrics-export-fixtures")' in app_source
     assert 'strcmp(argv[1], "deployment-fixtures")' in app_source
+    assert 'strcmp(argv[1], "durable-catalog-fixtures")' in app_source
     assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
     assert 'strcmp(argv[1], "compat-matrix")' in app_source
     assert 'strcmp(argv[1], "compat-fixtures")' in app_source
@@ -751,7 +755,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "serve")' in app_source
     assert 'option_value(argc, argv, "--config")' in app_source
     assert 'option_value(argc, argv, "--metrics-listen")' in app_source
-    assert "mem_service_run_unix_daemon_with_store_and_metrics" in app_source
+    assert "mem_service_run_unix_daemon_with_store_metrics_and_catalog" in app_source
     assert "load_mem_service_config" in app_source
     assert "MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U" in app_source
     assert 'strcmp(argv[1], "release-manifest")' in app_source
@@ -830,6 +834,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "service_manager_lifecycle=serve-config-ready-scrape-sigterm" in release_manifest
     assert "service_manager_shutdown=signal-clean-stop" in release_manifest
     assert "durable_backend=snapshot+journal" in release_manifest
+    assert "durable_catalog=storage-root-v1" in release_manifest
+    assert "durable_catalog_manifest=catalog/manifest.txt" in release_manifest
+    assert "payload_block_backend=layout-only" in release_manifest
     assert "durable_journal=store-path.journal" in release_manifest
     assert "metrics_listen_config=metrics_listen" in release_manifest
     assert "metrics_http_listener=tcp-ipv4" in release_manifest
@@ -885,6 +892,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_config_schema_version=1" in config_schema
     assert "field=listen type=string" in config_schema
     assert "field=store type=string" in config_schema
+    assert "field=storage_root type=string" in config_schema
     assert "field=backend type=enum values=snapshot,snapshot+journal" in config_schema
     assert "field=metrics_listen type=string" in config_schema
     assert "listen=unix:/tmp/linqu_mem_service.sock" in config_example
