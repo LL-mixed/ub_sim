@@ -268,20 +268,24 @@ Keep the implementation layers separated:
   histogram, idempotency replay/conflict counters, and Prometheus text metrics
   export. The current `audit-log` RPC exposes a bounded retained ring for
   mutating and fail-closed operations, persisted in `--store` and full
-  snapshots; HTTP scrape/service-manager metrics smoke, append-only durable
-  idempotency/audit log, compatibility matrix, product-grade restore policy,
-  and product-grade durable migration remain deployment work. This layer must stay
+  snapshots; `compat-matrix` exposes the current release compatibility rules for
+  wire/schema, retry, idempotency, audit, and snapshot behavior, while
+  `compat-baseline-v1` freezes the current old-v1-client to current-server
+  baseline. HTTP scrape/service-manager metrics smoke, append-only durable
+  idempotency/audit log, old/new compatibility matrix, product-grade restore policy, and
+  product-grade durable migration remain deployment work. This layer must stay
   model-neutral and
   callable by external
   serving/pretraining processes.
 - Release/deployment: the current `release-manifest`, `wire-schema`,
-  `config-fixtures`, and `install-smoke`
+  `compat-matrix`, `config-fixtures`, and `install-smoke`
   surfaces prove the minimum publishable layout for the daemon binary, public
   headers, client SDK sources, SDK examples, release manifest, wire schema
-  manifest, config schema/example, systemd-like deployment manifest,
-  Prometheus text metrics export format, and explicit client retry policy.
+  manifest, compatibility matrix, v1 compatibility baseline, config
+  schema/example, systemd-like deployment manifest, Prometheus text metrics
+  export format, and explicit client retry policy.
   They are not yet a full package, host service-manager smoke, upgrade policy,
-  or compatibility bundle.
+  or old/new compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
   and guest handoff timing. This layer can depend on guest runtime facilities.
 - Model adapters: Qwen3 range/KV/engram placement and payload sizing. New model

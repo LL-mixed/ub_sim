@@ -27,6 +27,12 @@
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
+#define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1663U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xe369f7bcU
+#define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1091U
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x7395c388U
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -34,7 +40,8 @@ static void usage(const char *argv0)
     printf("Usage: %s [--smoke] [--self-test]", argv0);
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [config-fixtures] [metrics-export-fixtures]");
-    printf(" [client-retry-fixtures]");
+    printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
+    printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
     printf(" [release-manifest] [release-fixtures]");
     printf(" [serve [--config <path>] [--listen unix:%s] [--store <path>]]",
            MEM_SERVICE_DEFAULT_UNIX_SOCKET);
@@ -332,6 +339,582 @@ static int run_wire_schema_fixture_check(void)
     return 0;
 }
 
+static int render_compat_matrix(char *matrix, size_t matrix_len, size_t *used_out)
+{
+    size_t used = 0;
+    size_t field_count = 0;
+    size_t oneof_count = 0;
+    size_t oneof_field_count = 0;
+
+    if (matrix == NULL || matrix_len == 0) {
+        return -1;
+    }
+    matrix[0] = '\0';
+    wire_schema_count_fields(&field_count, &oneof_count, &oneof_field_count);
+    if (append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "mem_service_compat_matrix_version=%u\n",
+                                MEM_SERVICE_COMPAT_MATRIX_VERSION) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_scope=wire-schema,release-layout,client-retry,idempotency,audit,snapshot\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_version_min=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_version_current=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_version_max=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_header_len=%u\n",
+                                MEM_SERVICE_WIRE_HEADER_LEN) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_schema_version_min=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_schema_version_current=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_payload_format=text-kv\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_schema_manifest_len=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "wire_schema_manifest_checksum=0x%08x\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "operation_count=%zu\n",
+                                wire_schema_operation_count()) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "field_count=%zu\n",
+                                field_count) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "oneof_count=%zu\n",
+                                oneof_count) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "oneof_field_count=%zu\n",
+                                oneof_field_count) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "status_count=%u\n",
+                                MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "unknown_text_field_policy=ignored_by_schema_validation\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "required_field_policy=missing_required_field_fails_schema\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "oneof_policy=at_least_one_selector_field_required\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "client_retry_policy=explicit-max-attempts-backoff\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "retry_timeout_policy=opt-in-retry-timeouts\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "idempotency_scope=mutating-object-prefix-kv-runtime-execution-training\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "idempotency_replay_match=operation-and-request-checksum\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "idempotency_conflict_status=version_conflict\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "idempotency_persistence=store-and-full-snapshot\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "audit_log_scope=mutating-and-fail-closed\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "audit_log_retention=bounded-ring\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "audit_log_persistence=store-and-full-snapshot\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "snapshot_store_magic=%s\n",
+                                MEM_SERVICE_CLI_STORE_MAGIC) != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "snapshot_full_restore_state=records-idempotency-audit\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "snapshot_paged_restore_state=records-only-clears-idempotency-audit\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "client_api=pretraining-refs-v1\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "client_api=pretraining-step-commit-v1\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=wire-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=wire-schema-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=store-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=config-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=metrics-export-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=client-retry-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=release-fixtures\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "compat_test=daemon-runtime\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "release_gate=install-smoke\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "upgrade_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "rollback_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(matrix,
+                                matrix_len,
+                                &used,
+                                "binary_typed_schema=not-yet\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_compat_matrix(void)
+{
+    char matrix[8192];
+    size_t used = 0;
+
+    if (render_compat_matrix(matrix, sizeof(matrix), &used) != 0) {
+        fprintf(stderr, "mem_service compat-matrix: render failed\n");
+        return 1;
+    }
+    (void)used;
+    fputs(matrix, stdout);
+    return 0;
+}
+
+static int run_compat_fixture_check(void)
+{
+    char matrix[8192];
+    size_t used = 0;
+    size_t field_count = 0;
+    size_t oneof_count = 0;
+    size_t oneof_field_count = 0;
+    uint32_t checksum;
+    int failures = 0;
+    const struct mem_service_wire_operation_schema *put_object_schema =
+        mem_service_wire_schema_for_operation(MEM_SERVICE_WIRE_OP_PUT_OBJECT);
+    const struct mem_service_wire_operation_schema *resolve_kv_schema =
+        mem_service_wire_schema_for_operation(MEM_SERVICE_WIRE_OP_RESOLVE_KV_SEGMENT);
+    struct mem_service_wire_payload_view valid_put =
+        mem_service_wire_payload_view_from_cstr(
+            "key=compat-object\n"
+            "version=1\n"
+            "checksum=2\n"
+            "unknown_future_field=ignored\n");
+    struct mem_service_wire_payload_view invalid_put =
+        mem_service_wire_payload_view_from_cstr("version=1\nchecksum=2\n");
+    struct mem_service_wire_payload_view invalid_oneof =
+        mem_service_wire_payload_view_from_cstr("unknown_future_field=ignored\n");
+
+    if (render_compat_matrix(matrix, sizeof(matrix), &used) != 0) {
+        fprintf(stderr, "mem_service compat-fixtures: render failed\n");
+        return 1;
+    }
+    wire_schema_count_fields(&field_count, &oneof_count, &oneof_field_count);
+    checksum = mem_service_wire_checksum(matrix, used);
+    if (used != MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service compat-fixtures: matrix len actual=%zu expected=%u\n",
+                used,
+                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN);
+        failures -= 1;
+    }
+    if (checksum != MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service compat-fixtures: matrix checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM);
+        failures -= 1;
+    }
+    if (MEM_SERVICE_WIRE_VERSION != 1U ||
+        MEM_SERVICE_WIRE_HEADER_LEN != 48U ||
+        MEM_SERVICE_WIRE_SCHEMA_VERSION != 1U ||
+        wire_schema_operation_count() !=
+            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT ||
+        field_count != MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT ||
+        oneof_count != MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT ||
+        oneof_field_count != MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT ||
+        MEM_SERVICE_WIRE_OP_AUDIT_LOG != 10U ||
+        MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT != 4U) {
+        fprintf(stderr, "mem_service compat-fixtures: version/id matrix mismatch\n");
+        failures -= 1;
+    }
+    if (!mem_service_wire_schema_validate_payload(put_object_schema,
+                                                  &valid_put,
+                                                  NULL) ||
+        mem_service_wire_schema_validate_payload(put_object_schema,
+                                                 &invalid_put,
+                                                 NULL) ||
+        mem_service_wire_schema_validate_payload(resolve_kv_schema,
+                                                 &invalid_oneof,
+                                                 NULL)) {
+        fprintf(stderr, "mem_service compat-fixtures: schema policy mismatch\n");
+        failures -= 1;
+    }
+    if (strstr(matrix, "idempotency_conflict_status=version_conflict\n") == NULL ||
+        strstr(matrix, "audit_log_persistence=store-and-full-snapshot\n") == NULL ||
+        strstr(matrix,
+               "snapshot_paged_restore_state=records-only-clears-idempotency-audit\n") ==
+            NULL ||
+        strstr(matrix, "upgrade_policy=current-version-only\n") == NULL) {
+        fprintf(stderr, "mem_service compat-fixtures: required rule missing\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service compat-fixtures: status=ok matrix_version=%u "
+           "matrix_len=%u matrix_checksum=0x%08x wire_version=%u "
+           "schema_version=%u operations=%u fields=%u statuses=%u\n",
+           MEM_SERVICE_COMPAT_MATRIX_VERSION,
+           MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
+           MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
+           MEM_SERVICE_WIRE_VERSION,
+           MEM_SERVICE_WIRE_SCHEMA_VERSION,
+           MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT,
+           MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT,
+           MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT);
+    return 0;
+}
+
+static int render_compat_baseline_v1(char *baseline,
+                                     size_t baseline_len,
+                                     size_t *used_out)
+{
+    size_t used = 0;
+
+    if (baseline == NULL || baseline_len == 0) {
+        return -1;
+    }
+    baseline[0] = '\0';
+    if (append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "mem_service_compat_baseline_version=1\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "baseline_name=mem-service-wire-v1\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "baseline_scope=old-v1-client-to-current-server\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "wire_version=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "wire_header_len=%u\n",
+                                MEM_SERVICE_WIRE_HEADER_LEN) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "wire_schema_version=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "wire_payload_format=text-kv\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "wire_schema_manifest_len=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "wire_schema_manifest_checksum=0x%08x\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "compat_matrix_len=%u\n",
+                                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "compat_matrix_checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "operation_count=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "field_count=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "status_count=%u\n",
+                                MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT) != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "old_client_new_server=compatible-within-v1\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "new_client_old_server=not-certified\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "unknown_text_field_policy=ignored_by_schema_validation\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "required_field_policy=missing_required_field_fails_schema\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "oneof_policy=at_least_one_selector_field_required\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "idempotency_replay_match=operation-and-request-checksum\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "idempotency_conflict_status=version_conflict\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "audit_log_persistence=store-and-full-snapshot\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "snapshot_full_restore_state=records-idempotency-audit\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "snapshot_paged_restore_state=records-only-clears-idempotency-audit\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "baseline_payload=put_object:v1-key-version-checksum-extra-field\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "baseline_payload=resolve_kv_segment:v1-key-or-block-hash-oneof\n") != 0 ||
+        append_wire_schema_line(baseline,
+                                baseline_len,
+                                &used,
+                                "baseline_payload=register_training_artifact:v1-training-step-compatible\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_compat_baseline_v1(void)
+{
+    char baseline[4096];
+    size_t used = 0;
+
+    if (render_compat_baseline_v1(baseline, sizeof(baseline), &used) != 0) {
+        fprintf(stderr, "mem_service compat-baseline-v1: render failed\n");
+        return 1;
+    }
+    (void)used;
+    fputs(baseline, stdout);
+    return 0;
+}
+
+static int run_compat_baseline_fixture_check(void)
+{
+    char baseline[4096];
+    size_t used = 0;
+    uint32_t checksum;
+    int failures = 0;
+    const struct mem_service_wire_operation_schema *put_object_schema =
+        mem_service_wire_schema_for_operation(MEM_SERVICE_WIRE_OP_PUT_OBJECT);
+    const struct mem_service_wire_operation_schema *resolve_kv_schema =
+        mem_service_wire_schema_for_operation(MEM_SERVICE_WIRE_OP_RESOLVE_KV_SEGMENT);
+    const struct mem_service_wire_operation_schema *training_publish_schema =
+        mem_service_wire_schema_for_operation(
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT);
+    struct mem_service_wire_payload_view old_put =
+        mem_service_wire_payload_view_from_cstr(
+            "key=old-client-object\n"
+            "version=1\n"
+            "checksum=2\n"
+            "future_optional_field=ignored\n");
+    struct mem_service_wire_payload_view old_put_missing_key =
+        mem_service_wire_payload_view_from_cstr("version=1\nchecksum=2\n");
+    struct mem_service_wire_payload_view old_resolve_kv =
+        mem_service_wire_payload_view_from_cstr("block_hash=old-block\n");
+    struct mem_service_wire_payload_view old_resolve_kv_missing_selector =
+        mem_service_wire_payload_view_from_cstr("future_optional_field=ignored\n");
+    struct mem_service_wire_payload_view old_training_publish =
+        mem_service_wire_payload_view_from_cstr(
+            "key=training/old/global-step-0001/commit\n"
+            "session_id=old\n"
+            "model_key=model-a\n"
+            "artifact_kind=training-step-commit\n"
+            "artifact_id=global-step-0001\n"
+            "version=1\n"
+            "checksum=101\n"
+            "idempotency_key=old/global-step-0001/v1\n"
+            "future_optional_field=ignored\n");
+
+    if (render_compat_baseline_v1(baseline, sizeof(baseline), &used) != 0) {
+        fprintf(stderr, "mem_service compat-baseline-fixtures: render failed\n");
+        return 1;
+    }
+    checksum = mem_service_wire_checksum(baseline, used);
+    if (used != MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service compat-baseline-fixtures: baseline len actual=%zu "
+                "expected=%u\n",
+                used,
+                MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN);
+        failures -= 1;
+    }
+    if (checksum != MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service compat-baseline-fixtures: baseline checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM);
+        failures -= 1;
+    }
+    if (!mem_service_wire_schema_validate_payload(put_object_schema,
+                                                  &old_put,
+                                                  NULL) ||
+        mem_service_wire_schema_validate_payload(put_object_schema,
+                                                 &old_put_missing_key,
+                                                 NULL) ||
+        !mem_service_wire_schema_validate_payload(resolve_kv_schema,
+                                                  &old_resolve_kv,
+                                                  NULL) ||
+        mem_service_wire_schema_validate_payload(resolve_kv_schema,
+                                                 &old_resolve_kv_missing_selector,
+                                                 NULL) ||
+        !mem_service_wire_schema_validate_payload(training_publish_schema,
+                                                  &old_training_publish,
+                                                  NULL)) {
+        fprintf(stderr,
+                "mem_service compat-baseline-fixtures: old payload policy failed\n");
+        failures -= 1;
+    }
+    if (strstr(baseline, "old_client_new_server=compatible-within-v1\n") == NULL ||
+        strstr(baseline, "new_client_old_server=not-certified\n") == NULL ||
+        strstr(baseline,
+               "baseline_payload=register_training_artifact:v1-training-step-compatible\n") ==
+            NULL) {
+        fprintf(stderr,
+                "mem_service compat-baseline-fixtures: required baseline missing\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service compat-baseline-fixtures: status=ok baseline_version=1 "
+           "baseline_len=%u baseline_checksum=0x%08x old_client_new_server=v1 "
+           "new_client_old_server=not-certified\n",
+           MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
+           MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM);
+    return 0;
+}
+
 static int run_smoke(void)
 {
     struct mem_service svc;
@@ -476,6 +1059,15 @@ static int run_release_manifest(void)
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN);
     printf("wire_schema_manifest_checksum=0x%08x\n",
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM);
+    printf("compat_matrix=share/lingqu/mem_service/compat-matrix.txt\n");
+    printf("compat_matrix_len=%u\n", MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN);
+    printf("compat_matrix_checksum=0x%08x\n",
+           MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM);
+    printf("compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt\n");
+    printf("compat_baseline_len=%u\n",
+           MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN);
+    printf("compat_baseline_checksum=0x%08x\n",
+           MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM);
     printf("config_schema_version=%u\n", MEM_SERVICE_CONFIG_SCHEMA_VERSION);
     printf("config_schema=share/lingqu/mem_service/config/mem_service.conf.schema\n");
     printf("config_example=share/lingqu/mem_service/config/mem_service.example.conf\n");
@@ -568,6 +1160,17 @@ static int run_release_fixture_check(void)
         fprintf(stderr, "mem_service release-fixtures: schema manifest fixture missing\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM == 0U) {
+        fprintf(stderr, "mem_service release-fixtures: compat matrix fixture missing\n");
+        failures -= 1;
+    }
+    if (MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM == 0U) {
+        fprintf(stderr,
+                "mem_service release-fixtures: compat baseline fixture missing\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT != 8U ||
         MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE != 9U ||
         MEM_SERVICE_WIRE_OP_AUDIT_LOG != 10U ||
@@ -592,11 +1195,17 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "metrics_export_formats=1 client_retry_policies=1 "
-           "client_api_profiles=2 "
+           "client_api_profiles=2 compat_artifacts=2 "
            "operations=23 statuses=11 "
-           "schema_manifest_len=%u schema_manifest_checksum=0x%08x\n",
+           "schema_manifest_len=%u schema_manifest_checksum=0x%08x "
+           "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
+           "compat_baseline_len=%u compat_baseline_checksum=0x%08x\n",
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN,
-           MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM);
+           MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM,
+           MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
+           MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
+           MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
+           MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM);
     return 0;
 }
 
@@ -2335,6 +2944,18 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "client-retry-fixtures") == 0) {
         return run_client_retry_fixture_check();
+    }
+    if (strcmp(argv[1], "compat-matrix") == 0) {
+        return run_compat_matrix();
+    }
+    if (strcmp(argv[1], "compat-fixtures") == 0) {
+        return run_compat_fixture_check();
+    }
+    if (strcmp(argv[1], "compat-baseline-v1") == 0) {
+        return run_compat_baseline_v1();
+    }
+    if (strcmp(argv[1], "compat-baseline-fixtures") == 0) {
+        return run_compat_baseline_fixture_check();
     }
     if (strcmp(argv[1], "release-manifest") == 0) {
         return run_release_manifest();

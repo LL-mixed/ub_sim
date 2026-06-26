@@ -14,6 +14,8 @@ REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
 CLI_SOURCE = ROOT / "apps" / "mem_service" / "mem_service.c"
 WIRE_SCHEMA_MANIFEST = ROOT / "apps" / "mem_service" / "wire-schema.txt"
+COMPAT_MATRIX = ROOT / "apps" / "mem_service" / "compat-matrix.txt"
+COMPAT_BASELINE_V1 = ROOT / "apps" / "mem_service" / "compat-baseline-v1.txt"
 SDK_EXAMPLES_DIR = ROOT / "apps" / "mem_service" / "examples"
 
 
@@ -1663,14 +1665,48 @@ int main(int argc, char **argv)
         self.assertIn("public_headers=8", fixtures.stdout)
         self.assertIn("client_sources=2", fixtures.stdout)
         self.assertIn("examples=2", fixtures.stdout)
+        self.assertIn("compat_artifacts=2", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
         self.assertIn("schema_manifest_len=8695", fixtures.stdout)
         self.assertIn("schema_manifest_checksum=0x8a8ca3c4", fixtures.stdout)
+        self.assertIn("compat_matrix_len=1663", fixtures.stdout)
+        self.assertIn("compat_matrix_checksum=0xe369f7bc", fixtures.stdout)
+        self.assertIn("compat_baseline_len=1091", fixtures.stdout)
+        self.assertIn("compat_baseline_checksum=0x7395c388", fixtures.stdout)
 
         manifest = self._run_client("release-manifest")
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, expected)
+
+    def test_compat_matrix_cli_matches_checked_in_contract(self):
+        fixtures = self._run_client("compat-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("matrix_version=1", fixtures.stdout)
+        self.assertIn("matrix_len=1663", fixtures.stdout)
+        self.assertIn("matrix_checksum=0xe369f7bc", fixtures.stdout)
+        self.assertIn("operations=23", fixtures.stdout)
+        self.assertIn("fields=102", fixtures.stdout)
+        self.assertIn("statuses=11", fixtures.stdout)
+
+        matrix = self._run_client("compat-matrix")
+        self.assertEqual(matrix.returncode, 0, matrix.stderr + matrix.stdout)
+        self.assertEqual(matrix.stdout, COMPAT_MATRIX.read_text())
+
+    def test_compat_baseline_cli_matches_checked_in_contract(self):
+        fixtures = self._run_client("compat-baseline-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("baseline_version=1", fixtures.stdout)
+        self.assertIn("baseline_len=1091", fixtures.stdout)
+        self.assertIn("baseline_checksum=0x7395c388", fixtures.stdout)
+        self.assertIn("old_client_new_server=v1", fixtures.stdout)
+        self.assertIn("new_client_old_server=not-certified", fixtures.stdout)
+
+        baseline = self._run_client("compat-baseline-v1")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr + baseline.stdout)
+        self.assertEqual(baseline.stdout, COMPAT_BASELINE_V1.read_text())
 
     def test_wire_schema_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("wire-schema-fixtures")
@@ -2038,13 +2074,30 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "release-manifest.txt"
             )
             wire_schema = destdir / "usr" / "share" / "lingqu" / "mem_service" / "wire-schema.txt"
+            compat_matrix = (
+                destdir / "usr" / "share" / "lingqu" / "mem_service" / "compat-matrix.txt"
+            )
+            compat_baseline = (
+                destdir
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "compat-baseline-v1.txt"
+            )
             self.assertTrue(manifest.exists())
             self.assertTrue(wire_schema.exists())
+            self.assertTrue(compat_matrix.exists())
+            self.assertTrue(compat_baseline.exists())
             self.assertIn("core_binary=bin/linqu_mem_service", manifest.read_text())
             self.assertIn("wire_schema_manifest_checksum=0x8a8ca3c4", manifest.read_text())
+            self.assertIn("compat_matrix_checksum=0xe369f7bc", manifest.read_text())
+            self.assertIn("compat_baseline_checksum=0x7395c388", manifest.read_text())
             self.assertIn("mem_service_serving_example.c", manifest.read_text())
             self.assertIn("mem_service_pretraining_example.c", manifest.read_text())
             self.assertEqual(wire_schema.read_text(), WIRE_SCHEMA_MANIFEST.read_text())
+            self.assertEqual(compat_matrix.read_text(), COMPAT_MATRIX.read_text())
+            self.assertEqual(compat_baseline.read_text(), COMPAT_BASELINE_V1.read_text())
 
 
 if __name__ == "__main__":

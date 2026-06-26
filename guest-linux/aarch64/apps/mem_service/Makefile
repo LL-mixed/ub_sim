@@ -32,6 +32,8 @@ MEM_SERVICE_QWEN3 := $(ROOT)/components/mem_service/mem_service_qwen3.c
 LLM_INFER := $(ROOT)/components/llm_infer/llm_infer.c
 MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt
 MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt
+MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt
+MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt
 MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema
 MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf
 MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service
@@ -104,7 +106,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all install install-smoke print-release-manifest print-wire-schema clean
+.PHONY: all install install-smoke print-release-manifest print-wire-schema print-compat-matrix print-compat-baseline-v1 clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -123,7 +125,13 @@ print-release-manifest:
 print-wire-schema:
 	@cat $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST)
 
-install: linqu_mem_service $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST)
+print-compat-matrix:
+	@cat $(MEM_SERVICE_COMPAT_MATRIX)
+
+print-compat-baseline-v1:
+	@cat $(MEM_SERVICE_COMPAT_BASELINE_V1)
+
+install: linqu_mem_service $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST)
 	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp $(MEM_SERVICE_PUBLIC_HEADERS) $(INSTALL_INCLUDEDIR)/
@@ -131,6 +139,8 @@ install: linqu_mem_service $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SC
 	cp $(MEM_SERVICE_CLIENT_EXAMPLES) $(INSTALL_EXAMPLEDIR)/
 	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(INSTALL_DATADIR)/release-manifest.txt
 	cp $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(INSTALL_DATADIR)/wire-schema.txt
+	cp $(MEM_SERVICE_COMPAT_MATRIX) $(INSTALL_DATADIR)/compat-matrix.txt
+	cp $(MEM_SERVICE_COMPAT_BASELINE_V1) $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	cp $(MEM_SERVICE_CONFIG_SCHEMA) $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	cp $(MEM_SERVICE_CONFIG_EXAMPLE) $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	cp $(MEM_SERVICE_DEPLOY_MANIFEST) $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
@@ -145,6 +155,8 @@ install-smoke: install
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/wire-schema.txt
+	test -f $(INSTALL_DATADIR)/compat-matrix.txt
+	test -f $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	test -f $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	test -f $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
@@ -152,6 +164,12 @@ install-smoke: install
 	grep -q '^core_binary=bin/linqu_mem_service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0x8a8ca3c4$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_matrix_len=1663$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_matrix_checksum=0xe369f7bc$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_baseline_len=1091$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_baseline_checksum=0x7395c388$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^config_schema=share/lingqu/mem_service/config/mem_service.conf.schema$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^config_example=share/lingqu/mem_service/config/mem_service.example.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -168,6 +186,15 @@ install-smoke: install
 	grep -q '^operation_count=23$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^field_count=102$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^oneof_field=resolve_kv_segment.0.block_hash$$' $(INSTALL_DATADIR)/wire-schema.txt
+	grep -q '^mem_service_compat_matrix_version=1$$' $(INSTALL_DATADIR)/compat-matrix.txt
+	grep -q '^wire_version_current=1$$' $(INSTALL_DATADIR)/compat-matrix.txt
+	grep -q '^wire_schema_manifest_checksum=0x8a8ca3c4$$' $(INSTALL_DATADIR)/compat-matrix.txt
+	grep -q '^idempotency_conflict_status=version_conflict$$' $(INSTALL_DATADIR)/compat-matrix.txt
+	grep -q '^audit_log_persistence=store-and-full-snapshot$$' $(INSTALL_DATADIR)/compat-matrix.txt
+	grep -q '^mem_service_compat_baseline_version=1$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
+	grep -q '^old_client_new_server=compatible-within-v1$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
+	grep -q '^new_client_old_server=not-certified$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
+	grep -q '^baseline_payload=register_training_artifact:v1-training-step-compatible$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	grep -q '^mem_service_config_schema_version=1$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	grep -q '^listen=unix:/tmp/linqu_mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
