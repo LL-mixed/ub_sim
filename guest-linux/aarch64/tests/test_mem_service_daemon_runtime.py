@@ -1753,6 +1753,7 @@ int main(int argc, char **argv)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
+        self.assertIn("collector_smokes=1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1783,6 +1784,13 @@ int main(int argc, char **argv)
         self.assertIn("host_service_manager=systemd-like", fixtures.stdout)
         self.assertIn("metrics_scrape_path=/metrics", fixtures.stdout)
         self.assertIn("metrics_http_content_type=prometheus-text", fixtures.stdout)
+
+    def test_collector_fixtures_cli_validates_prometheus_collector_contract(self):
+        fixtures = self._run_client("collector-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("collector=prometheus-text-http", fixtures.stdout)
+        self.assertIn("metrics=5", fixtures.stdout)
 
     def test_daemon_http_metrics_listener_serves_prometheus_scrape(self):
         metrics_port = self._free_tcp_port()
@@ -2601,6 +2609,33 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 chunks.append(chunk)
         return b"".join(chunks).decode()
 
+    def _collect_prometheus_metrics(self, response: str) -> dict[str, int]:
+        self.assertIn("HTTP/1.1 200 OK\r\n", response)
+        self.assertIn("Content-Type: text/plain; version=0.0.4\r\n", response)
+        self.assertIn("Cache-Control: no-store\r\n", response)
+        _, body = response.split("\r\n\r\n", 1)
+        metrics: dict[str, int] = {}
+        types: dict[str, str] = {}
+
+        for line in body.splitlines():
+            if not line:
+                continue
+            if line.startswith("# TYPE "):
+                _, _, name, metric_type = line.split(" ", 3)
+                types[name] = metric_type
+                continue
+            if line.startswith("#"):
+                continue
+            name, value = line.split(" ", 1)
+            metrics[name] = int(value)
+
+        self.assertEqual(types["lingqu_mem_service_request_count"], "counter")
+        self.assertEqual(
+            types["lingqu_mem_service_request_latency_max_ms"],
+            "gauge",
+        )
+        return metrics
+
     def _install_release_layout(self, app_dir: Path, destdir: Path) -> None:
         cmd = [
             "make",
@@ -2805,7 +2840,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 COMPAT_OLD_NEW_MATRIX.read_text(),
             )
 
-    def test_installed_host_service_manifest_runs_ready_scrape_and_shutdown(self):
+    def test_installed_host_service_manager_and_collector_smoke(self):
         app_dir = ROOT / "apps" / "mem_service"
         with tempfile.TemporaryDirectory(prefix="msvc_host_service_", dir=str(_tmp_parent())) as tmp:
             destdir = Path(tmp)
@@ -2868,11 +2903,39 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 )
                 self._wait_installed_service_ready(proc, host_binary, socket_path)
 
+                put = subprocess.run(
+                    [
+                        str(host_binary),
+                        "put-object",
+                        "--connect",
+                        f"unix:{socket_path}",
+                        "--key",
+                        "collector-smoke-object",
+                        "--version",
+                        "1",
+                        "--checksum",
+                        "8001",
+                    ],
+                    cwd=REPO_ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(put.returncode, 0, put.stderr + put.stdout)
+
                 scraped = self._http_metrics_request(metrics_port)
-                self.assertIn("HTTP/1.1 200 OK\r\n", scraped)
-                self.assertRegex(
-                    scraped,
-                    r"lingqu_mem_service_health_count [1-9][0-9]*\n",
+                collected = self._collect_prometheus_metrics(scraped)
+                self.assertGreaterEqual(
+                    collected["lingqu_mem_service_request_count"],
+                    2,
+                )
+                self.assertGreaterEqual(
+                    collected["lingqu_mem_service_health_count"],
+                    1,
+                )
+                self.assertEqual(
+                    collected["lingqu_mem_service_put_object_count"],
+                    1,
                 )
 
                 proc.terminate()

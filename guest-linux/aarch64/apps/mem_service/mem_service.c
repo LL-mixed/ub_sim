@@ -43,7 +43,7 @@ static void usage(const char *argv0)
     printf("Usage: %s [--smoke] [--self-test]", argv0);
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [config-fixtures]");
-    printf(" [metrics-export-fixtures] [deployment-fixtures]");
+    printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
@@ -1598,6 +1598,9 @@ static int run_release_manifest(void)
     printf("deployment_smoke=deployment-fixtures\n");
     printf("host_service_manager_smoke=installed-host-service-manager-smoke\n");
     printf("host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm\n");
+    printf("collector_smoke=collector-fixtures\n");
+    printf("collector_integration_smoke=installed-host-collector-smoke\n");
+    printf("collector_scrape_contract=prometheus-text-http-v0.0.4\n");
     printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
     printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
@@ -1746,6 +1749,7 @@ static int run_release_fixture_check(void)
            "host_artifacts=1 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
+           "collector_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -2746,6 +2750,140 @@ static int run_deployment_fixture_check(void)
     return 0;
 }
 
+static bool collector_http_response_has_header(const char *response,
+                                               const char *header)
+{
+    return response != NULL && header != NULL && strstr(response, header) != NULL;
+}
+
+static const char *collector_http_response_body(const char *response)
+{
+    const char *body;
+
+    if (response == NULL) {
+        return NULL;
+    }
+    body = strstr(response, "\r\n\r\n");
+    if (body == NULL) {
+        return NULL;
+    }
+    return body + 4;
+}
+
+static bool collector_metric_type_present(const char *body,
+                                          const char *metric_name,
+                                          const char *metric_type)
+{
+    char expected[256];
+
+    if (body == NULL || metric_name == NULL || metric_type == NULL) {
+        return false;
+    }
+    if (snprintf(expected,
+                 sizeof(expected),
+                 "# TYPE %s %s\n",
+                 metric_name,
+                 metric_type) >= (int)sizeof(expected)) {
+        return false;
+    }
+    return strstr(body, expected) != NULL;
+}
+
+static bool collector_metric_value_at_least(const char *body,
+                                            const char *metric_name,
+                                            uint64_t minimum)
+{
+    const char *cursor = body;
+    size_t metric_name_len;
+
+    if (body == NULL || metric_name == NULL) {
+        return false;
+    }
+    metric_name_len = strlen(metric_name);
+    while (*cursor != '\0') {
+        const char *line_end = strchr(cursor, '\n');
+        const char *value_start;
+        char *value_end = NULL;
+        uint64_t value;
+
+        if (line_end == NULL) {
+            line_end = cursor + strlen(cursor);
+        }
+        if ((size_t)(line_end - cursor) > metric_name_len &&
+            strncmp(cursor, metric_name, metric_name_len) == 0 &&
+            cursor[metric_name_len] == ' ') {
+            value_start = cursor + metric_name_len + 1;
+            value = strtoull(value_start, &value_end, 10);
+            if (value_end == value_start) {
+                return false;
+            }
+            while (value_end < line_end && isspace((unsigned char)*value_end)) {
+                ++value_end;
+            }
+            return value_end == line_end && value >= minimum;
+        }
+        if (*line_end == '\0') {
+            break;
+        }
+        cursor = line_end + 1;
+    }
+    return false;
+}
+
+static int run_collector_fixture_check(void)
+{
+    static const char sample_metrics[] =
+        "request_count=7\n"
+        "ok_count=6\n"
+        "health_count=1\n"
+        "put_object_count=2\n"
+        "request_latency_max_ms=4\n";
+    char response[4096];
+    const char *body;
+
+    if (render_metrics_http_response("GET",
+                                     "/metrics",
+                                     sample_metrics,
+                                     response,
+                                     sizeof(response)) != 0) {
+        fprintf(stderr, "mem_service collector-fixtures: http render failed\n");
+        return 1;
+    }
+    body = collector_http_response_body(response);
+    if (!collector_http_response_has_header(response, "HTTP/1.1 200 OK\r\n") ||
+        !collector_http_response_has_header(
+            response,
+            "Content-Type: text/plain; version=0.0.4\r\n") ||
+        body == NULL) {
+        fprintf(stderr, "mem_service collector-fixtures: http envelope failed\n");
+        return 1;
+    }
+    if (!collector_metric_type_present(body,
+                                       "lingqu_mem_service_request_count",
+                                       "counter") ||
+        !collector_metric_type_present(body,
+                                       "lingqu_mem_service_request_latency_max_ms",
+                                       "gauge") ||
+        !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_request_count",
+                                         7) ||
+        !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_health_count",
+                                         1) ||
+        !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_put_object_count",
+                                         2) ||
+        collector_metric_value_at_least(body,
+                                        "lingqu_mem_service_missing_count",
+                                        1)) {
+        fprintf(stderr, "mem_service collector-fixtures: metric parse failed\n");
+        return 1;
+    }
+    printf("mem_service collector-fixtures: status=ok "
+           "collector=prometheus-text-http metrics=5\n");
+    return 0;
+}
+
 static int run_metrics_export(int argc, char **argv)
 {
     const char *format = option_value(argc, argv, "--format");
@@ -3735,6 +3873,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "metrics-export-fixtures") == 0) {
         return run_metrics_export_fixture_check();
+    }
+    if (strcmp(argv[1], "collector-fixtures") == 0) {
+        return run_collector_fixture_check();
     }
     if (strcmp(argv[1], "deployment-fixtures") == 0) {
         return run_deployment_fixture_check();

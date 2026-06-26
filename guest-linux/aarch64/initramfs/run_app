@@ -720,6 +720,7 @@ run_default_actions() {
     run_binary "linqu_mem_service_journal_fixtures" /bin/linqu_mem_service journal-fixtures || rc=$?
     run_binary "linqu_mem_service_config_fixtures" /bin/linqu_mem_service config-fixtures || rc=$?
     run_binary "linqu_mem_service_metrics_export_fixtures" /bin/linqu_mem_service metrics-export-fixtures || rc=$?
+    run_binary "linqu_mem_service_collector_fixtures" /bin/linqu_mem_service collector-fixtures || rc=$?
     run_binary "linqu_mem_service_deployment_fixtures" /bin/linqu_mem_service deployment-fixtures || rc=$?
     run_binary "linqu_mem_service_client_retry_fixtures" /bin/linqu_mem_service client-retry-fixtures || rc=$?
     run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures || rc=$?
@@ -809,6 +810,7 @@ run_single_action() {
       run_binary "linqu_mem_service_journal_fixtures" /bin/linqu_mem_service journal-fixtures &&
       run_binary "linqu_mem_service_config_fixtures" /bin/linqu_mem_service config-fixtures &&
       run_binary "linqu_mem_service_metrics_export_fixtures" /bin/linqu_mem_service metrics-export-fixtures &&
+      run_binary "linqu_mem_service_collector_fixtures" /bin/linqu_mem_service collector-fixtures &&
       run_binary "linqu_mem_service_deployment_fixtures" /bin/linqu_mem_service deployment-fixtures &&
       run_binary "linqu_mem_service_client_retry_fixtures" /bin/linqu_mem_service client-retry-fixtures &&
       run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures &&

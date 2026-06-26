@@ -130,6 +130,7 @@ linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)
 host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host --smoke
 	./linqu_mem_service_host release-fixtures
+	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
 
 print-release-manifest:
@@ -204,6 +205,9 @@ install-smoke: install
 	grep -q '^deployment_smoke=deployment-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_service_manager_smoke=installed-host-service-manager-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^collector_smoke=collector-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^collector_integration_smoke=installed-host-collector-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^collector_scrape_contract=prometheus-text-http-v0.0.4$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_shutdown=signal-clean-stop$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt

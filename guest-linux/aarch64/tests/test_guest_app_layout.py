@@ -653,6 +653,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service config-fixtures" in run_app
     assert "linqu_mem_service_metrics_export_fixtures" in run_app
     assert "/bin/linqu_mem_service metrics-export-fixtures" in run_app
+    assert "linqu_mem_service_collector_fixtures" in run_app
+    assert "/bin/linqu_mem_service collector-fixtures" in run_app
     assert "linqu_mem_service_client_retry_fixtures" in run_app
     assert "/bin/linqu_mem_service client-retry-fixtures" in run_app
     assert "linqu_mem_service_compat_fixtures" in run_app
@@ -757,6 +759,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "journal-fixtures")' in app_source
     assert 'strcmp(argv[1], "config-fixtures")' in app_source
     assert 'strcmp(argv[1], "metrics-export-fixtures")' in app_source
+    assert 'strcmp(argv[1], "collector-fixtures")' in app_source
     assert 'strcmp(argv[1], "deployment-fixtures")' in app_source
     assert 'strcmp(argv[1], "durable-catalog-fixtures")' in app_source
     assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
@@ -784,6 +787,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_compat_old_new_fixture_check" in app_source
     assert "MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U" in app_source
     assert "render_metrics_http_response" in app_source
+    assert "run_collector_fixture_check" in app_source
+    assert "collector_metric_value_at_least" in app_source
     assert "run_deployment_fixture_check" in app_source
     assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U" in app_source
     assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x8b4219c5U" in app_source

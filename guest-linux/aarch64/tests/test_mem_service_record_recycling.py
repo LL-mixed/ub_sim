@@ -288,6 +288,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             run_app,
         )
         self.assertIn(
+            'run_binary "linqu_mem_service_collector_fixtures" '
+            "/bin/linqu_mem_service collector-fixtures",
+            run_app,
+        )
+        self.assertIn(
             'run_binary "linqu_mem_service_deployment_fixtures" '
             "/bin/linqu_mem_service deployment-fixtures",
             run_app,
@@ -333,6 +338,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "store-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "config-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "metrics-export-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "collector-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "compat-matrix")', cli_source)
         self.assertIn('strcmp(argv[1], "compat-fixtures")', cli_source)
@@ -346,6 +352,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_wire_schema_fixture_check", cli_source)
         self.assertIn("render_metrics_prometheus_text", cli_source)
         self.assertIn("run_metrics_export_fixture_check", cli_source)
+        self.assertIn("run_collector_fixture_check", cli_source)
+        self.assertIn("collector_metric_value_at_least", cli_source)
         self.assertIn("run_client_retry_fixture_check", cli_source)
         self.assertIn("run_compat_matrix", cli_source)
         self.assertIn("run_compat_fixture_check", cli_source)
@@ -458,6 +466,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^deployment_smoke=deployment-fixtures$$", cli_makefile)
         self.assertIn("^host_service_manager_smoke=installed-host-service-manager-smoke$$", cli_makefile)
         self.assertIn("^host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm$$", cli_makefile)
+        self.assertIn("^collector_smoke=collector-fixtures$$", cli_makefile)
+        self.assertIn("^collector_integration_smoke=installed-host-collector-smoke$$", cli_makefile)
+        self.assertIn("^collector_scrape_contract=prometheus-text-http-v0.0.4$$", cli_makefile)
         self.assertIn(
             "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$",
             cli_makefile,
@@ -497,6 +508,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("deployment_smoke=deployment-fixtures", release_manifest)
         self.assertIn("host_service_manager_smoke=installed-host-service-manager-smoke", release_manifest)
         self.assertIn("host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm", release_manifest)
+        self.assertIn("collector_smoke=collector-fixtures", release_manifest)
+        self.assertIn("collector_integration_smoke=installed-host-collector-smoke", release_manifest)
+        self.assertIn("collector_scrape_contract=prometheus-text-http-v0.0.4", release_manifest)
         self.assertIn(
             "service_manager_lifecycle=serve-config-ready-scrape-sigterm",
             release_manifest,
@@ -540,6 +554,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("config_artifacts=3", cli_source)
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("host_service_manager_smokes=1", cli_source)
+        self.assertIn("collector_smokes=1", cli_source)
         self.assertIn("durable_catalogs=1", cli_source)
         self.assertIn("payload_block_backends=1", cli_source)
         self.assertIn("metrics_export_formats=1", cli_source)
