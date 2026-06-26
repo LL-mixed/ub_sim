@@ -32,17 +32,17 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1760U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xfce9862fU
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1868U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xed7a1646U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3077U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcdafe5fbU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3125U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa00c3f8cU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 28U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 15U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 16U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
@@ -66,6 +66,7 @@ static void usage(const char *argv0)
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
+    printf(" [upgrade-rollback-runtime-fixtures]");
     printf(" [alert-rules] [alert-fixtures] [alert-integration-fixtures]");
     printf(" [package-manifest] [package-fixtures]");
     printf(" [durable-catalog-fixtures]");
@@ -719,6 +720,10 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
+                                "same_version_runtime_gate=upgrade-rollback-runtime-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
                                 "upgrade_policy=current-version-only\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
@@ -760,6 +765,10 @@ static int render_upgrade_rollback_policy(char *policy,
                                 policy_len,
                                 &used,
                                 "required_gate=admin-output-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=upgrade-rollback-runtime-fixtures\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
@@ -881,7 +890,10 @@ static int run_upgrade_rollback_fixture_check(void)
         strstr(policy, "old_server_runtime_binary=not-certified\n") == NULL ||
         strstr(policy, "new_client_old_server=not-certified-without-runtime-binary\n") ==
             NULL ||
+        strstr(policy, "same_version_runtime_gate=upgrade-rollback-runtime-fixtures\n") ==
+            NULL ||
         strstr(policy, "required_gate=admin-output-fixtures\n") == NULL ||
+        strstr(policy, "required_gate=upgrade-rollback-runtime-fixtures\n") == NULL ||
         strstr(policy, "required_gate=alert-fixtures\n") == NULL ||
         strstr(policy, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(policy, "required_gate=package-fixtures\n") == NULL ||
@@ -896,7 +908,7 @@ static int run_upgrade_rollback_fixture_check(void)
     printf("mem_service upgrade-rollback-fixtures: status=ok policy_version=%u "
            "policy_len=%u policy_checksum=0x%08x "
            "upgrade_policy=current-version-only "
-           "rollback_policy=current-version-only required_gates=17\n",
+           "rollback_policy=current-version-only required_gates=18\n",
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
@@ -2337,6 +2349,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "required_gate=upgrade-rollback-runtime-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate=api-abi-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2468,6 +2484,7 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=install-smoke\n") == NULL ||
         strstr(manifest, "artifact_gate=package-tarball-smoke\n") == NULL ||
         strstr(manifest, "native_package_gate=package-deb-smoke\n") == NULL ||
+        strstr(manifest, "required_gate=upgrade-rollback-runtime-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=not-certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
@@ -2539,6 +2556,7 @@ static int run_release_manifest(void)
     printf("rollback_policy=current-version-only\n");
     printf("old_server_runtime_binary=not-certified\n");
     printf("upgrade_rollback_gate=upgrade-rollback-fixtures\n");
+    printf("upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures\n");
     printf("client_api_version=%u\n", MEM_SERVICE_CLIENT_API_VERSION);
     printf("client_abi_version=%u\n", MEM_SERVICE_CLIENT_ABI_VERSION);
     printf("client_record_abi_size=%u\n", MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
@@ -2713,7 +2731,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 28U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 15U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 16U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -2771,6 +2789,7 @@ static int run_release_fixture_check(void)
            "api_abi_policies=1 "
            "admin_output_schemas=1 "
            "upgrade_rollback_policies=1 "
+           "upgrade_rollback_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -5836,6 +5855,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "upgrade-rollback-fixtures") == 0) {
         return run_upgrade_rollback_fixture_check();
+    }
+    if (strcmp(argv[1], "upgrade-rollback-runtime-fixtures") == 0) {
+        return mem_service_run_upgrade_rollback_runtime_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();

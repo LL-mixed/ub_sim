@@ -15,5 +15,6 @@ int mem_service_run_wire_fixture_check(void);
 int mem_service_run_store_fixture_check(void);
 int mem_service_run_journal_fixture_check(void);
 int mem_service_run_durable_catalog_fixture_check(void);
+int mem_service_run_upgrade_rollback_runtime_fixture_check(void);
 
 #endif

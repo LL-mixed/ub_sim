@@ -157,6 +157,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host package-fixtures
 	./linqu_mem_service_host admin-output-fixtures
 	./linqu_mem_service_host upgrade-rollback-fixtures
+	./linqu_mem_service_host upgrade-rollback-runtime-fixtures
 	./linqu_mem_service_host alert-fixtures
 	./linqu_mem_service_host alert-integration-fixtures
 	./linqu_mem_service_host api-abi-fixtures
@@ -323,8 +324,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=3077$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xcdafe5fb$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=3125$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xa00c3f8c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -346,12 +347,13 @@ install-smoke: install
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_len=1760$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0xfce9862f$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_len=1868$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0xed7a1646$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_gate=upgrade-rollback-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_len=875$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_checksum=0x743f84b8$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -420,8 +422,10 @@ install-smoke: install
 	grep -q '^mem_service_upgrade_rollback_policy_version=1$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^same_version_runtime_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^new_client_old_server=not-certified-without-runtime-binary$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=alert-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=alert-integration-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
@@ -441,9 +445,10 @@ install-smoke: install
 	grep -q '^native_package_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_runtime=not-executed-cross-compiled-arm64$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_file_count=28$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=15$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xfce9862f$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=16$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xed7a1646$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^cross_version_upgrade=not-certified$$' $(INSTALL_DATADIR)/package-manifest.txt

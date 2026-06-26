@@ -749,6 +749,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "INSTALL_HOSTDIR := $(DESTDIR)$(PREFIX)/libexec/lingqu/mem_service" in app_makefile
     assert "linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)" in app_makefile
     assert "host-artifact-smoke: linqu_mem_service_host" in app_makefile
+    assert "./linqu_mem_service_host upgrade-rollback-runtime-fixtures" in app_makefile
     assert "MEM_SERVICE_PUBLIC_HEADERS :=" in app_makefile
     assert "$(ROOT)/components/mem_service/mem_service_client.h" in app_makefile
     assert "$(ROOT)/components/mem_service/mem_service_wire_schema.h" in app_makefile
@@ -765,9 +766,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xcdafe5fb$$" in app_makefile
+    assert "^package_manifest_checksum=0xa00c3f8c$$" in app_makefile
     assert "^package_gate=package-fixtures$$" in app_makefile
-    assert "^upgrade_rollback_policy_checksum=0xfce9862f$$" in app_makefile
+    assert "^upgrade_rollback_policy_checksum=0xed7a1646$$" in app_makefile
+    assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
     assert "^upgrade_policy=current-version-only$$" in app_makefile
     assert "^rollback_policy=current-version-only$$" in app_makefile
     assert "^old_server_runtime_binary=not-certified$$" in app_makefile
@@ -894,17 +896,18 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU" in app_source
     assert "render_admin_output_schema" in app_source
     assert "run_admin_output_fixture_check" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1760U" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xfce9862fU" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1868U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xed7a1646U" in app_source
     assert "render_upgrade_rollback_policy" in app_source
     assert "run_upgrade_rollback_fixture_check" in app_source
+    assert "mem_service_run_upgrade_rollback_runtime_fixture_check" in app_source
     assert "MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U" in app_source
     assert "MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U" in app_source
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3077U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcdafe5fbU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3125U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa00c3f8cU" in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
     assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
     assert "render_package_manifest" in app_source
@@ -942,7 +945,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0xcdafe5fb" in release_manifest
+    assert "package_manifest_checksum=0xa00c3f8c" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
     assert (
         "distributable_package=out/mem_service/"
@@ -978,7 +981,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_format=text-kv" in release_manifest
     assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0xfce9862f" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0xed7a1646" in release_manifest
+    assert "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures" in release_manifest
     assert "upgrade_policy=current-version-only" in release_manifest
     assert "rollback_policy=current-version-only" in release_manifest
     assert "old_server_runtime_binary=not-certified" in release_manifest
@@ -1044,10 +1048,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "wire_schema_manifest_checksum=0xce883650" in release_manifest
     assert "admin_output_schema_len=6624" in release_manifest
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
-    assert "upgrade_rollback_policy_len=1760" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0xfce9862f" in release_manifest
-    assert "package_manifest_len=3077" in release_manifest
-    assert "package_manifest_checksum=0xcdafe5fb" in release_manifest
+    assert "upgrade_rollback_policy_len=1868" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0xed7a1646" in release_manifest
+    assert "package_manifest_len=3125" in release_manifest
+    assert "package_manifest_checksum=0xa00c3f8c" in release_manifest
     assert "api_abi_policy_len=875" in release_manifest
     assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
     assert "config_schema_version=1" in release_manifest
@@ -1088,8 +1092,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_upgrade_rollback_policy_version=1" in upgrade_rollback_policy
     assert "upgrade_policy=current-version-only" in upgrade_rollback_policy
     assert "rollback_policy=current-version-only" in upgrade_rollback_policy
+    assert "same_version_runtime_gate=upgrade-rollback-runtime-fixtures" in upgrade_rollback_policy
     assert "old_server_runtime_binary=not-certified" in upgrade_rollback_policy
     assert "new_client_old_server=not-certified-without-runtime-binary" in upgrade_rollback_policy
+    assert "required_gate=upgrade-rollback-runtime-fixtures" in upgrade_rollback_policy
     assert "required_gate=package-fixtures" in upgrade_rollback_policy
     assert "required_gate=install-smoke" in upgrade_rollback_policy
     assert "mem_service_package_manifest_version=1" in package_manifest
@@ -1107,12 +1113,13 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "native_package_gate=package-deb-smoke" in package_manifest
     assert "native_package_runtime=not-executed-cross-compiled-arm64" in package_manifest
     assert "installed_file_count=28" in package_manifest
-    assert "required_gate_count=15" in package_manifest
+    assert "required_gate_count=16" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
-        "upgrade-rollback-policy.txt checksum=0xfce9862f"
+        "upgrade-rollback-policy.txt checksum=0xed7a1646"
     ) in package_manifest
     assert "required_gate=package-fixtures" in package_manifest
+    assert "required_gate=upgrade-rollback-runtime-fixtures" in package_manifest
     assert "required_gate=package-tarball-smoke" in package_manifest
     assert "required_gate=package-deb-smoke" in package_manifest
     assert "cross_version_upgrade=not-certified" in package_manifest

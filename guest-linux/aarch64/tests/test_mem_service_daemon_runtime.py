@@ -1772,16 +1772,17 @@ int main(int argc, char **argv)
         self.assertIn("api_abi_policies=1", fixtures.stdout)
         self.assertIn("admin_output_schemas=1", fixtures.stdout)
         self.assertIn("upgrade_rollback_policies=1", fixtures.stdout)
+        self.assertIn("upgrade_rollback_runtime_smokes=1", fixtures.stdout)
         self.assertIn("api_abi_policy_len=875", fixtures.stdout)
         self.assertIn("api_abi_policy_checksum=0x743f84b8", fixtures.stdout)
         self.assertIn("admin_output_schema_len=6624", fixtures.stdout)
         self.assertIn("admin_output_schema_checksum=0x7021f4cf", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_len=1760", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_len=1868", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_checksum=0xed7a1646", fixtures.stdout)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
-        self.assertIn("package_manifest_len=3077", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xcdafe5fb", fixtures.stdout)
+        self.assertIn("package_manifest_len=3125", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xa00c3f8c", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1801,10 +1802,10 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=3077", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xcdafe5fb", fixtures.stdout)
+        self.assertIn("manifest_len=3125", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xa00c3f8c", fixtures.stdout)
         self.assertIn("installed_files=28", fixtures.stdout)
-        self.assertIn("required_gates=15", fixtures.stdout)
+        self.assertIn("required_gates=16", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1838,15 +1839,34 @@ int main(int argc, char **argv)
         fixtures = self._run_client("upgrade-rollback-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("policy_len=1760", fixtures.stdout)
-        self.assertIn("policy_checksum=0xfce9862f", fixtures.stdout)
-        self.assertIn("required_gates=17", fixtures.stdout)
+        self.assertIn("policy_len=1868", fixtures.stdout)
+        self.assertIn("policy_checksum=0xed7a1646", fixtures.stdout)
+        self.assertIn("required_gates=18", fixtures.stdout)
         self.assertIn("upgrade_policy=current-version-only", fixtures.stdout)
         self.assertIn("rollback_policy=current-version-only", fixtures.stdout)
 
         policy = self._run_client("upgrade-rollback-policy")
         self.assertEqual(policy.returncode, 0, policy.stderr + policy.stdout)
         self.assertEqual(policy.stdout, UPGRADE_ROLLBACK_POLICY.read_text())
+        self.assertIn(
+            "same_version_runtime_gate=upgrade-rollback-runtime-fixtures",
+            policy.stdout,
+        )
+
+        runtime = self._run_client("upgrade-rollback-runtime-fixtures")
+        self.assertEqual(runtime.returncode, 0, runtime.stderr + runtime.stdout)
+        self.assertIn("status=ok", runtime.stdout)
+        self.assertIn("same_version_restart=store-snapshot+journal", runtime.stdout)
+        self.assertIn(
+            "same_version_upgrade=export-snapshot+restore-snapshot",
+            runtime.stdout,
+        )
+        self.assertIn("same_version_rollback=baseline-snapshot-restore", runtime.stdout)
+        self.assertIn("pretraining_commits=1", runtime.stdout)
+        self.assertIn(
+            "release_admission=reject-unknown-release-generation",
+            runtime.stdout,
+        )
 
     def test_alert_rules_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("alert-fixtures")
@@ -2931,7 +2951,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xcdafe5fb", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xa00c3f8c", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -2979,7 +2999,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("admin_output_schema_checksum=0x7021f4cf", manifest.read_text())
             self.assertIn("admin_output_format=text-kv", manifest.read_text())
             self.assertIn("admin_metric_prefix=lingqu_mem_service_", manifest.read_text())
-            self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", manifest.read_text())
+            self.assertIn("upgrade_rollback_policy_checksum=0xed7a1646", manifest.read_text())
             self.assertIn("upgrade_policy=current-version-only", manifest.read_text())
             self.assertIn("rollback_policy=current-version-only", manifest.read_text())
             self.assertIn("old_server_runtime_binary=not-certified", manifest.read_text())

@@ -958,7 +958,11 @@ Recommended order:
    current exported metrics contract with a synthetic target; it does not prove
    a real Prometheus/Alertmanager deployment.
    The current `upgrade-rollback-policy` artifact freezes the
-   current-version-only admission rule and required gates; it does not certify
+   current-version-only admission rule and required gates; the
+   `upgrade-rollback-runtime-fixtures` gate now proves same-version restart
+   recovery from store+journal, snapshot restore into an upgraded runtime,
+   baseline snapshot rollback, idempotency replay, checksum/stale fail-closed,
+   and rejection of an unknown snapshot generation. It does not certify
    old-server runtime binaries or cross-version migration.
    Remaining work is protocol
    compatibility bundle, native rpm package artifact, cross-version

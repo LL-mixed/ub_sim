@@ -446,14 +446,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1760U", cli_source)
+        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1868U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xfce9862fU",
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xed7a1646U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3077U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3125U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcdafe5fbU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa00c3f8cU",
             cli_source,
         )
         self.assertIn(
@@ -567,6 +567,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("INSTALL_HOSTDIR := $(DESTDIR)$(PREFIX)/libexec/lingqu/mem_service", cli_makefile)
         self.assertIn("linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)", cli_makefile)
         self.assertIn("host-artifact-smoke: linqu_mem_service_host", cli_makefile)
+        self.assertIn("./linqu_mem_service_host upgrade-rollback-runtime-fixtures", cli_makefile)
         self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
         self.assertIn("MEM_SERVICE_CLIENT_SDK_SRCS :=", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
@@ -582,13 +583,17 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xcdafe5fb$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xa00c3f8c$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
         self.assertIn("^native_package_format=deb$$", cli_makefile)
         self.assertIn("^native_package_gate=package-deb-smoke$$", cli_makefile)
-        self.assertIn("^upgrade_rollback_policy_checksum=0xfce9862f$$", cli_makefile)
+        self.assertIn("^upgrade_rollback_policy_checksum=0xed7a1646$$", cli_makefile)
+        self.assertIn(
+            "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
+            cli_makefile,
+        )
         self.assertIn("^upgrade_policy=current-version-only$$", cli_makefile)
         self.assertIn("^rollback_policy=current-version-only$$", cli_makefile)
         self.assertIn("^old_server_runtime_binary=not-certified$$", cli_makefile)
@@ -656,7 +661,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0xcdafe5fb", release_manifest)
+        self.assertIn("package_manifest_checksum=0xa00c3f8c", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -677,7 +682,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "native_package_runtime=not-executed-cross-compiled-arm64",
             release_manifest,
         )
-        self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", release_manifest)
+        self.assertIn("upgrade_rollback_policy_checksum=0xed7a1646", release_manifest)
+        self.assertIn(
+            "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures",
+            release_manifest,
+        )
         self.assertIn("upgrade_policy=current-version-only", release_manifest)
         self.assertIn("rollback_policy=current-version-only", release_manifest)
         self.assertIn("old_server_runtime_binary=not-certified", release_manifest)
@@ -767,6 +776,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("admin_output_schemas=1", cli_source)
         self.assertIn("admin_output_schema_checksum=0x%08x", cli_source)
         self.assertIn("upgrade_rollback_policies=1", cli_source)
+        self.assertIn("upgrade_rollback_runtime_smokes=1", cli_source)
         self.assertIn("upgrade_rollback_policy_checksum=0x%08x", cli_source)
         self.assertIn("package_manifest_checksum=0x%08x", cli_source)
         self.assertIn("api_abi_policy_checksum=0x%08x", cli_source)
@@ -789,9 +799,17 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_upgrade_rollback_policy_version=1", upgrade_rollback_policy)
         self.assertIn("upgrade_policy=current-version-only", upgrade_rollback_policy)
         self.assertIn("rollback_policy=current-version-only", upgrade_rollback_policy)
+        self.assertIn(
+            "same_version_runtime_gate=upgrade-rollback-runtime-fixtures",
+            upgrade_rollback_policy,
+        )
         self.assertIn("old_server_runtime_binary=not-certified", upgrade_rollback_policy)
         self.assertIn(
             "new_client_old_server=not-certified-without-runtime-binary",
+            upgrade_rollback_policy,
+        )
+        self.assertIn(
+            "required_gate=upgrade-rollback-runtime-fixtures",
             upgrade_rollback_policy,
         )
         self.assertIn("required_gate=package-fixtures", upgrade_rollback_policy)
@@ -823,8 +841,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             package_manifest,
         )
         self.assertIn("installed_file_count=28", package_manifest)
-        self.assertIn("required_gate_count=15", package_manifest)
+        self.assertIn("required_gate_count=16", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
+        self.assertIn(
+            "required_gate=upgrade-rollback-runtime-fixtures",
+            package_manifest,
+        )
         self.assertIn("required_gate=package-tarball-smoke", package_manifest)
         self.assertIn("required_gate=package-deb-smoke", package_manifest)
         self.assertIn("cross_version_upgrade=not-certified", package_manifest)

@@ -2688,6 +2688,288 @@ int mem_service_run_journal_fixture_check(void)
     return 0;
 }
 
+int mem_service_run_upgrade_rollback_runtime_fixture_check(void)
+{
+    static const char baseline_object_payload[] =
+        "key=upgrade-fixture-object\n"
+        "version=11\n"
+        "checksum=11011\n"
+        "backing_len=128\n"
+        "idempotency_key=upgrade-fixture-object-v11\n";
+    static const char upgraded_object_payload[] =
+        "key=upgrade-fixture-object\n"
+        "version=12\n"
+        "checksum=12012\n"
+        "backing_len=256\n"
+        "idempotency_key=upgrade-fixture-object-v12\n";
+    static const char upgraded_object_query[] =
+        "key=upgrade-fixture-object\n"
+        "expected_version=12\n"
+        "expected_checksum=12012\n";
+    static const char training_bad_version_query[] =
+        "key=training/upgrade-run/step-7\n"
+        "expected_session_id=upgrade-run\n"
+        "expected_model_key=upgrade-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=step-7\n"
+        "expected_version=8\n"
+        "expected_checksum=7007\n";
+    static const char training_commit_payload[] =
+        "key=training/upgrade-run/step-7\n"
+        "session_id=upgrade-run\n"
+        "model_key=upgrade-model\n"
+        "artifact_kind=training-step-commit\n"
+        "artifact_id=step-7\n"
+        "owner=3\n"
+        "payload_kind=4\n"
+        "backing_offset=0\n"
+        "backing_len=8\n"
+        "checksum=7007\n"
+        "version=7\n"
+        "idempotency_key=upgrade-fixture-training-step-7\n";
+    static const char training_commit_query[] =
+        "key=training/upgrade-run/step-7\n"
+        "expected_session_id=upgrade-run\n"
+        "expected_model_key=upgrade-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=step-7\n"
+        "expected_version=7\n"
+        "expected_checksum=7007\n";
+    static const char training_bad_checksum_query[] =
+        "key=training/upgrade-run/step-7\n"
+        "expected_session_id=upgrade-run\n"
+        "expected_model_key=upgrade-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=step-7\n"
+        "expected_version=7\n"
+        "expected_checksum=7008\n";
+    static const char bad_generation_snapshot[] =
+        "mem_service_store_v0\n"
+        "record_count=0\n"
+        "audit_next_sequence=1\n"
+        "audit_event_count=0\n";
+    static struct mem_service current;
+    static struct mem_service restarted;
+    static struct mem_service upgraded;
+    static struct mem_service rolled_back;
+    static struct mem_service rejected;
+    struct mem_service_record record;
+    char store_path[160];
+    char journal_path[sizeof(store_path) + 16U];
+    char baseline_object_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char baseline_training_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char replay_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char upgraded_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char upgraded_query_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char training_query_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char baseline_snapshot[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char restore_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char rollback_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char fail_closed_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    enum mem_service_wire_status status;
+    enum mem_service_wire_status replay_status;
+    enum mem_service_wire_status upgraded_status;
+    enum mem_service_wire_status upgraded_query_status;
+    enum mem_service_wire_status training_query_status;
+    enum mem_service_wire_status restore_status;
+    enum mem_service_wire_status rollback_status;
+    enum mem_service_wire_status stale_status;
+    enum mem_service_wire_status checksum_status;
+    enum mem_service_wire_status reject_status;
+    int failures = 0;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_upgrade_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    if (mem_service_init(&current, true, true, true) != 0 ||
+        mem_service_init(&restarted, true, true, true) != 0 ||
+        mem_service_init(&upgraded, true, true, true) != 0 ||
+        mem_service_init(&rolled_back, true, true, true) != 0 ||
+        mem_service_init(&rejected, true, true, true) != 0) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: init failed\n");
+        return 1;
+    }
+
+    status = mem_service_handle_operation(&current,
+                                          MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                          baseline_object_payload,
+                                          baseline_object_response,
+                                          sizeof(baseline_object_response),
+                                          store_path,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: baseline object failed status=%s\n",
+                mem_service_wire_status_name(status));
+        failures -= 1;
+    }
+    status = mem_service_handle_operation(&current,
+                                          MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+                                          training_commit_payload,
+                                          baseline_training_response,
+                                          sizeof(baseline_training_response),
+                                          store_path,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: training commit failed status=%s\n",
+                mem_service_wire_status_name(status));
+        failures -= 1;
+    }
+    if (!mem_service_file_contains(journal_path, MEM_SERVICE_JOURNAL_MAGIC) ||
+        !mem_service_file_contains(journal_path, "idempotency_begin") ||
+        !mem_service_file_contains(journal_path, "audit_begin") ||
+        !mem_service_file_contains(journal_path, "key=upgrade-fixture-object-v11") ||
+        !mem_service_file_contains(journal_path,
+                                   "key=upgrade-fixture-training-step-7")) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: journal gate mismatch\n");
+        failures -= 1;
+    }
+    if (mem_service_load_durable_store(&restarted, store_path) != 0 ||
+        mem_service_get_record(&restarted, "upgrade-fixture-object", &record) != 0 ||
+        record.version != 11U || record.object_payload_checksum != 11011U ||
+        mem_service_get_record(&restarted, "training/upgrade-run/step-7", &record) != 0 ||
+        record.version != 7U || record.object_payload_checksum != 7007U ||
+        strcmp(record.artifact_kind, "training-step-commit") != 0) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: restart recovery mismatch\n");
+        failures -= 1;
+    }
+
+    status = mem_service_handle_operation(&restarted,
+                                          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT,
+                                          "",
+                                          baseline_snapshot,
+                                          sizeof(baseline_snapshot),
+                                          NULL,
+                                          NULL);
+    restore_status = mem_service_handle_operation(&upgraded,
+                                                  MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                                  baseline_snapshot,
+                                                  restore_response,
+                                                  sizeof(restore_response),
+                                                  NULL,
+                                                  NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        restore_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        upgraded.record_count != 2U) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: same-version restore mismatch\n");
+        failures -= 1;
+    }
+
+    replay_status = mem_service_handle_operation(&upgraded,
+                                                 MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                                 baseline_object_payload,
+                                                 replay_response,
+                                                 sizeof(replay_response),
+                                                 NULL,
+                                                 NULL);
+    upgraded_status = mem_service_handle_operation(&upgraded,
+                                                  MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                                  upgraded_object_payload,
+                                                  upgraded_response,
+                                                  sizeof(upgraded_response),
+                                                  NULL,
+                                                  NULL);
+    upgraded_query_status = mem_service_handle_operation(&upgraded,
+                                                        MEM_SERVICE_WIRE_OP_GET_OBJECT,
+                                                        upgraded_object_query,
+                                                        upgraded_query_response,
+                                                        sizeof(upgraded_query_response),
+                                                        NULL,
+                                                        NULL);
+    training_query_status = mem_service_handle_operation(&upgraded,
+                                                        MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT,
+                                                        training_commit_query,
+                                                        training_query_response,
+                                                        sizeof(training_query_response),
+                                                        NULL,
+                                                        NULL);
+    if (replay_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strcmp(baseline_object_response, replay_response) != 0 ||
+        upgraded.metrics.idempotency_replay_count != 1U ||
+        upgraded_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        upgraded_query_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(upgraded_query_response, "version=12\n") == NULL ||
+        training_query_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(training_query_response, "artifact_kind=training-step-commit\n") == NULL) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: upgraded runtime mismatch\n");
+        failures -= 1;
+    }
+
+    rollback_status = mem_service_handle_operation(&rolled_back,
+                                                  MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                                  baseline_snapshot,
+                                                  rollback_response,
+                                                  sizeof(rollback_response),
+                                                  NULL,
+                                                  NULL);
+    stale_status = mem_service_handle_operation(&rolled_back,
+                                                MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT,
+                                                training_bad_version_query,
+                                                fail_closed_response,
+                                                sizeof(fail_closed_response),
+                                                NULL,
+                                                NULL);
+    checksum_status = mem_service_handle_operation(&rolled_back,
+                                                   MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT,
+                                                   training_bad_checksum_query,
+                                                   fail_closed_response,
+                                                   sizeof(fail_closed_response),
+                                                   NULL,
+                                                   NULL);
+    reject_status = mem_service_handle_operation(&rejected,
+                                                 MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                                 bad_generation_snapshot,
+                                                 fail_closed_response,
+                                                 sizeof(fail_closed_response),
+                                                 NULL,
+                                                 NULL);
+    if (rollback_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        mem_service_get_record(&rolled_back, "upgrade-fixture-object", &record) != 0 ||
+        record.version != 11U || record.object_payload_checksum != 11011U ||
+        stale_status != MEM_SERVICE_WIRE_STATUS_STALE_REF ||
+        checksum_status != MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH ||
+        reject_status != MEM_SERVICE_WIRE_STATUS_INVALID_SESSION ||
+        rolled_back.metrics.stale_ref_count != 1U ||
+        rolled_back.metrics.checksum_mismatch_count != 1U ||
+        rolled_back.metrics.fail_closed_count != 2U) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-runtime-fixtures: rollback/admission mismatch\n");
+        failures -= 1;
+    }
+
+    unlink(store_path);
+    unlink(journal_path);
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service upgrade-rollback-runtime-fixtures: status=ok "
+           "same_version_restart=store-snapshot+journal "
+           "same_version_upgrade=export-snapshot+restore-snapshot "
+           "same_version_rollback=baseline-snapshot-restore "
+           "serving_records=1 pretraining_commits=1 idempotency_replay=%" PRIu64
+           " fail_closed=%" PRIu64
+           " release_admission=reject-unknown-release-generation\n",
+           upgraded.metrics.idempotency_replay_count,
+           rolled_back.metrics.fail_closed_count);
+    return 0;
+}
+
 int mem_service_run_durable_catalog_fixture_check(void)
 {
     char storage_root[160];
