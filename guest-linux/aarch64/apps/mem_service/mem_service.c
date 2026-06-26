@@ -39,10 +39,12 @@
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 2540U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4bdf7bccU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3077U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcdafe5fbU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 28U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 13U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 15U
+#define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
+#define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
@@ -2138,6 +2140,56 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "artifact_format=tar\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "artifact_name=%s\n",
+                                MEM_SERVICE_PACKAGE_TARBALL_NAME) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "artifact_root=usr\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "artifact_install_prefix=/usr\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "artifact_contents=installed-layout-v1-root\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "artifact_gate=package-tarball-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "native_package_format=deb\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "native_package_name=%s\n",
+                                MEM_SERVICE_NATIVE_DEB_NAME) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "native_package_arch=arm64\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "native_package_payload=debian-binary+control.tar.gz+data.tar.gz\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "native_package_gate=package-deb-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "native_package_runtime=not-executed-cross-compiled-arm64\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2317,6 +2369,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "required_gate=package-tarball-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=package-deb-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate=install-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2406,6 +2466,8 @@ static int run_package_fixture_check(void)
         strstr(manifest, "host_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n") ==
             NULL ||
         strstr(manifest, "required_gate=install-smoke\n") == NULL ||
+        strstr(manifest, "artifact_gate=package-tarball-smoke\n") == NULL ||
+        strstr(manifest, "native_package_gate=package-deb-smoke\n") == NULL ||
         strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=not-certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
@@ -2433,6 +2495,16 @@ static int run_release_manifest(void)
     printf("package_manifest_checksum=0x%08x\n",
            MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
     printf("package_gate=package-fixtures\n");
+    printf("distributable_package=out/mem_service/%s\n",
+           MEM_SERVICE_PACKAGE_TARBALL_NAME);
+    printf("distributable_package_format=tar\n");
+    printf("distributable_package_root=usr\n");
+    printf("distributable_package_gate=package-tarball-smoke\n");
+    printf("native_package=out/mem_service/%s\n", MEM_SERVICE_NATIVE_DEB_NAME);
+    printf("native_package_format=deb\n");
+    printf("native_package_arch=arm64\n");
+    printf("native_package_gate=package-deb-smoke\n");
+    printf("native_package_runtime=not-executed-cross-compiled-arm64\n");
     printf("core_binary=bin/linqu_mem_service\n");
     printf("qwen3_adapter_binary_optional=bin/linqu_mem_service_qwen3\n");
     printf("host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n");
@@ -2641,7 +2713,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 28U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 13U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 15U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -2690,7 +2762,7 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "host_artifacts=1 "
-           "package_artifacts=1 "
+           "package_artifacts=3 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "

@@ -1761,7 +1761,7 @@ int main(int argc, char **argv)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=1", fixtures.stdout)
         self.assertIn("host_artifacts=1", fixtures.stdout)
-        self.assertIn("package_artifacts=1", fixtures.stdout)
+        self.assertIn("package_artifacts=3", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
@@ -1780,8 +1780,8 @@ int main(int argc, char **argv)
         self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", fixtures.stdout)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
-        self.assertIn("package_manifest_len=2540", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x4bdf7bcc", fixtures.stdout)
+        self.assertIn("package_manifest_len=3077", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xcdafe5fb", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1801,10 +1801,10 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=2540", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x4bdf7bcc", fixtures.stdout)
+        self.assertIn("manifest_len=3077", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xcdafe5fb", fixtures.stdout)
         self.assertIn("installed_files=28", fixtures.stdout)
-        self.assertIn("required_gates=13", fixtures.stdout)
+        self.assertIn("required_gates=15", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -2931,10 +2931,49 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x4bdf7bcc", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xcdafe5fb", manifest.read_text())
+            self.assertIn("distributable_package_format=tar", manifest.read_text())
+            self.assertIn(
+                "distributable_package_gate=package-tarball-smoke",
+                manifest.read_text(),
+            )
+            self.assertIn("native_package_format=deb", manifest.read_text())
+            self.assertIn("native_package_arch=arm64", manifest.read_text())
+            self.assertIn("native_package_gate=package-deb-smoke", manifest.read_text())
+            self.assertIn(
+                "native_package_runtime=not-executed-cross-compiled-arm64",
+                manifest.read_text(),
+            )
             self.assertIn("package_gate=package-fixtures", manifest.read_text())
+            self.assertIn("artifact_format=tar", package_manifest.read_text())
+            self.assertIn(
+                "artifact_name=linqu_mem_service-installed-layout-v1.tar",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "artifact_gate=package-tarball-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn("native_package_format=deb", package_manifest.read_text())
+            self.assertIn(
+                "native_package_name=linqu-mem-service_0.1.0-1_arm64.deb",
+                package_manifest.read_text(),
+            )
+            self.assertIn("native_package_arch=arm64", package_manifest.read_text())
+            self.assertIn(
+                "native_package_gate=package-deb-smoke",
+                package_manifest.read_text(),
+            )
             self.assertIn("installed_file_count=28", package_manifest.read_text())
             self.assertIn("required_gate=package-fixtures", package_manifest.read_text())
+            self.assertIn(
+                "required_gate=package-tarball-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "required_gate=package-deb-smoke",
+                package_manifest.read_text(),
+            )
             self.assertIn("cross_version_upgrade=not-certified", package_manifest.read_text())
             self.assertIn("wire_schema_manifest_checksum=0xce883650", manifest.read_text())
             self.assertIn("admin_output_schema_checksum=0x7021f4cf", manifest.read_text())
@@ -3005,6 +3044,165 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertEqual(
                 compat_old_new_matrix.read_text(),
                 COMPAT_OLD_NEW_MATRIX.read_text(),
+            )
+
+    @unittest.skipUnless(shutil.which("tar"), "tar is required")
+    def test_make_package_tarball_smoke_creates_extractable_release_artifact(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        with tempfile.TemporaryDirectory(prefix="msvc_package_", dir=str(_tmp_parent())) as tmp:
+            package_out = Path(tmp) / "package"
+            try:
+                subprocess.run(
+                    [
+                        "make",
+                        "-C",
+                        str(app_dir),
+                        "CC=cc",
+                        "CFLAGS=-O2 -Wall -Wextra",
+                        "HOST_CC=cc",
+                        f"PACKAGE_OUT_DIR={package_out}",
+                        "package-tarball-smoke",
+                    ],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                subprocess.run(
+                    ["make", "-C", str(app_dir), "clean"],
+                    cwd=REPO_ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+            tarball = package_out / "linqu_mem_service-installed-layout-v1.tar"
+            listing = package_out / "linqu_mem_service-installed-layout-v1.tar.list"
+            verify_root = package_out / "linqu_mem_service.installed-layout-v1.verify"
+            release_manifest = (
+                verify_root
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "release-manifest.txt"
+            )
+            package_manifest = (
+                verify_root
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "package-manifest.txt"
+            )
+
+            self.assertTrue(tarball.exists())
+            self.assertIn("usr/bin/linqu_mem_service", listing.read_text())
+            self.assertIn(
+                "usr/libexec/lingqu/mem_service/linqu_mem_service_host",
+                listing.read_text(),
+            )
+            self.assertIn(
+                "usr/share/lingqu/mem_service/package-manifest.txt",
+                listing.read_text(),
+            )
+            self.assertTrue(release_manifest.exists())
+            self.assertTrue(package_manifest.exists())
+            self.assertIn("distributable_package_format=tar", release_manifest.read_text())
+            self.assertIn(
+                "distributable_package_gate=package-tarball-smoke",
+                release_manifest.read_text(),
+            )
+            self.assertIn("artifact_format=tar", package_manifest.read_text())
+            self.assertIn(
+                "artifact_gate=package-tarball-smoke",
+                package_manifest.read_text(),
+            )
+
+    @unittest.skipUnless(
+        shutil.which("aarch64-linux-gnu-gcc")
+        and shutil.which("ar")
+        and shutil.which("gzip")
+        and shutil.which("file"),
+        "aarch64-linux-gnu-gcc, ar, gzip, and file are required",
+    )
+    def test_make_package_deb_smoke_creates_arm64_native_package(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        with tempfile.TemporaryDirectory(prefix="msvc_deb_", dir=str(_tmp_parent())) as tmp:
+            package_out = Path(tmp) / "package"
+            try:
+                subprocess.run(
+                    [
+                        "make",
+                        "-C",
+                        str(app_dir),
+                        "CFLAGS=-O2 -Wall -Wextra",
+                        f"PACKAGE_OUT_DIR={package_out}",
+                        "package-deb-smoke",
+                    ],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                subprocess.run(
+                    ["make", "-C", str(app_dir), "clean"],
+                    cwd=REPO_ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+            deb = package_out / "linqu-mem-service_0.1.0-1_arm64.deb"
+            listing = package_out / "linqu-mem-service_0.1.0-1_arm64.deb.list"
+            verify_root = package_out / "linqu_mem_service.deb.verify"
+            control = verify_root / "control" / "control"
+            data_root = verify_root / "data"
+            release_manifest = (
+                data_root
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "release-manifest.txt"
+            )
+            package_manifest = (
+                data_root
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "package-manifest.txt"
+            )
+
+            self.assertTrue(deb.exists())
+            self.assertIn("debian-binary", listing.read_text())
+            self.assertIn("control.tar.gz", listing.read_text())
+            self.assertIn("data.tar.gz", listing.read_text())
+            self.assertIn("Package: linqu-mem-service", control.read_text())
+            self.assertIn("Architecture: arm64", control.read_text())
+            self.assertTrue((data_root / "usr" / "bin" / "linqu_mem_service").exists())
+            self.assertTrue(
+                (
+                    data_root
+                    / "usr"
+                    / "libexec"
+                    / "lingqu"
+                    / "mem_service"
+                    / "linqu_mem_service_host"
+                ).exists()
+            )
+            self.assertIn("native_package_format=deb", release_manifest.read_text())
+            self.assertIn(
+                "native_package_gate=package-deb-smoke",
+                release_manifest.read_text(),
+            )
+            self.assertIn("native_package_format=deb", package_manifest.read_text())
+            self.assertIn(
+                "native_package_gate=package-deb-smoke",
+                package_manifest.read_text(),
             )
 
     def test_installed_host_service_manager_and_collector_smoke(self):

@@ -1,6 +1,18 @@
 mem_service_package_manifest_version=1
 package_name=linqu_mem_service
 package_format=installed-layout-v1
+artifact_format=tar
+artifact_name=linqu_mem_service-installed-layout-v1.tar
+artifact_root=usr
+artifact_install_prefix=/usr
+artifact_contents=installed-layout-v1-root
+artifact_gate=package-tarball-smoke
+native_package_format=deb
+native_package_name=linqu-mem-service_0.1.0-1_arm64.deb
+native_package_arch=arm64
+native_package_payload=debian-binary+control.tar.gz+data.tar.gz
+native_package_gate=package-deb-smoke
+native_package_runtime=not-executed-cross-compiled-arm64
 package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy
 prefix_default=/usr
 binary=bin/linqu_mem_service
@@ -30,7 +42,7 @@ contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=
 contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0xdc6376da
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x56f8e4c3
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
-required_gate_count=13
+required_gate_count=15
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=admin-output-fixtures
@@ -43,6 +55,8 @@ required_gate=alert-fixtures
 required_gate=alert-integration-fixtures
 required_gate=durable-catalog-fixtures
 required_gate=host-artifact-smoke
+required_gate=package-tarball-smoke
+required_gate=package-deb-smoke
 required_gate=install-smoke
 serving_api=typed-c-client-v1
 pretraining_api=typed-c-client-v1

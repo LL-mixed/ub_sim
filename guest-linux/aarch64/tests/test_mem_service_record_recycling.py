@@ -451,9 +451,17 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xfce9862fU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 2540U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3077U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4bdf7bccU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcdafe5fbU",
+            cli_source,
+        )
+        self.assertIn(
+            'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"',
+            cli_source,
+        )
+        self.assertIn(
+            'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"',
             cli_source,
         )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U", cli_source)
@@ -524,6 +532,32 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml",
             cli_makefile,
         )
+        self.assertIn(
+            "MEM_SERVICE_PACKAGE_TARBALL_NAME := linqu_mem_service-installed-layout-v1.tar",
+            cli_makefile,
+        )
+        self.assertIn("MEM_SERVICE_DEB_NAME := linqu-mem-service", cli_makefile)
+        self.assertIn("MEM_SERVICE_DEB_ARCH ?= arm64", cli_makefile)
+        self.assertIn("package-tarball:", cli_makefile)
+        self.assertIn("package-tarball-smoke: package-tarball", cli_makefile)
+        self.assertIn("package-deb:", cli_makefile)
+        self.assertIn("package-deb-smoke: package-deb", cli_makefile)
+        self.assertIn("install: $(MEM_SERVICE_RELEASE_MANIFEST)", cli_makefile)
+        self.assertIn("rm -f linqu_mem_service linqu_mem_service_host", cli_makefile)
+        self.assertIn(
+            '$(MAKE) linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"',
+            cli_makefile,
+        )
+        self.assertIn(
+            '$(MAKE) linqu_mem_service_host HOST_CC="$(HOST_CC)" '
+            'HOST_CFLAGS="$(HOST_CFLAGS)"',
+            cli_makefile,
+        )
+        self.assertIn("tar -cf $(PACKAGE_TARBALL) -C $(PACKAGE_STAGE_ROOT) usr", cli_makefile)
+        self.assertIn(
+            'f.write(b"!<arch>\\n")',
+            cli_makefile,
+        )
         self.assertIn("MEM_SERVICE_CLIENT_EXAMPLES :=", cli_makefile)
         self.assertIn("examples/mem_service_serving_example.c", cli_makefile)
         self.assertIn("examples/mem_service_pretraining_example.c", cli_makefile)
@@ -548,8 +582,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x4bdf7bcc$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xcdafe5fb$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
+        self.assertIn("^distributable_package_format=tar$$", cli_makefile)
+        self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
+        self.assertIn("^native_package_format=deb$$", cli_makefile)
+        self.assertIn("^native_package_gate=package-deb-smoke$$", cli_makefile)
         self.assertIn("^upgrade_rollback_policy_checksum=0xfce9862f$$", cli_makefile)
         self.assertIn("^upgrade_policy=current-version-only$$", cli_makefile)
         self.assertIn("^rollback_policy=current-version-only$$", cli_makefile)
@@ -618,8 +656,27 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0x4bdf7bcc", release_manifest)
+        self.assertIn("package_manifest_checksum=0xcdafe5fb", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
+        self.assertIn(
+            "distributable_package=out/mem_service/"
+            "linqu_mem_service-installed-layout-v1.tar",
+            release_manifest,
+        )
+        self.assertIn("distributable_package_format=tar", release_manifest)
+        self.assertIn("distributable_package_root=usr", release_manifest)
+        self.assertIn("distributable_package_gate=package-tarball-smoke", release_manifest)
+        self.assertIn(
+            "native_package=out/mem_service/linqu-mem-service_0.1.0-1_arm64.deb",
+            release_manifest,
+        )
+        self.assertIn("native_package_format=deb", release_manifest)
+        self.assertIn("native_package_arch=arm64", release_manifest)
+        self.assertIn("native_package_gate=package-deb-smoke", release_manifest)
+        self.assertIn(
+            "native_package_runtime=not-executed-cross-compiled-arm64",
+            release_manifest,
+        )
         self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", release_manifest)
         self.assertIn("upgrade_policy=current-version-only", release_manifest)
         self.assertIn("rollback_policy=current-version-only", release_manifest)
@@ -698,7 +755,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("examples=2", cli_source)
         self.assertIn("host_artifacts=1", cli_source)
-        self.assertIn("package_artifacts=1", cli_source)
+        self.assertIn("package_artifacts=3", cli_source)
         self.assertIn("config_artifacts=3", cli_source)
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("host_service_manager_smokes=1", cli_source)
@@ -741,9 +798,35 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("required_gate=install-smoke", upgrade_rollback_policy)
         self.assertIn("mem_service_package_manifest_version=1", package_manifest)
         self.assertIn("package_format=installed-layout-v1", package_manifest)
+        self.assertIn("artifact_format=tar", package_manifest)
+        self.assertIn(
+            "artifact_name=linqu_mem_service-installed-layout-v1.tar",
+            package_manifest,
+        )
+        self.assertIn("artifact_root=usr", package_manifest)
+        self.assertIn("artifact_install_prefix=/usr", package_manifest)
+        self.assertIn("artifact_contents=installed-layout-v1-root", package_manifest)
+        self.assertIn("artifact_gate=package-tarball-smoke", package_manifest)
+        self.assertIn("native_package_format=deb", package_manifest)
+        self.assertIn(
+            "native_package_name=linqu-mem-service_0.1.0-1_arm64.deb",
+            package_manifest,
+        )
+        self.assertIn("native_package_arch=arm64", package_manifest)
+        self.assertIn(
+            "native_package_payload=debian-binary+control.tar.gz+data.tar.gz",
+            package_manifest,
+        )
+        self.assertIn("native_package_gate=package-deb-smoke", package_manifest)
+        self.assertIn(
+            "native_package_runtime=not-executed-cross-compiled-arm64",
+            package_manifest,
+        )
         self.assertIn("installed_file_count=28", package_manifest)
-        self.assertIn("required_gate_count=13", package_manifest)
+        self.assertIn("required_gate_count=15", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
+        self.assertIn("required_gate=package-tarball-smoke", package_manifest)
+        self.assertIn("required_gate=package-deb-smoke", package_manifest)
         self.assertIn("cross_version_upgrade=not-certified", package_manifest)
         self.assertIn("alert: LingquMemServiceDown", alert_rules)
         self.assertIn(

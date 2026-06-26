@@ -719,6 +719,27 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service" in app_makefile
     assert "MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service" in app_makefile
     assert "MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml" in app_makefile
+    assert "MEM_SERVICE_PACKAGE_TARBALL_NAME := linqu_mem_service-installed-layout-v1.tar" in app_makefile
+    assert "MEM_SERVICE_DEB_NAME := linqu-mem-service" in app_makefile
+    assert "MEM_SERVICE_DEB_ARCH ?= arm64" in app_makefile
+    assert "PACKAGE_OUT_DIR ?= ../../../../out/mem_service" in app_makefile
+    assert "package-tarball:" in app_makefile
+    assert "package-tarball-smoke: package-tarball" in app_makefile
+    assert "package-deb:" in app_makefile
+    assert "package-deb-smoke: package-deb" in app_makefile
+    assert "install: $(MEM_SERVICE_RELEASE_MANIFEST)" in app_makefile
+    assert "rm -f linqu_mem_service linqu_mem_service_host" in app_makefile
+    assert '$(MAKE) linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"' in app_makefile
+    assert (
+        '$(MAKE) linqu_mem_service_host HOST_CC="$(HOST_CC)" '
+        'HOST_CFLAGS="$(HOST_CFLAGS)"'
+    ) in app_makefile
+    assert "tar -cf $(PACKAGE_TARBALL) -C $(PACKAGE_STAGE_ROOT) usr" in app_makefile
+    assert 'f.write(b"!<arch>\\n")' in app_makefile
+    assert "^distributable_package_format=tar$$" in app_makefile
+    assert "^distributable_package_gate=package-tarball-smoke$$" in app_makefile
+    assert "^native_package_format=deb$$" in app_makefile
+    assert "^native_package_gate=package-deb-smoke$$" in app_makefile
     assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
     assert "examples/mem_service_serving_example.c" in app_makefile
     assert "examples/mem_service_pretraining_example.c" in app_makefile
@@ -744,7 +765,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x4bdf7bcc$$" in app_makefile
+    assert "^package_manifest_checksum=0xcdafe5fb$$" in app_makefile
     assert "^package_gate=package-fixtures$$" in app_makefile
     assert "^upgrade_rollback_policy_checksum=0xfce9862f$$" in app_makefile
     assert "^upgrade_policy=current-version-only$$" in app_makefile
@@ -882,8 +903,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 2540U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4bdf7bccU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3077U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcdafe5fbU" in app_source
+    assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
+    assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
     assert "render_package_manifest" in app_source
     assert "run_package_fixture_check" in app_source
     assert 'strcmp(argv[1], "health")' in app_source
@@ -919,8 +942,20 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0x4bdf7bcc" in release_manifest
+    assert "package_manifest_checksum=0xcdafe5fb" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
+    assert (
+        "distributable_package=out/mem_service/"
+        "linqu_mem_service-installed-layout-v1.tar"
+    ) in release_manifest
+    assert "distributable_package_format=tar" in release_manifest
+    assert "distributable_package_root=usr" in release_manifest
+    assert "distributable_package_gate=package-tarball-smoke" in release_manifest
+    assert "native_package=out/mem_service/linqu-mem-service_0.1.0-1_arm64.deb" in release_manifest
+    assert "native_package_format=deb" in release_manifest
+    assert "native_package_arch=arm64" in release_manifest
+    assert "native_package_gate=package-deb-smoke" in release_manifest
+    assert "native_package_runtime=not-executed-cross-compiled-arm64" in release_manifest
     assert "core_binary=bin/linqu_mem_service" in release_manifest
     assert (
         "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host"
@@ -1011,8 +1046,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=1760" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xfce9862f" in release_manifest
-    assert "package_manifest_len=2540" in release_manifest
-    assert "package_manifest_checksum=0x4bdf7bcc" in release_manifest
+    assert "package_manifest_len=3077" in release_manifest
+    assert "package_manifest_checksum=0xcdafe5fb" in release_manifest
     assert "api_abi_policy_len=875" in release_manifest
     assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
     assert "config_schema_version=1" in release_manifest
@@ -1059,13 +1094,27 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "required_gate=install-smoke" in upgrade_rollback_policy
     assert "mem_service_package_manifest_version=1" in package_manifest
     assert "package_format=installed-layout-v1" in package_manifest
+    assert "artifact_format=tar" in package_manifest
+    assert "artifact_name=linqu_mem_service-installed-layout-v1.tar" in package_manifest
+    assert "artifact_root=usr" in package_manifest
+    assert "artifact_install_prefix=/usr" in package_manifest
+    assert "artifact_contents=installed-layout-v1-root" in package_manifest
+    assert "artifact_gate=package-tarball-smoke" in package_manifest
+    assert "native_package_format=deb" in package_manifest
+    assert "native_package_name=linqu-mem-service_0.1.0-1_arm64.deb" in package_manifest
+    assert "native_package_arch=arm64" in package_manifest
+    assert "native_package_payload=debian-binary+control.tar.gz+data.tar.gz" in package_manifest
+    assert "native_package_gate=package-deb-smoke" in package_manifest
+    assert "native_package_runtime=not-executed-cross-compiled-arm64" in package_manifest
     assert "installed_file_count=28" in package_manifest
-    assert "required_gate_count=13" in package_manifest
+    assert "required_gate_count=15" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
         "upgrade-rollback-policy.txt checksum=0xfce9862f"
     ) in package_manifest
     assert "required_gate=package-fixtures" in package_manifest
+    assert "required_gate=package-tarball-smoke" in package_manifest
+    assert "required_gate=package-deb-smoke" in package_manifest
     assert "cross_version_upgrade=not-certified" in package_manifest
     assert "alert: LingquMemServiceDown" in alert_rules
     assert "increase(lingqu_mem_service_fail_closed_count[5m]) > 0" in alert_rules
@@ -1866,6 +1915,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
         "guest-linux/aarch64/apps/mem_service/compat-baseline-v1.txt",
         "guest-linux/aarch64/apps/mem_service/compat-matrix.txt",
         "guest-linux/aarch64/apps/mem_service/compat-old-new-matrix.txt",
+        "guest-linux/aarch64/apps/mem_service/package-manifest.txt",
         "guest-linux/aarch64/apps/mem_service/release-manifest.txt",
         "guest-linux/aarch64/apps/mem_service/upgrade-rollback-policy.txt",
         "guest-linux/aarch64/apps/mem_service/wire-schema.txt",
