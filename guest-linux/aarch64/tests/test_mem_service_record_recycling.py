@@ -89,6 +89,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         cli_source = (CLI_DIR / "mem_service.c").read_text()
         cli_makefile = (CLI_DIR / "Makefile").read_text()
         release_manifest = (CLI_DIR / "release-manifest.txt").read_text()
+        admin_output_schema = (CLI_DIR / "admin-output-schema.txt").read_text()
         api_abi_policy = (CLI_DIR / "api-abi-policy.txt").read_text()
         config_schema = (CLI_DIR / "configs" / "mem_service.conf.schema").read_text()
         config_example = (CLI_DIR / "configs" / "mem_service.example.conf").read_text()
@@ -299,6 +300,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             run_app,
         )
         self.assertIn(
+            'run_binary "linqu_mem_service_admin_output_fixtures" '
+            "/bin/linqu_mem_service admin-output-fixtures",
+            run_app,
+        )
+        self.assertIn(
             'run_binary "linqu_mem_service_client_retry_fixtures" '
             "/bin/linqu_mem_service client-retry-fixtures",
             run_app,
@@ -345,6 +351,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "config-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "metrics-export-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "collector-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "admin-output-schema")', cli_source)
+        self.assertIn('strcmp(argv[1], "admin-output-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-policy")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-fixtures")', cli_source)
@@ -365,6 +373,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_client_retry_fixture_check", cli_source)
         self.assertIn("render_api_abi_policy", cli_source)
         self.assertIn("run_api_abi_fixture_check", cli_source)
+        self.assertIn("render_admin_output_schema", cli_source)
+        self.assertIn("run_admin_output_fixture_check", cli_source)
         self.assertIn("run_compat_matrix", cli_source)
         self.assertIn("run_compat_fixture_check", cli_source)
         self.assertIn("run_compat_baseline_v1", cli_source)
@@ -393,6 +403,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U", cli_source)
         self.assertIn(
             "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xce883650U",
+            cli_source,
+        )
+        self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U", cli_source)
+        self.assertIn(
+            "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U", cli_source)
@@ -445,6 +460,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("linqu_mem_service_qwen3", cli_makefile)
         self.assertIn("MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt", cli_makefile)
+        self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt", cli_makefile)
@@ -469,6 +485,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("$(MEM_SERVICE_DEPLOY_MANIFEST)", cli_makefile)
         self.assertIn("$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)", cli_makefile)
         self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
+        self.assertIn("^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$", cli_makefile)
+        self.assertIn("^admin_output_schema_checksum=0x7021f4cf$$", cli_makefile)
+        self.assertIn("^admin_output_format=text-kv$$", cli_makefile)
+        self.assertIn("^admin_metric_prefix=lingqu_mem_service_$$", cli_makefile)
         self.assertIn("^client_retry_policy=explicit-max-attempts-backoff$$", cli_makefile)
         self.assertIn("^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$", cli_makefile)
         self.assertIn("^api_abi_policy_checksum=0x743f84b8$$", cli_makefile)
@@ -507,11 +527,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("install-smoke: install", cli_makefile)
         self.assertIn("print-release-manifest", cli_makefile)
         self.assertIn("print-wire-schema", cli_makefile)
+        self.assertIn("print-admin-output-schema", cli_makefile)
         self.assertIn("print-api-abi-policy", cli_makefile)
         self.assertIn("print-compat-matrix", cli_makefile)
         self.assertIn("print-compat-baseline-v1", cli_makefile)
         self.assertIn("print-compat-old-new-matrix", cli_makefile)
         self.assertIn("wire_schema_manifest_checksum=0xce883650", release_manifest)
+        self.assertIn("admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt", release_manifest)
+        self.assertIn("admin_output_schema_checksum=0x7021f4cf", release_manifest)
+        self.assertIn("admin_output_format=text-kv", release_manifest)
+        self.assertIn("admin_metric_prefix=lingqu_mem_service_", release_manifest)
         self.assertIn("api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt", release_manifest)
         self.assertIn("api_abi_policy_checksum=0x743f84b8", release_manifest)
         self.assertIn("client_api_version=1", release_manifest)
@@ -583,6 +608,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("host_service_manager_smokes=1", cli_source)
         self.assertIn("collector_smokes=1", cli_source)
         self.assertIn("api_abi_policies=1", cli_source)
+        self.assertIn("admin_output_schemas=1", cli_source)
+        self.assertIn("admin_output_schema_checksum=0x%08x", cli_source)
         self.assertIn("api_abi_policy_checksum=0x%08x", cli_source)
         self.assertIn("durable_catalogs=1", cli_source)
         self.assertIn("payload_block_backends=1", cli_source)
@@ -593,6 +620,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("operation_count=23", (CLI_DIR / "wire-schema.txt").read_text())
         self.assertIn("field_count=110", (CLI_DIR / "wire-schema.txt").read_text())
         self.assertIn("operation=audit_log:10", (CLI_DIR / "wire-schema.txt").read_text())
+        self.assertIn("mem_service_admin_output_schema_version=1", admin_output_schema)
+        self.assertIn("admin_command=metrics-export operation=metrics response=prometheus-text", admin_output_schema)
+        self.assertIn("metrics_prometheus_prefix=lingqu_mem_service_", admin_output_schema)
+        self.assertIn("metric_field=request_latency_max_ms type=gauge", admin_output_schema)
+        self.assertIn("audit_record_delimiter=audit_begin/audit_end", admin_output_schema)
+        self.assertIn("snapshot_page_field=next_index type=u64", admin_output_schema)
+        self.assertIn("fail_closed_status=checksum_mismatch", admin_output_schema)
         self.assertIn("mem_service_api_abi_policy_version=1", api_abi_policy)
         self.assertIn("client_api_version=1", api_abi_policy)
         self.assertIn("client_abi_version=1", api_abi_policy)
@@ -730,6 +764,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertTrue(SERVICE_WIRE_SCHEMA_H.exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.c").exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.h").exists())
+        self.assertTrue((CLI_DIR / "admin-output-schema.txt").exists())
         self.assertTrue((CLI_DIR / "api-abi-policy.txt").exists())
         self.assertTrue((CLI_DIR / "compat-baseline-v1.txt").exists())
         self.assertTrue((CLI_DIR / "compat-matrix.txt").exists())

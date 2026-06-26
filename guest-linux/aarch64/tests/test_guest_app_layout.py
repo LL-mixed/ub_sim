@@ -591,6 +591,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     app_source = (app_dir / "mem_service.c").read_text()
     release_manifest = (app_dir / "release-manifest.txt").read_text()
     wire_schema_manifest = (app_dir / "wire-schema.txt").read_text()
+    admin_output_schema = (app_dir / "admin-output-schema.txt").read_text()
     api_abi_policy = (app_dir / "api-abi-policy.txt").read_text()
     compat_matrix = (app_dir / "compat-matrix.txt").read_text()
     compat_baseline = (app_dir / "compat-baseline-v1.txt").read_text()
@@ -656,6 +657,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service metrics-export-fixtures" in run_app
     assert "linqu_mem_service_collector_fixtures" in run_app
     assert "/bin/linqu_mem_service collector-fixtures" in run_app
+    assert "linqu_mem_service_admin_output_fixtures" in run_app
+    assert "/bin/linqu_mem_service admin-output-fixtures" in run_app
     assert "linqu_mem_service_client_retry_fixtures" in run_app
     assert "/bin/linqu_mem_service client-retry-fixtures" in run_app
     assert "linqu_mem_service_api_abi_fixtures" in run_app
@@ -672,6 +675,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (app_dir / "Makefile").exists()
     assert (app_dir / "release-manifest.txt").exists()
     assert (app_dir / "wire-schema.txt").exists()
+    assert (app_dir / "admin-output-schema.txt").exists()
     assert (app_dir / "api-abi-policy.txt").exists()
     assert (app_dir / "compat-matrix.txt").exists()
     assert (app_dir / "compat-baseline-v1.txt").exists()
@@ -687,6 +691,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_makefile
     assert "MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt" in app_makefile
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt" in app_makefile
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt" in app_makefile
     assert "MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt" in app_makefile
@@ -715,6 +720,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(MEM_SERVICE_DEPLOY_MANIFEST)" in app_makefile
     assert "$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)" in app_makefile
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
+    assert "^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$" in app_makefile
+    assert "^admin_output_schema_checksum=0x7021f4cf$$" in app_makefile
+    assert "^admin_output_format=text-kv$$" in app_makefile
+    assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
     assert "^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$" in app_makefile
     assert "^api_abi_policy_checksum=0x743f84b8$$" in app_makefile
@@ -746,6 +755,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "install-smoke: install" in app_makefile
     assert "print-release-manifest" in app_makefile
     assert "print-wire-schema" in app_makefile
+    assert "print-admin-output-schema" in app_makefile
     assert "print-api-abi-policy" in app_makefile
     assert "print-compat-matrix" in app_makefile
     assert "print-compat-baseline-v1" in app_makefile
@@ -772,6 +782,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "metrics-export-fixtures")' in app_source
     assert 'strcmp(argv[1], "collector-fixtures")' in app_source
     assert 'strcmp(argv[1], "deployment-fixtures")' in app_source
+    assert 'strcmp(argv[1], "admin-output-schema")' in app_source
+    assert 'strcmp(argv[1], "admin-output-fixtures")' in app_source
     assert 'strcmp(argv[1], "durable-catalog-fixtures")' in app_source
     assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
     assert 'strcmp(argv[1], "api-abi-policy")' in app_source
@@ -817,6 +829,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xce883650U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU" in app_source
+    assert "render_admin_output_schema" in app_source
+    assert "run_admin_output_fixture_check" in app_source
     assert 'strcmp(argv[1], "health")' in app_source
     assert 'strcmp(argv[1], "ready")' in app_source
     assert 'strcmp(argv[1], "metrics")' in app_source
@@ -865,6 +881,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "mem_service_pretraining_example.c"
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
+    assert "admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt" in release_manifest
+    assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
+    assert "admin_output_format=text-kv" in release_manifest
+    assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt" in release_manifest
     assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
     assert "client_api_version=1" in release_manifest
@@ -919,6 +939,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "certification_limit=old-server-runtime-binary-not-certified" in compat_old_new
     assert "wire_schema_manifest_len=9220" in release_manifest
     assert "wire_schema_manifest_checksum=0xce883650" in release_manifest
+    assert "admin_output_schema_len=6624" in release_manifest
+    assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "api_abi_policy_len=875" in release_manifest
     assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
     assert "config_schema_version=1" in release_manifest
@@ -949,6 +971,13 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=inspect_object:18" in wire_schema_manifest
     assert "field_count=110" in wire_schema_manifest
     assert "oneof_field=resolve_kv_segment.0.block_hash" in wire_schema_manifest
+    assert "mem_service_admin_output_schema_version=1" in admin_output_schema
+    assert "admin_command=metrics-export operation=metrics response=prometheus-text" in admin_output_schema
+    assert "metrics_prometheus_prefix=lingqu_mem_service_" in admin_output_schema
+    assert "metric_field=request_latency_max_ms type=gauge" in admin_output_schema
+    assert "audit_record_delimiter=audit_begin/audit_end" in admin_output_schema
+    assert "snapshot_page_field=next_index type=u64" in admin_output_schema
+    assert "fail_closed_status=checksum_mismatch" in admin_output_schema
     assert "mem_service_config_schema_version=1" in config_schema
     assert "field=listen type=string" in config_schema
     assert "field=store type=string" in config_schema
@@ -1734,6 +1763,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
     assert "guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test" not in tracked_apps
     assert [path for path in tracked_runtime_source if "demo" in path.lower()] == []
     allowed_mem_service_release_artifacts = {
+        "guest-linux/aarch64/apps/mem_service/admin-output-schema.txt",
         "guest-linux/aarch64/apps/mem_service/api-abi-policy.txt",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.conf.schema",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.example.conf",

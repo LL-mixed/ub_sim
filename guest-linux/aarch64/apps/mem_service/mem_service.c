@@ -28,6 +28,9 @@
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
 #define MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_VERSION 1U
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
@@ -47,6 +50,7 @@ static void usage(const char *argv0)
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [config-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
+    printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
@@ -1795,6 +1799,13 @@ static int run_release_manifest(void)
     printf("api_abi_policy_len=%u\n", MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN);
     printf("api_abi_policy_checksum=0x%08x\n",
            MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM);
+    printf("admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt\n");
+    printf("admin_output_schema_len=%u\n",
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN);
+    printf("admin_output_schema_checksum=0x%08x\n",
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM);
+    printf("admin_output_format=text-kv\n");
+    printf("admin_metric_prefix=lingqu_mem_service_\n");
     printf("client_api_version=%u\n", MEM_SERVICE_CLIENT_API_VERSION);
     printf("client_abi_version=%u\n", MEM_SERVICE_CLIENT_ABI_VERSION);
     printf("client_record_abi_size=%u\n", MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
@@ -1940,6 +1951,12 @@ static int run_release_fixture_check(void)
         fprintf(stderr, "mem_service release-fixtures: api/abi policy fixture missing\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM == 0U) {
+        fprintf(stderr,
+                "mem_service release-fixtures: admin output schema fixture missing\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U ||
         MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM == 0U) {
         fprintf(stderr, "mem_service release-fixtures: compat matrix fixture missing\n");
@@ -1989,6 +2006,7 @@ static int run_release_fixture_check(void)
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "
            "api_abi_policies=1 "
+           "admin_output_schemas=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -1997,6 +2015,8 @@ static int run_release_fixture_check(void)
            "operations=23 statuses=11 "
            "schema_manifest_len=%u schema_manifest_checksum=0x%08x "
            "api_abi_policy_len=%u api_abi_policy_checksum=0x%08x "
+           "admin_output_schema_len=%u "
+           "admin_output_schema_checksum=0x%08x "
            "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
            "compat_baseline_len=%u compat_baseline_checksum=0x%08x "
            "compat_old_new_matrix_len=%u "
@@ -2005,6 +2025,8 @@ static int run_release_fixture_check(void)
            MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM,
            MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN,
            MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM,
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN,
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
@@ -2803,6 +2825,523 @@ static int render_metrics_prometheus_text(const char *metrics_payload,
         }
         cursor = line_end + 1;
     }
+    return 0;
+}
+
+static int render_admin_output_schema(char *schema, size_t schema_len, size_t *used_out)
+{
+    size_t used = 0;
+
+    if (schema == NULL || schema_len == 0) {
+        return -1;
+    }
+    schema[0] = '\0';
+    if (append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "mem_service_admin_output_schema_version=%u\n",
+                                MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_output_format=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "cli_status_line=mem_service <command>: status=<wire_status_name>\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "cli_payload_separator=payload-newline-for-payload-commands\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=health operation=health response=payload_optional\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=ready operation=ready response=payload_optional\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=status operation=status response=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=list-records operation=list_records response=record-lines\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=metrics operation=metrics response=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=metrics-export operation=metrics response=prometheus-text\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=audit-log operation=audit_log response=text-kv-records\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=inspect-object operation=inspect_object response=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=export-snapshot operation=export_snapshot response=snapshot-text\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=export-snapshot-page operation=export_snapshot_page response=snapshot-page-text\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=export-snapshot-to operation=export_snapshot_page response=local-file-summary\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=restore-snapshot operation=restore_snapshot response=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "admin_command=restore-snapshot-page operation=restore_snapshot_page response=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=ready type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=shmem_ready type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=urma_ready type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=block_ready type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=record_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=prefix_group_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=prefix_entry_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=kv_segment_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=object_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=runtime_handoff_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=execution_artifact_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=training_artifact_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "list_records_empty_field=record_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "list_records_record_line=record index=<u64> kind=<u32> kind_name=<string> key=<string> version=<u64> checksum=<u64>\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "metrics_export_format=prometheus-text\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "metrics_prometheus_prefix=lingqu_mem_service_\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "metrics_prometheus_default_type=counter\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "metrics_prometheus_type=request_latency_max_ms:gauge\n") != 0) {
+        return -1;
+    }
+#define APPEND_COUNTER_METRIC(name) \
+    do { \
+        if (append_wire_schema_line(schema, schema_len, &used, \
+                                    "metric_field=" name " type=counter\n") != 0) { \
+            return -1; \
+        } \
+    } while (0)
+    APPEND_COUNTER_METRIC("request_count");
+    APPEND_COUNTER_METRIC("ok_count");
+    APPEND_COUNTER_METRIC("error_count");
+    APPEND_COUNTER_METRIC("not_found_count");
+    APPEND_COUNTER_METRIC("stale_ref_count");
+    APPEND_COUNTER_METRIC("checksum_mismatch_count");
+    APPEND_COUNTER_METRIC("version_conflict_count");
+    APPEND_COUNTER_METRIC("invalid_model_binding_count");
+    APPEND_COUNTER_METRIC("invalid_session_count");
+    APPEND_COUNTER_METRIC("timeout_count");
+    APPEND_COUNTER_METRIC("capacity_exceeded_count");
+    APPEND_COUNTER_METRIC("unsupported_count");
+    APPEND_COUNTER_METRIC("internal_count");
+    APPEND_COUNTER_METRIC("fail_closed_count");
+    APPEND_COUNTER_METRIC("health_count");
+    APPEND_COUNTER_METRIC("ready_count");
+    APPEND_COUNTER_METRIC("status_count");
+    APPEND_COUNTER_METRIC("list_records_count");
+    APPEND_COUNTER_METRIC("metrics_count");
+    APPEND_COUNTER_METRIC("audit_log_count");
+    APPEND_COUNTER_METRIC("export_snapshot_count");
+    APPEND_COUNTER_METRIC("export_snapshot_page_count");
+    APPEND_COUNTER_METRIC("restore_snapshot_count");
+    APPEND_COUNTER_METRIC("restore_snapshot_page_count");
+    APPEND_COUNTER_METRIC("put_object_count");
+    APPEND_COUNTER_METRIC("get_object_count");
+    APPEND_COUNTER_METRIC("inspect_object_count");
+    APPEND_COUNTER_METRIC("get_object_hit_count");
+    APPEND_COUNTER_METRIC("get_object_miss_count");
+    APPEND_COUNTER_METRIC("register_prefix_count");
+    APPEND_COUNTER_METRIC("lookup_prefix_count");
+    APPEND_COUNTER_METRIC("prefix_lookup_hit_count");
+    APPEND_COUNTER_METRIC("prefix_lookup_miss_count");
+    APPEND_COUNTER_METRIC("publish_kv_count");
+    APPEND_COUNTER_METRIC("resolve_kv_count");
+    APPEND_COUNTER_METRIC("kv_resolve_hit_count");
+    APPEND_COUNTER_METRIC("kv_resolve_miss_count");
+    APPEND_COUNTER_METRIC("publish_runtime_handoff_count");
+    APPEND_COUNTER_METRIC("resolve_runtime_handoff_count");
+    APPEND_COUNTER_METRIC("register_execution_artifact_count");
+    APPEND_COUNTER_METRIC("query_execution_artifact_count");
+    APPEND_COUNTER_METRIC("register_training_artifact_count");
+    APPEND_COUNTER_METRIC("query_training_artifact_count");
+    APPEND_COUNTER_METRIC("artifact_query_hit_count");
+    APPEND_COUNTER_METRIC("artifact_query_miss_count");
+    APPEND_COUNTER_METRIC("idempotency_replay_count");
+    APPEND_COUNTER_METRIC("idempotency_conflict_count");
+    APPEND_COUNTER_METRIC("request_latency_total_ms");
+    if (append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "metric_field=request_latency_max_ms type=gauge\n") != 0) {
+        return -1;
+    }
+    APPEND_COUNTER_METRIC("request_latency_le_1ms_count");
+    APPEND_COUNTER_METRIC("request_latency_le_5ms_count");
+    APPEND_COUNTER_METRIC("request_latency_le_10ms_count");
+    APPEND_COUNTER_METRIC("request_latency_le_50ms_count");
+    APPEND_COUNTER_METRIC("request_latency_le_100ms_count");
+    APPEND_COUNTER_METRIC("request_latency_gt_100ms_count");
+#undef APPEND_COUNTER_METRIC
+    if (append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=audit_log type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=retained_events type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=first_sequence type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=start_sequence type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_record_delimiter=audit_begin/audit_end\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=sequence type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=monotonic_ms type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=operation type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=operation_name type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=status type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=status_name type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=request_checksum type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=response_checksum type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=idempotency_replay type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=key type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=session_id type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=model_key type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=artifact_kind type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=artifact_id type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=idempotency_key type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=version type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_event_field=checksum type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=events_emitted type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=next_sequence type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "audit_field=complete type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_export_magic=%s\n",
+                                MEM_SERVICE_CLI_STORE_MAGIC) != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_field=record_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_field=audit_next_sequence type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_field=audit_event_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_record_delimiter=record_begin/record_end\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=snapshot_page type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=store_magic type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=record_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=start_index type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=next_index type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=records_emitted type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=complete type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_field=status type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_field=restored type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_field=record_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_page_field=restore_stage type=string enum=begun,appended,cancelled\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_page_field=expected_records type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_page_field=page_index type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_page_field=records_imported type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "restore_page_field=complete type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "fail_closed_status=stale_ref\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "fail_closed_status=checksum_mismatch\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "fail_closed_status=version_conflict\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "fail_closed_status=invalid_model_binding\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "fail_closed_status=invalid_session\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_admin_output_schema(void)
+{
+    char schema[8192];
+    size_t used = 0;
+
+    if (render_admin_output_schema(schema, sizeof(schema), &used) != 0) {
+        fprintf(stderr, "mem_service admin-output-schema: render failed\n");
+        return 1;
+    }
+    (void)used;
+    fputs(schema, stdout);
+    return 0;
+}
+
+static int run_admin_output_fixture_check(void)
+{
+    static const char sample_metrics[] =
+        "request_count=3\n"
+        "request_latency_total_ms=11\n"
+        "request_latency_max_ms=7\n";
+    char schema[8192];
+    char exported[1024];
+    size_t used = 0;
+    uint32_t checksum;
+    int failures = 0;
+
+    if (render_admin_output_schema(schema, sizeof(schema), &used) != 0) {
+        fprintf(stderr, "mem_service admin-output-fixtures: render failed\n");
+        return 1;
+    }
+    checksum = mem_service_wire_checksum(schema, used);
+    if (used != MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service admin-output-fixtures: schema len actual=%zu "
+                "expected=%u\n",
+                used,
+                MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN);
+        failures -= 1;
+    }
+    if (checksum != MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service admin-output-fixtures: schema checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM);
+        failures -= 1;
+    }
+    if (strstr(schema, "admin_command=status operation=status response=text-kv\n") ==
+            NULL ||
+        strstr(schema, "admin_command=metrics-export operation=metrics response=prometheus-text\n") ==
+            NULL ||
+        strstr(schema, "metric_field=request_latency_max_ms type=gauge\n") ==
+            NULL ||
+        strstr(schema, "audit_record_delimiter=audit_begin/audit_end\n") ==
+            NULL ||
+        strstr(schema, "snapshot_page_field=next_index type=u64\n") == NULL ||
+        strstr(schema, "fail_closed_status=checksum_mismatch\n") == NULL) {
+        fprintf(stderr, "mem_service admin-output-fixtures: required schema missing\n");
+        failures -= 1;
+    }
+    if (render_metrics_prometheus_text(sample_metrics,
+                                       exported,
+                                       sizeof(exported)) != 0 ||
+        strstr(exported,
+               "# TYPE lingqu_mem_service_request_count counter\n"
+               "lingqu_mem_service_request_count 3\n") == NULL ||
+        strstr(exported,
+               "# TYPE lingqu_mem_service_request_latency_max_ms gauge\n"
+               "lingqu_mem_service_request_latency_max_ms 7\n") == NULL) {
+        fprintf(stderr,
+                "mem_service admin-output-fixtures: metrics export contract mismatch\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service admin-output-fixtures: status=ok schema_version=%u "
+           "schema_len=%u schema_checksum=0x%08x admin_commands=13 "
+           "metric_fields=55 prometheus_prefix=lingqu_mem_service_\n",
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_VERSION,
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN,
+           MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM);
     return 0;
 }
 
@@ -4121,6 +4660,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "deployment-fixtures") == 0) {
         return run_deployment_fixture_check();
+    }
+    if (strcmp(argv[1], "admin-output-schema") == 0) {
+        return run_admin_output_schema();
+    }
+    if (strcmp(argv[1], "admin-output-fixtures") == 0) {
+        return run_admin_output_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();

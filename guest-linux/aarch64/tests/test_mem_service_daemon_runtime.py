@@ -15,6 +15,7 @@ REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
 CLI_SOURCE = ROOT / "apps" / "mem_service" / "mem_service.c"
 WIRE_SCHEMA_MANIFEST = ROOT / "apps" / "mem_service" / "wire-schema.txt"
+ADMIN_OUTPUT_SCHEMA = ROOT / "apps" / "mem_service" / "admin-output-schema.txt"
 API_ABI_POLICY = ROOT / "apps" / "mem_service" / "api-abi-policy.txt"
 COMPAT_MATRIX = ROOT / "apps" / "mem_service" / "compat-matrix.txt"
 COMPAT_BASELINE_V1 = ROOT / "apps" / "mem_service" / "compat-baseline-v1.txt"
@@ -1760,8 +1761,11 @@ int main(int argc, char **argv)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
         self.assertIn("collector_smokes=1", fixtures.stdout)
         self.assertIn("api_abi_policies=1", fixtures.stdout)
+        self.assertIn("admin_output_schemas=1", fixtures.stdout)
         self.assertIn("api_abi_policy_len=875", fixtures.stdout)
         self.assertIn("api_abi_policy_checksum=0x743f84b8", fixtures.stdout)
+        self.assertIn("admin_output_schema_len=6624", fixtures.stdout)
+        self.assertIn("admin_output_schema_checksum=0x7021f4cf", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1787,6 +1791,18 @@ int main(int argc, char **argv)
         policy = self._run_client("api-abi-policy")
         self.assertEqual(policy.returncode, 0, policy.stderr + policy.stdout)
         self.assertEqual(policy.stdout, API_ABI_POLICY.read_text())
+
+    def test_admin_output_schema_cli_matches_checked_in_contract(self):
+        fixtures = self._run_client("admin-output-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("schema_len=6624", fixtures.stdout)
+        self.assertIn("schema_checksum=0x7021f4cf", fixtures.stdout)
+        self.assertIn("prometheus_prefix=lingqu_mem_service_", fixtures.stdout)
+
+        schema = self._run_client("admin-output-schema")
+        self.assertEqual(schema.returncode, 0, schema.stderr + schema.stdout)
+        self.assertEqual(schema.stdout, ADMIN_OUTPUT_SCHEMA.read_text())
 
     def test_durable_catalog_fixtures_cli_validates_storage_root_layout(self):
         fixtures = self._run_client("durable-catalog-fixtures")
@@ -2771,6 +2787,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "release-manifest.txt"
             )
             wire_schema = destdir / "usr" / "share" / "lingqu" / "mem_service" / "wire-schema.txt"
+            admin_output_schema = (
+                destdir
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "admin-output-schema.txt"
+            )
             api_abi_policy = (
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "api-abi-policy.txt"
             )
@@ -2804,6 +2828,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertTrue(manifest.exists())
             self.assertTrue(wire_schema.exists())
+            self.assertTrue(admin_output_schema.exists())
             self.assertTrue(api_abi_policy.exists())
             self.assertTrue(compat_matrix.exists())
             self.assertTrue(compat_baseline.exists())
@@ -2819,6 +2844,9 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("wire_schema_manifest_checksum=0xce883650", manifest.read_text())
+            self.assertIn("admin_output_schema_checksum=0x7021f4cf", manifest.read_text())
+            self.assertIn("admin_output_format=text-kv", manifest.read_text())
+            self.assertIn("admin_metric_prefix=lingqu_mem_service_", manifest.read_text())
             self.assertIn("api_abi_policy_checksum=0x743f84b8", manifest.read_text())
             self.assertIn("client_api_version=1", manifest.read_text())
             self.assertIn("client_abi_version=1", manifest.read_text())
@@ -2861,6 +2889,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 host_deploy_manifest.read_text(),
             )
             self.assertEqual(wire_schema.read_text(), WIRE_SCHEMA_MANIFEST.read_text())
+            self.assertEqual(admin_output_schema.read_text(), ADMIN_OUTPUT_SCHEMA.read_text())
             self.assertEqual(api_abi_policy.read_text(), API_ABI_POLICY.read_text())
             self.assertEqual(compat_matrix.read_text(), COMPAT_MATRIX.read_text())
             self.assertEqual(compat_baseline.read_text(), COMPAT_BASELINE_V1.read_text())
