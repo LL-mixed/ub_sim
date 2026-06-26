@@ -1564,7 +1564,7 @@ static int run_release_manifest(void)
     printf("service_name=linqu_mem_service\n");
     printf("core_binary=bin/linqu_mem_service\n");
     printf("qwen3_adapter_binary_optional=bin/linqu_mem_service_qwen3\n");
-    printf("host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host\n");
+    printf("host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n");
     printf("host_daemon_artifact_smoke=host-artifact-smoke\n");
     printf("default_endpoint=%s\n", mem_service_default_unix_socket_spec());
     printf("wire_version=%u\n", MEM_SERVICE_WIRE_VERSION);
@@ -1594,7 +1594,10 @@ static int run_release_manifest(void)
     printf("config_schema=share/lingqu/mem_service/config/mem_service.conf.schema\n");
     printf("config_example=share/lingqu/mem_service/config/mem_service.example.conf\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
+    printf("host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service\n");
     printf("deployment_smoke=deployment-fixtures\n");
+    printf("host_service_manager_smoke=installed-host-service-manager-smoke\n");
+    printf("host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm\n");
     printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
     printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
@@ -1742,6 +1745,7 @@ static int run_release_fixture_check(void)
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "host_artifacts=1 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
+           "host_service_manager_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -2658,6 +2662,20 @@ static int run_deployment_fixture_check(void)
         "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n";
+    static const char host_deployment_manifest[] =
+        "[Unit]\n"
+        "Description=Lingqu Memory Service Host Daemon\n"
+        "After=network.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
+        "serve --config /etc/lingqu/mem_service/mem_service.conf\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n";
     static const char sample_metrics[] =
         "request_count=5\n"
         "ok_count=5\n"
@@ -2671,6 +2689,16 @@ static int run_deployment_fixture_check(void)
         strstr(deployment_manifest, "Restart=on-failure\n") == NULL ||
         strstr(deployment_manifest, "WantedBy=multi-user.target\n") == NULL) {
         fprintf(stderr, "mem_service deployment-fixtures: manifest mismatch\n");
+        return 1;
+    }
+    if (strstr(host_deployment_manifest, "[Service]\n") == NULL ||
+        strstr(host_deployment_manifest,
+               "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
+               "serve --config /etc/lingqu/mem_service/mem_service.conf\n") == NULL ||
+        strstr(host_deployment_manifest, "Restart=on-failure\n") == NULL ||
+        strstr(host_deployment_manifest, "WantedBy=multi-user.target\n") == NULL) {
+        fprintf(stderr,
+                "mem_service deployment-fixtures: host manifest mismatch\n");
         return 1;
     }
     if (render_metrics_http_response("GET",
@@ -2712,7 +2740,8 @@ static int run_deployment_fixture_check(void)
     }
     printf("mem_service deployment-fixtures: status=ok deployment_smoke_version=%u "
            "service_manager=systemd-like metrics_scrape_path=/metrics "
-           "metrics_http_content_type=prometheus-text\n",
+           "metrics_http_content_type=prometheus-text "
+           "host_service_manager=systemd-like\n",
            MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION);
     return 0;
 }

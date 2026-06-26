@@ -289,7 +289,7 @@ Keep the implementation layers separated:
   `catalog/store.snapshot` when `store` is omitted; `sealed-local-block-v1`
   writes inline and server-side `payload_path` payloads into
   `blocks/<checksum>.block` and verifies them on read. Remote/chunked sealed
-  payload blocks, real host/systemd service-manager smoke, external collector
+  payload blocks, real systemd environment smoke, external collector
   integration smoke, old-server runtime-binary certification, product-grade
   restore policy, payload ownership, atomic durable catalog, and product-grade
   durable migration remain deployment work.
@@ -302,11 +302,13 @@ Keep the implementation layers separated:
   headers, client SDK sources, SDK examples, release manifest, wire schema
   manifest, compatibility matrix, v1 compatibility baseline, old/new
   schema-profile matrix, config schema/example, systemd-like deployment
-  manifest, host daemon artifact, deployment fixture, `host-artifact-smoke`,
-  Prometheus text metrics export format, `metrics_listen` config, `/metrics`
-  scrape path contract, TCP metrics listener contract, service-manager lifecycle
-  contract, durable catalog layout contract, and explicit client retry policy.
-  They are not yet a full package, real host/systemd service-manager smoke,
+  manifest, host daemon artifact under `libexec`, host service manifest,
+  deployment fixture, `host-artifact-smoke`,
+  `installed-host-service-manager-smoke`, Prometheus text metrics export format,
+  `metrics_listen` config, `/metrics` scrape path contract, TCP metrics listener
+  contract, service-manager lifecycle contract, durable catalog layout
+  contract, and explicit client retry policy.
+  They are not yet a full package, real systemd environment smoke,
   upgrade policy, or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
   and guest handoff timing. This layer can depend on guest runtime facilities.

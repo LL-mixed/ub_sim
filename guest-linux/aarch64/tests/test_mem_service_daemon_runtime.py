@@ -1,4 +1,5 @@
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -1751,6 +1752,7 @@ int main(int argc, char **argv)
         self.assertIn("host_artifacts=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
+        self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1778,6 +1780,7 @@ int main(int argc, char **argv)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("deployment_smoke_version=1", fixtures.stdout)
         self.assertIn("service_manager=systemd-like", fixtures.stdout)
+        self.assertIn("host_service_manager=systemd-like", fixtures.stdout)
         self.assertIn("metrics_scrape_path=/metrics", fixtures.stdout)
         self.assertIn("metrics_http_content_type=prometheus-text", fixtures.stdout)
 
@@ -2573,22 +2576,94 @@ int main(int argc, char **argv)
 
 @unittest.skipUnless(shutil.which("cc") and shutil.which("make"), "host cc and make are required")
 class MemServiceReleaseInstallTests(unittest.TestCase):
+    def _free_tcp_port(self) -> int:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", 0))
+            return int(listener.getsockname()[1])
+        finally:
+            listener.close()
+
+    def _http_metrics_request(self, port: int) -> str:
+        request = (
+            "GET /metrics HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as conn:
+            conn.sendall(request)
+            chunks = []
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks).decode()
+
+    def _install_release_layout(self, app_dir: Path, destdir: Path) -> None:
+        cmd = [
+            "make",
+            "-C",
+            str(app_dir),
+            "CC=cc",
+            "CFLAGS=-O2 -Wall -Wextra",
+            f"DESTDIR={destdir}",
+            "PREFIX=/usr",
+            "install-smoke",
+        ]
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+
+    def _parse_exec_start(self, service_unit: Path) -> list[str]:
+        for line in service_unit.read_text().splitlines():
+            if line.startswith("ExecStart="):
+                return shlex.split(line.split("=", 1)[1])
+        self.fail(f"{service_unit} has no ExecStart")
+
+    def _wait_installed_service_ready(
+        self,
+        proc: subprocess.Popen,
+        client_binary: Path,
+        socket_path: Path,
+    ) -> None:
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate(timeout=1)
+                if "Operation not permitted" in stderr and "mem_service serve: bind" in stderr:
+                    raise unittest.SkipTest("sandbox forbids Unix socket bind in subprocess")
+                if (
+                    "Operation not permitted" in stderr
+                    and "mem_service serve: metrics bind" in stderr
+                ):
+                    raise unittest.SkipTest("sandbox forbids TCP metrics bind in subprocess")
+                self.fail(
+                    f"installed mem_service daemon exited rc={proc.returncode}\n"
+                    f"stdout={stdout}\nstderr={stderr}"
+                )
+            health = subprocess.run(
+                [str(client_binary), "health", "--connect", f"unix:{socket_path}"],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if health.returncode == 0 and "status=ok" in health.stdout:
+                return
+            time.sleep(0.05)
+        proc.terminate()
+        stdout, stderr = proc.communicate(timeout=5)
+        self.fail(
+            "installed mem_service daemon did not become ready\n"
+            f"stdout={stdout}\nstderr={stderr}"
+        )
+
     def test_make_install_smoke_creates_release_layout(self):
         app_dir = ROOT / "apps" / "mem_service"
         with tempfile.TemporaryDirectory(prefix="msvc_install_", dir=str(_tmp_parent())) as tmp:
             destdir = Path(tmp)
-            cmd = [
-                "make",
-                "-C",
-                str(app_dir),
-                "CC=cc",
-                "CFLAGS=-O2 -Wall -Wextra",
-                f"DESTDIR={destdir}",
-                "PREFIX=/usr",
-                "install-smoke",
-            ]
             try:
-                subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+                self._install_release_layout(app_dir, destdir)
             finally:
                 subprocess.run(
                     ["make", "-C", str(app_dir), "clean"],
@@ -2603,10 +2678,9 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 (
                     destdir
                     / "usr"
-                    / "share"
+                    / "libexec"
                     / "lingqu"
                     / "mem_service"
-                    / "host"
                     / "linqu_mem_service_host"
                 ).exists()
             )
@@ -2661,14 +2735,24 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "mem_service"
                 / "compat-old-new-matrix.txt"
             )
+            host_deploy_manifest = (
+                destdir
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "deploy"
+                / "linqu_mem_service.host.service"
+            )
             self.assertTrue(manifest.exists())
             self.assertTrue(wire_schema.exists())
             self.assertTrue(compat_matrix.exists())
             self.assertTrue(compat_baseline.exists())
             self.assertTrue(compat_old_new_matrix.exists())
+            self.assertTrue(host_deploy_manifest.exists())
             self.assertIn("core_binary=bin/linqu_mem_service", manifest.read_text())
             self.assertIn(
-                "host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host",
+                "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host",
                 manifest.read_text(),
             )
             self.assertIn(
@@ -2679,6 +2763,18 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("compat_matrix_checksum=0x8b4219c5", manifest.read_text())
             self.assertIn("compat_baseline_checksum=0xdc6376da", manifest.read_text())
             self.assertIn("compat_old_new_matrix_checksum=0x56f8e4c3", manifest.read_text())
+            self.assertIn(
+                "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "host_service_manager_smoke=installed-host-service-manager-smoke",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm",
+                manifest.read_text(),
+            )
             self.assertIn("durable_backend=snapshot+journal", manifest.read_text())
             self.assertIn("durable_catalog=storage-root-v1", manifest.read_text())
             self.assertIn("durable_catalog_manifest=catalog/manifest.txt", manifest.read_text())
@@ -2696,6 +2792,11 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("metrics_scrape_path=/metrics", manifest.read_text())
             self.assertIn("mem_service_serving_example.c", manifest.read_text())
             self.assertIn("mem_service_pretraining_example.c", manifest.read_text())
+            self.assertIn(
+                "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
+                "serve --config /etc/lingqu/mem_service/mem_service.conf",
+                host_deploy_manifest.read_text(),
+            )
             self.assertEqual(wire_schema.read_text(), WIRE_SCHEMA_MANIFEST.read_text())
             self.assertEqual(compat_matrix.read_text(), COMPAT_MATRIX.read_text())
             self.assertEqual(compat_baseline.read_text(), COMPAT_BASELINE_V1.read_text())
@@ -2703,6 +2804,104 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 compat_old_new_matrix.read_text(),
                 COMPAT_OLD_NEW_MATRIX.read_text(),
             )
+
+    def test_installed_host_service_manifest_runs_ready_scrape_and_shutdown(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        with tempfile.TemporaryDirectory(prefix="msvc_host_service_", dir=str(_tmp_parent())) as tmp:
+            destdir = Path(tmp)
+            socket_path = _tmp_parent() / f"linqu_mem_service_host_{os.getpid()}_{id(self)}.sock"
+            metrics_port = self._free_tcp_port()
+            config_dir = destdir / "etc" / "lingqu" / "mem_service"
+            state_dir = destdir / "var" / "lib" / "lingqu" / "mem_service"
+            config_path = config_dir / "mem_service.conf"
+            store_path = state_dir / "service.store"
+            service_unit = (
+                destdir
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "deploy"
+                / "linqu_mem_service.host.service"
+            )
+            host_binary = (
+                destdir
+                / "usr"
+                / "libexec"
+                / "lingqu"
+                / "mem_service"
+                / "linqu_mem_service_host"
+            )
+            proc = None
+
+            try:
+                self._install_release_layout(app_dir, destdir)
+                config_dir.mkdir(parents=True)
+                state_dir.mkdir(parents=True)
+                config_path.write_text(
+                    f"listen=unix:{socket_path}\n"
+                    f"store={store_path}\n"
+                    "backend=snapshot+journal\n"
+                    "auth_mode=none\n"
+                    "metrics_mode=text-kv\n"
+                    f"metrics_listen=tcp:127.0.0.1:{metrics_port}\n"
+                    "adapter_enablement=core\n"
+                )
+
+                exec_start = self._parse_exec_start(service_unit)
+                self.assertEqual(
+                    exec_start[0],
+                    "/usr/libexec/lingqu/mem_service/linqu_mem_service_host",
+                )
+                self.assertEqual(exec_start[1:3], ["serve", "--config"])
+                self.assertEqual(
+                    exec_start[3],
+                    "/etc/lingqu/mem_service/mem_service.conf",
+                )
+                command = [str(host_binary), *exec_start[1:3], str(config_path)]
+                proc = subprocess.Popen(
+                    command,
+                    cwd=REPO_ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                self._wait_installed_service_ready(proc, host_binary, socket_path)
+
+                scraped = self._http_metrics_request(metrics_port)
+                self.assertIn("HTTP/1.1 200 OK\r\n", scraped)
+                self.assertRegex(
+                    scraped,
+                    r"lingqu_mem_service_health_count [1-9][0-9]*\n",
+                )
+
+                proc.terminate()
+                stdout, stderr = proc.communicate(timeout=5)
+                rc = proc.returncode
+                proc = None
+                self.assertEqual(rc, 0, stderr + stdout)
+                self.assertIn("status=ready", stdout)
+                self.assertIn(f"listen=unix:{socket_path}", stdout)
+                self.assertIn(f"store={store_path}", stdout)
+                self.assertIn(f"metrics_listen=tcp:127.0.0.1:{metrics_port}", stdout)
+                self.assertIn("status=stopped", stdout)
+                self.assertFalse(socket_path.exists(), "service socket should be removed on shutdown")
+            finally:
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.communicate(timeout=5)
+                socket_path.unlink(missing_ok=True)
+                subprocess.run(
+                    ["make", "-C", str(app_dir), "clean"],
+                    cwd=REPO_ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
 
 
 if __name__ == "__main__":

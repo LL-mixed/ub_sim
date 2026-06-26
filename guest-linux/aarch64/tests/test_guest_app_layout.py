@@ -597,6 +597,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     config_schema = (app_dir / "configs" / "mem_service.conf.schema").read_text()
     config_example = (app_dir / "configs" / "mem_service.example.conf").read_text()
     deploy_manifest = (app_dir / "deploy" / "linqu_mem_service.service").read_text()
+    host_deploy_manifest = (
+        app_dir / "deploy" / "linqu_mem_service.host.service"
+    ).read_text()
     serving_example = (app_dir / "examples" / "mem_service_serving_example.c").read_text()
     pretraining_example = (
         app_dir / "examples" / "mem_service_pretraining_example.c"
@@ -670,6 +673,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (app_dir / "configs" / "mem_service.conf.schema").exists()
     assert (app_dir / "configs" / "mem_service.example.conf").exists()
     assert (app_dir / "deploy" / "linqu_mem_service.service").exists()
+    assert (app_dir / "deploy" / "linqu_mem_service.host.service").exists()
     assert (app_dir / "examples" / "mem_service_serving_example.c").exists()
     assert (app_dir / "examples" / "mem_service_pretraining_example.c").exists()
     assert "linqu_mem_service_core" in app_makefile
@@ -683,13 +687,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema" in app_makefile
     assert "MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf" in app_makefile
     assert "MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service" in app_makefile
+    assert "MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service" in app_makefile
     assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
     assert "examples/mem_service_serving_example.c" in app_makefile
     assert "examples/mem_service_pretraining_example.c" in app_makefile
     assert "INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples" in app_makefile
     assert "INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config" in app_makefile
     assert "INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy" in app_makefile
-    assert "INSTALL_HOSTDIR := $(INSTALL_DATADIR)/host" in app_makefile
+    assert "INSTALL_HOSTDIR := $(DESTDIR)$(PREFIX)/libexec/lingqu/mem_service" in app_makefile
     assert "linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)" in app_makefile
     assert "host-artifact-smoke: linqu_mem_service_host" in app_makefile
     assert "MEM_SERVICE_PUBLIC_HEADERS :=" in app_makefile
@@ -701,6 +706,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(MEM_SERVICE_CONFIG_SCHEMA)" in app_makefile
     assert "$(MEM_SERVICE_CONFIG_EXAMPLE)" in app_makefile
     assert "$(MEM_SERVICE_DEPLOY_MANIFEST)" in app_makefile
+    assert "$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)" in app_makefile
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
     assert "^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$" in app_makefile
@@ -709,9 +715,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^compat_baseline_checksum=0xdc6376da$$" in app_makefile
     assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
     assert "^compat_old_new_matrix_checksum=0x56f8e4c3$$" in app_makefile
-    assert "^host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host$$" in app_makefile
+    assert "^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$" in app_makefile
     assert "^host_daemon_artifact_smoke=host-artifact-smoke$$" in app_makefile
+    assert "^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$" in app_makefile
     assert "^deployment_smoke=deployment-fixtures$$" in app_makefile
+    assert "^host_service_manager_smoke=installed-host-service-manager-smoke$$" in app_makefile
+    assert "^host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm$$" in app_makefile
     assert "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$" in app_makefile
     assert "^service_manager_shutdown=signal-clean-stop$$" in app_makefile
     assert "^durable_backend=snapshot+journal$$" in app_makefile
@@ -819,7 +828,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "core_binary=bin/linqu_mem_service" in release_manifest
     assert (
-        "host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host"
+        "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host"
         in release_manifest
     )
     assert "host_daemon_artifact_smoke=host-artifact-smoke" in release_manifest
@@ -841,6 +850,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt" in release_manifest
     assert "compat_old_new_matrix_checksum=0x56f8e4c3" in release_manifest
     assert "deployment_smoke=deployment-fixtures" in release_manifest
+    assert "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service" in release_manifest
+    assert "host_service_manager_smoke=installed-host-service-manager-smoke" in release_manifest
+    assert "host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm" in release_manifest
     assert "service_manager_lifecycle=serve-config-ready-scrape-sigterm" in release_manifest
     assert "service_manager_shutdown=signal-clean-stop" in release_manifest
     assert "durable_backend=snapshot+journal" in release_manifest
@@ -910,6 +922,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "backend=snapshot+journal" in config_example
     assert "metrics_listen=tcp:127.0.0.1:9900" in config_example
     assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest
+    assert (
+        "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
+        "serve --config /etc/lingqu/mem_service/mem_service.conf"
+        in host_deploy_manifest
+    )
     assert '#include "mem_service_client.h"' in serving_example
     assert "mem_service_client_register_prefix_entry" in serving_example
     assert "mem_service_client_publish_kv_segment" in serving_example
@@ -1682,6 +1699,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.conf.schema",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.example.conf",
         "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.service",
+        "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.host.service",
         "guest-linux/aarch64/apps/mem_service/compat-baseline-v1.txt",
         "guest-linux/aarch64/apps/mem_service/compat-matrix.txt",
         "guest-linux/aarch64/apps/mem_service/compat-old-new-matrix.txt",

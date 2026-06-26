@@ -92,6 +92,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         config_schema = (CLI_DIR / "configs" / "mem_service.conf.schema").read_text()
         config_example = (CLI_DIR / "configs" / "mem_service.example.conf").read_text()
         deploy_manifest = (CLI_DIR / "deploy" / "linqu_mem_service.service").read_text()
+        host_deploy_manifest = (
+            CLI_DIR / "deploy" / "linqu_mem_service.host.service"
+        ).read_text()
         serving_example = (
             CLI_DIR / "examples" / "mem_service_serving_example.c"
         ).read_text()
@@ -425,13 +428,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema", cli_makefile)
         self.assertIn("MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf", cli_makefile)
         self.assertIn("MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service", cli_makefile)
+        self.assertIn("MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service", cli_makefile)
         self.assertIn("MEM_SERVICE_CLIENT_EXAMPLES :=", cli_makefile)
         self.assertIn("examples/mem_service_serving_example.c", cli_makefile)
         self.assertIn("examples/mem_service_pretraining_example.c", cli_makefile)
         self.assertIn("INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples", cli_makefile)
         self.assertIn("INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config", cli_makefile)
         self.assertIn("INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy", cli_makefile)
-        self.assertIn("INSTALL_HOSTDIR := $(INSTALL_DATADIR)/host", cli_makefile)
+        self.assertIn("INSTALL_HOSTDIR := $(DESTDIR)$(PREFIX)/libexec/lingqu/mem_service", cli_makefile)
         self.assertIn("linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)", cli_makefile)
         self.assertIn("host-artifact-smoke: linqu_mem_service_host", cli_makefile)
         self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
@@ -439,6 +443,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_EXAMPLE)", cli_makefile)
         self.assertIn("$(MEM_SERVICE_DEPLOY_MANIFEST)", cli_makefile)
+        self.assertIn("$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)", cli_makefile)
         self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
         self.assertIn("^client_retry_policy=explicit-max-attempts-backoff$$", cli_makefile)
         self.assertIn("^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$", cli_makefile)
@@ -447,9 +452,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^compat_baseline_checksum=0xdc6376da$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix_checksum=0x56f8e4c3$$", cli_makefile)
-        self.assertIn("^host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host$$", cli_makefile)
+        self.assertIn("^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$", cli_makefile)
         self.assertIn("^host_daemon_artifact_smoke=host-artifact-smoke$$", cli_makefile)
+        self.assertIn("^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$", cli_makefile)
         self.assertIn("^deployment_smoke=deployment-fixtures$$", cli_makefile)
+        self.assertIn("^host_service_manager_smoke=installed-host-service-manager-smoke$$", cli_makefile)
+        self.assertIn("^host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm$$", cli_makefile)
         self.assertIn(
             "^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$",
             cli_makefile,
@@ -478,11 +486,17 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt", release_manifest)
         self.assertIn("compat_old_new_matrix_checksum=0x56f8e4c3", release_manifest)
         self.assertIn(
-            "host_daemon_binary=share/lingqu/mem_service/host/linqu_mem_service_host",
+            "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host",
             release_manifest,
         )
         self.assertIn("host_daemon_artifact_smoke=host-artifact-smoke", release_manifest)
+        self.assertIn(
+            "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service",
+            release_manifest,
+        )
         self.assertIn("deployment_smoke=deployment-fixtures", release_manifest)
+        self.assertIn("host_service_manager_smoke=installed-host-service-manager-smoke", release_manifest)
+        self.assertIn("host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm", release_manifest)
         self.assertIn(
             "service_manager_lifecycle=serve-config-ready-scrape-sigterm",
             release_manifest,
@@ -525,6 +539,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("host_artifacts=1", cli_source)
         self.assertIn("config_artifacts=3", cli_source)
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
+        self.assertIn("host_service_manager_smokes=1", cli_source)
         self.assertIn("durable_catalogs=1", cli_source)
         self.assertIn("payload_block_backends=1", cli_source)
         self.assertIn("metrics_export_formats=1", cli_source)
@@ -582,6 +597,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "ExecStart=/usr/bin/linqu_mem_service serve --config "
             "/etc/lingqu/mem_service/mem_service.conf",
             deploy_manifest,
+        )
+        self.assertIn(
+            "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
+            "serve --config /etc/lingqu/mem_service/mem_service.conf",
+            host_deploy_manifest,
         )
         self.assertIn('#include "mem_service_client.h"', serving_example)
         self.assertIn("mem_service_client_register_prefix_entry", serving_example)
