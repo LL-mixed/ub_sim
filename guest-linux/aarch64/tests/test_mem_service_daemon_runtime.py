@@ -955,16 +955,27 @@ int main(int argc, char **argv)
                 metrics[name] = int(value)
         return metrics
 
-    def _start_server(self) -> subprocess.Popen:
+    def _free_tcp_port(self) -> int:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", 0))
+            return int(listener.getsockname()[1])
+        finally:
+            listener.close()
+
+    def _start_server(self, metrics_port: int | None = None) -> subprocess.Popen:
+        cmd = [
+            str(self.binary),
+            "serve",
+            "--listen",
+            f"unix:{self.socket}",
+            "--store",
+            str(self.store),
+        ]
+        if metrics_port is not None:
+            cmd.extend(["--metrics-listen", f"tcp:127.0.0.1:{metrics_port}"])
         proc = subprocess.Popen(
-            [
-                str(self.binary),
-                "serve",
-                "--listen",
-                f"unix:{self.socket}",
-                "--store",
-                str(self.store),
-            ],
+            cmd,
             cwd=REPO_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -976,6 +987,11 @@ int main(int argc, char **argv)
                 stdout, stderr = proc.communicate(timeout=1)
                 if "Operation not permitted" in stderr and "mem_service serve: bind" in stderr:
                     raise unittest.SkipTest("sandbox forbids Unix socket bind in subprocess")
+                if (
+                    "Operation not permitted" in stderr
+                    and "mem_service serve: metrics bind" in stderr
+                ):
+                    raise unittest.SkipTest("sandbox forbids TCP metrics bind in subprocess")
                 self.fail(
                     f"mem_service daemon exited rc={proc.returncode}\nstdout={stdout}\nstderr={stderr}"
                 )
@@ -985,6 +1001,28 @@ int main(int argc, char **argv)
             time.sleep(0.05)
         self._stop_server(proc)
         self.fail("mem_service daemon did not become ready")
+
+    def _http_metrics_request(
+        self,
+        port: int,
+        method: str = "GET",
+        path: str = "/metrics",
+    ) -> str:
+        request = (
+            f"{method} {path} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as conn:
+            conn.sendall(request)
+            chunks = []
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
 
     def _stop_server(self, proc: subprocess.Popen):
         try:
@@ -1672,6 +1710,7 @@ int main(int argc, char **argv)
         self.assertIn("schema_manifest_checksum=0x8a8ca3c4", fixtures.stdout)
         self.assertIn("durable_backends=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
+        self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
         self.assertIn("compat_matrix_checksum=0xfb80227e", fixtures.stdout)
@@ -1693,6 +1732,41 @@ int main(int argc, char **argv)
         self.assertIn("service_manager=systemd-like", fixtures.stdout)
         self.assertIn("metrics_scrape_path=/metrics", fixtures.stdout)
         self.assertIn("metrics_http_content_type=prometheus-text", fixtures.stdout)
+
+    def test_daemon_http_metrics_listener_serves_prometheus_scrape(self):
+        metrics_port = self._free_tcp_port()
+        proc = self._start_server(metrics_port=metrics_port)
+        try:
+            put = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "http-metrics-object",
+                "--version",
+                "1",
+                "--checksum",
+                "7001",
+            )
+            self.assertEqual(put.returncode, 0, put.stderr + put.stdout)
+
+            response = self._http_metrics_request(metrics_port)
+            self.assertIn("HTTP/1.1 200 OK\r\n", response)
+            self.assertIn("Content-Type: text/plain; version=0.0.4\r\n", response)
+            self.assertIn("Cache-Control: no-store\r\n", response)
+            self.assertIn("# TYPE lingqu_mem_service_request_count counter\n", response)
+            self.assertIn("lingqu_mem_service_put_object_count 1\n", response)
+            self.assertIn("lingqu_mem_service_request_latency_max_ms", response)
+
+            missing = self._http_metrics_request(metrics_port, path="/bad")
+            self.assertIn("HTTP/1.1 404 Not Found\r\n", missing)
+            self.assertIn("not_found\n", missing)
+
+            wrong_method = self._http_metrics_request(metrics_port, method="POST")
+            self.assertIn("HTTP/1.1 405 Method Not Allowed\r\n", wrong_method)
+            self.assertIn("method_not_allowed\n", wrong_method)
+        finally:
+            self._stop_server(proc)
 
     def test_compat_matrix_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("compat-fixtures")
@@ -2144,6 +2218,8 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("durable_backend=snapshot+journal", manifest.read_text())
             self.assertIn("durable_journal=store-path.journal", manifest.read_text())
             self.assertIn("deployment_smoke=deployment-fixtures", manifest.read_text())
+            self.assertIn("metrics_listen_config=metrics_listen", manifest.read_text())
+            self.assertIn("metrics_http_listener=tcp-ipv4", manifest.read_text())
             self.assertIn("metrics_scrape_path=/metrics", manifest.read_text())
             self.assertIn("mem_service_serving_example.c", manifest.read_text())
             self.assertIn("mem_service_pretraining_example.c", manifest.read_text())

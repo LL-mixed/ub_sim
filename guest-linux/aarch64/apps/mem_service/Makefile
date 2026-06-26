@@ -186,6 +186,8 @@ install-smoke: install
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_export_format=prometheus-text$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^metrics_listen_config=metrics_listen$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^metrics_http_listener=tcp-ipv4$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_scrape_path=/metrics$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_http_content_type=text/plain; version=0.0.4$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^client_retry_policy=explicit-max-attempts-backoff$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -222,6 +224,7 @@ install-smoke: install
 	grep -q '^mem_service_config_schema_version=1$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	grep -q '^listen=unix:/tmp/linqu_mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
+	grep -q '^metrics_listen=tcp:127.0.0.1:9900$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 
 clean:

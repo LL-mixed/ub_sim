@@ -48,7 +48,8 @@ static void usage(const char *argv0)
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
     printf(" [compat-old-new-matrix] [compat-old-new-fixtures]");
     printf(" [release-manifest] [release-fixtures]");
-    printf(" [serve [--config <path>] [--listen unix:%s] [--store <path>]]",
+    printf(" [serve [--config <path>] [--listen unix:%s] [--store <path>]"
+           " [--metrics-listen tcp:127.0.0.1:9900]]",
            MEM_SERVICE_DEFAULT_UNIX_SOCKET);
     printf(" [health|ready|status|list-records|metrics|metrics-export|audit-log|export-snapshot|export-snapshot-page|export-snapshot-to|restore-snapshot [--connect unix:%s] [--timeout-ms <ms>] [--max-attempts <n>] [--retry-backoff-ms <ms>] [--retry-timeouts]]",
            MEM_SERVICE_DEFAULT_UNIX_SOCKET);
@@ -1594,6 +1595,8 @@ static int run_release_manifest(void)
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
     printf("metrics_export_format=prometheus-text\n");
+    printf("metrics_listen_config=metrics_listen\n");
+    printf("metrics_http_listener=tcp-ipv4\n");
     printf("metrics_scrape_path=/metrics\n");
     printf("metrics_http_content_type=text/plain; version=0.0.4\n");
     printf("client_retry_policy=explicit-max-attempts-backoff\n");
@@ -1728,7 +1731,8 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "deployment_smokes=1 durable_backends=1 "
-           "metrics_export_formats=1 metrics_scrape_paths=1 "
+           "metrics_export_formats=1 metrics_http_listeners=1 "
+           "metrics_scrape_paths=1 "
            "client_retry_policies=1 "
            "client_api_profiles=2 compat_artifacts=3 "
            "operations=23 statuses=11 "
@@ -1952,8 +1956,10 @@ static int append_idempotency_payload_field(char *payload,
 struct mem_service_cli_config {
     bool has_listen;
     bool has_store;
+    bool has_metrics_listen;
     char listen[160];
     char store[512];
+    char metrics_listen[160];
 };
 
 static void trim_ascii(char *value)
@@ -2026,6 +2032,16 @@ static int apply_config_field(struct mem_service_cli_config *config,
             return -1;
         }
         config->has_store = true;
+        return 0;
+    }
+    if (strcmp(name, "metrics_listen") == 0) {
+        if (strncmp(value, "tcp:", 4) != 0 ||
+            copy_config_value(config->metrics_listen,
+                              sizeof(config->metrics_listen),
+                              value) != 0) {
+            return -1;
+        }
+        config->has_metrics_listen = true;
         return 0;
     }
     if (strcmp(name, "backend") == 0) {
@@ -2172,6 +2188,7 @@ static int run_config_fixture_check(void)
                 "retention=manual\n"
                 "auth_mode=none\n"
                 "metrics_mode=text-kv\n"
+                "metrics_listen=tcp:127.0.0.1:9900\n"
                 "adapter_enablement=core\n") < 0) {
         fclose(file);
         unlink(valid_path);
@@ -2202,8 +2219,10 @@ static int run_config_fixture_check(void)
     if (load_mem_service_config(valid_path, &config, false) != 0 ||
         !config.has_listen ||
         !config.has_store ||
+        !config.has_metrics_listen ||
         strcmp(config.listen, "unix:/tmp/linqu_mem_service_fixture.sock") != 0 ||
-        strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0) {
+        strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0 ||
+        strcmp(config.metrics_listen, "tcp:127.0.0.1:9900") != 0) {
         failures -= 1;
     }
     if (load_mem_service_config(invalid_path, &config, true) == 0) {
@@ -2227,8 +2246,10 @@ static int run_serve(int argc, char **argv)
     const char *config_path = option_value(argc, argv, "--config");
     const char *listen_override = option_value(argc, argv, "--listen");
     const char *store_override = option_value(argc, argv, "--store");
+    const char *metrics_listen_override = option_value(argc, argv, "--metrics-listen");
     const char *listen_spec = mem_service_default_unix_socket_spec();
     const char *store_path = NULL;
+    const char *metrics_listen_spec = NULL;
     struct mem_service_cli_config config;
 
     if ((config_path == NULL && option_present(argc, argv, "--config")) ||
@@ -2241,6 +2262,8 @@ static int run_serve(int argc, char **argv)
         }
         listen_spec = config.has_listen ? config.listen : listen_spec;
         store_path = config.has_store ? config.store : NULL;
+        metrics_listen_spec =
+            config.has_metrics_listen ? config.metrics_listen : metrics_listen_spec;
     }
     if (listen_override != NULL) {
         listen_spec = listen_override;
@@ -2248,7 +2271,12 @@ static int run_serve(int argc, char **argv)
     if (store_override != NULL) {
         store_path = store_override;
     }
-    return mem_service_run_unix_daemon_with_store(listen_spec, store_path);
+    if (metrics_listen_override != NULL) {
+        metrics_listen_spec = metrics_listen_override;
+    }
+    return mem_service_run_unix_daemon_with_store_and_metrics(listen_spec,
+                                                             store_path,
+                                                             metrics_listen_spec);
 }
 
 static int run_client_status(int argc,

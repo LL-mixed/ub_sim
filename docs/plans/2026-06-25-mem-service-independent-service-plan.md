@@ -62,12 +62,12 @@
 
 | 缺口 | 对用户的影响 |
 | --- | --- |
-| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 release compat matrix、v1 baseline 和 old/new schema-profile matrix，但还缺 retry/idempotency old/new runtime compatibility matrix、真实 HTTP listener/collector scrape smoke 和产品级 restore/durable policy |
+| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、`serve --metrics-listen tcp:<ipv4>:<port>` 真实 HTTP listener、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 release compat matrix、v1 baseline 和 old/new schema-profile matrix，但还缺 retry/idempotency old/new runtime compatibility matrix、真实采集器集成门禁和产品级 restore/durable policy |
 | wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus，以及覆盖 23 个 operation 的 old-minimal/current-plus-future schema-profile compatibility fixtures；还缺 binary/typed payload schema、旧 server runtime binary 组合测试和跨版本 compatibility fixtures |
 | durable service backend 仍是最小 snapshot+journal | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；还缺产品级 durable catalog、journal truncation/atomicity policy、payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new runtime compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
 | pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`/metrics` scrape path contract 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、host service-manager smoke 和真实 HTTP/采集器观测门禁 |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`metrics_listen` config、`/metrics` scrape path contract、真实 HTTP listener runtime scrape 测试和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、host service-manager smoke 和真实采集器观测门禁 |
 
 ## 3. 目标架构
 
@@ -918,11 +918,11 @@ Recommended order:
    gradient, and optimizer-state helpers into release-grade typed wire/schema
    contracts.
 8. Extend the minimal release artifact layout into deployable package gates:
-   the current config schema, example config, service unit manifest, and
-   `/metrics` response envelope are installed and fixture-checked; remaining
-   work is protocol compatibility bundle, upgrade/rollback smoke, host
-   service-manager smoke, real HTTP/collector scrape smoke, and metrics/admin
-   output compatibility.
+   the current config schema, example config, service unit manifest, `/metrics`
+   response envelope, and TCP metrics listener contract are installed and
+   fixture-checked; remaining work is protocol compatibility bundle,
+   upgrade/rollback smoke, host service-manager smoke, external collector
+   integration smoke, and metrics/admin output compatibility.
 
 ## 7. Completion Definition
 

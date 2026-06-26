@@ -279,10 +279,12 @@ Keep the implementation layers separated:
   baseline, and `compat-old-new-matrix` freezes a v1 old/new schema-profile
   matrix for all 23 operations. `deployment-fixtures` validates the current
   systemd-like service manifest and `/metrics` Prometheus HTTP response
-  envelope. Real host service-manager smoke, real HTTP/collector scrape smoke,
-  old-server runtime-binary certification, product-grade restore policy,
-  payload ownership, atomic durable catalog, and product-grade durable migration
-  remain deployment work. This layer must stay model-neutral and
+  envelope, while `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real
+  HTTP scrape listener covered by runtime tests. Real host service-manager
+  smoke, external collector integration smoke, old-server runtime-binary
+  certification, product-grade restore policy, payload ownership, atomic
+  durable catalog, and product-grade durable migration remain deployment work.
+  This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
 - Release/deployment: the current `release-manifest`, `wire-schema`,
@@ -292,7 +294,8 @@ Keep the implementation layers separated:
   manifest, compatibility matrix, v1 compatibility baseline, old/new
   schema-profile matrix, config schema/example, systemd-like deployment
   manifest, deployment fixture, Prometheus text metrics export format,
-  `/metrics` scrape path contract, and explicit client retry policy.
+  `metrics_listen` config, `/metrics` scrape path contract, TCP metrics listener
+  contract, and explicit client retry policy.
   They are not yet a full package, host service-manager smoke, upgrade policy,
   or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,

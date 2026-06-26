@@ -11,6 +11,7 @@ optional=max_payload_bytes
 optional=retention
 optional=auth_mode
 optional=metrics_mode
+optional=metrics_listen
 optional=adapter_enablement
 field=listen type=string description=service endpoint, currently unix:<path>
 field=store type=string description=snapshot store path; append-only idempotency/audit journal uses <store>.journal
@@ -23,4 +24,5 @@ field=max_payload_bytes type=u64 description=deployment wire-payload capacity ex
 field=retention type=string description=retention policy label
 field=auth_mode type=enum values=none description=current local deployment auth mode
 field=metrics_mode type=enum values=text-kv description=current metrics export mode
+field=metrics_listen type=string description=optional HTTP metrics endpoint, currently tcp:<ipv4>:<port>
 field=adapter_enablement type=enum values=core,qwen3 description=enabled adapter surface

@@ -708,7 +708,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^compat_old_new_matrix_checksum=0x5130ec56$$" in app_makefile
     assert "^deployment_smoke=deployment-fixtures$$" in app_makefile
     assert "^durable_backend=snapshot+journal$$" in app_makefile
+    assert "^metrics_listen_config=metrics_listen$$" in app_makefile
+    assert "^metrics_http_listener=tcp-ipv4$$" in app_makefile
     assert "^metrics_scrape_path=/metrics$$" in app_makefile
+    assert "^metrics_listen=tcp:127.0.0.1:9900$$" in app_makefile
     assert "install-smoke: install" in app_makefile
     assert "print-release-manifest" in app_makefile
     assert "print-wire-schema" in app_makefile
@@ -745,6 +748,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "compat-old-new-fixtures")' in app_source
     assert 'strcmp(argv[1], "serve")' in app_source
     assert 'option_value(argc, argv, "--config")' in app_source
+    assert 'option_value(argc, argv, "--metrics-listen")' in app_source
+    assert "mem_service_run_unix_daemon_with_store_and_metrics" in app_source
     assert "load_mem_service_config" in app_source
     assert "MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U" in app_source
     assert 'strcmp(argv[1], "release-manifest")' in app_source
@@ -822,6 +827,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "deployment_smoke=deployment-fixtures" in release_manifest
     assert "durable_backend=snapshot+journal" in release_manifest
     assert "durable_journal=store-path.journal" in release_manifest
+    assert "metrics_listen_config=metrics_listen" in release_manifest
+    assert "metrics_http_listener=tcp-ipv4" in release_manifest
     assert "metrics_scrape_path=/metrics" in release_manifest
     assert "metrics_http_content_type=text/plain; version=0.0.4" in release_manifest
     assert "mem_service_compat_matrix_version=1" in compat_matrix
@@ -875,9 +882,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "field=listen type=string" in config_schema
     assert "field=store type=string" in config_schema
     assert "field=backend type=enum values=snapshot,snapshot+journal" in config_schema
+    assert "field=metrics_listen type=string" in config_schema
     assert "listen=unix:/tmp/linqu_mem_service.sock" in config_example
     assert "store=/tmp/linqu_mem_service.store" in config_example
     assert "backend=snapshot+journal" in config_example
+    assert "metrics_listen=tcp:127.0.0.1:9900" in config_example
     assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest
     assert '#include "mem_service_client.h"' in serving_example
     assert "mem_service_client_register_prefix_entry" in serving_example

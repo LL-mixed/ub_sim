@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
@@ -22,6 +25,7 @@
 #include "mem_service_wire_schema.h"
 
 #define MEM_SERVICE_UNIX_SPEC_PREFIX "unix:"
+#define MEM_SERVICE_TCP_SPEC_PREFIX "tcp:"
 #define MEM_SERVICE_STORE_MAGIC "mem_service_store_v1"
 #define MEM_SERVICE_JOURNAL_MAGIC "mem_service_journal_v1"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
@@ -55,6 +59,9 @@ static enum mem_service_wire_status mem_service_dispatch_operation(
     const char *payload,
     char *response,
     size_t response_len);
+static enum mem_service_wire_status mem_service_metrics(struct mem_service *svc,
+                                                        char *response,
+                                                        size_t response_len);
 static void mem_service_record_operation_metrics(
     struct mem_service *svc,
     enum mem_service_wire_operation operation,
@@ -4427,12 +4434,340 @@ static int mem_service_prepare_unix_addr(const char *path, struct sockaddr_un *a
     return 0;
 }
 
-int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *store_path)
+static int mem_service_parse_tcp_listen_spec(const char *listen_spec,
+                                             struct sockaddr_in *addr)
+{
+    char endpoint[128];
+    char *host;
+    char *port_text;
+    char *end = NULL;
+    unsigned long port;
+    size_t len;
+
+    if (listen_spec == NULL || listen_spec[0] == '\0' || addr == NULL) {
+        return -1;
+    }
+    if (strncmp(listen_spec,
+                MEM_SERVICE_TCP_SPEC_PREFIX,
+                strlen(MEM_SERVICE_TCP_SPEC_PREFIX)) == 0) {
+        listen_spec += strlen(MEM_SERVICE_TCP_SPEC_PREFIX);
+    }
+    len = strlen(listen_spec);
+    if (len == 0 || len >= sizeof(endpoint)) {
+        return -1;
+    }
+    memcpy(endpoint, listen_spec, len + 1U);
+    host = endpoint;
+    port_text = strrchr(endpoint, ':');
+    if (port_text == NULL || port_text == host) {
+        return -1;
+    }
+    *port_text = '\0';
+    port_text += 1;
+    if (port_text[0] == '\0') {
+        return -1;
+    }
+    errno = 0;
+    port = strtoul(port_text, &end, 10);
+    if (errno != 0 || end == port_text || *end != '\0' || port == 0UL ||
+        port > 65535UL) {
+        return -1;
+    }
+    memset(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr->sin_addr) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+static int mem_service_open_metrics_listener(const char *listen_spec)
+{
+    struct sockaddr_in addr;
+    int server_fd;
+    int reuse = 1;
+
+    if (mem_service_parse_tcp_listen_spec(listen_spec, &addr) != 0) {
+        fprintf(stderr, "mem_service serve: invalid metrics listen path\n");
+        return -1;
+    }
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("mem_service serve: metrics socket");
+        return -1;
+    }
+    (void)setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    if (bind(server_fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        perror("mem_service serve: metrics bind");
+        close(server_fd);
+        return -1;
+    }
+    if (listen(server_fd, 16) != 0) {
+        perror("mem_service serve: metrics listen");
+        close(server_fd);
+        return -1;
+    }
+    return server_fd;
+}
+
+static int mem_service_http_write_all(int fd, const char *data, size_t data_len)
+{
+    size_t written = 0;
+
+    while (written < data_len) {
+        ssize_t rc = send(fd, data + written, data_len - written, 0);
+
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (rc == 0) {
+            return -1;
+        }
+        written += (size_t)rc;
+    }
+    return 0;
+}
+
+static int mem_service_http_send_response(int fd,
+                                          unsigned int status,
+                                          const char *reason,
+                                          const char *content_type,
+                                          const char *body)
+{
+    char header[512];
+    size_t body_len = body != NULL ? strlen(body) : 0U;
+    int header_len;
+
+    if (reason == NULL || content_type == NULL) {
+        return -1;
+    }
+    header_len = snprintf(header,
+                          sizeof(header),
+                          "HTTP/1.1 %u %s\r\n"
+                          "Content-Type: %s\r\n"
+                          "Content-Length: %zu\r\n"
+                          "Cache-Control: no-store\r\n"
+                          "Connection: close\r\n"
+                          "\r\n",
+                          status,
+                          reason,
+                          content_type,
+                          body_len);
+    if (header_len < 0 || (size_t)header_len >= sizeof(header)) {
+        return -1;
+    }
+    if (mem_service_http_write_all(fd, header, (size_t)header_len) != 0) {
+        return -1;
+    }
+    if (body_len > 0U && mem_service_http_write_all(fd, body, body_len) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static bool mem_service_metrics_export_key_is_safe(const char *key, size_t key_len)
+{
+    size_t i;
+
+    if (key == NULL || key_len == 0U) {
+        return false;
+    }
+    for (i = 0; i < key_len; ++i) {
+        char c = key[i];
+
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static const char *mem_service_metrics_export_type(const char *key, size_t key_len)
+{
+    const char *suffix = "_max_ms";
+    size_t suffix_len = strlen(suffix);
+
+    return key_len >= suffix_len &&
+                   memcmp(key + key_len - suffix_len, suffix, suffix_len) == 0
+               ? "gauge"
+               : "counter";
+}
+
+static int mem_service_http_append_line(char *output,
+                                        size_t output_len,
+                                        size_t *used,
+                                        const char *fmt,
+                                        ...)
+{
+    va_list args;
+    int rc;
+
+    if (output == NULL || output_len == 0U || used == NULL || *used >= output_len) {
+        return -1;
+    }
+    va_start(args, fmt);
+    rc = vsnprintf(output + *used, output_len - *used, fmt, args);
+    va_end(args);
+    if (rc < 0 || (size_t)rc >= output_len - *used) {
+        return -1;
+    }
+    *used += (size_t)rc;
+    return 0;
+}
+
+static int mem_service_render_prometheus_text(const char *metrics_payload,
+                                              char *output,
+                                              size_t output_len)
+{
+    const char *cursor = metrics_payload;
+    size_t used = 0;
+
+    if (metrics_payload == NULL || output == NULL || output_len == 0U) {
+        return -1;
+    }
+    output[0] = '\0';
+    while (*cursor != '\0') {
+        const char *equals = strchr(cursor, '=');
+        const char *line_end = strchr(cursor, '\n');
+        const char *value;
+        size_t key_len;
+        size_t value_len;
+
+        if (line_end == NULL) {
+            return -1;
+        }
+        if (equals == NULL || equals > line_end || equals == cursor) {
+            return -1;
+        }
+        key_len = (size_t)(equals - cursor);
+        value = equals + 1;
+        value_len = (size_t)(line_end - value);
+        if (!mem_service_metrics_export_key_is_safe(cursor, key_len)) {
+            return -1;
+        }
+        if (mem_service_http_append_line(output,
+                                         output_len,
+                                         &used,
+                                         "# HELP lingqu_mem_service_%.*s mem_service metric\n",
+                                         (int)key_len,
+                                         cursor) != 0 ||
+            mem_service_http_append_line(output,
+                                         output_len,
+                                         &used,
+                                         "# TYPE lingqu_mem_service_%.*s %s\n",
+                                         (int)key_len,
+                                         cursor,
+                                         mem_service_metrics_export_type(cursor,
+                                                                        key_len)) != 0 ||
+            mem_service_http_append_line(output,
+                                         output_len,
+                                         &used,
+                                         "lingqu_mem_service_%.*s %.*s\n",
+                                         (int)key_len,
+                                         cursor,
+                                         (int)value_len,
+                                         value) != 0) {
+            return -1;
+        }
+        cursor = line_end + 1;
+    }
+    return 0;
+}
+
+static bool mem_service_http_request_is_get_metrics(const char *request)
+{
+    if (request == NULL) {
+        return false;
+    }
+    return strncmp(request, "GET /metrics ", strlen("GET /metrics ")) == 0 &&
+           strstr(request, "\r\n") != NULL;
+}
+
+static bool mem_service_http_request_is_method_get(const char *request)
+{
+    return request != NULL && strncmp(request, "GET ", strlen("GET ")) == 0;
+}
+
+static int mem_service_handle_metrics_http_client(int client_fd, struct mem_service *svc)
+{
+    char request[1024];
+    char metrics_payload[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char body[16384];
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_OK;
+    uint64_t start_ms = mem_service_monotonic_ms();
+    ssize_t got;
+
+    got = recv(client_fd, request, sizeof(request) - 1U, 0);
+    if (got < 0) {
+        if (errno == EINTR) {
+            return 0;
+        }
+        return -1;
+    }
+    if (got == 0) {
+        return 0;
+    }
+    request[got] = '\0';
+    if (!mem_service_http_request_is_get_metrics(request)) {
+        status = MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+        if (mem_service_http_request_is_method_get(request)) {
+            (void)mem_service_http_send_response(client_fd,
+                                                 404U,
+                                                 "Not Found",
+                                                 "text/plain",
+                                                 "not_found\n");
+        } else {
+            (void)mem_service_http_send_response(client_fd,
+                                                 405U,
+                                                 "Method Not Allowed",
+                                                 "text/plain",
+                                                 "method_not_allowed\n");
+        }
+        mem_service_record_operation_metrics(svc,
+                                             MEM_SERVICE_WIRE_OP_METRICS,
+                                             status,
+                                             mem_service_monotonic_ms() - start_ms);
+        return 0;
+    }
+    memset(metrics_payload, 0, sizeof(metrics_payload));
+    memset(body, 0, sizeof(body));
+    status = mem_service_metrics(svc, metrics_payload, sizeof(metrics_payload));
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        mem_service_render_prometheus_text(metrics_payload, body, sizeof(body)) != 0) {
+        status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        (void)mem_service_http_send_response(client_fd,
+                                             500U,
+                                             "Internal Server Error",
+                                             "text/plain",
+                                             "internal\n");
+    } else {
+        (void)mem_service_http_send_response(client_fd,
+                                             200U,
+                                             "OK",
+                                             "text/plain; version=0.0.4",
+                                             body);
+    }
+    mem_service_record_operation_metrics(svc,
+                                         MEM_SERVICE_WIRE_OP_METRICS,
+                                         status,
+                                         mem_service_monotonic_ms() - start_ms);
+    return status == MEM_SERVICE_WIRE_STATUS_OK ? 0 : -1;
+}
+
+int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
+                                                       const char *store_path,
+                                                       const char *metrics_listen_spec)
 {
     struct mem_service svc;
     struct sockaddr_un addr;
     const char *path = mem_service_unix_path_from_spec(listen_spec);
     int server_fd;
+    int metrics_fd = -1;
     int rc = 1;
 
     if (path == NULL && listen_spec == NULL) {
@@ -4467,44 +4802,106 @@ int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *
         unlink(path);
         return 1;
     }
+    if (metrics_listen_spec != NULL && metrics_listen_spec[0] != '\0') {
+        metrics_fd = mem_service_open_metrics_listener(metrics_listen_spec);
+        if (metrics_fd < 0) {
+            close(server_fd);
+            unlink(path);
+            return 1;
+        }
+    }
     mem_service_daemon_stop = 0;
     if (mem_service_install_signal_handlers() != 0) {
         perror("mem_service serve: signal");
         close(server_fd);
+        if (metrics_fd >= 0) {
+            close(metrics_fd);
+        }
         unlink(path);
         return 1;
     }
     if (store_path != NULL && store_path[0] != '\0') {
-        printf("mem_service serve: status=ready listen=unix:%s store=%s records=%zu\n",
+        printf("mem_service serve: status=ready listen=unix:%s store=%s records=%zu",
                path,
                store_path,
                svc.record_count);
     } else {
-        printf("mem_service serve: status=ready listen=unix:%s records=%zu\n",
+        printf("mem_service serve: status=ready listen=unix:%s records=%zu",
                path,
                svc.record_count);
     }
+    if (metrics_fd >= 0) {
+        printf(" metrics_listen=%s", metrics_listen_spec);
+    }
+    printf("\n");
     fflush(stdout);
     while (!mem_service_daemon_stop) {
-        int client_fd = accept(server_fd, NULL, NULL);
+        fd_set readfds;
+        int max_fd = server_fd;
+        int select_rc;
 
-        if (client_fd < 0) {
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+        if (metrics_fd >= 0) {
+            FD_SET(metrics_fd, &readfds);
+            if (metrics_fd > max_fd) {
+                max_fd = metrics_fd;
+            }
+        }
+        select_rc = select(max_fd + 1, &readfds, NULL, NULL, NULL);
+        if (select_rc < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            perror("mem_service serve: accept");
+            perror("mem_service serve: select");
             break;
         }
-        if (mem_service_handle_client(client_fd, &svc, store_path) != 0) {
-            fprintf(stderr, "mem_service serve: client request failed\n");
+        if (FD_ISSET(server_fd, &readfds)) {
+            int client_fd = accept(server_fd, NULL, NULL);
+
+            if (client_fd < 0) {
+                if (errno != EINTR) {
+                    perror("mem_service serve: accept");
+                    break;
+                }
+            } else {
+                if (mem_service_handle_client(client_fd, &svc, store_path) != 0) {
+                    fprintf(stderr, "mem_service serve: client request failed\n");
+                }
+                close(client_fd);
+            }
         }
-        close(client_fd);
+        if (metrics_fd >= 0 && FD_ISSET(metrics_fd, &readfds)) {
+            int client_fd = accept(metrics_fd, NULL, NULL);
+
+            if (client_fd < 0) {
+                if (errno != EINTR) {
+                    perror("mem_service serve: metrics accept");
+                    break;
+                }
+            } else {
+                if (mem_service_handle_metrics_http_client(client_fd, &svc) != 0) {
+                    fprintf(stderr, "mem_service serve: metrics request failed\n");
+                }
+                close(client_fd);
+            }
+        }
     }
     rc = 0;
     close(server_fd);
+    if (metrics_fd >= 0) {
+        close(metrics_fd);
+    }
     unlink(path);
     printf("mem_service serve: status=stopped\n");
     return rc;
+}
+
+int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *store_path)
+{
+    return mem_service_run_unix_daemon_with_store_and_metrics(listen_spec,
+                                                             store_path,
+                                                             NULL);
 }
 
 int mem_service_run_unix_daemon(const char *listen_spec)

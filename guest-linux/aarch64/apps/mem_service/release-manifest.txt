@@ -28,6 +28,8 @@ durable_backend=snapshot+journal
 durable_snapshot=store-path
 durable_journal=store-path.journal
 metrics_export_format=prometheus-text
+metrics_listen_config=metrics_listen
+metrics_http_listener=tcp-ipv4
 metrics_scrape_path=/metrics
 metrics_http_content_type=text/plain; version=0.0.4
 client_retry_policy=explicit-max-attempts-backoff
