@@ -32,12 +32,17 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1729U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0a027330U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1760U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xfce9862fU
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
+#define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 2540U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4bdf7bccU
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 28U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 13U
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
@@ -60,6 +65,7 @@ static void usage(const char *argv0)
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
     printf(" [alert-rules] [alert-fixtures] [alert-integration-fixtures]");
+    printf(" [package-manifest] [package-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
@@ -795,6 +801,10 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
+                                "required_gate=package-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
                                 "required_gate=release-fixtures\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
@@ -872,6 +882,7 @@ static int run_upgrade_rollback_fixture_check(void)
         strstr(policy, "required_gate=admin-output-fixtures\n") == NULL ||
         strstr(policy, "required_gate=alert-fixtures\n") == NULL ||
         strstr(policy, "required_gate=alert-integration-fixtures\n") == NULL ||
+        strstr(policy, "required_gate=package-fixtures\n") == NULL ||
         strstr(policy, "required_gate=install-smoke\n") == NULL) {
         fprintf(stderr,
                 "mem_service upgrade-rollback-fixtures: required policy missing\n");
@@ -883,7 +894,7 @@ static int run_upgrade_rollback_fixture_check(void)
     printf("mem_service upgrade-rollback-fixtures: status=ok policy_version=%u "
            "policy_len=%u policy_checksum=0x%08x "
            "upgrade_policy=current-version-only "
-           "rollback_policy=current-version-only required_gates=16\n",
+           "rollback_policy=current-version-only required_gates=17\n",
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
@@ -2101,10 +2112,327 @@ static int inspect_qwen3(void)
 }
 #endif
 
+static int render_package_manifest(char *manifest,
+                                   size_t manifest_len,
+                                   size_t *used_out)
+{
+    size_t used = 0;
+
+    if (manifest == NULL || manifest_len == 0) {
+        return -1;
+    }
+    manifest[0] = '\0';
+    if (append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "mem_service_package_manifest_version=%u\n",
+                                MEM_SERVICE_PACKAGE_MANIFEST_VERSION) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "package_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "package_format=installed-layout-v1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "prefix_default=/usr\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "binary=bin/linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "host_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "optional_adapter=bin/linqu_mem_service_qwen3\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "default_endpoint=%s\n",
+                                mem_service_default_unix_socket_spec()) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "data_root=share/lingqu/mem_service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "header_root=include/lingqu/mem_service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "source_root=src/lingqu/mem_service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "config_root=share/lingqu/mem_service/config\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "deploy_root=share/lingqu/mem_service/deploy\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_file_count=%u\n",
+                                MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=core_binary count=1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=host_binary count=1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=public_headers count=8\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=client_sources count=2\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=examples count=2\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=contracts count=9\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=configs count=2\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=deploy count=3\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=release-manifest path=share/lingqu/mem_service/release-manifest.txt\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=wire-schema path=share/lingqu/mem_service/wire-schema.txt checksum=0x%08x\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=admin-output-schema path=share/lingqu/mem_service/admin-output-schema.txt checksum=0x%08x\n",
+                                MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x%08x\n",
+                                MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=api-abi-policy path=share/lingqu/mem_service/api-abi-policy.txt checksum=0x%08x\n",
+                                MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0x%08x\n",
+                                MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate_count=%u\n",
+                                MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=release-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=package-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=admin-output-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=upgrade-rollback-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=api-abi-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=compat-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=deployment-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=collector-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=alert-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=alert-integration-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=durable-catalog-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=host-artifact-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=install-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "serving_api=typed-c-client-v1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pretraining_api=typed-c-client-v1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "durable_backend=snapshot+journal\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "payload_block_backend=sealed-local-block-v1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "upgrade_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "old_server_runtime_binary=not-certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "cross_version_upgrade=not-certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "real_systemd_environment=not-certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "production_collector_alert_environment=not-certified\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_package_manifest(void)
+{
+    char manifest[8192];
+    size_t used = 0;
+
+    if (render_package_manifest(manifest, sizeof(manifest), &used) != 0) {
+        fprintf(stderr, "mem_service package-manifest: render failed\n");
+        return 1;
+    }
+    fwrite(manifest, 1, used, stdout);
+    return 0;
+}
+
+static int run_package_fixture_check(void)
+{
+    char manifest[8192];
+    size_t used = 0;
+    uint32_t checksum;
+
+    if (render_package_manifest(manifest, sizeof(manifest), &used) != 0) {
+        fprintf(stderr, "mem_service package-fixtures: render failed\n");
+        return 1;
+    }
+    checksum = mem_service_wire_checksum(manifest, used);
+    if (used != MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service package-fixtures: manifest len actual=%zu expected=%u\n",
+                used,
+                MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN);
+        return 1;
+    }
+    if (checksum != MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service package-fixtures: manifest checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
+        return 1;
+    }
+    if (strstr(manifest, "package_format=installed-layout-v1\n") == NULL ||
+        strstr(manifest, "binary=bin/linqu_mem_service\n") == NULL ||
+        strstr(manifest, "host_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n") ==
+            NULL ||
+        strstr(manifest, "required_gate=install-smoke\n") == NULL ||
+        strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
+        strstr(manifest, "cross_version_upgrade=not-certified\n") == NULL) {
+        fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
+        return 1;
+    }
+    printf("mem_service package-fixtures: status=ok package_version=%u "
+           "package_format=installed-layout-v1 manifest_len=%u "
+           "manifest_checksum=0x%08x installed_files=%u required_gates=%u\n",
+           MEM_SERVICE_PACKAGE_MANIFEST_VERSION,
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN,
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM,
+           MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT,
+           MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT);
+    return 0;
+}
+
 static int run_release_manifest(void)
 {
     printf("mem_service_release_manifest_version=1\n");
     printf("service_name=linqu_mem_service\n");
+    printf("package_format=installed-layout-v1\n");
+    printf("package_manifest=share/lingqu/mem_service/package-manifest.txt\n");
+    printf("package_manifest_len=%u\n",
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN);
+    printf("package_manifest_checksum=0x%08x\n",
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
+    printf("package_gate=package-fixtures\n");
     printf("core_binary=bin/linqu_mem_service\n");
     printf("qwen3_adapter_binary_optional=bin/linqu_mem_service_qwen3\n");
     printf("host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n");
@@ -2310,6 +2638,13 @@ static int run_release_fixture_check(void)
         fprintf(stderr, "mem_service release-fixtures: alert rules fixture missing\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 28U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 13U) {
+        fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U ||
         MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM == 0U) {
         fprintf(stderr, "mem_service release-fixtures: compat matrix fixture missing\n");
@@ -2355,6 +2690,7 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "host_artifacts=1 "
+           "package_artifacts=1 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "
@@ -2376,6 +2712,7 @@ static int run_release_fixture_check(void)
            "upgrade_rollback_policy_len=%u "
            "upgrade_rollback_policy_checksum=0x%08x "
            "alert_rules_len=%u alert_rules_checksum=0x%08x "
+           "package_manifest_len=%u package_manifest_checksum=0x%08x "
            "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
            "compat_baseline_len=%u compat_baseline_checksum=0x%08x "
            "compat_old_new_matrix_len=%u "
@@ -2391,6 +2728,8 @@ static int run_release_fixture_check(void)
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM,
            MEM_SERVICE_ALERT_RULES_EXPECTED_LEN,
            MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM,
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN,
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
@@ -5455,6 +5794,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "compat-old-new-fixtures") == 0) {
         return run_compat_old_new_fixture_check();
+    }
+    if (strcmp(argv[1], "package-manifest") == 0) {
+        return run_package_manifest();
+    }
+    if (strcmp(argv[1], "package-fixtures") == 0) {
+        return run_package_fixture_check();
     }
     if (strcmp(argv[1], "release-manifest") == 0) {
         return run_release_manifest();

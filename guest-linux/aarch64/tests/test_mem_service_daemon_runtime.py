@@ -17,6 +17,7 @@ CLI_SOURCE = ROOT / "apps" / "mem_service" / "mem_service.c"
 WIRE_SCHEMA_MANIFEST = ROOT / "apps" / "mem_service" / "wire-schema.txt"
 ADMIN_OUTPUT_SCHEMA = ROOT / "apps" / "mem_service" / "admin-output-schema.txt"
 UPGRADE_ROLLBACK_POLICY = ROOT / "apps" / "mem_service" / "upgrade-rollback-policy.txt"
+PACKAGE_MANIFEST = ROOT / "apps" / "mem_service" / "package-manifest.txt"
 ALERT_RULES = (
     ROOT / "apps" / "mem_service" / "deploy" / "linqu_mem_service.prometheus-alerts.yml"
 )
@@ -1760,6 +1761,7 @@ int main(int argc, char **argv)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=1", fixtures.stdout)
         self.assertIn("host_artifacts=1", fixtures.stdout)
+        self.assertIn("package_artifacts=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
@@ -1774,10 +1776,12 @@ int main(int argc, char **argv)
         self.assertIn("api_abi_policy_checksum=0x743f84b8", fixtures.stdout)
         self.assertIn("admin_output_schema_len=6624", fixtures.stdout)
         self.assertIn("admin_output_schema_checksum=0x7021f4cf", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_len=1729", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_checksum=0x0a027330", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_len=1760", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", fixtures.stdout)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
+        self.assertIn("package_manifest_len=2540", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x4bdf7bcc", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1887", fixtures.stdout)
@@ -1791,6 +1795,20 @@ int main(int argc, char **argv)
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, expected)
+
+    def test_package_manifest_cli_matches_checked_in_contract(self):
+        fixtures = self._run_client("package-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
+        self.assertIn("manifest_len=2540", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x4bdf7bcc", fixtures.stdout)
+        self.assertIn("installed_files=28", fixtures.stdout)
+        self.assertIn("required_gates=13", fixtures.stdout)
+
+        manifest = self._run_client("package-manifest")
+        self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
+        self.assertEqual(manifest.stdout, PACKAGE_MANIFEST.read_text())
 
     def test_api_abi_policy_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("api-abi-fixtures")
@@ -1820,9 +1838,9 @@ int main(int argc, char **argv)
         fixtures = self._run_client("upgrade-rollback-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("policy_len=1729", fixtures.stdout)
-        self.assertIn("policy_checksum=0x0a027330", fixtures.stdout)
-        self.assertIn("required_gates=16", fixtures.stdout)
+        self.assertIn("policy_len=1760", fixtures.stdout)
+        self.assertIn("policy_checksum=0xfce9862f", fixtures.stdout)
+        self.assertIn("required_gates=17", fixtures.stdout)
         self.assertIn("upgrade_policy=current-version-only", fixtures.stdout)
         self.assertIn("rollback_policy=current-version-only", fixtures.stdout)
 
@@ -2832,6 +2850,9 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             manifest = (
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "release-manifest.txt"
             )
+            package_manifest = (
+                destdir / "usr" / "share" / "lingqu" / "mem_service" / "package-manifest.txt"
+            )
             wire_schema = destdir / "usr" / "share" / "lingqu" / "mem_service" / "wire-schema.txt"
             admin_output_schema = (
                 destdir
@@ -2890,6 +2911,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "linqu_mem_service.prometheus-alerts.yml"
             )
             self.assertTrue(manifest.exists())
+            self.assertTrue(package_manifest.exists())
             self.assertTrue(wire_schema.exists())
             self.assertTrue(admin_output_schema.exists())
             self.assertTrue(upgrade_rollback_policy.exists())
@@ -2908,11 +2930,17 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "host_daemon_artifact_smoke=host-artifact-smoke",
                 manifest.read_text(),
             )
+            self.assertIn("package_format=installed-layout-v1", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x4bdf7bcc", manifest.read_text())
+            self.assertIn("package_gate=package-fixtures", manifest.read_text())
+            self.assertIn("installed_file_count=28", package_manifest.read_text())
+            self.assertIn("required_gate=package-fixtures", package_manifest.read_text())
+            self.assertIn("cross_version_upgrade=not-certified", package_manifest.read_text())
             self.assertIn("wire_schema_manifest_checksum=0xce883650", manifest.read_text())
             self.assertIn("admin_output_schema_checksum=0x7021f4cf", manifest.read_text())
             self.assertIn("admin_output_format=text-kv", manifest.read_text())
             self.assertIn("admin_metric_prefix=lingqu_mem_service_", manifest.read_text())
-            self.assertIn("upgrade_rollback_policy_checksum=0x0a027330", manifest.read_text())
+            self.assertIn("upgrade_rollback_policy_checksum=0xfce9862f", manifest.read_text())
             self.assertIn("upgrade_policy=current-version-only", manifest.read_text())
             self.assertIn("rollback_policy=current-version-only", manifest.read_text())
             self.assertIn("old_server_runtime_binary=not-certified", manifest.read_text())

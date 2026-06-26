@@ -1,0 +1,55 @@
+mem_service_package_manifest_version=1
+package_name=linqu_mem_service
+package_format=installed-layout-v1
+package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy
+prefix_default=/usr
+binary=bin/linqu_mem_service
+host_binary=libexec/lingqu/mem_service/linqu_mem_service_host
+optional_adapter=bin/linqu_mem_service_qwen3
+default_endpoint=unix:/tmp/linqu_mem_service.sock
+data_root=share/lingqu/mem_service
+header_root=include/lingqu/mem_service
+source_root=src/lingqu/mem_service
+config_root=share/lingqu/mem_service/config
+deploy_root=share/lingqu/mem_service/deploy
+installed_file_count=28
+file_class=core_binary count=1
+file_class=host_binary count=1
+file_class=public_headers count=8
+file_class=client_sources count=2
+file_class=examples count=2
+file_class=contracts count=9
+file_class=configs count=2
+file_class=deploy count=3
+contract=release-manifest path=share/lingqu/mem_service/release-manifest.txt
+contract=wire-schema path=share/lingqu/mem_service/wire-schema.txt checksum=0xce883650
+contract=admin-output-schema path=share/lingqu/mem_service/admin-output-schema.txt checksum=0x7021f4cf
+contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xfce9862f
+contract=api-abi-policy path=share/lingqu/mem_service/api-abi-policy.txt checksum=0x743f84b8
+contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=0x8b4219c5
+contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0xdc6376da
+contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x56f8e4c3
+contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
+required_gate_count=13
+required_gate=release-fixtures
+required_gate=package-fixtures
+required_gate=admin-output-fixtures
+required_gate=upgrade-rollback-fixtures
+required_gate=api-abi-fixtures
+required_gate=compat-fixtures
+required_gate=deployment-fixtures
+required_gate=collector-fixtures
+required_gate=alert-fixtures
+required_gate=alert-integration-fixtures
+required_gate=durable-catalog-fixtures
+required_gate=host-artifact-smoke
+required_gate=install-smoke
+serving_api=typed-c-client-v1
+pretraining_api=typed-c-client-v1
+durable_backend=snapshot+journal
+payload_block_backend=sealed-local-block-v1
+upgrade_policy=current-version-only
+old_server_runtime_binary=not-certified
+cross_version_upgrade=not-certified
+real_systemd_environment=not-certified
+production_collector_alert_environment=not-certified

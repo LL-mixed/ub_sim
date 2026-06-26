@@ -45,6 +45,7 @@ required_gate=deployment-fixtures
 required_gate=collector-fixtures
 required_gate=alert-fixtures
 required_gate=alert-integration-fixtures
+required_gate=package-fixtures
 required_gate=release-fixtures
 required_gate=host-artifact-smoke
 required_gate=install-smoke

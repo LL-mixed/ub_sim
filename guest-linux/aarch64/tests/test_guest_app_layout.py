@@ -590,6 +590,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     app_makefile = (app_dir / "Makefile").read_text()
     app_source = (app_dir / "mem_service.c").read_text()
     release_manifest = (app_dir / "release-manifest.txt").read_text()
+    package_manifest = (app_dir / "package-manifest.txt").read_text()
     wire_schema_manifest = (app_dir / "wire-schema.txt").read_text()
     admin_output_schema = (app_dir / "admin-output-schema.txt").read_text()
     upgrade_rollback_policy = (app_dir / "upgrade-rollback-policy.txt").read_text()
@@ -679,11 +680,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service compat-baseline-fixtures" in run_app
     assert "linqu_mem_service_compat_old_new_fixtures" in run_app
     assert "/bin/linqu_mem_service compat-old-new-fixtures" in run_app
+    assert "linqu_mem_service_package_fixtures" in run_app
+    assert "/bin/linqu_mem_service package-fixtures" in run_app
     assert "linqu_mem_service_release_fixtures" in run_app
     assert "/bin/linqu_mem_service release-fixtures" in run_app
     assert (app_dir / "mem_service.c").exists()
     assert (app_dir / "Makefile").exists()
     assert (app_dir / "release-manifest.txt").exists()
+    assert (app_dir / "package-manifest.txt").exists()
     assert (app_dir / "wire-schema.txt").exists()
     assert (app_dir / "admin-output-schema.txt").exists()
     assert (app_dir / "upgrade-rollback-policy.txt").exists()
@@ -702,6 +706,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "linqu_mem_service_qwen3" in app_makefile
     assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_makefile
     assert "MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt" in app_makefile
+    assert "MEM_SERVICE_PACKAGE_MANIFEST := package-manifest.txt" in app_makefile
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt" in app_makefile
     assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt" in app_makefile
     assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY := upgrade-rollback-policy.txt" in app_makefile
@@ -739,7 +744,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^upgrade_rollback_policy_checksum=0x0a027330$$" in app_makefile
+    assert "^package_manifest_checksum=0x4bdf7bcc$$" in app_makefile
+    assert "^package_gate=package-fixtures$$" in app_makefile
+    assert "^upgrade_rollback_policy_checksum=0xfce9862f$$" in app_makefile
     assert "^upgrade_policy=current-version-only$$" in app_makefile
     assert "^rollback_policy=current-version-only$$" in app_makefile
     assert "^old_server_runtime_binary=not-certified$$" in app_makefile
@@ -777,6 +784,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^metrics_listen=tcp:127.0.0.1:9900$$" in app_makefile
     assert "install-smoke: install" in app_makefile
     assert "print-release-manifest" in app_makefile
+    assert "print-package-manifest" in app_makefile
     assert "print-wire-schema" in app_makefile
     assert "print-admin-output-schema" in app_makefile
     assert "print-upgrade-rollback-policy" in app_makefile
@@ -824,6 +832,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "compat-baseline-fixtures")' in app_source
     assert 'strcmp(argv[1], "compat-old-new-matrix")' in app_source
     assert 'strcmp(argv[1], "compat-old-new-fixtures")' in app_source
+    assert 'strcmp(argv[1], "package-manifest")' in app_source
+    assert 'strcmp(argv[1], "package-fixtures")' in app_source
     assert 'strcmp(argv[1], "serve")' in app_source
     assert 'option_value(argc, argv, "--config")' in app_source
     assert 'option_value(argc, argv, "--metrics-listen")' in app_source
@@ -863,8 +873,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU" in app_source
     assert "render_admin_output_schema" in app_source
     assert "run_admin_output_fixture_check" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1729U" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0a027330U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1760U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xfce9862fU" in app_source
     assert "render_upgrade_rollback_policy" in app_source
     assert "run_upgrade_rollback_fixture_check" in app_source
     assert "MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U" in app_source
@@ -872,6 +882,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 2540U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4bdf7bccU" in app_source
+    assert "render_package_manifest" in app_source
+    assert "run_package_fixture_check" in app_source
     assert 'strcmp(argv[1], "health")' in app_source
     assert 'strcmp(argv[1], "ready")' in app_source
     assert 'strcmp(argv[1], "metrics")' in app_source
@@ -903,6 +917,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "resolve-training-step")' in app_source
     assert "#ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT" in app_source
     assert "mem_service_release_manifest_version=1" in release_manifest
+    assert "package_format=installed-layout-v1" in release_manifest
+    assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
+    assert "package_manifest_checksum=0x4bdf7bcc" in release_manifest
+    assert "package_gate=package-fixtures" in release_manifest
     assert "core_binary=bin/linqu_mem_service" in release_manifest
     assert (
         "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host"
@@ -925,7 +943,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_format=text-kv" in release_manifest
     assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0x0a027330" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0xfce9862f" in release_manifest
     assert "upgrade_policy=current-version-only" in release_manifest
     assert "rollback_policy=current-version-only" in release_manifest
     assert "old_server_runtime_binary=not-certified" in release_manifest
@@ -991,8 +1009,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "wire_schema_manifest_checksum=0xce883650" in release_manifest
     assert "admin_output_schema_len=6624" in release_manifest
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
-    assert "upgrade_rollback_policy_len=1729" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0x0a027330" in release_manifest
+    assert "upgrade_rollback_policy_len=1760" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0xfce9862f" in release_manifest
+    assert "package_manifest_len=2540" in release_manifest
+    assert "package_manifest_checksum=0x4bdf7bcc" in release_manifest
     assert "api_abi_policy_len=875" in release_manifest
     assert "api_abi_policy_checksum=0x743f84b8" in release_manifest
     assert "config_schema_version=1" in release_manifest
@@ -1035,7 +1055,18 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "rollback_policy=current-version-only" in upgrade_rollback_policy
     assert "old_server_runtime_binary=not-certified" in upgrade_rollback_policy
     assert "new_client_old_server=not-certified-without-runtime-binary" in upgrade_rollback_policy
+    assert "required_gate=package-fixtures" in upgrade_rollback_policy
     assert "required_gate=install-smoke" in upgrade_rollback_policy
+    assert "mem_service_package_manifest_version=1" in package_manifest
+    assert "package_format=installed-layout-v1" in package_manifest
+    assert "installed_file_count=28" in package_manifest
+    assert "required_gate_count=13" in package_manifest
+    assert (
+        "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
+        "upgrade-rollback-policy.txt checksum=0xfce9862f"
+    ) in package_manifest
+    assert "required_gate=package-fixtures" in package_manifest
+    assert "cross_version_upgrade=not-certified" in package_manifest
     assert "alert: LingquMemServiceDown" in alert_rules
     assert "increase(lingqu_mem_service_fail_closed_count[5m]) > 0" in alert_rules
     assert "increase(lingqu_mem_service_checksum_mismatch_count[5m]) > 0" in alert_rules

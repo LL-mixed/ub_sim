@@ -33,6 +33,7 @@ MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW := $(ROOT)/components/mem_service/mem_service
 MEM_SERVICE_QWEN3 := $(ROOT)/components/mem_service/mem_service_qwen3.c
 LLM_INFER := $(ROOT)/components/llm_infer/llm_infer.c
 MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt
+MEM_SERVICE_PACKAGE_MANIFEST := package-manifest.txt
 MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt
 MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt
 MEM_SERVICE_UPGRADE_ROLLBACK_POLICY := upgrade-rollback-policy.txt
@@ -115,7 +116,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -134,6 +135,7 @@ linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)
 host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host --smoke
 	./linqu_mem_service_host release-fixtures
+	./linqu_mem_service_host package-fixtures
 	./linqu_mem_service_host admin-output-fixtures
 	./linqu_mem_service_host upgrade-rollback-fixtures
 	./linqu_mem_service_host alert-fixtures
@@ -144,6 +146,9 @@ host-artifact-smoke: linqu_mem_service_host
 
 print-release-manifest:
 	@cat $(MEM_SERVICE_RELEASE_MANIFEST)
+
+print-package-manifest:
+	@cat $(MEM_SERVICE_PACKAGE_MANIFEST)
 
 print-wire-schema:
 	@cat $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST)
@@ -169,7 +174,7 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
+install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
 	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
@@ -177,6 +182,7 @@ install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST
 	cp $(MEM_SERVICE_CLIENT_SDK_SRCS) $(INSTALL_SRCDIR)/
 	cp $(MEM_SERVICE_CLIENT_EXAMPLES) $(INSTALL_EXAMPLEDIR)/
 	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(INSTALL_DATADIR)/release-manifest.txt
+	cp $(MEM_SERVICE_PACKAGE_MANIFEST) $(INSTALL_DATADIR)/package-manifest.txt
 	cp $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(INSTALL_DATADIR)/wire-schema.txt
 	cp $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(INSTALL_DATADIR)/admin-output-schema.txt
 	cp $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
@@ -200,6 +206,7 @@ install-smoke: install
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
+	test -f $(INSTALL_DATADIR)/package-manifest.txt
 	test -f $(INSTALL_DATADIR)/wire-schema.txt
 	test -f $(INSTALL_DATADIR)/admin-output-schema.txt
 	test -f $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
@@ -213,6 +220,11 @@ install-smoke: install
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=2540$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x4bdf7bcc$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^core_binary=bin/linqu_mem_service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -224,8 +236,8 @@ install-smoke: install
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_len=1729$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0x0a027330$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_len=1760$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0xfce9862f$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -302,7 +314,15 @@ install-smoke: install
 	grep -q '^new_client_old_server=not-certified-without-runtime-binary$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=alert-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=alert-integration-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=install-smoke$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^mem_service_package_manifest_version=1$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_file_count=28$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=13$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xfce9862f$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^cross_version_upgrade=not-certified$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^mem_service_api_abi_policy_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt

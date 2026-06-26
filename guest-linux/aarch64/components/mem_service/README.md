@@ -191,6 +191,10 @@ a Qwen3 adapter inspect build:
   client SDK source files, SDK example files, config/deploy artifacts,
   wire/schema versions, wire schema manifest checksum, admin output schema
   checksum, operation IDs, and status IDs.
+- `apps/mem_service/package-manifest.txt` freezes the current
+  `installed-layout-v1` package contract: install roots, file classes, required
+  contract checksums, required fixture gates, and not-certified boundaries for
+  cross-version/runtime-environment claims.
 
 Build and validation entrypoints:
 
@@ -217,13 +221,15 @@ Build and validation entrypoints:
   `durable-catalog-fixtures`,
   `compat-old-new-matrix`, `compat-old-new-fixtures`, `admin-output-schema`,
   `admin-output-fixtures`, `api-abi-policy`, `api-abi-fixtures`,
-  `release-manifest`, and `release-fixtures`, and
+  `package-manifest`, `package-fixtures`, `release-manifest`, and
+  `release-fixtures`, and
   `/bin/linqu_mem_service_qwen3` for Qwen3 topology inspection.
 - `apps/mem_service` also exposes `make install-smoke DESTDIR=<dir>
   PREFIX=/usr`, which installs the core daemon binary, public headers, client
   SDK source files, serving/pretraining SDK examples, release manifest, wire
-  schema manifest, admin output schema, config schema/example, and deployment
-  manifest into a package-like layout.
+  schema manifest, package manifest, admin output schema, config
+  schema/example, and deployment manifest into an `installed-layout-v1`
+  package layout.
 - Guest app runners provide the CLI surface that exercises the component.
 - `run_app mem_service` runs the standalone metadata smoke path, wire fixture
   gate, wire schema fixture gate, store/journal fixture gates, compat fixture
@@ -328,7 +334,8 @@ Keep the implementation layers separated:
   callable by external
   serving/pretraining processes.
 - Release/deployment: the current `release-manifest`, `wire-schema`,
-  `admin-output-schema`, `upgrade-rollback-policy`, `api-abi-policy`,
+  `admin-output-schema`, `upgrade-rollback-policy`, `package-manifest`,
+  `api-abi-policy`,
   `compat-matrix`, `compat-old-new-fixtures`, `config-fixtures`, and `install-smoke`
   surfaces prove the minimum publishable layout for the daemon binary, public
   headers, client SDK sources, SDK examples, release manifest, wire schema
@@ -342,10 +349,10 @@ Keep the implementation layers separated:
   Prometheus metric prefix/type contract, `metrics_listen` config, `/metrics`
   scrape path contract, collector scrape contract, TCP metrics listener
   contract, Prometheus alert rules artifact, synthetic alert integration
-  fixture, service-manager lifecycle contract, durable catalog layout contract,
+  fixture, installed-layout-v1 package contract, service-manager lifecycle contract, durable catalog layout contract,
   current-version-only upgrade/rollback gate, and explicit client
   retry policy.
-  They are not yet a full package, real systemd environment smoke,
+  They are not yet a tar/deb/rpm-style distributable package, real systemd environment smoke,
   cross-version upgrade/rollback smoke, production collector/alert environment
   integration gate, or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,

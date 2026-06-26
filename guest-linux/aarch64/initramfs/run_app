@@ -731,6 +731,7 @@ run_default_actions() {
     run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures || rc=$?
     run_binary "linqu_mem_service_compat_baseline_fixtures" /bin/linqu_mem_service compat-baseline-fixtures || rc=$?
     run_binary "linqu_mem_service_compat_old_new_fixtures" /bin/linqu_mem_service compat-old-new-fixtures || rc=$?
+    run_binary "linqu_mem_service_package_fixtures" /bin/linqu_mem_service package-fixtures || rc=$?
     run_binary "linqu_mem_service_release_fixtures" /bin/linqu_mem_service release-fixtures || rc=$?
     ran_any="1"
   fi
@@ -826,6 +827,7 @@ run_single_action() {
       run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures &&
       run_binary "linqu_mem_service_compat_baseline_fixtures" /bin/linqu_mem_service compat-baseline-fixtures &&
       run_binary "linqu_mem_service_compat_old_new_fixtures" /bin/linqu_mem_service compat-old-new-fixtures &&
+      run_binary "linqu_mem_service_package_fixtures" /bin/linqu_mem_service package-fixtures &&
       run_binary "linqu_mem_service_release_fixtures" /bin/linqu_mem_service release-fixtures
       ;;
     mem_service_qwen3)
