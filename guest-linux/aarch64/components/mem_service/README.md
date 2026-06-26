@@ -189,15 +189,17 @@ Build and validation entrypoints:
   `components/llm_infer/llm_infer.c` only into the Qwen3 adapter inspection
   binary.
 - `apps/mem_service` builds `/bin/linqu_mem_service` for core smoke/self-test,
-  wire fixture validation, store fixture validation, Unix-socket `serve`,
-  optional `serve --store` metadata/ref snapshot recovery, `health`, `ready`,
+  wire fixture validation, store/journal fixture validation, Unix-socket
+  `serve`, optional `serve --store` metadata/ref snapshot+journal recovery,
+  `health`, `ready`,
   `status`, `list-records`,
   `put-object`, `get-object`,
   `register-prefix`, `lookup-prefix`, `publish-kv`, `resolve-kv`,
   `publish-runtime-handoff`, `resolve-runtime-handoff`,
   `register-execution-artifact`, `query-execution-artifact`,
   `register-training-artifact`, `query-training-artifact`,
-  `wire-schema`, `wire-schema-fixtures`, `release-manifest`, and
+  `wire-schema`, `wire-schema-fixtures`, `journal-fixtures`,
+  `compat-old-new-matrix`, `compat-old-new-fixtures`, `release-manifest`, and
   `release-fixtures`, and
   `/bin/linqu_mem_service_qwen3` for Qwen3 topology inspection.
 - `apps/mem_service` also exposes `make install-smoke DESTDIR=<dir>
@@ -207,7 +209,8 @@ Build and validation entrypoints:
   package-like layout.
 - Guest app runners provide the CLI surface that exercises the component.
 - `run_app mem_service` runs the standalone metadata smoke path, wire fixture
-  gate, wire schema fixture gate, store fixture gate, and release fixture gate.
+  gate, wire schema fixture gate, store/journal fixture gates, compat fixture
+  gates, and release fixture gate.
 - `tests/test_mem_service_record_recycling.py` validates record capacity, recycling,
   KV payload sizing, and object-ref naming contracts.
 
@@ -250,15 +253,16 @@ Keep the implementation layers separated:
   Runtime handoff, execution artifact, and training artifact query requests
   can now carry expected session, model, artifact kind, artifact id, version,
   and checksum bindings; mismatches fail closed with stable wire status codes.
-  The `store-fixtures` CLI freezes the current minimum save/load path for
-  committed metadata/object-ref records, completed idempotency records, and
+  The `store-fixtures` and `journal-fixtures` CLI gates freeze the current
+  minimum save/load path for committed metadata/object-ref records plus an
+  append-only `<store>.journal` stream for completed idempotency records and
   bounded audit records.
   `serve --store <path>` uses that path for restart recovery, including
   cross-restart replay/conflict behavior for completed idempotency keys and
-  retained audit events; it does not make Memory Service own durable payload
-  bytes. Full `export-snapshot`/`restore-snapshot` carries idempotency and
-  audit records when the snapshot fits in the wire payload; paged snapshot
-  export remains record-only.
+  retained audit events from both the snapshot and journal; it does not make
+  Memory Service own durable payload bytes. Full `export-snapshot`/
+  `restore-snapshot` carries idempotency and audit records when the snapshot
+  fits in the wire payload; paged snapshot export remains record-only.
   The `status`, `list-records`,
   `metrics`, `audit-log`, `inspect-object`, `export-snapshot`,
   `export-snapshot-page`, `export-snapshot-to`, `restore-snapshot`, and
@@ -267,25 +271,30 @@ Keep the implementation layers separated:
   transactional paged restore for large snapshots plus fixed request-latency
   histogram, idempotency replay/conflict counters, and Prometheus text metrics
   export. The current `audit-log` RPC exposes a bounded retained ring for
-  mutating and fail-closed operations, persisted in `--store` and full
-  snapshots; `compat-matrix` exposes the current release compatibility rules for
-  wire/schema, retry, idempotency, audit, and snapshot behavior, while
+  mutating and fail-closed operations, persisted in `--store`, `<store>.journal`,
+  and full snapshots; `compat-matrix` exposes the current release compatibility
+  rules for wire/schema, retry, idempotency, audit, snapshot, and journal
+  behavior,
   `compat-baseline-v1` freezes the current old-v1-client to current-server
-  baseline. HTTP scrape/service-manager metrics smoke, append-only durable
-  idempotency/audit log, old/new compatibility matrix, product-grade restore policy, and
-  product-grade durable migration remain deployment work. This layer must stay
-  model-neutral and
+  baseline, and `compat-old-new-matrix` freezes a v1 old/new schema-profile
+  matrix for all 23 operations. `deployment-fixtures` validates the current
+  systemd-like service manifest and `/metrics` Prometheus HTTP response
+  envelope. Real host service-manager smoke, real HTTP/collector scrape smoke,
+  old-server runtime-binary certification, product-grade restore policy,
+  payload ownership, atomic durable catalog, and product-grade durable migration
+  remain deployment work. This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
 - Release/deployment: the current `release-manifest`, `wire-schema`,
-  `compat-matrix`, `config-fixtures`, and `install-smoke`
+  `compat-matrix`, `compat-old-new-fixtures`, `config-fixtures`, and `install-smoke`
   surfaces prove the minimum publishable layout for the daemon binary, public
   headers, client SDK sources, SDK examples, release manifest, wire schema
-  manifest, compatibility matrix, v1 compatibility baseline, config
-  schema/example, systemd-like deployment manifest, Prometheus text metrics
-  export format, and explicit client retry policy.
+  manifest, compatibility matrix, v1 compatibility baseline, old/new
+  schema-profile matrix, config schema/example, systemd-like deployment
+  manifest, deployment fixture, Prometheus text metrics export format,
+  `/metrics` scrape path contract, and explicit client retry policy.
   They are not yet a full package, host service-manager smoke, upgrade policy,
-  or old/new compatibility bundle.
+  or old-server runtime-binary compatibility bundle.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
   and guest handoff timing. This layer can depend on guest runtime facilities.
 - Model adapters: Qwen3 range/KV/engram placement and payload sizing. New model

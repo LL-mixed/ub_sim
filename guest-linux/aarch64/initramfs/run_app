@@ -717,11 +717,14 @@ run_default_actions() {
     run_binary "linqu_mem_service_wire_fixtures" /bin/linqu_mem_service wire-fixtures || rc=$?
     run_binary "linqu_mem_service_wire_schema_fixtures" /bin/linqu_mem_service wire-schema-fixtures || rc=$?
     run_binary "linqu_mem_service_store_fixtures" /bin/linqu_mem_service store-fixtures || rc=$?
+    run_binary "linqu_mem_service_journal_fixtures" /bin/linqu_mem_service journal-fixtures || rc=$?
     run_binary "linqu_mem_service_config_fixtures" /bin/linqu_mem_service config-fixtures || rc=$?
     run_binary "linqu_mem_service_metrics_export_fixtures" /bin/linqu_mem_service metrics-export-fixtures || rc=$?
+    run_binary "linqu_mem_service_deployment_fixtures" /bin/linqu_mem_service deployment-fixtures || rc=$?
     run_binary "linqu_mem_service_client_retry_fixtures" /bin/linqu_mem_service client-retry-fixtures || rc=$?
     run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures || rc=$?
     run_binary "linqu_mem_service_compat_baseline_fixtures" /bin/linqu_mem_service compat-baseline-fixtures || rc=$?
+    run_binary "linqu_mem_service_compat_old_new_fixtures" /bin/linqu_mem_service compat-old-new-fixtures || rc=$?
     run_binary "linqu_mem_service_release_fixtures" /bin/linqu_mem_service release-fixtures || rc=$?
     ran_any="1"
   fi
@@ -803,11 +806,14 @@ run_single_action() {
       run_binary "linqu_mem_service_wire_fixtures" /bin/linqu_mem_service wire-fixtures &&
       run_binary "linqu_mem_service_wire_schema_fixtures" /bin/linqu_mem_service wire-schema-fixtures &&
       run_binary "linqu_mem_service_store_fixtures" /bin/linqu_mem_service store-fixtures &&
+      run_binary "linqu_mem_service_journal_fixtures" /bin/linqu_mem_service journal-fixtures &&
       run_binary "linqu_mem_service_config_fixtures" /bin/linqu_mem_service config-fixtures &&
       run_binary "linqu_mem_service_metrics_export_fixtures" /bin/linqu_mem_service metrics-export-fixtures &&
+      run_binary "linqu_mem_service_deployment_fixtures" /bin/linqu_mem_service deployment-fixtures &&
       run_binary "linqu_mem_service_client_retry_fixtures" /bin/linqu_mem_service client-retry-fixtures &&
       run_binary "linqu_mem_service_compat_fixtures" /bin/linqu_mem_service compat-fixtures &&
       run_binary "linqu_mem_service_compat_baseline_fixtures" /bin/linqu_mem_service compat-baseline-fixtures &&
+      run_binary "linqu_mem_service_compat_old_new_fixtures" /bin/linqu_mem_service compat-old-new-fixtures &&
       run_binary "linqu_mem_service_release_fixtures" /bin/linqu_mem_service release-fixtures
       ;;
     mem_service_qwen3)

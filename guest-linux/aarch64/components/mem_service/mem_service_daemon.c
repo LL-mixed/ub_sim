@@ -23,6 +23,7 @@
 
 #define MEM_SERVICE_UNIX_SPEC_PREFIX "unix:"
 #define MEM_SERVICE_STORE_MAGIC "mem_service_store_v1"
+#define MEM_SERVICE_JOURNAL_MAGIC "mem_service_journal_v1"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
 
 static const uint64_t mem_service_latency_bucket_limits_ms
@@ -1321,18 +1322,22 @@ static int mem_service_store_import_audit(struct mem_service *svc,
                                           const struct mem_service_audit_event *event)
 {
     size_t slot_index;
+    bool duplicate_sequence = false;
 
     if (svc == NULL || event == NULL || event->sequence == 0 ||
         event->operation == 0) {
         return -1;
     }
     slot_index = (size_t)((event->sequence - 1U) % MEM_SERVICE_MAX_AUDIT_EVENTS);
+    duplicate_sequence = svc->audit_events[slot_index].in_use &&
+                         svc->audit_events[slot_index].sequence == event->sequence;
     svc->audit_events[slot_index] = *event;
     svc->audit_events[slot_index].in_use = true;
     if (event->sequence >= svc->audit_next_sequence) {
         svc->audit_next_sequence = event->sequence + 1U;
     }
-    if (svc->audit_event_count < MEM_SERVICE_MAX_AUDIT_EVENTS) {
+    if (!duplicate_sequence &&
+        svc->audit_event_count < MEM_SERVICE_MAX_AUDIT_EVENTS) {
         svc->audit_event_count += 1U;
     }
     return 0;
@@ -1507,6 +1512,22 @@ static int mem_service_import_snapshot_records_text(struct mem_service *svc,
     return 0;
 }
 
+static int mem_service_make_journal_path(const char *store_path,
+                                         char *journal_path,
+                                         size_t journal_path_len)
+{
+    if (store_path == NULL || store_path[0] == '\0' ||
+        journal_path == NULL || journal_path_len == 0) {
+        return -1;
+    }
+    return snprintf(journal_path,
+                    journal_path_len,
+                    "%s.journal",
+                    store_path) < (int)journal_path_len
+               ? 0
+               : -1;
+}
+
 static int mem_service_load_store(struct mem_service *svc, const char *store_path)
 {
     FILE *file;
@@ -1543,6 +1564,59 @@ static int mem_service_load_store(struct mem_service *svc, const char *store_pat
     }
     fclose(file);
     return state.in_record || state.in_idempotency || state.in_audit ? -1 : 0;
+}
+
+static int mem_service_load_journal(struct mem_service *svc, const char *store_path)
+{
+    char journal_path[512];
+    FILE *file;
+    char line[512];
+    struct mem_service_store_import_state state;
+
+    if (store_path == NULL || store_path[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        return -1;
+    }
+    file = fopen(journal_path, "r");
+    if (file == NULL) {
+        return errno == ENOENT ? 0 : -1;
+    }
+    if (fgets(line, sizeof(line), file) == NULL) {
+        fclose(file);
+        return -1;
+    }
+    mem_service_trim_line(line);
+    if (strcmp(line, MEM_SERVICE_JOURNAL_MAGIC) != 0) {
+        fclose(file);
+        return -1;
+    }
+
+    memset(&state, 0, sizeof(state));
+    while (fgets(line, sizeof(line), file) != NULL) {
+        mem_service_trim_line(line);
+        if (line[0] == '\0') {
+            continue;
+        }
+        if (mem_service_import_store_line(svc, line, &state) != 0) {
+            fclose(file);
+            return -1;
+        }
+    }
+    fclose(file);
+    return state.in_record || state.in_idempotency || state.in_audit ? -1 : 0;
+}
+
+static int mem_service_load_durable_store(struct mem_service *svc,
+                                          const char *store_path)
+{
+    if (mem_service_load_store(svc, store_path) != 0) {
+        return -1;
+    }
+    return mem_service_load_journal(svc, store_path);
 }
 
 static int mem_service_save_record(FILE *file, const struct mem_service_record *record)
@@ -1718,6 +1792,78 @@ static int mem_service_save_audit_event(FILE *file,
                : 0;
 }
 
+static int mem_service_journal_needs_header(const char *journal_path,
+                                            bool *needs_header_out)
+{
+    FILE *file;
+    char line[512];
+
+    if (journal_path == NULL || needs_header_out == NULL) {
+        return -1;
+    }
+    *needs_header_out = false;
+    file = fopen(journal_path, "r");
+    if (file == NULL) {
+        if (errno == ENOENT) {
+            *needs_header_out = true;
+            return 0;
+        }
+        return -1;
+    }
+    if (fgets(line, sizeof(line), file) == NULL) {
+        bool empty = feof(file);
+
+        fclose(file);
+        if (empty) {
+            *needs_header_out = true;
+            return 0;
+        }
+        return -1;
+    }
+    fclose(file);
+    mem_service_trim_line(line);
+    return strcmp(line, MEM_SERVICE_JOURNAL_MAGIC) == 0 ? 0 : -1;
+}
+
+static int mem_service_append_journal(
+    const char *store_path,
+    const struct mem_service_idempotency_record *idempotency,
+    const struct mem_service_audit_event *event)
+{
+    char journal_path[512];
+    FILE *file;
+    bool needs_header = false;
+
+    if (store_path == NULL || store_path[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0 ||
+        mem_service_journal_needs_header(journal_path, &needs_header) != 0) {
+        return -1;
+    }
+    file = fopen(journal_path, "a");
+    if (file == NULL) {
+        return -1;
+    }
+    if (needs_header && fprintf(file, "%s\n", MEM_SERVICE_JOURNAL_MAGIC) < 0) {
+        fclose(file);
+        return -1;
+    }
+    if (idempotency != NULL && idempotency->in_use &&
+        mem_service_save_idempotency_record(file, idempotency) != 0) {
+        fclose(file);
+        return -1;
+    }
+    if (event != NULL && event->in_use &&
+        mem_service_save_audit_event(file, event) != 0) {
+        fclose(file);
+        return -1;
+    }
+    return fclose(file) == 0 ? 0 : -1;
+}
+
 static int mem_service_save_store(const struct mem_service *svc, const char *store_path)
 {
     char tmp_path[512];
@@ -1796,6 +1942,28 @@ static enum mem_service_wire_status mem_service_put_object(struct mem_service *s
                                                            char *response,
                                                            size_t response_len);
 
+static bool mem_service_file_contains(const char *path, const char *needle)
+{
+    FILE *file;
+    char line[512];
+
+    if (path == NULL || needle == NULL) {
+        return false;
+    }
+    file = fopen(path, "r");
+    if (file == NULL) {
+        return false;
+    }
+    while (fgets(line, sizeof(line), file) != NULL) {
+        if (strstr(line, needle) != NULL) {
+            fclose(file);
+            return true;
+        }
+    }
+    fclose(file);
+    return false;
+}
+
 int mem_service_run_store_fixture_check(void)
 {
     static const char payload[] =
@@ -1820,12 +1988,20 @@ int mem_service_run_store_fixture_check(void)
     enum mem_service_wire_status status;
     enum mem_service_wire_status replay_status;
     enum mem_service_wire_status conflict_status;
+    char journal_path[sizeof(store_path) + 16U];
 
     snprintf(store_path,
              sizeof(store_path),
              "/tmp/linqu_mem_service_store_fixture_%ld.store",
              (long)getpid());
     unlink(store_path);
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service store-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(journal_path);
     if (mem_service_init(&first, true, true, true) != 0 ||
         mem_service_init(&second, true, true, true) != 0) {
         fprintf(stderr, "mem_service store-fixtures: init failed\n");
@@ -1836,28 +2012,38 @@ int mem_service_run_store_fixture_check(void)
                                           payload,
                                           response,
                                           sizeof(response),
-                                          NULL);
+                                          store_path);
     if (status != MEM_SERVICE_WIRE_STATUS_OK) {
         fprintf(stderr, "mem_service store-fixtures: put failed status=%s\n",
                 mem_service_wire_status_name(status));
-        return 1;
-    }
-    if (mem_service_save_store(&first, store_path) != 0) {
-        fprintf(stderr, "mem_service store-fixtures: save failed path=%s\n", store_path);
         unlink(store_path);
+        unlink(journal_path);
         return 1;
     }
-    if (mem_service_load_store(&second, store_path) != 0) {
+    if (!mem_service_file_contains(journal_path, MEM_SERVICE_JOURNAL_MAGIC) ||
+        !mem_service_file_contains(journal_path, "idempotency_begin") ||
+        !mem_service_file_contains(journal_path, "audit_begin") ||
+        !mem_service_file_contains(journal_path, "key=durable-fixture-idem") ||
+        !mem_service_file_contains(journal_path, "key=durable-fixture-object")) {
+        fprintf(stderr, "mem_service store-fixtures: journal content mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_load_durable_store(&second, store_path) != 0) {
         fprintf(stderr, "mem_service store-fixtures: load failed path=%s\n", store_path);
         unlink(store_path);
+        unlink(journal_path);
         return 1;
     }
     unlink(store_path);
+    unlink(journal_path);
     if (mem_service_get_record(&second, "durable-fixture-object", &record) != 0 ||
         record.kind != MEM_SERVICE_RECORD_KVCACHE_OBJECT ||
         record.version != 7 ||
         record.object_payload_checksum != 12345 ||
-        record.object_backing_len != 64) {
+        record.object_backing_len != 64 ||
+        second.audit_event_count != 1U) {
         fprintf(stderr, "mem_service store-fixtures: recovered record mismatch\n");
         return 1;
     }
@@ -1883,12 +2069,106 @@ int mem_service_run_store_fixture_check(void)
         return 1;
     }
     printf("mem_service store-fixtures: status=ok records=%zu key=%s version=%" PRIu64
-           " checksum=%" PRIu64 " idempotency_replay=%" PRIu64 "\n",
+           " checksum=%" PRIu64 " idempotency_replay=%" PRIu64
+           " journal_events=%" PRIu64 "\n",
            second.record_count,
            record.key,
            record.version,
            record.object_payload_checksum,
-           second.metrics.idempotency_replay_count);
+           second.metrics.idempotency_replay_count,
+           second.audit_event_count);
+    return 0;
+}
+
+int mem_service_run_journal_fixture_check(void)
+{
+    static const char payload[] =
+        "key=journal-fixture-object\n"
+        "version=9\n"
+        "checksum=9009\n"
+        "backing_len=96\n"
+        "idempotency_key=journal-fixture-idem\n";
+    struct mem_service writer;
+    struct mem_service journal_only;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char replay_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char store_path[160];
+    char journal_path[sizeof(store_path) + 16U];
+    enum mem_service_wire_status status;
+    enum mem_service_wire_status replay_status;
+    uint64_t loaded_audit_events;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_journal_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service journal-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    if (mem_service_init(&writer, true, true, true) != 0 ||
+        mem_service_init(&journal_only, true, true, true) != 0) {
+        fprintf(stderr, "mem_service journal-fixtures: init failed\n");
+        return 1;
+    }
+    status = mem_service_handle_operation(&writer,
+                                          MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                          payload,
+                                          response,
+                                          sizeof(response),
+                                          store_path);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr, "mem_service journal-fixtures: put failed status=%s\n",
+                mem_service_wire_status_name(status));
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (!mem_service_file_contains(journal_path, MEM_SERVICE_JOURNAL_MAGIC) ||
+        !mem_service_file_contains(journal_path, "idempotency_begin") ||
+        !mem_service_file_contains(journal_path, "audit_begin") ||
+        !mem_service_file_contains(journal_path, "key=journal-fixture-idem") ||
+        !mem_service_file_contains(journal_path, "key=journal-fixture-object")) {
+        fprintf(stderr, "mem_service journal-fixtures: journal content mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_load_journal(&journal_only, store_path) != 0) {
+        fprintf(stderr, "mem_service journal-fixtures: journal load failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    loaded_audit_events = journal_only.audit_event_count;
+    replay_status = mem_service_handle_operation(&journal_only,
+                                                MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                                payload,
+                                                replay_response,
+                                                sizeof(replay_response),
+                                                NULL);
+    unlink(store_path);
+    unlink(journal_path);
+    if (loaded_audit_events != 1U ||
+        journal_only.audit_event_count != 2U ||
+        replay_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strcmp(response, replay_response) != 0 ||
+        journal_only.metrics.idempotency_replay_count != 1U) {
+        fprintf(stderr,
+                "mem_service journal-fixtures: replay recovery mismatch\n");
+        return 1;
+    }
+    printf("mem_service journal-fixtures: status=ok journal_magic=%s "
+           "loaded_audit_events=%" PRIu64 " replay_audit_events=%" PRIu64
+           " idempotency_replay=%" PRIu64 "\n",
+           MEM_SERVICE_JOURNAL_MAGIC,
+           loaded_audit_events,
+           journal_only.audit_event_count,
+           journal_only.metrics.idempotency_replay_count);
     return 0;
 }
 
@@ -3904,12 +4184,16 @@ static bool mem_service_append_audit_event(struct mem_service *svc,
                                            const char *payload,
                                            enum mem_service_wire_status status,
                                            const char *response,
-                                           bool idempotency_replay)
+                                           bool idempotency_replay,
+                                           const struct mem_service_audit_event **event_out)
 {
     struct mem_service_audit_event *event;
     uint64_t sequence;
     size_t slot_index;
 
+    if (event_out != NULL) {
+        *event_out = NULL;
+    }
     if (svc == NULL ||
         !mem_service_should_audit_operation(operation, payload, status)) {
         return false;
@@ -3971,6 +4255,9 @@ static bool mem_service_append_audit_event(struct mem_service *svc,
     if (svc->audit_event_count < MEM_SERVICE_MAX_AUDIT_EVENTS) {
         svc->audit_event_count += 1U;
     }
+    if (event_out != NULL) {
+        *event_out = event;
+    }
     return true;
 }
 
@@ -3986,6 +4273,7 @@ static enum mem_service_wire_status mem_service_handle_operation(
     uint64_t end_ms;
     uint64_t latency_ms;
     struct mem_service_idempotency_record *pending_idempotency = NULL;
+    const struct mem_service_audit_event *audit_event = NULL;
     bool idempotency_handled = false;
     bool audit_appended = false;
     enum mem_service_wire_status status =
@@ -4015,11 +4303,17 @@ static enum mem_service_wire_status mem_service_handle_operation(
                                                     payload,
                                                     status,
                                                     response,
-                                                    idempotency_handled);
+                                                    idempotency_handled,
+                                                    &audit_event);
     if (audit_appended && store_path != NULL &&
-        mem_service_save_store(svc, store_path) != 0) {
+        (mem_service_append_journal(store_path,
+                                    pending_idempotency,
+                                    audit_event) != 0 ||
+         mem_service_save_store(svc, store_path) != 0)) {
         if (status == MEM_SERVICE_WIRE_STATUS_OK &&
             mem_service_operation_mutates(operation, payload)) {
+            const struct mem_service_audit_event *failure_audit_event = NULL;
+
             status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
             snprintf(response, response_len, "durable_store_save_failed\n");
             mem_service_complete_idempotency_record(pending_idempotency,
@@ -4032,7 +4326,12 @@ static enum mem_service_wire_status mem_service_handle_operation(
                                                  payload,
                                                  status,
                                                  response,
-                                                 idempotency_handled);
+                                                 idempotency_handled,
+                                                 &failure_audit_event);
+            (void)mem_service_append_journal(store_path,
+                                             pending_idempotency,
+                                             failure_audit_event);
+            (void)mem_service_save_store(svc, store_path);
         }
     }
 
@@ -4147,7 +4446,7 @@ int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *
         fprintf(stderr, "mem_service serve: init failed\n");
         return 1;
     }
-    if (mem_service_load_store(&svc, store_path) != 0) {
+    if (mem_service_load_durable_store(&svc, store_path) != 0) {
         fprintf(stderr, "mem_service serve: store load failed path=%s\n", store_path);
         return 1;
     }

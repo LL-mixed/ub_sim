@@ -593,6 +593,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     wire_schema_manifest = (app_dir / "wire-schema.txt").read_text()
     compat_matrix = (app_dir / "compat-matrix.txt").read_text()
     compat_baseline = (app_dir / "compat-baseline-v1.txt").read_text()
+    compat_old_new = (app_dir / "compat-old-new-matrix.txt").read_text()
     config_schema = (app_dir / "configs" / "mem_service.conf.schema").read_text()
     config_example = (app_dir / "configs" / "mem_service.example.conf").read_text()
     deploy_manifest = (app_dir / "deploy" / "linqu_mem_service.service").read_text()
@@ -655,6 +656,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service compat-fixtures" in run_app
     assert "linqu_mem_service_compat_baseline_fixtures" in run_app
     assert "/bin/linqu_mem_service compat-baseline-fixtures" in run_app
+    assert "linqu_mem_service_compat_old_new_fixtures" in run_app
+    assert "/bin/linqu_mem_service compat-old-new-fixtures" in run_app
     assert "linqu_mem_service_release_fixtures" in run_app
     assert "/bin/linqu_mem_service release-fixtures" in run_app
     assert (app_dir / "mem_service.c").exists()
@@ -663,6 +666,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (app_dir / "wire-schema.txt").exists()
     assert (app_dir / "compat-matrix.txt").exists()
     assert (app_dir / "compat-baseline-v1.txt").exists()
+    assert (app_dir / "compat-old-new-matrix.txt").exists()
     assert (app_dir / "configs" / "mem_service.conf.schema").exists()
     assert (app_dir / "configs" / "mem_service.example.conf").exists()
     assert (app_dir / "deploy" / "linqu_mem_service.service").exists()
@@ -675,6 +679,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt" in app_makefile
     assert "MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt" in app_makefile
+    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX := compat-old-new-matrix.txt" in app_makefile
     assert "MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema" in app_makefile
     assert "MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf" in app_makefile
     assert "MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service" in app_makefile
@@ -696,14 +701,20 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
     assert "^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$" in app_makefile
-    assert "^compat_matrix_checksum=0xe369f7bc$$" in app_makefile
+    assert "^compat_matrix_checksum=0xfb80227e$$" in app_makefile
     assert "^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$" in app_makefile
-    assert "^compat_baseline_checksum=0x7395c388$$" in app_makefile
+    assert "^compat_baseline_checksum=0x32f075cf$$" in app_makefile
+    assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
+    assert "^compat_old_new_matrix_checksum=0x5130ec56$$" in app_makefile
+    assert "^deployment_smoke=deployment-fixtures$$" in app_makefile
+    assert "^durable_backend=snapshot+journal$$" in app_makefile
+    assert "^metrics_scrape_path=/metrics$$" in app_makefile
     assert "install-smoke: install" in app_makefile
     assert "print-release-manifest" in app_makefile
     assert "print-wire-schema" in app_makefile
     assert "print-compat-matrix" in app_makefile
     assert "print-compat-baseline-v1" in app_makefile
+    assert "print-compat-old-new-matrix" in app_makefile
     core_sources = re.search(
         r"MEM_SERVICE_CORE_SRCS :=(?P<body>.*?)MEM_SERVICE_QWEN3_ADAPTER_SRCS :=",
         app_makefile,
@@ -721,13 +732,17 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "wire-fixtures")' in app_source
     assert 'strcmp(argv[1], "wire-schema")' in app_source
     assert 'strcmp(argv[1], "wire-schema-fixtures")' in app_source
+    assert 'strcmp(argv[1], "journal-fixtures")' in app_source
     assert 'strcmp(argv[1], "config-fixtures")' in app_source
     assert 'strcmp(argv[1], "metrics-export-fixtures")' in app_source
+    assert 'strcmp(argv[1], "deployment-fixtures")' in app_source
     assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
     assert 'strcmp(argv[1], "compat-matrix")' in app_source
     assert 'strcmp(argv[1], "compat-fixtures")' in app_source
     assert 'strcmp(argv[1], "compat-baseline-v1")' in app_source
     assert 'strcmp(argv[1], "compat-baseline-fixtures")' in app_source
+    assert 'strcmp(argv[1], "compat-old-new-matrix")' in app_source
+    assert 'strcmp(argv[1], "compat-old-new-fixtures")' in app_source
     assert 'strcmp(argv[1], "serve")' in app_source
     assert 'option_value(argc, argv, "--config")' in app_source
     assert "load_mem_service_config" in app_source
@@ -740,10 +755,17 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_compat_fixture_check" in app_source
     assert "run_compat_baseline_v1" in app_source
     assert "run_compat_baseline_fixture_check" in app_source
-    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1663U" in app_source
-    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xe369f7bcU" in app_source
-    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1091U" in app_source
-    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x7395c388U" in app_source
+    assert "run_compat_old_new_matrix" in app_source
+    assert "run_compat_old_new_fixture_check" in app_source
+    assert "MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U" in app_source
+    assert "render_metrics_http_response" in app_source
+    assert "run_deployment_fixture_check" in app_source
+    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U" in app_source
+    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xfb80227eU" in app_source
+    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1208U" in app_source
+    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x32f075cfU" in app_source
+    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1590U" in app_source
+    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x5130ec56U" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8695U" in app_source
@@ -792,18 +814,33 @@ def test_mem_service_has_component_and_cli_entrypoints():
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
     assert "compat_matrix=share/lingqu/mem_service/compat-matrix.txt" in release_manifest
-    assert "compat_matrix_checksum=0xe369f7bc" in release_manifest
+    assert "compat_matrix_checksum=0xfb80227e" in release_manifest
     assert "compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt" in release_manifest
-    assert "compat_baseline_checksum=0x7395c388" in release_manifest
+    assert "compat_baseline_checksum=0x32f075cf" in release_manifest
+    assert "compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt" in release_manifest
+    assert "compat_old_new_matrix_checksum=0x5130ec56" in release_manifest
+    assert "deployment_smoke=deployment-fixtures" in release_manifest
+    assert "durable_backend=snapshot+journal" in release_manifest
+    assert "durable_journal=store-path.journal" in release_manifest
+    assert "metrics_scrape_path=/metrics" in release_manifest
+    assert "metrics_http_content_type=text/plain; version=0.0.4" in release_manifest
     assert "mem_service_compat_matrix_version=1" in compat_matrix
     assert "wire_version_current=1" in compat_matrix
     assert "wire_schema_manifest_checksum=0x8a8ca3c4" in compat_matrix
     assert "idempotency_conflict_status=version_conflict" in compat_matrix
-    assert "audit_log_persistence=store-and-full-snapshot" in compat_matrix
+    assert "idempotency_persistence=store-journal-and-full-snapshot" in compat_matrix
+    assert "audit_log_persistence=store-journal-and-full-snapshot" in compat_matrix
+    assert "journal_scope=completed-idempotency-and-audit-events" in compat_matrix
+    assert "compat_test=journal-fixtures" in compat_matrix
+    assert "compat_test=deployment-fixtures" in compat_matrix
     assert "mem_service_compat_baseline_version=1" in compat_baseline
     assert "old_client_new_server=compatible-within-v1" in compat_baseline
     assert "new_client_old_server=not-certified" in compat_baseline
     assert "baseline_payload=register_training_artifact:v1-training-step-compatible" in compat_baseline
+    assert "mem_service_old_new_compat_matrix_version=1" in compat_old_new
+    assert "certified_pair=current-v1-client->old-v1-schema-profile" in compat_old_new
+    assert "not_certified_pair=current-v1-client->old-v1-runtime-binary" in compat_old_new
+    assert "certification_limit=old-server-runtime-binary-not-certified" in compat_old_new
     assert "wire_schema_manifest_len=8695" in release_manifest
     assert "wire_schema_manifest_checksum=0x8a8ca3c4" in release_manifest
     assert "config_schema_version=1" in release_manifest
@@ -837,9 +874,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_config_schema_version=1" in config_schema
     assert "field=listen type=string" in config_schema
     assert "field=store type=string" in config_schema
-    assert "field=backend type=enum values=snapshot" in config_schema
+    assert "field=backend type=enum values=snapshot,snapshot+journal" in config_schema
     assert "listen=unix:/tmp/linqu_mem_service.sock" in config_example
     assert "store=/tmp/linqu_mem_service.store" in config_example
+    assert "backend=snapshot+journal" in config_example
     assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest
     assert '#include "mem_service_client.h"' in serving_example
     assert "mem_service_client_register_prefix_entry" in serving_example
@@ -1615,6 +1653,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
         "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.service",
         "guest-linux/aarch64/apps/mem_service/compat-baseline-v1.txt",
         "guest-linux/aarch64/apps/mem_service/compat-matrix.txt",
+        "guest-linux/aarch64/apps/mem_service/compat-old-new-matrix.txt",
         "guest-linux/aarch64/apps/mem_service/release-manifest.txt",
         "guest-linux/aarch64/apps/mem_service/wire-schema.txt",
     }

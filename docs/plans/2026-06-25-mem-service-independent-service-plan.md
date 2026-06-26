@@ -35,8 +35,8 @@
 | wire fixture gate | `linqu_mem_service wire-fixtures` 校验 header size/offset、operation/status 数值、23 个 canonical request payload 长度/checksum、23 个真实 handler response 长度/checksum 和 header init | 已有 request/response corpus |
 | wire schema manifest | `linqu_mem_service wire-schema` 生成 `apps/mem_service/wire-schema.txt`；`wire-schema-fixtures` 冻结 manifest length/checksum、23 个 operation、102 个字段、1 个 oneof selector | 已有最小兼容 manifest |
 | artifact query binding | runtime handoff、execution artifact、training artifact query 支持 `expected_session_id`、`expected_model_key`、`expected_artifact_kind`、`expected_artifact_id`、`expected_version`、`expected_checksum` fail-closed 校验 | 已有最小上下文绑定 |
-| store fixture gate | `linqu_mem_service store-fixtures` 校验 metadata/ref snapshot save/load/recover，以及 `--store` 格式中的 idempotency replay/conflict 恢复 | 已有最小版本 |
-| service process | `linqu_mem_service serve --listen unix:<path> [--store <path>]` | 已有最小 Unix-socket daemon 和 metadata/ref snapshot recovery |
+| store/journal fixture gate | `linqu_mem_service store-fixtures` 校验 metadata/ref snapshot save/load/recover，`linqu_mem_service journal-fixtures` 校验 `<store>.journal` 中 completed idempotency/audit 的 append-only replay 恢复 | 已有最小版本 |
+| service process | `linqu_mem_service serve --listen unix:<path> [--store <path>]` | 已有最小 Unix-socket daemon、metadata/ref snapshot recovery 和 idempotency/audit journal recovery |
 | lifecycle/admin client CLI | `linqu_mem_service health/ready/status/list-records --connect unix:<path>` | 已有最小版本 |
 | object RPC | `linqu_mem_service put-object/get-object --connect unix:<path>` | 已有最小 key/value payload 版本 |
 | prefix RPC | `linqu_mem_service register-prefix/lookup-prefix --connect unix:<path>` | 已有最小 key/value payload 版本 |
@@ -46,8 +46,8 @@
 | training artifact RPC | `linqu_mem_service register-training-artifact/query-training-artifact --connect unix:<path>` | 已有最小 key/value payload 版本 |
 | training-step commit CLI | `linqu_mem_service commit-training-step/resolve-training-step --connect unix:<path>` 固定 `artifact_kind=training-step-commit`，要求 session/model/artifact/version/checksum/idempotency key，默认 fail-closed | 已有最小 committed marker 版本 |
 | metrics RPC/export | `linqu_mem_service metrics --connect unix:<path>` 暴露 request/status/operation hit-miss/fail-closed、idempotency replay/conflict 和 latency histogram 计数；`metrics-export --format prometheus-text` 可把同一 RPC 输出转换为 Prometheus text exposition | 已有最小观测导出版本 |
-| audit-log RPC | `linqu_mem_service audit-log --connect unix:<path>` 暴露 bounded retained audit ring，覆盖 mutating operation 和 fail-closed status，记录 operation/status/request checksum/response checksum/idempotency replay/session/model/artifact/version/checksum，并随 `--store` 和 full snapshot 持久化；runtime test 覆盖 training-step commit、stale fail-closed、metrics 计数和重启后查询 | 已有最小审计版本 |
-| mutation idempotency | object/prefix/KV/runtime handoff/execution artifact/training artifact 写路径支持可选 `idempotency_key`；重复相同 operation/payload replay 首次响应，重复 key 搭配不同 payload fail-closed 为 `version_conflict`；`wire-fixtures` 覆盖进程内 replay/conflict，`store-fixtures` 覆盖 save/load replay/conflict，daemon runtime test 在允许 Unix socket bind 的环境覆盖 `serve --store` 跨重启 replay/conflict | 已有最小持久化版本 |
+| audit-log RPC | `linqu_mem_service audit-log --connect unix:<path>` 暴露 bounded retained audit ring，覆盖 mutating operation 和 fail-closed status，记录 operation/status/request checksum/response checksum/idempotency replay/session/model/artifact/version/checksum，并随 `--store`、`<store>.journal` 和 full snapshot 持久化；runtime test 覆盖 training-step commit、stale fail-closed、metrics 计数和重启后查询 | 已有最小审计版本 |
+| mutation idempotency | object/prefix/KV/runtime handoff/execution artifact/training artifact 写路径支持可选 `idempotency_key`；重复相同 operation/payload replay 首次响应，重复 key 搭配不同 payload fail-closed 为 `version_conflict`；`wire-fixtures` 覆盖进程内 replay/conflict，`store-fixtures` 覆盖 save/load replay/conflict，`journal-fixtures` 覆盖 append-only journal replay 恢复，daemon runtime test 在允许 Unix socket bind 的环境覆盖 `serve --store` 跨重启 replay/conflict | 已有最小持久化版本 |
 | Qwen3 inspect CLI | `/bin/linqu_mem_service_qwen3 --inspect-qwen3` | 已有 |
 | W5 Qwen3 runtime handoff | `mem_service_qwen3*.c/h` | 已有 |
 | cluster/OBMM split units | `mem_service_cluster_*`, `mem_service_obmm_*` | 已有 |
@@ -55,19 +55,19 @@
 | independent deployment assessment | `docs/mem_service_independent_deployment_assessment.md` | 已有 |
 | config/deploy contract | `serve --config <path>` 支持 text key/value config；`config-fixtures` 校验 schema 约束；发布布局包含 config schema、example config 和 systemd-like deployment manifest | 已有最小版本 |
 | release manifest CLI | `linqu_mem_service release-manifest` 和 `release-fixtures` 冻结 core binary、public headers、client SDK sources、SDK examples、config/deploy artifacts、metrics export format、client retry policy、pretraining refs 与 pretraining step commit client API profiles、wire/schema versions、schema manifest checksum、operation/status IDs | 已有最小版本 |
-| compat matrix CLI | `linqu_mem_service compat-matrix`、`compat-fixtures`、`compat-baseline-v1` 和 `compat-baseline-fixtures` 冻结当前 wire/schema、release layout、retry、idempotency、audit、snapshot 兼容规则，以及 old-v1-client 到 current-server 的最小兼容 baseline，并随 install layout 发布 | 已有最小版本 |
-| install layout smoke | `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr` 安装 binary/header/client source/SDK examples/release manifest/wire schema manifest/compat matrix/v1 baseline/config/deploy artifacts 并校验布局 | 已有最小版本 |
+| compat matrix CLI | `linqu_mem_service compat-matrix`、`compat-fixtures`、`compat-baseline-v1`、`compat-baseline-fixtures`、`compat-old-new-matrix` 和 `compat-old-new-fixtures` 冻结当前 wire/schema、release layout、retry、idempotency、audit、snapshot、journal 兼容规则，old-v1-client 到 current-server 的最小兼容 baseline，以及覆盖 23 个 operation 的 v1 old/new schema-profile matrix，并随 install layout 发布 | 已有 schema-profile 版本 |
+| install layout smoke | `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr` 安装 binary/header/client source/SDK examples/release manifest/wire schema manifest/compat matrix/v1 baseline/old-new schema-profile matrix/config/deploy artifacts 并校验布局 | 已有最小版本 |
 
 当前主要缺口：
 
 | 缺口 | 对用户的影响 |
 | --- | --- |
-| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 release compat matrix 和 v1 baseline，但还缺 retry/idempotency old/new compatibility matrix、append-only durable idempotency/audit log、HTTP scrape/service-manager metrics smoke 和产品级 restore/durable policy |
-| wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，以及 23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus；还缺 binary/typed payload schema、跨版本 compatibility fixtures |
-| durable service backend 仍是最小 snapshot | 已能通过 `serve --store` 恢复 committed metadata/ref、completed idempotency record 和 retained audit event；还缺产品级 durable catalog、append-only audit log、payload block backend、migration |
-| serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
-| pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum、append-only audit/replay record 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、config schema、example config、systemd-like deployment manifest、SDK examples、Prometheus text metrics export manifest entry 和 install-smoke；还缺完整 old/new 版本组合包、升级/回滚、host service-manager smoke 和 HTTP/采集器观测门禁 |
+| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 release compat matrix、v1 baseline 和 old/new schema-profile matrix，但还缺 retry/idempotency old/new runtime compatibility matrix、真实 HTTP listener/collector scrape smoke 和产品级 restore/durable policy |
+| wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus，以及覆盖 23 个 operation 的 old-minimal/current-plus-future schema-profile compatibility fixtures；还缺 binary/typed payload schema、旧 server runtime binary 组合测试和跨版本 compatibility fixtures |
+| durable service backend 仍是最小 snapshot+journal | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；还缺产品级 durable catalog、journal truncation/atomicity policy、payload block backend、migration |
+| serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺 retry/idempotency old/new runtime compatibility matrix、model/session mismatch 负例和 serving 集成矩阵 |
+| pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、源 manifest、wire schema manifest、compat matrix、v1 baseline、old/new schema-profile matrix、config schema、example config、systemd-like deployment manifest、`deployment-fixtures`、SDK examples、Prometheus text metrics export manifest entry、`/metrics` scrape path contract 和 install-smoke；还缺旧 server runtime binary 组合包、升级/回滚、host service-manager smoke 和真实 HTTP/采集器观测门禁 |
 
 ## 3. 目标架构
 
@@ -108,7 +108,7 @@ mem_service deployment
 
 1. 保留 `docs/mem_service_independent_deployment_assessment.md` 作为现状判断。
 2. 新增本计划文档作为后续推进基线。
-3. 明确当前 completion 不能成立：daemon/RPC 已有 object/prefix/KV/runtime handoff/execution artifact/training artifact 最小业务闭环、typed C client、`--store` snapshot recovery 和最小 release/install layout，但还没有 binary typed schema、产品级 durable backend、serving/pretraining 集成矩阵、配置/部署 manifest 和兼容升级门禁。
+3. 明确当前 completion 不能成立：daemon/RPC 已有 object/prefix/KV/runtime handoff/execution artifact/training artifact 最小业务闭环、typed C client、`--store` snapshot+journal recovery 和最小 release/install layout，但还没有 binary typed schema、产品级 durable backend、serving/pretraining 集成矩阵、配置/部署 manifest 和兼容升级门禁。
 
 验收：
 
@@ -243,10 +243,10 @@ existing W5/Qwen3 tests remain green
    - 当前 object/prefix/KV/runtime handoff/execution artifact/training artifact 写路径已支持可选 `idempotency_key`。
    - 相同 `idempotency_key`、相同 operation 和相同 payload 会 replay 首次响应，不重新执行 mutation。
    - 相同 `idempotency_key` 搭配不同 operation 或 payload 会 fail-closed 为 `version_conflict`。
-   - 当前 `--store` 和 full `export-snapshot` 会保存 completed idempotency record；`store-fixtures` 覆盖 save/load 后 replay/conflict，daemon runtime 测试在允许 Unix socket bind 的环境覆盖 `serve --store` 重启后的 replay/conflict。
-   - 当前 `audit-log` 已有 bounded retained ring，覆盖 mutating operation 和 fail-closed status，并随 `--store` 和 full snapshot 持久化。
-   - 当前 `compat-matrix` 已冻结 release-time retry/idempotency/audit/snapshot 兼容规则，`compat-baseline-v1` 已冻结 old-v1-client 到 current-server 的最小 baseline。
-   - 后续还要补 append-only durable idempotency/audit log、retry/idempotency old/new compatibility matrix 和 full old/new compatibility matrix。
+   - 当前 `--store`、`<store>.journal` 和 full `export-snapshot` 会保存 completed idempotency record；`store-fixtures` 覆盖 save/load 后 replay/conflict，`journal-fixtures` 覆盖 append-only journal replay 恢复，daemon runtime 测试在允许 Unix socket bind 的环境覆盖 `serve --store` 重启后的 replay/conflict。
+   - 当前 `audit-log` 已有 bounded retained ring，覆盖 mutating operation 和 fail-closed status，并随 `--store`、`<store>.journal` 和 full snapshot 持久化。
+   - 当前 `compat-matrix` 已冻结 release-time retry/idempotency/audit/snapshot/journal 兼容规则，`compat-baseline-v1` 已冻结 old-v1-client 到 current-server 的最小 baseline，`compat-old-new-matrix` 已冻结覆盖 23 个 operation 的 v1 old/new schema-profile matrix。
+   - 后续还要补 retry/idempotency old/new runtime compatibility matrix、旧 server runtime binary full old/new compatibility matrix 和产品级 journal truncation/atomicity policy。
 7. 定义 compatibility rules：
    - minor version backward compatible。
    - major version requires explicit negotiation。
@@ -328,7 +328,7 @@ linqu_mem_service can put/get object and publish/resolve prefix/KV over Unix soc
    node_id             # current schema-only field
    cluster_id          # current schema-only field
    storage_root        # current schema-only field
-   backend             # current schema validates snapshot
+   backend             # current schema validates snapshot and snapshot+journal
    max_records         # current schema validates u64
    max_payload_bytes   # current schema validates u64
    retention           # current schema-only field
@@ -483,7 +483,7 @@ audit log can explain a state transition
    最小 SDK 示例，覆盖 prefix/KV/runtime handoff/execution artifact
    两进程 publish/query smoke，并显式配置 opt-in retry/backoff controls 和
    mutation `idempotency_key`。下一步仍需要 release-grade SDK API、
-   retry/idempotency old/new compatibility matrix、durable idempotency、模型/会话绑定负例和
+   retry/idempotency old/new runtime compatibility matrix、durable idempotency、模型/会话绑定负例和
    serving 集成矩阵。
 6. 保持 Qwen3 adapter 作为 first serving adapter，但不让 Qwen3 类型进入 core API。
 
@@ -700,9 +700,9 @@ installable serving/pretraining SDK examples prove minimal two-process RPC smoke
 pretraining worker runtime gate proves typed multi-worker publish/resolve, checkpoint restart, stale/checksum fail-closed, and idempotency conflict
 shared text key/value payload helper, public operation schema contract, and request schema fixture gate exist
 wire-schema CLI and checked-in wire-schema.txt freeze the current operation/field manifest
-minimal --store snapshot exists and carries completed idempotency records plus bounded audit records, but no production durable catalog/append-only audit/block backend
-minimal release manifest CLI, wire schema manifest, compat matrix, v1 baseline, config/deploy artifacts, SDK examples, and install-smoke layout exist
-no retry/idempotency old/new compatibility matrix, model/session mismatch matrix, or product-grade multi-worker pretraining commit/audit matrix
+minimal --store snapshot+journal exists and carries completed idempotency records plus bounded audit records, but no production durable catalog/block backend or journal truncation/atomicity policy
+minimal release manifest CLI, wire schema manifest, compat matrix, v1 baseline, old/new schema-profile matrix, config/deploy artifacts, SDK examples, and install-smoke layout exist
+no retry/idempotency old/new runtime compatibility matrix, model/session mismatch matrix, or product-grade multi-worker pretraining commit/audit matrix
 ```
 
 ### 5.2 Gate Matrix
@@ -749,6 +749,7 @@ Phase 2:
 Phase 3:
   test_mem_service_daemon_graceful_shutdown
   linqu_mem_service store-fixtures
+  linqu_mem_service journal-fixtures
   test_daemon_store_survives_restart_for_object_refs
 
 Phase 4:
@@ -884,8 +885,10 @@ Recommended order:
    23 canonical request payloads, and 23 real handler responses. The current
    `wire-schema` manifest freezes the present operation/field surface, the
    current `compat-matrix` freezes release-time compatibility rules, and
-   `compat-baseline-v1` freezes the current old-v1-client baseline. This is
-   still not a full old/new client/server compatibility matrix.
+   `compat-baseline-v1` freezes the current old-v1-client baseline, and
+   `compat-old-new-matrix` freezes the current v1 old/new schema-profile matrix
+   for all 23 operations. This is still not a full old-server runtime-binary
+   client/server compatibility matrix.
 2. Promote the shared text key/value payload helper and public operation schema
    contract into a release-grade typed schema layer. The current helper removes
    CLI/daemon parser drift and validates present request fields, but it is not
@@ -915,10 +918,11 @@ Recommended order:
    gradient, and optimizer-state helpers into release-grade typed wire/schema
    contracts.
 8. Extend the minimal release artifact layout into deployable package gates:
-   the current config schema, example config, and service unit manifest are
-   installed and fixture-checked; remaining work is protocol compatibility
-   bundle, upgrade/rollback smoke, host service-manager smoke, and
-   metrics/admin output compatibility.
+   the current config schema, example config, service unit manifest, and
+   `/metrics` response envelope are installed and fixture-checked; remaining
+   work is protocol compatibility bundle, upgrade/rollback smoke, host
+   service-manager smoke, real HTTP/collector scrape smoke, and metrics/admin
+   output compatibility.
 
 ## 7. Completion Definition
 
