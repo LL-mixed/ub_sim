@@ -20,22 +20,22 @@
 #endif
 
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_VERSION 1U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 8961U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x8c27baeeU
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xce883650U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 23U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 106U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 110U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
 #define MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1887U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x1ab0e2e8U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x8b4219c5U
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
 #define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1208U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x06798bcfU
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xdc6376daU
 #define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1590U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xbc3d2fabU
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x56f8e4c3U
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -61,6 +61,7 @@ static void usage(const char *argv0)
     printf(" [register-training-artifact|query-training-artifact]");
     printf(" [commit-training-step|resolve-training-step]");
     printf(" [mutating commands accept --idempotency-key <key>]");
+    printf(" [object/artifact mutating commands accept --payload-file <path>]");
 #ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT
     printf(" [--inspect-qwen3]");
 #endif
@@ -1598,6 +1599,7 @@ static int run_release_manifest(void)
     printf("durable_catalog=storage-root-v1\n");
     printf("durable_catalog_manifest=catalog/manifest.txt\n");
     printf("payload_block_backend=sealed-local-block-v1\n");
+    printf("payload_block_ingest=payload-inline,payload-file\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
     printf("metrics_export_format=prometheus-text\n");
@@ -2793,6 +2795,7 @@ static int run_put_object(int argc, char **argv)
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--checksum", "checksum") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--version", "version") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-inline", "payload_inline") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-file", "payload_path") != 0 ||
         append_idempotency_payload_field(payload, sizeof(payload), argc, argv) != 0) {
         return 2;
     }
@@ -3489,6 +3492,7 @@ static int append_artifact_payload(char *payload,
         append_optional_payload_field(payload, payload_len, argc, argv, "--checksum", "checksum") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--version", "version") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--payload-inline", "payload_inline") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--payload-file", "payload_path") != 0 ||
         append_idempotency_payload_field(payload, payload_len, argc, argv) != 0) {
         return -1;
     }
@@ -3617,6 +3621,7 @@ static int append_training_step_commit_payload(char *payload,
         append_required_payload_field(payload, payload_len, argc, argv, "--checksum", "checksum") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--version", "version") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--payload-inline", "payload_inline") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--payload-file", "payload_path") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--idempotency-key", "idempotency_key") != 0) {
         return -1;
     }

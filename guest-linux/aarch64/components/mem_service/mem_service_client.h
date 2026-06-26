@@ -59,6 +59,7 @@ struct mem_service_client_object {
     bool has_version;
     uint64_t version;
     const char *payload_inline;
+    const char *payload_path;
 };
 
 struct mem_service_client_block_entry {
@@ -104,6 +105,7 @@ struct mem_service_client_artifact {
     bool has_version;
     uint64_t version;
     const char *payload_inline;
+    const char *payload_path;
 };
 
 struct mem_service_client_artifact_query {
@@ -138,6 +140,7 @@ struct mem_service_client_training_ref {
     bool has_version;
     uint64_t version;
     const char *payload_inline;
+    const char *payload_path;
 };
 
 struct mem_service_client_training_ref_query {

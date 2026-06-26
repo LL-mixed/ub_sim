@@ -38,6 +38,7 @@ static const uint64_t mem_service_latency_bucket_limits_ms
     [MEM_SERVICE_METRIC_LATENCY_BUCKET_COUNT] = {1U, 5U, 10U, 50U, 100U, UINT64_MAX};
 
 static volatile sig_atomic_t mem_service_daemon_stop;
+static uint64_t mem_service_payload_tmp_seq;
 
 struct mem_service_restore_snapshot_stage {
     bool active;
@@ -1785,22 +1786,119 @@ static void mem_service_quarantine_payload_block(const char *storage_root,
     (void)rename(block_path, quarantine_path);
 }
 
+static int mem_service_make_payload_tmp_path(const char *storage_root,
+                                             char *path,
+                                             size_t path_len)
+{
+    char block_dir[512];
+    char tmp_name[64];
+    uint64_t seq = ++mem_service_payload_tmp_seq;
+
+    if (mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        snprintf(tmp_name,
+                 sizeof(tmp_name),
+                 "ingest.tmp.%ld.%" PRIu64 ".%llu",
+                 (long)getpid(),
+                 seq,
+                 (unsigned long long)mem_service_wall_clock_ms()) >=
+            (int)sizeof(tmp_name)) {
+        return -1;
+    }
+    return mem_service_join_path(path, path_len, block_dir, tmp_name);
+}
+
+static enum mem_service_wire_status mem_service_copy_payload_file_to_tmp(
+    const char *payload_path,
+    const char *tmp_path,
+    uint64_t *actual_len_out,
+    uint64_t *actual_checksum_out)
+{
+    FILE *src;
+    FILE *dst;
+    uint8_t buffer[4096];
+    uint64_t actual_len = 0;
+    uint64_t hash = 1469598103934665603ULL;
+
+    if (payload_path == NULL || payload_path[0] == '\0' ||
+        tmp_path == NULL || tmp_path[0] == '\0' ||
+        actual_len_out == NULL || actual_checksum_out == NULL) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    src = fopen(payload_path, "rb");
+    if (src == NULL) {
+        return MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+    }
+    dst = fopen(tmp_path, "wb");
+    if (dst == NULL) {
+        fclose(src);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    for (;;) {
+        size_t got = fread(buffer, 1U, sizeof(buffer), src);
+        size_t i;
+
+        if (got > 0U &&
+            fwrite(buffer, 1U, got, dst) != got) {
+            fclose(src);
+            fclose(dst);
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        for (i = 0; i < got; ++i) {
+            hash ^= buffer[i];
+            hash *= 1099511628211ULL;
+        }
+        actual_len += (uint64_t)got;
+        if (got < sizeof(buffer)) {
+            if (ferror(src)) {
+                fclose(src);
+                fclose(dst);
+                unlink(tmp_path);
+                return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+            }
+            break;
+        }
+    }
+    if (fclose(src) != 0) {
+        fclose(dst);
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    if (fclose(dst) != 0) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    *actual_len_out = actual_len;
+    *actual_checksum_out = hash;
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
 static enum mem_service_wire_status mem_service_write_payload_block(
     const char *storage_root,
     const char *payload,
     const char *payload_inline,
+    const char *payload_path,
     struct mem_service_record *record)
 {
     char block_path[512];
     char tmp_path[512];
     uint64_t expected_len = 0;
     uint64_t expected_checksum = 0;
-    uint64_t actual_len;
-    uint64_t actual_checksum;
+    uint64_t actual_len = 0;
+    uint64_t actual_checksum = 0;
+    bool has_inline = payload_inline != NULL && payload_inline[0] != '\0';
+    bool has_path = payload_path != NULL && payload_path[0] != '\0';
     FILE *file;
+    enum mem_service_wire_status status;
 
-    if (payload_inline == NULL || payload_inline[0] == '\0') {
+    if (!has_inline && !has_path) {
         return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (has_inline && has_path) {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
     }
     if (record == NULL || storage_root == NULL || storage_root[0] == '\0') {
         return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
@@ -1810,42 +1908,69 @@ static enum mem_service_wire_status mem_service_write_payload_block(
             MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
         return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
     }
-    actual_len = (uint64_t)strlen(payload_inline);
-    actual_checksum = mem_service_checksum_bytes((const uint8_t *)payload_inline,
-                                                 actual_len);
+    if (has_inline) {
+        actual_len = (uint64_t)strlen(payload_inline);
+        actual_checksum =
+            mem_service_checksum_bytes((const uint8_t *)payload_inline,
+                                       actual_len);
+    } else {
+        if (mem_service_make_payload_tmp_path(storage_root,
+                                              tmp_path,
+                                              sizeof(tmp_path)) != 0) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        status = mem_service_copy_payload_file_to_tmp(payload_path,
+                                                      tmp_path,
+                                                      &actual_len,
+                                                      &actual_checksum);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            return status;
+        }
+    }
     if (mem_service_payload_get_u64_checked(payload, "backing_len", &expected_len) &&
         expected_len != actual_len) {
+        if (has_path) {
+            unlink(tmp_path);
+        }
         return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
     }
     if (mem_service_payload_get_u64_checked(payload, "checksum", &expected_checksum) &&
         expected_checksum != actual_checksum) {
+        if (has_path) {
+            unlink(tmp_path);
+        }
         return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
     }
     if (mem_service_make_payload_block_path(storage_root,
                                             actual_checksum,
                                             block_path,
-                                            sizeof(block_path)) != 0 ||
-        snprintf(tmp_path,
-                 sizeof(tmp_path),
-                 "%s.tmp.%ld",
-                 block_path,
-                 (long)getpid()) >= (int)sizeof(tmp_path)) {
+                                            sizeof(block_path)) != 0) {
+        if (has_path) {
+            unlink(tmp_path);
+        }
         return MEM_SERVICE_WIRE_STATUS_INTERNAL;
     }
-    file = fopen(tmp_path, "wb");
-    if (file == NULL) {
-        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
-    }
-    if (actual_len > 0U &&
-        fwrite(payload_inline, 1U, (size_t)actual_len, file) !=
-            (size_t)actual_len) {
-        fclose(file);
-        unlink(tmp_path);
-        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
-    }
-    if (fclose(file) != 0) {
-        unlink(tmp_path);
-        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    if (has_inline) {
+        if (mem_service_make_payload_tmp_path(storage_root,
+                                              tmp_path,
+                                              sizeof(tmp_path)) != 0) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        file = fopen(tmp_path, "wb");
+        if (file == NULL) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (actual_len > 0U &&
+            fwrite(payload_inline, 1U, (size_t)actual_len, file) !=
+                (size_t)actual_len) {
+            fclose(file);
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (fclose(file) != 0) {
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
     }
     if (rename(tmp_path, block_path) != 0) {
         unlink(tmp_path);
@@ -2797,6 +2922,7 @@ static enum mem_service_wire_status mem_service_put_object(struct mem_service *s
     struct mem_service_record next;
     char key[sizeof(record->key)];
     char payload_inline[1024];
+    char payload_path[512];
     enum mem_service_wire_status block_status;
 
     if (!mem_service_payload_get_string(payload, "key", key, sizeof(key))) {
@@ -2813,13 +2939,21 @@ static enum mem_service_wire_status mem_service_put_object(struct mem_service *s
     next.object_backing_len = mem_service_payload_get_u64(payload, "backing_len", 0);
     next.object_payload_checksum = mem_service_payload_get_u64(payload, "checksum", 0);
     next.object_publish_monotonic_ms = mem_service_wall_clock_ms();
-    if (mem_service_payload_get_string(payload,
-                                       "payload_inline",
-                                       payload_inline,
-                                       sizeof(payload_inline))) {
+    payload_inline[0] = '\0';
+    payload_path[0] = '\0';
+    (void)mem_service_payload_get_string(payload,
+                                         "payload_inline",
+                                         payload_inline,
+                                         sizeof(payload_inline));
+    (void)mem_service_payload_get_string(payload,
+                                         "payload_path",
+                                         payload_path,
+                                         sizeof(payload_path));
+    if (payload_inline[0] != '\0' || payload_path[0] != '\0') {
         block_status = mem_service_write_payload_block(storage_root,
                                                        payload,
                                                        payload_inline,
+                                                       payload_path,
                                                        &next);
         if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
             return block_status;
@@ -2939,6 +3073,7 @@ static enum mem_service_wire_status mem_service_store_artifact(
     struct mem_service_record next;
     char key[sizeof(record->key)];
     char payload_inline[1024];
+    char payload_path[512];
     uint64_t old_version = 0;
     uint64_t requested_version = 0;
     bool has_requested_version;
@@ -3000,13 +3135,21 @@ static enum mem_service_wire_status mem_service_store_artifact(
     next.object_backing_len = mem_service_payload_get_u64(payload, "backing_len", 0);
     next.object_payload_checksum = mem_service_payload_get_u64(payload, "checksum", 0);
     next.object_publish_monotonic_ms = mem_service_wall_clock_ms();
-    if (mem_service_payload_get_string(payload,
-                                       "payload_inline",
-                                       payload_inline,
-                                       sizeof(payload_inline))) {
+    payload_inline[0] = '\0';
+    payload_path[0] = '\0';
+    (void)mem_service_payload_get_string(payload,
+                                         "payload_inline",
+                                         payload_inline,
+                                         sizeof(payload_inline));
+    (void)mem_service_payload_get_string(payload,
+                                         "payload_path",
+                                         payload_path,
+                                         sizeof(payload_path));
+    if (payload_inline[0] != '\0' || payload_path[0] != '\0') {
         block_status = mem_service_write_payload_block(storage_root,
                                                        payload,
                                                        payload_inline,
+                                                       payload_path,
                                                        &next);
         if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
             return block_status;

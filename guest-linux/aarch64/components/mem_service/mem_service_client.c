@@ -279,7 +279,11 @@ static int mem_service_client_append_object_payload(
         mem_service_client_append_optional_string(payload,
                                                   payload_len,
                                                   "payload_inline",
-                                                  object->payload_inline) != 0) {
+                                                  object->payload_inline) != 0 ||
+        mem_service_client_append_optional_string(payload,
+                                                  payload_len,
+                                                  "payload_path",
+                                                  object->payload_path) != 0) {
         return -1;
     }
     return 0;
@@ -411,7 +415,11 @@ static int mem_service_client_append_artifact_payload(
         mem_service_client_append_optional_string(payload,
                                                   payload_len,
                                                   "payload_inline",
-                                                  artifact->payload_inline) != 0) {
+                                                  artifact->payload_inline) != 0 ||
+        mem_service_client_append_optional_string(payload,
+                                                  payload_len,
+                                                  "payload_path",
+                                                  artifact->payload_path) != 0) {
         return -1;
     }
     return 0;
@@ -533,6 +541,7 @@ static int mem_service_client_publish_training_ref(
     artifact.has_version = ref->has_version;
     artifact.version = ref->version;
     artifact.payload_inline = ref->payload_inline;
+    artifact.payload_path = ref->payload_path;
     return mem_service_client_publish_artifact(
         client,
         MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
