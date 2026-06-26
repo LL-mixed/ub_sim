@@ -35,6 +35,7 @@ LLM_INFER := $(ROOT)/components/llm_infer/llm_infer.c
 MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt
 MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt
 MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt
+MEM_SERVICE_UPGRADE_ROLLBACK_POLICY := upgrade-rollback-policy.txt
 MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt
 MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt
 MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt
@@ -113,7 +114,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-admin-output-schema print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke install install-smoke print-release-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -133,6 +134,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host --smoke
 	./linqu_mem_service_host release-fixtures
 	./linqu_mem_service_host admin-output-fixtures
+	./linqu_mem_service_host upgrade-rollback-fixtures
 	./linqu_mem_service_host api-abi-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
@@ -146,6 +148,9 @@ print-wire-schema:
 print-admin-output-schema:
 	@cat $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA)
 
+print-upgrade-rollback-policy:
+	@cat $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY)
+
 print-api-abi-policy:
 	@cat $(MEM_SERVICE_API_ABI_POLICY)
 
@@ -158,7 +163,7 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST)
+install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST)
 	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
@@ -168,6 +173,7 @@ install: linqu_mem_service linqu_mem_service_host $(MEM_SERVICE_RELEASE_MANIFEST
 	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(INSTALL_DATADIR)/release-manifest.txt
 	cp $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(INSTALL_DATADIR)/wire-schema.txt
 	cp $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(INSTALL_DATADIR)/admin-output-schema.txt
+	cp $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	cp $(MEM_SERVICE_API_ABI_POLICY) $(INSTALL_DATADIR)/api-abi-policy.txt
 	cp $(MEM_SERVICE_COMPAT_MATRIX) $(INSTALL_DATADIR)/compat-matrix.txt
 	cp $(MEM_SERVICE_COMPAT_BASELINE_V1) $(INSTALL_DATADIR)/compat-baseline-v1.txt
@@ -189,6 +195,7 @@ install-smoke: install
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/wire-schema.txt
 	test -f $(INSTALL_DATADIR)/admin-output-schema.txt
+	test -f $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	test -f $(INSTALL_DATADIR)/api-abi-policy.txt
 	test -f $(INSTALL_DATADIR)/compat-matrix.txt
 	test -f $(INSTALL_DATADIR)/compat-baseline-v1.txt
@@ -208,6 +215,13 @@ install-smoke: install
 	grep -q '^admin_output_schema_checksum=0x7021f4cf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_len=1659$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0xcf4c65bb$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_gate=upgrade-rollback-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_len=875$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_checksum=0x743f84b8$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -266,6 +280,12 @@ install-smoke: install
 	grep -q '^metric_field=request_latency_max_ms type=gauge$$' $(INSTALL_DATADIR)/admin-output-schema.txt
 	grep -q '^audit_record_delimiter=audit_begin/audit_end$$' $(INSTALL_DATADIR)/admin-output-schema.txt
 	grep -q '^fail_closed_status=checksum_mismatch$$' $(INSTALL_DATADIR)/admin-output-schema.txt
+	grep -q '^mem_service_upgrade_rollback_policy_version=1$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^old_server_runtime_binary=not-certified$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^new_client_old_server=not-certified-without-runtime-binary$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^required_gate=install-smoke$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^mem_service_api_abi_policy_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt

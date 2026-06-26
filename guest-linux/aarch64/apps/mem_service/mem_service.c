@@ -31,6 +31,9 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_VERSION 1U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1659U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcf4c65bbU
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x743f84b8U
@@ -51,6 +54,7 @@ static void usage(const char *argv0)
     printf(" [store-fixtures] [journal-fixtures] [config-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
+    printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
@@ -563,6 +567,311 @@ static int run_api_abi_fixture_check(void)
            MEM_SERVICE_CLIENT_API_VERSION,
            MEM_SERVICE_CLIENT_ABI_VERSION,
            MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
+    return 0;
+}
+
+static int render_upgrade_rollback_policy(char *policy,
+                                          size_t policy_len,
+                                          size_t *used_out)
+{
+    size_t used = 0;
+
+    if (policy == NULL || policy_len == 0) {
+        return -1;
+    }
+    policy[0] = '\0';
+    if (append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "mem_service_upgrade_rollback_policy_version=%u\n",
+                                MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "release_manifest_version=1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_version_current=%u\n",
+                                MEM_SERVICE_WIRE_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_header_len=%u\n",
+                                MEM_SERVICE_WIRE_HEADER_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_schema_version_current=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_payload_format=text-kv\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_schema_manifest_len=%u\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "wire_schema_manifest_checksum=0x%08x\n",
+                                MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "admin_output_schema_len=%u\n",
+                                MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "admin_output_schema_checksum=0x%08x\n",
+                                MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "api_abi_policy_len=%u\n",
+                                MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "api_abi_policy_checksum=0x%08x\n",
+                                MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "compat_matrix_len=%u\n",
+                                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "compat_matrix_checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "compat_baseline_len=%u\n",
+                                MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "compat_baseline_checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "compat_old_new_matrix_len=%u\n",
+                                MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "compat_old_new_matrix_checksum=0x%08x\n",
+                                MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "config_schema_version=%u\n",
+                                MEM_SERVICE_CONFIG_SCHEMA_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "deployment_smoke_version=%u\n",
+                                MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "store_magic=%s\n",
+                                MEM_SERVICE_CLI_STORE_MAGIC) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "catalog_layout=storage-root-v1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "payload_block_backend=sealed-local-block-v1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "same_version_restart_recovery=store-snapshot+journal\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "same_version_restore=export-snapshot-page+restore-snapshot-page\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "upgrade_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "rollback_policy=current-version-only\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "upgrade_admission=reject-unknown-release-generation\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "rollback_admission=reject-unknown-release-generation\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "old_server_runtime_binary=not-certified\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "new_client_old_server=not-certified-without-runtime-binary\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "migration_policy=not-yet\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "downgrade_policy=not-certified\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=wire-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=wire-schema-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=admin-output-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=api-abi-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=compat-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=compat-old-new-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=store-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=journal-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=durable-catalog-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=deployment-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=collector-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=release-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=host-artifact-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_gate=install-smoke\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_upgrade_rollback_policy(void)
+{
+    char policy[4096];
+    size_t used = 0;
+
+    if (render_upgrade_rollback_policy(policy, sizeof(policy), &used) != 0) {
+        fprintf(stderr, "mem_service upgrade-rollback-policy: render failed\n");
+        return 1;
+    }
+    (void)used;
+    fputs(policy, stdout);
+    return 0;
+}
+
+static int run_upgrade_rollback_fixture_check(void)
+{
+    char policy[4096];
+    size_t used = 0;
+    uint32_t checksum;
+    int failures = 0;
+
+    if (render_upgrade_rollback_policy(policy, sizeof(policy), &used) != 0) {
+        fprintf(stderr, "mem_service upgrade-rollback-fixtures: render failed\n");
+        return 1;
+    }
+    checksum = mem_service_wire_checksum(policy, used);
+    if (used != MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-fixtures: policy len actual=%zu "
+                "expected=%u\n",
+                used,
+                MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN);
+        failures -= 1;
+    }
+    if (checksum != MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-fixtures: policy checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
+        failures -= 1;
+    }
+    if (MEM_SERVICE_WIRE_VERSION != 1U ||
+        MEM_SERVICE_WIRE_SCHEMA_VERSION != 1U ||
+        MEM_SERVICE_CONFIG_SCHEMA_VERSION != 1U ||
+        MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-fixtures: release dependency missing\n");
+        failures -= 1;
+    }
+    if (strstr(policy, "upgrade_policy=current-version-only\n") == NULL ||
+        strstr(policy, "rollback_policy=current-version-only\n") == NULL ||
+        strstr(policy, "old_server_runtime_binary=not-certified\n") == NULL ||
+        strstr(policy, "new_client_old_server=not-certified-without-runtime-binary\n") ==
+            NULL ||
+        strstr(policy, "required_gate=admin-output-fixtures\n") == NULL ||
+        strstr(policy, "required_gate=install-smoke\n") == NULL) {
+        fprintf(stderr,
+                "mem_service upgrade-rollback-fixtures: required policy missing\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service upgrade-rollback-fixtures: status=ok policy_version=%u "
+           "policy_len=%u policy_checksum=0x%08x "
+           "upgrade_policy=current-version-only "
+           "rollback_policy=current-version-only required_gates=14\n",
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION,
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
     return 0;
 }
 
@@ -1806,6 +2115,15 @@ static int run_release_manifest(void)
            MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM);
     printf("admin_output_format=text-kv\n");
     printf("admin_metric_prefix=lingqu_mem_service_\n");
+    printf("upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt\n");
+    printf("upgrade_rollback_policy_len=%u\n",
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN);
+    printf("upgrade_rollback_policy_checksum=0x%08x\n",
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM);
+    printf("upgrade_policy=current-version-only\n");
+    printf("rollback_policy=current-version-only\n");
+    printf("old_server_runtime_binary=not-certified\n");
+    printf("upgrade_rollback_gate=upgrade-rollback-fixtures\n");
     printf("client_api_version=%u\n", MEM_SERVICE_CLIENT_API_VERSION);
     printf("client_abi_version=%u\n", MEM_SERVICE_CLIENT_ABI_VERSION);
     printf("client_record_abi_size=%u\n", MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
@@ -1957,6 +2275,12 @@ static int run_release_fixture_check(void)
                 "mem_service release-fixtures: admin output schema fixture missing\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM == 0U) {
+        fprintf(stderr,
+                "mem_service release-fixtures: upgrade/rollback policy fixture missing\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN == 0U ||
         MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM == 0U) {
         fprintf(stderr, "mem_service release-fixtures: compat matrix fixture missing\n");
@@ -2007,6 +2331,7 @@ static int run_release_fixture_check(void)
            "collector_smokes=1 "
            "api_abi_policies=1 "
            "admin_output_schemas=1 "
+           "upgrade_rollback_policies=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=1 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
@@ -2017,6 +2342,8 @@ static int run_release_fixture_check(void)
            "api_abi_policy_len=%u api_abi_policy_checksum=0x%08x "
            "admin_output_schema_len=%u "
            "admin_output_schema_checksum=0x%08x "
+           "upgrade_rollback_policy_len=%u "
+           "upgrade_rollback_policy_checksum=0x%08x "
            "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
            "compat_baseline_len=%u compat_baseline_checksum=0x%08x "
            "compat_old_new_matrix_len=%u "
@@ -2027,6 +2354,8 @@ static int run_release_fixture_check(void)
            MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM,
            MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN,
            MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM,
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN,
+           MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN,
@@ -4666,6 +4995,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "admin-output-fixtures") == 0) {
         return run_admin_output_fixture_check();
+    }
+    if (strcmp(argv[1], "upgrade-rollback-policy") == 0) {
+        return run_upgrade_rollback_policy();
+    }
+    if (strcmp(argv[1], "upgrade-rollback-fixtures") == 0) {
+        return run_upgrade_rollback_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();

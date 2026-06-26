@@ -90,6 +90,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         cli_makefile = (CLI_DIR / "Makefile").read_text()
         release_manifest = (CLI_DIR / "release-manifest.txt").read_text()
         admin_output_schema = (CLI_DIR / "admin-output-schema.txt").read_text()
+        upgrade_rollback_policy = (CLI_DIR / "upgrade-rollback-policy.txt").read_text()
         api_abi_policy = (CLI_DIR / "api-abi-policy.txt").read_text()
         config_schema = (CLI_DIR / "configs" / "mem_service.conf.schema").read_text()
         config_example = (CLI_DIR / "configs" / "mem_service.example.conf").read_text()
@@ -305,6 +306,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             run_app,
         )
         self.assertIn(
+            'run_binary "linqu_mem_service_upgrade_rollback_fixtures" '
+            "/bin/linqu_mem_service upgrade-rollback-fixtures",
+            run_app,
+        )
+        self.assertIn(
             'run_binary "linqu_mem_service_client_retry_fixtures" '
             "/bin/linqu_mem_service client-retry-fixtures",
             run_app,
@@ -353,6 +359,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "collector-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "admin-output-schema")', cli_source)
         self.assertIn('strcmp(argv[1], "admin-output-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "upgrade-rollback-policy")', cli_source)
+        self.assertIn('strcmp(argv[1], "upgrade-rollback-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-policy")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-fixtures")', cli_source)
@@ -375,6 +383,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_api_abi_fixture_check", cli_source)
         self.assertIn("render_admin_output_schema", cli_source)
         self.assertIn("run_admin_output_fixture_check", cli_source)
+        self.assertIn("render_upgrade_rollback_policy", cli_source)
+        self.assertIn("run_upgrade_rollback_fixture_check", cli_source)
         self.assertIn("run_compat_matrix", cli_source)
         self.assertIn("run_compat_fixture_check", cli_source)
         self.assertIn("run_compat_baseline_v1", cli_source)
@@ -408,6 +418,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U", cli_source)
         self.assertIn(
             "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
+            cli_source,
+        )
+        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1659U", cli_source)
+        self.assertIn(
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcf4c65bbU",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 875U", cli_source)
@@ -461,6 +476,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_RELEASE_MANIFEST := release-manifest.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt", cli_makefile)
+        self.assertIn(
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY := upgrade-rollback-policy.txt",
+            cli_makefile,
+        )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt", cli_makefile)
@@ -489,6 +508,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^admin_output_schema_checksum=0x7021f4cf$$", cli_makefile)
         self.assertIn("^admin_output_format=text-kv$$", cli_makefile)
         self.assertIn("^admin_metric_prefix=lingqu_mem_service_$$", cli_makefile)
+        self.assertIn(
+            "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
+            cli_makefile,
+        )
+        self.assertIn("^upgrade_rollback_policy_checksum=0xcf4c65bb$$", cli_makefile)
+        self.assertIn("^upgrade_policy=current-version-only$$", cli_makefile)
+        self.assertIn("^rollback_policy=current-version-only$$", cli_makefile)
+        self.assertIn("^old_server_runtime_binary=not-certified$$", cli_makefile)
         self.assertIn("^client_retry_policy=explicit-max-attempts-backoff$$", cli_makefile)
         self.assertIn("^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$", cli_makefile)
         self.assertIn("^api_abi_policy_checksum=0x743f84b8$$", cli_makefile)
@@ -528,6 +555,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("print-release-manifest", cli_makefile)
         self.assertIn("print-wire-schema", cli_makefile)
         self.assertIn("print-admin-output-schema", cli_makefile)
+        self.assertIn("print-upgrade-rollback-policy", cli_makefile)
         self.assertIn("print-api-abi-policy", cli_makefile)
         self.assertIn("print-compat-matrix", cli_makefile)
         self.assertIn("print-compat-baseline-v1", cli_makefile)
@@ -537,6 +565,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("admin_output_schema_checksum=0x7021f4cf", release_manifest)
         self.assertIn("admin_output_format=text-kv", release_manifest)
         self.assertIn("admin_metric_prefix=lingqu_mem_service_", release_manifest)
+        self.assertIn(
+            "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt",
+            release_manifest,
+        )
+        self.assertIn("upgrade_rollback_policy_checksum=0xcf4c65bb", release_manifest)
+        self.assertIn("upgrade_policy=current-version-only", release_manifest)
+        self.assertIn("rollback_policy=current-version-only", release_manifest)
+        self.assertIn("old_server_runtime_binary=not-certified", release_manifest)
         self.assertIn("api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt", release_manifest)
         self.assertIn("api_abi_policy_checksum=0x743f84b8", release_manifest)
         self.assertIn("client_api_version=1", release_manifest)
@@ -610,6 +646,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("api_abi_policies=1", cli_source)
         self.assertIn("admin_output_schemas=1", cli_source)
         self.assertIn("admin_output_schema_checksum=0x%08x", cli_source)
+        self.assertIn("upgrade_rollback_policies=1", cli_source)
+        self.assertIn("upgrade_rollback_policy_checksum=0x%08x", cli_source)
         self.assertIn("api_abi_policy_checksum=0x%08x", cli_source)
         self.assertIn("durable_catalogs=1", cli_source)
         self.assertIn("payload_block_backends=1", cli_source)
@@ -627,6 +665,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("audit_record_delimiter=audit_begin/audit_end", admin_output_schema)
         self.assertIn("snapshot_page_field=next_index type=u64", admin_output_schema)
         self.assertIn("fail_closed_status=checksum_mismatch", admin_output_schema)
+        self.assertIn("mem_service_upgrade_rollback_policy_version=1", upgrade_rollback_policy)
+        self.assertIn("upgrade_policy=current-version-only", upgrade_rollback_policy)
+        self.assertIn("rollback_policy=current-version-only", upgrade_rollback_policy)
+        self.assertIn("old_server_runtime_binary=not-certified", upgrade_rollback_policy)
+        self.assertIn(
+            "new_client_old_server=not-certified-without-runtime-binary",
+            upgrade_rollback_policy,
+        )
+        self.assertIn("required_gate=install-smoke", upgrade_rollback_policy)
         self.assertIn("mem_service_api_abi_policy_version=1", api_abi_policy)
         self.assertIn("client_api_version=1", api_abi_policy)
         self.assertIn("client_abi_version=1", api_abi_policy)
@@ -765,6 +812,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.c").exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.h").exists())
         self.assertTrue((CLI_DIR / "admin-output-schema.txt").exists())
+        self.assertTrue((CLI_DIR / "upgrade-rollback-policy.txt").exists())
         self.assertTrue((CLI_DIR / "api-abi-policy.txt").exists())
         self.assertTrue((CLI_DIR / "compat-baseline-v1.txt").exists())
         self.assertTrue((CLI_DIR / "compat-matrix.txt").exists())
