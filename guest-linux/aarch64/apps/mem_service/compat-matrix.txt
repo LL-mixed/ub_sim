@@ -30,6 +30,7 @@ audit_log_persistence=store-journal-and-full-snapshot
 journal_store_magic=mem_service_journal_v1
 journal_path_policy=store-path-dot-journal
 journal_scope=completed-idempotency-and-audit-events
+journal_truncation_policy=threshold-compaction
 snapshot_store_magic=mem_service_store_v1
 snapshot_full_restore_state=records-idempotency-audit
 snapshot_paged_restore_state=records-only-clears-idempotency-audit

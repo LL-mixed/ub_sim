@@ -14,8 +14,12 @@ int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
 int mem_service_run_wire_fixture_check(void);
 int mem_service_run_store_fixture_check(void);
 int mem_service_run_journal_fixture_check(void);
+int mem_service_run_journal_torn_recovery_fixture_check(void);
+int mem_service_run_journal_compaction_fixture_check(void);
 int mem_service_run_durable_catalog_fixture_check(void);
+int mem_service_run_chunked_block_fixture_check(void);
 int mem_service_run_upgrade_rollback_runtime_fixture_check(void);
 int mem_service_run_compat_runtime_fixture_check(void);
+int mem_service_run_compat_old_server_runtime_fixture_check(void);
 
 #endif

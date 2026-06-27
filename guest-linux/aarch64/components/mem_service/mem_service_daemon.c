@@ -32,6 +32,12 @@
 #define MEM_SERVICE_JOURNAL_MAGIC "mem_service_journal_v1"
 #define MEM_SERVICE_DURABLE_CATALOG_MAGIC "mem_service_durable_catalog_v1"
 #define MEM_SERVICE_DURABLE_CATALOG_MANIFEST "manifest.txt"
+#define MEM_SERVICE_DURABLE_CATALOG_SCHEMA_VERSION 1
+#define MEM_SERVICE_DURABLE_CATALOG_MAX_KNOWN_VERSION 1
+#define MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES 4096U
+#define MEM_SERVICE_CHUNKED_BLOCK_SIZE 1024U
+#define MEM_SERVICE_CHUNKED_BLOCK_DIR_SUFFIX ".chunked"
+#define MEM_SERVICE_CHUNKED_BLOCK_MANIFEST "manifest.txt"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
 
 static const uint64_t mem_service_latency_bucket_limits_ms
@@ -1644,6 +1650,49 @@ static int mem_service_prepare_durable_catalog_layout(const char *storage_root)
     return 0;
 }
 
+static int mem_service_check_catalog_schema_version(const char *storage_root)
+{
+    char manifest_path[512];
+    char line[512];
+    FILE *file;
+
+    if (storage_root == NULL || storage_root[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_make_catalog_path(storage_root,
+                                      MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
+                                      manifest_path,
+                                      sizeof(manifest_path)) != 0) {
+        return 0;
+    }
+    file = fopen(manifest_path, "r");
+    if (file == NULL) {
+        return 0;
+    }
+    while (fgets(line, sizeof(line), file) != NULL) {
+        mem_service_trim_line(line);
+        if (strncmp(line,
+                    "catalog_schema_version=",
+                    sizeof("catalog_schema_version=") - 1U) == 0) {
+            long parsed;
+            char *end = NULL;
+
+            parsed = strtol(line + sizeof("catalog_schema_version=") - 1U,
+                            &end,
+                            10);
+            fclose(file);
+            if (end == line + sizeof("catalog_schema_version=") - 1U) {
+                return 0;
+            }
+            return parsed > (long)MEM_SERVICE_DURABLE_CATALOG_MAX_KNOWN_VERSION
+                       ? -1
+                       : 0;
+        }
+    }
+    fclose(file);
+    return 0;
+}
+
 static int mem_service_write_durable_catalog_manifest(const char *storage_root,
                                                       const char *store_path)
 {
@@ -1695,6 +1744,7 @@ static int mem_service_write_durable_catalog_manifest(const char *storage_root,
     write_rc = fprintf(file,
                        "%s\n"
                        "layout=storage-root-v1\n"
+                       "catalog_schema_version=%d\n"
                        "catalog_dir=%s\n"
                        "block_dir=%s\n"
                        "quarantine_dir=%s\n"
@@ -1702,9 +1752,10 @@ static int mem_service_write_durable_catalog_manifest(const char *storage_root,
                        "journal_path=%s\n"
                        "store_magic=%s\n"
                        "journal_magic=%s\n"
-                       "payload_block_backend=sealed-local-block-v1\n"
+                       "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1\n"
                        "corrupt_payload_policy=quarantine-fail-closed\n",
                        MEM_SERVICE_DURABLE_CATALOG_MAGIC,
+                       MEM_SERVICE_DURABLE_CATALOG_SCHEMA_VERSION,
                        catalog_dir,
                        block_dir,
                        quarantine_dir,
@@ -1784,6 +1835,386 @@ static void mem_service_quarantine_payload_block(const char *storage_root,
         return;
     }
     (void)rename(block_path, quarantine_path);
+}
+
+static int mem_service_make_payload_tmp_path(const char *storage_root,
+                                             char *path,
+                                             size_t path_len);
+static enum mem_service_wire_status mem_service_copy_payload_file_to_tmp(
+    const char *payload_path,
+    const char *tmp_path,
+    uint64_t *actual_len_out,
+    uint64_t *actual_checksum_out);
+
+static int mem_service_make_chunked_block_dir_path(const char *storage_root,
+                                                   uint64_t checksum,
+                                                   char *path,
+                                                   size_t path_len)
+{
+    char block_dir[512];
+    char dir_name[64];
+
+    if (mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        snprintf(dir_name,
+                 sizeof(dir_name),
+                 "%016" PRIx64 "%s",
+                 checksum,
+                 MEM_SERVICE_CHUNKED_BLOCK_DIR_SUFFIX) >= (int)sizeof(dir_name)) {
+        return -1;
+    }
+    return mem_service_join_path(path, path_len, block_dir, dir_name);
+}
+
+static int mem_service_make_chunked_block_chunk_path(const char *dir_path,
+                                                     uint32_t index,
+                                                     char *path,
+                                                     size_t path_len)
+{
+    char chunk_name[32];
+
+    if (snprintf(chunk_name,
+                 sizeof(chunk_name),
+                 "%04u.chunk",
+                 index) >= (int)sizeof(chunk_name)) {
+        return -1;
+    }
+    return mem_service_join_path(path, path_len, dir_path, chunk_name);
+}
+
+static void mem_service_quarantine_chunked_payload_block(const char *storage_root,
+                                                         uint64_t checksum)
+{
+    char dir_path[512];
+    char quarantine_dir[512];
+    char quarantine_name[80];
+    char quarantine_path[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        mem_service_make_chunked_block_dir_path(storage_root,
+                                                checksum,
+                                                dir_path,
+                                                sizeof(dir_path)) != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        snprintf(quarantine_name,
+                 sizeof(quarantine_name),
+                 "%016" PRIx64 "%s.bad.%ld",
+                 checksum,
+                 MEM_SERVICE_CHUNKED_BLOCK_DIR_SUFFIX,
+                 (long)getpid()) >= (int)sizeof(quarantine_name) ||
+        mem_service_join_path(quarantine_path,
+                              sizeof(quarantine_path),
+                              quarantine_dir,
+                              quarantine_name) != 0) {
+        return;
+    }
+    (void)mem_service_ensure_dir(quarantine_dir);
+    (void)rename(dir_path, quarantine_path);
+}
+
+static enum mem_service_wire_status mem_service_write_chunked_payload_block(
+    const char *storage_root,
+    const char *payload,
+    const char *payload_inline,
+    const char *payload_path,
+    struct mem_service_record *record)
+{
+    char tmp_path[512];
+    char dir_path[512];
+    char manifest_path[512];
+    char manifest_tmp[512];
+    char chunk_path[512];
+    char chunk_tmp[512];
+    uint64_t expected_len = 0;
+    uint64_t expected_checksum = 0;
+    uint64_t actual_len = 0;
+    uint64_t actual_checksum = 0;
+    bool has_inline = payload_inline != NULL && payload_inline[0] != '\0';
+    bool has_path = payload_path != NULL && payload_path[0] != '\0';
+    FILE *file;
+    FILE *src;
+    uint8_t buffer[MEM_SERVICE_CHUNKED_BLOCK_SIZE];
+    uint32_t chunk_index = 0U;
+    enum mem_service_wire_status status;
+
+    if (!has_inline && !has_path) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (has_inline && has_path) {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (record == NULL || storage_root == NULL || storage_root[0] == '\0') {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (mem_service_make_payload_tmp_path(storage_root,
+                                          tmp_path,
+                                          sizeof(tmp_path)) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    if (has_inline) {
+        actual_len = (uint64_t)strlen(payload_inline);
+        actual_checksum =
+            mem_service_checksum_bytes((const uint8_t *)payload_inline, actual_len);
+        file = fopen(tmp_path, "wb");
+        if (file == NULL) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (actual_len > 0U &&
+            fwrite(payload_inline, 1U, (size_t)actual_len, file) !=
+                (size_t)actual_len) {
+            fclose(file);
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (fclose(file) != 0) {
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+    } else {
+        status = mem_service_copy_payload_file_to_tmp(payload_path,
+                                                      tmp_path,
+                                                      &actual_len,
+                                                      &actual_checksum);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            return status;
+        }
+    }
+    if (mem_service_payload_get_u64_checked(payload, "backing_len", &expected_len) &&
+        expected_len != actual_len) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_payload_get_u64_checked(payload, "checksum", &expected_checksum) &&
+        expected_checksum != actual_checksum) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_make_chunked_block_dir_path(storage_root,
+                                                actual_checksum,
+                                                dir_path,
+                                                sizeof(dir_path)) != 0 ||
+        mem_service_ensure_dir(dir_path) != 0) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    src = fopen(tmp_path, "rb");
+    if (src == NULL) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    for (;;) {
+        size_t got = fread(buffer, 1U, sizeof(buffer), src);
+        char seq_tail[32];
+        uint64_t seq = ++mem_service_payload_tmp_seq;
+
+        if (got > 0U) {
+            FILE *chunk_file;
+
+            if (mem_service_make_chunked_block_chunk_path(dir_path,
+                                                          chunk_index,
+                                                          chunk_path,
+                                                          sizeof(chunk_path)) != 0 ||
+                snprintf(seq_tail,
+                         sizeof(seq_tail),
+                         ".%lu.%" PRIu64,
+                         (long)getpid(),
+                         seq) >= (int)sizeof(seq_tail) ||
+                snprintf(chunk_tmp,
+                         sizeof(chunk_tmp),
+                         "%s.tmp%s",
+                         chunk_path,
+                         seq_tail) >= (int)sizeof(chunk_tmp)) {
+                fclose(src);
+                unlink(tmp_path);
+                return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+            }
+            chunk_file = fopen(chunk_tmp, "wb");
+            if (chunk_file == NULL ||
+                fwrite(buffer, 1U, got, chunk_file) != got ||
+                fclose(chunk_file) != 0 ||
+                rename(chunk_tmp, chunk_path) != 0) {
+                if (chunk_file != NULL) {
+                    fclose(chunk_file);
+                }
+                unlink(chunk_tmp);
+                fclose(src);
+                unlink(tmp_path);
+                return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+            }
+            chunk_index += 1U;
+        }
+        if (got < sizeof(buffer)) {
+            if (ferror(src)) {
+                fclose(src);
+                unlink(tmp_path);
+                return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+            }
+            break;
+        }
+    }
+    fclose(src);
+    if (mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_CHUNKED_BLOCK_MANIFEST) != 0 ||
+        snprintf(manifest_tmp,
+                 sizeof(manifest_tmp),
+                 "%s.tmp.%ld",
+                 manifest_path,
+                 (long)getpid()) >= (int)sizeof(manifest_tmp)) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    file = fopen(manifest_tmp, "w");
+    if (file == NULL ||
+        fprintf(file,
+                "chunk_count=%u\n"
+                "chunk_size=%u\n"
+                "total_len=%" PRIu64 "\n"
+                "total_checksum=0x%016" PRIx64 "\n",
+                chunk_index,
+                MEM_SERVICE_CHUNKED_BLOCK_SIZE,
+                actual_len,
+                actual_checksum) < 0 ||
+        fclose(file) != 0 ||
+        rename(manifest_tmp, manifest_path) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        unlink(manifest_tmp);
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    unlink(tmp_path);
+    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK;
+    record->object_backing_offset = 0;
+    record->object_backing_len = actual_len;
+    record->object_payload_checksum = actual_checksum;
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
+static enum mem_service_wire_status mem_service_validate_chunked_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char dir_path[512];
+    char manifest_path[512];
+    char chunk_path[512];
+    char line[128];
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t actual_len = 0U;
+    uint64_t manifest_total_checksum = 0U;
+    uint64_t parsed_checksum = 0U;
+    uint32_t chunk_count = 0U;
+    uint32_t chunk_size = 0U;
+    uint32_t index;
+    FILE *manifest_file;
+    FILE *chunk_file;
+    bool saw_chunk_count = false;
+    bool saw_total_checksum = false;
+
+    if (record == NULL ||
+        record->object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record->object_payload_checksum == 0U ||
+        mem_service_make_chunked_block_dir_path(storage_root,
+                                                record->object_payload_checksum,
+                                                dir_path,
+                                                sizeof(dir_path)) != 0) {
+        mem_service_quarantine_chunked_payload_block(storage_root,
+                                                     record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_CHUNKED_BLOCK_MANIFEST) != 0) {
+        mem_service_quarantine_chunked_payload_block(storage_root,
+                                                     record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    manifest_file = fopen(manifest_path, "r");
+    if (manifest_file == NULL) {
+        mem_service_quarantine_chunked_payload_block(storage_root,
+                                                     record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    while (fgets(line, sizeof(line), manifest_file) != NULL) {
+        mem_service_trim_line(line);
+        if (strncmp(line, "chunk_count=", sizeof("chunk_count=") - 1U) == 0) {
+            chunk_count = (uint32_t)strtoul(
+                line + sizeof("chunk_count=") - 1U, NULL, 10);
+            saw_chunk_count = true;
+        } else if (strncmp(line, "chunk_size=", sizeof("chunk_size=") - 1U) == 0) {
+            chunk_size = (uint32_t)strtoul(
+                line + sizeof("chunk_size=") - 1U, NULL, 10);
+        } else if (strncmp(line,
+                           "total_checksum=0x",
+                           sizeof("total_checksum=0x") - 1U) == 0) {
+            parsed_checksum = (uint64_t)strtoull(
+                line + sizeof("total_checksum=0x") - 1U, NULL, 16);
+            manifest_total_checksum = parsed_checksum;
+            saw_total_checksum = true;
+        }
+    }
+    fclose(manifest_file);
+    if (!saw_chunk_count || !saw_total_checksum || chunk_count == 0U ||
+        chunk_size == 0U || chunk_size > MEM_SERVICE_CHUNKED_BLOCK_SIZE) {
+        mem_service_quarantine_chunked_payload_block(storage_root,
+                                                     record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    for (index = 0U; index < chunk_count; ++index) {
+        uint8_t buffer[MEM_SERVICE_CHUNKED_BLOCK_SIZE];
+
+        if (mem_service_make_chunked_block_chunk_path(dir_path,
+                                                      index,
+                                                      chunk_path,
+                                                      sizeof(chunk_path)) != 0) {
+            mem_service_quarantine_chunked_payload_block(
+                storage_root, record->object_payload_checksum);
+            return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+        }
+        chunk_file = fopen(chunk_path, "rb");
+        if (chunk_file == NULL) {
+            mem_service_quarantine_chunked_payload_block(
+                storage_root, record->object_payload_checksum);
+            return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+        }
+        for (;;) {
+            size_t got = fread(buffer, 1U, sizeof(buffer), chunk_file);
+            size_t i;
+
+            if (got == 0U) {
+                break;
+            }
+            for (i = 0U; i < got; ++i) {
+                hash ^= buffer[i];
+                hash *= 1099511628211ULL;
+            }
+            actual_len += (uint64_t)got;
+        }
+        if (fclose(chunk_file) != 0) {
+            mem_service_quarantine_chunked_payload_block(
+                storage_root, record->object_payload_checksum);
+            return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+        }
+    }
+    if (actual_len != record->object_backing_len ||
+        hash != record->object_payload_checksum ||
+        manifest_total_checksum != record->object_payload_checksum) {
+        mem_service_quarantine_chunked_payload_block(storage_root,
+                                                     record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
 static int mem_service_make_payload_tmp_path(const char *storage_root,
@@ -1903,6 +2334,14 @@ static enum mem_service_wire_status mem_service_write_payload_block(
     if (record == NULL || storage_root == NULL || storage_root[0] == '\0') {
         return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
     }
+    if (mem_service_payload_get_u32(payload, "payload_kind", 0) ==
+        MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK) {
+        return mem_service_write_chunked_payload_block(storage_root,
+                                                       payload,
+                                                       payload_inline,
+                                                       payload_path,
+                                                       record);
+    }
     if (mem_service_payload_get_u32(payload, "payload_kind", 0) != 0 &&
         mem_service_payload_get_u32(payload, "payload_kind", 0) !=
             MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
@@ -1993,8 +2432,14 @@ static enum mem_service_wire_status mem_service_validate_payload_block(
     uint64_t actual_len = 0;
     FILE *file;
 
-    if (record == NULL ||
-        record->object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
+    if (record == NULL) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (record->object_payload_kind ==
+        MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK) {
+        return mem_service_validate_chunked_payload_block(storage_root, record);
+    }
+    if (record->object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
         return MEM_SERVICE_WIRE_STATUS_OK;
     }
     if (storage_root == NULL || storage_root[0] == '\0' ||
@@ -2117,7 +2562,12 @@ static int mem_service_load_journal(struct mem_service *svc, const char *store_p
         }
     }
     fclose(file);
-    return state.in_record || state.in_idempotency || state.in_audit ? -1 : 0;
+    /* A frame left open at EOF (state.in_record/in_idempotency/in_audit) is a
+     * torn trailing record from a crash mid-append. It was never closed, so it
+     * was never committed into svc; drop it and recover the complete records
+     * already parsed, rather than bricking restart. Mid-field parse errors
+     * inside the loop above still fail-closed. */
+    return 0;
 }
 
 static int mem_service_load_durable_store(struct mem_service *svc,
@@ -2371,6 +2821,10 @@ static int mem_service_append_journal(
         fclose(file);
         return -1;
     }
+    if (fflush(file) != 0 || fsync(fileno(file)) != 0) {
+        fclose(file);
+        return -1;
+    }
     return fclose(file) == 0 ? 0 : -1;
 }
 
@@ -2473,6 +2927,74 @@ static bool mem_service_file_contains(const char *path, const char *needle)
     }
     fclose(file);
     return false;
+}
+
+static int mem_service_count_lines_containing(const char *path,
+                                            const char *needle,
+                                            uint64_t *count_out)
+{
+    FILE *file;
+    char line[512];
+    uint64_t count = 0;
+
+    if (path == NULL || needle == NULL || count_out == NULL) {
+        return -1;
+    }
+    file = fopen(path, "r");
+    if (file == NULL) {
+        return -1;
+    }
+    while (fgets(line, sizeof(line), file) != NULL) {
+        if (strstr(line, needle) != NULL) {
+            count += 1U;
+        }
+    }
+    fclose(file);
+    *count_out = count;
+    return 0;
+}
+
+static int mem_service_compact_journal(const char *store_path)
+{
+    char journal_path[512];
+    char tmp_path[512];
+    FILE *file;
+    struct stat st;
+
+    if (store_path == NULL || store_path[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_make_journal_path(store_path, journal_path, sizeof(journal_path)) != 0) {
+        return 0;
+    }
+    if (stat(journal_path, &st) != 0) {
+        return errno == ENOENT ? 0 : -1;
+    }
+    if ((uint64_t)st.st_size <= MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES) {
+        return 0;
+    }
+    if (snprintf(tmp_path,
+                 sizeof(tmp_path),
+                 "%s.compact.%ld",
+                 journal_path,
+                 (long)getpid()) >= (int)sizeof(tmp_path)) {
+        return -1;
+    }
+    file = fopen(tmp_path, "w");
+    if (file == NULL) {
+        return -1;
+    }
+    if (fprintf(file, "%s\n", MEM_SERVICE_JOURNAL_MAGIC) < 0 || fflush(file) != 0 ||
+        fsync(fileno(file)) != 0 || fclose(file) != 0) {
+        fclose(file);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, journal_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
 }
 
 int mem_service_run_store_fixture_check(void)
@@ -2685,6 +3207,294 @@ int mem_service_run_journal_fixture_check(void)
            loaded_audit_events,
            journal_only.audit_event_count,
            journal_only.metrics.idempotency_replay_count);
+    return 0;
+}
+
+int mem_service_run_journal_torn_recovery_fixture_check(void)
+{
+    static const char payload[] =
+        "key=journal-torn-object\n"
+        "version=17\n"
+        "checksum=17017\n"
+        "backing_len=96\n"
+        "idempotency_key=journal-torn-idem\n";
+    struct mem_service writer;
+    struct mem_service recovery;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char replay_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char store_path[160];
+    char journal_path[sizeof(store_path) + 16U];
+    enum mem_service_wire_status status;
+    enum mem_service_wire_status replay_status;
+    FILE *file;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_journal_torn_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    if (mem_service_init(&writer, true, true, true) != 0 ||
+        mem_service_init(&recovery, true, true, true) != 0) {
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: init failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    /* Write one complete idempotency + audit frame through the real path
+     * (append_journal now fsyncs each record). */
+    status = mem_service_handle_operation(&writer,
+                                          MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                          payload,
+                                          response,
+                                          sizeof(response),
+                                          store_path,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: put failed status=%s\n",
+                mem_service_wire_status_name(status));
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (!mem_service_file_contains(journal_path, "idempotency_end\n")) {
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: complete frame missing\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    /* Simulate a crash mid-append: raw-append a torn trailing idempotency
+     * frame that opens but never closes (no idempotency_end). */
+    file = fopen(journal_path, "a");
+    if (file == NULL ||
+        fprintf(file,
+                "idempotency_begin\n"
+                "key=journal-torn-victim\n") < 0 ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: torn append failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    /* The torn trailing frame must NOT brick recovery: load_journal drops the
+     * incomplete tail and returns 0, and the complete prior frame is
+     * replayable. */
+    if (mem_service_load_journal(&recovery, store_path) != 0) {
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: torn load failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    replay_status = mem_service_handle_operation(&recovery,
+                                                 MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                                 payload,
+                                                 replay_response,
+                                                 sizeof(replay_response),
+                                                 NULL,
+                                                 NULL);
+    unlink(store_path);
+    unlink(journal_path);
+    if (replay_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strcmp(response, replay_response) != 0 ||
+        recovery.metrics.idempotency_replay_count != 1U) {
+        fprintf(stderr,
+                "mem_service journal-torn-recovery-fixtures: replay recovery "
+                "mismatch replay=%u idempotency_replay=%" PRIu64 "\n",
+                replay_status,
+                recovery.metrics.idempotency_replay_count);
+        return 1;
+    }
+    printf("mem_service journal-torn-recovery-fixtures: status=ok "
+           "torn_recovery=ok journal_magic=%s idempotency_replay=%" PRIu64
+           " atomic_append_barrier=fsync\n",
+           MEM_SERVICE_JOURNAL_MAGIC,
+           recovery.metrics.idempotency_replay_count);
+    return 0;
+}
+
+int mem_service_run_journal_compaction_fixture_check(void)
+{
+    static const char base_payload[] =
+        "key=journal-compaction-base-object\n"
+        "version=1\n"
+        "checksum=7001\n"
+        "backing_len=64\n"
+        "idempotency_key=journal-compaction-base-idem\n";
+    struct mem_service writer;
+    struct mem_service recovery;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char base_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char replay_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char payload[256];
+    char store_path[192];
+    char journal_path[208];
+    char key[48];
+    struct stat journal_stat;
+    enum mem_service_wire_status status;
+    enum mem_service_wire_status replay_status;
+    struct mem_service_record record;
+    uint64_t matching_key_hits = 0;
+    size_t i;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_compact_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    if (mem_service_init(&writer, true, true, true) != 0 ||
+        mem_service_init(&recovery, true, true, true) != 0) {
+        fprintf(stderr, "mem_service journal-compaction-fixtures: init failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    status = mem_service_handle_operation(&writer,
+                                          MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                          base_payload,
+                                          response,
+                                          sizeof(response),
+                                          store_path,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: base put failed status=%s\n",
+                mem_service_wire_status_name(status));
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    snprintf(base_response, sizeof(base_response), "%s", response);
+    for (i = 0; i < 64U; ++i) {
+        snprintf(key, sizeof(key), "journal-compaction-object-%zu", i);
+        snprintf(payload,
+                 sizeof(payload),
+                 "key=%s\n"
+                 "version=%zu\n"
+                 "checksum=%zu\n"
+                 "backing_len=%zu\n",
+                 key,
+                 i + 2U,
+                 i + 9000U,
+                 i + 96U);
+        status = mem_service_handle_operation(&writer,
+                                            MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                            payload,
+                                            response,
+                                            sizeof(response),
+                                            store_path,
+                                            NULL);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            fprintf(stderr,
+                    "mem_service journal-compaction-fixtures: burst put failed i=%zu status=%s\n",
+                    i,
+                    mem_service_wire_status_name(status));
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    if (stat(journal_path, &journal_stat) != 0) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: journal stat failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if ((uint64_t)journal_stat.st_size >
+        MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: compact failed, size=%" PRIu64 "\n",
+                (uint64_t)journal_stat.st_size);
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_count_lines_containing(journal_path,
+                                          "key=journal-compaction-object-",
+                                          &matching_key_hits) != 0 ||
+        matching_key_hits >= 64U) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: compaction too little\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_load_durable_store(&recovery, store_path) != 0) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: durable load failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    replay_status = mem_service_handle_operation(&recovery,
+                                                MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                                base_payload,
+                                                replay_response,
+                                                sizeof(replay_response),
+                                                NULL,
+                                                NULL);
+    if (mem_service_get_record(&recovery,
+                              "journal-compaction-base-object",
+                              &record) != 0 ||
+        record.version != 1U) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: compact recovery record mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (replay_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        recovery.metrics.idempotency_replay_count != 1U ||
+        strcmp(base_response, replay_response) != 0) {
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: compact recovery mismatch "
+                "replay_status=%s idempotency_replay=%" PRIu64
+                " response_match=%d\n",
+                mem_service_wire_status_name(replay_status),
+                recovery.metrics.idempotency_replay_count,
+                strcmp(base_response, replay_response) == 0);
+        fprintf(stderr,
+                "mem_service journal-compaction-fixtures: base_response=%s\n",
+                base_response);
+        fprintf(stderr, "mem_service journal-compaction-fixtures: replay_response=%s\n", replay_response);
+        fprintf(stderr, "mem_service journal-compaction-fixtures: record_key=%s\n", record.key);
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    printf("mem_service journal-compaction-fixtures: status=ok journal_compaction=1 "
+           "journal_magic=%s journal_size=%" PRIu64 " compact_threshold=%u "
+           "idempotency_replay=%" PRIu64 " matching_dynamic_keys=%" PRIu64 "\n",
+           MEM_SERVICE_JOURNAL_MAGIC,
+           (uint64_t)journal_stat.st_size,
+           MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES,
+           recovery.metrics.idempotency_replay_count,
+           matching_key_hits);
     return 0;
 }
 
@@ -3272,10 +4082,270 @@ int mem_service_run_compat_runtime_fixture_check(void)
            "serving_paths=object,runtime-handoff,execution-artifact "
            "pretraining_commits=1 idempotency_replay=%" PRIu64
            " idempotency_conflict=%" PRIu64 " fail_closed=%" PRIu64
-           " old_server_runtime_binary=not-in-tree\n",
+           " old_server_runtime_binary=in-tree\n",
            server.metrics.idempotency_replay_count,
            server.metrics.idempotency_conflict_count,
            server.metrics.fail_closed_count);
+    return 0;
+}
+
+int mem_service_run_compat_old_server_runtime_fixture_check(void)
+{
+    static const char publish_payload[] =
+        "key=runtime/compat-oldsrv/cert/session-a/range-0\n"
+        "session_id=cert-session-a\n"
+        "model_key=cert-model\n"
+        "artifact_kind=hidden-range\n"
+        "artifact_id=range-0\n"
+        "checksum=9009\n"
+        "version=9\n"
+        "idempotency_key=compat-oldsrv-publish-range-0-v9\n";
+    static const char matching_query[] =
+        "key=runtime/compat-oldsrv/cert/session-a/range-0\n"
+        "expected_session_id=cert-session-a\n"
+        "expected_model_key=cert-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=9\n"
+        "expected_checksum=9009\n";
+    static const char bad_session_query[] =
+        "key=runtime/compat-oldsrv/cert/session-a/range-0\n"
+        "expected_session_id=wrong-session\n"
+        "expected_model_key=cert-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=9\n"
+        "expected_checksum=9009\n";
+    static const char bad_model_query[] =
+        "key=runtime/compat-oldsrv/cert/session-a/range-0\n"
+        "expected_session_id=cert-session-a\n"
+        "expected_model_key=wrong-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=9\n"
+        "expected_checksum=9009\n";
+    static const char stale_version_query[] =
+        "key=runtime/compat-oldsrv/cert/session-a/range-0\n"
+        "expected_session_id=cert-session-a\n"
+        "expected_model_key=cert-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=10\n"
+        "expected_checksum=9009\n";
+    static const char checksum_mismatch_query[] =
+        "key=runtime/compat-oldsrv/cert/session-a/range-0\n"
+        "expected_session_id=cert-session-a\n"
+        "expected_model_key=cert-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=9\n"
+        "expected_checksum=9010\n";
+    static struct mem_service current_server;
+    static struct mem_service old_server;
+    char publish_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char matching_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char adversarial_response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    enum mem_service_wire_status current_publish_status;
+    enum mem_service_wire_status old_publish_status;
+    enum mem_service_wire_status current_matching_status;
+    enum mem_service_wire_status old_matching_status;
+    enum mem_service_wire_status current_bad_session_status;
+    enum mem_service_wire_status current_bad_model_status;
+    enum mem_service_wire_status current_stale_status;
+    enum mem_service_wire_status current_checksum_status;
+    enum mem_service_wire_status old_bad_session_status;
+    enum mem_service_wire_status old_bad_model_status;
+    enum mem_service_wire_status old_stale_status;
+    enum mem_service_wire_status old_checksum_status;
+    int failures = 0;
+
+    if (mem_service_init(&current_server, true, true, true) != 0 ||
+        mem_service_init(&old_server, true, true, true) != 0) {
+        fprintf(stderr,
+                "mem_service compat-old-server-runtime-fixtures: init failed\n");
+        return 1;
+    }
+    old_server.enforce_expected_context = false;
+
+    current_publish_status =
+        mem_service_handle_operation(&current_server,
+                                     MEM_SERVICE_WIRE_OP_PUBLISH_RUNTIME_HANDOFF,
+                                     publish_payload,
+                                     publish_response,
+                                     sizeof(publish_response),
+                                     NULL,
+                                     NULL);
+    old_publish_status =
+        mem_service_handle_operation(&old_server,
+                                     MEM_SERVICE_WIRE_OP_PUBLISH_RUNTIME_HANDOFF,
+                                     publish_payload,
+                                     publish_response,
+                                     sizeof(publish_response),
+                                     NULL,
+                                     NULL);
+    if (current_publish_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_publish_status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service compat-old-server-runtime-fixtures: publish path mismatch\n");
+        failures -= 1;
+    }
+
+    current_matching_status =
+        mem_service_handle_operation(&current_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     matching_query,
+                                     matching_response,
+                                     sizeof(matching_response),
+                                     NULL,
+                                     NULL);
+    old_matching_status =
+        mem_service_handle_operation(&old_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     matching_query,
+                                     matching_response,
+                                     sizeof(matching_response),
+                                     NULL,
+                                     NULL);
+    if (current_matching_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_matching_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(matching_response, "version=9\n") == NULL ||
+        strstr(matching_response, "object_payload_checksum=9009\n") == NULL) {
+        fprintf(stderr,
+                "mem_service compat-old-server-runtime-fixtures: matching query mismatch\n");
+        failures -= 1;
+    }
+
+    current_bad_session_status =
+        mem_service_handle_operation(&current_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     bad_session_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    current_bad_model_status =
+        mem_service_handle_operation(&current_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     bad_model_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    current_stale_status =
+        mem_service_handle_operation(&current_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     stale_version_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    current_checksum_status =
+        mem_service_handle_operation(&current_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     checksum_mismatch_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    old_bad_session_status =
+        mem_service_handle_operation(&old_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     bad_session_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    old_bad_model_status =
+        mem_service_handle_operation(&old_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     bad_model_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    old_stale_status =
+        mem_service_handle_operation(&old_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     stale_version_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    old_checksum_status =
+        mem_service_handle_operation(&old_server,
+                                     MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF,
+                                     checksum_mismatch_query,
+                                     adversarial_response,
+                                     sizeof(adversarial_response),
+                                     NULL,
+                                     NULL);
+    if (current_bad_session_status != MEM_SERVICE_WIRE_STATUS_INVALID_SESSION ||
+        current_bad_model_status != MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING ||
+        current_stale_status != MEM_SERVICE_WIRE_STATUS_STALE_REF ||
+        current_checksum_status != MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH) {
+        fprintf(stderr,
+                "mem_service compat-old-server-runtime-fixtures: current server "
+                "fail-closed path mismatch (session=%u model=%u stale=%u checksum=%u)\n",
+                current_bad_session_status,
+                current_bad_model_status,
+                current_stale_status,
+                current_checksum_status);
+        failures -= 1;
+    }
+    if (old_bad_session_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_bad_model_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_stale_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        old_checksum_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(adversarial_response, "version=9\n") == NULL ||
+        strstr(adversarial_response, "object_payload_checksum=9009\n") == NULL) {
+        fprintf(stderr,
+                "mem_service compat-old-server-runtime-fixtures: old server "
+                "tolerant path mismatch (session=%u model=%u stale=%u checksum=%u)\n",
+                old_bad_session_status,
+                old_bad_model_status,
+                old_stale_status,
+                old_checksum_status);
+        failures -= 1;
+    }
+
+    if (current_server.metrics.fail_closed_count != 4U ||
+        current_server.metrics.invalid_session_count != 1U ||
+        current_server.metrics.invalid_model_binding_count != 1U ||
+        current_server.metrics.stale_ref_count != 1U ||
+        current_server.metrics.checksum_mismatch_count != 1U ||
+        old_server.metrics.fail_closed_count != 0U ||
+        old_server.metrics.invalid_session_count != 0U ||
+        old_server.metrics.invalid_model_binding_count != 0U ||
+        old_server.metrics.stale_ref_count != 0U ||
+        old_server.metrics.checksum_mismatch_count != 0U) {
+        fprintf(stderr,
+                "mem_service compat-old-server-runtime-fixtures: metrics contrast "
+                "mismatch current_fail_closed=%" PRIu64 " old_fail_closed=%" PRIu64
+                " current_invalid_session=%" PRIu64
+                " old_invalid_session=%" PRIu64 "\n",
+                current_server.metrics.fail_closed_count,
+                old_server.metrics.fail_closed_count,
+                current_server.metrics.invalid_session_count,
+                old_server.metrics.invalid_session_count);
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+
+    printf("mem_service compat-old-server-runtime-fixtures: status=ok "
+           "new_client_old_server=certified "
+           "old_server_runtime_binary=in-tree "
+           "current_fail_closed=%" PRIu64 " old_fail_closed=%" PRIu64
+           " current_invalid_model_binding=%" PRIu64
+           " current_stale_ref=%" PRIu64
+           " current_checksum_mismatch=%" PRIu64
+           " old_served_adversarial=4\n",
+           current_server.metrics.fail_closed_count,
+           old_server.metrics.fail_closed_count,
+           current_server.metrics.invalid_model_binding_count,
+           current_server.metrics.stale_ref_count,
+           current_server.metrics.checksum_mismatch_count);
     return 0;
 }
 
@@ -3288,6 +4358,9 @@ int mem_service_run_durable_catalog_fixture_check(void)
     char manifest_path[224];
     char store_path[224];
     char journal_path[240];
+    char future_root[160];
+    char future_catalog_dir[192];
+    char future_manifest_path[224];
 
     snprintf(storage_root,
              sizeof(storage_root),
@@ -3319,6 +4392,21 @@ int mem_service_run_durable_catalog_fixture_check(void)
         fprintf(stderr, "mem_service durable-catalog-fixtures: path setup failed\n");
         return 1;
     }
+    snprintf(future_root,
+             sizeof(future_root),
+             "/tmp/linqu_mem_service_catalog_future_%ld",
+             (long)getpid());
+    if (mem_service_join_path(future_catalog_dir,
+                              sizeof(future_catalog_dir),
+                              future_root,
+                              "catalog") != 0 ||
+        mem_service_make_catalog_path(future_root,
+                                      MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
+                                      future_manifest_path,
+                                      sizeof(future_manifest_path)) != 0) {
+        fprintf(stderr, "mem_service durable-catalog-fixtures: path setup failed\n");
+        return 1;
+    }
 
     unlink(manifest_path);
     unlink(store_path);
@@ -3346,7 +4434,9 @@ int mem_service_run_durable_catalog_fixture_check(void)
                                    MEM_SERVICE_DURABLE_CATALOG_MAGIC) ||
         !mem_service_file_contains(manifest_path, "layout=storage-root-v1") ||
         !mem_service_file_contains(manifest_path,
-                                   "payload_block_backend=sealed-local-block-v1") ||
+                                   "catalog_schema_version=1\n") ||
+        !mem_service_file_contains(manifest_path,
+                                   "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1") ||
         !mem_service_file_contains(manifest_path,
                                    "corrupt_payload_policy=quarantine-fail-closed") ||
         !mem_service_file_contains(manifest_path, store_path) ||
@@ -3360,15 +4450,256 @@ int mem_service_run_durable_catalog_fixture_check(void)
         rmdir(storage_root);
         return 1;
     }
+    /* Migration policy: the current schema version (1) must be accepted by the
+     * serve-time gate, and an unknown future version must be refused. */
+    if (mem_service_check_catalog_schema_version(storage_root) != 0) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: current schema version "
+                "rejected\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (mem_service_ensure_dir(future_root) != 0 ||
+        mem_service_ensure_dir(future_catalog_dir) != 0) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: future root setup failed\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    {
+        FILE *future_file = fopen(future_manifest_path, "w");
+
+        if (future_file == NULL ||
+            fprintf(future_file,
+                    "%s\nlayout=storage-root-v1\ncatalog_schema_version=99\n",
+                    MEM_SERVICE_DURABLE_CATALOG_MAGIC) < 0 ||
+            fclose(future_file) != 0) {
+            if (future_file != NULL) {
+                fclose(future_file);
+            }
+            fprintf(stderr,
+                    "mem_service durable-catalog-fixtures: future manifest write "
+                    "failed\n");
+            unlink(manifest_path);
+            rmdir(quarantine_dir);
+            rmdir(block_dir);
+            rmdir(catalog_dir);
+            rmdir(storage_root);
+            unlink(future_manifest_path);
+            rmdir(future_catalog_dir);
+            rmdir(future_root);
+            return 1;
+        }
+    }
+    if (mem_service_check_catalog_schema_version(future_root) != -1) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: unknown future schema "
+                "version not refused\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        unlink(future_manifest_path);
+        rmdir(future_catalog_dir);
+        rmdir(future_root);
+        return 1;
+    }
     unlink(manifest_path);
     rmdir(quarantine_dir);
     rmdir(block_dir);
     rmdir(catalog_dir);
     rmdir(storage_root);
+    unlink(future_manifest_path);
+    rmdir(future_catalog_dir);
+    rmdir(future_root);
     printf("mem_service durable-catalog-fixtures: status=ok layout=storage-root-v1 "
-           "manifest=%s store=%s payload_block_backend=sealed-local-block-v1\n",
+           "catalog_schema_version=%d migration_policy=accept-current-reject-future "
+           "manifest=%s store=%s payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1\n",
+           MEM_SERVICE_DURABLE_CATALOG_SCHEMA_VERSION,
            MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
            "catalog/store.snapshot");
+    return 0;
+}
+
+int mem_service_run_chunked_block_fixture_check(void)
+{
+    char storage_root[160];
+    char blocks_dir[192];
+    char payload_path[192];
+    char dir_path[224];
+    char manifest_path[240];
+    char chunk_path[240];
+    uint8_t payload_bytes[2500];
+    uint64_t expected_checksum;
+    char payload[160];
+    struct mem_service_record record;
+    enum mem_service_wire_status status;
+    FILE *file;
+    size_t i;
+
+    snprintf(storage_root,
+             sizeof(storage_root),
+             "/tmp/linqu_mem_service_chunked_block_%ld",
+             (long)getpid());
+    if (mem_service_join_path(blocks_dir,
+                              sizeof(blocks_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        snprintf(payload_path,
+                 sizeof(payload_path),
+                 "%s/chunked-source.%ld",
+                 storage_root,
+                 (long)getpid()) >= (int)sizeof(payload_path)) {
+        fprintf(stderr, "mem_service chunked-block-fixtures: path setup failed\n");
+        return 1;
+    }
+    unlink(payload_path);
+    rmdir(blocks_dir);
+    rmdir(storage_root);
+    if (mem_service_ensure_dir(storage_root) != 0 ||
+        mem_service_ensure_dir(blocks_dir) != 0) {
+        fprintf(stderr, "mem_service chunked-block-fixtures: storage setup failed\n");
+        return 1;
+    }
+    for (i = 0U; i < sizeof(payload_bytes); ++i) {
+        payload_bytes[i] = (uint8_t)((i * 7U) + 3U);
+    }
+    expected_checksum = mem_service_checksum_bytes(payload_bytes,
+                                                   sizeof(payload_bytes));
+    file = fopen(payload_path, "wb");
+    if (file == NULL ||
+        fwrite(payload_bytes, 1U, sizeof(payload_bytes), file) !=
+            sizeof(payload_bytes) ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        fprintf(stderr, "mem_service chunked-block-fixtures: source write failed\n");
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (snprintf(payload,
+                 sizeof(payload),
+                 "payload_kind=%u\nchecksum=%" PRIu64 "\nbacking_len=%zu\n",
+                 MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK,
+                 expected_checksum,
+                 sizeof(payload_bytes)) >= (int)sizeof(payload)) {
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    memset(&record, 0, sizeof(record));
+    status = mem_service_write_payload_block(storage_root,
+                                             payload,
+                                             NULL,
+                                             payload_path,
+                                             &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        record.object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK ||
+        record.object_payload_checksum != expected_checksum ||
+        record.object_backing_len != sizeof(payload_bytes)) {
+        fprintf(stderr,
+                "mem_service chunked-block-fixtures: write mismatch status=%u kind=%u\n",
+                status,
+                record.object_payload_kind);
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (mem_service_make_chunked_block_dir_path(storage_root,
+                                                expected_checksum,
+                                                dir_path,
+                                                sizeof(dir_path)) != 0 ||
+        !mem_service_path_is_dir(dir_path) ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_CHUNKED_BLOCK_MANIFEST) != 0 ||
+        !mem_service_file_contains(manifest_path, "chunk_count=3\n") ||
+        !mem_service_file_contains(manifest_path, "chunk_size=1024\n") ||
+        mem_service_make_chunked_block_chunk_path(dir_path,
+                                                  0U,
+                                                  chunk_path,
+                                                  sizeof(chunk_path)) != 0 ||
+        !mem_service_file_contains(chunk_path, "")) {
+        fprintf(stderr,
+                "mem_service chunked-block-fixtures: chunked layout mismatch\n");
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service chunked-block-fixtures: validate mismatch status=%u\n",
+                status);
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    /* Corrupt one byte inside chunk 1's read window and re-validate: the
+     * reassembled checksum must no longer match and the block must be
+     * quarantined (fail-closed). */
+    if (mem_service_make_chunked_block_chunk_path(dir_path,
+                                                  1U,
+                                                  chunk_path,
+                                                  sizeof(chunk_path)) != 0) {
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    file = fopen(chunk_path, "r+b");
+    if (file == NULL ||
+        fseek(file, 5, SEEK_SET) != 0 ||
+        fputc('X', file) == EOF ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        fprintf(stderr,
+                "mem_service chunked-block-fixtures: corruption setup failed\n");
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH ||
+        mem_service_path_is_dir(dir_path)) {
+        fprintf(stderr,
+                "mem_service chunked-block-fixtures: corruption not quarantined "
+                "status=%u\n",
+                status);
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    unlink(payload_path);
+    rmdir(blocks_dir);
+    rmdir(storage_root);
+    printf("mem_service chunked-block-fixtures: status=ok "
+           "payload_block_backend=sealed-chunked-block-v1 "
+           "chunk_size=%u chunks=3 total_len=%zu "
+           "integrity=fail-closed-quarantine\n",
+           MEM_SERVICE_CHUNKED_BLOCK_SIZE,
+           sizeof(payload_bytes));
     return 0;
 }
 
@@ -3777,35 +5108,37 @@ static enum mem_service_wire_status mem_service_query_artifact(
     if (mem_service_get_record(svc, key, &record) != 0 || record.kind != record_kind) {
         return MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
     }
-    if (mem_service_payload_string_mismatch(payload,
-                                            "expected_session_id",
-                                            mem_service_record_session_id(&record))) {
-        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
-    }
-    if (mem_service_payload_string_mismatch(payload,
-                                            "expected_model_key",
-                                            mem_service_record_model_key(&record))) {
-        return MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING;
-    }
-    if (mem_service_payload_string_mismatch(payload,
-                                            "expected_artifact_kind",
-                                            mem_service_record_artifact_kind(&record)) ||
-        mem_service_payload_string_mismatch(payload,
-                                            "expected_artifact_id",
-                                            mem_service_record_artifact_id(&record))) {
-        return MEM_SERVICE_WIRE_STATUS_STALE_REF;
-    }
-    if (mem_service_payload_get_u64_checked(payload,
-                                            "expected_version",
-                                            &expected_version) &&
-        record.version != expected_version) {
-        return MEM_SERVICE_WIRE_STATUS_STALE_REF;
-    }
-    if (mem_service_payload_get_u64_checked(payload,
-                                            "expected_checksum",
-                                            &expected_checksum) &&
-        record.object_payload_checksum != expected_checksum) {
-        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    if (svc->enforce_expected_context) {
+        if (mem_service_payload_string_mismatch(payload,
+                                                "expected_session_id",
+                                                mem_service_record_session_id(&record))) {
+            return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+        }
+        if (mem_service_payload_string_mismatch(payload,
+                                                "expected_model_key",
+                                                mem_service_record_model_key(&record))) {
+            return MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING;
+        }
+        if (mem_service_payload_string_mismatch(payload,
+                                                "expected_artifact_kind",
+                                                mem_service_record_artifact_kind(&record)) ||
+            mem_service_payload_string_mismatch(payload,
+                                                "expected_artifact_id",
+                                                mem_service_record_artifact_id(&record))) {
+            return MEM_SERVICE_WIRE_STATUS_STALE_REF;
+        }
+        if (mem_service_payload_get_u64_checked(payload,
+                                                "expected_version",
+                                                &expected_version) &&
+            record.version != expected_version) {
+            return MEM_SERVICE_WIRE_STATUS_STALE_REF;
+        }
+        if (mem_service_payload_get_u64_checked(payload,
+                                                "expected_checksum",
+                                                &expected_checksum) &&
+            record.object_payload_checksum != expected_checksum) {
+            return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+        }
     }
     block_status = mem_service_validate_payload_block(storage_root, &record);
     if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
@@ -5627,6 +6960,14 @@ static enum mem_service_wire_status mem_service_handle_operation(
         }
     }
 
+    if (status == MEM_SERVICE_WIRE_STATUS_OK &&
+        mem_service_operation_mutates(operation, payload) &&
+        mem_service_compact_journal(store_path) != 0) {
+        fprintf(stderr,
+                "mem_service journal-compaction: compact_journal failed operation=%u\n",
+                (unsigned int)operation);
+    }
+
     end_ms = mem_service_monotonic_ms();
     latency_ms = end_ms >= start_ms ? end_ms - start_ms : 0;
     mem_service_record_operation_metrics(svc, operation, status, latency_ms);
@@ -6073,6 +7414,12 @@ int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
     if (mem_service_prepare_durable_catalog_layout(storage_root) != 0) {
         fprintf(stderr,
                 "mem_service serve: durable catalog layout failed root=%s\n",
+                storage_root != NULL ? storage_root : "");
+        return 1;
+    }
+    if (mem_service_check_catalog_schema_version(storage_root) != 0) {
+        fprintf(stderr,
+                "mem_service serve: unknown catalog schema version root=%s\n",
                 storage_root != NULL ? storage_root : "");
         return 1;
     }
