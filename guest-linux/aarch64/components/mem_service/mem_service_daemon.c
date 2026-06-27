@@ -4688,6 +4688,308 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
     return 0;
 }
 
+/* Typed-binary payload data plane (additive to text-kv).
+ *
+ * Wire format (all multi-byte integers big-endian):
+ *   magic "MSTP" (4 bytes) | version (u8) | field_count (u8) | fields...
+ * Each field: type (u8) | name_len (u8) | name (name_len bytes) |
+ *              value_len (u16) | value (value_len bytes)
+ *   STRING (1): value is the raw bytes; U32 (2): value is 4 BE bytes;
+ *   U64 (3): value is 8 BE bytes.
+ *
+ * Text-kv remains the default wire payload format; typed-binary is an opt-in
+ * alternative representation. Decode rejects any version newer than
+ * MAX_KNOWN_VERSION (forward-compat fail-closed). */
+#define MEM_SERVICE_TYPED_PAYLOAD_MAGIC0 ((uint8_t)'M')
+#define MEM_SERVICE_TYPED_PAYLOAD_MAGIC1 ((uint8_t)'S')
+#define MEM_SERVICE_TYPED_PAYLOAD_MAGIC2 ((uint8_t)'T')
+#define MEM_SERVICE_TYPED_PAYLOAD_MAGIC3 ((uint8_t)'P')
+#define MEM_SERVICE_TYPED_PAYLOAD_VERSION 1U
+#define MEM_SERVICE_TYPED_PAYLOAD_MAX_KNOWN_VERSION 1U
+#define MEM_SERVICE_TYPED_PAYLOAD_MAX_FIELDS 32U
+#define MEM_SERVICE_TYPED_PAYLOAD_MAX_NAME 32U
+#define MEM_SERVICE_TYPED_PAYLOAD_MAX_VALUE 1024U
+
+struct mem_service_typed_payload_field {
+    uint8_t type;
+    char name[MEM_SERVICE_TYPED_PAYLOAD_MAX_NAME];
+    char string_value[MEM_SERVICE_TYPED_PAYLOAD_MAX_VALUE];
+    uint64_t int_value;
+};
+
+static void mem_service_typed_put_u16_be(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static uint16_t mem_service_typed_get_u16_be(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+static int mem_service_typed_payload_encode(
+    const struct mem_service_typed_payload_field *fields,
+    size_t field_count,
+    uint8_t *buf,
+    size_t buf_len)
+{
+    size_t offset = 0U;
+    size_t i;
+
+    if (fields == NULL || buf == NULL || field_count > 255U) {
+        return -1;
+    }
+    if (buf_len < 6U) {
+        return -1;
+    }
+    buf[0] = MEM_SERVICE_TYPED_PAYLOAD_MAGIC0;
+    buf[1] = MEM_SERVICE_TYPED_PAYLOAD_MAGIC1;
+    buf[2] = MEM_SERVICE_TYPED_PAYLOAD_MAGIC2;
+    buf[3] = MEM_SERVICE_TYPED_PAYLOAD_MAGIC3;
+    buf[4] = (uint8_t)MEM_SERVICE_TYPED_PAYLOAD_VERSION;
+    buf[5] = (uint8_t)field_count;
+    offset = 6U;
+    for (i = 0U; i < field_count; ++i) {
+        const struct mem_service_typed_payload_field *f = &fields[i];
+        size_t name_len = strlen(f->name);
+        size_t value_len = 0U;
+        const uint8_t *value_bytes = NULL;
+        uint8_t u32_be[4];
+        uint8_t u64_be[8];
+        size_t need;
+
+        if (name_len == 0U || name_len > 255U) {
+            return -1;
+        }
+        if (f->type == MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING) {
+            value_len = strlen(f->string_value);
+            value_bytes = (const uint8_t *)f->string_value;
+        } else if (f->type == MEM_SERVICE_WIRE_PAYLOAD_FIELD_U32) {
+            uint32_t v = (uint32_t)f->int_value;
+            u32_be[0] = (uint8_t)(v >> 24);
+            u32_be[1] = (uint8_t)(v >> 16);
+            u32_be[2] = (uint8_t)(v >> 8);
+            u32_be[3] = (uint8_t)v;
+            value_len = 4U;
+            value_bytes = u32_be;
+        } else if (f->type == MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64) {
+            uint64_t v = f->int_value;
+            int b;
+            for (b = 0; b < 8; ++b) {
+                u64_be[b] = (uint8_t)(v >> (56 - 8 * b));
+            }
+            value_len = 8U;
+            value_bytes = u64_be;
+        } else {
+            return -1;
+        }
+        if (value_len > 65535U) {
+            return -1;
+        }
+        need = 1U + 1U + name_len + 2U + value_len;
+        if (offset + need > buf_len) {
+            return -1;
+        }
+        buf[offset] = f->type;
+        buf[offset + 1U] = (uint8_t)name_len;
+        memcpy(buf + offset + 2U, f->name, name_len);
+        mem_service_typed_put_u16_be(buf + offset + 2U + name_len,
+                                     (uint16_t)value_len);
+        memcpy(buf + offset + 4U + name_len, value_bytes, value_len);
+        offset += need;
+    }
+    return (int)offset;
+}
+
+static int mem_service_typed_payload_decode(
+    const uint8_t *buf,
+    size_t buf_len,
+    struct mem_service_typed_payload_field *out_fields,
+    size_t max_fields,
+    uint8_t *version_out)
+{
+    size_t offset = 0U;
+    size_t field_count;
+    size_t i;
+
+    if (buf == NULL || out_fields == NULL) {
+        return -1;
+    }
+    if (buf_len < 6U ||
+        buf[0] != MEM_SERVICE_TYPED_PAYLOAD_MAGIC0 ||
+        buf[1] != MEM_SERVICE_TYPED_PAYLOAD_MAGIC1 ||
+        buf[2] != MEM_SERVICE_TYPED_PAYLOAD_MAGIC2 ||
+        buf[3] != MEM_SERVICE_TYPED_PAYLOAD_MAGIC3) {
+        return -1;
+    }
+    if (version_out != NULL) {
+        *version_out = buf[4];
+    }
+    if (buf[4] > MEM_SERVICE_TYPED_PAYLOAD_MAX_KNOWN_VERSION) {
+        return -1;
+    }
+    field_count = buf[5];
+    if (field_count > max_fields) {
+        return -1;
+    }
+    offset = 6U;
+    for (i = 0U; i < field_count; ++i) {
+        struct mem_service_typed_payload_field *f = &out_fields[i];
+        uint8_t type;
+        uint8_t name_len;
+        uint16_t value_len;
+        size_t need;
+
+        if (offset + 2U > buf_len) {
+            return -1;
+        }
+        type = buf[offset];
+        name_len = buf[offset + 1U];
+        need = 1U + 1U + (size_t)name_len + 2U;
+        if (offset + need > buf_len) {
+            return -1;
+        }
+        if (name_len == 0U || name_len >= MEM_SERVICE_TYPED_PAYLOAD_MAX_NAME) {
+            return -1;
+        }
+        memset(f, 0, sizeof(*f));
+        f->type = type;
+        memcpy(f->name, buf + offset + 2U, name_len);
+        f->name[name_len] = '\0';
+        value_len = mem_service_typed_get_u16_be(buf + offset + 2U + name_len);
+        if (value_len > MEM_SERVICE_TYPED_PAYLOAD_MAX_VALUE ||
+            offset + need + value_len > buf_len) {
+            return -1;
+        }
+        if (type == MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING) {
+            if (value_len >= MEM_SERVICE_TYPED_PAYLOAD_MAX_VALUE) {
+                return -1;
+            }
+            memcpy(f->string_value, buf + offset + 4U + name_len, value_len);
+            f->string_value[value_len] = '\0';
+        } else if (type == MEM_SERVICE_WIRE_PAYLOAD_FIELD_U32) {
+            const uint8_t *p = buf + offset + 4U + name_len;
+            if (value_len != 4U) {
+                return -1;
+            }
+            f->int_value = (uint64_t)(((uint32_t)p[0] << 24) |
+                                      ((uint32_t)p[1] << 16) |
+                                      ((uint32_t)p[2] << 8) |
+                                      (uint32_t)p[3]);
+        } else if (type == MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64) {
+            const uint8_t *p = buf + offset + 4U + name_len;
+            uint64_t v = 0U;
+            int b;
+            if (value_len != 8U) {
+                return -1;
+            }
+            for (b = 0; b < 8; ++b) {
+                v = (v << 8) | (uint64_t)p[b];
+            }
+            f->int_value = v;
+        } else {
+            return -1;
+        }
+        offset += need + value_len;
+    }
+    return (int)field_count;
+}
+
+int mem_service_run_typed_payload_fixture_check(void)
+{
+    static const char string_expect[] = "typed-payload-string-value";
+    struct mem_service_typed_payload_field encode_fields[3];
+    struct mem_service_typed_payload_field decode_fields[MEM_SERVICE_TYPED_PAYLOAD_MAX_FIELDS];
+    uint8_t buf[512];
+    uint8_t future_buf[512];
+    int encoded;
+    int decoded;
+    uint8_t version = 0U;
+    int failures = 0;
+
+    memset(encode_fields, 0, sizeof(encode_fields));
+    encode_fields[0].type = MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING;
+    snprintf(encode_fields[0].name, sizeof(encode_fields[0].name), "session_id");
+    snprintf(encode_fields[0].string_value, sizeof(encode_fields[0].string_value),
+             "%s", string_expect);
+    encode_fields[1].type = MEM_SERVICE_WIRE_PAYLOAD_FIELD_U32;
+    snprintf(encode_fields[1].name, sizeof(encode_fields[1].name), "owner_node");
+    encode_fields[1].int_value = 2147483647U; /* large u32, exercises all 4 bytes */
+    encode_fields[2].type = MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64;
+    snprintf(encode_fields[2].name, sizeof(encode_fields[2].name), "checksum");
+    encode_fields[2].int_value = 18364758544493064720ULL; /* > 2^63, all 8 bytes */
+
+    encoded = mem_service_typed_payload_encode(encode_fields, 3U, buf, sizeof(buf));
+    if (encoded <= 0) {
+        fprintf(stderr,
+                "mem_service typed-payload-fixtures: encode failed rc=%d\n",
+                encoded);
+        return 1;
+    }
+    decoded = mem_service_typed_payload_decode(buf, (size_t)encoded, decode_fields,
+                                               MEM_SERVICE_TYPED_PAYLOAD_MAX_FIELDS,
+                                               &version);
+    if (decoded != 3 || version != MEM_SERVICE_TYPED_PAYLOAD_VERSION) {
+        fprintf(stderr,
+                "mem_service typed-payload-fixtures: decode header mismatch "
+                "decoded=%d version=%u\n",
+                decoded,
+                version);
+        failures -= 1;
+    }
+    if (decoded == 3) {
+        if (decode_fields[0].type != MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING ||
+            strcmp(decode_fields[0].name, "session_id") != 0 ||
+            strcmp(decode_fields[0].string_value, string_expect) != 0 ||
+            decode_fields[1].type != MEM_SERVICE_WIRE_PAYLOAD_FIELD_U32 ||
+            strcmp(decode_fields[1].name, "owner_node") != 0 ||
+            decode_fields[1].int_value != 2147483647U ||
+            decode_fields[2].type != MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64 ||
+            strcmp(decode_fields[2].name, "checksum") != 0 ||
+            decode_fields[2].int_value != 18364758544493064720ULL) {
+            fprintf(stderr,
+                    "mem_service typed-payload-fixtures: round-trip field mismatch\n");
+            failures -= 1;
+        }
+    }
+    /* Forward-compat version gate: a future-version buffer must be rejected. */
+    memcpy(future_buf, buf, (size_t)encoded);
+    future_buf[4] = (uint8_t)(MEM_SERVICE_TYPED_PAYLOAD_MAX_KNOWN_VERSION + 1U);
+    if (mem_service_typed_payload_decode(future_buf, (size_t)encoded, decode_fields,
+                                         MEM_SERVICE_TYPED_PAYLOAD_MAX_FIELDS,
+                                         NULL) != -1) {
+        fprintf(stderr,
+                "mem_service typed-payload-fixtures: future version not rejected\n");
+        failures -= 1;
+    }
+    /* Malformed input must fail-closed, not crash: truncated header, bad magic,
+     * and a value_len that overruns the buffer. */
+    if (mem_service_typed_payload_decode(buf, 3U, decode_fields,
+                                         MEM_SERVICE_TYPED_PAYLOAD_MAX_FIELDS,
+                                         NULL) != -1 ||
+        mem_service_typed_payload_decode((const uint8_t *)"XSTP\x01\x00", 6U,
+                                         decode_fields,
+                                         MEM_SERVICE_TYPED_PAYLOAD_MAX_FIELDS,
+                                         NULL) != -1) {
+        fprintf(stderr,
+                "mem_service typed-payload-fixtures: malformed input not rejected\n");
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service typed-payload-fixtures: status=ok "
+           "wire_payload_typed_binary_format=typed-binary-v1 "
+           "wire_payload_text_kv_format=text-kv "
+           "round_trip_fields=3 "
+           "version=%u version_gate=reject-unknown-future "
+           "malformed_input=fail-closed encoded_bytes=%d\n",
+           MEM_SERVICE_TYPED_PAYLOAD_VERSION,
+           encoded);
+    return 0;
+}
+
 int mem_service_run_durable_catalog_fixture_check(void)
 {
     char storage_root[160];

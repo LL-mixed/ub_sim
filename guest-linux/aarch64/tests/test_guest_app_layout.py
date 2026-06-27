@@ -774,6 +774,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^compat_runtime_gate=compat-runtime-fixtures$$" in app_makefile
     assert "^serving_fail_closed_matrix=certified$$" in app_makefile
     assert "^pretraining_fail_closed_matrix=certified$$" in app_makefile
+    assert "^wire_payload_typed_binary_format=typed-binary-v1$$" in app_makefile
     assert "^upgrade_policy=current-version-only$$" in app_makefile
     assert "^rollback_policy=current-version-only$$" in app_makefile
     assert "^old_server_runtime_binary=certified$$" in app_makefile
@@ -896,6 +897,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_serving_fail_closed_fixture_check" in app_source
     assert 'strcmp(argv[1], "pretraining-fail-closed-fixtures")' in app_source
     assert "mem_service_run_pretraining_fail_closed_fixture_check" in app_source
+    assert 'strcmp(argv[1], "typed-payload-fixtures")' in app_source
+    assert "mem_service_run_typed_payload_fixture_check" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U" in app_source
@@ -996,6 +999,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "compat_runtime_gate=compat-runtime-fixtures" in release_manifest
     assert "serving_fail_closed_matrix=certified" in release_manifest
     assert "pretraining_fail_closed_matrix=certified" in release_manifest
+    assert "wire_payload_typed_binary_format=typed-binary-v1" in release_manifest
     assert "upgrade_policy=current-version-only" in release_manifest
     assert "rollback_policy=current-version-only" in release_manifest
     assert "old_server_runtime_binary=certified" in release_manifest

@@ -53,7 +53,7 @@
 
 ### 3.3 wire/接口演进深度
 
-- payload schema 仍以文本 key/value 为主，未完成更完整的二进制/强 typed 数据面演进验证。
+- payload schema 仍以文本 key/value 为主，未完成更完整的二进制/强 typed 数据面演进验证。**已闭环（2026-06-27，4.5）**：新增 typed-binary 编解码（TLV + 版本门禁）与 text-kv 并存，`typed-payload-fixtures` 真实字节级 round-trip + 前向兼容版本拒绝 + 畸形输入 fail-closed，对抗 review 零 bug。
 - **已闭环（2026-06-27，4.3）**：serving 与 pretraining 的 session/model/artifact-kind/artifact-id/version/checksum 负例已形成独立完整回归矩阵——新增 `serving-fail-closed-fixtures`（runtime-handoff + execution-artifact 各跑全 mismatch 矩阵）与 `pretraining-fail-closed-fixtures`（training-step-commit 全 mismatch 矩阵），用真实 `mem_service_handle_operation` + 真实 fail-closed 计数承载（serving fail_closed=10、pretraining fail_closed=5），并固化为 release-manifest 契约 + host-artifact-smoke/install-smoke 门禁。
 
 ### 3.4 运维与部署闭环
@@ -87,19 +87,20 @@
 1. 补齐真实系统部署验收（systemd 生命周期、指标采集、告警联调脚本）。
 2. 增加多发布渠道产物一致性验证（含 rpm / 多格式 artifact）。
 
-### 4.5 数据面演进（非替代，增量）
+### 4.5 数据面演进（非替代，增量）—— ✅ 已完成（2026-06-27）
 
-1. 保持文本 schema 向后兼容。
-2. 增加二进制/typed payload 演进路径并设置版本兼容门禁。
+1. ✅ 保持文本 schema 向后兼容：text-kv 仍为默认 wire payload 格式（`wire_payload_text_kv_format=text-kv`）。
+2. ✅ 增加二进制/typed payload 演进路径并设置版本兼容门禁：新增 typed-binary 编解码（TLV：`MSTP` magic + version + 字段数 + 每字段 `[type][name_len][name][value_len BE][value]`，STRING 原始字节 / U32=4 BE / U64=8 BE），`typed-payload-fixtures` 用真实字节级 encode→decode 证明 string/u32(>2^31)/u64(>2^63) 全 round-trip、未知未来 version 被 reject、truncated/bad-magic 输入 fail-closed。对抗 review 未发现 bug（边界/溢出/越界均正确 fail-closed）。`wire_payload_typed_binary_format=typed-binary-v1` 固化到 release-manifest。
 
 ## 5. 达成度结论
 
-- 当前达成度：`~95%`（2026-06-27 更新，较 ~94% 提升：serving/pretraining 负例矩阵 4.3 已闭环）
-- 当前状态：**可独立运行、可基本协同**，离“生产级独立服务”还剩关键缺口：
-  - ~~跨版本组合兼容闭环~~ ✅ 已闭环（4.1）
+- 当前达成度：`~96%`（2026-06-27 更新，较 ~95% 提升：typed-binary 数据面 4.5 已闭环；所有进程内可做的缺口已全部完成）
+- 当前状态：**可独立运行、可基本协同**，剩余缺口全部是**环境/外部依赖**阻塞：
+  - ~~跨版本组合兼容闭环~~ ✅（4.1）
   - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环（4.2a/b/c）；⏳ 仅剩 remote block backend（需 transport 层）
-  - ~~serving/pretraining 负例矩阵（4.3）~~ ✅ 已闭环（4.3）
+  - ~~serving/pretraining 负例矩阵（4.3）~~ ✅（4.3）
   - 真实运维场景硬门禁（4.4）：**环境阻塞**（需真实 Linux CI：systemd + rpm toolchain），simulator 级门禁已就绪
+  - ~~数据面 typed-binary 演进（4.5）~~ ✅（4.5）
 - 数据面演进（4.3 负例矩阵、4.5 typed payload）作为增量项继续推进。
 
 该文件可直接作为后续迭代拆分任务和 release gate 的依据。

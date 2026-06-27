@@ -431,6 +431,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_run_serving_fail_closed_fixture_check", cli_source)
         self.assertIn('strcmp(argv[1], "pretraining-fail-closed-fixtures")', cli_source)
         self.assertIn("mem_service_run_pretraining_fail_closed_fixture_check", cli_source)
+        self.assertIn('strcmp(argv[1], "typed-payload-fixtures")', cli_source)
+        self.assertIn("mem_service_run_typed_payload_fixture_check", cli_source)
         self.assertIn('strcmp(argv[1], "deployment-fixtures")', cli_source)
         self.assertIn("MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U", cli_source)
         self.assertIn("render_metrics_http_response", cli_source)
@@ -588,6 +590,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("./linqu_mem_service_host compat-old-server-runtime-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host serving-fail-closed-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host pretraining-fail-closed-fixtures", cli_makefile)
+        self.assertIn("./linqu_mem_service_host typed-payload-fixtures", cli_makefile)
         self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
         self.assertIn("MEM_SERVICE_CLIENT_SDK_SRCS :=", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
@@ -617,6 +620,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^compat_runtime_gate=compat-runtime-fixtures$$", cli_makefile)
         self.assertIn("^serving_fail_closed_matrix=certified$$", cli_makefile)
         self.assertIn("^pretraining_fail_closed_matrix=certified$$", cli_makefile)
+        self.assertIn("^wire_payload_typed_binary_format=typed-binary-v1$$", cli_makefile)
         self.assertIn("^upgrade_policy=current-version-only$$", cli_makefile)
         self.assertIn("^rollback_policy=current-version-only$$", cli_makefile)
         self.assertIn("^old_server_runtime_binary=certified$$", cli_makefile)
@@ -723,6 +727,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("pretraining_fail_closed_matrix=certified", release_manifest)
         self.assertIn(
             "pretraining_fail_closed_gate=pretraining-fail-closed-fixtures",
+            release_manifest,
+        )
+        self.assertIn("wire_payload_text_kv_format=text-kv", release_manifest)
+        self.assertIn(
+            "wire_payload_typed_binary_format=typed-binary-v1", release_manifest
+        )
+        self.assertIn(
+            "wire_payload_typed_binary_gate=typed-payload-fixtures",
             release_manifest,
         )
         self.assertIn("upgrade_policy=current-version-only", release_manifest)

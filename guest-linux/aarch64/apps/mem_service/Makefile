@@ -165,6 +165,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host compat-old-server-runtime-fixtures
 	./linqu_mem_service_host serving-fail-closed-fixtures
 	./linqu_mem_service_host pretraining-fail-closed-fixtures
+	./linqu_mem_service_host typed-payload-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
 
@@ -364,6 +365,9 @@ install-smoke: install
 	grep -q '^serving_fail_closed_gate=serving-fail-closed-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^pretraining_fail_closed_matrix=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^pretraining_fail_closed_gate=pretraining-fail-closed-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^wire_payload_text_kv_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^wire_payload_typed_binary_format=typed-binary-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^wire_payload_typed_binary_gate=typed-payload-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_len=848$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_checksum=0x8b516d14$$' $(INSTALL_DATADIR)/release-manifest.txt

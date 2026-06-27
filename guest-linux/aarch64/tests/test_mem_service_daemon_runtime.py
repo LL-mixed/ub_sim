@@ -2475,6 +2475,20 @@ int main(int argc, char **argv)
         self.assertIn("checksum_mismatch=1", fixtures.stdout)
         self.assertIn("fail_closed=5", fixtures.stdout)
 
+    def test_typed_payload_fixtures_round_trip_and_version_gate(self):
+        fixtures = self._run_client("typed-payload-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("wire_payload_typed_binary_format=typed-binary-v1",
+                      fixtures.stdout)
+        self.assertIn("wire_payload_text_kv_format=text-kv", fixtures.stdout)
+        # Real byte-level encode/decode round-trip across all three typed field
+        # kinds (string/u32/u64 incl. a >2^63 value), plus a forward-compat
+        # version gate and malformed-input fail-closed -- not canned strings.
+        self.assertIn("round_trip_fields=3", fixtures.stdout)
+        self.assertIn("version_gate=reject-unknown-future", fixtures.stdout)
+        self.assertIn("malformed_input=fail-closed", fixtures.stdout)
+
     def test_journal_fixtures_cli_recovers_idempotency_and_audit(self):
         fixtures = self._run_client("journal-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
@@ -3132,6 +3146,13 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                           manifest.read_text())
             self.assertIn(
                 "pretraining_fail_closed_gate=pretraining-fail-closed-fixtures",
+                manifest.read_text())
+            self.assertIn("wire_payload_text_kv_format=text-kv",
+                          manifest.read_text())
+            self.assertIn("wire_payload_typed_binary_format=typed-binary-v1",
+                          manifest.read_text())
+            self.assertIn(
+                "wire_payload_typed_binary_gate=typed-payload-fixtures",
                 manifest.read_text())
             self.assertIn("compat_matrix_checksum=0xac1df9db", manifest.read_text())
             self.assertIn("compat_baseline_checksum=0xa538400f", manifest.read_text())
