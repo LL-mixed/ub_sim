@@ -163,6 +163,8 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host api-abi-fixtures
 	./linqu_mem_service_host compat-runtime-fixtures
 	./linqu_mem_service_host compat-old-server-runtime-fixtures
+	./linqu_mem_service_host serving-fail-closed-fixtures
+	./linqu_mem_service_host pretraining-fail-closed-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
 
@@ -358,6 +360,10 @@ install-smoke: install
 	grep -q '^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_runtime_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_old_server_runtime_gate=compat-old-server-runtime-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^serving_fail_closed_matrix=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^serving_fail_closed_gate=serving-fail-closed-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^pretraining_fail_closed_matrix=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^pretraining_fail_closed_gate=pretraining-fail-closed-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_len=848$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_checksum=0x8b516d14$$' $(INSTALL_DATADIR)/release-manifest.txt

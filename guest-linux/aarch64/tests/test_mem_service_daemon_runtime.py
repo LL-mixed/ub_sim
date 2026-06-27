@@ -2448,6 +2448,33 @@ int main(int argc, char **argv)
         self.assertEqual(_counter("current_stale_ref"), 1)
         self.assertEqual(_counter("current_checksum_mismatch"), 1)
 
+    def test_serving_fail_closed_fixtures_cover_mismatch_matrix(self):
+        fixtures = self._run_client("serving-fail-closed-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("serving_fail_closed_matrix=certified", fixtures.stdout)
+        self.assertIn("serving_paths=runtime-handoff,execution-artifact", fixtures.stdout)
+        # Full mismatch matrix across both serving artifact types (runtime-handoff
+        # + execution-artifact), each fail-closing on session/model/kind|version/
+        # checksum. Counters come from the real metrics path, not canned strings.
+        self.assertIn("invalid_session=2", fixtures.stdout)
+        self.assertIn("invalid_model_binding=2", fixtures.stdout)
+        self.assertIn("stale_ref=4", fixtures.stdout)
+        self.assertIn("checksum_mismatch=2", fixtures.stdout)
+        self.assertIn("fail_closed=10", fixtures.stdout)
+
+    def test_pretraining_fail_closed_fixtures_cover_mismatch_matrix(self):
+        fixtures = self._run_client("pretraining-fail-closed-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("pretraining_fail_closed_matrix=certified", fixtures.stdout)
+        self.assertIn("pretraining_paths=training-step-commit", fixtures.stdout)
+        self.assertIn("invalid_session=1", fixtures.stdout)
+        self.assertIn("invalid_model_binding=1", fixtures.stdout)
+        self.assertIn("stale_ref=2", fixtures.stdout)
+        self.assertIn("checksum_mismatch=1", fixtures.stdout)
+        self.assertIn("fail_closed=5", fixtures.stdout)
+
     def test_journal_fixtures_cli_recovers_idempotency_and_audit(self):
         fixtures = self._run_client("journal-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
@@ -3097,6 +3124,15 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("client_record_abi_size=744", manifest.read_text())
             self.assertIn("compat_runtime_gate=compat-runtime-fixtures",
                           manifest.read_text())
+            self.assertIn("serving_fail_closed_matrix=certified",
+                          manifest.read_text())
+            self.assertIn("serving_fail_closed_gate=serving-fail-closed-fixtures",
+                          manifest.read_text())
+            self.assertIn("pretraining_fail_closed_matrix=certified",
+                          manifest.read_text())
+            self.assertIn(
+                "pretraining_fail_closed_gate=pretraining-fail-closed-fixtures",
+                manifest.read_text())
             self.assertIn("compat_matrix_checksum=0xac1df9db", manifest.read_text())
             self.assertIn("compat_baseline_checksum=0xa538400f", manifest.read_text())
             self.assertIn("compat_old_new_matrix_checksum=0x641e48ca",

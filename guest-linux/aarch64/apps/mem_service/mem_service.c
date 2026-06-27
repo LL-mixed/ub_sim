@@ -77,6 +77,8 @@ static void usage(const char *argv0)
     printf(" [compat-old-new-matrix] [compat-old-new-fixtures]");
     printf(" [compat-runtime-fixtures]");
     printf(" [compat-old-server-runtime-fixtures]");
+    printf(" [serving-fail-closed-fixtures]");
+    printf(" [pretraining-fail-closed-fixtures]");
     printf(" [release-manifest] [release-fixtures]");
     printf(" [serve [--config <path>] [--listen unix:%s] [--store <path>]"
            " [--metrics-listen tcp:127.0.0.1:9900]]",
@@ -2609,6 +2611,10 @@ static int run_release_manifest(void)
     printf("upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures\n");
     printf("compat_runtime_gate=compat-runtime-fixtures\n");
     printf("compat_old_server_runtime_gate=compat-old-server-runtime-fixtures\n");
+    printf("serving_fail_closed_matrix=certified\n");
+    printf("serving_fail_closed_gate=serving-fail-closed-fixtures\n");
+    printf("pretraining_fail_closed_matrix=certified\n");
+    printf("pretraining_fail_closed_gate=pretraining-fail-closed-fixtures\n");
     printf("client_api_version=%u\n", MEM_SERVICE_CLIENT_API_VERSION);
     printf("client_abi_version=%u\n", MEM_SERVICE_CLIENT_ABI_VERSION);
     printf("client_record_abi_size=%u\n", MEM_SERVICE_CLIENT_RECORD_ABI_SIZE);
@@ -5956,6 +5962,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "compat-old-server-runtime-fixtures") == 0) {
         return mem_service_run_compat_old_server_runtime_fixture_check();
+    }
+    if (strcmp(argv[1], "serving-fail-closed-fixtures") == 0) {
+        return mem_service_run_serving_fail_closed_fixture_check();
+    }
+    if (strcmp(argv[1], "pretraining-fail-closed-fixtures") == 0) {
+        return mem_service_run_pretraining_fail_closed_fixture_check();
     }
     if (strcmp(argv[1], "package-manifest") == 0) {
         return run_package_manifest();

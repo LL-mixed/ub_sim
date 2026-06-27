@@ -18,6 +18,8 @@ int mem_service_run_journal_torn_recovery_fixture_check(void);
 int mem_service_run_journal_compaction_fixture_check(void);
 int mem_service_run_durable_catalog_fixture_check(void);
 int mem_service_run_chunked_block_fixture_check(void);
+int mem_service_run_serving_fail_closed_fixture_check(void);
+int mem_service_run_pretraining_fail_closed_fixture_check(void);
 int mem_service_run_upgrade_rollback_runtime_fixture_check(void);
 int mem_service_run_compat_runtime_fixture_check(void);
 int mem_service_run_compat_old_server_runtime_fixture_check(void);

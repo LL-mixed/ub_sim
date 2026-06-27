@@ -54,12 +54,12 @@
 ### 3.3 wire/接口演进深度
 
 - payload schema 仍以文本 key/value 为主，未完成更完整的二进制/强 typed 数据面演进验证。
-- serving 与 pretraining 的 session/model 级负例（例如 binding mismatch）尚未形成独立完整回归矩阵。
+- **已闭环（2026-06-27，4.3）**：serving 与 pretraining 的 session/model/artifact-kind/artifact-id/version/checksum 负例已形成独立完整回归矩阵——新增 `serving-fail-closed-fixtures`（runtime-handoff + execution-artifact 各跑全 mismatch 矩阵）与 `pretraining-fail-closed-fixtures`（training-step-commit 全 mismatch 矩阵），用真实 `mem_service_handle_operation` + 真实 fail-closed 计数承载（serving fail_closed=10、pretraining fail_closed=5），并固化为 release-manifest 契约 + host-artifact-smoke/install-smoke 门禁。
 
 ### 3.4 运维与部署闭环
 
-- 真实系统级部署门禁尚未补齐（真实 systemd 环境、真实生产采集/告警联调还未成为硬门禁）。
-- 包分发（如 rpm）与多发布渠道跨版本升级验证仍有空白。
+- 真实系统级部署门禁尚未补齐（真实 systemd 环境、真实生产采集/告警联调还未成为硬门禁）。**环境阻塞**：本机为 macOS dev，无 systemd/rpm/rpm2cpio，4.4 的"真实"硬门禁需真实 Linux CI 才能诚实闭环；现状已有 systemd-like + collector + alert 的 simulator 级门禁（`installed-host-service-manager-smoke`、`collector-fixtures`、`alert-integration-fixtures`）。
+- 包分发（如 rpm）与多发布渠道跨版本升级验证仍有空白。**环境阻塞**：rpm 需 `rpmbuild`/`rpm2cpio` 才能诚实构建+校验（本机缺失）；deb + tar 双渠道已就绪。
 
 ## 4. 补齐方案（执行顺序）
 
@@ -77,10 +77,10 @@
    - ✅ 有界 compaction（4.2c）：`compact_journal` 在 save_store 成功后、journal 超 `MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES` 时原子重写为 header；新增 `journal-compaction-fixtures` 证明界定 + 恢复。`journal_truncation_policy=threshold-compaction` 写入 compat-matrix/compat-baseline 契约。
 3. ✅ 增加分片 block backend 的最小可行实现并接入兼容门禁（2026-06-27，4.2b）：`sealed-chunked-block-v1`（payload_kind=65），1024B 分块 + manifest，validate 重组重算 FNV-1a 64-bit + fail-closed quarantine；`chunked-block-fixtures` 真实 I/O 证明（该 fixture 在开发期捕获并修复了 2 个真实 bug：末块非整块校验、quarantine 路径）；对抗 review 未发现新 bug。远端（remote）block backend 仍待后续增量（需要 transport 层，超出当前范围）。
 
-### 4.3 serving/pretraining 语义负例闭环
+### 4.3 serving/pretraining 语义负例闭环 —— ✅ 已完成（2026-06-27）
 
-1. 独立补充 session/model/artifact mismatch 的 fixture：serving 与 pretraining 各自覆盖。
-2. 将负例 fail-closed 与计数统计固化到 contract，并纳入 release/install gate。
+1. ✅ 独立补充 session/model/artifact mismatch 的 fixture：新增 `serving-fail-closed-fixtures`（runtime-handoff + execution-artifact，全 5 类 mismatch）与 `pretraining-fail-closed-fixtures`（training-step-commit，全 5 类 mismatch），serving/pretraining 各自覆盖。
+2. ✅ 将负例 fail-closed 与计数统计固化到 contract：`serving_fail_closed_matrix=certified` / `pretraining_fail_closed_matrix=certified` + gate 名写入 release-manifest，接入 host-artifact-smoke + install-smoke grep；计数（invalid_session/invalid_model_binding/stale_ref/checksum_mismatch/fail_closed）由真实 metrics 路径承载。
 
 ### 4.4 生产运维闭环
 
@@ -94,11 +94,12 @@
 
 ## 5. 达成度结论
 
-- 当前达成度：`~94%`（2026-06-27 更新，较 ~92% 提升：journal threshold compaction 4.2c 已闭环，4.2 durable 后端除 remote backend 外全部完成）
+- 当前达成度：`~95%`（2026-06-27 更新，较 ~94% 提升：serving/pretraining 负例矩阵 4.3 已闭环）
 - 当前状态：**可独立运行、可基本协同**，离“生产级独立服务”还剩关键缺口：
   - ~~跨版本组合兼容闭环~~ ✅ 已闭环（4.1）
-  - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环：catalog 迁移（4.2a）+ journal 原子性/崩溃恢复（4.2a）+ chunked block backend（4.2b）+ journal threshold compaction（4.2c）；⏳ 仅剩 remote block backend（需 transport 层）
-  - 真实运维场景硬门禁（4.4）
+  - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环（4.2a/b/c）；⏳ 仅剩 remote block backend（需 transport 层）
+  - ~~serving/pretraining 负例矩阵（4.3）~~ ✅ 已闭环（4.3）
+  - 真实运维场景硬门禁（4.4）：**环境阻塞**（需真实 Linux CI：systemd + rpm toolchain），simulator 级门禁已就绪
 - 数据面演进（4.3 负例矩阵、4.5 typed payload）作为增量项继续推进。
 
 该文件可直接作为后续迭代拆分任务和 release gate 的依据。

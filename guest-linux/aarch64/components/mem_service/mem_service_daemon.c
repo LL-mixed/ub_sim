@@ -4349,6 +4349,345 @@ int mem_service_run_compat_old_server_runtime_fixture_check(void)
     return 0;
 }
 
+int mem_service_run_serving_fail_closed_fixture_check(void)
+{
+    static const char runtime_publish[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "session_id=srv-session\n"
+        "model_key=srv-model\n"
+        "artifact_kind=hidden-range\n"
+        "artifact_id=range-0\n"
+        "checksum=7007\n"
+        "version=7\n"
+        "idempotency_key=serving-runtime-range-0-v7\n";
+    static const char runtime_match[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7007\n";
+    static const char runtime_bad_session[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=wrong-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7007\n";
+    static const char runtime_bad_model[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=wrong-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7007\n";
+    static const char runtime_bad_kind[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=wrong-kind\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7007\n";
+    static const char runtime_bad_version[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=99\n"
+        "expected_checksum=7007\n";
+    static const char runtime_bad_checksum[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_version=7\n"
+        "expected_checksum=7008\n";
+    static const char exec_register[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "session_id=srv-session\n"
+        "request_id=srv-req-0\n"
+        "model_key=srv-model\n"
+        "artifact_kind=logits\n"
+        "artifact_id=logits-0\n"
+        "owner=2\n"
+        "payload_kind=3\n"
+        "backing_offset=64\n"
+        "backing_len=256\n"
+        "checksum=8008\n"
+        "version=8\n"
+        "idempotency_key=serving-exec-logits-0-v8\n";
+    static const char exec_match[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=logits\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_version=8\n"
+        "expected_checksum=8008\n";
+    static const char exec_bad_session[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=wrong-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=logits\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_version=8\n"
+        "expected_checksum=8008\n";
+    static const char exec_bad_model[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=wrong-model\n"
+        "expected_artifact_kind=logits\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_version=8\n"
+        "expected_checksum=8008\n";
+    static const char exec_bad_kind[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=wrong-kind\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_version=8\n"
+        "expected_checksum=8008\n";
+    static const char exec_bad_version[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=logits\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_version=99\n"
+        "expected_checksum=8008\n";
+    static const char exec_bad_checksum[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=logits\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_version=8\n"
+        "expected_checksum=8009\n";
+    static struct mem_service svc;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    enum mem_service_wire_status s;
+    int failures = 0;
+
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service serving-fail-closed-fixtures: init failed\n");
+        return 1;
+    }
+#define SERVING_QUERY(op, q, expect)                                          \
+    do {                                                                       \
+        s = mem_service_handle_operation(&svc, (op), (q), response,            \
+                                         sizeof(response), NULL, NULL);        \
+        if (s != (expect)) {                                                   \
+            fprintf(stderr,                                                    \
+                    "mem_service serving-fail-closed-fixtures: " #op           \
+                    " " #q " status=%u expected=%u\n",                         \
+                    s, (expect));                                              \
+            failures -= 1;                                                     \
+        }                                                                      \
+    } while (0)
+
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_PUBLISH_RUNTIME_HANDOFF, runtime_publish,
+                  MEM_SERVICE_WIRE_STATUS_OK);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_match,
+                  MEM_SERVICE_WIRE_STATUS_OK);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_session,
+                  MEM_SERVICE_WIRE_STATUS_INVALID_SESSION);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_model,
+                  MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_kind,
+                  MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_version,
+                  MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_checksum,
+                  MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH);
+
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_REGISTER_EXECUTION_ARTIFACT, exec_register,
+                  MEM_SERVICE_WIRE_STATUS_OK);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_match,
+                  MEM_SERVICE_WIRE_STATUS_OK);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_session,
+                  MEM_SERVICE_WIRE_STATUS_INVALID_SESSION);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_model,
+                  MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_kind,
+                  MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_version,
+                  MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_checksum,
+                  MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH);
+#undef SERVING_QUERY
+
+    if (svc.metrics.invalid_session_count != 2U ||
+        svc.metrics.invalid_model_binding_count != 2U ||
+        svc.metrics.stale_ref_count != 4U ||
+        svc.metrics.checksum_mismatch_count != 2U ||
+        svc.metrics.fail_closed_count != 10U) {
+        fprintf(stderr,
+                "mem_service serving-fail-closed-fixtures: counter mismatch "
+                "invalid_session=%" PRIu64 " invalid_model=%" PRIu64
+                " stale_ref=%" PRIu64 " checksum=%" PRIu64 " fail_closed=%" PRIu64 "\n",
+                svc.metrics.invalid_session_count,
+                svc.metrics.invalid_model_binding_count,
+                svc.metrics.stale_ref_count,
+                svc.metrics.checksum_mismatch_count,
+                svc.metrics.fail_closed_count);
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service serving-fail-closed-fixtures: status=ok "
+           "serving_fail_closed_matrix=certified "
+           "serving_paths=runtime-handoff,execution-artifact "
+           "mismatch_cases=invalid-session,invalid-model-binding,stale-ref,checksum-mismatch "
+           "invalid_session=%" PRIu64 " invalid_model_binding=%" PRIu64
+           " stale_ref=%" PRIu64 " checksum_mismatch=%" PRIu64
+           " fail_closed=%" PRIu64 "\n",
+           svc.metrics.invalid_session_count,
+           svc.metrics.invalid_model_binding_count,
+           svc.metrics.stale_ref_count,
+           svc.metrics.checksum_mismatch_count,
+           svc.metrics.fail_closed_count);
+    return 0;
+}
+
+int mem_service_run_pretraining_fail_closed_fixture_check(void)
+{
+    static const char training_register[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "session_id=pt-session\n"
+        "model_key=pt-model\n"
+        "artifact_kind=training-step-commit\n"
+        "artifact_id=global-step-42\n"
+        "checksum=4242\n"
+        "version=42\n"
+        "idempotency_key=pretraining-step-42-v42\n";
+    static const char training_match[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=pt-session\n"
+        "expected_model_key=pt-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=42\n"
+        "expected_checksum=4242\n";
+    static const char training_bad_session[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=wrong-session\n"
+        "expected_model_key=pt-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=42\n"
+        "expected_checksum=4242\n";
+    static const char training_bad_model[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=pt-session\n"
+        "expected_model_key=wrong-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=42\n"
+        "expected_checksum=4242\n";
+    static const char training_bad_kind[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=pt-session\n"
+        "expected_model_key=pt-model\n"
+        "expected_artifact_kind=wrong-kind\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=42\n"
+        "expected_checksum=4242\n";
+    static const char training_bad_version[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=pt-session\n"
+        "expected_model_key=pt-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=99\n"
+        "expected_checksum=4242\n";
+    static const char training_bad_checksum[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=pt-session\n"
+        "expected_model_key=pt-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_version=42\n"
+        "expected_checksum=4243\n";
+    static struct mem_service svc;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    enum mem_service_wire_status s;
+    int failures = 0;
+
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service pretraining-fail-closed-fixtures: init failed\n");
+        return 1;
+    }
+#define PT_QUERY(op, q, expect)                                               \
+    do {                                                                       \
+        s = mem_service_handle_operation(&svc, (op), (q), response,            \
+                                         sizeof(response), NULL, NULL);        \
+        if (s != (expect)) {                                                   \
+            fprintf(stderr,                                                    \
+                    "mem_service pretraining-fail-closed-fixtures: " #op       \
+                    " " #q " status=%u expected=%u\n",                         \
+                    s, (expect));                                              \
+            failures -= 1;                                                     \
+        }                                                                      \
+    } while (0)
+
+    PT_QUERY(MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT, training_register,
+             MEM_SERVICE_WIRE_STATUS_OK);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_match,
+             MEM_SERVICE_WIRE_STATUS_OK);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_session,
+             MEM_SERVICE_WIRE_STATUS_INVALID_SESSION);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_model,
+             MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_kind,
+             MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_version,
+             MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_checksum,
+             MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH);
+#undef PT_QUERY
+
+    if (svc.metrics.invalid_session_count != 1U ||
+        svc.metrics.invalid_model_binding_count != 1U ||
+        svc.metrics.stale_ref_count != 2U ||
+        svc.metrics.checksum_mismatch_count != 1U ||
+        svc.metrics.fail_closed_count != 5U) {
+        fprintf(stderr,
+                "mem_service pretraining-fail-closed-fixtures: counter mismatch "
+                "invalid_session=%" PRIu64 " invalid_model=%" PRIu64
+                " stale_ref=%" PRIu64 " checksum=%" PRIu64 " fail_closed=%" PRIu64 "\n",
+                svc.metrics.invalid_session_count,
+                svc.metrics.invalid_model_binding_count,
+                svc.metrics.stale_ref_count,
+                svc.metrics.checksum_mismatch_count,
+                svc.metrics.fail_closed_count);
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service pretraining-fail-closed-fixtures: status=ok "
+           "pretraining_fail_closed_matrix=certified "
+           "pretraining_paths=training-step-commit "
+           "mismatch_cases=invalid-session,invalid-model-binding,stale-ref,checksum-mismatch "
+           "invalid_session=%" PRIu64 " invalid_model_binding=%" PRIu64
+           " stale_ref=%" PRIu64 " checksum_mismatch=%" PRIu64
+           " fail_closed=%" PRIu64 "\n",
+           svc.metrics.invalid_session_count,
+           svc.metrics.invalid_model_binding_count,
+           svc.metrics.stale_ref_count,
+           svc.metrics.checksum_mismatch_count,
+           svc.metrics.fail_closed_count);
+    return 0;
+}
+
 int mem_service_run_durable_catalog_fixture_check(void)
 {
     char storage_root[160];
