@@ -110,7 +110,9 @@ a Qwen3 adapter inspect build:
   evidence verifier, remote-transport bundle verifier, and release
   certification verifier, a release certification CI wrapper, plus an
   installed-layout selfcheck. `package-manifest` records `release_script_root`,
-  each `release_script`, `linux_ops_ci`, `linux_ops_ci_preflight`, and
+  each `release_script`, `linux_ops_ci`, `linux_ops_ci_preflight`,
+  `remote_payload_production_transport_ci`,
+  `remote_payload_production_transport_ci_preflight`, and
   `file_class=release_scripts count=9`; install, tar, deb, and rpm smokes
   verify those scripts are present and executable.
   `scripts/verify_mem_service_installed_layout.sh --no-runtime` validates the
@@ -120,9 +122,11 @@ a Qwen3 adapter inspect build:
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
   marker, and producer/consumer separation. The `linux_ops_ci`,
-  `linux_ops_ci_preflight`, `release_certification_ci`, and
-  `release_certification_preflight` manifest fields make those release gates
-  machine-discoverable without reading this README.
+  `linux_ops_ci_preflight`, `remote_payload_production_transport_ci`,
+  `remote_payload_production_transport_ci_preflight`,
+  `release_certification_ci`, and `release_certification_preflight` manifest
+  fields make those release gates machine-discoverable without reading this
+  README.
   The evidence, bundle, and release verifiers first resolve the installed
   `libexec/lingqu/mem_service/linqu_mem_service_host` relative to that
   `share/` script directory, then fall back to the source-tree app directory
@@ -495,8 +499,11 @@ Keep the implementation layers separated:
   that cross-host run; it builds `linqu_mem_service_host` if needed, runs the
   generator, and re-runs `remote-transport-verify --evidence-file <path>` on
   the generated artifact, then creates and verifies
-  `linqu-mem-service-remote-transport-bundle.tar`. After CI publishes the
-  evidence and bundle artifacts,
+  `linqu-mem-service-remote-transport-bundle.tar`.
+  `scripts/run_mem_service_remote_transport_ci.sh --preflight` checks the app
+  directory, partition marker, non-loopback TCP source, producer/consumer host
+  separation, and `make` availability before running the cross-host probe.
+  After CI publishes the evidence and bundle artifacts,
   `scripts/verify_mem_service_remote_transport_evidence.sh --evidence-file
   <path>` rebuilds/locates `linqu_mem_service_host` and re-runs
   `remote-transport-verify --evidence-file <path>` without needing the producer

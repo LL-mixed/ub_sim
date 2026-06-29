@@ -273,6 +273,8 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
     assert "--consumer-host HOST" in runner
     assert "--network-partition-marker PATH" in runner
     assert "--bundle-file PATH" in runner
+    assert "--preflight" in runner
+    assert "PREFLIGHT FAIL" in runner
     assert "remote-transport-generate-evidence" in runner
     assert "remote-transport-verify --evidence-file" in runner
     assert "remote-transport-certification-bundle" in runner
@@ -311,6 +313,24 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
         text=True,
         capture_output=True,
     )
+    preflight = subprocess.run(
+        [
+            str(runner_path),
+            "--source",
+            "tcp:10.0.0.11:9000",
+            "--producer-host",
+            "producer-a",
+            "--consumer-host",
+            "consumer-b",
+            "--network-partition-marker",
+            "/tmp/remote-transport.partition",
+            "--preflight",
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
     assert missing_arg.returncode == 2
     assert "--source is required" in missing_arg.stderr
@@ -326,6 +346,9 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
     assert "--storage-root /tmp/remote-transport.storage" in dry_run.stdout
     assert "remote-transport-verify --evidence-file /tmp/remote-transport.evidence" in dry_run.stdout
     assert "remote-transport-certification-bundle remote-transport-certification-bundle-verify" in dry_run.stdout
+    assert preflight.returncode == 1
+    assert "PREFLIGHT FAIL" in preflight.stderr
+    assert "network partition marker not readable" in preflight.stderr
 
 
 def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnable():
@@ -1273,7 +1296,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x6910ef54$$" in app_makefile
+    assert "^package_manifest_checksum=0x769279ef$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-runtime-smoke: installed-sdk-example-smoke" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
@@ -1314,6 +1337,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight$$" in app_makefile
     assert "^linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh$$" in app_makefile
     assert "^linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight$$" in app_makefile
+    assert "^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$" in app_makefile
+    assert "^remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight$$" in app_makefile
     assert "^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$" in app_makefile
     assert "^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$" in app_makefile
     assert "^ops_certification_verify=ops-certification-verify --evidence-file$$" in app_makefile
@@ -1503,8 +1528,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 6807U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6910ef54U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7001U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x769279efU" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1547,7 +1572,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x6910ef54" in release_manifest
+    assert "package_manifest_checksum=0x769279ef" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1690,8 +1715,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=6807" in release_manifest
-    assert "package_manifest_checksum=0x6910ef54" in release_manifest
+    assert "package_manifest_len=7001" in release_manifest
+    assert "package_manifest_checksum=0x769279ef" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -1746,6 +1771,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert (
         "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight"
         in release_manifest
     )
     assert (
@@ -1892,6 +1921,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh" in package_manifest
     assert (
         "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight"
+        in package_manifest
+    )
+    assert "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh" in package_manifest
+    assert (
+        "remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight"
         in package_manifest
     )
     assert (

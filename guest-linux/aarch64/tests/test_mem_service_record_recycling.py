@@ -503,9 +503,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 6807U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7001U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6910ef54U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x769279efU",
             cli_source,
         )
         self.assertIn(
@@ -741,7 +741,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x6910ef54$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x769279ef$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-runtime-smoke: installed-sdk-example-smoke", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c", cli_makefile)
@@ -889,6 +889,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^remote_payload_production_transport_generate=remote-transport-generate-evidence$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$", cli_makefile)
+        self.assertIn("^remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_bundle=remote-transport-certification-bundle$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_bundle_verify=remote-transport-certification-bundle-verify$$", cli_makefile)
@@ -949,10 +950,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x6910ef54", release_manifest)
+        self.assertIn("package_manifest_checksum=0x769279ef", release_manifest)
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", release_manifest)
         self.assertIn(
             "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
+            release_manifest,
+        )
+        self.assertIn(
+            "remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight",
             release_manifest,
         )
         self.assertIn("binary_version_command=version", release_manifest)
@@ -1249,6 +1254,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", package_manifest)
         self.assertIn(
             "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
+            package_manifest,
+        )
+        self.assertIn(
+            "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh",
+            package_manifest,
+        )
+        self.assertIn(
+            "remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight",
             package_manifest,
         )
         self.assertIn(

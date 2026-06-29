@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 6807U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6910ef54U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7001U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x769279efU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 44U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 26U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2877,6 +2877,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "upgrade_policy=current-version-only\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -4239,6 +4247,12 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=ops-certification-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=ops-certification-evidence-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=remote-transport-evidence-fixtures\n") == NULL ||
+        strstr(manifest,
+               "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh\n") ==
+            NULL ||
+        strstr(manifest,
+               "remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight\n") ==
+            NULL ||
         strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "required_gate=version-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=installed-sdk-runtime-smoke\n") == NULL ||
@@ -4498,6 +4512,7 @@ static int run_release_manifest(void)
     printf("remote_payload_production_transport_generate=remote-transport-generate-evidence\n");
     printf("remote_payload_production_transport_verify=remote-transport-verify --evidence-file\n");
     printf("remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh\n");
+    printf("remote_payload_production_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight\n");
     printf("remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh\n");
     printf("remote_payload_production_transport_bundle=remote-transport-certification-bundle\n");
     printf("remote_payload_production_transport_bundle_verify=remote-transport-certification-bundle-verify\n");

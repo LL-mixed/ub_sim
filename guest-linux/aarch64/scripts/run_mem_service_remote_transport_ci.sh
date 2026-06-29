@@ -13,6 +13,7 @@ EVIDENCE_FILE=""
 BUNDLE_FILE=""
 STORAGE_ROOT=""
 DRY_RUN=0
+PRE_FLIGHT=0
 
 usage() {
   cat <<'EOF'
@@ -41,6 +42,7 @@ Options:
   --storage-root DIR                Temporary storage root used by the probe.
   --out-dir DIR                     Output directory for default evidence/storage paths.
   --app-dir DIR                     mem_service app directory containing linqu_mem_service_host.
+  --preflight                       Check prerequisites without running certification.
   --dry-run                         Print commands without running them.
   -h, --help                        Show this help.
 EOF
@@ -124,6 +126,10 @@ while (( $# > 0 )); do
       DRY_RUN=1
       shift
       ;;
+    --preflight)
+      PRE_FLIGHT=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -163,7 +169,71 @@ if [[ -z "$STORAGE_ROOT" ]]; then
   STORAGE_ROOT="$OUT_DIR/storage"
 fi
 
+preflight_require() {
+  local ok="$1"
+  local message="$2"
+  if [[ "$ok" != "1" ]]; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: $message" >&2
+    return 1
+  fi
+  return 0
+}
+
+preflight_command() {
+  local name="$1"
+  if ! command -v "$name" >/dev/null; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: missing command: $name" >&2
+    return 1
+  fi
+  return 0
+}
+
+preflight_source() {
+  local source="$1"
+  local address="${source#tcp:}"
+  address="${address%:*}"
+  if [[ "$source" != tcp:*:* ]]; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: --source must be tcp:IP:PORT" >&2
+    return 1
+  fi
+  if [[ "$address" == "127."* || "$address" == "0.0.0.0" || "$address" == "localhost" ]]; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: --source must be non-loopback IPv4: $source" >&2
+    return 1
+  fi
+  return 0
+}
+
+run_preflight() {
+  local failures=0
+
+  preflight_require "$([[ -d "$APP_DIR" ]] && echo 1 || echo 0)" "app directory not found: $APP_DIR" || failures=$((failures + 1))
+  preflight_require "$([[ -r "$PARTITION_MARKER" ]] && echo 1 || echo 0)" "network partition marker not readable: $PARTITION_MARKER" || failures=$((failures + 1))
+  if [[ -r "$PARTITION_MARKER" ]] && ! grep -q '^network_partition_fail_closed=pass$' "$PARTITION_MARKER"; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: network partition marker must contain network_partition_fail_closed=pass" >&2
+    failures=$((failures + 1))
+  fi
+  preflight_source "$SOURCE" || failures=$((failures + 1))
+  if [[ "$PRODUCER_HOST" == "$CONSUMER_HOST" ]]; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: producer and consumer hosts must differ" >&2
+    failures=$((failures + 1))
+  fi
+  preflight_command make || failures=$((failures + 1))
+
+  if [[ "$failures" -ne 0 ]]; then
+    echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL failures=$failures" >&2
+    return 1
+  fi
+  printf '[mem-service-remote-transport-ci] PREFLIGHT PASS source=%s producer=%s consumer=%s evidence=%s\n' \
+    "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$EVIDENCE_FILE"
+  return 0
+}
+
 printf '[mem-service-remote-transport-ci] RUN source=%s producer=%s consumer=%s evidence=%s bundle=%s\n' "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$EVIDENCE_FILE" "$BUNDLE_FILE"
+if [[ "$PRE_FLIGHT" == "1" ]]; then
+  run_preflight
+  exit $?
+fi
+
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
   printf '%s/linqu_mem_service_host remote-transport-generate-evidence --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --evidence-file %s --storage-root %s\n' "$APP_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$EVIDENCE_FILE" "$STORAGE_ROOT"
@@ -181,6 +251,7 @@ if [[ ! -f "$PARTITION_MARKER" ]]; then
   exit 1
 fi
 
+run_preflight
 mkdir -p "$(dirname "$EVIDENCE_FILE")" "$STORAGE_ROOT"
 mkdir -p "$(dirname "$BUNDLE_FILE")"
 if [[ ! -x "$APP_DIR/linqu_mem_service_host" ]]; then
