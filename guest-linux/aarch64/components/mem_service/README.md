@@ -115,7 +115,9 @@ a Qwen3 adapter inspect build:
   `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
-  marker, and producer/consumer separation.
+  marker, and producer/consumer separation. The `release_certification_ci` and
+  `release_certification_preflight` manifest fields make those release gates
+  machine-discoverable without reading this README.
   The evidence, bundle, and release verifiers first resolve the installed
   `libexec/lingqu/mem_service/linqu_mem_service_host` relative to that
   `share/` script directory, then fall back to the source-tree app directory
