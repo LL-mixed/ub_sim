@@ -3,7 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_DIR="$ROOT_DIR/apps/mem_service"
+DEFAULT_APP_DIR="$ROOT_DIR/apps/mem_service"
+APP_DIR=""
+HOST_BIN=""
 EVIDENCE_FILE=""
 DRY_RUN=0
 
@@ -16,9 +18,59 @@ Verifies a mem_service real-Linux ops certification evidence artifact.
 Options:
   --evidence-file PATH  Evidence file produced by run_mem_service_linux_ops_ci.sh.
   --app-dir DIR         mem_service app directory containing linqu_mem_service_host.
+                        By default the script first tries the installed
+                        libexec binary next to the installed share tree, then
+                        falls back to the source-tree app directory.
   --dry-run             Print the build and verify commands without running them.
   -h, --help            Show this help.
 EOF
+}
+
+resolve_host_bin() {
+  local installed_host
+
+  if [[ -n "$APP_DIR" ]]; then
+    HOST_BIN="$APP_DIR/linqu_mem_service_host"
+    if [[ ! -x "$HOST_BIN" ]]; then
+      make -C "$APP_DIR" linqu_mem_service_host
+    fi
+    return
+  fi
+
+  installed_host="$(cd "$SCRIPT_DIR/../../../.." && pwd)/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    HOST_BIN="$installed_host"
+    return
+  fi
+
+  APP_DIR="$DEFAULT_APP_DIR"
+  HOST_BIN="$APP_DIR/linqu_mem_service_host"
+  if [[ ! -d "$APP_DIR" ]]; then
+    echo "[mem-service-linux-ops-evidence] FAIL: app directory not found: $APP_DIR" >&2
+    exit 1
+  fi
+  if [[ ! -x "$HOST_BIN" ]]; then
+    make -C "$APP_DIR" linqu_mem_service_host
+  fi
+}
+
+print_host_verify_commands() {
+  local installed_host
+
+  if [[ -n "$APP_DIR" ]]; then
+    printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
+    printf '%s/linqu_mem_service_host ops-certification-verify --evidence-file %s\n' "$APP_DIR" "$EVIDENCE_FILE"
+    return
+  fi
+
+  installed_host="$(cd "$SCRIPT_DIR/../../../.." && pwd)/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    printf '%s ops-certification-verify --evidence-file %s\n' "$installed_host" "$EVIDENCE_FILE"
+    return
+  fi
+
+  printf 'make -C %s linqu_mem_service_host\n' "$DEFAULT_APP_DIR"
+  printf '%s/linqu_mem_service_host ops-certification-verify --evidence-file %s\n' "$DEFAULT_APP_DIR" "$EVIDENCE_FILE"
 }
 
 while (( $# > 0 )); do
@@ -61,8 +113,7 @@ if [[ -z "$EVIDENCE_FILE" ]]; then
 fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
-  printf '%s/linqu_mem_service_host ops-certification-verify --evidence-file %s\n' "$APP_DIR" "$EVIDENCE_FILE"
+  print_host_verify_commands
   exit 0
 fi
 
@@ -71,14 +122,6 @@ if [[ ! -f "$EVIDENCE_FILE" ]]; then
   exit 1
 fi
 
-if [[ ! -d "$APP_DIR" ]]; then
-  echo "[mem-service-linux-ops-evidence] FAIL: app directory not found: $APP_DIR" >&2
-  exit 1
-fi
-
-if [[ ! -x "$APP_DIR/linqu_mem_service_host" ]]; then
-  make -C "$APP_DIR" linqu_mem_service_host
-fi
-
-"$APP_DIR/linqu_mem_service_host" ops-certification-verify --evidence-file "$EVIDENCE_FILE"
+resolve_host_bin
+"$HOST_BIN" ops-certification-verify --evidence-file "$EVIDENCE_FILE"
 printf '[mem-service-linux-ops-evidence] PASS evidence=%s\n' "$EVIDENCE_FILE"

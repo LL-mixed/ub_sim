@@ -208,6 +208,8 @@ def test_mem_service_linux_ops_evidence_verifier_is_reusable_and_dry_runnable():
     assert verifier_path.stat().st_mode & 0o111
     assert "--evidence-file PATH" in verifier
     assert "linqu_mem_service_host" in verifier
+    assert "libexec/lingqu/mem_service/linqu_mem_service_host" in verifier
+    assert "DEFAULT_APP_DIR" in verifier
     assert "ops-certification-verify --evidence-file" in verifier
     assert "[mem-service-linux-ops-evidence] PASS evidence=" in verifier
 
@@ -315,6 +317,8 @@ def test_mem_service_remote_transport_evidence_verifier_is_reusable_and_dry_runn
     assert verifier_path.stat().st_mode & 0o111
     assert "--evidence-file PATH" in verifier
     assert "linqu_mem_service_host" in verifier
+    assert "libexec/lingqu/mem_service/linqu_mem_service_host" in verifier
+    assert "DEFAULT_APP_DIR" in verifier
     assert "remote-transport-verify --evidence-file" in verifier
     assert "[mem-service-remote-transport-evidence] PASS evidence=" in verifier
 
@@ -359,6 +363,8 @@ def test_mem_service_ops_certification_bundle_verifier_is_reusable_and_dry_runna
     assert "ops-certification-linux-ci.evidence" in verifier
     assert "ops-certification-upgrade-rollback.marker" in verifier
     assert "ops-certification-verify --evidence-file" in verifier
+    assert "libexec/lingqu/mem_service/linqu_mem_service_host" in verifier
+    assert "DEFAULT_APP_DIR" in verifier
     assert "unsafe tar entry" in verifier
     assert "[mem-service-ops-certification-bundle] PASS bundle=" in verifier
 
@@ -401,6 +407,8 @@ def test_mem_service_remote_transport_bundle_verifier_is_reusable_and_dry_runnab
     assert "remote-transport-bundle.manifest" in verifier
     assert "remote-transport.evidence" in verifier
     assert "remote-transport-verify --evidence-file" in verifier
+    assert "libexec/lingqu/mem_service/linqu_mem_service_host" in verifier
+    assert "DEFAULT_APP_DIR" in verifier
     assert "unsafe tar entry" in verifier
     assert "[mem-service-remote-transport-bundle] PASS bundle=" in verifier
 
@@ -444,6 +452,8 @@ def test_mem_service_release_certification_verifier_is_reusable_and_dry_runnable
     assert "--remote-transport-bundle-file PATH" in verifier
     assert "verify_mem_service_ops_certification_bundle.sh" in verifier
     assert "verify_mem_service_remote_transport_bundle.sh" in verifier
+    assert "installed libexec binary" in verifier
+    assert "source-tree app directory" in verifier
     assert "[mem-service-release-certification] PASS ops_bundle=" in verifier
 
     missing_arg = subprocess.run(
@@ -1139,6 +1149,13 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "INSTALL_SCRIPTSDIR := $(INSTALL_DATADIR)/scripts" in app_makefile
     assert "cp $(MEM_SERVICE_RELEASE_SCRIPTS) $(INSTALL_SCRIPTSDIR)/" in app_makefile
     assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh" in app_makefile
+    assert "verify_mem_service_linux_ops_evidence.sh --evidence-file /tmp/linqu_mem_service_ops.evidence --dry-run" in app_makefile
+    assert "verify_mem_service_remote_transport_evidence.sh --evidence-file /tmp/linqu_mem_service_remote_transport.evidence --dry-run" in app_makefile
+    assert "verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu_mem_service_ops_bundle.tar --dry-run" in app_makefile
+    assert "verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run" in app_makefile
+    assert "verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar" in app_makefile
+    assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify" in app_makefile
+    assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify" in app_makefile
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$" in app_makefile
     assert "^admin_output_schema_checksum=0x7021f4cf$$" in app_makefile

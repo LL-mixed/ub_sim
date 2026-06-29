@@ -600,6 +600,11 @@ install-smoke: install
 	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_evidence.sh
 	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_bundle.sh
 	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh
+	$(INSTALL_SCRIPTSDIR)/verify_mem_service_linux_ops_evidence.sh --evidence-file /tmp/linqu_mem_service_ops.evidence --dry-run | grep -q '$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify'
+	$(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_evidence.sh --evidence-file /tmp/linqu_mem_service_remote_transport.evidence --dry-run | grep -q '$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify'
+	$(INSTALL_SCRIPTSDIR)/verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu_mem_service_ops_bundle.tar --dry-run | grep -q '$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify'
+	$(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run | grep -q '$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify'
+	$(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar --remote-transport-bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run | grep -q 'verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu_mem_service_ops_bundle.tar --work-dir'
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/package-manifest.txt
 	test -f $(INSTALL_DATADIR)/wire-schema.txt

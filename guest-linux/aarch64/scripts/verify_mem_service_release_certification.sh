@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_DIR="$ROOT_DIR/apps/mem_service"
+APP_DIR=""
 OPS_BUNDLE_FILE=""
 REMOTE_TRANSPORT_BUNDLE_FILE=""
 WORK_DIR=""
@@ -18,7 +18,12 @@ Verifies that a mem_service release has independently replayable certification a
 Options:
   --ops-bundle-file PATH                 Linux ops certification bundle.
   --remote-transport-bundle-file PATH    Remote transport certification bundle.
-  --app-dir DIR                          mem_service app directory containing linqu_mem_service_host.
+  --app-dir DIR                          Optional mem_service app directory
+                                         override for source-tree verification.
+                                         By default nested verifiers use the
+                                         installed libexec binary next to the
+                                         installed share tree, then fall back to
+                                         the source-tree app directory.
   --work-dir DIR                         Directory used to extract nested bundles.
   --dry-run                              Print the verification commands without running them.
   -h, --help                             Show this help.
@@ -92,8 +97,13 @@ OPS_VERIFY_WORK_DIR="$WORK_DIR/ops"
 REMOTE_TRANSPORT_VERIFY_WORK_DIR="$WORK_DIR/remote-transport"
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  printf '%s/verify_mem_service_ops_certification_bundle.sh --bundle-file %s --app-dir %s --work-dir %s\n' "$SCRIPT_DIR" "$OPS_BUNDLE_FILE" "$APP_DIR" "$OPS_VERIFY_WORK_DIR"
-  printf '%s/verify_mem_service_remote_transport_bundle.sh --bundle-file %s --app-dir %s --work-dir %s\n' "$SCRIPT_DIR" "$REMOTE_TRANSPORT_BUNDLE_FILE" "$APP_DIR" "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
+  if [[ -n "$APP_DIR" ]]; then
+    printf '%s/verify_mem_service_ops_certification_bundle.sh --bundle-file %s --app-dir %s --work-dir %s\n' "$SCRIPT_DIR" "$OPS_BUNDLE_FILE" "$APP_DIR" "$OPS_VERIFY_WORK_DIR"
+    printf '%s/verify_mem_service_remote_transport_bundle.sh --bundle-file %s --app-dir %s --work-dir %s\n' "$SCRIPT_DIR" "$REMOTE_TRANSPORT_BUNDLE_FILE" "$APP_DIR" "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
+  else
+    printf '%s/verify_mem_service_ops_certification_bundle.sh --bundle-file %s --work-dir %s\n' "$SCRIPT_DIR" "$OPS_BUNDLE_FILE" "$OPS_VERIFY_WORK_DIR"
+    printf '%s/verify_mem_service_remote_transport_bundle.sh --bundle-file %s --work-dir %s\n' "$SCRIPT_DIR" "$REMOTE_TRANSPORT_BUNDLE_FILE" "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
+  fi
   exit 0
 fi
 
@@ -105,19 +115,23 @@ if [[ ! -f "$REMOTE_TRANSPORT_BUNDLE_FILE" ]]; then
   echo "[mem-service-release-certification] FAIL: remote transport bundle file not found: $REMOTE_TRANSPORT_BUNDLE_FILE" >&2
   exit 1
 fi
-if [[ ! -d "$APP_DIR" ]]; then
-  echo "[mem-service-release-certification] FAIL: app directory not found: $APP_DIR" >&2
-  exit 1
-fi
-
 mkdir -p "$WORK_DIR"
-"$SCRIPT_DIR/verify_mem_service_ops_certification_bundle.sh" \
-  --bundle-file "$OPS_BUNDLE_FILE" \
-  --app-dir "$APP_DIR" \
-  --work-dir "$OPS_VERIFY_WORK_DIR"
-"$SCRIPT_DIR/verify_mem_service_remote_transport_bundle.sh" \
-  --bundle-file "$REMOTE_TRANSPORT_BUNDLE_FILE" \
-  --app-dir "$APP_DIR" \
-  --work-dir "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
+if [[ -n "$APP_DIR" ]]; then
+  "$SCRIPT_DIR/verify_mem_service_ops_certification_bundle.sh" \
+    --bundle-file "$OPS_BUNDLE_FILE" \
+    --app-dir "$APP_DIR" \
+    --work-dir "$OPS_VERIFY_WORK_DIR"
+  "$SCRIPT_DIR/verify_mem_service_remote_transport_bundle.sh" \
+    --bundle-file "$REMOTE_TRANSPORT_BUNDLE_FILE" \
+    --app-dir "$APP_DIR" \
+    --work-dir "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
+else
+  "$SCRIPT_DIR/verify_mem_service_ops_certification_bundle.sh" \
+    --bundle-file "$OPS_BUNDLE_FILE" \
+    --work-dir "$OPS_VERIFY_WORK_DIR"
+  "$SCRIPT_DIR/verify_mem_service_remote_transport_bundle.sh" \
+    --bundle-file "$REMOTE_TRANSPORT_BUNDLE_FILE" \
+    --work-dir "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
+fi
 
 printf '[mem-service-release-certification] PASS ops_bundle=%s remote_transport_bundle=%s\n' "$OPS_BUNDLE_FILE" "$REMOTE_TRANSPORT_BUNDLE_FILE"

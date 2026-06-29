@@ -3522,6 +3522,44 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 (scripts_dir / "verify_mem_service_release_certification.sh").stat().st_mode
                 & 0o111
             )
+            installed_host = (
+                destdir
+                / "usr"
+                / "libexec"
+                / "lingqu"
+                / "mem_service"
+                / "linqu_mem_service_host"
+            )
+            ops_dry_run = subprocess.run(
+                [
+                    str(scripts_dir / "verify_mem_service_linux_ops_evidence.sh"),
+                    "--evidence-file",
+                    "/tmp/linqu_mem_service_ops.evidence",
+                    "--dry-run",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            remote_dry_run = subprocess.run(
+                [
+                    str(scripts_dir / "verify_mem_service_remote_transport_evidence.sh"),
+                    "--evidence-file",
+                    "/tmp/linqu_mem_service_remote_transport.evidence",
+                    "--dry-run",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            self.assertIn(
+                f"{installed_host} ops-certification-verify",
+                ops_dry_run.stdout,
+            )
+            self.assertIn(
+                f"{installed_host} remote-transport-verify",
+                remote_dry_run.stdout,
+            )
             self.assertIn(
                 "release_script_root=share/lingqu/mem_service/scripts",
                 manifest.read_text(),

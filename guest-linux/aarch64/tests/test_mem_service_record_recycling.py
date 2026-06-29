@@ -687,6 +687,34 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh",
             cli_makefile,
         )
+        self.assertIn(
+            "verify_mem_service_linux_ops_evidence.sh --evidence-file /tmp/linqu_mem_service_ops.evidence --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_remote_transport_evidence.sh --evidence-file /tmp/linqu_mem_service_remote_transport.evidence --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu_mem_service_ops_bundle.tar --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar",
+            cli_makefile,
+        )
+        self.assertIn(
+            "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify",
+            cli_makefile,
+        )
+        self.assertIn(
+            "$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify",
+            cli_makefile,
+        )
         self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
         self.assertIn("^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$", cli_makefile)
         self.assertIn("^admin_output_schema_checksum=0x7021f4cf$$", cli_makefile)

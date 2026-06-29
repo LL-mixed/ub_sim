@@ -3,7 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_DIR="$ROOT_DIR/apps/mem_service"
+DEFAULT_APP_DIR="$ROOT_DIR/apps/mem_service"
+APP_DIR=""
+HOST_BIN=""
 BUNDLE_FILE=""
 WORK_DIR=""
 DRY_RUN=0
@@ -17,10 +19,58 @@ Verifies a mem_service production remote transport evidence bundle artifact.
 Options:
   --bundle-file PATH  Bundle produced by remote-transport-certification-bundle.
   --app-dir DIR       mem_service app directory containing linqu_mem_service_host.
+                      By default the script first tries the installed libexec
+                      binary next to the installed share tree, then falls back
+                      to the source-tree app directory.
   --work-dir DIR      Directory used to extract the bundle.
   --dry-run           Print the verification commands without running them.
   -h, --help          Show this help.
 EOF
+}
+
+resolve_host_bin() {
+  local installed_host
+
+  if [[ -n "$APP_DIR" ]]; then
+    HOST_BIN="$APP_DIR/linqu_mem_service_host"
+    if [[ ! -x "$HOST_BIN" ]]; then
+      make -C "$APP_DIR" linqu_mem_service_host
+    fi
+    return
+  fi
+
+  installed_host="$(cd "$SCRIPT_DIR/../../../.." && pwd)/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    HOST_BIN="$installed_host"
+    return
+  fi
+
+  APP_DIR="$DEFAULT_APP_DIR"
+  HOST_BIN="$APP_DIR/linqu_mem_service_host"
+  if [[ ! -d "$APP_DIR" ]]; then
+    echo "[mem-service-remote-transport-bundle] FAIL: app directory not found: $APP_DIR" >&2
+    exit 1
+  fi
+  if [[ ! -x "$HOST_BIN" ]]; then
+    make -C "$APP_DIR" linqu_mem_service_host
+  fi
+}
+
+print_host_verify_command() {
+  local installed_host
+
+  if [[ -n "$APP_DIR" ]]; then
+    printf '%s/linqu_mem_service_host remote-transport-verify --evidence-file %s/remote-transport.evidence\n' "$APP_DIR" "$WORK_DIR"
+    return
+  fi
+
+  installed_host="$(cd "$SCRIPT_DIR/../../../.." && pwd)/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    printf '%s remote-transport-verify --evidence-file %s/remote-transport.evidence\n' "$installed_host" "$WORK_DIR"
+    return
+  fi
+
+  printf '%s/linqu_mem_service_host remote-transport-verify --evidence-file %s/remote-transport.evidence\n' "$DEFAULT_APP_DIR" "$WORK_DIR"
 }
 
 while (( $# > 0 )); do
@@ -80,17 +130,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
   printf 'tar -C %s -xf %s\n' "$WORK_DIR" "$BUNDLE_FILE"
   printf 'test -f %s/remote-transport-bundle.manifest\n' "$WORK_DIR"
   printf 'test -f %s/remote-transport.evidence\n' "$WORK_DIR"
-  printf '%s/linqu_mem_service_host remote-transport-verify --evidence-file %s/remote-transport.evidence\n' "$APP_DIR" "$WORK_DIR"
+  print_host_verify_command
   exit 0
 fi
 
 if [[ ! -f "$BUNDLE_FILE" ]]; then
   echo "[mem-service-remote-transport-bundle] FAIL: bundle file not found: $BUNDLE_FILE" >&2
-  exit 1
-fi
-
-if [[ ! -d "$APP_DIR" ]]; then
-  echo "[mem-service-remote-transport-bundle] FAIL: app directory not found: $APP_DIR" >&2
   exit 1
 fi
 
@@ -127,9 +172,6 @@ grep -q '^evidence=remote-transport.evidence$' "$MANIFEST"
 grep -q '^release_manifest=release-manifest.txt$' "$MANIFEST"
 grep -q '^package_manifest=package-manifest.txt$' "$MANIFEST"
 
-if [[ ! -x "$APP_DIR/linqu_mem_service_host" ]]; then
-  make -C "$APP_DIR" linqu_mem_service_host
-fi
-
-"$APP_DIR/linqu_mem_service_host" remote-transport-verify --evidence-file "$EVIDENCE"
+resolve_host_bin
+"$HOST_BIN" remote-transport-verify --evidence-file "$EVIDENCE"
 printf '[mem-service-remote-transport-bundle] PASS bundle=%s evidence=%s\n' "$BUNDLE_FILE" "$EVIDENCE"

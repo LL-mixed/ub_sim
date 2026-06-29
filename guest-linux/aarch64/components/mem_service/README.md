@@ -108,6 +108,10 @@ a Qwen3 adapter inspect build:
   certification verifier. `package-manifest` records `release_script_root`,
   each `release_script`, and `file_class=release_scripts count=7`; install,
   tar, deb, and rpm smokes verify those scripts are present and executable.
+  The evidence, bundle, and release verifiers first resolve the installed
+  `libexec/lingqu/mem_service/linqu_mem_service_host` relative to that
+  `share/` script directory, then fall back to the source-tree app directory
+  only when the installed host binary is absent or `--app-dir` is supplied.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC
@@ -238,7 +242,8 @@ a Qwen3 adapter inspect build:
   contract checksums, binary self-description gate, required fixture gates, and
   not-certified boundaries for cross-version/runtime-environment claims. It
   also freezes the installed release-script payload so a published package can
-  carry its own post-release evidence verification entrypoints.
+  carry its own post-release evidence verification entrypoints without
+  requiring a source checkout for the default verifier path.
 - `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the
   release layout, then compiles the serving and pretraining examples from the
   installed public headers, installed SDK sources, and installed example
