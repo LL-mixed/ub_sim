@@ -4,11 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host serve --config /etc/lingqu/mem_service/mem_service.conf
+ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host serve --config /etc/lingqu/mem_service/mem_service.host.conf
 Restart=on-failure
 RestartSec=2
 RuntimeDirectory=lingqu
-StateDirectory=lingqu/mem_service
+StateDirectory=lingqu/mem_service_host
 
 [Install]
 WantedBy=multi-user.target

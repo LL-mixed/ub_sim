@@ -1788,8 +1788,8 @@ int main(int argc, char **argv)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=4127", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xac6312a9", fixtures.stdout)
+        self.assertIn("package_manifest_len=4281", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xe58a9d13", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1810,9 +1810,9 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=4127", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xac6312a9", fixtures.stdout)
-        self.assertIn("installed_files=33", fixtures.stdout)
+        self.assertIn("manifest_len=4281", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xe58a9d13", fixtures.stdout)
+        self.assertIn("installed_files=35", fixtures.stdout)
         self.assertIn("required_gates=21", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
@@ -1841,7 +1841,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xac6312a9\n"
+            "package_manifest_checksum=0xe58a9d13\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1887,7 +1887,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0xac6312a9", generated.stdout)
+        self.assertIn("package_manifest_checksum=0xe58a9d13", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -3183,7 +3183,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xac6312a9", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xe58a9d13", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3228,13 +3228,21 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "rpm_package_runtime=requires-linux-rpm-toolchain",
                 package_manifest.read_text(),
             )
-            self.assertIn("installed_file_count=33", package_manifest.read_text())
+            self.assertIn("installed_file_count=35", package_manifest.read_text())
             self.assertIn(
                 "runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf",
                 package_manifest.read_text(),
             )
             self.assertIn(
                 "runtime_config=etc/lingqu/mem_service/mem_service.conf",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "host_runtime_config_source=share/lingqu/mem_service/config/mem_service.host.runtime.conf",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf",
                 package_manifest.read_text(),
             )
             self.assertIn(
@@ -3297,6 +3305,8 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                           manifest.read_text())
             self.assertIn("linux_ops_certification_smoke=linux-ops-certification-smoke",
                           manifest.read_text())
+            self.assertIn("linux_ops_deployment_smoke=linux-ops-deployment-smoke",
+                          manifest.read_text())
             self.assertIn("ops_certification_verify=ops-certification-verify --evidence-file",
                           manifest.read_text())
             self.assertIn("real_systemd_environment=not-certified", manifest.read_text())
@@ -3334,6 +3344,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn(
+                "host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "host_runtime_config_source=share/lingqu/mem_service/config/mem_service.host.runtime.conf",
+                manifest.read_text(),
+            )
+            self.assertIn(
                 "systemd_unit=lib/systemd/system/linqu_mem_service.service",
                 manifest.read_text(),
             )
@@ -3368,7 +3386,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("mem_service_pretraining_example.c", manifest.read_text())
             self.assertIn(
                 "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
-                "serve --config /etc/lingqu/mem_service/mem_service.conf",
+                "serve --config /etc/lingqu/mem_service/mem_service.host.conf",
                 host_deploy_manifest.read_text(),
             )
             self.assertEqual(wire_schema.read_text(), WIRE_SCHEMA_MANIFEST.read_text())
@@ -3652,6 +3670,41 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 + result.stderr
             )
 
+        with tempfile.TemporaryDirectory(prefix="msvc_linux_deploy_", dir=str(_tmp_parent())) as tmp:
+            package_out = Path(tmp) / "package"
+            evidence = package_out / "ops-certification-linux-ci.evidence"
+            result = subprocess.run(
+                [
+                    "make",
+                    "-C",
+                    str(app_dir),
+                    "CFLAGS=-O2 -Wall -Wextra",
+                    f"PACKAGE_OUT_DIR={package_out}",
+                    "linux-ops-deployment-smoke",
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["make", "-C", str(app_dir), "clean"],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(evidence.exists())
+            self.assertTrue(
+                "rpmbuild" in result.stdout + result.stderr
+                or "uname -s" in result.stdout + result.stderr
+                or "id -u" in result.stdout + result.stderr
+                or "/run/systemd/system" in result.stdout + result.stderr
+                or "ops-certification-linux-ci-smoke: fail-closed" in result.stderr
+            )
+
     def test_installed_host_service_manager_and_collector_smoke(self):
         app_dir = ROOT / "apps" / "mem_service"
         with tempfile.TemporaryDirectory(prefix="msvc_host_service_", dir=str(_tmp_parent())) as tmp:
@@ -3693,7 +3746,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                     installed_service_unit.read_text(),
                 )
                 self.assertIn(
-                    "StateDirectory=lingqu/mem_service",
+                    "StateDirectory=lingqu/mem_service_host",
                     installed_service_unit.read_text(),
                 )
                 self.assertEqual(
@@ -3720,7 +3773,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 self.assertEqual(exec_start[1:3], ["serve", "--config"])
                 self.assertEqual(
                     exec_start[3],
-                    "/etc/lingqu/mem_service/mem_service.conf",
+                    "/etc/lingqu/mem_service/mem_service.host.conf",
                 )
                 command = [str(host_binary), *exec_start[1:3], str(config_path)]
                 proc = subprocess.Popen(

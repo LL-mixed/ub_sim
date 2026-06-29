@@ -213,11 +213,18 @@ a Qwen3 adapter inspect build:
   Linux rpm-toolchain gate: it requires `rpmbuild`, `rpm2cpio`, and `cpio`; on
   hosts without those tools it fails closed rather than certifying an rpm
   artifact.
-- `make linux-ops-certification-smoke` is the Linux CI orchestration gate. It
-  first runs `package-rpm-smoke`, then requires the real deployment
+- `make linux-ops-certification-smoke` is the Linux CI evidence verification
+  gate. It first runs `package-rpm-smoke`, then requires the real deployment
   upgrade/rollback marker, and finally runs `ops-certification-linux-ci-smoke`
   to persist and verify the evidence file. It is expected to fail closed on
   developer hosts without the rpm/systemd/upgrade-rollback environment.
+- `make linux-ops-deployment-smoke` is the privileged real-Linux deployment
+  gate. It requires Linux, root, systemd, rpm, curl, promtool, and the
+  upgrade/rollback marker; installs the built rpm, daemon-reloads systemd,
+  starts both `linqu_mem_service.service` and
+  `linqu_mem_service.host.service`, scrapes metrics from the service and host
+  ports, checks the installed Prometheus rules, and then runs the same
+  `ops-certification-linux-ci-smoke` evidence verifier.
 
 Build and validation entrypoints:
 
@@ -256,11 +263,16 @@ Build and validation entrypoints:
   `installed-layout-v1` package layout. The runtime config source is
   `share/lingqu/mem_service/config/mem_service.runtime.conf`, separate from the
   `/tmp`-oriented example config, and defaults to `/run/lingqu` plus
-  `/var/lib/lingqu/mem_service` paths. It also installs the service units into
+  `/var/lib/lingqu/mem_service` paths. The host service has its own
+  `share/lingqu/mem_service/config/mem_service.host.runtime.conf` copied to
+  `etc/lingqu/mem_service/mem_service.host.conf`, using
+  `/run/lingqu/mem_service_host.sock`,
+  `/var/lib/lingqu/mem_service_host`, and metrics port `9901` so both systemd
+  units can be active in the same Linux CI run. It also installs the service units into
   `usr/lib/systemd/system/` while keeping the same files under
   `share/lingqu/mem_service/deploy/` as checked deployment manifests. The
   installed systemd units point at that `/etc` runtime config path and declare
-  `RuntimeDirectory=lingqu` plus `StateDirectory=lingqu/mem_service`, so
+  `RuntimeDirectory=lingqu` plus service-specific `StateDirectory` values, so
   tar/deb/rpm package smokes verify the units and config are present instead of
   relying on share-only example files.
 - Guest app runners provide the CLI surface that exercises the component.
@@ -361,16 +373,18 @@ Keep the implementation layers separated:
   The install/package contract now includes the default runtime config at
   `etc/lingqu/mem_service/mem_service.conf`; it is copied from the checked
   `configs/mem_service.runtime.conf` deploy config, while
-  `configs/mem_service.example.conf` remains the developer `/tmp` example. Both
-  release and package manifests list the runtime config as the service unit's
-  default configuration source. The package layout also installs
+  `configs/mem_service.example.conf` remains the developer `/tmp` example. The
+  host unit uses `configs/mem_service.host.runtime.conf`, copied to
+  `etc/lingqu/mem_service/mem_service.host.conf`, with a distinct socket,
+  state directory, and metrics port from the main unit. Both release and
+  package manifests list the service and host runtime config sources. The
+  package layout also installs
   `lib/systemd/system/linqu_mem_service.service` and
   `lib/systemd/system/linqu_mem_service.host.service` as the enableable unit
   files, with the share/deploy copies retained as contract manifests. The
-  systemd unit files declare `RuntimeDirectory=lingqu` and
-  `StateDirectory=lingqu/mem_service` so Linux systemd owns the default
-  `/run/lingqu` socket directory and `/var/lib/lingqu/mem_service` state
-  directory.
+  systemd unit files declare `RuntimeDirectory=lingqu` and service-specific
+  `StateDirectory` values so Linux systemd owns the default `/run/lingqu`
+  socket directory and `/var/lib/lingqu/*` state directories.
   `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real HTTP scrape
   listener covered by runtime tests. The portable service-manager lifecycle
   smoke covers config startup, ready/health, HTTP scrape, collector metrics
