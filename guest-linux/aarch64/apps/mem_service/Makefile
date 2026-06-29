@@ -194,6 +194,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host serving-fail-closed-fixtures
 	./linqu_mem_service_host pretraining-fail-closed-fixtures
 	./linqu_mem_service_host typed-payload-fixtures
+	./linqu_mem_service_host remote-block-backend-policy-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
 
@@ -621,6 +622,8 @@ install-smoke: install
 	grep -q '^durable_catalog=storage-root-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_catalog_manifest=catalog/manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_block_backend=requires-transport-layer$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_block_backend_gate=remote-block-backend-policy-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_block_ingest=payload-inline,payload-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_export_format=prometheus-text$$' $(INSTALL_DATADIR)/release-manifest.txt

@@ -424,11 +424,15 @@ Keep the implementation layers separated:
   catalog layout (`catalog/manifest.txt`, `blocks/`, `quarantine/`) and derives
   `catalog/store.snapshot` when `store` is omitted; `sealed-local-block-v1`
   writes inline and server-side `payload_path` payloads into
-  `blocks/<checksum>.block` and verifies them on read. Remote/chunked sealed
-  payload blocks, real systemd environment smoke, production collector/alert
-  environment integration smoke, old-server runtime-binary certification, product-grade
-  restore policy, payload ownership, atomic durable catalog, and product-grade
-  durable migration remain deployment work.
+  `blocks/<checksum>.block` and verifies them on read. `sealed-chunked-block-v1`
+  writes large payloads into chunk directories and fail-closed quarantines
+  corrupt chunks. Remote payload block storage is explicitly not admitted until
+  the transport layer lands; the release contract records
+  `remote_payload_block_backend=requires-transport-layer` and the local
+  `remote-block-backend-policy-fixtures` gate prevents it being mistaken for a
+  supported backend. Real systemd environment smoke, production collector/alert
+  environment integration smoke, product-grade restore policy, payload ownership,
+  and remote transport-backed block storage remain deployment work.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.

@@ -2014,6 +2014,23 @@ int main(int argc, char **argv)
         # reassembled checksum no longer matches -> fail-closed quarantine.
         self.assertIn("integrity=fail-closed-quarantine", fixtures.stdout)
 
+    def test_remote_block_backend_policy_fixtures_cli_is_fail_closed(self):
+        fixtures = self._run_client("remote-block-backend-policy-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn(
+            "remote_payload_block_backend=requires-transport-layer",
+            fixtures.stdout,
+        )
+        self.assertIn(
+            "remote_backend_admission=fail-closed-until-transport-layer",
+            fixtures.stdout,
+        )
+        self.assertIn(
+            "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1",
+            fixtures.stdout,
+        )
+
     def test_deployment_fixtures_cli_validates_service_and_metrics_scrape_contract(self):
         fixtures = self._run_client("deployment-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)

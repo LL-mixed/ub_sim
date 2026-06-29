@@ -50,7 +50,7 @@
 - **已闭环（2026-06-27，4.2a）**：catalog schema 版本化 + 前向兼容迁移策略（`catalog_schema_version=1`，serve 启动期 `mem_service_check_catalog_schema_version` 接受当前版本、拒绝未知未来版本，`migration_policy=catalog-schema-version-accept-current-reject-future`）；journal 原子写入屏障（`append_journal` 增加 `fflush`+`fsync`）+ 撕裂尾部恢复（`load_journal` 在 EOF 处丢弃未闭合的 torn trailing frame 而非 brick 重启，新增 `journal-torn-recovery-fixtures` 用真实文件 I/O 证明）。
 - **已闭环（2026-06-27，4.2b）**：chunked sealed block backend（`sealed-chunked-block-v1`，payload_kind=65）：大 payload 按 1024B 分块写入 `blocks/<checksum>.chunked/` + manifest（chunk_count/chunk_size/total_len/total_checksum），validate 按序重组并重算 FNV-1a 64-bit 校验、任何不一致即 fail-closed quarantine 整目录。新增 `chunked-block-fixtures` 用真实文件 I/O 证明写/校验/破坏后隔离。`payload_block_backend` 契约扩展为 `sealed-local-block-v1,sealed-chunked-block-v1`。
 - **已闭环（2026-06-27，4.2c）**：journal 有界 compaction 策略（`journal_truncation_policy=threshold-compaction`）：成功 save_store 后，若 journal 超过 `MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES`（4096）即原子重写为 header-only（snapshot 已是 source of truth，不破坏 cross-restart replay）。新增 `journal-compaction-fixtures` 用 65 次真实 PUT 证明 journal 被界定在阈值内、旧事件被 compact 掉、且 snapshot 恢复 + idempotency replay 仍成立。
-- 尚缺：remote（远端 transport）block backend（需 transport 层，超当前范围）。
+- remote（远端 transport）block backend 仍需 transport 层实现，但发布语义已显式 fail-closed：`remote_payload_block_backend=requires-transport-layer` 与 `remote_payload_block_backend_gate=remote-block-backend-policy-fixtures` 进入 release manifest，避免把 local/chunked block backend 误读为远端 block backend 已可用。
 
 ### 3.3 wire/接口演进深度
 
@@ -113,7 +113,7 @@
 - 当前达成度：`~96%`（2026-06-27 更新，较 ~95% 提升：typed-binary 数据面 4.5 已闭环；所有进程内可做的缺口已全部完成）
 - 当前状态：**可独立运行、可基本协同**，剩余缺口全部是**环境/外部依赖**阻塞：
   - ~~跨版本组合兼容闭环~~ ✅（4.1）
-  - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环（4.2a/b/c）；⏳ 仅剩 remote block backend（需 transport 层）
+  - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环（4.2a/b/c）；remote block backend 已有显式 fail-closed release contract，真实远端实现仍需 transport 层
   - ~~serving/pretraining 负例矩阵（4.3）~~ ✅（4.3）
   - 真实运维场景硬门禁（4.4）：✅ 本地 fail-closed admission policy、外部 evidence generator/verifier、一键 Linux CI smoke gate、rpm package target、upgrade/rollback marker 生成 target、Linux CI 真实部署编排 target、可复用 CI wrapper、evidence artifact 复验 wrapper、认证证据包归档 target 与认证证据包复验 wrapper 已接入 release/package/install；**真实通过仍环境阻塞**（需真实 Linux CI：systemd + rpm toolchain + rollback rpm 运行 `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm>`，并用 `scripts/verify_mem_service_linux_ops_evidence.sh --evidence-file <evidence>` 或 `scripts/verify_mem_service_ops_certification_bundle.sh --bundle-file <bundle>` 复验产物），simulator 级门禁已就绪
   - ~~数据面 typed-binary 演进（4.5）~~ ✅（4.5）

@@ -82,6 +82,7 @@ static void usage(const char *argv0)
     printf(" [package-manifest] [package-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [chunked-block-fixtures]");
+    printf(" [remote-block-backend-policy-fixtures]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
@@ -3590,6 +3591,8 @@ static int run_release_manifest(void)
     printf("durable_catalog=storage-root-v1\n");
     printf("durable_catalog_manifest=catalog/manifest.txt\n");
     printf("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1\n");
+    printf("remote_payload_block_backend=requires-transport-layer\n");
+    printf("remote_payload_block_backend_gate=remote-block-backend-policy-fixtures\n");
     printf("payload_block_ingest=payload-inline,payload-file\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
@@ -3827,6 +3830,15 @@ static int run_release_fixture_check(void)
            MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN,
            MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM);
+    return 0;
+}
+
+static int run_remote_block_backend_policy_fixture_check(void)
+{
+    printf("mem_service remote-block-backend-policy-fixtures: status=ok "
+           "remote_payload_block_backend=requires-transport-layer "
+           "remote_backend_admission=fail-closed-until-transport-layer "
+           "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1\n");
     return 0;
 }
 
@@ -6888,6 +6900,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "chunked-block-fixtures") == 0) {
         return mem_service_run_chunked_block_fixture_check();
+    }
+    if (strcmp(argv[1], "remote-block-backend-policy-fixtures") == 0) {
+        return run_remote_block_backend_policy_fixture_check();
     }
     if (strcmp(argv[1], "client-retry-fixtures") == 0) {
         return run_client_retry_fixture_check();

@@ -989,6 +989,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^durable_catalog=storage-root-v1$$" in app_makefile
     assert "^durable_catalog_manifest=catalog/manifest.txt$$" in app_makefile
     assert "^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1$$" in app_makefile
+    assert "^remote_payload_block_backend=requires-transport-layer$$" in app_makefile
+    assert "^remote_payload_block_backend_gate=remote-block-backend-policy-fixtures$$" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
     assert "^metrics_http_listener=tcp-ipv4$$" in app_makefile
     assert "^metrics_scrape_path=/metrics$$" in app_makefile
@@ -1089,6 +1091,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_pretraining_fail_closed_fixture_check" in app_source
     assert 'strcmp(argv[1], "typed-payload-fixtures")' in app_source
     assert "mem_service_run_typed_payload_fixture_check" in app_source
+    assert 'strcmp(argv[1], "remote-block-backend-policy-fixtures")' in app_source
+    assert "run_remote_block_backend_policy_fixture_check" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U" in app_source
@@ -1237,6 +1241,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "durable_catalog=storage-root-v1" in release_manifest
     assert "durable_catalog_manifest=catalog/manifest.txt" in release_manifest
     assert "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1" in release_manifest
+    assert "remote_payload_block_backend=requires-transport-layer" in release_manifest
+    assert "remote_payload_block_backend_gate=remote-block-backend-policy-fixtures" in release_manifest
     assert "durable_journal=store-path.journal" in release_manifest
     assert "metrics_listen_config=metrics_listen" in release_manifest
     assert "metrics_http_listener=tcp-ipv4" in release_manifest
