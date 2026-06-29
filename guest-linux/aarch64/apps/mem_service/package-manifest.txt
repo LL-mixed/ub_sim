@@ -42,7 +42,7 @@ contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=
 contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0xa538400f
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x641e48ca
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
-contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0x8590ad51
+contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xbf0b8e75
 required_gate_count=19
 required_gate=release-fixtures
 required_gate=package-fixtures

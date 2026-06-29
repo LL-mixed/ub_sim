@@ -774,7 +774,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x0da5dde1$$" in app_makefile
+    assert "^package_manifest_checksum=0x06bedc71$$" in app_makefile
     assert "^package_gate=package-fixtures$$" in app_makefile
     assert "^upgrade_rollback_policy_checksum=0x0f9df008$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
@@ -793,6 +793,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^ops_certification_gate=ops-certification-fixtures$$" in app_makefile
     assert "^ops_certification_evidence_schema=ops-certification-evidence-v1$$" in app_makefile
     assert "^ops_certification_evidence_gate=ops-certification-evidence-fixtures$$" in app_makefile
+    assert "^ops_certification_generate=ops-certification-generate-evidence$$" in app_makefile
     assert "^ops_certification_verify=ops-certification-verify --evidence-file$$" in app_makefile
     assert "^real_systemd_environment=not-certified$$" in app_makefile
     assert "^production_collector_alert_environment=not-certified$$" in app_makefile
@@ -869,6 +870,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "ops-certification-policy")' in app_source
     assert 'strcmp(argv[1], "ops-certification-fixtures")' in app_source
     assert 'strcmp(argv[1], "ops-certification-evidence-fixtures")' in app_source
+    assert 'strcmp(argv[1], "ops-certification-generate-evidence")' in app_source
     assert 'strcmp(argv[1], "ops-certification-verify")' in app_source
     assert 'strcmp(argv[1], "durable-catalog-fixtures")' in app_source
     assert 'strcmp(argv[1], "client-retry-fixtures")' in app_source
@@ -936,18 +938,19 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_upgrade_rollback_runtime_fixture_check" in app_source
     assert "MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U" in app_source
     assert "MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U" in app_source
-    assert "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 991U" in app_source
-    assert "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0x8590ad51U" in app_source
+    assert "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1068U" in app_source
+    assert "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xbf0b8e75U" in app_source
     assert "MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U" in app_source
     assert "render_ops_certification_policy" in app_source
     assert "run_ops_certification_fixture_check" in app_source
     assert "run_ops_certification_evidence_fixture_check" in app_source
+    assert "run_ops_certification_generate_evidence" in app_source
     assert "run_ops_certification_verify" in app_source
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3384U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x0da5dde1U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x06bedc71U" in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
     assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
     assert "render_package_manifest" in app_source
@@ -985,7 +988,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0x0da5dde1" in release_manifest
+    assert "package_manifest_checksum=0x06bedc71" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
     assert (
         "distributable_package=out/mem_service/"
@@ -1098,13 +1101,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "upgrade_rollback_policy_len=1968" in release_manifest
     assert "upgrade_rollback_policy_checksum=0x0f9df008" in release_manifest
     assert "package_manifest_len=3384" in release_manifest
-    assert "package_manifest_checksum=0x0da5dde1" in release_manifest
+    assert "package_manifest_checksum=0x06bedc71" in release_manifest
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest
-    assert "ops_certification_policy_len=991" in release_manifest
-    assert "ops_certification_policy_checksum=0x8590ad51" in release_manifest
+    assert "ops_certification_policy_len=1068" in release_manifest
+    assert "ops_certification_policy_checksum=0xbf0b8e75" in release_manifest
     assert "ops_certification_gate=ops-certification-fixtures" in release_manifest
     assert "ops_certification_evidence_schema=ops-certification-evidence-v1" in release_manifest
     assert "ops_certification_evidence_gate=ops-certification-evidence-fixtures" in release_manifest
+    assert "ops_certification_generate=ops-certification-generate-evidence" in release_manifest
     assert "ops_certification_verify=ops-certification-verify --evidence-file" in release_manifest
     assert "real_systemd_environment=not-certified" in release_manifest
     assert "production_collector_alert_environment=not-certified" in release_manifest
@@ -1160,6 +1164,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "certification_status=not-certified" in ops_certification_policy
     assert "admission_rule=fail-closed-until-external-evidence" in ops_certification_policy
     assert "evidence_schema=ops-certification-evidence-v1" in ops_certification_policy
+    assert "evidence_generate=ops-certification-generate-evidence" in ops_certification_policy
     assert "evidence_gate=ops-certification-evidence-fixtures" in ops_certification_policy
     assert "external_gate=linux-systemd-service-smoke" in ops_certification_policy
     assert "external_gate=prometheus-alertmanager-rule-smoke" in ops_certification_policy

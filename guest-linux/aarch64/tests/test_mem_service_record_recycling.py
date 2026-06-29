@@ -405,6 +405,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "ops-certification-policy")', cli_source)
         self.assertIn('strcmp(argv[1], "ops-certification-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "ops-certification-evidence-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "ops-certification-generate-evidence")', cli_source)
         self.assertIn('strcmp(argv[1], "ops-certification-verify")', cli_source)
         self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-policy")', cli_source)
@@ -484,15 +485,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0f9df008U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 991U", cli_source)
+        self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1068U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0x8590ad51U",
+            "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xbf0b8e75U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U", cli_source)
         self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3384U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x0da5dde1U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x06bedc71U",
             cli_source,
         )
         self.assertIn(
@@ -633,7 +634,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x0da5dde1$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x06bedc71$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
@@ -693,6 +694,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "^ops_certification_generate=ops-certification-generate-evidence$$",
+            cli_makefile,
+        )
+        self.assertIn(
             "^ops_certification_verify=ops-certification-verify --evidence-file$$",
             cli_makefile,
         )
@@ -739,7 +744,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0x0da5dde1", release_manifest)
+        self.assertIn("package_manifest_checksum=0x06bedc71", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -966,6 +971,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             "evidence_schema=ops-certification-evidence-v1",
+            ops_certification_policy,
+        )
+        self.assertIn(
+            "evidence_generate=ops-certification-generate-evidence",
             ops_certification_policy,
         )
         self.assertIn(

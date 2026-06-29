@@ -1785,10 +1785,10 @@ int main(int argc, char **argv)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
-        self.assertIn("ops_certification_policy_len=991", fixtures.stdout)
-        self.assertIn("ops_certification_policy_checksum=0x8590ad51", fixtures.stdout)
+        self.assertIn("ops_certification_policy_len=1068", fixtures.stdout)
+        self.assertIn("ops_certification_policy_checksum=0xbf0b8e75", fixtures.stdout)
         self.assertIn("package_manifest_len=3384", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x0da5dde1", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x06bedc71", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1810,7 +1810,7 @@ int main(int argc, char **argv)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
         self.assertIn("manifest_len=3384", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x0da5dde1", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x06bedc71", fixtures.stdout)
         self.assertIn("installed_files=29", fixtures.stdout)
         self.assertIn("required_gates=19", fixtures.stdout)
 
@@ -1822,8 +1822,8 @@ int main(int argc, char **argv)
         fixtures = self._run_client("ops-certification-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("policy_len=991", fixtures.stdout)
-        self.assertIn("policy_checksum=0x8590ad51", fixtures.stdout)
+        self.assertIn("policy_len=1068", fixtures.stdout)
+        self.assertIn("policy_checksum=0xbf0b8e75", fixtures.stdout)
         self.assertIn("certification_status=not-certified", fixtures.stdout)
         self.assertIn(
             "admission_rule=fail-closed-until-external-evidence", fixtures.stdout
@@ -1839,8 +1839,8 @@ int main(int argc, char **argv)
             "certification_scope=real-linux-operations\n"
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
-            "ops_certification_policy_checksum=0x8590ad51\n"
-            "package_manifest_checksum=0x0da5dde1\n"
+            "ops_certification_policy_checksum=0xbf0b8e75\n"
+            "package_manifest_checksum=0x06bedc71\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1878,6 +1878,25 @@ int main(int argc, char **argv)
         self.assertIn("evidence_schema=ops-certification-evidence-v1",
                       evidence_fixtures.stdout)
         self.assertIn("fail_closed=2", evidence_fixtures.stdout)
+
+        generated = self._run_client("ops-certification-generate-evidence")
+        self.assertEqual(generated.returncode, 0, generated.stderr + generated.stdout)
+        self.assertIn(
+            "evidence_generator=ops-certification-generate-evidence",
+            generated.stdout,
+        )
+        self.assertIn("ops_certification_policy_checksum=0xbf0b8e75", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x06bedc71", generated.stdout)
+        self.assertIn("rpm_package_smoke=fail", generated.stdout)
+
+        with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
+            generated_path = Path(tmp) / "ops.generated.evidence"
+            generated_path.write_text(generated.stdout)
+            generated_rejected = self._run_client(
+                "ops-certification-verify", "--evidence-file", str(generated_path)
+            )
+            self.assertNotEqual(generated_rejected.returncode, 0)
+            self.assertIn("fail-closed", generated_rejected.stderr)
 
     def test_api_abi_policy_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("api-abi-fixtures")
@@ -3149,7 +3168,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x0da5dde1", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x06bedc71", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3220,10 +3239,12 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt",
                 manifest.read_text(),
             )
-            self.assertIn("ops_certification_policy_checksum=0x8590ad51", manifest.read_text())
+            self.assertIn("ops_certification_policy_checksum=0xbf0b8e75", manifest.read_text())
             self.assertIn("ops_certification_gate=ops-certification-fixtures",
                           manifest.read_text())
             self.assertIn("ops_certification_evidence_gate=ops-certification-evidence-fixtures",
+                          manifest.read_text())
+            self.assertIn("ops_certification_generate=ops-certification-generate-evidence",
                           manifest.read_text())
             self.assertIn("ops_certification_verify=ops-certification-verify --evidence-file",
                           manifest.read_text())
