@@ -251,8 +251,11 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
     assert "--producer-host HOST" in runner
     assert "--consumer-host HOST" in runner
     assert "--network-partition-marker PATH" in runner
+    assert "--bundle-file PATH" in runner
     assert "remote-transport-generate-evidence" in runner
     assert "remote-transport-verify --evidence-file" in runner
+    assert "remote-transport-certification-bundle" in runner
+    assert "remote-transport-certification-bundle-verify" in runner
     assert "source_address_non_loopback" not in runner
     assert "non-loopback IPv4 address" in runner
 
@@ -276,6 +279,8 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
             "/tmp/remote-transport.partition",
             "--evidence-file",
             "/tmp/remote-transport.evidence",
+            "--bundle-file",
+            "/tmp/linqu-mem-service-remote-transport-bundle.tar",
             "--storage-root",
             "/tmp/remote-transport.storage",
             "--dry-run",
@@ -295,8 +300,11 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
     assert "--consumer-host consumer-b" in dry_run.stdout
     assert "--network-partition-marker /tmp/remote-transport.partition" in dry_run.stdout
     assert "--evidence-file /tmp/remote-transport.evidence" in dry_run.stdout
+    assert "REMOTE_TRANSPORT_EVIDENCE=/tmp/remote-transport.evidence" in dry_run.stdout
+    assert "REMOTE_TRANSPORT_BUNDLE=/tmp/linqu-mem-service-remote-transport-bundle.tar" in dry_run.stdout
     assert "--storage-root /tmp/remote-transport.storage" in dry_run.stdout
     assert "remote-transport-verify --evidence-file /tmp/remote-transport.evidence" in dry_run.stdout
+    assert "remote-transport-certification-bundle remote-transport-certification-bundle-verify" in dry_run.stdout
 
 
 def test_mem_service_remote_transport_evidence_verifier_is_reusable_and_dry_runnable():

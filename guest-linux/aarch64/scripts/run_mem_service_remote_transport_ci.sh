@@ -10,6 +10,7 @@ PRODUCER_HOST=""
 CONSUMER_HOST=""
 PARTITION_MARKER=""
 EVIDENCE_FILE=""
+BUNDLE_FILE=""
 STORAGE_ROOT=""
 DRY_RUN=0
 
@@ -28,6 +29,7 @@ Requirements:
 
 Outputs:
   - remote-transport.evidence
+  - linqu-mem-service-remote-transport-bundle.tar
 
 Options:
   --source tcp:IP:PORT              Producer TCP payload source.
@@ -35,6 +37,7 @@ Options:
   --consumer-host HOST              Consumer host identity recorded in evidence.
   --network-partition-marker PATH   Marker proving partition fail-closed behavior.
   --evidence-file PATH              Evidence output path.
+  --bundle-file PATH                Bundle output path.
   --storage-root DIR                Temporary storage root used by the probe.
   --out-dir DIR                     Output directory for default evidence/storage paths.
   --app-dir DIR                     mem_service app directory containing linqu_mem_service_host.
@@ -83,6 +86,14 @@ while (( $# > 0 )); do
         exit 2
       fi
       EVIDENCE_FILE="$2"
+      shift 2
+      ;;
+    --bundle-file)
+      if (( $# < 2 )); then
+        echo "--bundle-file requires a path" >&2
+        exit 2
+      fi
+      BUNDLE_FILE="$2"
       shift 2
       ;;
     --storage-root)
@@ -145,15 +156,19 @@ fi
 if [[ -z "$EVIDENCE_FILE" ]]; then
   EVIDENCE_FILE="$OUT_DIR/remote-transport.evidence"
 fi
+if [[ -z "$BUNDLE_FILE" ]]; then
+  BUNDLE_FILE="$OUT_DIR/linqu-mem-service-remote-transport-bundle.tar"
+fi
 if [[ -z "$STORAGE_ROOT" ]]; then
   STORAGE_ROOT="$OUT_DIR/storage"
 fi
 
-printf '[mem-service-remote-transport-ci] RUN source=%s producer=%s consumer=%s evidence=%s\n' "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$EVIDENCE_FILE"
+printf '[mem-service-remote-transport-ci] RUN source=%s producer=%s consumer=%s evidence=%s bundle=%s\n' "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$EVIDENCE_FILE" "$BUNDLE_FILE"
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
   printf '%s/linqu_mem_service_host remote-transport-generate-evidence --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --evidence-file %s --storage-root %s\n' "$APP_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$EVIDENCE_FILE" "$STORAGE_ROOT"
   printf '%s/linqu_mem_service_host remote-transport-verify --evidence-file %s\n' "$APP_DIR" "$EVIDENCE_FILE"
+  printf 'make -C %s PACKAGE_OUT_DIR=%s REMOTE_TRANSPORT_EVIDENCE=%s REMOTE_TRANSPORT_BUNDLE=%s remote-transport-certification-bundle remote-transport-certification-bundle-verify\n' "$APP_DIR" "$OUT_DIR" "$EVIDENCE_FILE" "$BUNDLE_FILE"
   exit 0
 fi
 
@@ -167,6 +182,7 @@ if [[ ! -f "$PARTITION_MARKER" ]]; then
 fi
 
 mkdir -p "$(dirname "$EVIDENCE_FILE")" "$STORAGE_ROOT"
+mkdir -p "$(dirname "$BUNDLE_FILE")"
 if [[ ! -x "$APP_DIR/linqu_mem_service_host" ]]; then
   make -C "$APP_DIR" linqu_mem_service_host
 fi
@@ -179,5 +195,11 @@ fi
   --evidence-file "$EVIDENCE_FILE" \
   --storage-root "$STORAGE_ROOT"
 "$APP_DIR/linqu_mem_service_host" remote-transport-verify --evidence-file "$EVIDENCE_FILE"
+make -C "$APP_DIR" \
+  PACKAGE_OUT_DIR="$OUT_DIR" \
+  REMOTE_TRANSPORT_EVIDENCE="$EVIDENCE_FILE" \
+  REMOTE_TRANSPORT_BUNDLE="$BUNDLE_FILE" \
+  remote-transport-certification-bundle \
+  remote-transport-certification-bundle-verify
 
-printf '[mem-service-remote-transport-ci] PASS evidence=%s\n' "$EVIDENCE_FILE"
+printf '[mem-service-remote-transport-ci] PASS evidence=%s bundle=%s\n' "$EVIDENCE_FILE" "$BUNDLE_FILE"

@@ -455,7 +455,9 @@ Keep the implementation layers separated:
   `scripts/run_mem_service_remote_transport_ci.sh` is the reusable wrapper for
   that cross-host run; it builds `linqu_mem_service_host` if needed, runs the
   generator, and re-runs `remote-transport-verify --evidence-file <path>` on
-  the generated artifact. After CI publishes the evidence artifact,
+  the generated artifact, then creates and verifies
+  `linqu-mem-service-remote-transport-bundle.tar`. After CI publishes the
+  evidence and bundle artifacts,
   `scripts/verify_mem_service_remote_transport_evidence.sh --evidence-file
   <path>` rebuilds/locates `linqu_mem_service_host` and re-runs
   `remote-transport-verify --evidence-file <path>` without needing the producer
