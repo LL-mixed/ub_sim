@@ -1790,6 +1790,7 @@ int main(int argc, char **argv)
         self.assertIn("host_artifacts=1", fixtures.stdout)
         self.assertIn("systemd_units=2", fixtures.stdout)
         self.assertIn("package_artifacts=4", fixtures.stdout)
+        self.assertIn("installed_sdk_runtime_smokes=1", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
@@ -1816,8 +1817,8 @@ int main(int argc, char **argv)
         self.assertIn("version_smokes=1", fixtures.stdout)
         self.assertIn("restore_policy_smokes=1", fixtures.stdout)
         self.assertIn("config_security_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=5408", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x1590a98b", fixtures.stdout)
+        self.assertIn("package_manifest_len=5590", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xbe6ecfe1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1842,8 +1843,8 @@ int main(int argc, char **argv)
         self.assertIn("wire_version=1", version.stdout)
         self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", version.stdout)
         self.assertIn("api_abi_policy_checksum=0x5d95ae02", version.stdout)
-        self.assertIn("package_manifest_len=5408", version.stdout)
-        self.assertIn("package_manifest_checksum=0x1590a98b", version.stdout)
+        self.assertIn("package_manifest_len=5590", version.stdout)
+        self.assertIn("package_manifest_checksum=0xbe6ecfe1", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
         self.assertIn("package_manifest_command=package-manifest", version.stdout)
         self.assertIn("config_security_gate=config-fixtures", version.stdout)
@@ -1853,18 +1854,18 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("service_version=0.1.0", fixtures.stdout)
-        self.assertIn("package_manifest_len=5408", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x1590a98b", fixtures.stdout)
+        self.assertIn("package_manifest_len=5590", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xbe6ecfe1", fixtures.stdout)
 
     def test_package_manifest_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("package-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=5408", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x1590a98b", fixtures.stdout)
+        self.assertIn("manifest_len=5590", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xbe6ecfe1", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
-        self.assertIn("required_gates=25", fixtures.stdout)
+        self.assertIn("required_gates=26", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1923,7 +1924,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x1590a98b\n"
+            "package_manifest_checksum=0xbe6ecfe1\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1969,7 +1970,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x1590a98b", generated.stdout)
+        self.assertIn("package_manifest_checksum=0xbe6ecfe1", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2169,7 +2170,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0x1590a98b\n"
+            "package_manifest_checksum=0xbe6ecfe1\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -3260,6 +3261,31 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
         ]
         subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
 
+    def _run_installed_sdk_runtime_smoke(
+        self,
+        app_dir: Path,
+        destdir: Path,
+        package_out: Path,
+    ) -> subprocess.CompletedProcess:
+        cmd = [
+            "make",
+            "-C",
+            str(app_dir),
+            "CC=cc",
+            "CFLAGS=-O2 -Wall -Wextra",
+            f"DESTDIR={destdir}",
+            f"PACKAGE_OUT_DIR={package_out}",
+            "PREFIX=/usr",
+            "installed-sdk-runtime-smoke",
+        ]
+        return subprocess.run(
+            cmd,
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def _parse_exec_start(self, service_unit: Path) -> list[str]:
         for line in service_unit.read_text().splitlines():
             if line.startswith("ExecStart="):
@@ -3451,13 +3477,21 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x1590a98b", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xbe6ecfe1", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),
             )
             self.assertIn(
                 "installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime",
                 manifest.read_text(),
             )
             self.assertIn("distributable_package_format=tar", manifest.read_text())
@@ -3544,6 +3578,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn(
                 "required_gate=installed-sdk-example-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "required_gate=installed-sdk-runtime-smoke",
                 package_manifest.read_text(),
             )
             self.assertIn(
@@ -3709,6 +3747,32 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             smoke_dir = package_out / "installed-sdk-example-smoke"
             self.assertTrue((smoke_dir / "mem_service_serving_example").exists())
             self.assertTrue((smoke_dir / "mem_service_pretraining_example").exists())
+
+    def test_installed_sdk_runtime_smoke_runs_external_clients(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        with tempfile.TemporaryDirectory(prefix="msvc_sdk_runtime_", dir=str(_tmp_parent())) as tmp:
+            destdir = Path(tmp) / "destdir"
+            package_out = Path(tmp) / "out"
+            try:
+                result = self._run_installed_sdk_runtime_smoke(
+                    app_dir,
+                    destdir,
+                    package_out,
+                )
+            finally:
+                subprocess.run(
+                    ["make", "-C", str(app_dir), "clean"],
+                    cwd=REPO_ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+            self.assertIn("mem_service_serving_example=ok", result.stdout)
+            self.assertIn("mem_service_pretraining_example=ok", result.stdout)
+            self.assertIn("runtime_handoff_count=1", result.stdout)
+            self.assertIn("execution_artifact_count=1", result.stdout)
+            self.assertIn("training_artifact_count=6", result.stdout)
 
     @unittest.skipUnless(shutil.which("tar"), "tar is required")
     def test_make_package_tarball_smoke_creates_extractable_release_artifact(self):

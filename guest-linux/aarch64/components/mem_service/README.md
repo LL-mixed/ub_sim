@@ -235,6 +235,12 @@ a Qwen3 adapter inspect build:
   installed public headers, installed SDK sources, and installed example
   sources. This proves external serving/pretraining clients can build against
   the installed SDK boundary without depending on daemon-private source files.
+- `make installed-sdk-runtime-smoke DESTDIR=<dir> PREFIX=/usr` builds on that
+  installed SDK layout, starts the installed host daemon through its installed
+  binary path, runs the installed serving and pretraining example clients
+  against the daemon over a Unix socket, and checks the resulting service
+  status. This proves the installed daemon and external clients cooperate at
+  runtime without relying on source-tree private paths.
 - `apps/mem_service/packaging/linqu-mem-service.spec` is the rpm package spec
   used by `make package-rpm` and `make package-rpm-smoke`. The rpm smoke is a
   Linux rpm-toolchain gate: it requires `rpmbuild`, `rpm2cpio`, and `cpio`; on
@@ -310,7 +316,10 @@ Build and validation entrypoints:
   `usr/lib/systemd/system/` while keeping the same files under
   `share/lingqu/mem_service/deploy/` as checked deployment manifests.
   `installed-sdk-example-smoke` reuses that installed layout and compiles both
-  SDK examples only from the installed include/source/example roots. The
+  SDK examples only from the installed include/source/example roots.
+  `installed-sdk-runtime-smoke` then starts the installed host daemon and runs
+  those installed serving/pretraining clients against it over the public Unix
+  socket API. The
   installed systemd units point at that `/etc` runtime config path and declare
   `RuntimeDirectory=lingqu` plus service-specific `StateDirectory` values, so
   tar/deb/rpm package smokes verify the units and config are present instead of

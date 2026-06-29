@@ -503,9 +503,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5408U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5590U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1590a98bU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xbe6ecfe1U",
             cli_source,
         )
         self.assertIn(
@@ -681,8 +681,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x1590a98b$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xbe6ecfe1$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
+        self.assertIn("installed-sdk-runtime-smoke: installed-sdk-example-smoke", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c", cli_makefile)
         self.assertIn("$(INSTALL_SRCDIR)/mem_service_client.c", cli_makefile)
@@ -847,7 +848,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x1590a98b", release_manifest)
+        self.assertIn("package_manifest_checksum=0xbe6ecfe1", release_manifest)
         self.assertIn("binary_version_command=version", release_manifest)
         self.assertIn("binary_version_contract=text-kv", release_manifest)
         self.assertIn("binary_version_gate=version-fixtures", release_manifest)
@@ -858,6 +859,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("restore_policy_scope=full-snapshot+paged-snapshot", release_manifest)
         self.assertIn("restore_policy_gate=restore-policy-fixtures", release_manifest)
         self.assertIn("installed_sdk_example_smoke=installed-sdk-example-smoke", release_manifest)
+        self.assertIn("installed_sdk_runtime_smoke=installed-sdk-runtime-smoke", release_manifest)
+        self.assertIn(
+            "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime",
+            release_manifest,
+        )
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -1156,7 +1162,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("binary_version_command=version", package_manifest)
         self.assertIn("binary_version_contract=text-kv", package_manifest)
         self.assertIn("binary_version_gate=version-fixtures", package_manifest)
-        self.assertIn("required_gate_count=25", package_manifest)
+        self.assertIn("required_gate_count=26", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn("required_gate=version-fixtures", package_manifest)
         self.assertIn("required_gate=remote-transport-evidence-fixtures", package_manifest)
@@ -1172,6 +1178,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("required_gate=package-deb-smoke", package_manifest)
         self.assertIn("required_gate=package-rpm-smoke", package_manifest)
         self.assertIn("required_gate=installed-sdk-example-smoke", package_manifest)
+        self.assertIn("required_gate=installed-sdk-runtime-smoke", package_manifest)
+        self.assertIn("installed_sdk_runtime_smoke=installed-sdk-runtime-smoke", package_manifest)
         self.assertIn("required_gate=restore-policy-fixtures", package_manifest)
         self.assertIn("restore_policy=transactional-staged-restore", package_manifest)
         self.assertIn("restore_policy_gate=restore-policy-fixtures", package_manifest)

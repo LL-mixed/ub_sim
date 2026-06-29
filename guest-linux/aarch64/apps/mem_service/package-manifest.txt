@@ -33,6 +33,8 @@ header_root=include/lingqu/mem_service
 source_root=src/lingqu/mem_service
 installed_sdk_example_smoke=installed-sdk-example-smoke
 installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile
+installed_sdk_runtime_smoke=installed-sdk-runtime-smoke
+installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime
 config_root=share/lingqu/mem_service/config
 system_config_root=etc/lingqu/mem_service
 runtime_config=etc/lingqu/mem_service/mem_service.conf
@@ -67,7 +69,7 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x627bf6a1
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=25
+required_gate_count=26
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=version-fixtures
@@ -93,6 +95,7 @@ required_gate=package-deb-smoke
 required_gate=package-rpm-smoke
 required_gate=install-smoke
 required_gate=installed-sdk-example-smoke
+required_gate=installed-sdk-runtime-smoke
 serving_api=typed-c-client-v1
 pretraining_api=typed-c-client-v1
 payload_ownership_matrix=certified

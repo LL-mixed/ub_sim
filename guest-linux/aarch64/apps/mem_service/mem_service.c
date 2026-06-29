@@ -46,10 +46,10 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5408U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1590a98bU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5590U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xbe6ecfe1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 25U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 26U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -2502,6 +2502,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "config_root=share/lingqu/mem_service/config\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2750,6 +2758,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=installed-sdk-example-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=installed-sdk-runtime-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4169,6 +4181,12 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=remote-transport-evidence-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "required_gate=version-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=installed-sdk-runtime-smoke\n") == NULL ||
+        strstr(manifest, "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke\n") ==
+            NULL ||
+        strstr(manifest,
+               "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime\n") ==
+            NULL ||
         strstr(manifest, "binary_version_command=version\n") == NULL ||
         strstr(manifest, "binary_version_contract=text-kv\n") == NULL ||
         strstr(manifest, "binary_version_gate=version-fixtures\n") == NULL ||
@@ -4210,6 +4228,8 @@ static int run_release_manifest(void)
     printf("package_gate=package-fixtures\n");
     printf("installed_sdk_example_smoke=installed-sdk-example-smoke\n");
     printf("installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile\n");
+    printf("installed_sdk_runtime_smoke=installed-sdk-runtime-smoke\n");
+    printf("installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime\n");
     printf("distributable_package=out/mem_service/%s\n",
            MEM_SERVICE_PACKAGE_TARBALL_NAME);
     printf("distributable_package_format=tar\n");
@@ -4507,7 +4527,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 35U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 25U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 26U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -4557,6 +4577,7 @@ static int run_release_fixture_check(void)
            "public_headers=8 client_sources=2 examples=2 config_artifacts=6 "
            "host_artifacts=1 "
            "package_artifacts=4 "
+           "installed_sdk_runtime_smokes=1 "
            "version_smokes=1 "
            "config_security_smokes=1 "
            "systemd_units=2 "

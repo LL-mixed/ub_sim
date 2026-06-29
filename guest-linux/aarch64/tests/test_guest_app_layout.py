@@ -1139,8 +1139,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x1590a98b$$" in app_makefile
+    assert "^package_manifest_checksum=0xbe6ecfe1$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
+    assert "installed-sdk-runtime-smoke: installed-sdk-example-smoke" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
     assert "$(INSTALL_SRCDIR)/mem_service_client.c" in app_makefile
@@ -1364,8 +1365,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5408U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1590a98bU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5590U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xbe6ecfe1U" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1408,7 +1409,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x1590a98b" in release_manifest
+    assert "package_manifest_checksum=0xbe6ecfe1" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1419,6 +1420,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "restore_policy_scope=full-snapshot+paged-snapshot" in release_manifest
     assert "restore_policy_gate=restore-policy-fixtures" in release_manifest
     assert "installed_sdk_example_smoke=installed-sdk-example-smoke" in release_manifest
+    assert "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke" in release_manifest
+    assert (
+        "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime"
+        in release_manifest
+    )
     assert "package_gate=package-fixtures" in release_manifest
     assert (
         "distributable_package=out/mem_service/"
@@ -1546,8 +1552,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=5408" in release_manifest
-    assert "package_manifest_checksum=0x1590a98b" in release_manifest
+    assert "package_manifest_len=5590" in release_manifest
+    assert "package_manifest_checksum=0xbe6ecfe1" in release_manifest
     assert "remote_payload_production_network_transport=not-certified" in release_manifest
     assert (
         "remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1"
@@ -1713,7 +1719,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "binary_version_gate=version-fixtures" in package_manifest
     assert "file_class=runtime_config count=2" in package_manifest
     assert "file_class=systemd_units count=2" in package_manifest
-    assert "required_gate_count=25" in package_manifest
+    assert "required_gate_count=26" in package_manifest
     assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
     assert "required_gate=version-fixtures" in package_manifest
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
@@ -1731,6 +1737,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "required_gate=package-deb-smoke" in package_manifest
     assert "required_gate=package-rpm-smoke" in package_manifest
     assert "required_gate=installed-sdk-example-smoke" in package_manifest
+    assert "required_gate=installed-sdk-runtime-smoke" in package_manifest
+    assert "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke" in package_manifest
     assert "required_gate=restore-policy-fixtures" in package_manifest
     assert "restore_policy=transactional-staged-restore" in package_manifest
     assert "restore_policy_gate=restore-policy-fixtures" in package_manifest

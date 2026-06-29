@@ -99,6 +99,7 @@ REMOTE_TRANSPORT_BUNDLE_MANIFEST := $(REMOTE_TRANSPORT_BUNDLE_ROOT)/remote-trans
 REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/remote-transport-bundle.verify
 RELEASE_CERTIFICATION_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/release-certification.verify
 INSTALLED_SDK_EXAMPLE_SMOKE_DIR := $(PACKAGE_OUT_DIR)/installed-sdk-example-smoke
+INSTALLED_SDK_RUNTIME_SMOKE_DIR := $(PACKAGE_OUT_DIR)/installed-sdk-runtime-smoke
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
 INSTALL_SRCDIR := $(DESTDIR)$(PREFIX)/src/lingqu/mem_service
@@ -168,7 +169,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify release-certification-verify install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify release-certification-verify install installed-sdk-example-smoke installed-sdk-runtime-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -528,6 +529,33 @@ installed-sdk-example-smoke: install
 	test -x $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example
 	test -x $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example
 
+installed-sdk-runtime-smoke: installed-sdk-example-smoke
+	rm -rf $(INSTALLED_SDK_RUNTIME_SMOKE_DIR)
+	mkdir -p $(INSTALLED_SDK_RUNTIME_SMOKE_DIR)
+	set -eu; \
+	socket="$(abspath $(INSTALLED_SDK_RUNTIME_SMOKE_DIR))/mem_service.sock"; \
+	store="$(abspath $(INSTALLED_SDK_RUNTIME_SMOKE_DIR))/store.snapshot"; \
+	rm -f "$$socket" "$$store" "$$store.journal"; \
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host serve --listen unix:"$$socket" --store "$$store" > "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.stdout" 2> "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.stderr" & \
+	pid=$$!; \
+	trap 'kill "$$pid" >/dev/null 2>&1 || true; wait "$$pid" >/dev/null 2>&1 || true' EXIT INT TERM; \
+	i=0; \
+	while ! $(INSTALL_HOSTDIR)/linqu_mem_service_host ready --connect unix:"$$socket" >/dev/null 2>&1; do \
+		if ! kill -0 "$$pid" >/dev/null 2>&1; then \
+			cat "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.stderr"; \
+			exit 1; \
+		fi; \
+		i=$$((i + 1)); \
+		if [ "$$i" -ge 100 ]; then \
+			cat "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.stderr"; \
+			exit 1; \
+		fi; \
+		sleep 0.05; \
+	done; \
+	$(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example unix:"$$socket"; \
+	$(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example unix:"$$socket"; \
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host status --connect unix:"$$socket"
+
 install-smoke: install
 	test -x $(INSTALL_BINDIR)/linqu_mem_service
 	test -x $(INSTALL_HOSTDIR)/linqu_mem_service_host
@@ -561,11 +589,13 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=5408$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x1590a98b$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=5590$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xbe6ecfe1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^installed_sdk_runtime_smoke=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_root=usr+etc$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -777,7 +807,7 @@ install-smoke: install
 	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=25$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=26$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -789,6 +819,9 @@ install-smoke: install
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_sdk_runtime_smoke=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^restore_policy=transactional-staged-restore$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^restore_policy_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
