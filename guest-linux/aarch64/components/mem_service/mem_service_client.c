@@ -451,6 +451,11 @@ static int mem_service_client_append_artifact_query_payload(
                                                   payload_len,
                                                   "expected_artifact_id",
                                                   query->expected_artifact_id) != 0 ||
+        mem_service_client_append_optional_u32(payload,
+                                               payload_len,
+                                               "expected_owner",
+                                               query->has_expected_owner,
+                                               query->expected_owner) != 0 ||
         mem_service_client_append_optional_u64(payload,
                                                payload_len,
                                                "expected_version",
@@ -568,6 +573,8 @@ static int mem_service_client_resolve_training_ref(
     artifact_query.expected_model_key = query->expected_model_key;
     artifact_query.expected_artifact_kind = artifact_kind;
     artifact_query.expected_artifact_id = query->expected_artifact_id;
+    artifact_query.has_expected_owner = query->has_expected_owner;
+    artifact_query.expected_owner = query->expected_owner;
     artifact_query.has_expected_version = query->has_expected_version;
     artifact_query.expected_version = query->expected_version;
     artifact_query.has_expected_checksum = query->has_expected_checksum;

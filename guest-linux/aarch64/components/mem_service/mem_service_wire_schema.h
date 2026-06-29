@@ -130,6 +130,7 @@ static const struct mem_service_wire_payload_field
         {"expected_model_key", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
         {"expected_artifact_kind", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
         {"expected_artifact_id", MEM_SERVICE_WIRE_PAYLOAD_FIELD_STRING, false},
+        {"expected_owner", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U32, false},
         {"expected_version", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
         {"expected_checksum", MEM_SERVICE_WIRE_PAYLOAD_FIELD_U64, false},
 };

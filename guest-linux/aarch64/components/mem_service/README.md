@@ -479,8 +479,15 @@ Keep the implementation layers separated:
   validation, corruption fail-closed behavior, distinct producer/consumer
   hosts, and network-partition fail-closed behavior.
   Real systemd environment smoke, production collector/alert environment
-  integration smoke, product-grade restore policy, payload ownership, and
-  cross-machine remote transport-backed block storage remain deployment work.
+  integration smoke, product-grade restore policy, and cross-machine remote
+  transport-backed block storage remain deployment work. Artifact query payload
+  ownership is now an explicit opt-in contract: serving and pretraining clients
+  can send `expected_owner`, and the daemon rejects owner mismatches with
+  `invalid_model_binding` through the existing fail-closed query path. The
+  release contract records this as
+  `payload_ownership_scope=artifact-query-expected-owner`, with
+  `serving-fail-closed-fixtures` and `pretraining-fail-closed-fixtures` as the
+  evidence gate.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.

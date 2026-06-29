@@ -2,7 +2,7 @@ mem_service_wire_schema_manifest_version=1
 wire_schema_version=1
 wire_payload_format=text-kv
 operation_count=23
-field_count=110
+field_count=113
 oneof_count=1
 oneof_field_count=2
 operation=health:1 schema_version=1 payload_format=text-kv fields=0 oneofs=0
@@ -85,12 +85,13 @@ field=publish_runtime_handoff.version type=u64 required=0
 field=publish_runtime_handoff.idempotency_key type=string required=0
 field=publish_runtime_handoff.payload_inline type=string required=0
 field=publish_runtime_handoff.payload_path type=string required=0
-operation=resolve_runtime_handoff:65 schema_version=1 payload_format=text-kv fields=7 oneofs=0
+operation=resolve_runtime_handoff:65 schema_version=1 payload_format=text-kv fields=8 oneofs=0
 field=resolve_runtime_handoff.key type=string required=1
 field=resolve_runtime_handoff.expected_session_id type=string required=0
 field=resolve_runtime_handoff.expected_model_key type=string required=0
 field=resolve_runtime_handoff.expected_artifact_kind type=string required=0
 field=resolve_runtime_handoff.expected_artifact_id type=string required=0
+field=resolve_runtime_handoff.expected_owner type=u32 required=0
 field=resolve_runtime_handoff.expected_version type=u64 required=0
 field=resolve_runtime_handoff.expected_checksum type=u64 required=0
 operation=register_execution_artifact:80 schema_version=1 payload_format=text-kv fields=15 oneofs=0
@@ -109,12 +110,13 @@ field=register_execution_artifact.version type=u64 required=0
 field=register_execution_artifact.idempotency_key type=string required=0
 field=register_execution_artifact.payload_inline type=string required=0
 field=register_execution_artifact.payload_path type=string required=0
-operation=query_execution_artifact:81 schema_version=1 payload_format=text-kv fields=7 oneofs=0
+operation=query_execution_artifact:81 schema_version=1 payload_format=text-kv fields=8 oneofs=0
 field=query_execution_artifact.key type=string required=1
 field=query_execution_artifact.expected_session_id type=string required=0
 field=query_execution_artifact.expected_model_key type=string required=0
 field=query_execution_artifact.expected_artifact_kind type=string required=0
 field=query_execution_artifact.expected_artifact_id type=string required=0
+field=query_execution_artifact.expected_owner type=u32 required=0
 field=query_execution_artifact.expected_version type=u64 required=0
 field=query_execution_artifact.expected_checksum type=u64 required=0
 operation=register_training_artifact:96 schema_version=1 payload_format=text-kv fields=15 oneofs=0
@@ -133,11 +135,12 @@ field=register_training_artifact.version type=u64 required=0
 field=register_training_artifact.idempotency_key type=string required=0
 field=register_training_artifact.payload_inline type=string required=0
 field=register_training_artifact.payload_path type=string required=0
-operation=query_training_artifact:97 schema_version=1 payload_format=text-kv fields=7 oneofs=0
+operation=query_training_artifact:97 schema_version=1 payload_format=text-kv fields=8 oneofs=0
 field=query_training_artifact.key type=string required=1
 field=query_training_artifact.expected_session_id type=string required=0
 field=query_training_artifact.expected_model_key type=string required=0
 field=query_training_artifact.expected_artifact_kind type=string required=0
 field=query_training_artifact.expected_artifact_id type=string required=0
+field=query_training_artifact.expected_owner type=u32 required=0
 field=query_training_artifact.expected_version type=u64 required=0
 field=query_training_artifact.expected_checksum type=u64 required=0

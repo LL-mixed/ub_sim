@@ -21,10 +21,10 @@
 #endif
 
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_VERSION 1U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9220U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xce883650U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9416U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xf4cf34c6U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 23U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 110U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 113U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
@@ -34,7 +34,7 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2019U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcdcd3550U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xf7943816U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
@@ -45,8 +45,8 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4944U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1e9f6129U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5033U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa84d70d5U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 23U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -57,12 +57,12 @@
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5d95ae02U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1978U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x1844c64dU
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x61d07124U
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
 #define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1251U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xdac5b8d5U
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x1e017705U
 #define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1733U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x6509c49dU
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x627bf6a1U
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -2579,6 +2579,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "payload_ownership_matrix=certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "payload_ownership_scope=artifact-query-expected-owner\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "durable_backend=snapshot+journal\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3971,6 +3979,8 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=remote-transport-evidence-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
+        strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
+        strstr(manifest, "payload_ownership_scope=artifact-query-expected-owner\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
         return 1;
@@ -4055,6 +4065,9 @@ static int run_release_manifest(void)
     printf("serving_fail_closed_gate=serving-fail-closed-fixtures\n");
     printf("pretraining_fail_closed_matrix=certified\n");
     printf("pretraining_fail_closed_gate=pretraining-fail-closed-fixtures\n");
+    printf("payload_ownership_matrix=certified\n");
+    printf("payload_ownership_scope=artifact-query-expected-owner\n");
+    printf("payload_ownership_gate=serving-fail-closed-fixtures,pretraining-fail-closed-fixtures\n");
     printf("wire_payload_text_kv_format=text-kv\n");
     printf("wire_payload_typed_binary_format=typed-binary-v1\n");
     printf("wire_payload_typed_binary_gate=typed-payload-fixtures\n");
@@ -7205,6 +7218,7 @@ static int append_artifact_query_payload(char *payload,
         append_optional_payload_field(payload, payload_len, argc, argv, "--expected-model-key", "expected_model_key") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--expected-artifact-kind", "expected_artifact_kind") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--expected-artifact-id", "expected_artifact_id") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--expected-version", "expected_version") != 0 ||
         append_optional_payload_field(payload, payload_len, argc, argv, "--expected-checksum", "expected_checksum") != 0) {
         return -1;
@@ -7337,6 +7351,7 @@ static int append_training_step_query_payload(char *payload,
                              "expected_artifact_kind",
                              MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND) != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--expected-artifact-id", "expected_artifact_id") != 0 ||
+        append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--expected-version", "expected_version") != 0 ||
         append_required_payload_field(payload, payload_len, argc, argv, "--expected-checksum", "expected_checksum") != 0) {
         return -1;

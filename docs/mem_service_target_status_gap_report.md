@@ -1,6 +1,6 @@
 # mem_service 独立化状态与缺口闭环报告
 
-更新时间：2026-06-27
+更新时间：2026-06-29
 
 ## 1. 目标
 
@@ -19,7 +19,7 @@
 
 - `linqu_mem_service` 的服务进程形态已具备：`serve/health/ready/status/list-records/metrics/audit-log` 等最小 admin 与运行时闭环可用。
 - 业务 RPC 与 CLI 已覆盖：object、prefix、KV、runtime handoff、execution artifact、training artifact、training-step-commit。
-- query fail-closed 链路已具备上下文校验（`expected_session_id`、`expected_model_key`、`expected_artifact_kind`、`expected_artifact_id`、`expected_version`、`expected_checksum`）。
+- query fail-closed 链路已具备上下文校验（`expected_session_id`、`expected_model_key`、`expected_artifact_kind`、`expected_artifact_id`、`expected_owner`、`expected_version`、`expected_checksum`）。
 - mutation 可选 idempotency 支持并有 replay/conflict 语义，且结合 `store` 与 journal 可跨重启恢复。
 - `audit-log` 与 `metrics` 已有最小实现与导出（含基本直方图、命中/未命中/失败关闭、idempotency 计数）。
 - 已支持外部进程调用栈：`mem_service_wire_client` + `mem_service_client`，并有 serving/pretraining 示例覆盖。新增 `installed-sdk-example-smoke` 会从安装后的 public headers、SDK sources、example sources 编译两个外部客户端，证明外部 serving/pretraining 集成不依赖源码树内部路径。
@@ -55,7 +55,7 @@
 ### 3.3 wire/接口演进深度
 
 - payload schema 仍以文本 key/value 为主，未完成更完整的二进制/强 typed 数据面演进验证。**已闭环（2026-06-27，4.5）**：新增 typed-binary 编解码（TLV + 版本门禁）与 text-kv 并存，`typed-payload-fixtures` 真实字节级 round-trip + 前向兼容版本拒绝 + 畸形输入 fail-closed，对抗 review 零 bug。
-- **已闭环（2026-06-27，4.3）**：serving 与 pretraining 的 session/model/artifact-kind/artifact-id/version/checksum 负例已形成独立完整回归矩阵——新增 `serving-fail-closed-fixtures`（runtime-handoff + execution-artifact 各跑全 mismatch 矩阵）与 `pretraining-fail-closed-fixtures`（training-step-commit 全 mismatch 矩阵），用真实 `mem_service_handle_operation` + 真实 fail-closed 计数承载（serving fail_closed=10、pretraining fail_closed=5），并固化为 release-manifest 契约 + host-artifact-smoke/install-smoke 门禁。
+- **已闭环（2026-06-29，4.3 增量）**：serving 与 pretraining 的 session/model/artifact-kind/artifact-id/owner/version/checksum 负例已形成独立完整回归矩阵——`serving-fail-closed-fixtures`（runtime-handoff + execution-artifact 各跑全 mismatch 矩阵）与 `pretraining-fail-closed-fixtures`（training-step-commit 全 mismatch 矩阵），用真实 `mem_service_handle_operation` + 真实 fail-closed 计数承载（serving fail_closed=12、pretraining fail_closed=6）。owner 维度通过 artifact query 的 `expected_owner` 显式表达，owner mismatch 返回 `invalid_model_binding` 并计入 fail-closed。release-manifest 记录 `payload_ownership_matrix=certified`、`payload_ownership_scope=artifact-query-expected-owner` 与 `payload_ownership_gate=serving-fail-closed-fixtures,pretraining-fail-closed-fixtures`，并进入 host-artifact-smoke/install-smoke 门禁。
 
 ### 3.4 运维与部署闭环
 
@@ -80,10 +80,11 @@
    - ✅ 有界 compaction（4.2c）：`compact_journal` 在 save_store 成功后、journal 超 `MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES` 时原子重写为 header；新增 `journal-compaction-fixtures` 证明界定 + 恢复。`journal_truncation_policy=threshold-compaction` 写入 compat-matrix/compat-baseline 契约。
 3. ✅ 增加分片 block backend 的最小可行实现并接入兼容门禁（2026-06-27，4.2b）：`sealed-chunked-block-v1`（payload_kind=65），1024B 分块 + manifest，validate 重组重算 FNV-1a 64-bit + fail-closed quarantine；`chunked-block-fixtures` 真实 I/O 证明（该 fixture 在开发期捕获并修复了 2 个真实 bug：末块非整块校验、quarantine 路径）。2026-06-29 增加 `transport-loopback-block-v1`（payload_kind=66）和 `transport-tcp-block-v1`（payload_kind=67），分别由 `transport-block-fixtures` 与 `network-transport-block-fixtures` 证明；同日新增 `remote-transport-evidence-fixtures`、`remote-transport-generate-evidence`、`remote-transport-verify --evidence-file`、`scripts/run_mem_service_remote_transport_ci.sh`、`scripts/verify_mem_service_remote_transport_evidence.sh`、`remote-transport-certification-bundle`、`remote-transport-certification-bundle-verify` 与 `scripts/verify_mem_service_remote_transport_bundle.sh`，把跨主机生产 network transport 保持为外部 evidence 门禁，并提供 CI artifact 归档/发布后复验入口。
 
-### 4.3 serving/pretraining 语义负例闭环 —— ✅ 已完成（2026-06-27）
+### 4.3 serving/pretraining 语义负例闭环 —— ✅ 已完成（2026-06-29）
 
-1. ✅ 独立补充 session/model/artifact mismatch 的 fixture：新增 `serving-fail-closed-fixtures`（runtime-handoff + execution-artifact，全 5 类 mismatch）与 `pretraining-fail-closed-fixtures`（training-step-commit，全 5 类 mismatch），serving/pretraining 各自覆盖。
+1. ✅ 独立补充 session/model/artifact/owner mismatch 的 fixture：`serving-fail-closed-fixtures`（runtime-handoff + execution-artifact，全 6 类 mismatch）与 `pretraining-fail-closed-fixtures`（training-step-commit，全 6 类 mismatch），serving/pretraining 各自覆盖。
 2. ✅ 将负例 fail-closed 与计数统计固化到 contract：`serving_fail_closed_matrix=certified` / `pretraining_fail_closed_matrix=certified` + gate 名写入 release-manifest，接入 host-artifact-smoke + install-smoke grep；计数（invalid_session/invalid_model_binding/stale_ref/checksum_mismatch/fail_closed）由真实 metrics 路径承载。
+3. ✅ payload ownership gate 已闭环：artifact query 新增可选 `expected_owner`，wire schema 显式记录在 runtime handoff、execution artifact 与 training artifact query 上；owner mismatch 使用 `invalid_model_binding` fail-closed，release/package manifest 记录 `payload_ownership_matrix=certified` 和 `payload_ownership_scope=artifact-query-expected-owner`。
 
 ### 4.4 生产运维闭环
 
@@ -112,11 +113,11 @@
 
 ## 5. 达成度结论
 
-- 当前达成度：`~96%`（2026-06-27 更新，较 ~95% 提升：typed-binary 数据面 4.5 已闭环；所有进程内可做的缺口已全部完成）
+- 当前达成度：`~97%`（2026-06-29 更新，较 ~96% 提升：payload ownership gate 已进入 serving/pretraining fail-closed 矩阵；所有进程内可做的协同安全缺口已基本完成）
 - 当前状态：**可独立运行、可基本协同**，剩余缺口全部是**环境/外部依赖**阻塞：
   - ~~跨版本组合兼容闭环~~ ✅（4.1）
   - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环（4.2a/b/c）；remote block backend 已有显式 fail-closed release contract，真实远端实现仍需 transport 层
-  - ~~serving/pretraining 负例矩阵（4.3）~~ ✅（4.3）
+  - ~~serving/pretraining 负例矩阵与 payload ownership gate（4.3）~~ ✅（4.3）
   - 真实运维场景硬门禁（4.4）：✅ 本地 fail-closed admission policy、外部 evidence generator/verifier、一键 Linux CI smoke gate、rpm package target、upgrade/rollback marker 生成 target、Linux CI 真实部署编排 target、可复用 CI wrapper、evidence artifact 复验 wrapper、认证证据包归档 target 与认证证据包复验 wrapper 已接入 release/package/install；**真实通过仍环境阻塞**（需真实 Linux CI：systemd + rpm toolchain + rollback rpm 运行 `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm>`，并用 `scripts/verify_mem_service_linux_ops_evidence.sh --evidence-file <evidence>` 或 `scripts/verify_mem_service_ops_certification_bundle.sh --bundle-file <bundle>` 复验产物），simulator 级门禁已就绪
   - ~~数据面 typed-binary 演进（4.5）~~ ✅（4.5）
 - 数据面演进（4.3 负例矩阵、4.5 typed payload）作为增量项继续推进。

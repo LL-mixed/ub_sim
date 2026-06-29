@@ -129,6 +129,8 @@ struct mem_service_client_artifact_query {
     const char *expected_model_key;
     const char *expected_artifact_kind;
     const char *expected_artifact_id;
+    bool has_expected_owner;
+    uint32_t expected_owner;
     bool has_expected_version;
     uint64_t expected_version;
     bool has_expected_checksum;
@@ -163,6 +165,8 @@ struct mem_service_client_training_ref_query {
     const char *expected_session_id;
     const char *expected_model_key;
     const char *expected_artifact_id;
+    bool has_expected_owner;
+    uint32_t expected_owner;
     bool has_expected_version;
     uint64_t expected_version;
     bool has_expected_checksum;

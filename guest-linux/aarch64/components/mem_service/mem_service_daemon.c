@@ -5054,6 +5054,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "model_key=srv-model\n"
         "artifact_kind=hidden-range\n"
         "artifact_id=range-0\n"
+        "owner=1\n"
         "checksum=7007\n"
         "version=7\n"
         "idempotency_key=serving-runtime-range-0-v7\n";
@@ -5063,6 +5064,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=hidden-range\n"
         "expected_artifact_id=range-0\n"
+        "expected_owner=1\n"
         "expected_version=7\n"
         "expected_checksum=7007\n";
     static const char runtime_bad_session[] =
@@ -5071,6 +5073,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=hidden-range\n"
         "expected_artifact_id=range-0\n"
+        "expected_owner=1\n"
         "expected_version=7\n"
         "expected_checksum=7007\n";
     static const char runtime_bad_model[] =
@@ -5079,6 +5082,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=wrong-model\n"
         "expected_artifact_kind=hidden-range\n"
         "expected_artifact_id=range-0\n"
+        "expected_owner=1\n"
         "expected_version=7\n"
         "expected_checksum=7007\n";
     static const char runtime_bad_kind[] =
@@ -5087,6 +5091,16 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=wrong-kind\n"
         "expected_artifact_id=range-0\n"
+        "expected_owner=1\n"
+        "expected_version=7\n"
+        "expected_checksum=7007\n";
+    static const char runtime_bad_owner[] =
+        "key=runtime/serving-matrix/session-a/range-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=hidden-range\n"
+        "expected_artifact_id=range-0\n"
+        "expected_owner=99\n"
         "expected_version=7\n"
         "expected_checksum=7007\n";
     static const char runtime_bad_version[] =
@@ -5095,6 +5109,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=hidden-range\n"
         "expected_artifact_id=range-0\n"
+        "expected_owner=1\n"
         "expected_version=99\n"
         "expected_checksum=7007\n";
     static const char runtime_bad_checksum[] =
@@ -5103,6 +5118,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=hidden-range\n"
         "expected_artifact_id=range-0\n"
+        "expected_owner=1\n"
         "expected_version=7\n"
         "expected_checksum=7008\n";
     static const char exec_register[] =
@@ -5125,6 +5141,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=logits\n"
         "expected_artifact_id=logits-0\n"
+        "expected_owner=2\n"
         "expected_version=8\n"
         "expected_checksum=8008\n";
     static const char exec_bad_session[] =
@@ -5133,6 +5150,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=logits\n"
         "expected_artifact_id=logits-0\n"
+        "expected_owner=2\n"
         "expected_version=8\n"
         "expected_checksum=8008\n";
     static const char exec_bad_model[] =
@@ -5141,6 +5159,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=wrong-model\n"
         "expected_artifact_kind=logits\n"
         "expected_artifact_id=logits-0\n"
+        "expected_owner=2\n"
         "expected_version=8\n"
         "expected_checksum=8008\n";
     static const char exec_bad_kind[] =
@@ -5149,6 +5168,16 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=wrong-kind\n"
         "expected_artifact_id=logits-0\n"
+        "expected_owner=2\n"
+        "expected_version=8\n"
+        "expected_checksum=8008\n";
+    static const char exec_bad_owner[] =
+        "key=execution/serving-matrix/session-a/logits-0\n"
+        "expected_session_id=srv-session\n"
+        "expected_model_key=srv-model\n"
+        "expected_artifact_kind=logits\n"
+        "expected_artifact_id=logits-0\n"
+        "expected_owner=99\n"
         "expected_version=8\n"
         "expected_checksum=8008\n";
     static const char exec_bad_version[] =
@@ -5157,6 +5186,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=logits\n"
         "expected_artifact_id=logits-0\n"
+        "expected_owner=2\n"
         "expected_version=99\n"
         "expected_checksum=8008\n";
     static const char exec_bad_checksum[] =
@@ -5165,6 +5195,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
         "expected_model_key=srv-model\n"
         "expected_artifact_kind=logits\n"
         "expected_artifact_id=logits-0\n"
+        "expected_owner=2\n"
         "expected_version=8\n"
         "expected_checksum=8009\n";
     static struct mem_service svc;
@@ -5199,6 +5230,8 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
                   MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
     SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_kind,
                   MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_owner,
+                  MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
     SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_version,
                   MEM_SERVICE_WIRE_STATUS_STALE_REF);
     SERVING_QUERY(MEM_SERVICE_WIRE_OP_RESOLVE_RUNTIME_HANDOFF, runtime_bad_checksum,
@@ -5214,6 +5247,8 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
                   MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
     SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_kind,
                   MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_owner,
+                  MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
     SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_version,
                   MEM_SERVICE_WIRE_STATUS_STALE_REF);
     SERVING_QUERY(MEM_SERVICE_WIRE_OP_QUERY_EXECUTION_ARTIFACT, exec_bad_checksum,
@@ -5221,10 +5256,10 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
 #undef SERVING_QUERY
 
     if (svc.metrics.invalid_session_count != 2U ||
-        svc.metrics.invalid_model_binding_count != 2U ||
+        svc.metrics.invalid_model_binding_count != 4U ||
         svc.metrics.stale_ref_count != 4U ||
         svc.metrics.checksum_mismatch_count != 2U ||
-        svc.metrics.fail_closed_count != 10U) {
+        svc.metrics.fail_closed_count != 12U) {
         fprintf(stderr,
                 "mem_service serving-fail-closed-fixtures: counter mismatch "
                 "invalid_session=%" PRIu64 " invalid_model=%" PRIu64
@@ -5242,7 +5277,7 @@ int mem_service_run_serving_fail_closed_fixture_check(void)
     printf("mem_service serving-fail-closed-fixtures: status=ok "
            "serving_fail_closed_matrix=certified "
            "serving_paths=runtime-handoff,execution-artifact "
-           "mismatch_cases=invalid-session,invalid-model-binding,stale-ref,checksum-mismatch "
+           "mismatch_cases=invalid-session,invalid-model-binding,invalid-owner,stale-ref,checksum-mismatch "
            "invalid_session=%" PRIu64 " invalid_model_binding=%" PRIu64
            " stale_ref=%" PRIu64 " checksum_mismatch=%" PRIu64
            " fail_closed=%" PRIu64 "\n",
@@ -5262,6 +5297,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "model_key=pt-model\n"
         "artifact_kind=training-step-commit\n"
         "artifact_id=global-step-42\n"
+        "owner=3\n"
         "checksum=4242\n"
         "version=42\n"
         "idempotency_key=pretraining-step-42-v42\n";
@@ -5271,6 +5307,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "expected_model_key=pt-model\n"
         "expected_artifact_kind=training-step-commit\n"
         "expected_artifact_id=global-step-42\n"
+        "expected_owner=3\n"
         "expected_version=42\n"
         "expected_checksum=4242\n";
     static const char training_bad_session[] =
@@ -5279,6 +5316,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "expected_model_key=pt-model\n"
         "expected_artifact_kind=training-step-commit\n"
         "expected_artifact_id=global-step-42\n"
+        "expected_owner=3\n"
         "expected_version=42\n"
         "expected_checksum=4242\n";
     static const char training_bad_model[] =
@@ -5287,6 +5325,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "expected_model_key=wrong-model\n"
         "expected_artifact_kind=training-step-commit\n"
         "expected_artifact_id=global-step-42\n"
+        "expected_owner=3\n"
         "expected_version=42\n"
         "expected_checksum=4242\n";
     static const char training_bad_kind[] =
@@ -5295,6 +5334,16 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "expected_model_key=pt-model\n"
         "expected_artifact_kind=wrong-kind\n"
         "expected_artifact_id=global-step-42\n"
+        "expected_owner=3\n"
+        "expected_version=42\n"
+        "expected_checksum=4242\n";
+    static const char training_bad_owner[] =
+        "key=training/pretraining-matrix/global-step-42/commit\n"
+        "expected_session_id=pt-session\n"
+        "expected_model_key=pt-model\n"
+        "expected_artifact_kind=training-step-commit\n"
+        "expected_artifact_id=global-step-42\n"
+        "expected_owner=99\n"
         "expected_version=42\n"
         "expected_checksum=4242\n";
     static const char training_bad_version[] =
@@ -5303,6 +5352,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "expected_model_key=pt-model\n"
         "expected_artifact_kind=training-step-commit\n"
         "expected_artifact_id=global-step-42\n"
+        "expected_owner=3\n"
         "expected_version=99\n"
         "expected_checksum=4242\n";
     static const char training_bad_checksum[] =
@@ -5311,6 +5361,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
         "expected_model_key=pt-model\n"
         "expected_artifact_kind=training-step-commit\n"
         "expected_artifact_id=global-step-42\n"
+        "expected_owner=3\n"
         "expected_version=42\n"
         "expected_checksum=4243\n";
     static struct mem_service svc;
@@ -5345,6 +5396,8 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
              MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
     PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_kind,
              MEM_SERVICE_WIRE_STATUS_STALE_REF);
+    PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_owner,
+             MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING);
     PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_version,
              MEM_SERVICE_WIRE_STATUS_STALE_REF);
     PT_QUERY(MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT, training_bad_checksum,
@@ -5352,10 +5405,10 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
 #undef PT_QUERY
 
     if (svc.metrics.invalid_session_count != 1U ||
-        svc.metrics.invalid_model_binding_count != 1U ||
+        svc.metrics.invalid_model_binding_count != 2U ||
         svc.metrics.stale_ref_count != 2U ||
         svc.metrics.checksum_mismatch_count != 1U ||
-        svc.metrics.fail_closed_count != 5U) {
+        svc.metrics.fail_closed_count != 6U) {
         fprintf(stderr,
                 "mem_service pretraining-fail-closed-fixtures: counter mismatch "
                 "invalid_session=%" PRIu64 " invalid_model=%" PRIu64
@@ -5373,7 +5426,7 @@ int mem_service_run_pretraining_fail_closed_fixture_check(void)
     printf("mem_service pretraining-fail-closed-fixtures: status=ok "
            "pretraining_fail_closed_matrix=certified "
            "pretraining_paths=training-step-commit "
-           "mismatch_cases=invalid-session,invalid-model-binding,stale-ref,checksum-mismatch "
+           "mismatch_cases=invalid-session,invalid-model-binding,invalid-owner,stale-ref,checksum-mismatch "
            "invalid_session=%" PRIu64 " invalid_model_binding=%" PRIu64
            " stale_ref=%" PRIu64 " checksum_mismatch=%" PRIu64
            " fail_closed=%" PRIu64 "\n",
@@ -6575,6 +6628,20 @@ static bool mem_service_payload_get_u64_checked(const char *payload,
     return mem_service_wire_payload_get_u64_checked(&view, name, out);
 }
 
+static bool mem_service_payload_get_u32_checked(const char *payload,
+                                                const char *name,
+                                                uint32_t *out)
+{
+    uint64_t parsed;
+
+    if (!mem_service_payload_get_u64_checked(payload, name, &parsed) ||
+        parsed > UINT32_MAX) {
+        return false;
+    }
+    *out = (uint32_t)parsed;
+    return true;
+}
+
 static enum mem_service_kvcache_state mem_service_payload_get_state(
     const char *payload,
     enum mem_service_kvcache_state default_value)
@@ -6960,6 +7027,7 @@ static enum mem_service_wire_status mem_service_query_artifact(
 {
     struct mem_service_record record;
     char key[sizeof(record.key)];
+    uint32_t expected_owner;
     uint64_t expected_version;
     uint64_t expected_checksum;
     enum mem_service_wire_status block_status;
@@ -6988,6 +7056,12 @@ static enum mem_service_wire_status mem_service_query_artifact(
                                                 "expected_artifact_id",
                                                 mem_service_record_artifact_id(&record))) {
             return MEM_SERVICE_WIRE_STATUS_STALE_REF;
+        }
+        if (mem_service_payload_get_u32_checked(payload,
+                                                "expected_owner",
+                                                &expected_owner) &&
+            record.object_owner_node != expected_owner) {
+            return MEM_SERVICE_WIRE_STATUS_INVALID_MODEL_BINDING;
         }
         if (mem_service_payload_get_u64_checked(payload,
                                                 "expected_version",
