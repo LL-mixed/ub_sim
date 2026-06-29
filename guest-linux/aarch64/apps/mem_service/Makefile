@@ -162,7 +162,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -199,6 +199,9 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host remote-block-backend-policy-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
+
+network-transport-block-smoke: linqu_mem_service_host
+	./linqu_mem_service_host network-transport-block-fixtures
 
 package-tarball:
 	mkdir -p $(PACKAGE_OUT_DIR)
@@ -525,8 +528,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=4485$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xc03abd84$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=4508$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xb0d5d634$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -555,8 +558,8 @@ install-smoke: install
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_len=1996$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0xa7302b65$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_len=2019$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0xcdcd3550$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -632,11 +635,13 @@ install-smoke: install
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_catalog=storage-root-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_catalog_manifest=catalog/manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^remote_payload_block_backend=transport-loopback-block-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_block_backend=transport-loopback-block-v1,transport-tcp-block-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_block_backend_gate=remote-block-backend-policy-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_block_data_gate=transport-block-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^remote_payload_network_transport=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_network_transport=tcp-loopback-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_network_transport_gate=network-transport-block-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_network_transport_make_gate=network-transport-block-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_block_ingest=payload-inline,payload-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_export_format=prometheus-text$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -707,7 +712,7 @@ install-smoke: install
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate_count=22$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xa7302b65$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xcdcd3550$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt

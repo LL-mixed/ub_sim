@@ -485,9 +485,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1996U", cli_source)
+        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2019U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xa7302b65U",
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcdcd3550U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U", cli_source)
@@ -496,9 +496,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4485U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4508U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xc03abd84U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb0d5d634U",
             cli_source,
         )
         self.assertIn(
@@ -529,8 +529,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "durable-catalog-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "chunked-block-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "transport-block-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "network-transport-block-fixtures")', cli_source)
         self.assertIn("mem_service_run_chunked_block_fixture_check", cli_source)
         self.assertIn("mem_service_run_transport_block_fixture_check", cli_source)
+        self.assertIn("mem_service_run_network_transport_block_fixture_check", cli_source)
         self.assertIn('strcmp(argv[1], "health")', cli_source)
         self.assertIn('strcmp(argv[1], "ready")', cli_source)
         self.assertIn('strcmp(argv[1], "status")', cli_source)
@@ -669,7 +671,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xc03abd84$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xb0d5d634$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c", cli_makefile)
@@ -683,7 +685,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^native_package_gate=package-deb-smoke$$", cli_makefile)
         self.assertIn("^rpm_native_package_format=rpm$$", cli_makefile)
         self.assertIn("^rpm_native_package_gate=package-rpm-smoke$$", cli_makefile)
-        self.assertIn("^upgrade_rollback_policy_checksum=0xa7302b65$$", cli_makefile)
+        self.assertIn("^upgrade_rollback_policy_checksum=0xcdcd3550$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
             cli_makefile,
@@ -774,10 +776,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^durable_backend=snapshot+journal$$", cli_makefile)
         self.assertIn("^durable_catalog=storage-root-v1$$", cli_makefile)
         self.assertIn("^durable_catalog_manifest=catalog/manifest.txt$$", cli_makefile)
-        self.assertIn("^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1$$", cli_makefile)
-        self.assertIn("^remote_payload_block_backend=transport-loopback-block-v1$$", cli_makefile)
+        self.assertIn("^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1$$", cli_makefile)
+        self.assertIn("^remote_payload_block_backend=transport-loopback-block-v1,transport-tcp-block-v1$$", cli_makefile)
         self.assertIn("^remote_payload_block_data_gate=transport-block-fixtures$$", cli_makefile)
-        self.assertIn("^remote_payload_network_transport=not-certified$$", cli_makefile)
+        self.assertIn("^remote_payload_network_transport=tcp-loopback-certified$$", cli_makefile)
+        self.assertIn("^remote_payload_network_transport_gate=network-transport-block-fixtures$$", cli_makefile)
+        self.assertIn("^remote_payload_network_transport_make_gate=network-transport-block-smoke$$", cli_makefile)
+        self.assertIn("network-transport-block-smoke: linqu_mem_service_host", cli_makefile)
         self.assertIn("^metrics_listen_config=metrics_listen$$", cli_makefile)
         self.assertIn("^metrics_http_listener=tcp-ipv4$$", cli_makefile)
         self.assertIn("^metrics_scrape_path=/metrics$$", cli_makefile)
@@ -806,7 +811,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0xc03abd84", release_manifest)
+        self.assertIn("package_manifest_checksum=0xb0d5d634", release_manifest)
         self.assertIn("installed_sdk_example_smoke=installed-sdk-example-smoke", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
@@ -847,7 +852,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke",
             release_manifest,
         )
-        self.assertIn("upgrade_rollback_policy_checksum=0xa7302b65", release_manifest)
+        self.assertIn("upgrade_rollback_policy_checksum=0xcdcd3550", release_manifest)
         self.assertIn(
             "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures",
             release_manifest,
@@ -928,10 +933,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("durable_backend=snapshot+journal", release_manifest)
         self.assertIn("durable_catalog=storage-root-v1", release_manifest)
         self.assertIn("durable_catalog_manifest=catalog/manifest.txt", release_manifest)
-        self.assertIn("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1", release_manifest)
-        self.assertIn("remote_payload_block_backend=transport-loopback-block-v1", release_manifest)
+        self.assertIn("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1", release_manifest)
+        self.assertIn("remote_payload_block_backend=transport-loopback-block-v1,transport-tcp-block-v1", release_manifest)
         self.assertIn("remote_payload_block_data_gate=transport-block-fixtures", release_manifest)
-        self.assertIn("remote_payload_network_transport=not-certified", release_manifest)
+        self.assertIn("remote_payload_network_transport=tcp-loopback-certified", release_manifest)
+        self.assertIn("remote_payload_network_transport_gate=network-transport-block-fixtures", release_manifest)
+        self.assertIn("remote_payload_network_transport_make_gate=network-transport-block-smoke", release_manifest)
         self.assertIn("durable_journal=store-path.journal", release_manifest)
         self.assertIn("metrics_listen_config=metrics_listen", release_manifest)
         self.assertIn("metrics_http_listener=tcp-ipv4", release_manifest)
@@ -986,7 +993,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_manifest_checksum=0x%08x", cli_source)
         self.assertIn("api_abi_policy_checksum=0x%08x", cli_source)
         self.assertIn("durable_catalogs=1", cli_source)
-        self.assertIn("payload_block_backends=3", cli_source)
+        self.assertIn("payload_block_backends=4", cli_source)
         self.assertIn("metrics_export_formats=1", cli_source)
         self.assertIn("metrics_http_listeners=1", cli_source)
         self.assertIn("client_retry_policies=1", cli_source)

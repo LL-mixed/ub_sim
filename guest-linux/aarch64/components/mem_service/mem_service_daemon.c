@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -39,6 +40,7 @@
 #define MEM_SERVICE_CHUNKED_BLOCK_DIR_SUFFIX ".chunked"
 #define MEM_SERVICE_CHUNKED_BLOCK_MANIFEST "manifest.txt"
 #define MEM_SERVICE_TRANSPORT_BLOCK_DIR_SUFFIX ".transport"
+#define MEM_SERVICE_TRANSPORT_TCP_BLOCK_DIR_SUFFIX ".tcp"
 #define MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD "payload.block"
 #define MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST "manifest.txt"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
@@ -1942,6 +1944,29 @@ static int mem_service_make_transport_block_dir_path(const char *storage_root,
     return mem_service_join_path(path, path_len, block_dir, dir_name);
 }
 
+static int mem_service_make_transport_tcp_block_dir_path(const char *storage_root,
+                                                         uint64_t checksum,
+                                                         char *path,
+                                                         size_t path_len)
+{
+    char block_dir[512];
+    char dir_name[64];
+
+    if (mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "remote-blocks") != 0 ||
+        snprintf(dir_name,
+                 sizeof(dir_name),
+                 "%016" PRIx64 "%s",
+                 checksum,
+                 MEM_SERVICE_TRANSPORT_TCP_BLOCK_DIR_SUFFIX) >=
+            (int)sizeof(dir_name)) {
+        return -1;
+    }
+    return mem_service_join_path(path, path_len, block_dir, dir_name);
+}
+
 static void mem_service_quarantine_transport_payload_block(const char *storage_root,
                                                            uint64_t checksum)
 {
@@ -1973,6 +1998,158 @@ static void mem_service_quarantine_transport_payload_block(const char *storage_r
     }
     (void)mem_service_ensure_dir(quarantine_dir);
     (void)rename(dir_path, quarantine_path);
+}
+
+static void mem_service_quarantine_transport_tcp_payload_block(
+    const char *storage_root,
+    uint64_t checksum)
+{
+    char dir_path[512];
+    char quarantine_dir[512];
+    char quarantine_name[80];
+    char quarantine_path[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        mem_service_make_transport_tcp_block_dir_path(storage_root,
+                                                      checksum,
+                                                      dir_path,
+                                                      sizeof(dir_path)) != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        snprintf(quarantine_name,
+                 sizeof(quarantine_name),
+                 "%016" PRIx64 "%s.bad.%ld",
+                 checksum,
+                 MEM_SERVICE_TRANSPORT_TCP_BLOCK_DIR_SUFFIX,
+                 (long)getpid()) >= (int)sizeof(quarantine_name) ||
+        mem_service_join_path(quarantine_path,
+                              sizeof(quarantine_path),
+                              quarantine_dir,
+                              quarantine_name) != 0) {
+        return;
+    }
+    (void)mem_service_ensure_dir(quarantine_dir);
+    (void)rename(dir_path, quarantine_path);
+}
+
+static int mem_service_parse_tcp_payload_source(const char *source,
+                                                struct sockaddr_in *addr)
+{
+    char endpoint[160];
+    char *host;
+    char *port_text;
+    char *end = NULL;
+    unsigned long port;
+    size_t len;
+
+    if (source == NULL || addr == NULL) {
+        return -1;
+    }
+    if (strncmp(source,
+                MEM_SERVICE_TCP_SPEC_PREFIX,
+                strlen(MEM_SERVICE_TCP_SPEC_PREFIX)) == 0) {
+        source += strlen(MEM_SERVICE_TCP_SPEC_PREFIX);
+    }
+    len = strlen(source);
+    if (len == 0U || len >= sizeof(endpoint)) {
+        return -1;
+    }
+    memcpy(endpoint, source, len + 1U);
+    host = endpoint;
+    port_text = strrchr(endpoint, ':');
+    if (port_text == NULL || port_text == host) {
+        return -1;
+    }
+    *port_text = '\0';
+    port_text += 1;
+    if (port_text[0] == '\0') {
+        return -1;
+    }
+    port = strtoul(port_text, &end, 10);
+    if (end == NULL || *end != '\0' || port == 0UL || port > 65535UL) {
+        return -1;
+    }
+    memset(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr->sin_addr) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+static enum mem_service_wire_status mem_service_fetch_tcp_payload_to_tmp(
+    const char *source,
+    const char *tmp_path,
+    uint64_t *actual_len_out,
+    uint64_t *actual_checksum_out)
+{
+    struct sockaddr_in addr;
+    uint8_t buffer[4096];
+    uint64_t actual_len = 0;
+    uint64_t hash = 1469598103934665603ULL;
+    int fd;
+    FILE *dst;
+
+    if (source == NULL || source[0] == '\0' ||
+        tmp_path == NULL || tmp_path[0] == '\0' ||
+        actual_len_out == NULL || actual_checksum_out == NULL) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    if (mem_service_parse_tcp_payload_source(source, &addr) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    if (connect(fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+    }
+    dst = fopen(tmp_path, "wb");
+    if (dst == NULL) {
+        close(fd);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    for (;;) {
+        ssize_t got = read(fd, buffer, sizeof(buffer));
+        ssize_t i;
+
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            fclose(dst);
+            close(fd);
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (got == 0) {
+            break;
+        }
+        if (fwrite(buffer, 1U, (size_t)got, dst) != (size_t)got) {
+            fclose(dst);
+            close(fd);
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        for (i = 0; i < got; ++i) {
+            hash ^= buffer[i];
+            hash *= 1099511628211ULL;
+        }
+        actual_len += (uint64_t)got;
+    }
+    close(fd);
+    if (fclose(dst) != 0) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    *actual_len_out = actual_len;
+    *actual_checksum_out = hash;
+    return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
 static enum mem_service_wire_status mem_service_write_transport_payload_block(
@@ -2095,6 +2272,113 @@ static enum mem_service_wire_status mem_service_write_transport_payload_block(
         return MEM_SERVICE_WIRE_STATUS_INTERNAL;
     }
     record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK;
+    record->object_backing_offset = 0;
+    record->object_backing_len = actual_len;
+    record->object_payload_checksum = actual_checksum;
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
+static enum mem_service_wire_status mem_service_write_transport_tcp_payload_block(
+    const char *storage_root,
+    const char *payload,
+    const char *payload_inline,
+    const char *payload_path,
+    struct mem_service_record *record)
+{
+    char tmp_path[512];
+    char dir_path[512];
+    char block_path[512];
+    char manifest_path[512];
+    char manifest_tmp[512];
+    uint64_t expected_len = 0;
+    uint64_t expected_checksum = 0;
+    uint64_t actual_len = 0;
+    uint64_t actual_checksum = 0;
+    bool has_inline = payload_inline != NULL && payload_inline[0] != '\0';
+    bool has_path = payload_path != NULL && payload_path[0] != '\0';
+    FILE *file;
+    enum mem_service_wire_status status;
+
+    if (has_inline || !has_path) {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (strncmp(payload_path,
+                MEM_SERVICE_TCP_SPEC_PREFIX,
+                strlen(MEM_SERVICE_TCP_SPEC_PREFIX)) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (record == NULL || storage_root == NULL || storage_root[0] == '\0') {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (mem_service_make_payload_tmp_path(storage_root,
+                                          tmp_path,
+                                          sizeof(tmp_path)) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    status = mem_service_fetch_tcp_payload_to_tmp(payload_path,
+                                                  tmp_path,
+                                                  &actual_len,
+                                                  &actual_checksum);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        return status;
+    }
+    if (mem_service_payload_get_u64_checked(payload, "backing_len", &expected_len) &&
+        expected_len != actual_len) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_payload_get_u64_checked(payload, "checksum", &expected_checksum) &&
+        expected_checksum != actual_checksum) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_make_transport_tcp_block_dir_path(storage_root,
+                                                      actual_checksum,
+                                                      dir_path,
+                                                      sizeof(dir_path)) != 0 ||
+        mem_service_ensure_dir(dir_path) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0 ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        snprintf(manifest_tmp,
+                 sizeof(manifest_tmp),
+                 "%s.tmp.%ld",
+                 manifest_path,
+                 (long)getpid()) >= (int)sizeof(manifest_tmp)) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    if (rename(tmp_path, block_path) != 0) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    file = fopen(manifest_tmp, "w");
+    if (file == NULL ||
+        fprintf(file,
+                "backend=transport-tcp-block-v1\n"
+                "transport=tcp-loopback-v1\n"
+                "payload=%s\n"
+                "total_len=%" PRIu64 "\n"
+                "total_checksum=0x%016" PRIx64 "\n",
+                MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD,
+                actual_len,
+                actual_checksum) < 0 ||
+        fclose(file) != 0 ||
+        rename(manifest_tmp, manifest_path) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        unlink(manifest_tmp);
+        mem_service_quarantine_transport_tcp_payload_block(storage_root,
+                                                           actual_checksum);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK;
     record->object_backing_offset = 0;
     record->object_backing_len = actual_len;
     record->object_payload_checksum = actual_checksum;
@@ -2504,6 +2788,108 @@ static enum mem_service_wire_status mem_service_validate_transport_payload_block
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
+static enum mem_service_wire_status mem_service_validate_transport_tcp_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char dir_path[512];
+    char manifest_path[512];
+    char block_path[512];
+    char line[160];
+    uint8_t buffer[1024];
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t actual_len = 0U;
+    uint64_t manifest_total_checksum = 0U;
+    bool saw_backend = false;
+    bool saw_transport = false;
+    bool saw_total_checksum = false;
+    FILE *manifest_file;
+    FILE *payload_file;
+
+    if (record == NULL ||
+        record->object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record->object_payload_checksum == 0U ||
+        mem_service_make_transport_tcp_block_dir_path(storage_root,
+                                                      record->object_payload_checksum,
+                                                      dir_path,
+                                                      sizeof(dir_path)) != 0 ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0) {
+        mem_service_quarantine_transport_tcp_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    manifest_file = fopen(manifest_path, "r");
+    if (manifest_file == NULL) {
+        mem_service_quarantine_transport_tcp_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    while (fgets(line, sizeof(line), manifest_file) != NULL) {
+        mem_service_trim_line(line);
+        if (strcmp(line, "backend=transport-tcp-block-v1") == 0) {
+            saw_backend = true;
+        } else if (strcmp(line, "transport=tcp-loopback-v1") == 0) {
+            saw_transport = true;
+        } else if (strncmp(line,
+                           "total_checksum=0x",
+                           sizeof("total_checksum=0x") - 1U) == 0) {
+            manifest_total_checksum = (uint64_t)strtoull(
+                line + sizeof("total_checksum=0x") - 1U, NULL, 16);
+            saw_total_checksum = true;
+        }
+    }
+    fclose(manifest_file);
+    if (!saw_backend || !saw_transport || !saw_total_checksum ||
+        manifest_total_checksum != record->object_payload_checksum) {
+        mem_service_quarantine_transport_tcp_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    payload_file = fopen(block_path, "rb");
+    if (payload_file == NULL) {
+        mem_service_quarantine_transport_tcp_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    for (;;) {
+        size_t got = fread(buffer, 1U, sizeof(buffer), payload_file);
+        size_t i;
+
+        for (i = 0U; i < got; ++i) {
+            hash ^= buffer[i];
+            hash *= 1099511628211ULL;
+        }
+        actual_len += (uint64_t)got;
+        if (got < sizeof(buffer)) {
+            if (ferror(payload_file)) {
+                fclose(payload_file);
+                mem_service_quarantine_transport_tcp_payload_block(
+                    storage_root, record->object_payload_checksum);
+                return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+            }
+            break;
+        }
+    }
+    fclose(payload_file);
+    if (actual_len != record->object_backing_len ||
+        hash != record->object_payload_checksum) {
+        mem_service_quarantine_transport_tcp_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
 static int mem_service_make_payload_tmp_path(const char *storage_root,
                                              char *path,
                                              size_t path_len)
@@ -2637,6 +3023,14 @@ static enum mem_service_wire_status mem_service_write_payload_block(
                                                          payload_path,
                                                          record);
     }
+    if (mem_service_payload_get_u32(payload, "payload_kind", 0) ==
+        MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK) {
+        return mem_service_write_transport_tcp_payload_block(storage_root,
+                                                            payload,
+                                                            payload_inline,
+                                                            payload_path,
+                                                            record);
+    }
     if (mem_service_payload_get_u32(payload, "payload_kind", 0) != 0 &&
         mem_service_payload_get_u32(payload, "payload_kind", 0) !=
             MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
@@ -2737,6 +3131,10 @@ static enum mem_service_wire_status mem_service_validate_payload_block(
     if (record->object_payload_kind ==
         MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK) {
         return mem_service_validate_transport_payload_block(storage_root, record);
+    }
+    if (record->object_payload_kind ==
+        MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK) {
+        return mem_service_validate_transport_tcp_payload_block(storage_root, record);
     }
     if (record->object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
         return MEM_SERVICE_WIRE_STATUS_OK;
@@ -5818,6 +6216,260 @@ int mem_service_run_transport_block_fixture_check(void)
            "transport=file-copy-v1 total_len=%zu "
            "integrity=fail-closed-quarantine "
            "network_transport=not-certified\n",
+           sizeof(payload_bytes));
+    return 0;
+}
+
+static int mem_service_fixture_write_all(int fd, const uint8_t *bytes, size_t len)
+{
+    size_t done = 0U;
+
+    while (done < len) {
+        ssize_t rc = write(fd, bytes + done, len - done);
+
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (rc == 0) {
+            return -1;
+        }
+        done += (size_t)rc;
+    }
+    return 0;
+}
+
+static int mem_service_start_tcp_payload_fixture_source(const uint8_t *payload,
+                                                        size_t payload_len,
+                                                        uint16_t *port_out,
+                                                        pid_t *child_out)
+{
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    int server_fd;
+    pid_t child;
+    int reuse = 1;
+
+    if (payload == NULL || payload_len == 0U || port_out == NULL ||
+        child_out == NULL) {
+        return -1;
+    }
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        return -1;
+    }
+    (void)setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1 ||
+        bind(server_fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        int rc = 1;
+
+        if (client_fd >= 0) {
+            rc = mem_service_fixture_write_all(client_fd, payload, payload_len) == 0
+                     ? 0
+                     : 1;
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(rc);
+    }
+    close(server_fd);
+    *port_out = ntohs(addr.sin_port);
+    *child_out = child;
+    return 0;
+}
+
+int mem_service_run_network_transport_block_fixture_check(void)
+{
+    char storage_root[160];
+    char blocks_dir[240];
+    char remote_blocks_dir[240];
+    char payload_source[80];
+    char dir_path[240];
+    char manifest_path[240];
+    char block_path[240];
+    uint8_t payload_bytes[2049];
+    uint64_t expected_checksum;
+    char payload[160];
+    struct mem_service_record record;
+    enum mem_service_wire_status status;
+    uint16_t port = 0;
+    pid_t child = -1;
+    int child_status = 0;
+    FILE *file;
+    size_t i;
+
+    snprintf(storage_root,
+             sizeof(storage_root),
+             "/tmp/linqu_mem_service_tcp_block_%ld",
+             (long)getpid());
+    if (mem_service_join_path(blocks_dir,
+                              sizeof(blocks_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(remote_blocks_dir,
+                              sizeof(remote_blocks_dir),
+                              storage_root,
+                              "remote-blocks") != 0) {
+        fprintf(stderr, "mem_service network-transport-block-fixtures: path setup failed\n");
+        return 1;
+    }
+    rmdir(blocks_dir);
+    rmdir(remote_blocks_dir);
+    rmdir(storage_root);
+    if (mem_service_ensure_dir(storage_root) != 0 ||
+        mem_service_ensure_dir(blocks_dir) != 0 ||
+        mem_service_ensure_dir(remote_blocks_dir) != 0) {
+        fprintf(stderr, "mem_service network-transport-block-fixtures: storage setup failed\n");
+        return 1;
+    }
+    for (i = 0U; i < sizeof(payload_bytes); ++i) {
+        payload_bytes[i] = (uint8_t)((i * 13U) + 23U);
+    }
+    expected_checksum = mem_service_checksum_bytes(payload_bytes,
+                                                   sizeof(payload_bytes));
+    if (mem_service_start_tcp_payload_fixture_source(payload_bytes,
+                                                     sizeof(payload_bytes),
+                                                     &port,
+                                                     &child) != 0 ||
+        snprintf(payload_source,
+                 sizeof(payload_source),
+                 "tcp:127.0.0.1:%u",
+                 (unsigned)port) >= (int)sizeof(payload_source)) {
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: tcp source setup failed\n");
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (snprintf(payload,
+                 sizeof(payload),
+                 "payload_kind=%u\nchecksum=%" PRIu64 "\nbacking_len=%zu\n",
+                 MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK,
+                 expected_checksum,
+                 sizeof(payload_bytes)) >= (int)sizeof(payload)) {
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    memset(&record, 0, sizeof(record));
+    status = mem_service_write_payload_block(storage_root,
+                                             payload,
+                                             NULL,
+                                             payload_source,
+                                             &record);
+    if (waitpid(child, &child_status, 0) < 0 ||
+        !WIFEXITED(child_status) ||
+        WEXITSTATUS(child_status) != 0) {
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: tcp source failed\n");
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        record.object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK ||
+        record.object_payload_checksum != expected_checksum ||
+        record.object_backing_len != sizeof(payload_bytes)) {
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: write mismatch "
+                "status=%u kind=%u\n",
+                status,
+                record.object_payload_kind);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (mem_service_make_transport_tcp_block_dir_path(storage_root,
+                                                      expected_checksum,
+                                                      dir_path,
+                                                      sizeof(dir_path)) != 0 ||
+        !mem_service_path_is_dir(dir_path) ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0 ||
+        !mem_service_file_contains(manifest_path,
+                                   "backend=transport-tcp-block-v1\n") ||
+        !mem_service_file_contains(manifest_path, "transport=tcp-loopback-v1\n") ||
+        !mem_service_file_contains(block_path, "")) {
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: layout mismatch\n");
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: validate mismatch "
+                "status=%u\n",
+                status);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    file = fopen(block_path, "r+b");
+    if (file == NULL ||
+        fseek(file, 31, SEEK_SET) != 0 ||
+        fputc('N', file) == EOF ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: corruption setup failed\n");
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH ||
+        mem_service_path_is_dir(dir_path)) {
+        fprintf(stderr,
+                "mem_service network-transport-block-fixtures: corruption not "
+                "quarantined status=%u\n",
+                status);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    rmdir(blocks_dir);
+    rmdir(remote_blocks_dir);
+    rmdir(storage_root);
+    printf("mem_service network-transport-block-fixtures: status=ok "
+           "payload_block_backend=transport-tcp-block-v1 "
+           "transport=tcp-loopback-v1 total_len=%zu "
+           "integrity=fail-closed-quarantine "
+           "network_transport=tcp-loopback-certified\n",
            sizeof(payload_bytes));
     return 0;
 }

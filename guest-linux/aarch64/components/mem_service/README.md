@@ -436,12 +436,17 @@ Keep the implementation layers separated:
   corrupt chunks. `transport-loopback-block-v1` writes payloads under
   `remote-blocks/<checksum>.transport/` with a transport manifest, verifies
   through that backend on read, and fail-closed quarantines corrupt payloads.
-  Cross-machine network transport remains explicitly not certified: the release
-  contract records `remote_payload_network_transport=not-certified`, while
-  `transport-block-fixtures` proves the loopback transport data path. Real
-  systemd environment smoke, production collector/alert environment integration
-  smoke, product-grade restore policy, payload ownership, and cross-machine
-  remote transport-backed block storage remain deployment work.
+  `transport-tcp-block-v1` fetches payloads from `tcp:<ipv4>:<port>` into
+  `remote-blocks/<checksum>.tcp/`, then validates and quarantines through the
+  same sealed transport contract. The release contract records
+  `remote_payload_network_transport=tcp-loopback-certified` and
+  `remote_payload_network_transport_gate=network-transport-block-fixtures`;
+  `make network-transport-block-smoke` is the explicit Make entrypoint for that
+  socket-using gate.
+  cross-machine production network transport still requires deployment evidence.
+  Real systemd environment smoke, production collector/alert environment
+  integration smoke, product-grade restore policy, payload ownership, and
+  cross-machine remote transport-backed block storage remain deployment work.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.

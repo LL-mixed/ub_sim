@@ -33,8 +33,8 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1996U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xa7302b65U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2019U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xcdcd3550U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
@@ -44,8 +44,8 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4485U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xc03abd84U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4508U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb0d5d634U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 22U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -83,6 +83,7 @@ static void usage(const char *argv0)
     printf(" [durable-catalog-fixtures]");
     printf(" [chunked-block-fixtures]");
     printf(" [transport-block-fixtures]");
+    printf(" [network-transport-block-fixtures]");
     printf(" [remote-block-backend-policy-fixtures]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
@@ -729,7 +730,7 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
-                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1\n") != 0 ||
+                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
@@ -2574,7 +2575,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1\n") != 0 ||
+                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3606,11 +3607,13 @@ static int run_release_manifest(void)
     printf("durable_backend=snapshot+journal\n");
     printf("durable_catalog=storage-root-v1\n");
     printf("durable_catalog_manifest=catalog/manifest.txt\n");
-    printf("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1\n");
-    printf("remote_payload_block_backend=transport-loopback-block-v1\n");
+    printf("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n");
+    printf("remote_payload_block_backend=transport-loopback-block-v1,transport-tcp-block-v1\n");
     printf("remote_payload_block_backend_gate=remote-block-backend-policy-fixtures\n");
     printf("remote_payload_block_data_gate=transport-block-fixtures\n");
-    printf("remote_payload_network_transport=not-certified\n");
+    printf("remote_payload_network_transport=tcp-loopback-certified\n");
+    printf("remote_payload_network_transport_gate=network-transport-block-fixtures\n");
+    printf("remote_payload_network_transport_make_gate=network-transport-block-smoke\n");
     printf("payload_block_ingest=payload-inline,payload-file\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
@@ -3807,7 +3810,7 @@ static int run_release_fixture_check(void)
            "upgrade_rollback_policies=1 "
            "upgrade_rollback_runtime_smokes=1 "
            "compat_runtime_smokes=1 "
-           "durable_backends=1 durable_catalogs=1 payload_block_backends=3 "
+           "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
            "client_retry_policies=1 "
@@ -3854,11 +3857,12 @@ static int run_release_fixture_check(void)
 static int run_remote_block_backend_policy_fixture_check(void)
 {
     printf("mem_service remote-block-backend-policy-fixtures: status=ok "
-           "remote_payload_block_backend=transport-loopback-block-v1 "
-           "remote_backend_admission=loopback-certified-network-fail-closed "
+           "remote_payload_block_backend=transport-loopback-block-v1,transport-tcp-block-v1 "
+           "remote_backend_admission=loopback-and-tcp-loopback-certified "
            "remote_payload_block_data_gate=transport-block-fixtures "
-           "remote_payload_network_transport=not-certified "
-           "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1\n");
+           "remote_payload_network_transport=tcp-loopback-certified "
+           "remote_payload_network_transport_gate=network-transport-block-fixtures "
+           "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n");
     return 0;
 }
 
@@ -6923,6 +6927,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "transport-block-fixtures") == 0) {
         return mem_service_run_transport_block_fixture_check();
+    }
+    if (strcmp(argv[1], "network-transport-block-fixtures") == 0) {
+        return mem_service_run_network_transport_block_fixture_check();
     }
     if (strcmp(argv[1], "remote-block-backend-policy-fixtures") == 0) {
         return run_remote_block_backend_policy_fixture_check();

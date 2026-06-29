@@ -19,6 +19,7 @@ int mem_service_run_journal_compaction_fixture_check(void);
 int mem_service_run_durable_catalog_fixture_check(void);
 int mem_service_run_chunked_block_fixture_check(void);
 int mem_service_run_transport_block_fixture_check(void);
+int mem_service_run_network_transport_block_fixture_check(void);
 int mem_service_run_serving_fail_closed_fixture_check(void);
 int mem_service_run_pretraining_fail_closed_fixture_check(void);
 int mem_service_run_typed_payload_fixture_check(void);
