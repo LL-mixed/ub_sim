@@ -92,6 +92,11 @@ OPS_CERTIFICATION_BUNDLE_ROOT := $(PACKAGE_OUT_DIR)/ops-certification-bundle
 OPS_CERTIFICATION_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-ops-certification-bundle.tar
 OPS_CERTIFICATION_BUNDLE_MANIFEST := $(OPS_CERTIFICATION_BUNDLE_ROOT)/ops-certification-bundle.manifest
 OPS_CERTIFICATION_BUNDLE_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/ops-certification-bundle.verify
+REMOTE_TRANSPORT_EVIDENCE := $(PACKAGE_OUT_DIR)/remote-transport.evidence
+REMOTE_TRANSPORT_BUNDLE_ROOT := $(PACKAGE_OUT_DIR)/remote-transport-bundle
+REMOTE_TRANSPORT_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-remote-transport-bundle.tar
+REMOTE_TRANSPORT_BUNDLE_MANIFEST := $(REMOTE_TRANSPORT_BUNDLE_ROOT)/remote-transport-bundle.manifest
+REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/remote-transport-bundle.verify
 INSTALLED_SDK_EXAMPLE_SMOKE_DIR := $(PACKAGE_OUT_DIR)/installed-sdk-example-smoke
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
@@ -162,7 +167,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -366,6 +371,24 @@ linux-ops-certification-bundle: package-rpm-smoke linux-ops-evidence-verify
 linux-ops-certification-bundle-verify: linqu_mem_service_host
 	test -f $(OPS_CERTIFICATION_BUNDLE)
 	$(ROOT)/scripts/verify_mem_service_ops_certification_bundle.sh --bundle-file $(abspath $(OPS_CERTIFICATION_BUNDLE)) --app-dir $(abspath .) --work-dir $(abspath $(OPS_CERTIFICATION_BUNDLE_VERIFY_ROOT))
+
+remote-transport-evidence-verify: linqu_mem_service_host
+	test -f $(REMOTE_TRANSPORT_EVIDENCE)
+	./linqu_mem_service_host remote-transport-verify --evidence-file $(abspath $(REMOTE_TRANSPORT_EVIDENCE))
+
+remote-transport-certification-bundle: remote-transport-evidence-verify
+	rm -rf $(REMOTE_TRANSPORT_BUNDLE_ROOT)
+	mkdir -p $(REMOTE_TRANSPORT_BUNDLE_ROOT)
+	cp $(REMOTE_TRANSPORT_EVIDENCE) $(REMOTE_TRANSPORT_BUNDLE_ROOT)/remote-transport.evidence
+	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(REMOTE_TRANSPORT_BUNDLE_ROOT)/release-manifest.txt
+	cp $(MEM_SERVICE_PACKAGE_MANIFEST) $(REMOTE_TRANSPORT_BUNDLE_ROOT)/package-manifest.txt
+	printf '%s\n' 'bundle_schema=linqu-mem-service-remote-transport-bundle-v1' 'bundle_gate=remote-transport-certification-bundle' 'evidence_verify_gate=remote-transport-evidence-verify' 'evidence=remote-transport.evidence' 'release_manifest=release-manifest.txt' 'package_manifest=package-manifest.txt' > $(REMOTE_TRANSPORT_BUNDLE_MANIFEST)
+	tar -C $(REMOTE_TRANSPORT_BUNDLE_ROOT) -cf $(REMOTE_TRANSPORT_BUNDLE) .
+	test -f $(REMOTE_TRANSPORT_BUNDLE)
+
+remote-transport-certification-bundle-verify: linqu_mem_service_host
+	test -f $(REMOTE_TRANSPORT_BUNDLE)
+	$(ROOT)/scripts/verify_mem_service_remote_transport_bundle.sh --bundle-file $(abspath $(REMOTE_TRANSPORT_BUNDLE)) --app-dir $(abspath .) --work-dir $(abspath $(REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT))
 
 linux-ops-upgrade-rollback-smoke: package-rpm-smoke
 	test "$$(uname -s)" = Linux
@@ -650,6 +673,9 @@ install-smoke: install
 	grep -q '^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_bundle=remote-transport-certification-bundle$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_bundle_verify=remote-transport-certification-bundle-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_bundle_script=scripts/verify_mem_service_remote_transport_bundle.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^required_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^payload_block_ingest=payload-inline,payload-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt

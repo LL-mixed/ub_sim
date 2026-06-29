@@ -383,6 +383,49 @@ def test_mem_service_ops_certification_bundle_verifier_is_reusable_and_dry_runna
     assert "ops-certification-verify --evidence-file" in dry_run.stdout
 
 
+def test_mem_service_remote_transport_bundle_verifier_is_reusable_and_dry_runnable():
+    verifier_path = ROOT / "scripts" / "verify_mem_service_remote_transport_bundle.sh"
+    verifier = verifier_path.read_text()
+
+    assert verifier_path.exists()
+    assert verifier_path.stat().st_mode & 0o111
+    assert "--bundle-file PATH" in verifier
+    assert "remote-transport-bundle.manifest" in verifier
+    assert "remote-transport.evidence" in verifier
+    assert "remote-transport-verify --evidence-file" in verifier
+    assert "unsafe tar entry" in verifier
+    assert "[mem-service-remote-transport-bundle] PASS bundle=" in verifier
+
+    missing_arg = subprocess.run(
+        [str(verifier_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(verifier_path),
+            "--bundle-file",
+            "/tmp/linqu-mem-service-remote-transport-bundle.tar",
+            "--work-dir",
+            "/tmp/linqu-mem-service-remote-transport-bundle.verify",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--bundle-file is required" in missing_arg.stderr
+    assert "tar -tf /tmp/linqu-mem-service-remote-transport-bundle.tar" in dry_run.stdout
+    assert "remote-transport-bundle.manifest" in dry_run.stdout
+    assert "remote-transport.evidence" in dry_run.stdout
+    assert "remote-transport-verify --evidence-file" in dry_run.stdout
+
+
 def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     runner = ROOT / "scripts" / "run_ub_app_validation_matrix.sh"
 
@@ -983,6 +1026,13 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "bundle_schema=linqu-mem-service-ops-certification-bundle-v1" in app_makefile
     assert "OPS_CERTIFICATION_ROLLBACK_RPM ?=" in app_makefile
     assert "OPS_CERTIFICATION_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-ops-certification-bundle.tar" in app_makefile
+    assert "remote-transport-evidence-verify: linqu_mem_service_host" in app_makefile
+    assert "remote-transport-certification-bundle: remote-transport-evidence-verify" in app_makefile
+    assert "remote-transport-certification-bundle-verify: linqu_mem_service_host" in app_makefile
+    assert "verify_mem_service_remote_transport_bundle.sh" in app_makefile
+    assert "./linqu_mem_service_host remote-transport-verify --evidence-file" in app_makefile
+    assert "bundle_schema=linqu-mem-service-remote-transport-bundle-v1" in app_makefile
+    assert "REMOTE_TRANSPORT_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-remote-transport-bundle.tar" in app_makefile
     assert "linux-ops-upgrade-rollback-smoke: package-rpm-smoke" in app_makefile
     assert "linux-ops-deployment-smoke: linux-ops-upgrade-rollback-smoke linqu_mem_service_host" in app_makefile
     assert "install: $(MEM_SERVICE_RELEASE_MANIFEST)" in app_makefile
@@ -1106,6 +1156,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^remote_payload_production_transport_generate=remote-transport-generate-evidence$$" in app_makefile
     assert "^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$" in app_makefile
     assert "^remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh$$" in app_makefile
+    assert "^remote_payload_production_transport_bundle=remote-transport-certification-bundle$$" in app_makefile
+    assert "^remote_payload_production_transport_bundle_verify=remote-transport-certification-bundle-verify$$" in app_makefile
+    assert "^remote_payload_production_transport_bundle_script=scripts/verify_mem_service_remote_transport_bundle.sh$$" in app_makefile
     assert "^required_gate=remote-transport-evidence-fixtures$$" in app_makefile
     assert "network-transport-block-smoke: linqu_mem_service_host" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
@@ -1438,6 +1491,18 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert (
         "remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_bundle=remote-transport-certification-bundle"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_bundle_verify=remote-transport-certification-bundle-verify"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_bundle_script=scripts/verify_mem_service_remote_transport_bundle.sh"
         in release_manifest
     )
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest

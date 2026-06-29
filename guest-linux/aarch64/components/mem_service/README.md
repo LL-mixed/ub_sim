@@ -459,7 +459,13 @@ Keep the implementation layers separated:
   `scripts/verify_mem_service_remote_transport_evidence.sh --evidence-file
   <path>` rebuilds/locates `linqu_mem_service_host` and re-runs
   `remote-transport-verify --evidence-file <path>` without needing the producer
-  payload source again. The `remote-transport-evidence-fixtures` gate defines
+  payload source again. `remote-transport-certification-bundle` packages the
+  verified evidence, release manifest, package manifest, and a bundle manifest
+  into `linqu-mem-service-remote-transport-bundle.tar`; after publication,
+  `remote-transport-certification-bundle-verify REMOTE_TRANSPORT_BUNDLE=<path>`
+  or `scripts/verify_mem_service_remote_transport_bundle.sh --bundle-file
+  <path>` extracts the bundle safely, checks the manifest contract, and verifies
+  the embedded evidence again. The `remote-transport-evidence-fixtures` gate defines
   the required evidence schema: non-loopback source address, cross-host
   topology, `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum
   validation, corruption fail-closed behavior, distinct producer/consumer
