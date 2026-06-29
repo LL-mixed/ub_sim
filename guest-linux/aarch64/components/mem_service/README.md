@@ -96,7 +96,11 @@ a Qwen3 adapter inspect build:
   `linux-ops-certification-bundle` packages the verified evidence, upgrade/
   rollback marker, rpm, release manifest, package manifest, and ops policy into
   `linqu-mem-service-ops-certification-bundle.tar` for release audit and
-  cross-machine handoff.
+  cross-machine handoff. `scripts/verify_mem_service_ops_certification_bundle.sh
+  --bundle-file <path>` and the Make target
+  `linux-ops-certification-bundle-verify OPS_CERTIFICATION_BUNDLE=<path>`
+  validate that handoff bundle and re-run evidence verification from the
+  extracted artifact.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC

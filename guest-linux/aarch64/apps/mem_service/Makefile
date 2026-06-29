@@ -91,6 +91,7 @@ OPS_CERTIFICATION_ROLLBACK_RPM ?=
 OPS_CERTIFICATION_BUNDLE_ROOT := $(PACKAGE_OUT_DIR)/ops-certification-bundle
 OPS_CERTIFICATION_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-ops-certification-bundle.tar
 OPS_CERTIFICATION_BUNDLE_MANIFEST := $(OPS_CERTIFICATION_BUNDLE_ROOT)/ops-certification-bundle.manifest
+OPS_CERTIFICATION_BUNDLE_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/ops-certification-bundle.verify
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
 INSTALL_SRCDIR := $(DESTDIR)$(PREFIX)/src/lingqu/mem_service
@@ -355,6 +356,10 @@ linux-ops-certification-bundle: package-rpm-smoke linux-ops-evidence-verify
 	tar -C $(OPS_CERTIFICATION_BUNDLE_ROOT) -cf $(OPS_CERTIFICATION_BUNDLE) .
 	test -f $(OPS_CERTIFICATION_BUNDLE)
 
+linux-ops-certification-bundle-verify: linqu_mem_service_host
+	test -f $(OPS_CERTIFICATION_BUNDLE)
+	$(ROOT)/scripts/verify_mem_service_ops_certification_bundle.sh --bundle-file $(abspath $(OPS_CERTIFICATION_BUNDLE)) --app-dir $(abspath .) --work-dir $(abspath $(OPS_CERTIFICATION_BUNDLE_VERIFY_ROOT))
+
 linux-ops-upgrade-rollback-smoke: package-rpm-smoke
 	test "$$(uname -s)" = Linux
 	test "$$(id -u)" = 0
@@ -603,6 +608,7 @@ install-smoke: install
 	grep -q '^linux_ops_certification_smoke=linux-ops-certification-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_evidence_verify=linux-ops-evidence-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_certification_bundle=linux-ops-certification-bundle$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt

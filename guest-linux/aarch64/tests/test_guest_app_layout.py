@@ -241,6 +241,49 @@ def test_mem_service_linux_ops_evidence_verifier_is_reusable_and_dry_runnable():
     ) in dry_run.stdout
 
 
+def test_mem_service_ops_certification_bundle_verifier_is_reusable_and_dry_runnable():
+    verifier_path = ROOT / "scripts" / "verify_mem_service_ops_certification_bundle.sh"
+    verifier = verifier_path.read_text()
+
+    assert verifier_path.exists()
+    assert verifier_path.stat().st_mode & 0o111
+    assert "--bundle-file PATH" in verifier
+    assert "ops-certification-bundle.manifest" in verifier
+    assert "ops-certification-linux-ci.evidence" in verifier
+    assert "ops-certification-upgrade-rollback.marker" in verifier
+    assert "ops-certification-verify --evidence-file" in verifier
+    assert "unsafe tar entry" in verifier
+    assert "[mem-service-ops-certification-bundle] PASS bundle=" in verifier
+
+    missing_arg = subprocess.run(
+        [str(verifier_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(verifier_path),
+            "--bundle-file",
+            "/tmp/linqu-mem-service-ops-certification-bundle.tar",
+            "--work-dir",
+            "/tmp/linqu-mem-service-ops-certification-bundle.verify",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--bundle-file is required" in missing_arg.stderr
+    assert "tar -tf /tmp/linqu-mem-service-ops-certification-bundle.tar" in dry_run.stdout
+    assert "ops-certification-bundle.manifest" in dry_run.stdout
+    assert "ops-certification-verify --evidence-file" in dry_run.stdout
+
+
 def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     runner = ROOT / "scripts" / "run_ub_app_validation_matrix.sh"
 
@@ -835,6 +878,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host" in app_makefile
     assert "linux-ops-evidence-verify: linqu_mem_service_host" in app_makefile
     assert "linux-ops-certification-bundle: package-rpm-smoke linux-ops-evidence-verify" in app_makefile
+    assert "linux-ops-certification-bundle-verify: linqu_mem_service_host" in app_makefile
+    assert "verify_mem_service_ops_certification_bundle.sh" in app_makefile
     assert "./linqu_mem_service_host ops-certification-verify --evidence-file" in app_makefile
     assert "bundle_schema=linqu-mem-service-ops-certification-bundle-v1" in app_makefile
     assert "OPS_CERTIFICATION_ROLLBACK_RPM ?=" in app_makefile
@@ -913,6 +958,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^linux_ops_certification_smoke=linux-ops-certification-smoke$$" in app_makefile
     assert "^linux_ops_evidence_verify=linux-ops-evidence-verify$$" in app_makefile
     assert "^linux_ops_certification_bundle=linux-ops-certification-bundle$$" in app_makefile
+    assert "^linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify$$" in app_makefile
     assert "^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$" in app_makefile
     assert "^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$" in app_makefile
     assert "^ops_certification_verify=ops-certification-verify --evidence-file$$" in app_makefile
@@ -1244,6 +1290,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "linux_ops_certification_smoke=linux-ops-certification-smoke" in release_manifest
     assert "linux_ops_evidence_verify=linux-ops-evidence-verify" in release_manifest
     assert "linux_ops_certification_bundle=linux-ops-certification-bundle" in release_manifest
+    assert "linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify" in release_manifest
     assert "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke" in release_manifest
     assert "linux_ops_deployment_smoke=linux-ops-deployment-smoke" in release_manifest
     assert "ops_certification_verify=ops-certification-verify --evidence-file" in release_manifest
