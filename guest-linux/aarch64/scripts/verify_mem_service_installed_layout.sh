@@ -169,13 +169,16 @@ require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_instal
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_release_certification.sh")"
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_linux_ops_evidence.sh")"
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_remote_transport_evidence.sh")"
+require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "run_mem_service_release_certification_ci.sh")"
 
 PACKAGE_MANIFEST=$(path_join "$DATA_DIR" "package-manifest.txt")
 RELEASE_MANIFEST=$(path_join "$DATA_DIR" "release-manifest.txt")
 require_grep "$PACKAGE_MANIFEST" '^package_format=installed-layout-v1$'
-require_grep "$PACKAGE_MANIFEST" '^file_class=release_scripts count=8$'
+require_grep "$PACKAGE_MANIFEST" '^file_class=release_scripts count=9$'
 require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$'
+require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh$'
 require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$'
+require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh$'
 require_grep "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.conf")" '^backend=snapshot+journal$'
 require_grep "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.host.conf")" '^metrics_listen=tcp:127[.]0[.]0[.]1:9901$'
 
