@@ -443,7 +443,13 @@ Keep the implementation layers separated:
   `remote_payload_network_transport_gate=network-transport-block-fixtures`;
   `make network-transport-block-smoke` is the explicit Make entrypoint for that
   socket-using gate.
-  cross-machine production network transport still requires deployment evidence.
+  Cross-machine production network transport remains fail-closed as
+  `remote_payload_production_network_transport=not-certified` until an external
+  evidence file passes `remote-transport-verify --evidence-file <path>`. The
+  `remote-transport-evidence-fixtures` gate defines the required evidence
+  schema: cross-host topology, `transport-tcp-block-v1`, TCP/IPv4, payload
+  round-trip, checksum validation, corruption fail-closed behavior, distinct
+  producer/consumer hosts, and network-partition fail-closed behavior.
   Real systemd environment smoke, production collector/alert environment
   integration smoke, product-grade restore policy, payload ownership, and
   cross-machine remote transport-backed block storage remain deployment work.

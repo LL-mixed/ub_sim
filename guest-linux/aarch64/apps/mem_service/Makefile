@@ -197,6 +197,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host typed-payload-fixtures
 	./linqu_mem_service_host transport-block-fixtures
 	./linqu_mem_service_host remote-block-backend-policy-fixtures
+	./linqu_mem_service_host remote-transport-evidence-fixtures
 	./linqu_mem_service_host collector-fixtures
 	./linqu_mem_service_host deployment-fixtures
 
@@ -528,8 +529,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=4508$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xb0d5d634$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=4864$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xa4140023$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -642,6 +643,11 @@ install-smoke: install
 	grep -q '^remote_payload_network_transport=tcp-loopback-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_network_transport_gate=network-transport-block-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_network_transport_make_gate=network-transport-block-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_network_transport=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^required_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^payload_block_ingest=payload-inline,payload-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^metrics_export_format=prometheus-text$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -711,7 +717,7 @@ install-smoke: install
 	grep -q '^host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=22$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=23$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xcdcd3550$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt

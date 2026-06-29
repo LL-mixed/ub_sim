@@ -496,9 +496,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4508U", cli_source)
+        self.assertIn("MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U", cli_source)
+        self.assertIn("run_remote_transport_evidence_fixture_check", cli_source)
+        self.assertIn("run_remote_transport_verify", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4864U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb0d5d634U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4140023U",
             cli_source,
         )
         self.assertIn(
@@ -671,7 +674,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xb0d5d634$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xa4140023$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c", cli_makefile)
@@ -782,6 +785,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^remote_payload_network_transport=tcp-loopback-certified$$", cli_makefile)
         self.assertIn("^remote_payload_network_transport_gate=network-transport-block-fixtures$$", cli_makefile)
         self.assertIn("^remote_payload_network_transport_make_gate=network-transport-block-smoke$$", cli_makefile)
+        self.assertIn("^remote_payload_production_network_transport=not-certified$$", cli_makefile)
+        self.assertIn("^remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1$$", cli_makefile)
+        self.assertIn("^remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures$$", cli_makefile)
+        self.assertIn("^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$", cli_makefile)
+        self.assertIn("^required_gate=remote-transport-evidence-fixtures$$", cli_makefile)
         self.assertIn("network-transport-block-smoke: linqu_mem_service_host", cli_makefile)
         self.assertIn("^metrics_listen_config=metrics_listen$$", cli_makefile)
         self.assertIn("^metrics_http_listener=tcp-ipv4$$", cli_makefile)
@@ -811,7 +819,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0xb0d5d634", release_manifest)
+        self.assertIn("package_manifest_checksum=0xa4140023", release_manifest)
         self.assertIn("installed_sdk_example_smoke=installed-sdk-example-smoke", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
@@ -1087,8 +1095,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("file_class=runtime_config count=2", package_manifest)
         self.assertIn("file_class=systemd_units count=2", package_manifest)
-        self.assertIn("required_gate_count=22", package_manifest)
+        self.assertIn("required_gate_count=23", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
+        self.assertIn("required_gate=remote-transport-evidence-fixtures", package_manifest)
         self.assertIn(
             "required_gate=upgrade-rollback-runtime-fixtures",
             package_manifest,

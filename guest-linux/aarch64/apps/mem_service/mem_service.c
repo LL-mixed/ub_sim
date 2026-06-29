@@ -43,11 +43,12 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
+#define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4508U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb0d5d634U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4864U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4140023U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 22U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 23U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -85,6 +86,8 @@ static void usage(const char *argv0)
     printf(" [transport-block-fixtures]");
     printf(" [network-transport-block-fixtures]");
     printf(" [remote-block-backend-policy-fixtures]");
+    printf(" [remote-transport-evidence-fixtures]");
+    printf(" [remote-transport-verify --evidence-file <path>]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
     printf(" [compat-baseline-v1] [compat-baseline-fixtures]");
@@ -2531,6 +2534,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "required_gate=remote-transport-evidence-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate=ops-certification-linux-ci-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2576,6 +2583,22 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_payload_production_network_transport=not-certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_payload_production_transport_verify=remote-transport-verify --evidence-file\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2878,6 +2901,68 @@ static int validate_ops_certification_evidence(const char *evidence,
                                                    &policy_checksum) ||
         policy_checksum != MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM) {
         snprintf(reason, reason_len, "bad-policy-checksum");
+        return -1;
+    }
+    if (!mem_service_wire_payload_get_u64_checked(&view,
+                                                   "package_manifest_checksum",
+                                                   &package_checksum) ||
+        package_checksum != MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) {
+        snprintf(reason, reason_len, "bad-package-checksum");
+        return -1;
+    }
+    for (i = 0; i < sizeof(required_pass_gates) / sizeof(required_pass_gates[0]); ++i) {
+        if (!mem_service_payload_string_equals(&view,
+                                               required_pass_gates[i],
+                                               "pass")) {
+            snprintf(reason, reason_len, "gate-not-pass:%s", required_pass_gates[i]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int validate_remote_transport_evidence(const char *evidence,
+                                              char *reason,
+                                              size_t reason_len)
+{
+    struct mem_service_wire_payload_view view;
+    uint64_t package_checksum;
+    uint32_t version;
+    static const char *required_pass_gates[] = {
+        "payload_block_round_trip",
+        "payload_checksum_validation",
+        "payload_corruption_fail_closed",
+        "producer_consumer_distinct_hosts",
+        "network_partition_fail_closed",
+    };
+    size_t i;
+
+    if (reason != NULL && reason_len > 0) {
+        reason[0] = '\0';
+    }
+    if (evidence == NULL || evidence[0] == '\0') {
+        snprintf(reason, reason_len, "empty-evidence");
+        return -1;
+    }
+    view = mem_service_wire_payload_view_from_cstr(evidence);
+    version = mem_service_wire_payload_get_u32(
+        &view, "mem_service_remote_transport_evidence_version", 0);
+    if (version != MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION) {
+        snprintf(reason, reason_len, "bad-evidence-version");
+        return -1;
+    }
+    if (!mem_service_payload_string_equals(&view,
+                                           "service_name",
+                                           "linqu_mem_service") ||
+        !mem_service_payload_string_equals(&view,
+                                           "certification_scope",
+                                           "production-network-transport") ||
+        !mem_service_payload_string_equals(&view,
+                                           "transport_backend",
+                                           "transport-tcp-block-v1") ||
+        !mem_service_payload_string_equals(&view, "transport_protocol", "tcp-ipv4") ||
+        !mem_service_payload_string_equals(&view, "transport_topology", "cross-host")) {
+        snprintf(reason, reason_len, "bad-evidence-identity");
         return -1;
     }
     if (!mem_service_wire_payload_get_u64_checked(&view,
@@ -3286,6 +3371,32 @@ static int run_ops_certification_verify(int argc, char **argv)
     return 0;
 }
 
+static int run_remote_transport_verify(int argc, char **argv)
+{
+    const char *path = option_value(argc, argv, "--evidence-file");
+    char evidence[2048];
+    char reason[160];
+
+    if (path == NULL || path[0] == '\0') {
+        fprintf(stderr, "mem_service remote-transport-verify: missing --evidence-file\n");
+        return 2;
+    }
+    if (read_text_file_limited(path, evidence, sizeof(evidence)) != 0) {
+        fprintf(stderr, "mem_service remote-transport-verify: evidence read failed\n");
+        return 1;
+    }
+    if (validate_remote_transport_evidence(evidence, reason, sizeof(reason)) != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-verify: fail-closed reason=%s\n",
+                reason);
+        return 1;
+    }
+    printf("mem_service remote-transport-verify: status=ok "
+           "certification_status=certified evidence_version=%u external_gates=5\n",
+           MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION);
+    return 0;
+}
+
 static int append_ops_certification_valid_evidence(char *evidence,
                                                    size_t evidence_len)
 {
@@ -3352,6 +3463,67 @@ static int append_ops_certification_valid_evidence(char *evidence,
                : 0;
 }
 
+static int append_remote_transport_valid_evidence(char *evidence,
+                                                  size_t evidence_len)
+{
+    size_t used = 0;
+
+    evidence[0] = '\0';
+    return append_wire_schema_line(
+               evidence,
+               evidence_len,
+               &used,
+               "mem_service_remote_transport_evidence_version=%u\n",
+               MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION) != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "service_name=linqu_mem_service\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "certification_scope=production-network-transport\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "transport_backend=transport-tcp-block-v1\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "transport_protocol=tcp-ipv4\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "transport_topology=cross-host\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "package_manifest_checksum=0x%08x\n",
+                                   MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "payload_block_round_trip=pass\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "payload_checksum_validation=pass\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "payload_corruption_fail_closed=pass\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "producer_consumer_distinct_hosts=pass\n") != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "network_partition_fail_closed=pass\n") != 0
+               ? -1
+               : 0;
+}
+
 static int run_ops_certification_evidence_fixture_check(void)
 {
     char valid[2048];
@@ -3407,6 +3579,83 @@ static int run_ops_certification_evidence_fixture_check(void)
     return 0;
 }
 
+static int run_remote_transport_evidence_fixture_check(void)
+{
+    char valid[2048];
+    char bad_gate[2048];
+    char bad_topology[2048];
+    char bad_checksum[2048];
+    char reason[160];
+
+    if (append_remote_transport_valid_evidence(valid, sizeof(valid)) != 0) {
+        fprintf(stderr, "mem_service remote-transport-evidence-fixtures: render failed\n");
+        return 1;
+    }
+    if (validate_remote_transport_evidence(valid, reason, sizeof(reason)) != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-evidence-fixtures: valid rejected "
+                "reason=%s\n",
+                reason);
+        return 1;
+    }
+    strcpy(bad_gate, valid);
+    {
+        char *gate = strstr(bad_gate, "network_partition_fail_closed=pass\n");
+
+        if (gate == NULL) {
+            return 1;
+        }
+        memcpy(gate,
+               "network_partition_fail_closed=fail\n",
+               strlen("network_partition_fail_closed=fail\n"));
+    }
+    if (validate_remote_transport_evidence(bad_gate, reason, sizeof(reason)) == 0 ||
+        strstr(reason, "network_partition_fail_closed") == NULL) {
+        fprintf(stderr,
+                "mem_service remote-transport-evidence-fixtures: bad gate accepted\n");
+        return 1;
+    }
+    strcpy(bad_topology, valid);
+    {
+        char *topology = strstr(bad_topology, "transport_topology=cross-host\n");
+
+        if (topology == NULL) {
+            return 1;
+        }
+        memcpy(topology,
+               "transport_topology=loopback   \n",
+               strlen("transport_topology=loopback   \n"));
+    }
+    if (validate_remote_transport_evidence(bad_topology, reason, sizeof(reason)) == 0 ||
+        strcmp(reason, "bad-evidence-identity") != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-evidence-fixtures: bad topology accepted\n");
+        return 1;
+    }
+    strcpy(bad_checksum, valid);
+    {
+        char *checksum = strstr(bad_checksum, "package_manifest_checksum=0x");
+
+        if (checksum == NULL) {
+            return 1;
+        }
+        memcpy(checksum,
+               "package_manifest_checksum=0x00000000",
+               strlen("package_manifest_checksum=0x00000000"));
+    }
+    if (validate_remote_transport_evidence(bad_checksum, reason, sizeof(reason)) == 0 ||
+        strcmp(reason, "bad-package-checksum") != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-evidence-fixtures: bad checksum accepted\n");
+        return 1;
+    }
+    printf("mem_service remote-transport-evidence-fixtures: status=ok "
+           "evidence_schema=remote-transport-evidence-v1 "
+           "positive=1 fail_closed=3 external_gates=5 "
+           "certification_status=not-certified-until-cross-host-evidence\n");
+    return 0;
+}
+
 static int run_package_fixture_check(void)
 {
     char manifest[8192];
@@ -3447,6 +3696,7 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=ops-certification-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=ops-certification-evidence-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=remote-transport-evidence-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
@@ -3614,6 +3864,10 @@ static int run_release_manifest(void)
     printf("remote_payload_network_transport=tcp-loopback-certified\n");
     printf("remote_payload_network_transport_gate=network-transport-block-fixtures\n");
     printf("remote_payload_network_transport_make_gate=network-transport-block-smoke\n");
+    printf("remote_payload_production_network_transport=not-certified\n");
+    printf("remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1\n");
+    printf("remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures\n");
+    printf("remote_payload_production_transport_verify=remote-transport-verify --evidence-file\n");
     printf("payload_block_ingest=payload-inline,payload-file\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
@@ -3748,7 +4002,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 35U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 22U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 23U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -3805,6 +4059,7 @@ static int run_release_fixture_check(void)
            "alert_rule_artifacts=1 alert_rules=%u "
            "alert_integration_smokes=1 "
            "ops_certification_policies=1 "
+           "remote_transport_evidence_schemas=1 "
            "api_abi_policies=1 "
            "admin_output_schemas=1 "
            "upgrade_rollback_policies=1 "
@@ -6933,6 +7188,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "remote-block-backend-policy-fixtures") == 0) {
         return run_remote_block_backend_policy_fixture_check();
+    }
+    if (strcmp(argv[1], "remote-transport-evidence-fixtures") == 0) {
+        return run_remote_transport_evidence_fixture_check();
+    }
+    if (strcmp(argv[1], "remote-transport-verify") == 0) {
+        return run_remote_transport_verify(argc, argv);
     }
     if (strcmp(argv[1], "client-retry-fixtures") == 0) {
         return run_client_retry_fixture_check();

@@ -934,7 +934,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xb0d5d634$$" in app_makefile
+    assert "^package_manifest_checksum=0xa4140023$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
@@ -1001,6 +1001,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^remote_payload_network_transport=tcp-loopback-certified$$" in app_makefile
     assert "^remote_payload_network_transport_gate=network-transport-block-fixtures$$" in app_makefile
     assert "^remote_payload_network_transport_make_gate=network-transport-block-smoke$$" in app_makefile
+    assert "^remote_payload_production_network_transport=not-certified$$" in app_makefile
+    assert "^remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1$$" in app_makefile
+    assert "^remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures$$" in app_makefile
+    assert "^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$" in app_makefile
+    assert "^required_gate=remote-transport-evidence-fixtures$$" in app_makefile
     assert "network-transport-block-smoke: linqu_mem_service_host" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
     assert "^metrics_http_listener=tcp-ipv4$$" in app_makefile
@@ -1134,11 +1139,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_ops_certification_generate_evidence" in app_source
     assert "run_ops_certification_linux_ci_smoke" in app_source
     assert "run_ops_certification_verify" in app_source
+    assert "MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U" in app_source
+    assert "run_remote_transport_evidence_fixture_check" in app_source
+    assert "run_remote_transport_verify" in app_source
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4508U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb0d5d634U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4864U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4140023U" in app_source
     assert 'MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"' in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
     assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
@@ -1177,7 +1185,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0xb0d5d634" in release_manifest
+    assert "package_manifest_checksum=0xa4140023" in release_manifest
     assert "installed_sdk_example_smoke=installed-sdk-example-smoke" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
     assert (
@@ -1303,8 +1311,21 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xcdcd3550" in release_manifest
-    assert "package_manifest_len=4508" in release_manifest
-    assert "package_manifest_checksum=0xb0d5d634" in release_manifest
+    assert "package_manifest_len=4864" in release_manifest
+    assert "package_manifest_checksum=0xa4140023" in release_manifest
+    assert "remote_payload_production_network_transport=not-certified" in release_manifest
+    assert (
+        "remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_verify=remote-transport-verify --evidence-file"
+        in release_manifest
+    )
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest
     assert "ops_certification_policy_len=1118" in release_manifest
     assert "ops_certification_policy_checksum=0xe77c644b" in release_manifest
@@ -1422,7 +1443,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service" in package_manifest
     assert "file_class=runtime_config count=2" in package_manifest
     assert "file_class=systemd_units count=2" in package_manifest
-    assert "required_gate_count=22" in package_manifest
+    assert "required_gate_count=23" in package_manifest
+    assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
+    assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
         "upgrade-rollback-policy.txt checksum=0xcdcd3550"

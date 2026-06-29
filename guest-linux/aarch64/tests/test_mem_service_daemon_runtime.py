@@ -1786,10 +1786,11 @@ int main(int argc, char **argv)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
+        self.assertIn("remote_transport_evidence_schemas=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=4508", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xb0d5d634", fixtures.stdout)
+        self.assertIn("package_manifest_len=4864", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xa4140023", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1810,10 +1811,10 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=4508", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xb0d5d634", fixtures.stdout)
+        self.assertIn("manifest_len=4864", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xa4140023", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
-        self.assertIn("required_gates=22", fixtures.stdout)
+        self.assertIn("required_gates=23", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1841,7 +1842,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xb0d5d634\n"
+            "package_manifest_checksum=0xa4140023\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1887,7 +1888,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0xb0d5d634", generated.stdout)
+        self.assertIn("package_manifest_checksum=0xa4140023", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2067,6 +2068,55 @@ int main(int argc, char **argv)
             "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1",
             fixtures.stdout,
         )
+
+    def test_remote_transport_evidence_fixtures_and_verify_fail_closed(self):
+        fixtures = self._run_client("remote-transport-evidence-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("evidence_schema=remote-transport-evidence-v1", fixtures.stdout)
+        self.assertIn("fail_closed=3", fixtures.stdout)
+        self.assertIn("external_gates=5", fixtures.stdout)
+        self.assertIn(
+            "certification_status=not-certified-until-cross-host-evidence",
+            fixtures.stdout,
+        )
+
+        evidence = (
+            "mem_service_remote_transport_evidence_version=1\n"
+            "service_name=linqu_mem_service\n"
+            "certification_scope=production-network-transport\n"
+            "transport_backend=transport-tcp-block-v1\n"
+            "transport_protocol=tcp-ipv4\n"
+            "transport_topology=cross-host\n"
+            "package_manifest_checksum=0xa4140023\n"
+            "payload_block_round_trip=pass\n"
+            "payload_checksum_validation=pass\n"
+            "payload_corruption_fail_closed=pass\n"
+            "producer_consumer_distinct_hosts=pass\n"
+            "network_partition_fail_closed=pass\n"
+        )
+        bad_evidence = evidence.replace(
+            "transport_topology=cross-host", "transport_topology=loopback"
+        )
+        with tempfile.TemporaryDirectory(prefix="msvc_remote_transport_", dir=str(_tmp_parent())) as tmp:
+            evidence_path = Path(tmp) / "remote_transport.evidence"
+            bad_evidence_path = Path(tmp) / "remote_transport.bad.evidence"
+            evidence_path.write_text(evidence)
+            bad_evidence_path.write_text(bad_evidence)
+
+            verified = self._run_client(
+                "remote-transport-verify", "--evidence-file", str(evidence_path)
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr + verified.stdout)
+            self.assertIn("certification_status=certified", verified.stdout)
+            self.assertIn("external_gates=5", verified.stdout)
+
+            rejected = self._run_client(
+                "remote-transport-verify", "--evidence-file", str(bad_evidence_path)
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("fail-closed", rejected.stderr)
+            self.assertIn("bad-evidence-identity", rejected.stderr)
 
     def test_deployment_fixtures_cli_validates_service_and_metrics_scrape_contract(self):
         fixtures = self._run_client("deployment-fixtures")
@@ -3256,7 +3306,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xb0d5d634", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xa4140023", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),
