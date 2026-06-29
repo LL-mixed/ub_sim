@@ -543,7 +543,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             path.read_text(encoding="utf-8")
             for path in sorted(
                 {
-                    db_service_dir / "mem_service.c",
+                    db_service_dir / "mem_service_module.c",
                     *db_service_dir.glob("mem_service_*.c"),
                     *db_service_dir.glob("mem_service_*.inc"),
                 }

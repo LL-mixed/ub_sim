@@ -612,7 +612,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
         app_dir / "examples" / "mem_service_pretraining_example.c"
     ).read_text()
 
-    assert 'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"' in build_script
+    assert 'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service_module.c"' in build_script
     assert 'MEM_SERVICE_CLUSTER_UTILS_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_utils.c"' in build_script
     assert 'MEM_SERVICE_CLUSTER_PAYLOAD_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_payload.c"' in build_script
     assert 'MEM_SERVICE_CLUSTER_READ_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_read.c"' in build_script
@@ -1192,7 +1192,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_pretraining_example=ok" in pretraining_example
     assert not (ROOT / "apps" / "mem_service_demo").exists()
     assert "test_mem_service_record_recycling.py" in readme
-    assert (component_dir / "mem_service.c").exists()
+    assert (component_dir / "mem_service_module.c").exists()
     assert (component_dir / "mem_service_cluster_utils.c").exists()
     assert (component_dir / "mem_service_cluster_utils.h").exists()
     assert (component_dir / "mem_service_cluster_payload.c").exists()
@@ -1245,7 +1245,7 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert (app_dir / "llm_infer.c").exists()
     assert (app_dir / "Makefile").exists()
     assert "all: linqu_llm_infer" in makefile
-    assert "components/mem_service/mem_service.c" in makefile
+    assert "components/mem_service/mem_service_module.c" in makefile
     assert "components/mem_service/mem_service_cluster_utils.c" in makefile
     assert "components/mem_service/mem_service_cluster_payload.c" in makefile
     assert "components/mem_service/mem_service_cluster_read.c" in makefile

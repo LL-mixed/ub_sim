@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT.parents[1]
 SERVICE_DIR = ROOT / "components" / "mem_service"
-SERVICE_C = SERVICE_DIR / "mem_service.c"
+SERVICE_C = SERVICE_DIR / "mem_service_module.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
 SERVICE_CORE_H = SERVICE_DIR / "mem_service_core.h"
 SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
@@ -112,7 +112,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
         self.assertIn("Components do not install guest binaries directly", components_readme)
         self.assertIn(
-            'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service.c"',
+            'MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service_module.c"',
             build_script,
         )
         self.assertIn(

@@ -6,7 +6,7 @@ HOST_CFLAGS ?= -O2 -Wall -Wextra
 PYTHON ?= python3
 INCLUDES := -I$(ROOT) -I$(ROOT)/.. -I$(ROOT)/libs/obmm_queue -I$(ROOT)/apps/obmm_queue
 
-MEM_SERVICE := $(ROOT)/components/mem_service/mem_service.c
+MEM_SERVICE := $(ROOT)/components/mem_service/mem_service_module.c
 MEM_SERVICE_CLUSTER_UTILS := $(ROOT)/components/mem_service/mem_service_cluster_utils.c
 MEM_SERVICE_CLUSTER_PAYLOAD := $(ROOT)/components/mem_service/mem_service_cluster_payload.c
 MEM_SERVICE_CLUSTER_READ := $(ROOT)/components/mem_service/mem_service_cluster_read.c

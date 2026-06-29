@@ -1,7 +1,7 @@
 CC = aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -static
 ROOT := ../..
-MEM_SERVICE := $(ROOT)/components/mem_service/mem_service.c
+MEM_SERVICE := $(ROOT)/components/mem_service/mem_service_module.c
 MEM_SERVICE_CLUSTER_UTILS := $(ROOT)/components/mem_service/mem_service_cluster_utils.c
 MEM_SERVICE_CLUSTER_PAYLOAD := $(ROOT)/components/mem_service/mem_service_cluster_payload.c
 MEM_SERVICE_CLUSTER_READ := $(ROOT)/components/mem_service/mem_service_cluster_read.c
