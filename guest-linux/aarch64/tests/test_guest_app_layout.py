@@ -299,6 +299,47 @@ def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
     assert "remote-transport-verify --evidence-file /tmp/remote-transport.evidence" in dry_run.stdout
 
 
+def test_mem_service_remote_transport_evidence_verifier_is_reusable_and_dry_runnable():
+    verifier_path = ROOT / "scripts" / "verify_mem_service_remote_transport_evidence.sh"
+    verifier = verifier_path.read_text()
+
+    assert verifier_path.exists()
+    assert verifier_path.stat().st_mode & 0o111
+    assert "--evidence-file PATH" in verifier
+    assert "linqu_mem_service_host" in verifier
+    assert "remote-transport-verify --evidence-file" in verifier
+    assert "[mem-service-remote-transport-evidence] PASS evidence=" in verifier
+
+    missing_arg = subprocess.run(
+        [str(verifier_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(verifier_path),
+            "--evidence-file",
+            "/tmp/remote-transport.evidence",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--evidence-file is required" in missing_arg.stderr
+    assert "make -C " in dry_run.stdout
+    assert "linqu_mem_service_host" in dry_run.stdout
+    assert (
+        "remote-transport-verify --evidence-file /tmp/remote-transport.evidence"
+        in dry_run.stdout
+    )
+
+
 def test_mem_service_ops_certification_bundle_verifier_is_reusable_and_dry_runnable():
     verifier_path = ROOT / "scripts" / "verify_mem_service_ops_certification_bundle.sh"
     verifier = verifier_path.read_text()
@@ -1064,6 +1105,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures$$" in app_makefile
     assert "^remote_payload_production_transport_generate=remote-transport-generate-evidence$$" in app_makefile
     assert "^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$" in app_makefile
+    assert "^remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh$$" in app_makefile
     assert "^required_gate=remote-transport-evidence-fixtures$$" in app_makefile
     assert "network-transport-block-smoke: linqu_mem_service_host" in app_makefile
     assert "^metrics_listen_config=metrics_listen$$" in app_makefile
@@ -1392,6 +1434,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert (
         "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh"
         in release_manifest
     )
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest

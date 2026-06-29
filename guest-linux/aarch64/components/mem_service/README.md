@@ -455,7 +455,11 @@ Keep the implementation layers separated:
   `scripts/run_mem_service_remote_transport_ci.sh` is the reusable wrapper for
   that cross-host run; it builds `linqu_mem_service_host` if needed, runs the
   generator, and re-runs `remote-transport-verify --evidence-file <path>` on
-  the generated artifact. The `remote-transport-evidence-fixtures` gate defines
+  the generated artifact. After CI publishes the evidence artifact,
+  `scripts/verify_mem_service_remote_transport_evidence.sh --evidence-file
+  <path>` rebuilds/locates `linqu_mem_service_host` and re-runs
+  `remote-transport-verify --evidence-file <path>` without needing the producer
+  payload source again. The `remote-transport-evidence-fixtures` gate defines
   the required evidence schema: non-loopback source address, cross-host
   topology, `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum
   validation, corruption fail-closed behavior, distinct producer/consumer

@@ -792,6 +792,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^remote_payload_production_transport_generate=remote-transport-generate-evidence$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$", cli_makefile)
         self.assertIn("^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$", cli_makefile)
+        self.assertIn("^remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh$$", cli_makefile)
         self.assertIn("^required_gate=remote-transport-evidence-fixtures$$", cli_makefile)
         self.assertIn("network-transport-block-smoke: linqu_mem_service_host", cli_makefile)
         self.assertIn("^metrics_listen_config=metrics_listen$$", cli_makefile)

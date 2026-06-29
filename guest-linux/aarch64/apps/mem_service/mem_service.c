@@ -4142,6 +4142,7 @@ static int run_release_manifest(void)
     printf("remote_payload_production_transport_generate=remote-transport-generate-evidence\n");
     printf("remote_payload_production_transport_verify=remote-transport-verify --evidence-file\n");
     printf("remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh\n");
+    printf("remote_payload_production_transport_evidence_verify=scripts/verify_mem_service_remote_transport_evidence.sh\n");
     printf("payload_block_ingest=payload-inline,payload-file\n");
     printf("durable_snapshot=store-path\n");
     printf("durable_journal=store-path.journal\n");
