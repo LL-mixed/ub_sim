@@ -23,7 +23,7 @@
 - mutation 可选 idempotency 支持并有 replay/conflict 语义，且结合 `store` 与 journal 可跨重启恢复。
 - `audit-log` 与 `metrics` 已有最小实现与导出（含基本直方图、命中/未命中/失败关闭、idempotency 计数）。
 - 已支持外部进程调用栈：`mem_service_wire_client` + `mem_service_client`，并有 serving/pretraining 示例覆盖。
-- 发布/安装能力已打通：release manifest、package manifest、install-smoke、package-tarball-smoke、package-deb-smoke、package-rpm-smoke（rpm 需要 Linux rpm toolchain）。安装布局已包含 systemd unit 默认引用的 `/etc/lingqu/mem_service/mem_service.conf` runtime config，tar/deb/rpm smoke 会验证该配置随包落盘。
+- 发布/安装能力已打通：release manifest、package manifest、install-smoke、package-tarball-smoke、package-deb-smoke、package-rpm-smoke（rpm 需要 Linux rpm toolchain）。安装布局已包含 systemd unit 默认引用的 `/etc/lingqu/mem_service/mem_service.conf` runtime config，并把 enableable unit 安装到 `usr/lib/systemd/system/`；tar/deb/rpm smoke 会验证配置与 unit 随包落盘。
 - 生产运维认证边界已显式化：`ops-certification-policy`、`ops-certification-fixtures`、`ops-certification-evidence-fixtures`、`ops-certification-generate-evidence`、`ops-certification-linux-ci-smoke`、`linux-ops-certification-smoke`、release/package manifest 和 install-smoke 共同把真实 Linux systemd、Prometheus/Alertmanager、rpm、多发布渠道部署升级回滚列为外部硬门禁；当前状态 fail-closed 为 `not-certified`，避免用 simulator smoke 冒充生产认证。
 - 合约与门禁体系已具备：
   - wire / wire-schema / store / journal / compat 基础门禁
@@ -62,6 +62,7 @@
 - 真实系统级部署门禁尚未补齐（真实 systemd 环境、真实生产采集/告警联调还未通过真实环境认证）。**已补齐本地可做的硬边界（2026-06-29，4.4a/4.4b/4.4c/4.4d/4.4f）**：新增 `ops-certification-policy`、`ops-certification-fixtures`、`ops-certification-evidence-fixtures`、`ops-certification-generate-evidence`、`ops-certification-linux-ci-smoke`、`linux-ops-certification-smoke` 和 `ops-certification-verify --evidence-file <path>`，将 `linux-systemd-service-smoke`、`linux-systemd-host-service-smoke`、`prometheus-scrape-smoke`、`prometheus-alertmanager-rule-smoke`、`rpm-package-smoke`、`upgrade-rollback-deployment-smoke` 固化为 release/package/install 门禁，并提供外部 Linux CI 证据生成、落盘与验收入口；当前 release manifest 明确 `real_systemd_environment=not-certified`、`production_collector_alert_environment=not-certified`、`rpm_package=not-certified`。**环境阻塞**：本机为 macOS dev，无 systemd/rpm/rpm2cpio，4.4 的"真实"通过仍需真实 Linux CI 运行 `linux-ops-certification-smoke` 并产出可通过 verifier 的 evidence 文件；现状已有 systemd-like + collector + alert 的 simulator 级门禁（`installed-host-service-manager-smoke`、`collector-fixtures`、`alert-integration-fixtures`）。
 - 包分发的 rpm 入口已补齐为可复用发布门禁：`packaging/linqu-mem-service.spec`、`package-rpm`、`package-rpm-smoke` 已进入 release/package contract；**环境阻塞**：rpm 真实产物验收仍需 `rpmbuild`/`rpm2cpio`/`cpio` 的 Linux rpm toolchain，本机 macOS 只验证缺工具时 fail-closed；deb + tar 双渠道已就绪。
 - systemd 默认配置安装布局已补齐：`install` 会把 `configs/mem_service.example.conf` 作为 runtime config 安装到 `etc/lingqu/mem_service/mem_service.conf`，release/package manifest 记录 `runtime_config` 与 `runtime_config_source`，tar/deb/rpm package smoke 均验证该文件存在。该项解决了 unit 文件指向 `/etc/.../mem_service.conf` 但安装包只带 share/example config 的部署缺口。
+- 标准 systemd unit 安装布局已补齐：`install` 会把 `linqu_mem_service.service` 与 `linqu_mem_service.host.service` 安装到 `usr/lib/systemd/system/`，同时保留 `share/lingqu/mem_service/deploy/` 下的 contract manifest 副本；release/package manifest 记录 `systemd_unit` 与 `host_systemd_unit`，tar/deb/rpm package smoke 均验证 unit 随包落盘。真实 `systemctl enable/start/status` 仍属于 Linux CI 外部认证范围。
 
 ## 4. 补齐方案（执行顺序）
 
@@ -94,6 +95,7 @@
 6. ✅ rpm 发布入口已补齐（2026-06-29，4.4e）：新增 `packaging/linqu-mem-service.spec`、`package-rpm`、`package-rpm-smoke`，release/package manifest 记录 rpm 产物名、架构、payload、gate 与 `requires-linux-rpm-toolchain` 运行边界；本机缺 rpm 工具链时 fail-closed，不伪造认证。真实 rpm 产物一致性仍需 Linux rpm toolchain 执行 `package-rpm-smoke`。
 7. ✅ Linux CI 编排入口已补齐（2026-06-29，4.4f）：新增 `linux-ops-certification-smoke`，按固定顺序执行 `package-rpm-smoke`、要求真实升级/回滚 marker 已存在，再调用 `ops-certification-linux-ci-smoke` 生成并验证 evidence；本机缺 rpm/systemd/marker 时 fail-closed，不伪造真实运维认证。
 8. ✅ 默认 runtime config 安装闭环已补齐（2026-06-29，4.4g）：`install`、tar/deb/rpm package payload、release/package manifest、install-smoke 和 package smoke 均覆盖 `etc/lingqu/mem_service/mem_service.conf`，与 systemd unit 的 `--config /etc/lingqu/mem_service/mem_service.conf` 默认路径对齐。
+9. ✅ 标准 systemd unit 安装闭环已补齐（2026-06-29，4.4h）：`install`、tar/deb/rpm package payload、release/package manifest、install-smoke 和 package smoke 均覆盖 `lib/systemd/system/linqu_mem_service.service` 与 `lib/systemd/system/linqu_mem_service.host.service`，使包安装后具备直接启用的 systemd unit 文件；真实启停与状态验证仍由 Linux CI 的 `linux-ops-certification-smoke` 认证。
 
 ### 4.5 数据面演进（非替代，增量）—— ✅ 已完成（2026-06-27）
 

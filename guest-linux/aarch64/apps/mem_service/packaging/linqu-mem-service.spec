@@ -27,4 +27,6 @@ cp -a %{_builddir}/%{name}-%{version}/etc %{buildroot}/
 /usr/include/lingqu/mem_service
 /usr/src/lingqu/mem_service
 /usr/share/lingqu/mem_service
+/usr/lib/systemd/system/linqu_mem_service.service
+/usr/lib/systemd/system/linqu_mem_service.host.service
 %config(noreplace) /etc/lingqu/mem_service/mem_service.conf

@@ -1764,6 +1764,7 @@ int main(int argc, char **argv)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=2", fixtures.stdout)
         self.assertIn("host_artifacts=1", fixtures.stdout)
+        self.assertIn("systemd_units=2", fixtures.stdout)
         self.assertIn("package_artifacts=4", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
@@ -1787,8 +1788,8 @@ int main(int argc, char **argv)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=3917", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x57b5f06c", fixtures.stdout)
+        self.assertIn("package_manifest_len=4127", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xb507bf35", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1809,9 +1810,9 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=3917", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x57b5f06c", fixtures.stdout)
-        self.assertIn("installed_files=30", fixtures.stdout)
+        self.assertIn("manifest_len=4127", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xb507bf35", fixtures.stdout)
+        self.assertIn("installed_files=32", fixtures.stdout)
         self.assertIn("required_gates=21", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
@@ -1840,7 +1841,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x57b5f06c\n"
+            "package_manifest_checksum=0xb507bf35\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1886,7 +1887,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x57b5f06c", generated.stdout)
+        self.assertIn("package_manifest_checksum=0xb507bf35", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -3182,7 +3183,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x57b5f06c", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xb507bf35", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3227,9 +3228,17 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "rpm_package_runtime=requires-linux-rpm-toolchain",
                 package_manifest.read_text(),
             )
-            self.assertIn("installed_file_count=30", package_manifest.read_text())
+            self.assertIn("installed_file_count=32", package_manifest.read_text())
             self.assertIn(
                 "runtime_config=etc/lingqu/mem_service/mem_service.conf",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "systemd_unit=lib/systemd/system/linqu_mem_service.service",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service",
                 package_manifest.read_text(),
             )
             self.assertIn("required_gate=package-fixtures", package_manifest.read_text())
@@ -3318,6 +3327,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                           manifest.read_text())
             self.assertIn(
                 "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "systemd_unit=lib/systemd/system/linqu_mem_service.service",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service",
                 manifest.read_text(),
             )
             self.assertIn(
@@ -3650,6 +3667,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "deploy"
                 / "linqu_mem_service.host.service"
             )
+            installed_service_unit = (
+                destdir / "usr" / "lib" / "systemd" / "system" /
+                "linqu_mem_service.host.service"
+            )
             host_binary = (
                 destdir
                 / "usr"
@@ -3662,6 +3683,11 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
 
             try:
                 self._install_release_layout(app_dir, destdir)
+                self.assertTrue(installed_service_unit.exists())
+                self.assertEqual(
+                    self._parse_exec_start(installed_service_unit),
+                    self._parse_exec_start(service_unit),
+                )
                 config_dir.mkdir(parents=True, exist_ok=True)
                 state_dir.mkdir(parents=True)
                 config_path.write_text(

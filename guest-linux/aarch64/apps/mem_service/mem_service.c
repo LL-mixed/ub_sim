@@ -44,9 +44,9 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3917U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x57b5f06cU
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 30U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4127U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb507bf35U
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 32U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 21U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
@@ -2288,7 +2288,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy+runtime-config\n") != 0 ||
+                                "package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy+runtime-config+systemd-units\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2345,6 +2345,18 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "systemd_unit_root=lib/systemd/system\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "systemd_unit=lib/systemd/system/linqu_mem_service.service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "installed_file_count=%u\n",
                                 MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT) != 0 ||
         append_wire_schema_line(manifest,
@@ -2383,6 +2395,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "file_class=deploy count=3\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=systemd_units count=2\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3522,6 +3538,8 @@ static int run_release_manifest(void)
     printf("runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
     printf("host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service\n");
+    printf("systemd_unit=lib/systemd/system/linqu_mem_service.service\n");
+    printf("host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service\n");
     printf("deployment_smoke=deployment-fixtures\n");
     printf("host_service_manager_smoke=installed-host-service-manager-smoke\n");
     printf("host_service_manager_lifecycle=host-serve-config-ready-scrape-sigterm\n");
@@ -3690,7 +3708,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 30U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 32U ||
         MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 21U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
@@ -3741,6 +3759,7 @@ static int run_release_fixture_check(void)
            "public_headers=8 client_sources=2 examples=2 config_artifacts=4 "
            "host_artifacts=1 "
            "package_artifacts=4 "
+           "systemd_units=2 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "

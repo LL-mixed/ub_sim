@@ -253,9 +253,12 @@ Build and validation entrypoints:
   schema manifest, package manifest, admin output schema, config
   schema/example, default runtime config
   `etc/lingqu/mem_service/mem_service.conf`, and deployment manifest into an
-  `installed-layout-v1` package layout. The installed systemd unit points at
-  that `/etc` runtime config path, so tar/deb/rpm package smokes verify the
-  config is present instead of relying on a share-only example file.
+  `installed-layout-v1` package layout. It also installs the service units into
+  `usr/lib/systemd/system/` while keeping the same files under
+  `share/lingqu/mem_service/deploy/` as checked deployment manifests. The
+  installed systemd units point at that `/etc` runtime config path, so
+  tar/deb/rpm package smokes verify the units and config are present instead of
+  relying on share-only example files.
 - Guest app runners provide the CLI surface that exercises the component.
 - `run_app mem_service` runs the standalone metadata smoke path, wire fixture
   gate, wire schema fixture gate, store/journal fixture gates, compat fixture
@@ -354,7 +357,10 @@ Keep the implementation layers separated:
   The install/package contract now includes the default runtime config at
   `etc/lingqu/mem_service/mem_service.conf`; it is copied from the checked
   example config and listed in both release and package manifests as the
-  service unit's default configuration path.
+  service unit's default configuration path. The package layout also installs
+  `lib/systemd/system/linqu_mem_service.service` and
+  `lib/systemd/system/linqu_mem_service.host.service` as the enableable unit
+  files, with the share/deploy copies retained as contract manifests.
   `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real HTTP scrape
   listener covered by runtime tests. The portable service-manager lifecycle
   smoke covers config startup, ready/health, HTTP scrape, collector metrics
