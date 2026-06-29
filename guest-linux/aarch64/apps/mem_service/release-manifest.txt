@@ -103,6 +103,7 @@ ops_certification_evidence_gate=ops-certification-evidence-fixtures
 ops_certification_generate=ops-certification-generate-evidence
 ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke
 linux_ops_certification_smoke=linux-ops-certification-smoke
+linux_ops_evidence_verify=linux-ops-evidence-verify
 linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke
 linux_ops_deployment_smoke=linux-ops-deployment-smoke
 ops_certification_verify=ops-certification-verify --evidence-file

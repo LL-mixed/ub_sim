@@ -830,6 +830,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package-rpm:" in app_makefile
     assert "package-rpm-smoke: package-rpm" in app_makefile
     assert "linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host" in app_makefile
+    assert "linux-ops-evidence-verify: linqu_mem_service_host" in app_makefile
+    assert "./linqu_mem_service_host ops-certification-verify --evidence-file" in app_makefile
     assert "OPS_CERTIFICATION_ROLLBACK_RPM ?=" in app_makefile
     assert "linux-ops-upgrade-rollback-smoke: package-rpm-smoke" in app_makefile
     assert "linux-ops-deployment-smoke: linux-ops-upgrade-rollback-smoke linqu_mem_service_host" in app_makefile
@@ -903,6 +905,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^ops_certification_generate=ops-certification-generate-evidence$$" in app_makefile
     assert "^ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke$$" in app_makefile
     assert "^linux_ops_certification_smoke=linux-ops-certification-smoke$$" in app_makefile
+    assert "^linux_ops_evidence_verify=linux-ops-evidence-verify$$" in app_makefile
     assert "^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$" in app_makefile
     assert "^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$" in app_makefile
     assert "^ops_certification_verify=ops-certification-verify --evidence-file$$" in app_makefile
@@ -1232,6 +1235,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "ops_certification_generate=ops-certification-generate-evidence" in release_manifest
     assert "ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke" in release_manifest
     assert "linux_ops_certification_smoke=linux-ops-certification-smoke" in release_manifest
+    assert "linux_ops_evidence_verify=linux-ops-evidence-verify" in release_manifest
     assert "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke" in release_manifest
     assert "linux_ops_deployment_smoke=linux-ops-deployment-smoke" in release_manifest
     assert "ops_certification_verify=ops-certification-verify --evidence-file" in release_manifest

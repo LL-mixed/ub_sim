@@ -88,7 +88,9 @@ a Qwen3 adapter inspect build:
   artifact, `scripts/verify_mem_service_linux_ops_evidence.sh --evidence-file
   <path>` rebuilds `linqu_mem_service_host` if needed and re-runs
   `ops-certification-verify --evidence-file <path>` as an independent
-  artifact verifier.
+  artifact verifier. The app Makefile also exposes
+  `linux-ops-evidence-verify OPS_CERTIFICATION_EVIDENCE=<path>` for CI systems
+  that call release gates through `make`.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC
