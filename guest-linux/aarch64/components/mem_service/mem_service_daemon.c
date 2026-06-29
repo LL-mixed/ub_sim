@@ -38,6 +38,9 @@
 #define MEM_SERVICE_CHUNKED_BLOCK_SIZE 1024U
 #define MEM_SERVICE_CHUNKED_BLOCK_DIR_SUFFIX ".chunked"
 #define MEM_SERVICE_CHUNKED_BLOCK_MANIFEST "manifest.txt"
+#define MEM_SERVICE_TRANSPORT_BLOCK_DIR_SUFFIX ".transport"
+#define MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD "payload.block"
+#define MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST "manifest.txt"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
 
 static const uint64_t mem_service_latency_bucket_limits_ms
@@ -1752,7 +1755,7 @@ static int mem_service_write_durable_catalog_manifest(const char *storage_root,
                        "journal_path=%s\n"
                        "store_magic=%s\n"
                        "journal_magic=%s\n"
-                       "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1\n"
+                       "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1\n"
                        "corrupt_payload_policy=quarantine-fail-closed\n",
                        MEM_SERVICE_DURABLE_CATALOG_MAGIC,
                        MEM_SERVICE_DURABLE_CATALOG_SCHEMA_VERSION,
@@ -1915,6 +1918,187 @@ static void mem_service_quarantine_chunked_payload_block(const char *storage_roo
     }
     (void)mem_service_ensure_dir(quarantine_dir);
     (void)rename(dir_path, quarantine_path);
+}
+
+static int mem_service_make_transport_block_dir_path(const char *storage_root,
+                                                     uint64_t checksum,
+                                                     char *path,
+                                                     size_t path_len)
+{
+    char block_dir[512];
+    char dir_name[64];
+
+    if (mem_service_join_path(block_dir,
+                              sizeof(block_dir),
+                              storage_root,
+                              "remote-blocks") != 0 ||
+        snprintf(dir_name,
+                 sizeof(dir_name),
+                 "%016" PRIx64 "%s",
+                 checksum,
+                 MEM_SERVICE_TRANSPORT_BLOCK_DIR_SUFFIX) >= (int)sizeof(dir_name)) {
+        return -1;
+    }
+    return mem_service_join_path(path, path_len, block_dir, dir_name);
+}
+
+static void mem_service_quarantine_transport_payload_block(const char *storage_root,
+                                                           uint64_t checksum)
+{
+    char dir_path[512];
+    char quarantine_dir[512];
+    char quarantine_name[80];
+    char quarantine_path[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        mem_service_make_transport_block_dir_path(storage_root,
+                                                  checksum,
+                                                  dir_path,
+                                                  sizeof(dir_path)) != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        snprintf(quarantine_name,
+                 sizeof(quarantine_name),
+                 "%016" PRIx64 "%s.bad.%ld",
+                 checksum,
+                 MEM_SERVICE_TRANSPORT_BLOCK_DIR_SUFFIX,
+                 (long)getpid()) >= (int)sizeof(quarantine_name) ||
+        mem_service_join_path(quarantine_path,
+                              sizeof(quarantine_path),
+                              quarantine_dir,
+                              quarantine_name) != 0) {
+        return;
+    }
+    (void)mem_service_ensure_dir(quarantine_dir);
+    (void)rename(dir_path, quarantine_path);
+}
+
+static enum mem_service_wire_status mem_service_write_transport_payload_block(
+    const char *storage_root,
+    const char *payload,
+    const char *payload_inline,
+    const char *payload_path,
+    struct mem_service_record *record)
+{
+    char tmp_path[512];
+    char dir_path[512];
+    char block_path[512];
+    char manifest_path[512];
+    char manifest_tmp[512];
+    uint64_t expected_len = 0;
+    uint64_t expected_checksum = 0;
+    uint64_t actual_len = 0;
+    uint64_t actual_checksum = 0;
+    bool has_inline = payload_inline != NULL && payload_inline[0] != '\0';
+    bool has_path = payload_path != NULL && payload_path[0] != '\0';
+    FILE *file;
+    enum mem_service_wire_status status;
+
+    if (!has_inline && !has_path) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (has_inline && has_path) {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (record == NULL || storage_root == NULL || storage_root[0] == '\0') {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (mem_service_make_payload_tmp_path(storage_root,
+                                          tmp_path,
+                                          sizeof(tmp_path)) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    if (has_inline) {
+        actual_len = (uint64_t)strlen(payload_inline);
+        actual_checksum =
+            mem_service_checksum_bytes((const uint8_t *)payload_inline, actual_len);
+        file = fopen(tmp_path, "wb");
+        if (file == NULL) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (actual_len > 0U &&
+            fwrite(payload_inline, 1U, (size_t)actual_len, file) !=
+                (size_t)actual_len) {
+            fclose(file);
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        if (fclose(file) != 0) {
+            unlink(tmp_path);
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+    } else {
+        status = mem_service_copy_payload_file_to_tmp(payload_path,
+                                                      tmp_path,
+                                                      &actual_len,
+                                                      &actual_checksum);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            return status;
+        }
+    }
+    if (mem_service_payload_get_u64_checked(payload, "backing_len", &expected_len) &&
+        expected_len != actual_len) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_payload_get_u64_checked(payload, "checksum", &expected_checksum) &&
+        expected_checksum != actual_checksum) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (mem_service_make_transport_block_dir_path(storage_root,
+                                                  actual_checksum,
+                                                  dir_path,
+                                                  sizeof(dir_path)) != 0 ||
+        mem_service_ensure_dir(dir_path) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0 ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        snprintf(manifest_tmp,
+                 sizeof(manifest_tmp),
+                 "%s.tmp.%ld",
+                 manifest_path,
+                 (long)getpid()) >= (int)sizeof(manifest_tmp)) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    if (rename(tmp_path, block_path) != 0) {
+        unlink(tmp_path);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    file = fopen(manifest_tmp, "w");
+    if (file == NULL ||
+        fprintf(file,
+                "backend=transport-loopback-block-v1\n"
+                "transport=file-copy-v1\n"
+                "payload=%s\n"
+                "total_len=%" PRIu64 "\n"
+                "total_checksum=0x%016" PRIx64 "\n",
+                MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD,
+                actual_len,
+                actual_checksum) < 0 ||
+        fclose(file) != 0 ||
+        rename(manifest_tmp, manifest_path) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        unlink(manifest_tmp);
+        mem_service_quarantine_transport_payload_block(storage_root,
+                                                       actual_checksum);
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK;
+    record->object_backing_offset = 0;
+    record->object_backing_len = actual_len;
+    record->object_payload_checksum = actual_checksum;
+    return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
 static enum mem_service_wire_status mem_service_write_chunked_payload_block(
@@ -2217,6 +2401,109 @@ static enum mem_service_wire_status mem_service_validate_chunked_payload_block(
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
+static enum mem_service_wire_status mem_service_validate_transport_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char dir_path[512];
+    char manifest_path[512];
+    char block_path[512];
+    char line[160];
+    uint8_t buffer[1024];
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t actual_len = 0U;
+    uint64_t manifest_total_checksum = 0U;
+    bool saw_backend = false;
+    bool saw_transport = false;
+    bool saw_total_checksum = false;
+    FILE *manifest_file;
+    FILE *payload_file;
+
+    if (record == NULL ||
+        record->object_payload_kind !=
+            MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record->object_payload_checksum == 0U ||
+        mem_service_make_transport_block_dir_path(storage_root,
+                                                  record->object_payload_checksum,
+                                                  dir_path,
+                                                  sizeof(dir_path)) != 0 ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0) {
+        mem_service_quarantine_transport_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    manifest_file = fopen(manifest_path, "r");
+    if (manifest_file == NULL) {
+        mem_service_quarantine_transport_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    while (fgets(line, sizeof(line), manifest_file) != NULL) {
+        mem_service_trim_line(line);
+        if (strcmp(line, "backend=transport-loopback-block-v1") == 0) {
+            saw_backend = true;
+        } else if (strcmp(line, "transport=file-copy-v1") == 0) {
+            saw_transport = true;
+        } else if (strncmp(line,
+                           "total_checksum=0x",
+                           sizeof("total_checksum=0x") - 1U) == 0) {
+            manifest_total_checksum = (uint64_t)strtoull(
+                line + sizeof("total_checksum=0x") - 1U, NULL, 16);
+            saw_total_checksum = true;
+        }
+    }
+    fclose(manifest_file);
+    if (!saw_backend || !saw_transport || !saw_total_checksum ||
+        manifest_total_checksum != record->object_payload_checksum) {
+        mem_service_quarantine_transport_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    payload_file = fopen(block_path, "rb");
+    if (payload_file == NULL) {
+        mem_service_quarantine_transport_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    for (;;) {
+        size_t got = fread(buffer, 1U, sizeof(buffer), payload_file);
+        size_t i;
+
+        for (i = 0U; i < got; ++i) {
+            hash ^= buffer[i];
+            hash *= 1099511628211ULL;
+        }
+        actual_len += (uint64_t)got;
+        if (got < sizeof(buffer)) {
+            if (ferror(payload_file)) {
+                fclose(payload_file);
+                mem_service_quarantine_transport_payload_block(
+                    storage_root, record->object_payload_checksum);
+                return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+            }
+            break;
+        }
+    }
+    fclose(payload_file);
+    if (actual_len != record->object_backing_len ||
+        hash != record->object_payload_checksum) {
+        mem_service_quarantine_transport_payload_block(
+            storage_root, record->object_payload_checksum);
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
 static int mem_service_make_payload_tmp_path(const char *storage_root,
                                              char *path,
                                              size_t path_len)
@@ -2342,6 +2629,14 @@ static enum mem_service_wire_status mem_service_write_payload_block(
                                                        payload_path,
                                                        record);
     }
+    if (mem_service_payload_get_u32(payload, "payload_kind", 0) ==
+        MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK) {
+        return mem_service_write_transport_payload_block(storage_root,
+                                                         payload,
+                                                         payload_inline,
+                                                         payload_path,
+                                                         record);
+    }
     if (mem_service_payload_get_u32(payload, "payload_kind", 0) != 0 &&
         mem_service_payload_get_u32(payload, "payload_kind", 0) !=
             MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
@@ -2438,6 +2733,10 @@ static enum mem_service_wire_status mem_service_validate_payload_block(
     if (record->object_payload_kind ==
         MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK) {
         return mem_service_validate_chunked_payload_block(storage_root, record);
+    }
+    if (record->object_payload_kind ==
+        MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK) {
+        return mem_service_validate_transport_payload_block(storage_root, record);
     }
     if (record->object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
         return MEM_SERVICE_WIRE_STATUS_OK;
@@ -5340,6 +5639,185 @@ int mem_service_run_chunked_block_fixture_check(void)
            "chunk_size=%u chunks=3 total_len=%zu "
            "integrity=fail-closed-quarantine\n",
            MEM_SERVICE_CHUNKED_BLOCK_SIZE,
+           sizeof(payload_bytes));
+    return 0;
+}
+
+int mem_service_run_transport_block_fixture_check(void)
+{
+    char storage_root[160];
+    char blocks_dir[240];
+    char remote_blocks_dir[240];
+    char payload_path[240];
+    char dir_path[240];
+    char manifest_path[240];
+    char block_path[240];
+    uint8_t payload_bytes[1537];
+    uint64_t expected_checksum;
+    char payload[160];
+    struct mem_service_record record;
+    enum mem_service_wire_status status;
+    FILE *file;
+    size_t i;
+
+    snprintf(storage_root,
+             sizeof(storage_root),
+             "/tmp/linqu_mem_service_transport_block_%ld",
+             (long)getpid());
+    if (mem_service_join_path(blocks_dir,
+                              sizeof(blocks_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(remote_blocks_dir,
+                              sizeof(remote_blocks_dir),
+                              storage_root,
+                              "remote-blocks") != 0 ||
+        snprintf(payload_path,
+                 sizeof(payload_path),
+                 "%s/transport-source.%ld",
+                 storage_root,
+                 (long)getpid()) >= (int)sizeof(payload_path)) {
+        fprintf(stderr, "mem_service transport-block-fixtures: path setup failed\n");
+        return 1;
+    }
+    unlink(payload_path);
+    rmdir(blocks_dir);
+    rmdir(remote_blocks_dir);
+    rmdir(storage_root);
+    if (mem_service_ensure_dir(storage_root) != 0 ||
+        mem_service_ensure_dir(blocks_dir) != 0 ||
+        mem_service_ensure_dir(remote_blocks_dir) != 0) {
+        fprintf(stderr, "mem_service transport-block-fixtures: storage setup failed\n");
+        return 1;
+    }
+    for (i = 0U; i < sizeof(payload_bytes); ++i) {
+        payload_bytes[i] = (uint8_t)((i * 11U) + 19U);
+    }
+    expected_checksum = mem_service_checksum_bytes(payload_bytes,
+                                                   sizeof(payload_bytes));
+    file = fopen(payload_path, "wb");
+    if (file == NULL ||
+        fwrite(payload_bytes, 1U, sizeof(payload_bytes), file) !=
+            sizeof(payload_bytes) ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        fprintf(stderr, "mem_service transport-block-fixtures: source write failed\n");
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (snprintf(payload,
+                 sizeof(payload),
+                 "payload_kind=%u\nchecksum=%" PRIu64 "\nbacking_len=%zu\n",
+                 MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK,
+                 expected_checksum,
+                 sizeof(payload_bytes)) >= (int)sizeof(payload)) {
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    memset(&record, 0, sizeof(record));
+    status = mem_service_write_payload_block(storage_root,
+                                             payload,
+                                             NULL,
+                                             payload_path,
+                                             &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        record.object_payload_kind !=
+            MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK ||
+        record.object_payload_checksum != expected_checksum ||
+        record.object_backing_len != sizeof(payload_bytes)) {
+        fprintf(stderr,
+                "mem_service transport-block-fixtures: write mismatch status=%u "
+                "kind=%u\n",
+                status,
+                record.object_payload_kind);
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (mem_service_make_transport_block_dir_path(storage_root,
+                                                  expected_checksum,
+                                                  dir_path,
+                                                  sizeof(dir_path)) != 0 ||
+        !mem_service_path_is_dir(dir_path) ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0 ||
+        !mem_service_file_contains(manifest_path,
+                                   "backend=transport-loopback-block-v1\n") ||
+        !mem_service_file_contains(manifest_path, "transport=file-copy-v1\n") ||
+        !mem_service_file_contains(block_path, "")) {
+        fprintf(stderr,
+                "mem_service transport-block-fixtures: layout mismatch\n");
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service transport-block-fixtures: validate mismatch status=%u\n",
+                status);
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    file = fopen(block_path, "r+b");
+    if (file == NULL ||
+        fseek(file, 17, SEEK_SET) != 0 ||
+        fputc('Z', file) == EOF ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        fprintf(stderr,
+                "mem_service transport-block-fixtures: corruption setup failed\n");
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH ||
+        mem_service_path_is_dir(dir_path)) {
+        fprintf(stderr,
+                "mem_service transport-block-fixtures: corruption not quarantined "
+                "status=%u\n",
+                status);
+        unlink(payload_path);
+        rmdir(blocks_dir);
+        rmdir(remote_blocks_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    unlink(payload_path);
+    rmdir(blocks_dir);
+    rmdir(remote_blocks_dir);
+    rmdir(storage_root);
+    printf("mem_service transport-block-fixtures: status=ok "
+           "payload_block_backend=transport-loopback-block-v1 "
+           "transport=file-copy-v1 total_len=%zu "
+           "integrity=fail-closed-quarantine "
+           "network_transport=not-certified\n",
            sizeof(payload_bytes));
     return 0;
 }

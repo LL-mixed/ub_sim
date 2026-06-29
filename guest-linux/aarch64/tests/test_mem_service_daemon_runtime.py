@@ -1762,7 +1762,7 @@ int main(int argc, char **argv)
         self.assertIn("schema_manifest_checksum=0xce883650", fixtures.stdout)
         self.assertIn("durable_backends=1", fixtures.stdout)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
-        self.assertIn("payload_block_backends=2", fixtures.stdout)
+        self.assertIn("payload_block_backends=3", fixtures.stdout)
         self.assertIn("host_artifacts=1", fixtures.stdout)
         self.assertIn("systemd_units=2", fixtures.stdout)
         self.assertIn("package_artifacts=4", fixtures.stdout)
@@ -1781,15 +1781,15 @@ int main(int argc, char **argv)
         self.assertIn("api_abi_policy_checksum=0x5d95ae02", fixtures.stdout)
         self.assertIn("admin_output_schema_len=6624", fixtures.stdout)
         self.assertIn("admin_output_schema_checksum=0x7021f4cf", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_len=1968", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_checksum=0x83e991c2", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_len=1996", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_checksum=0xa7302b65", fixtures.stdout)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=4457", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x774c92a1", fixtures.stdout)
+        self.assertIn("package_manifest_len=4485", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xc03abd84", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1810,8 +1810,8 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=4457", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x774c92a1", fixtures.stdout)
+        self.assertIn("manifest_len=4485", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xc03abd84", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
         self.assertIn("required_gates=22", fixtures.stdout)
 
@@ -1841,7 +1841,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x774c92a1\n"
+            "package_manifest_checksum=0xc03abd84\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1887,7 +1887,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x774c92a1", generated.stdout)
+        self.assertIn("package_manifest_checksum=0xc03abd84", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -1941,8 +1941,8 @@ int main(int argc, char **argv)
         fixtures = self._run_client("upgrade-rollback-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("policy_len=1968", fixtures.stdout)
-        self.assertIn("policy_checksum=0x83e991c2", fixtures.stdout)
+        self.assertIn("policy_len=1996", fixtures.stdout)
+        self.assertIn("policy_checksum=0xa7302b65", fixtures.stdout)
         self.assertIn("required_gates=19", fixtures.stdout)
         self.assertIn("upgrade_policy=current-version-only", fixtures.stdout)
         self.assertIn("rollback_policy=current-version-only", fixtures.stdout)
@@ -2014,20 +2014,38 @@ int main(int argc, char **argv)
         # reassembled checksum no longer matches -> fail-closed quarantine.
         self.assertIn("integrity=fail-closed-quarantine", fixtures.stdout)
 
-    def test_remote_block_backend_policy_fixtures_cli_is_fail_closed(self):
+    def test_transport_block_fixtures_cli_writes_validates_and_quarantines(self):
+        fixtures = self._run_client("transport-block-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("payload_block_backend=transport-loopback-block-v1", fixtures.stdout)
+        self.assertIn("transport=file-copy-v1", fixtures.stdout)
+        self.assertIn("total_len=1537", fixtures.stdout)
+        self.assertIn("integrity=fail-closed-quarantine", fixtures.stdout)
+        self.assertIn("network_transport=not-certified", fixtures.stdout)
+
+    def test_remote_block_backend_policy_fixtures_cli_marks_loopback_certified(self):
         fixtures = self._run_client("remote-block-backend-policy-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn(
-            "remote_payload_block_backend=requires-transport-layer",
+            "remote_payload_block_backend=transport-loopback-block-v1",
             fixtures.stdout,
         )
         self.assertIn(
-            "remote_backend_admission=fail-closed-until-transport-layer",
+            "remote_backend_admission=loopback-certified-network-fail-closed",
             fixtures.stdout,
         )
         self.assertIn(
-            "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1",
+            "remote_payload_block_data_gate=transport-block-fixtures",
+            fixtures.stdout,
+        )
+        self.assertIn(
+            "remote_payload_network_transport=not-certified",
+            fixtures.stdout,
+        )
+        self.assertIn(
+            "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1",
             fixtures.stdout,
         )
 
@@ -3219,7 +3237,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x774c92a1", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xc03abd84", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),
@@ -3327,7 +3345,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("admin_output_schema_checksum=0x7021f4cf", manifest.read_text())
             self.assertIn("admin_output_format=text-kv", manifest.read_text())
             self.assertIn("admin_metric_prefix=lingqu_mem_service_", manifest.read_text())
-            self.assertIn("upgrade_rollback_policy_checksum=0x83e991c2", manifest.read_text())
+            self.assertIn("upgrade_rollback_policy_checksum=0xa7302b65", manifest.read_text())
             self.assertIn("upgrade_policy=current-version-only", manifest.read_text())
             self.assertIn("rollback_policy=current-version-only", manifest.read_text())
             self.assertIn("old_server_runtime_binary=certified", manifest.read_text())
@@ -3420,7 +3438,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("durable_backend=snapshot+journal", manifest.read_text())
             self.assertIn("durable_catalog=storage-root-v1", manifest.read_text())
             self.assertIn("durable_catalog_manifest=catalog/manifest.txt", manifest.read_text())
-            self.assertIn("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1",
+            self.assertIn("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1",
                           manifest.read_text())
             self.assertIn("durable_journal=store-path.journal", manifest.read_text())
             self.assertIn("deployment_smoke=deployment-fixtures", manifest.read_text())

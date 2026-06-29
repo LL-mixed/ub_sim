@@ -433,13 +433,15 @@ Keep the implementation layers separated:
   writes inline and server-side `payload_path` payloads into
   `blocks/<checksum>.block` and verifies them on read. `sealed-chunked-block-v1`
   writes large payloads into chunk directories and fail-closed quarantines
-  corrupt chunks. Remote payload block storage is explicitly not admitted until
-  the transport layer lands; the release contract records
-  `remote_payload_block_backend=requires-transport-layer` and the local
-  `remote-block-backend-policy-fixtures` gate prevents it being mistaken for a
-  supported backend. Real systemd environment smoke, production collector/alert
-  environment integration smoke, product-grade restore policy, payload ownership,
-  and remote transport-backed block storage remain deployment work.
+  corrupt chunks. `transport-loopback-block-v1` writes payloads under
+  `remote-blocks/<checksum>.transport/` with a transport manifest, verifies
+  through that backend on read, and fail-closed quarantines corrupt payloads.
+  Cross-machine network transport remains explicitly not certified: the release
+  contract records `remote_payload_network_transport=not-certified`, while
+  `transport-block-fixtures` proves the loopback transport data path. Real
+  systemd environment smoke, production collector/alert environment integration
+  smoke, product-grade restore policy, payload ownership, and cross-machine
+  remote transport-backed block storage remain deployment work.
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
