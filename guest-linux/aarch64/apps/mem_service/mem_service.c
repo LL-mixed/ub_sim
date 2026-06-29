@@ -34,7 +34,7 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 1968U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0f9df008U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x83e991c2U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
@@ -45,23 +45,23 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4281U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xe58a9d13U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x8952501fU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 21U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
-#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 848U
-#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x8b516d14U
+#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 856U
+#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5d95ae02U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1970U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xac1df9dbU
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1978U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x1844c64dU
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
 #define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1251U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xa538400fU
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xdac5b8d5U
 #define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1733U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x641e48caU
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x6509c49dU
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -518,7 +518,7 @@ static int render_api_abi_policy(char *policy, size_t policy_len, size_t *used_o
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
-                                "binary_typed_schema=not-yet\n") != 0) {
+                                "binary_typed_schema=typed-binary-v1\n") != 0) {
         return -1;
     }
     if (used_out != NULL) {
@@ -1181,7 +1181,7 @@ static int render_compat_matrix(char *matrix, size_t matrix_len, size_t *used_ou
         append_wire_schema_line(matrix,
                                 matrix_len,
                                 &used,
-                                "binary_typed_schema=not-yet\n") != 0) {
+                                "binary_typed_schema=typed-binary-v1\n") != 0) {
         return -1;
     }
     if (used_out != NULL) {

@@ -23,4 +23,4 @@ old_client_new_server_policy=compatible-within-v1
 new_client_old_server_policy=certified
 upgrade_policy=current-version-only
 rollback_policy=current-version-only
-binary_typed_schema=not-yet
+binary_typed_schema=typed-binary-v1

@@ -50,4 +50,4 @@ compat_test=daemon-runtime
 release_gate=install-smoke
 upgrade_policy=current-version-only
 rollback_policy=current-version-only
-binary_typed_schema=not-yet
+binary_typed_schema=typed-binary-v1

@@ -52,11 +52,11 @@ file_class=systemd_units count=2
 contract=release-manifest path=share/lingqu/mem_service/release-manifest.txt
 contract=wire-schema path=share/lingqu/mem_service/wire-schema.txt checksum=0xce883650
 contract=admin-output-schema path=share/lingqu/mem_service/admin-output-schema.txt checksum=0x7021f4cf
-contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x0f9df008
-contract=api-abi-policy path=share/lingqu/mem_service/api-abi-policy.txt checksum=0x8b516d14
-contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=0xac1df9db
-contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0xa538400f
-contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x641e48ca
+contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x83e991c2
+contract=api-abi-policy path=share/lingqu/mem_service/api-abi-policy.txt checksum=0x5d95ae02
+contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=0x1844c64d
+contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0xdac5b8d5
+contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x6509c49d
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
 required_gate_count=21
