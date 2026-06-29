@@ -88,6 +88,9 @@ RPM_PACKAGE := $(PACKAGE_OUT_DIR)/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERS
 OPS_CERTIFICATION_EVIDENCE := $(PACKAGE_OUT_DIR)/ops-certification-linux-ci.evidence
 OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER := $(PACKAGE_OUT_DIR)/ops-certification-upgrade-rollback.marker
 OPS_CERTIFICATION_ROLLBACK_RPM ?=
+OPS_CERTIFICATION_BUNDLE_ROOT := $(PACKAGE_OUT_DIR)/ops-certification-bundle
+OPS_CERTIFICATION_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-ops-certification-bundle.tar
+OPS_CERTIFICATION_BUNDLE_MANIFEST := $(OPS_CERTIFICATION_BUNDLE_ROOT)/ops-certification-bundle.manifest
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
 INSTALL_SRCDIR := $(DESTDIR)$(PREFIX)/src/lingqu/mem_service
@@ -338,6 +341,20 @@ linux-ops-evidence-verify: linqu_mem_service_host
 	test -f $(OPS_CERTIFICATION_EVIDENCE)
 	./linqu_mem_service_host ops-certification-verify --evidence-file $(abspath $(OPS_CERTIFICATION_EVIDENCE))
 
+linux-ops-certification-bundle: package-rpm-smoke linux-ops-evidence-verify
+	test -f $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)
+	rm -rf $(OPS_CERTIFICATION_BUNDLE_ROOT)
+	mkdir -p $(OPS_CERTIFICATION_BUNDLE_ROOT)
+	cp $(OPS_CERTIFICATION_EVIDENCE) $(OPS_CERTIFICATION_BUNDLE_ROOT)/ops-certification-linux-ci.evidence
+	cp $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER) $(OPS_CERTIFICATION_BUNDLE_ROOT)/ops-certification-upgrade-rollback.marker
+	cp $(RPM_PACKAGE) $(OPS_CERTIFICATION_BUNDLE_ROOT)/$(notdir $(RPM_PACKAGE))
+	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(OPS_CERTIFICATION_BUNDLE_ROOT)/release-manifest.txt
+	cp $(MEM_SERVICE_PACKAGE_MANIFEST) $(OPS_CERTIFICATION_BUNDLE_ROOT)/package-manifest.txt
+	cp $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(OPS_CERTIFICATION_BUNDLE_ROOT)/ops-certification-policy.txt
+	printf '%s\n' 'bundle_schema=linqu-mem-service-ops-certification-bundle-v1' 'bundle_gate=linux-ops-certification-bundle' 'evidence_verify_gate=linux-ops-evidence-verify' 'evidence=ops-certification-linux-ci.evidence' 'upgrade_rollback_marker=ops-certification-upgrade-rollback.marker' 'rpm=$(notdir $(RPM_PACKAGE))' 'release_manifest=release-manifest.txt' 'package_manifest=package-manifest.txt' 'ops_certification_policy=ops-certification-policy.txt' > $(OPS_CERTIFICATION_BUNDLE_MANIFEST)
+	tar -C $(OPS_CERTIFICATION_BUNDLE_ROOT) -cf $(OPS_CERTIFICATION_BUNDLE) .
+	test -f $(OPS_CERTIFICATION_BUNDLE)
+
 linux-ops-upgrade-rollback-smoke: package-rpm-smoke
 	test "$$(uname -s)" = Linux
 	test "$$(id -u)" = 0
@@ -585,6 +602,7 @@ install-smoke: install
 	grep -q '^ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_certification_smoke=linux-ops-certification-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_evidence_verify=linux-ops-evidence-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^linux_ops_certification_bundle=linux-ops-certification-bundle$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt

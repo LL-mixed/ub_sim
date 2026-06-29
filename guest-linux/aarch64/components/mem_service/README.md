@@ -90,7 +90,11 @@ a Qwen3 adapter inspect build:
   `ops-certification-verify --evidence-file <path>` as an independent
   artifact verifier. The app Makefile also exposes
   `linux-ops-evidence-verify OPS_CERTIFICATION_EVIDENCE=<path>` for CI systems
-  that call release gates through `make`.
+  that call release gates through `make`. Once the evidence is verified,
+  `linux-ops-certification-bundle` packages the verified evidence, upgrade/
+  rollback marker, rpm, release manifest, package manifest, and ops policy into
+  `linqu-mem-service-ops-certification-bundle.tar` for release audit and
+  cross-machine handoff.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC

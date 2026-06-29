@@ -3576,6 +3576,7 @@ static int run_release_manifest(void)
     printf("ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke\n");
     printf("linux_ops_certification_smoke=linux-ops-certification-smoke\n");
     printf("linux_ops_evidence_verify=linux-ops-evidence-verify\n");
+    printf("linux_ops_certification_bundle=linux-ops-certification-bundle\n");
     printf("linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke\n");
     printf("linux_ops_deployment_smoke=linux-ops-deployment-smoke\n");
     printf("ops_certification_verify=ops-certification-verify --evidence-file\n");
