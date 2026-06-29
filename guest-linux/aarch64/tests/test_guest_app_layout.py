@@ -164,8 +164,10 @@ def test_mem_service_linux_ops_ci_runner_is_reusable_and_dry_runnable():
     assert "--rollback-rpm PATH" in runner
     assert "OPS_CERTIFICATION_ROLLBACK_RPM=$ROLLBACK_RPM" in runner
     assert "linux-ops-deployment-smoke" in runner
+    assert "linux-ops-certification-bundle" in runner
     assert "ops-certification-linux-ci.evidence" in runner
     assert "ops-certification-upgrade-rollback.marker" in runner
+    assert "linqu-mem-service-ops-certification-bundle.tar" in runner
     assert "rpmbuild, rpm2cpio, cpio, rpm, curl, promtool" in runner
 
     missing_arg = subprocess.run(
@@ -195,6 +197,7 @@ def test_mem_service_linux_ops_ci_runner_is_reusable_and_dry_runnable():
     assert "PACKAGE_OUT_DIR=/tmp/linqu-mem-service-ops" in dry_run.stdout
     assert "OPS_CERTIFICATION_ROLLBACK_RPM=/tmp/linqu-mem-service-prev.rpm" in dry_run.stdout
     assert "linux-ops-deployment-smoke" in dry_run.stdout
+    assert "linux-ops-certification-bundle" in dry_run.stdout
 
 
 def test_mem_service_linux_ops_evidence_verifier_is_reusable_and_dry_runnable():

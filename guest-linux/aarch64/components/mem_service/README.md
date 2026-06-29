@@ -82,12 +82,14 @@ a Qwen3 adapter inspect build:
   path.
 - `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm>`
   is the recommended real-Linux CI wrapper for deployment certification. It
-  runs `linux-ops-deployment-smoke` and emits
+  runs `linux-ops-deployment-smoke` followed by
+  `linux-ops-certification-bundle` and emits
   `ops-certification-linux-ci.evidence` plus
-  `ops-certification-upgrade-rollback.marker`. After CI publishes the evidence
-  artifact, `scripts/verify_mem_service_linux_ops_evidence.sh --evidence-file
-  <path>` rebuilds `linqu_mem_service_host` if needed and re-runs
-  `ops-certification-verify --evidence-file <path>` as an independent
+  `ops-certification-upgrade-rollback.marker` plus
+  `linqu-mem-service-ops-certification-bundle.tar`. After CI publishes the
+  evidence artifact, `scripts/verify_mem_service_linux_ops_evidence.sh
+  --evidence-file <path>` rebuilds `linqu_mem_service_host` if needed and
+  re-runs `ops-certification-verify --evidence-file <path>` as an independent
   artifact verifier. The app Makefile also exposes
   `linux-ops-evidence-verify OPS_CERTIFICATION_EVIDENCE=<path>` for CI systems
   that call release gates through `make`. Once the evidence is verified,

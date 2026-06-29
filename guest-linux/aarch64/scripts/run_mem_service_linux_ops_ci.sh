@@ -23,6 +23,7 @@ Requirements:
 Outputs:
   - ops-certification-upgrade-rollback.marker
   - ops-certification-linux-ci.evidence
+  - linqu-mem-service-ops-certification-bundle.tar
 
 Options:
   --rollback-rpm PATH  Previous-release rpm used for rollback validation.
@@ -71,17 +72,19 @@ if [[ -z "$ROLLBACK_RPM" ]]; then
   exit 2
 fi
 
-printf '[mem-service-linux-ops-ci] RUN app=mem_service target=linux-ops-deployment-smoke out=%s rollback_rpm=%s\n' "$OUT_DIR" "$ROLLBACK_RPM"
+printf '[mem-service-linux-ops-ci] RUN app=mem_service targets=linux-ops-deployment-smoke,linux-ops-certification-bundle out=%s rollback_rpm=%s\n' "$OUT_DIR" "$ROLLBACK_RPM"
 if [[ "$DRY_RUN" == "1" ]]; then
-  printf 'make -C %s PACKAGE_OUT_DIR=%s OPS_CERTIFICATION_ROLLBACK_RPM=%s linux-ops-deployment-smoke\n' "$APP_DIR" "$OUT_DIR" "$ROLLBACK_RPM"
+  printf 'make -C %s PACKAGE_OUT_DIR=%s OPS_CERTIFICATION_ROLLBACK_RPM=%s linux-ops-deployment-smoke linux-ops-certification-bundle\n' "$APP_DIR" "$OUT_DIR" "$ROLLBACK_RPM"
   exit 0
 fi
 
 make -C "$APP_DIR" \
   "PACKAGE_OUT_DIR=$OUT_DIR" \
   "OPS_CERTIFICATION_ROLLBACK_RPM=$ROLLBACK_RPM" \
-  linux-ops-deployment-smoke
+  linux-ops-deployment-smoke \
+  linux-ops-certification-bundle
 
-printf '[mem-service-linux-ops-ci] PASS evidence=%s marker=%s\n' \
+printf '[mem-service-linux-ops-ci] PASS evidence=%s marker=%s bundle=%s\n' \
   "$OUT_DIR/ops-certification-linux-ci.evidence" \
-  "$OUT_DIR/ops-certification-upgrade-rollback.marker"
+  "$OUT_DIR/ops-certification-upgrade-rollback.marker" \
+  "$OUT_DIR/linqu-mem-service-ops-certification-bundle.tar"
