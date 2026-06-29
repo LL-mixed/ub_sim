@@ -155,6 +155,48 @@ def test_app_build_matrix_runner_matches_app_inventory():
         assert f"  {app}\n" in runner
 
 
+def test_mem_service_linux_ops_ci_runner_is_reusable_and_dry_runnable():
+    runner_path = ROOT / "scripts" / "run_mem_service_linux_ops_ci.sh"
+    runner = runner_path.read_text()
+
+    assert runner_path.exists()
+    assert runner_path.stat().st_mode & 0o111
+    assert "--rollback-rpm PATH" in runner
+    assert "OPS_CERTIFICATION_ROLLBACK_RPM=$ROLLBACK_RPM" in runner
+    assert "linux-ops-deployment-smoke" in runner
+    assert "ops-certification-linux-ci.evidence" in runner
+    assert "ops-certification-upgrade-rollback.marker" in runner
+    assert "rpmbuild, rpm2cpio, cpio, rpm, curl, promtool" in runner
+
+    missing_arg = subprocess.run(
+        [str(runner_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(runner_path),
+            "--rollback-rpm",
+            "/tmp/linqu-mem-service-prev.rpm",
+            "--out-dir",
+            "/tmp/linqu-mem-service-ops",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--rollback-rpm is required" in missing_arg.stderr
+    assert "PACKAGE_OUT_DIR=/tmp/linqu-mem-service-ops" in dry_run.stdout
+    assert "OPS_CERTIFICATION_ROLLBACK_RPM=/tmp/linqu-mem-service-prev.rpm" in dry_run.stdout
+    assert "linux-ops-deployment-smoke" in dry_run.stdout
+
+
 def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     runner = ROOT / "scripts" / "run_ub_app_validation_matrix.sh"
 

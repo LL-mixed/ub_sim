@@ -232,6 +232,10 @@ a Qwen3 adapter inspect build:
   metrics from the service and host ports, checks the installed Prometheus
   rules, and then runs the same `ops-certification-linux-ci-smoke` evidence
   verifier.
+- `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <rpm>` is the
+  reusable Linux CI wrapper around `linux-ops-deployment-smoke`. It keeps the
+  rollback rpm and output directory explicit, then reports the expected
+  evidence and upgrade/rollback marker artifact paths for CI collection.
 
 Build and validation entrypoints:
 
