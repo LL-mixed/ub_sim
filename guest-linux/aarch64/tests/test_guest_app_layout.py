@@ -320,6 +320,8 @@ def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnabl
     assert "--producer-host HOST" in runner
     assert "--consumer-host HOST" in runner
     assert "--network-partition-marker PATH" in runner
+    assert "--preflight" in runner
+    assert "PREFLIGHT FAIL" in runner
     assert "run_mem_service_linux_ops_ci.sh" in runner
     assert "run_mem_service_remote_transport_ci.sh" in runner
     assert "verify_mem_service_release_certification.sh" in runner
@@ -355,6 +357,26 @@ def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnabl
         text=True,
         capture_output=True,
     )
+    preflight = subprocess.run(
+        [
+            str(runner_path),
+            "--rollback-rpm",
+            "/tmp/linqu-mem-service-prev.rpm",
+            "--source",
+            "tcp:10.0.0.11:9000",
+            "--producer-host",
+            "producer-a",
+            "--consumer-host",
+            "consumer-b",
+            "--network-partition-marker",
+            "/tmp/remote-transport.partition",
+            "--preflight",
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
     assert missing_arg.returncode == 2
     assert "--rollback-rpm is required" in missing_arg.stderr
@@ -368,6 +390,9 @@ def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnabl
     assert "verify_mem_service_release_certification.sh --ops-bundle-file" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification/linux_ops" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification/remote_transport" in dry_run.stdout
+    assert preflight.returncode == 1
+    assert "PREFLIGHT FAIL" in preflight.stderr
+    assert "rollback rpm not readable" in preflight.stderr
 
 
 def test_mem_service_remote_transport_evidence_verifier_is_reusable_and_dry_runnable():

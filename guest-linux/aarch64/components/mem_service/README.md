@@ -112,6 +112,10 @@ a Qwen3 adapter inspect build:
   `scripts/verify_mem_service_installed_layout.sh --no-runtime` validates the
   installed `bin/`, `libexec/`, `share/`, `etc/`, systemd, config, deploy, and
   manifest layout without requiring the source tree.
+  `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
+  destructive release-certification prerequisites first: Linux/systemd/root,
+  rpm/promtool toolchain, rollback rpm, remote transport source, partition
+  marker, and producer/consumer separation.
   The evidence, bundle, and release verifiers first resolve the installed
   `libexec/lingqu/mem_service/linqu_mem_service_host` relative to that
   `share/` script directory, then fall back to the source-tree app directory
