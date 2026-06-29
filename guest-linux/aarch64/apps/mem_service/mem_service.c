@@ -38,11 +38,14 @@
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
+#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_VERSION 1U
+#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 838U
+#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xb6f55049U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3179U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x37a59873U
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 28U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 17U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3334U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xed23dacaU
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 29U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 18U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
@@ -68,6 +71,7 @@ static void usage(const char *argv0)
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
     printf(" [upgrade-rollback-runtime-fixtures]");
     printf(" [alert-rules] [alert-fixtures] [alert-integration-fixtures]");
+    printf(" [ops-certification-policy] [ops-certification-fixtures]");
     printf(" [package-manifest] [package-fixtures]");
     printf(" [durable-catalog-fixtures]");
     printf(" [chunked-block-fixtures]");
@@ -2320,7 +2324,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=contracts count=9\n") != 0 ||
+                                "file_class=contracts count=10\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2376,6 +2380,11 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0x%08x\n",
+                                MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate_count=%u\n",
                                 MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT) != 0 ||
         append_wire_schema_line(manifest,
@@ -2426,6 +2435,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=alert-integration-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=ops-certification-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2503,6 +2516,181 @@ static int run_package_manifest(void)
     return 0;
 }
 
+static int render_ops_certification_policy(char *policy,
+                                           size_t policy_len,
+                                           size_t *used_out)
+{
+    size_t used = 0;
+
+    if (policy == NULL || policy_len == 0) {
+        return -1;
+    }
+    if (append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "mem_service_ops_certification_policy_version=%u\n",
+                                MEM_SERVICE_OPS_CERTIFICATION_POLICY_VERSION) != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "certification_scope=real-linux-operations\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "certification_status=not-certified\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "admission_rule=fail-closed-until-external-evidence\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "local_gate=deployment-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "local_gate=collector-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "local_gate=alert-integration-fixtures\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "external_gate=linux-systemd-service-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "external_gate=linux-systemd-host-service-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "external_gate=prometheus-scrape-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "external_gate=prometheus-alertmanager-rule-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "external_gate=rpm-package-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "external_gate=upgrade-rollback-deployment-smoke\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_environment=os=linux\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_environment=init=systemd\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_tool=systemctl\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_tool=journalctl\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_tool=promtool\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "required_tool=rpmbuild\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "real_systemd_environment=not-certified\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "production_collector_alert_environment=not-certified\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "rpm_package=not-certified\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_ops_certification_policy(void)
+{
+    char policy[4096];
+    size_t used = 0;
+
+    if (render_ops_certification_policy(policy, sizeof(policy), &used) != 0) {
+        fprintf(stderr, "mem_service ops-certification-policy: render failed\n");
+        return 1;
+    }
+    fwrite(policy, 1, used, stdout);
+    return 0;
+}
+
+static int run_ops_certification_fixture_check(void)
+{
+    char policy[4096];
+    size_t used = 0;
+    uint32_t checksum;
+
+    if (render_ops_certification_policy(policy, sizeof(policy), &used) != 0) {
+        fprintf(stderr, "mem_service ops-certification-fixtures: render failed\n");
+        return 1;
+    }
+    checksum = mem_service_wire_checksum(policy, used);
+    if (used != MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN) {
+        fprintf(stderr,
+                "mem_service ops-certification-fixtures: policy len actual=%zu "
+                "expected=%u\n",
+                used,
+                MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN);
+        return 1;
+    }
+    if (checksum != MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM) {
+        fprintf(stderr,
+                "mem_service ops-certification-fixtures: policy checksum actual=0x%08x "
+                "expected=0x%08x\n",
+                checksum,
+                MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM);
+        return 1;
+    }
+    if (strstr(policy, "certification_status=not-certified\n") == NULL ||
+        strstr(policy,
+               "admission_rule=fail-closed-until-external-evidence\n") == NULL ||
+        strstr(policy, "external_gate=linux-systemd-service-smoke\n") == NULL ||
+        strstr(policy,
+               "external_gate=prometheus-alertmanager-rule-smoke\n") == NULL ||
+        strstr(policy, "external_gate=rpm-package-smoke\n") == NULL ||
+        strstr(policy, "required_environment=init=systemd\n") == NULL ||
+        strstr(policy, "real_systemd_environment=not-certified\n") == NULL ||
+        strstr(policy,
+               "production_collector_alert_environment=not-certified\n") == NULL) {
+        fprintf(stderr,
+                "mem_service ops-certification-fixtures: required policy missing\n");
+        return 1;
+    }
+    printf("mem_service ops-certification-fixtures: status=ok policy_version=%u "
+           "policy_len=%u policy_checksum=0x%08x "
+           "certification_status=not-certified external_gates=6 "
+           "admission_rule=fail-closed-until-external-evidence\n",
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_VERSION,
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN,
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM);
+    return 0;
+}
+
 static int run_package_fixture_check(void)
 {
     char manifest[8192];
@@ -2539,6 +2727,8 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=upgrade-rollback-runtime-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=compat-runtime-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=ops-certification-fixtures\n") == NULL ||
+        strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
         return 1;
@@ -2659,6 +2849,15 @@ static int run_release_manifest(void)
     printf("alert_rule_count=%u\n", MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT);
     printf("alert_rules_gate=alert-fixtures\n");
     printf("alert_integration_smoke=alert-integration-fixtures\n");
+    printf("ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt\n");
+    printf("ops_certification_policy_len=%u\n",
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN);
+    printf("ops_certification_policy_checksum=0x%08x\n",
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM);
+    printf("ops_certification_gate=ops-certification-fixtures\n");
+    printf("real_systemd_environment=not-certified\n");
+    printf("production_collector_alert_environment=not-certified\n");
+    printf("rpm_package=not-certified\n");
     printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
     printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
@@ -2790,10 +2989,16 @@ static int run_release_fixture_check(void)
         fprintf(stderr, "mem_service release-fixtures: alert rules fixture missing\n");
         failures -= 1;
     }
+    if (MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN == 0U ||
+        MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM == 0U) {
+        fprintf(stderr,
+                "mem_service release-fixtures: ops certification policy missing\n");
+        failures -= 1;
+    }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 28U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 17U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 29U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 18U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -2848,6 +3053,7 @@ static int run_release_fixture_check(void)
            "collector_smokes=1 "
            "alert_rule_artifacts=1 alert_rules=%u "
            "alert_integration_smokes=1 "
+           "ops_certification_policies=1 "
            "api_abi_policies=1 "
            "admin_output_schemas=1 "
            "upgrade_rollback_policies=1 "
@@ -2866,6 +3072,8 @@ static int run_release_fixture_check(void)
            "upgrade_rollback_policy_len=%u "
            "upgrade_rollback_policy_checksum=0x%08x "
            "alert_rules_len=%u alert_rules_checksum=0x%08x "
+           "ops_certification_policy_len=%u "
+           "ops_certification_policy_checksum=0x%08x "
            "package_manifest_len=%u package_manifest_checksum=0x%08x "
            "compat_matrix_len=%u compat_matrix_checksum=0x%08x "
            "compat_baseline_len=%u compat_baseline_checksum=0x%08x "
@@ -2882,6 +3090,8 @@ static int run_release_fixture_check(void)
            MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM,
            MEM_SERVICE_ALERT_RULES_EXPECTED_LEN,
            MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM,
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN,
+           MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM,
            MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN,
            MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM,
            MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN,
@@ -5909,6 +6119,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "alert-integration-fixtures") == 0) {
         return run_alert_integration_fixture_check();
+    }
+    if (strcmp(argv[1], "ops-certification-policy") == 0) {
+        return run_ops_certification_policy();
+    }
+    if (strcmp(argv[1], "ops-certification-fixtures") == 0) {
+        return run_ops_certification_fixture_check();
     }
     if (strcmp(argv[1], "deployment-fixtures") == 0) {
         return run_deployment_fixture_check();

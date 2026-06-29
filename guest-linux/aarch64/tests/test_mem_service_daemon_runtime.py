@@ -18,6 +18,9 @@ WIRE_SCHEMA_MANIFEST = ROOT / "apps" / "mem_service" / "wire-schema.txt"
 ADMIN_OUTPUT_SCHEMA = ROOT / "apps" / "mem_service" / "admin-output-schema.txt"
 UPGRADE_ROLLBACK_POLICY = ROOT / "apps" / "mem_service" / "upgrade-rollback-policy.txt"
 PACKAGE_MANIFEST = ROOT / "apps" / "mem_service" / "package-manifest.txt"
+OPS_CERTIFICATION_POLICY = (
+    ROOT / "apps" / "mem_service" / "ops-certification-policy.txt"
+)
 ALERT_RULES = (
     ROOT / "apps" / "mem_service" / "deploy" / "linqu_mem_service.prometheus-alerts.yml"
 )
@@ -1781,8 +1784,11 @@ int main(int argc, char **argv)
         self.assertIn("upgrade_rollback_policy_checksum=0x0f9df008", fixtures.stdout)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
-        self.assertIn("package_manifest_len=3179", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x37a59873", fixtures.stdout)
+        self.assertIn("ops_certification_policies=1", fixtures.stdout)
+        self.assertIn("ops_certification_policy_len=838", fixtures.stdout)
+        self.assertIn("ops_certification_policy_checksum=0xb6f55049", fixtures.stdout)
+        self.assertIn("package_manifest_len=3334", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xed23daca", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1803,14 +1809,29 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=3179", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x37a59873", fixtures.stdout)
-        self.assertIn("installed_files=28", fixtures.stdout)
-        self.assertIn("required_gates=17", fixtures.stdout)
+        self.assertIn("manifest_len=3334", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xed23daca", fixtures.stdout)
+        self.assertIn("installed_files=29", fixtures.stdout)
+        self.assertIn("required_gates=18", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, PACKAGE_MANIFEST.read_text())
+
+    def test_ops_certification_policy_cli_matches_checked_in_contract(self):
+        fixtures = self._run_client("ops-certification-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("policy_len=838", fixtures.stdout)
+        self.assertIn("policy_checksum=0xb6f55049", fixtures.stdout)
+        self.assertIn("certification_status=not-certified", fixtures.stdout)
+        self.assertIn(
+            "admission_rule=fail-closed-until-external-evidence", fixtures.stdout
+        )
+
+        policy = self._run_client("ops-certification-policy")
+        self.assertEqual(policy.returncode, 0, policy.stderr + policy.stdout)
+        self.assertEqual(policy.stdout, OPS_CERTIFICATION_POLICY.read_text())
 
     def test_api_abi_policy_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("api-abi-fixtures")
@@ -3012,6 +3033,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "mem_service"
                 / "upgrade-rollback-policy.txt"
             )
+            ops_certification_policy = (
+                destdir
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "ops-certification-policy.txt"
+            )
             api_abi_policy = (
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "api-abi-policy.txt"
             )
@@ -3057,6 +3086,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertTrue(wire_schema.exists())
             self.assertTrue(admin_output_schema.exists())
             self.assertTrue(upgrade_rollback_policy.exists())
+            self.assertTrue(ops_certification_policy.exists())
             self.assertTrue(api_abi_policy.exists())
             self.assertTrue(compat_matrix.exists())
             self.assertTrue(compat_baseline.exists())
@@ -3073,7 +3103,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x37a59873", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xed23daca", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3106,7 +3136,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "native_package_gate=package-deb-smoke",
                 package_manifest.read_text(),
             )
-            self.assertIn("installed_file_count=28", package_manifest.read_text())
+            self.assertIn("installed_file_count=29", package_manifest.read_text())
             self.assertIn("required_gate=package-fixtures", package_manifest.read_text())
             self.assertIn(
                 "required_gate=package-tarball-smoke",
@@ -3114,6 +3144,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn(
                 "required_gate=package-deb-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "required_gate=ops-certification-fixtures",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "contract=ops-certification-policy",
                 package_manifest.read_text(),
             )
             self.assertIn("cross_version_upgrade=certified", package_manifest.read_text())
@@ -3132,6 +3170,17 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "alert_integration_smoke=alert-integration-fixtures",
                 manifest.read_text(),
             )
+            self.assertIn(
+                "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt",
+                manifest.read_text(),
+            )
+            self.assertIn("ops_certification_policy_checksum=0xb6f55049", manifest.read_text())
+            self.assertIn("ops_certification_gate=ops-certification-fixtures",
+                          manifest.read_text())
+            self.assertIn("real_systemd_environment=not-certified", manifest.read_text())
+            self.assertIn("production_collector_alert_environment=not-certified",
+                          manifest.read_text())
+            self.assertIn("rpm_package=not-certified", manifest.read_text())
             self.assertIn("api_abi_policy_checksum=0x8b516d14", manifest.read_text())
             self.assertIn("client_api_version=1", manifest.read_text())
             self.assertIn("client_abi_version=1", manifest.read_text())
@@ -3197,6 +3246,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertEqual(
                 upgrade_rollback_policy.read_text(),
                 UPGRADE_ROLLBACK_POLICY.read_text(),
+            )
+            self.assertEqual(
+                ops_certification_policy.read_text(),
+                OPS_CERTIFICATION_POLICY.read_text(),
             )
             self.assertEqual(alert_rules.read_text(), ALERT_RULES.read_text())
             self.assertEqual(api_abi_policy.read_text(), API_ABI_POLICY.read_text())

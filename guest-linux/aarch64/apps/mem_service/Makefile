@@ -38,6 +38,7 @@ MEM_SERVICE_PACKAGE_MANIFEST := package-manifest.txt
 MEM_SERVICE_WIRE_SCHEMA_MANIFEST := wire-schema.txt
 MEM_SERVICE_ADMIN_OUTPUT_SCHEMA := admin-output-schema.txt
 MEM_SERVICE_UPGRADE_ROLLBACK_POLICY := upgrade-rollback-policy.txt
+MEM_SERVICE_OPS_CERTIFICATION_POLICY := ops-certification-policy.txt
 MEM_SERVICE_API_ABI_POLICY := api-abi-policy.txt
 MEM_SERVICE_COMPAT_MATRIX := compat-matrix.txt
 MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt
@@ -135,7 +136,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -160,6 +161,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host upgrade-rollback-runtime-fixtures
 	./linqu_mem_service_host alert-fixtures
 	./linqu_mem_service_host alert-integration-fixtures
+	./linqu_mem_service_host ops-certification-fixtures
 	./linqu_mem_service_host api-abi-fixtures
 	./linqu_mem_service_host compat-runtime-fixtures
 	./linqu_mem_service_host compat-old-server-runtime-fixtures
@@ -263,6 +265,9 @@ print-admin-output-schema:
 print-upgrade-rollback-policy:
 	@cat $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY)
 
+print-ops-certification-policy:
+	@cat $(MEM_SERVICE_OPS_CERTIFICATION_POLICY)
+
 print-alert-rules:
 	@cat $(MEM_SERVICE_ALERT_RULES)
 
@@ -278,7 +283,7 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
+install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
 	rm -f linqu_mem_service linqu_mem_service_host
 	$(MAKE) linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"
 	$(MAKE) linqu_mem_service_host HOST_CC="$(HOST_CC)" HOST_CFLAGS="$(HOST_CFLAGS)"
@@ -293,6 +298,7 @@ install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_S
 	cp $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(INSTALL_DATADIR)/wire-schema.txt
 	cp $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(INSTALL_DATADIR)/admin-output-schema.txt
 	cp $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	cp $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(INSTALL_DATADIR)/ops-certification-policy.txt
 	cp $(MEM_SERVICE_API_ABI_POLICY) $(INSTALL_DATADIR)/api-abi-policy.txt
 	cp $(MEM_SERVICE_COMPAT_MATRIX) $(INSTALL_DATADIR)/compat-matrix.txt
 	cp $(MEM_SERVICE_COMPAT_BASELINE_V1) $(INSTALL_DATADIR)/compat-baseline-v1.txt
@@ -317,6 +323,7 @@ install-smoke: install
 	test -f $(INSTALL_DATADIR)/wire-schema.txt
 	test -f $(INSTALL_DATADIR)/admin-output-schema.txt
 	test -f $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	test -f $(INSTALL_DATADIR)/ops-certification-policy.txt
 	test -f $(INSTALL_DATADIR)/api-abi-policy.txt
 	test -f $(INSTALL_DATADIR)/compat-matrix.txt
 	test -f $(INSTALL_DATADIR)/compat-baseline-v1.txt
@@ -329,8 +336,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=3179$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x37a59873$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=3334$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xed23daca$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -402,6 +409,11 @@ install-smoke: install
 	grep -q '^alert_rule_count=5$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^alert_rules_gate=alert-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^alert_integration_smoke=alert-integration-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^ops_certification_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^real_systemd_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^production_collector_alert_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rpm_package=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_shutdown=signal-clean-stop$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -461,15 +473,23 @@ install-smoke: install
 	grep -q '^native_package_payload=debian-binary+control.tar.gz+data.tar.gz$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_runtime=not-executed-cross-compiled-arm64$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^installed_file_count=28$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=17$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_file_count=29$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=18$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x0f9df008$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^cross_version_upgrade=certified$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^mem_service_ops_certification_policy_version=1$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
+	grep -q '^certification_status=not-certified$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
+	grep -q '^admission_rule=fail-closed-until-external-evidence$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
+	grep -q '^external_gate=linux-systemd-service-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
+	grep -q '^external_gate=prometheus-alertmanager-rule-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
+	grep -q '^external_gate=rpm-package-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^mem_service_api_abi_policy_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt

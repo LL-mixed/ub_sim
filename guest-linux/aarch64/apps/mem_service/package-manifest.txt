@@ -24,13 +24,13 @@ header_root=include/lingqu/mem_service
 source_root=src/lingqu/mem_service
 config_root=share/lingqu/mem_service/config
 deploy_root=share/lingqu/mem_service/deploy
-installed_file_count=28
+installed_file_count=29
 file_class=core_binary count=1
 file_class=host_binary count=1
 file_class=public_headers count=8
 file_class=client_sources count=2
 file_class=examples count=2
-file_class=contracts count=9
+file_class=contracts count=10
 file_class=configs count=2
 file_class=deploy count=3
 contract=release-manifest path=share/lingqu/mem_service/release-manifest.txt
@@ -42,7 +42,8 @@ contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=
 contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0xa538400f
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x641e48ca
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
-required_gate_count=17
+contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xb6f55049
+required_gate_count=18
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=admin-output-fixtures
@@ -55,6 +56,7 @@ required_gate=deployment-fixtures
 required_gate=collector-fixtures
 required_gate=alert-fixtures
 required_gate=alert-integration-fixtures
+required_gate=ops-certification-fixtures
 required_gate=durable-catalog-fixtures
 required_gate=host-artifact-smoke
 required_gate=package-tarball-smoke
