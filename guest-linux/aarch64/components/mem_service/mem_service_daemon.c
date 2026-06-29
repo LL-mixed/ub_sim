@@ -6474,6 +6474,97 @@ int mem_service_run_network_transport_block_fixture_check(void)
     return 0;
 }
 
+int mem_service_probe_transport_tcp_payload_block(
+    const char *storage_root,
+    const char *payload_source,
+    struct mem_service_remote_transport_probe_result *result)
+{
+    char blocks_dir[512];
+    char remote_blocks_dir[512];
+    char dir_path[512];
+    char block_path[512];
+    char payload[96];
+    struct mem_service_record record;
+    enum mem_service_wire_status status;
+    FILE *file;
+
+    if (result == NULL) {
+        return -1;
+    }
+    memset(result, 0, sizeof(*result));
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        payload_source == NULL || payload_source[0] == '\0') {
+        return -1;
+    }
+    if (mem_service_join_path(blocks_dir,
+                              sizeof(blocks_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(remote_blocks_dir,
+                              sizeof(remote_blocks_dir),
+                              storage_root,
+                              "remote-blocks") != 0 ||
+        mem_service_ensure_dir(storage_root) != 0 ||
+        mem_service_ensure_dir(blocks_dir) != 0 ||
+        mem_service_ensure_dir(remote_blocks_dir) != 0) {
+        return -1;
+    }
+    if (snprintf(payload,
+                 sizeof(payload),
+                 "payload_kind=%u\n",
+                 MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK) >=
+        (int)sizeof(payload)) {
+        return -1;
+    }
+    memset(&record, 0, sizeof(record));
+    status = mem_service_write_payload_block(storage_root,
+                                             payload,
+                                             NULL,
+                                             payload_source,
+                                             &record);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        record.object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK ||
+        record.object_backing_len == 0U ||
+        record.object_payload_checksum == 0U) {
+        return 0;
+    }
+    result->payload_block_round_trip = true;
+    result->payload_len = record.object_backing_len;
+    result->payload_checksum = record.object_payload_checksum;
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status == MEM_SERVICE_WIRE_STATUS_OK) {
+        result->payload_checksum_validation = true;
+    } else {
+        return 0;
+    }
+    if (mem_service_make_transport_tcp_block_dir_path(storage_root,
+                                                      record.object_payload_checksum,
+                                                      dir_path,
+                                                      sizeof(dir_path)) != 0 ||
+        mem_service_join_path(block_path,
+                              sizeof(block_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0) {
+        return 0;
+    }
+    file = fopen(block_path, "r+b");
+    if (file == NULL ||
+        fseek(file, 0, SEEK_SET) != 0 ||
+        fputc('X', file) == EOF ||
+        fclose(file) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        return 0;
+    }
+    status = mem_service_validate_payload_block(storage_root, &record);
+    if (status == MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH &&
+        !mem_service_path_is_dir(dir_path)) {
+        result->payload_corruption_fail_closed = true;
+    }
+    return 0;
+}
+
 static bool mem_service_payload_get_u64_checked(const char *payload,
                                                 const char *name,
                                                 uint64_t *out)

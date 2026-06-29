@@ -445,11 +445,18 @@ Keep the implementation layers separated:
   socket-using gate.
   Cross-machine production network transport remains fail-closed as
   `remote_payload_production_network_transport=not-certified` until an external
-  evidence file passes `remote-transport-verify --evidence-file <path>`. The
+  evidence file passes `remote-transport-verify --evidence-file <path>`.
+  `remote-transport-generate-evidence --source tcp:<ipv4>:<port>
+  --producer-host <host> --consumer-host <host> --network-partition-marker
+  <path> --evidence-file <path>` is the consumer-side evidence generator: it
+  fetches the producer payload through `transport-tcp-block-v1`, validates the
+  local sealed copy, corrupts it to prove fail-closed quarantine, rejects
+  loopback sources, and requires a CI-produced network-partition marker. The
   `remote-transport-evidence-fixtures` gate defines the required evidence
-  schema: cross-host topology, `transport-tcp-block-v1`, TCP/IPv4, payload
-  round-trip, checksum validation, corruption fail-closed behavior, distinct
-  producer/consumer hosts, and network-partition fail-closed behavior.
+  schema: non-loopback source address, cross-host topology,
+  `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum validation,
+  corruption fail-closed behavior, distinct producer/consumer hosts, and
+  network-partition fail-closed behavior.
   Real systemd environment smoke, production collector/alert environment
   integration smoke, product-grade restore policy, payload ownership, and
   cross-machine remote transport-backed block storage remain deployment work.

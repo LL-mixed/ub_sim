@@ -45,8 +45,8 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4864U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4140023U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4944U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1e9f6129U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 23U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -87,6 +87,7 @@ static void usage(const char *argv0)
     printf(" [network-transport-block-fixtures]");
     printf(" [remote-block-backend-policy-fixtures]");
     printf(" [remote-transport-evidence-fixtures]");
+    printf(" [remote-transport-generate-evidence --source tcp:<ipv4>:<port> --producer-host <host> --consumer-host <host> --network-partition-marker <path> --evidence-file <path>]");
     printf(" [remote-transport-verify --evidence-file <path>]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
     printf(" [client-retry-fixtures] [compat-matrix] [compat-fixtures]");
@@ -2598,6 +2599,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "remote_payload_production_transport_generate=remote-transport-generate-evidence\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "remote_payload_production_transport_verify=remote-transport-verify --evidence-file\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2929,6 +2934,7 @@ static int validate_remote_transport_evidence(const char *evidence,
     uint64_t package_checksum;
     uint32_t version;
     static const char *required_pass_gates[] = {
+        "source_address_non_loopback",
         "payload_block_round_trip",
         "payload_checksum_validation",
         "payload_corruption_fail_closed",
@@ -3392,8 +3398,270 @@ static int run_remote_transport_verify(int argc, char **argv)
         return 1;
     }
     printf("mem_service remote-transport-verify: status=ok "
-           "certification_status=certified evidence_version=%u external_gates=5\n",
+           "certification_status=certified evidence_version=%u external_gates=6\n",
            MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION);
+    return 0;
+}
+
+static bool remote_transport_parse_source_ip(const char *source,
+                                             char *ip,
+                                             size_t ip_len)
+{
+    const char *start;
+    const char *port;
+    size_t len;
+
+    if (source == NULL || strncmp(source, "tcp:", 4) != 0 ||
+        ip == NULL || ip_len == 0) {
+        return false;
+    }
+    start = source + 4;
+    port = strrchr(start, ':');
+    if (port == NULL || port == start || port[1] == '\0') {
+        return false;
+    }
+    len = (size_t)(port - start);
+    if (len == 0 || len >= ip_len) {
+        return false;
+    }
+    memcpy(ip, start, len);
+    ip[len] = '\0';
+    return true;
+}
+
+static bool remote_transport_source_ip_is_non_loopback(const char *source)
+{
+    char ip[80];
+
+    if (!remote_transport_parse_source_ip(source, ip, sizeof(ip))) {
+        return false;
+    }
+    if (strcmp(ip, "0.0.0.0") == 0 ||
+        strcmp(ip, "127.0.0.1") == 0 ||
+        strcmp(ip, "localhost") == 0 ||
+        strncmp(ip, "127.", 4) == 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool remote_transport_hosts_are_distinct(const char *producer_host,
+                                                const char *consumer_host)
+{
+    return producer_host != NULL && producer_host[0] != '\0' &&
+           consumer_host != NULL && consumer_host[0] != '\0' &&
+           strcmp(producer_host, consumer_host) != 0;
+}
+
+static bool remote_transport_partition_marker_passes(const char *marker_path)
+{
+    char marker[512];
+
+    if (!ops_certification_safe_path(marker_path) ||
+        read_text_file_limited(marker_path, marker, sizeof(marker)) != 0) {
+        return false;
+    }
+    return strstr(marker, "network_partition_fail_closed=pass\n") != NULL;
+}
+
+static int render_remote_transport_generated_evidence(
+    const char *source,
+    const char *producer_host,
+    const char *consumer_host,
+    const char *partition_marker,
+    const struct mem_service_remote_transport_probe_result *probe,
+    char *evidence,
+    size_t evidence_len,
+    size_t *used_out)
+{
+    size_t used = 0;
+    bool source_non_loopback = remote_transport_source_ip_is_non_loopback(source);
+    bool distinct_hosts =
+        remote_transport_hosts_are_distinct(producer_host, consumer_host);
+    bool partition_pass =
+        remote_transport_partition_marker_passes(partition_marker);
+
+    if (probe == NULL || evidence == NULL || evidence_len == 0) {
+        return -1;
+    }
+    evidence[0] = '\0';
+    if (append_wire_schema_line(
+            evidence,
+            evidence_len,
+            &used,
+            "mem_service_remote_transport_evidence_version=%u\n",
+            MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION) != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "certification_scope=production-network-transport\n") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "evidence_generator=remote-transport-generate-evidence\n") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "transport_backend=transport-tcp-block-v1\n") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "transport_protocol=tcp-ipv4\n") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "transport_topology=cross-host\n") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "producer_host=%s\n",
+                                producer_host != NULL ? producer_host : "") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "consumer_host=%s\n",
+                                consumer_host != NULL ? consumer_host : "") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "source=%s\n",
+                                source != NULL ? source : "") != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "package_manifest_checksum=0x%08x\n",
+                                MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "payload_len=%" PRIu64 "\n",
+                                probe->payload_len) != 0 ||
+        append_wire_schema_line(evidence,
+                                evidence_len,
+                                &used,
+                                "payload_checksum=0x%016" PRIx64 "\n",
+                                probe->payload_checksum) != 0 ||
+        append_ops_certification_gate_status(evidence,
+                                             evidence_len,
+                                             &used,
+                                             "source_address_non_loopback",
+                                             source_non_loopback) != 0 ||
+        append_ops_certification_gate_status(evidence,
+                                             evidence_len,
+                                             &used,
+                                             "payload_block_round_trip",
+                                             probe->payload_block_round_trip) != 0 ||
+        append_ops_certification_gate_status(evidence,
+                                             evidence_len,
+                                             &used,
+                                             "payload_checksum_validation",
+                                             probe->payload_checksum_validation) != 0 ||
+        append_ops_certification_gate_status(evidence,
+                                             evidence_len,
+                                             &used,
+                                             "payload_corruption_fail_closed",
+                                             probe->payload_corruption_fail_closed) != 0 ||
+        append_ops_certification_gate_status(evidence,
+                                             evidence_len,
+                                             &used,
+                                             "producer_consumer_distinct_hosts",
+                                             distinct_hosts) != 0 ||
+        append_ops_certification_gate_status(evidence,
+                                             evidence_len,
+                                             &used,
+                                             "network_partition_fail_closed",
+                                             partition_pass) != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_remote_transport_generate_evidence(int argc, char **argv)
+{
+    const char *source = option_value(argc, argv, "--source");
+    const char *producer_host = option_value(argc, argv, "--producer-host");
+    const char *consumer_host = option_value(argc, argv, "--consumer-host");
+    const char *partition_marker =
+        option_value(argc, argv, "--network-partition-marker");
+    const char *evidence_file = option_value(argc, argv, "--evidence-file");
+    const char *storage_root_arg = option_value(argc, argv, "--storage-root");
+    char storage_root[256];
+    char evidence[2048];
+    char reason[160];
+    size_t used = 0;
+    struct mem_service_remote_transport_probe_result probe;
+
+    if (source == NULL || producer_host == NULL || consumer_host == NULL ||
+        partition_marker == NULL || evidence_file == NULL ||
+        source[0] == '\0' || producer_host[0] == '\0' ||
+        consumer_host[0] == '\0' || partition_marker[0] == '\0' ||
+        evidence_file[0] == '\0') {
+        fprintf(stderr,
+                "mem_service remote-transport-generate-evidence: missing required option\n");
+        return 2;
+    }
+    if (!ops_certification_safe_path(evidence_file) ||
+        !ops_certification_safe_path(partition_marker)) {
+        fprintf(stderr,
+                "mem_service remote-transport-generate-evidence: unsafe evidence path\n");
+        return 2;
+    }
+    if (storage_root_arg != NULL && storage_root_arg[0] != '\0') {
+        if (!ops_certification_safe_path(storage_root_arg) ||
+            strlen(storage_root_arg) >= sizeof(storage_root)) {
+            fprintf(stderr,
+                    "mem_service remote-transport-generate-evidence: unsafe storage root\n");
+            return 2;
+        }
+        strcpy(storage_root, storage_root_arg);
+    } else if (snprintf(storage_root,
+                        sizeof(storage_root),
+                        "/tmp/linqu_mem_service_remote_transport_probe_%ld",
+                        (long)getpid()) >= (int)sizeof(storage_root)) {
+        return 1;
+    }
+    if (mem_service_probe_transport_tcp_payload_block(storage_root,
+                                                      source,
+                                                      &probe) != 0) {
+        memset(&probe, 0, sizeof(probe));
+    }
+    if (render_remote_transport_generated_evidence(source,
+                                                   producer_host,
+                                                   consumer_host,
+                                                   partition_marker,
+                                                   &probe,
+                                                   evidence,
+                                                   sizeof(evidence),
+                                                   &used) != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-generate-evidence: render failed\n");
+        return 1;
+    }
+    if (write_text_file_limited(evidence_file, evidence, used) != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-generate-evidence: evidence write failed\n");
+        return 1;
+    }
+    if (validate_remote_transport_evidence(evidence, reason, sizeof(reason)) != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-generate-evidence: fail-closed "
+                "reason=%s evidence_file=%s\n",
+                reason,
+                evidence_file);
+        return 1;
+    }
+    printf("mem_service remote-transport-generate-evidence: status=ok "
+           "certification_status=certified evidence_file=%s external_gates=6 "
+           "payload_len=%" PRIu64 "\n",
+           evidence_file,
+           probe.payload_len);
     return 0;
 }
 
@@ -3500,6 +3768,10 @@ static int append_remote_transport_valid_evidence(char *evidence,
                                    &used,
                                    "package_manifest_checksum=0x%08x\n",
                                    MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+           append_wire_schema_line(evidence,
+                                   evidence_len,
+                                   &used,
+                                   "source_address_non_loopback=pass\n") != 0 ||
            append_wire_schema_line(evidence,
                                    evidence_len,
                                    &used,
@@ -3651,7 +3923,7 @@ static int run_remote_transport_evidence_fixture_check(void)
     }
     printf("mem_service remote-transport-evidence-fixtures: status=ok "
            "evidence_schema=remote-transport-evidence-v1 "
-           "positive=1 fail_closed=3 external_gates=5 "
+           "positive=1 fail_closed=3 external_gates=6 "
            "certification_status=not-certified-until-cross-host-evidence\n");
     return 0;
 }
@@ -3867,6 +4139,7 @@ static int run_release_manifest(void)
     printf("remote_payload_production_network_transport=not-certified\n");
     printf("remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1\n");
     printf("remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures\n");
+    printf("remote_payload_production_transport_generate=remote-transport-generate-evidence\n");
     printf("remote_payload_production_transport_verify=remote-transport-verify --evidence-file\n");
     printf("payload_block_ingest=payload-inline,payload-file\n");
     printf("durable_snapshot=store-path\n");
@@ -7191,6 +7464,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "remote-transport-evidence-fixtures") == 0) {
         return run_remote_transport_evidence_fixture_check();
+    }
+    if (strcmp(argv[1], "remote-transport-generate-evidence") == 0) {
+        return run_remote_transport_generate_evidence(argc, argv);
     }
     if (strcmp(argv[1], "remote-transport-verify") == 0) {
         return run_remote_transport_verify(argc, argv);

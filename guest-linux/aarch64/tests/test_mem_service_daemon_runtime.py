@@ -1789,8 +1789,8 @@ int main(int argc, char **argv)
         self.assertIn("remote_transport_evidence_schemas=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=4864", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xa4140023", fixtures.stdout)
+        self.assertIn("package_manifest_len=4944", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x1e9f6129", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1811,8 +1811,8 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=4864", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xa4140023", fixtures.stdout)
+        self.assertIn("manifest_len=4944", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x1e9f6129", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
         self.assertIn("required_gates=23", fixtures.stdout)
 
@@ -1842,7 +1842,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xa4140023\n"
+            "package_manifest_checksum=0x1e9f6129\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1888,7 +1888,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0xa4140023", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x1e9f6129", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2075,7 +2075,7 @@ int main(int argc, char **argv)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("evidence_schema=remote-transport-evidence-v1", fixtures.stdout)
         self.assertIn("fail_closed=3", fixtures.stdout)
-        self.assertIn("external_gates=5", fixtures.stdout)
+        self.assertIn("external_gates=6", fixtures.stdout)
         self.assertIn(
             "certification_status=not-certified-until-cross-host-evidence",
             fixtures.stdout,
@@ -2088,7 +2088,8 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xa4140023\n"
+            "package_manifest_checksum=0x1e9f6129\n"
+            "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
             "payload_corruption_fail_closed=pass\n"
@@ -2109,7 +2110,7 @@ int main(int argc, char **argv)
             )
             self.assertEqual(verified.returncode, 0, verified.stderr + verified.stdout)
             self.assertIn("certification_status=certified", verified.stdout)
-            self.assertIn("external_gates=5", verified.stdout)
+            self.assertIn("external_gates=6", verified.stdout)
 
             rejected = self._run_client(
                 "remote-transport-verify", "--evidence-file", str(bad_evidence_path)
@@ -2117,6 +2118,60 @@ int main(int argc, char **argv)
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("fail-closed", rejected.stderr)
             self.assertIn("bad-evidence-identity", rejected.stderr)
+
+    def test_remote_transport_generate_evidence_fetches_payload_but_rejects_loopback(self):
+        payload = b"remote transport generated evidence payload"
+        ready = threading.Event()
+        port_holder = {}
+
+        def serve_once():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+                server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                server.bind(("127.0.0.1", 0))
+                server.listen(1)
+                port_holder["port"] = server.getsockname()[1]
+                ready.set()
+                conn, _ = server.accept()
+                with conn:
+                    conn.sendall(payload)
+
+        thread = threading.Thread(target=serve_once, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(timeout=5.0))
+        with tempfile.TemporaryDirectory(prefix="msvc_remote_transport_gen_", dir=str(_tmp_parent())) as tmp:
+            tmp_path = Path(tmp)
+            marker = tmp_path / "partition.marker"
+            evidence_path = tmp_path / "remote_transport.evidence"
+            storage_root = tmp_path / "storage"
+            marker.write_text("network_partition_fail_closed=pass\n")
+
+            generated = self._run_client(
+                "remote-transport-generate-evidence",
+                "--source",
+                f"tcp:127.0.0.1:{port_holder['port']}",
+                "--producer-host",
+                "producer-a",
+                "--consumer-host",
+                "consumer-b",
+                "--network-partition-marker",
+                str(marker),
+                "--evidence-file",
+                str(evidence_path),
+                "--storage-root",
+                str(storage_root),
+            )
+            thread.join(timeout=5.0)
+            self.assertNotEqual(generated.returncode, 0)
+            self.assertIn("fail-closed", generated.stderr)
+            self.assertIn("source_address_non_loopback", generated.stderr)
+            evidence = evidence_path.read_text()
+            self.assertIn("evidence_generator=remote-transport-generate-evidence", evidence)
+            self.assertIn("source_address_non_loopback=fail", evidence)
+            self.assertIn("payload_block_round_trip=pass", evidence)
+            self.assertIn("payload_checksum_validation=pass", evidence)
+            self.assertIn("payload_corruption_fail_closed=pass", evidence)
+            self.assertIn("producer_consumer_distinct_hosts=pass", evidence)
+            self.assertIn("network_partition_fail_closed=pass", evidence)
 
     def test_deployment_fixtures_cli_validates_service_and_metrics_scrape_contract(self):
         fixtures = self._run_client("deployment-fixtures")
@@ -3306,7 +3361,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xa4140023", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x1e9f6129", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),

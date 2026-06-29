@@ -1,6 +1,17 @@
 #ifndef MEM_SERVICE_DAEMON_H
 #define MEM_SERVICE_DAEMON_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
+struct mem_service_remote_transport_probe_result {
+    bool payload_block_round_trip;
+    bool payload_checksum_validation;
+    bool payload_corruption_fail_closed;
+    uint64_t payload_len;
+    uint64_t payload_checksum;
+};
+
 int mem_service_run_unix_daemon(const char *listen_spec);
 int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *store_path);
 int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
@@ -20,6 +31,10 @@ int mem_service_run_durable_catalog_fixture_check(void);
 int mem_service_run_chunked_block_fixture_check(void);
 int mem_service_run_transport_block_fixture_check(void);
 int mem_service_run_network_transport_block_fixture_check(void);
+int mem_service_probe_transport_tcp_payload_block(
+    const char *storage_root,
+    const char *payload_source,
+    struct mem_service_remote_transport_probe_result *result);
 int mem_service_run_serving_fail_closed_fixture_check(void);
 int mem_service_run_pretraining_fail_closed_fixture_check(void);
 int mem_service_run_typed_payload_fixture_check(void);

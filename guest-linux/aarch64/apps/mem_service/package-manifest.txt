@@ -92,6 +92,7 @@ payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-lo
 remote_payload_production_network_transport=not-certified
 remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1
 remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures
+remote_payload_production_transport_generate=remote-transport-generate-evidence
 remote_payload_production_transport_verify=remote-transport-verify --evidence-file
 upgrade_policy=current-version-only
 old_server_runtime_binary=certified

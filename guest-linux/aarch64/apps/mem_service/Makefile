@@ -529,8 +529,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=4864$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xa4140023$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=4944$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x1e9f6129$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -646,6 +646,7 @@ install-smoke: install
 	grep -q '^remote_payload_production_network_transport=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_generate=remote-transport-generate-evidence$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^required_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^payload_block_ingest=payload-inline,payload-file$$' $(INSTALL_DATADIR)/release-manifest.txt
