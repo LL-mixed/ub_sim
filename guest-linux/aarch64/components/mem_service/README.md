@@ -80,6 +80,15 @@ a Qwen3 adapter inspect build:
   persists the evidence, and verifies it as a single CI gate. Local fixtures
   cover the positive/negative parser behavior and the non-Linux fail-closed
   path.
+- `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm>`
+  is the recommended real-Linux CI wrapper for deployment certification. It
+  runs `linux-ops-deployment-smoke` and emits
+  `ops-certification-linux-ci.evidence` plus
+  `ops-certification-upgrade-rollback.marker`. After CI publishes the evidence
+  artifact, `scripts/verify_mem_service_linux_ops_evidence.sh --evidence-file
+  <path>` rebuilds `linqu_mem_service_host` if needed and re-runs
+  `ops-certification-verify --evidence-file <path>` as an independent
+  artifact verifier.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC

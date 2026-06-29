@@ -197,6 +197,47 @@ def test_mem_service_linux_ops_ci_runner_is_reusable_and_dry_runnable():
     assert "linux-ops-deployment-smoke" in dry_run.stdout
 
 
+def test_mem_service_linux_ops_evidence_verifier_is_reusable_and_dry_runnable():
+    verifier_path = ROOT / "scripts" / "verify_mem_service_linux_ops_evidence.sh"
+    verifier = verifier_path.read_text()
+
+    assert verifier_path.exists()
+    assert verifier_path.stat().st_mode & 0o111
+    assert "--evidence-file PATH" in verifier
+    assert "linqu_mem_service_host" in verifier
+    assert "ops-certification-verify --evidence-file" in verifier
+    assert "[mem-service-linux-ops-evidence] PASS evidence=" in verifier
+
+    missing_arg = subprocess.run(
+        [str(verifier_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(verifier_path),
+            "--evidence-file",
+            "/tmp/ops-certification-linux-ci.evidence",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--evidence-file is required" in missing_arg.stderr
+    assert "make -C " in dry_run.stdout
+    assert "linqu_mem_service_host" in dry_run.stdout
+    assert (
+        "ops-certification-verify --evidence-file "
+        "/tmp/ops-certification-linux-ci.evidence"
+    ) in dry_run.stdout
+
+
 def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     runner = ROOT / "scripts" / "run_ub_app_validation_matrix.sh"
 
