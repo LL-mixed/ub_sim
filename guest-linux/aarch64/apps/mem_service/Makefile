@@ -559,8 +559,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=5159$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x50c6945d$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=5277$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xba9359e5$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -636,6 +636,9 @@ install-smoke: install
 	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_runtime_config_source=share/lingqu/mem_service/config/mem_service.host.runtime.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^service_auth_boundary=unix-socket-local-only$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^metrics_auth_boundary=loopback-only$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^config_security_gate=config-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^systemd_unit=lib/systemd/system/linqu_mem_service.service$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -758,6 +761,9 @@ install-smoke: install
 	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_runtime_config_source=share/lingqu/mem_service/config/mem_service.host.runtime.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^service_auth_boundary=unix-socket-local-only$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^metrics_auth_boundary=loopback-only$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^config_security_gate=config-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^systemd_unit_root=lib/systemd/system$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^systemd_unit=lib/systemd/system/linqu_mem_service.service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/package-manifest.txt

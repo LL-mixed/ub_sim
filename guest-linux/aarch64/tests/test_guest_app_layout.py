@@ -1139,7 +1139,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x50c6945d$$" in app_makefile
+    assert "^package_manifest_checksum=0xba9359e5$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
@@ -1361,8 +1361,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5159U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x50c6945dU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5277U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xba9359e5U" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1404,7 +1404,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0x50c6945d" in release_manifest
+    assert "package_manifest_checksum=0xba9359e5" in release_manifest
+    assert "service_auth_boundary=unix-socket-local-only" in release_manifest
+    assert "metrics_auth_boundary=loopback-only" in release_manifest
+    assert "config_security_gate=config-fixtures" in release_manifest
     assert "restore_policy=transactional-staged-restore" in release_manifest
     assert "restore_policy_scope=full-snapshot+paged-snapshot" in release_manifest
     assert "restore_policy_gate=restore-policy-fixtures" in release_manifest
@@ -1536,8 +1539,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=5159" in release_manifest
-    assert "package_manifest_checksum=0x50c6945d" in release_manifest
+    assert "package_manifest_len=5277" in release_manifest
+    assert "package_manifest_checksum=0xba9359e5" in release_manifest
     assert "remote_payload_production_network_transport=not-certified" in release_manifest
     assert (
         "remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1"
@@ -1728,10 +1731,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "lingqu_mem_service_request_latency_max_ms > 100" in alert_rules
     assert "mem_service_config_schema_version=1" in config_schema
     assert "field=listen type=string" in config_schema
+    assert "must be unix:<path> while auth_mode=none" in config_schema
     assert "field=store type=string" in config_schema
     assert "field=storage_root type=string" in config_schema
     assert "field=backend type=enum values=snapshot,snapshot+journal" in config_schema
     assert "field=metrics_listen type=string" in config_schema
+    assert "must be tcp:127.0.0.1:<port>" in config_schema
     assert "listen=unix:/tmp/linqu_mem_service.sock" in config_example
     assert "store=/tmp/linqu_mem_service.store" in config_example
     assert "backend=snapshot+journal" in config_example
@@ -1745,6 +1750,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "store=/var/lib/lingqu/mem_service_host/store.snapshot" in config_host_runtime
     assert "storage_root=/var/lib/lingqu/mem_service_host" in config_host_runtime
     assert "metrics_listen=tcp:127.0.0.1:9901" in config_host_runtime
+    assert "service_auth_boundary=unix-socket-local-only" in package_manifest
+    assert "metrics_auth_boundary=loopback-only" in package_manifest
+    assert "config_security_gate=config-fixtures" in package_manifest
     assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest
     assert (
         "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "

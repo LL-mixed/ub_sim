@@ -966,6 +966,7 @@ int main(int argc, char **argv)
             check=False,
             capture_output=True,
             text=True,
+            timeout=5,
         )
 
     def _run_client(self, *args: str) -> subprocess.CompletedProcess:
@@ -975,6 +976,7 @@ int main(int argc, char **argv)
             check=False,
             capture_output=True,
             text=True,
+            timeout=5,
         )
 
     def _parse_metrics(self, payload: str) -> dict[str, int]:
@@ -1041,6 +1043,28 @@ int main(int argc, char **argv)
             time.sleep(0.05)
         self._stop_server(proc)
         self.fail("mem_service daemon did not become ready")
+
+    def test_daemon_rejects_non_loopback_metrics_listener(self):
+        metrics_port = self._free_tcp_port()
+        result = subprocess.run(
+            [
+                str(self.binary),
+                "serve",
+                "--listen",
+                f"unix:{self.socket}",
+                "--store",
+                str(self.store),
+                "--metrics-listen",
+                f"tcp:0.0.0.0:{metrics_port}",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("invalid metrics listen path", result.stderr)
 
     def _http_metrics_request(
         self,
@@ -1790,8 +1814,9 @@ int main(int argc, char **argv)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
         self.assertIn("restore_policy_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=5159", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x50c6945d", fixtures.stdout)
+        self.assertIn("config_security_smokes=1", fixtures.stdout)
+        self.assertIn("package_manifest_len=5277", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0xba9359e5", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1812,14 +1837,24 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=5159", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x50c6945d", fixtures.stdout)
+        self.assertIn("manifest_len=5277", fixtures.stdout)
+        self.assertIn("manifest_checksum=0xba9359e5", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
         self.assertIn("required_gates=24", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, PACKAGE_MANIFEST.read_text())
+
+    def test_config_fixtures_enforce_local_auth_boundary(self):
+        fixtures = self._run_client("config-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn(
+            "service_auth_boundary=unix-socket-local-only",
+            fixtures.stdout,
+        )
+        self.assertIn("metrics_auth_boundary=loopback-only", fixtures.stdout)
 
     def test_restore_policy_fixtures_fail_closed_until_commit(self):
         fixtures = self._run_client("restore-policy-fixtures")
@@ -1864,7 +1899,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x50c6945d\n"
+            "package_manifest_checksum=0xba9359e5\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1910,7 +1945,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x50c6945d", generated.stdout)
+        self.assertIn("package_manifest_checksum=0xba9359e5", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2110,7 +2145,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0x50c6945d\n"
+            "package_manifest_checksum=0xba9359e5\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -3392,7 +3427,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x50c6945d", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0xba9359e5", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),

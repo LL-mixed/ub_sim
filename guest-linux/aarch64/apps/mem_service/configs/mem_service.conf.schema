@@ -13,7 +13,7 @@ optional=auth_mode
 optional=metrics_mode
 optional=metrics_listen
 optional=adapter_enablement
-field=listen type=string description=service endpoint, currently unix:<path>
+field=listen type=string description=service endpoint, must be unix:<path> while auth_mode=none
 field=store type=string description=snapshot store path; append-only idempotency/audit journal uses <store>.journal
 field=node_id type=string description=stable deployment node identity
 field=cluster_id type=string description=stable deployment cluster identity
@@ -22,7 +22,7 @@ field=backend type=enum values=snapshot,snapshot+journal description=current dur
 field=max_records type=u64 description=deployment record-capacity expectation
 field=max_payload_bytes type=u64 description=deployment wire-payload capacity expectation
 field=retention type=string description=retention policy label
-field=auth_mode type=enum values=none description=current local deployment auth mode
+field=auth_mode type=enum values=none description=local-only deployment mode; network service endpoints are rejected
 field=metrics_mode type=enum values=text-kv description=current metrics export mode
-field=metrics_listen type=string description=optional HTTP metrics endpoint, currently tcp:<ipv4>:<port>
+field=metrics_listen type=string description=optional HTTP metrics endpoint, must be tcp:127.0.0.1:<port>
 field=adapter_enablement type=enum values=core,qwen3 description=enabled adapter surface

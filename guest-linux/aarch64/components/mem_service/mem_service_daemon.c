@@ -9336,6 +9336,9 @@ static int mem_service_parse_tcp_listen_spec(const char *listen_spec,
     if (inet_pton(AF_INET, host, &addr->sin_addr) != 1) {
         return -1;
     }
+    if (addr->sin_addr.s_addr != htonl(INADDR_LOOPBACK)) {
+        return -1;
+    }
     return 0;
 }
 

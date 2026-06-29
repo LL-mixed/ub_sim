@@ -510,8 +510,9 @@ Keep the implementation layers separated:
   deployment fixture, `host-artifact-smoke`,
   `installed-host-service-manager-smoke`, Prometheus text metrics export format,
   Prometheus metric prefix/type contract, `metrics_listen` config, `/metrics`
-  scrape path contract, collector scrape contract, TCP metrics listener
-  contract, Prometheus alert rules artifact, synthetic alert integration,
+  scrape path contract, collector scrape contract, loopback-only TCP metrics
+  listener contract, local-only `auth_mode=none` config boundary,
+  Prometheus alert rules artifact, synthetic alert integration,
   production-ops certification policy,
   fixture, installed-layout-v1 package contract, service-manager lifecycle contract, durable catalog layout contract,
   current-version-only upgrade/rollback gate, and explicit client

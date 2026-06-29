@@ -45,8 +45,8 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5159U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x50c6945dU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5277U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xba9359e5U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 24U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2365,6 +2365,18 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "service_auth_boundary=unix-socket-local-only\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "metrics_auth_boundary=loopback-only\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "config_security_gate=config-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "deploy_root=share/lingqu/mem_service/deploy\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3995,6 +4007,9 @@ static int run_package_fixture_check(void)
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
         strstr(manifest, "payload_ownership_scope=artifact-query-expected-owner\n") == NULL ||
+        strstr(manifest, "service_auth_boundary=unix-socket-local-only\n") == NULL ||
+        strstr(manifest, "metrics_auth_boundary=loopback-only\n") == NULL ||
+        strstr(manifest, "config_security_gate=config-fixtures\n") == NULL ||
         strstr(manifest, "restore_policy=transactional-staged-restore\n") == NULL ||
         strstr(manifest, "restore_policy_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
@@ -4120,6 +4135,9 @@ static int run_release_manifest(void)
     printf("runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf\n");
     printf("host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf\n");
     printf("host_runtime_config_source=share/lingqu/mem_service/config/mem_service.host.runtime.conf\n");
+    printf("service_auth_boundary=unix-socket-local-only\n");
+    printf("metrics_auth_boundary=loopback-only\n");
+    printf("config_security_gate=config-fixtures\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
     printf("host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service\n");
     printf("systemd_unit=lib/systemd/system/linqu_mem_service.service\n");
@@ -4366,6 +4384,7 @@ static int run_release_fixture_check(void)
            "public_headers=8 client_sources=2 examples=2 config_artifacts=6 "
            "host_artifacts=1 "
            "package_artifacts=4 "
+           "config_security_smokes=1 "
            "systemd_units=2 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
@@ -4701,6 +4720,25 @@ static int copy_config_value(char *out, size_t out_len, const char *value)
     return 0;
 }
 
+static bool is_loopback_metrics_listen_spec(const char *value)
+{
+    const char *port_text;
+    char *end = NULL;
+    unsigned long port;
+
+    if (value == NULL || strncmp(value, "tcp:127.0.0.1:", 14) != 0) {
+        return false;
+    }
+    port_text = value + 14;
+    if (port_text[0] == '\0') {
+        return false;
+    }
+    errno = 0;
+    port = strtoul(port_text, &end, 10);
+    return errno == 0 && end != port_text && *end == '\0' &&
+           port > 0UL && port <= 65535UL;
+}
+
 static int apply_config_field(struct mem_service_cli_config *config,
                               const char *name,
                               const char *value)
@@ -4730,7 +4768,7 @@ static int apply_config_field(struct mem_service_cli_config *config,
         return 0;
     }
     if (strcmp(name, "metrics_listen") == 0) {
-        if (strncmp(value, "tcp:", 4) != 0 ||
+        if (!is_loopback_metrics_listen_spec(value) ||
             copy_config_value(config->metrics_listen,
                               sizeof(config->metrics_listen),
                               value) != 0) {
@@ -4897,7 +4935,9 @@ static int run_config_fixture_check(void)
         unlink(valid_path);
         return 1;
     }
-    if (fprintf(file, "listen=tcp:127.0.0.1:9900\nbackend=unknown\n") < 0) {
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_fixture_bad.sock\n"
+                "metrics_listen=tcp:0.0.0.0:9900\n") < 0) {
         if (file != NULL) {
             fclose(file);
         }
@@ -4931,7 +4971,8 @@ static int run_config_fixture_check(void)
         return 1;
     }
     printf("mem_service config-fixtures: status=ok schema_version=%u listen=%s store=%s "
-           "storage_root=%s\n",
+           "storage_root=%s service_auth_boundary=unix-socket-local-only "
+           "metrics_auth_boundary=loopback-only\n",
            MEM_SERVICE_CONFIG_SCHEMA_VERSION,
            "unix:/tmp/linqu_mem_service_fixture.sock",
            "/tmp/linqu_mem_service_fixture.store",

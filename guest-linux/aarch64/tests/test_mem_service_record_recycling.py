@@ -500,9 +500,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_evidence_fixture_check", cli_source)
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5159U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5277U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x50c6945dU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xba9359e5U",
             cli_source,
         )
         self.assertIn(
@@ -678,7 +678,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x50c6945d$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xba9359e5$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c", cli_makefile)
@@ -843,7 +843,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0x50c6945d", release_manifest)
+        self.assertIn("package_manifest_checksum=0xba9359e5", release_manifest)
+        self.assertIn("service_auth_boundary=unix-socket-local-only", release_manifest)
+        self.assertIn("metrics_auth_boundary=loopback-only", release_manifest)
+        self.assertIn("config_security_gate=config-fixtures", release_manifest)
         self.assertIn("restore_policy=transactional-staged-restore", release_manifest)
         self.assertIn("restore_policy_scope=full-snapshot+paged-snapshot", release_manifest)
         self.assertIn("restore_policy_gate=restore-policy-fixtures", release_manifest)
@@ -1129,6 +1132,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "host_runtime_config_source=share/lingqu/mem_service/config/mem_service.host.runtime.conf",
             package_manifest,
         )
+        self.assertIn("service_auth_boundary=unix-socket-local-only", package_manifest)
+        self.assertIn("metrics_auth_boundary=loopback-only", package_manifest)
+        self.assertIn("config_security_gate=config-fixtures", package_manifest)
         self.assertIn("systemd_unit_root=lib/systemd/system", package_manifest)
         self.assertIn(
             "systemd_unit=lib/systemd/system/linqu_mem_service.service",
@@ -1258,11 +1264,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("mem_service_config_schema_version=1", config_schema)
         self.assertIn("field=listen type=string", config_schema)
+        self.assertIn("must be unix:<path> while auth_mode=none", config_schema)
         self.assertIn("field=store type=string", config_schema)
         self.assertIn("field=storage_root type=string", config_schema)
         self.assertIn("field=backend type=enum values=snapshot,snapshot+journal", config_schema)
         self.assertIn("field=metrics_listen type=string", config_schema)
+        self.assertIn("must be tcp:127.0.0.1:<port>", config_schema)
         self.assertIn("field=auth_mode type=enum values=none", config_schema)
+        self.assertIn("network service endpoints are rejected", config_schema)
         self.assertIn("listen=unix:/tmp/linqu_mem_service.sock", config_example)
         self.assertIn("store=/tmp/linqu_mem_service.store", config_example)
         self.assertIn("backend=snapshot+journal", config_example)
