@@ -31,19 +31,19 @@ source_root=src/lingqu/mem_service
 config_root=share/lingqu/mem_service/config
 system_config_root=etc/lingqu/mem_service
 runtime_config=etc/lingqu/mem_service/mem_service.conf
-runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf
+runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf
 deploy_root=share/lingqu/mem_service/deploy
 systemd_unit_root=lib/systemd/system
 systemd_unit=lib/systemd/system/linqu_mem_service.service
 host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service
-installed_file_count=32
+installed_file_count=33
 file_class=core_binary count=1
 file_class=host_binary count=1
 file_class=public_headers count=8
 file_class=client_sources count=2
 file_class=examples count=2
 file_class=contracts count=10
-file_class=configs count=2
+file_class=configs count=3
 file_class=runtime_config count=1
 file_class=deploy count=3
 file_class=systemd_units count=2

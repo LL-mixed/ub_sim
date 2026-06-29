@@ -604,6 +604,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     compat_old_new = (app_dir / "compat-old-new-matrix.txt").read_text()
     config_schema = (app_dir / "configs" / "mem_service.conf.schema").read_text()
     config_example = (app_dir / "configs" / "mem_service.example.conf").read_text()
+    config_runtime = (app_dir / "configs" / "mem_service.runtime.conf").read_text()
     deploy_manifest = (app_dir / "deploy" / "linqu_mem_service.service").read_text()
     host_deploy_manifest = (
         app_dir / "deploy" / "linqu_mem_service.host.service"
@@ -703,6 +704,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (app_dir / "compat-old-new-matrix.txt").exists()
     assert (app_dir / "configs" / "mem_service.conf.schema").exists()
     assert (app_dir / "configs" / "mem_service.example.conf").exists()
+    assert (app_dir / "configs" / "mem_service.runtime.conf").exists()
     assert (app_dir / "deploy" / "linqu_mem_service.service").exists()
     assert (app_dir / "deploy" / "linqu_mem_service.host.service").exists()
     assert (app_dir / "deploy" / "linqu_mem_service.prometheus-alerts.yml").exists()
@@ -723,6 +725,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX := compat-old-new-matrix.txt" in app_makefile
     assert "MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema" in app_makefile
     assert "MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf" in app_makefile
+    assert "MEM_SERVICE_CONFIG_RUNTIME := configs/mem_service.runtime.conf" in app_makefile
     assert "MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service" in app_makefile
     assert "MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service" in app_makefile
     assert "MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml" in app_makefile
@@ -778,6 +781,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(ROOT)/components/mem_service/mem_service_wire_client.c" in app_makefile
     assert "$(MEM_SERVICE_CONFIG_SCHEMA)" in app_makefile
     assert "$(MEM_SERVICE_CONFIG_EXAMPLE)" in app_makefile
+    assert "$(MEM_SERVICE_CONFIG_RUNTIME)" in app_makefile
     assert "$(MEM_SERVICE_DEPLOY_MANIFEST)" in app_makefile
     assert "$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)" in app_makefile
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
@@ -786,7 +790,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xb507bf35$$" in app_makefile
+    assert "^package_manifest_checksum=0xac6312a9$$" in app_makefile
     assert "^package_gate=package-fixtures$$" in app_makefile
     assert "^upgrade_rollback_policy_checksum=0x0f9df008$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
@@ -966,7 +970,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4127U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb507bf35U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xac6312a9U" in app_source
     assert 'MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"' in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
     assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
@@ -1005,7 +1009,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0xb507bf35" in release_manifest
+    assert "package_manifest_checksum=0xac6312a9" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
     assert (
         "distributable_package=out/mem_service/"
@@ -1125,7 +1129,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "upgrade_rollback_policy_len=1968" in release_manifest
     assert "upgrade_rollback_policy_checksum=0x0f9df008" in release_manifest
     assert "package_manifest_len=4127" in release_manifest
-    assert "package_manifest_checksum=0xb507bf35" in release_manifest
+    assert "package_manifest_checksum=0xac6312a9" in release_manifest
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest
     assert "ops_certification_policy_len=1118" in release_manifest
     assert "ops_certification_policy_checksum=0xe77c644b" in release_manifest
@@ -1146,7 +1150,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "config_example=share/lingqu/mem_service/config/mem_service.example.conf" in release_manifest
     assert "runtime_config=etc/lingqu/mem_service/mem_service.conf" in release_manifest
     assert (
-        "runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf"
+        "runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf"
         in release_manifest
     )
     assert "deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service" in release_manifest
@@ -1221,11 +1225,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "rpm_package_payload=rpm-cpio+metadata" in package_manifest
     assert "rpm_package_gate=package-rpm-smoke" in package_manifest
     assert "rpm_package_runtime=requires-linux-rpm-toolchain" in package_manifest
-    assert "installed_file_count=32" in package_manifest
+    assert "installed_file_count=33" in package_manifest
     assert "system_config_root=etc/lingqu/mem_service" in package_manifest
     assert "runtime_config=etc/lingqu/mem_service/mem_service.conf" in package_manifest
     assert (
-        "runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf"
+        "runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf"
         in package_manifest
     )
     assert "systemd_unit_root=lib/systemd/system" in package_manifest
@@ -1263,12 +1267,21 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "store=/tmp/linqu_mem_service.store" in config_example
     assert "backend=snapshot+journal" in config_example
     assert "metrics_listen=tcp:127.0.0.1:9900" in config_example
+    assert "listen=unix:/run/lingqu/mem_service.sock" in config_runtime
+    assert "store=/var/lib/lingqu/mem_service/store.snapshot" in config_runtime
+    assert "storage_root=/var/lib/lingqu/mem_service" in config_runtime
+    assert "backend=snapshot+journal" in config_runtime
+    assert "metrics_listen=tcp:127.0.0.1:9900" in config_runtime
     assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest
     assert (
         "ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host "
         "serve --config /etc/lingqu/mem_service/mem_service.conf"
         in host_deploy_manifest
     )
+    assert "RuntimeDirectory=lingqu" in deploy_manifest
+    assert "StateDirectory=lingqu/mem_service" in deploy_manifest
+    assert "RuntimeDirectory=lingqu" in host_deploy_manifest
+    assert "StateDirectory=lingqu/mem_service" in host_deploy_manifest
     assert '#include "mem_service_client.h"' in serving_example
     assert "mem_service_client_register_prefix_entry" in serving_example
     assert "mem_service_client_publish_kv_segment" in serving_example
@@ -2042,6 +2055,7 @@ def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
         "guest-linux/aarch64/apps/mem_service/api-abi-policy.txt",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.conf.schema",
         "guest-linux/aarch64/apps/mem_service/configs/mem_service.example.conf",
+        "guest-linux/aarch64/apps/mem_service/configs/mem_service.runtime.conf",
         "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml",
         "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.service",
         "guest-linux/aarch64/apps/mem_service/deploy/linqu_mem_service.host.service",

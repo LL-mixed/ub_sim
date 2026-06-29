@@ -7,6 +7,8 @@ Type=simple
 ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf
 Restart=on-failure
 RestartSec=2
+RuntimeDirectory=lingqu
+StateDirectory=lingqu/mem_service
 
 [Install]
 WantedBy=multi-user.target

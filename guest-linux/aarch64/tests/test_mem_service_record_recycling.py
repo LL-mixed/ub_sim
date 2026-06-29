@@ -101,6 +101,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         api_abi_policy = (CLI_DIR / "api-abi-policy.txt").read_text()
         config_schema = (CLI_DIR / "configs" / "mem_service.conf.schema").read_text()
         config_example = (CLI_DIR / "configs" / "mem_service.example.conf").read_text()
+        config_runtime = (CLI_DIR / "configs" / "mem_service.runtime.conf").read_text()
         deploy_manifest = (CLI_DIR / "deploy" / "linqu_mem_service.service").read_text()
         host_deploy_manifest = (
             CLI_DIR / "deploy" / "linqu_mem_service.host.service"
@@ -494,7 +495,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U", cli_source)
         self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4127U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb507bf35U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xac6312a9U",
             cli_source,
         )
         self.assertIn(
@@ -577,6 +578,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_COMPAT_OLD_NEW_MATRIX := compat-old-new-matrix.txt", cli_makefile)
         self.assertIn("MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema", cli_makefile)
         self.assertIn("MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf", cli_makefile)
+        self.assertIn("MEM_SERVICE_CONFIG_RUNTIME := configs/mem_service.runtime.conf", cli_makefile)
         self.assertIn("MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service", cli_makefile)
         self.assertIn("MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service", cli_makefile)
         self.assertIn(
@@ -649,7 +651,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xb507bf35$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xac6312a9$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
@@ -769,7 +771,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0xb507bf35", release_manifest)
+        self.assertIn("package_manifest_checksum=0xac6312a9", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -896,7 +898,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("config_example=share/lingqu/mem_service/config/mem_service.example.conf", release_manifest)
         self.assertIn("runtime_config=etc/lingqu/mem_service/mem_service.conf", release_manifest)
         self.assertIn(
-            "runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf",
+            "runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf",
             release_manifest,
         )
         self.assertIn("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service", release_manifest)
@@ -925,7 +927,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("host_artifacts=1", cli_source)
         self.assertIn("systemd_units=2", cli_source)
         self.assertIn("package_artifacts=4", cli_source)
-        self.assertIn("config_artifacts=4", cli_source)
+        self.assertIn("config_artifacts=5", cli_source)
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("host_service_manager_smokes=1", cli_source)
         self.assertIn("collector_smokes=1", cli_source)
@@ -1012,11 +1014,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "rpm_package_runtime=requires-linux-rpm-toolchain",
             package_manifest,
         )
-        self.assertIn("installed_file_count=32", package_manifest)
+        self.assertIn("installed_file_count=33", package_manifest)
         self.assertIn("system_config_root=etc/lingqu/mem_service", package_manifest)
         self.assertIn("runtime_config=etc/lingqu/mem_service/mem_service.conf", package_manifest)
         self.assertIn(
-            "runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf",
+            "runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf",
             package_manifest,
         )
         self.assertIn("systemd_unit_root=lib/systemd/system", package_manifest)
@@ -1147,6 +1149,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("backend=snapshot+journal", config_example)
         self.assertIn("metrics_listen=tcp:127.0.0.1:9900", config_example)
         self.assertIn("auth_mode=none", config_example)
+        self.assertIn("listen=unix:/run/lingqu/mem_service.sock", config_runtime)
+        self.assertIn("store=/var/lib/lingqu/mem_service/store.snapshot", config_runtime)
+        self.assertIn("storage_root=/var/lib/lingqu/mem_service", config_runtime)
+        self.assertIn("backend=snapshot+journal", config_runtime)
+        self.assertIn("metrics_listen=tcp:127.0.0.1:9900", config_runtime)
         self.assertIn(
             "ExecStart=/usr/bin/linqu_mem_service serve --config "
             "/etc/lingqu/mem_service/mem_service.conf",
@@ -1157,6 +1164,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "serve --config /etc/lingqu/mem_service/mem_service.conf",
             host_deploy_manifest,
         )
+        self.assertIn("RuntimeDirectory=lingqu", deploy_manifest)
+        self.assertIn("StateDirectory=lingqu/mem_service", deploy_manifest)
+        self.assertIn("RuntimeDirectory=lingqu", host_deploy_manifest)
+        self.assertIn("StateDirectory=lingqu/mem_service", host_deploy_manifest)
         self.assertIn('#include "mem_service_client.h"', serving_example)
         self.assertIn("mem_service_client_register_prefix_entry", serving_example)
         self.assertIn("mem_service_client_publish_kv_segment", serving_example)

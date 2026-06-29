@@ -45,8 +45,8 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4127U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xb507bf35U
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 32U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xac6312a9U
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 33U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 21U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
@@ -2337,7 +2337,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf\n") != 0 ||
+                                "runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2386,7 +2386,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=configs count=2\n") != 0 ||
+                                "file_class=configs count=3\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3535,7 +3535,7 @@ static int run_release_manifest(void)
     printf("config_schema=share/lingqu/mem_service/config/mem_service.conf.schema\n");
     printf("config_example=share/lingqu/mem_service/config/mem_service.example.conf\n");
     printf("runtime_config=etc/lingqu/mem_service/mem_service.conf\n");
-    printf("runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf\n");
+    printf("runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
     printf("host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service\n");
     printf("systemd_unit=lib/systemd/system/linqu_mem_service.service\n");
@@ -3708,7 +3708,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 32U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 33U ||
         MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 21U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
@@ -3756,7 +3756,7 @@ static int run_release_fixture_check(void)
         return 1;
     }
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
-           "public_headers=8 client_sources=2 examples=2 config_artifacts=4 "
+           "public_headers=8 client_sources=2 examples=2 config_artifacts=5 "
            "host_artifacts=1 "
            "package_artifacts=4 "
            "systemd_units=2 "

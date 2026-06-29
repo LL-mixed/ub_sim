@@ -251,12 +251,16 @@ Build and validation entrypoints:
   PREFIX=/usr`, which installs the core daemon binary, public headers, client
   SDK source files, serving/pretraining SDK examples, release manifest, wire
   schema manifest, package manifest, admin output schema, config
-  schema/example, default runtime config
+  schema/example, the deploy runtime config copied to
   `etc/lingqu/mem_service/mem_service.conf`, and deployment manifest into an
-  `installed-layout-v1` package layout. It also installs the service units into
+  `installed-layout-v1` package layout. The runtime config source is
+  `share/lingqu/mem_service/config/mem_service.runtime.conf`, separate from the
+  `/tmp`-oriented example config, and defaults to `/run/lingqu` plus
+  `/var/lib/lingqu/mem_service` paths. It also installs the service units into
   `usr/lib/systemd/system/` while keeping the same files under
   `share/lingqu/mem_service/deploy/` as checked deployment manifests. The
-  installed systemd units point at that `/etc` runtime config path, so
+  installed systemd units point at that `/etc` runtime config path and declare
+  `RuntimeDirectory=lingqu` plus `StateDirectory=lingqu/mem_service`, so
   tar/deb/rpm package smokes verify the units and config are present instead of
   relying on share-only example files.
 - Guest app runners provide the CLI surface that exercises the component.
@@ -356,11 +360,17 @@ Keep the implementation layers separated:
   `ops-certification-verify --evidence-file`.
   The install/package contract now includes the default runtime config at
   `etc/lingqu/mem_service/mem_service.conf`; it is copied from the checked
-  example config and listed in both release and package manifests as the
-  service unit's default configuration path. The package layout also installs
+  `configs/mem_service.runtime.conf` deploy config, while
+  `configs/mem_service.example.conf` remains the developer `/tmp` example. Both
+  release and package manifests list the runtime config as the service unit's
+  default configuration source. The package layout also installs
   `lib/systemd/system/linqu_mem_service.service` and
   `lib/systemd/system/linqu_mem_service.host.service` as the enableable unit
-  files, with the share/deploy copies retained as contract manifests.
+  files, with the share/deploy copies retained as contract manifests. The
+  systemd unit files declare `RuntimeDirectory=lingqu` and
+  `StateDirectory=lingqu/mem_service` so Linux systemd owns the default
+  `/run/lingqu` socket directory and `/var/lib/lingqu/mem_service` state
+  directory.
   `serve --metrics-listen tcp:<ipv4>:<port>` exposes the real HTTP scrape
   listener covered by runtime tests. The portable service-manager lifecycle
   smoke covers config startup, ready/health, HTTP scrape, collector metrics

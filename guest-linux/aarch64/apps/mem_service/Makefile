@@ -45,6 +45,7 @@ MEM_SERVICE_COMPAT_BASELINE_V1 := compat-baseline-v1.txt
 MEM_SERVICE_COMPAT_OLD_NEW_MATRIX := compat-old-new-matrix.txt
 MEM_SERVICE_CONFIG_SCHEMA := configs/mem_service.conf.schema
 MEM_SERVICE_CONFIG_EXAMPLE := configs/mem_service.example.conf
+MEM_SERVICE_CONFIG_RUNTIME := configs/mem_service.runtime.conf
 MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service
 MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service
 MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml
@@ -204,6 +205,7 @@ package-tarball-smoke: package-tarball
 	grep -q '^usr/share/lingqu/mem_service/package-manifest.txt$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/release-manifest.txt$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/ops-certification-policy.txt$$' $(PACKAGE_TARBALL_LIST)
+	grep -q '^usr/share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^etc/lingqu/mem_service/mem_service.conf$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/lib/systemd/system/linqu_mem_service.service$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/lib/systemd/system/linqu_mem_service.host.service$$' $(PACKAGE_TARBALL_LIST)
@@ -217,6 +219,7 @@ package-tarball-smoke: package-tarball
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/include/lingqu/mem_service/mem_service_client.h
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/src/lingqu/mem_service/mem_service_client.c
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
+	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/config/mem_service.runtime.conf
 	test -f $(PACKAGE_VERIFY_ROOT)/etc/lingqu/mem_service/mem_service.conf
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/lib/systemd/system/linqu_mem_service.service
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/lib/systemd/system/linqu_mem_service.host.service
@@ -272,6 +275,7 @@ package-deb-smoke: package-deb
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/ops-certification-policy.txt
+	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/config/mem_service.runtime.conf
 	test -f $(DEB_VERIFY_ROOT)/data/etc/lingqu/mem_service/mem_service.conf
 	test -f $(DEB_VERIFY_ROOT)/data/usr/lib/systemd/system/linqu_mem_service.service
 	test -f $(DEB_VERIFY_ROOT)/data/usr/lib/systemd/system/linqu_mem_service.host.service
@@ -306,6 +310,7 @@ package-rpm-smoke: package-rpm
 	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
+	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/config/mem_service.runtime.conf
 	test -f $(RPM_VERIFY_ROOT)/etc/lingqu/mem_service/mem_service.conf
 	test -f $(RPM_VERIFY_ROOT)/usr/lib/systemd/system/linqu_mem_service.service
 	test -f $(RPM_VERIFY_ROOT)/usr/lib/systemd/system/linqu_mem_service.host.service
@@ -352,7 +357,7 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
+install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_CONFIG_RUNTIME) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
 	rm -f linqu_mem_service linqu_mem_service_host
 	$(MAKE) -B linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"
 	$(MAKE) -B linqu_mem_service_host HOST_CC="$(HOST_CC)" HOST_CFLAGS="$(HOST_CFLAGS)"
@@ -374,7 +379,8 @@ install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_S
 	cp $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	cp $(MEM_SERVICE_CONFIG_SCHEMA) $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	cp $(MEM_SERVICE_CONFIG_EXAMPLE) $(INSTALL_CONFIGDIR)/mem_service.example.conf
-	cp $(MEM_SERVICE_CONFIG_EXAMPLE) $(INSTALL_SYSCONFDIR)/mem_service.conf
+	cp $(MEM_SERVICE_CONFIG_RUNTIME) $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
+	cp $(MEM_SERVICE_CONFIG_RUNTIME) $(INSTALL_SYSCONFDIR)/mem_service.conf
 	cp $(MEM_SERVICE_DEPLOY_MANIFEST) $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	cp $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
 	cp $(MEM_SERVICE_DEPLOY_MANIFEST) $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.service
@@ -402,6 +408,7 @@ install-smoke: install
 	test -f $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	test -f $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	test -f $(INSTALL_CONFIGDIR)/mem_service.example.conf
+	test -f $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
 	test -f $(INSTALL_SYSCONFDIR)/mem_service.conf
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	test -f $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
@@ -412,7 +419,7 @@ install-smoke: install
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest_len=4127$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xb507bf35$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xac6312a9$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -475,7 +482,7 @@ install-smoke: install
 	grep -q '^config_schema=share/lingqu/mem_service/config/mem_service.conf.schema$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^config_example=share/lingqu/mem_service/config/mem_service.example.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^runtime_config=etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^systemd_unit=lib/systemd/system/linqu_mem_service.service$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -569,9 +576,9 @@ install-smoke: install
 	grep -q '^rpm_package_payload=rpm-cpio+metadata$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^rpm_package_runtime=requires-linux-rpm-toolchain$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^installed_file_count=32$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_file_count=33$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^runtime_config=etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.example.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^systemd_unit_root=lib/systemd/system$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^systemd_unit=lib/systemd/system/linqu_mem_service.service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -634,13 +641,23 @@ install-smoke: install
 	grep -q '^listen=unix:/tmp/linqu_mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^metrics_listen=tcp:127.0.0.1:9900$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
-	grep -q '^listen=unix:/tmp/linqu_mem_service.sock$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
+	grep -q '^listen=unix:/run/lingqu/mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
+	grep -q '^store=/var/lib/lingqu/mem_service/store.snapshot$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
+	grep -q '^storage_root=/var/lib/lingqu/mem_service$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
+	grep -q '^backend=snapshot+journal$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
+	grep -q '^listen=unix:/run/lingqu/mem_service.sock$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
+	grep -q '^store=/var/lib/lingqu/mem_service/store.snapshot$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
+	grep -q '^storage_root=/var/lib/lingqu/mem_service$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^metrics_listen=tcp:127.0.0.1:9900$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	grep -q '^ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.service
 	grep -q '^ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.host.service
+	grep -q '^RuntimeDirectory=lingqu$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.service
+	grep -q '^StateDirectory=lingqu/mem_service$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.service
+	grep -q '^RuntimeDirectory=lingqu$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.host.service
+	grep -q '^StateDirectory=lingqu/mem_service$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.host.service
 	grep -q '^  - alert: LingquMemServiceDown$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^    expr: increase(lingqu_mem_service_fail_closed_count\[5m\]) > 0$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^    expr: lingqu_mem_service_request_latency_max_ms > 100$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
