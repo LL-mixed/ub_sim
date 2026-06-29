@@ -1133,13 +1133,19 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(MEM_SERVICE_CONFIG_HOST_RUNTIME)" in app_makefile
     assert "$(MEM_SERVICE_DEPLOY_MANIFEST)" in app_makefile
     assert "$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)" in app_makefile
+    assert "MEM_SERVICE_RELEASE_SCRIPTS :=" in app_makefile
+    assert "$(ROOT)/scripts/run_mem_service_linux_ops_ci.sh" in app_makefile
+    assert "$(ROOT)/scripts/verify_mem_service_release_certification.sh" in app_makefile
+    assert "INSTALL_SCRIPTSDIR := $(INSTALL_DATADIR)/scripts" in app_makefile
+    assert "cp $(MEM_SERVICE_RELEASE_SCRIPTS) $(INSTALL_SCRIPTSDIR)/" in app_makefile
+    assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh" in app_makefile
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$" in app_makefile
     assert "^admin_output_schema_checksum=0x7021f4cf$$" in app_makefile
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xbe6ecfe1$$" in app_makefile
+    assert "^package_manifest_checksum=0x47b1d051$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-runtime-smoke: installed-sdk-example-smoke" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
@@ -1365,8 +1371,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5590U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xbe6ecfe1U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 6327U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x47b1d051U" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1409,7 +1415,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0xbe6ecfe1" in release_manifest
+    assert "package_manifest_checksum=0x47b1d051" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1552,8 +1558,33 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=5590" in release_manifest
-    assert "package_manifest_checksum=0xbe6ecfe1" in release_manifest
+    assert "package_manifest_len=6327" in release_manifest
+    assert "package_manifest_checksum=0x47b1d051" in release_manifest
+    assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/"
+        "verify_mem_service_release_certification.sh"
+        in release_manifest
+    )
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh"
+        in release_manifest
+    )
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/"
+        "verify_mem_service_ops_certification_bundle.sh"
+        in release_manifest
+    )
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/"
+        "run_mem_service_remote_transport_ci.sh"
+        in release_manifest
+    )
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/"
+        "verify_mem_service_remote_transport_bundle.sh"
+        in release_manifest
+    )
     assert "remote_payload_production_network_transport=not-certified" in release_manifest
     assert (
         "remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1"
@@ -1699,7 +1730,22 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "rpm_package_payload=rpm-cpio+metadata" in package_manifest
     assert "rpm_package_gate=package-rpm-smoke" in package_manifest
     assert "rpm_package_runtime=requires-linux-rpm-toolchain" in package_manifest
-    assert "installed_file_count=35" in package_manifest
+    assert "installed_file_count=42" in package_manifest
+    assert "release_script_root=share/lingqu/mem_service/scripts" in package_manifest
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/"
+        "verify_mem_service_release_certification.sh"
+        in package_manifest
+    )
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh"
+        in package_manifest
+    )
+    assert (
+        "release_script=share/lingqu/mem_service/scripts/"
+        "run_mem_service_remote_transport_ci.sh"
+        in package_manifest
+    )
     assert "system_config_root=etc/lingqu/mem_service" in package_manifest
     assert "runtime_config=etc/lingqu/mem_service/mem_service.conf" in package_manifest
     assert (
@@ -1719,6 +1765,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "binary_version_gate=version-fixtures" in package_manifest
     assert "file_class=runtime_config count=2" in package_manifest
     assert "file_class=systemd_units count=2" in package_manifest
+    assert "file_class=release_scripts count=7" in package_manifest
     assert "required_gate_count=26" in package_manifest
     assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
     assert "required_gate=version-fixtures" in package_manifest

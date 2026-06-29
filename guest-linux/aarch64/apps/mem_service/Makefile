@@ -50,6 +50,14 @@ MEM_SERVICE_CONFIG_HOST_RUNTIME := configs/mem_service.host.runtime.conf
 MEM_SERVICE_DEPLOY_MANIFEST := deploy/linqu_mem_service.service
 MEM_SERVICE_HOST_DEPLOY_MANIFEST := deploy/linqu_mem_service.host.service
 MEM_SERVICE_ALERT_RULES := deploy/linqu_mem_service.prometheus-alerts.yml
+MEM_SERVICE_RELEASE_SCRIPTS := \
+	$(ROOT)/scripts/run_mem_service_linux_ops_ci.sh \
+	$(ROOT)/scripts/verify_mem_service_linux_ops_evidence.sh \
+	$(ROOT)/scripts/verify_mem_service_ops_certification_bundle.sh \
+	$(ROOT)/scripts/run_mem_service_remote_transport_ci.sh \
+	$(ROOT)/scripts/verify_mem_service_remote_transport_evidence.sh \
+	$(ROOT)/scripts/verify_mem_service_remote_transport_bundle.sh \
+	$(ROOT)/scripts/verify_mem_service_release_certification.sh
 MEM_SERVICE_PACKAGE_TARBALL_NAME := linqu_mem_service-installed-layout-v1.tar
 MEM_SERVICE_DEB_NAME := linqu-mem-service
 MEM_SERVICE_DEB_VERSION ?= 0.1.0-1
@@ -107,6 +115,7 @@ INSTALL_DATADIR := $(DESTDIR)$(PREFIX)/share/lingqu/mem_service
 INSTALL_EXAMPLEDIR := $(INSTALL_DATADIR)/examples
 INSTALL_CONFIGDIR := $(INSTALL_DATADIR)/config
 INSTALL_DEPLOYDIR := $(INSTALL_DATADIR)/deploy
+INSTALL_SCRIPTSDIR := $(INSTALL_DATADIR)/scripts
 INSTALL_HOSTDIR := $(DESTDIR)$(PREFIX)/libexec/lingqu/mem_service
 INSTALL_SYSCONFDIR := $(DESTDIR)$(SYSCONFDIR)/lingqu/mem_service
 INSTALL_SYSTEMDUNITDIR := $(DESTDIR)$(SYSTEMDUNITDIR)
@@ -228,6 +237,9 @@ package-tarball-smoke: package-tarball
 	grep -q '^usr/share/lingqu/mem_service/package-manifest.txt$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/release-manifest.txt$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/ops-certification-policy.txt$$' $(PACKAGE_TARBALL_LIST)
+	grep -q '^usr/share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(PACKAGE_TARBALL_LIST)
+	grep -q '^usr/share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh$$' $(PACKAGE_TARBALL_LIST)
+	grep -q '^usr/share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/config/mem_service.host.runtime.conf$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^etc/lingqu/mem_service/mem_service.conf$$' $(PACKAGE_TARBALL_LIST)
@@ -244,6 +256,9 @@ package-tarball-smoke: package-tarball
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/include/lingqu/mem_service/mem_service_client.h
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/src/lingqu/mem_service/mem_service_client.c
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
+	test -x $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh
+	test -x $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_ops_certification_bundle.sh
+	test -x $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_remote_transport_bundle.sh
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/config/mem_service.runtime.conf
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/config/mem_service.host.runtime.conf
 	test -f $(PACKAGE_VERIFY_ROOT)/etc/lingqu/mem_service/mem_service.conf
@@ -304,6 +319,9 @@ package-deb-smoke: package-deb
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/ops-certification-policy.txt
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/config/mem_service.runtime.conf
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/config/mem_service.host.runtime.conf
+	test -x $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh
+	test -x $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh
+	test -x $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh
 	test -f $(DEB_VERIFY_ROOT)/data/etc/lingqu/mem_service/mem_service.conf
 	test -f $(DEB_VERIFY_ROOT)/data/etc/lingqu/mem_service/mem_service.host.conf
 	test -f $(DEB_VERIFY_ROOT)/data/usr/lib/systemd/system/linqu_mem_service.service
@@ -311,8 +329,11 @@ package-deb-smoke: package-deb
 	grep -q '^backend=snapshot+journal$$' $(DEB_VERIFY_ROOT)/data/etc/lingqu/mem_service/mem_service.conf
 	grep -q '^native_package_format=deb$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^native_package_gate=package-deb-smoke$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
+	grep -q '^release_script_root=share/lingqu/mem_service/scripts$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
+	grep -q '^file_class=release_scripts count=7$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^native_package_format=deb$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
 	grep -q '^native_package_gate=package-deb-smoke$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
 	file $(DEB_VERIFY_ROOT)/data/usr/bin/linqu_mem_service | grep -q 'ELF 64-bit.*ARM aarch64'
 	file $(DEB_VERIFY_ROOT)/data/usr/libexec/lingqu/mem_service/linqu_mem_service_host | grep -q 'ELF 64-bit.*ARM aarch64'
 
@@ -341,6 +362,9 @@ package-rpm-smoke: package-rpm
 	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
 	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/config/mem_service.runtime.conf
 	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/config/mem_service.host.runtime.conf
+	test -x $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh
+	test -x $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh
+	test -x $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh
 	test -f $(RPM_VERIFY_ROOT)/etc/lingqu/mem_service/mem_service.conf
 	test -f $(RPM_VERIFY_ROOT)/etc/lingqu/mem_service/mem_service.host.conf
 	test -f $(RPM_VERIFY_ROOT)/usr/lib/systemd/system/linqu_mem_service.service
@@ -350,6 +374,9 @@ package-rpm-smoke: package-rpm
 	grep -q '^rpm_native_package_gate=package-rpm-smoke$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	grep -q '^rpm_package_format=rpm$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+	grep -q '^release_script_root=share/lingqu/mem_service/scripts$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+	grep -q '^file_class=release_scripts count=7$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 
 linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host
 	test -f $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)
@@ -490,11 +517,11 @@ print-compat-baseline-v1:
 print-compat-old-new-matrix:
 	@cat $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX)
 
-install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_CONFIG_RUNTIME) $(MEM_SERVICE_CONFIG_HOST_RUNTIME) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
+install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_CONFIG_RUNTIME) $(MEM_SERVICE_CONFIG_HOST_RUNTIME) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES) $(MEM_SERVICE_RELEASE_SCRIPTS)
 	rm -f linqu_mem_service linqu_mem_service_host
 	$(MAKE) -B linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"
 	$(MAKE) -B linqu_mem_service_host HOST_CC="$(HOST_CC)" HOST_CFLAGS="$(HOST_CFLAGS)"
-	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR) $(INSTALL_SYSCONFDIR) $(INSTALL_SYSTEMDUNITDIR)
+	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_SCRIPTSDIR) $(INSTALL_HOSTDIR) $(INSTALL_SYSCONFDIR) $(INSTALL_SYSTEMDUNITDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
 	cp $(MEM_SERVICE_PUBLIC_HEADERS) $(INSTALL_INCLUDEDIR)/
@@ -521,6 +548,7 @@ install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_S
 	cp $(MEM_SERVICE_DEPLOY_MANIFEST) $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.service
 	cp $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.host.service
 	cp $(MEM_SERVICE_ALERT_RULES) $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
+	cp $(MEM_SERVICE_RELEASE_SCRIPTS) $(INSTALL_SCRIPTSDIR)/
 
 installed-sdk-example-smoke: install
 	mkdir -p $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)
@@ -565,6 +593,13 @@ install-smoke: install
 	test -f $(INSTALL_SRCDIR)/mem_service_wire_client.c
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c
+	test -x $(INSTALL_SCRIPTSDIR)/run_mem_service_linux_ops_ci.sh
+	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_linux_ops_evidence.sh
+	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_ops_certification_bundle.sh
+	test -x $(INSTALL_SCRIPTSDIR)/run_mem_service_remote_transport_ci.sh
+	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_evidence.sh
+	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_bundle.sh
+	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/package-manifest.txt
 	test -f $(INSTALL_DATADIR)/wire-schema.txt
@@ -589,8 +624,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=5590$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xbe6ecfe1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=6327$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x47b1d051$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -703,6 +738,14 @@ install-smoke: install
 	grep -q '^linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_certification_verify=release-certification-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_certification_verify_script=scripts/verify_mem_service_release_certification.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script_root=share/lingqu/mem_service/scripts$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_linux_ops_evidence.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_ops_certification_bundle.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_remote_transport_evidence.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_remote_transport_bundle.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -791,7 +834,7 @@ install-smoke: install
 	grep -q '^rpm_package_payload=rpm-cpio+metadata$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^rpm_package_runtime=requires-linux-rpm-toolchain$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^installed_file_count=35$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_file_count=42$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^runtime_config=etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -802,11 +845,16 @@ install-smoke: install
 	grep -q '^systemd_unit_root=lib/systemd/system$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^systemd_unit=lib/systemd/system/linqu_mem_service.service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_script_root=share/lingqu/mem_service/scripts$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_script=share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^binary_version_command=version$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^binary_version_contract=text-kv$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^file_class=release_scripts count=7$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate_count=26$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt

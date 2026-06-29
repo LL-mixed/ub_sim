@@ -101,6 +101,13 @@ a Qwen3 adapter inspect build:
   `linux-ops-certification-bundle-verify OPS_CERTIFICATION_BUNDLE=<path>`
   validate that handoff bundle and re-run evidence verification from the
   extracted artifact.
+- The installed layout now ships the release verification scripts under
+  `share/lingqu/mem_service/scripts/`: Linux ops CI, Linux ops evidence
+  verifier, ops bundle verifier, remote-transport CI, remote-transport
+  evidence verifier, remote-transport bundle verifier, and release
+  certification verifier. `package-manifest` records `release_script_root`,
+  each `release_script`, and `file_class=release_scripts count=7`; install,
+  tar, deb, and rpm smokes verify those scripts are present and executable.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC
@@ -229,7 +236,9 @@ a Qwen3 adapter inspect build:
 - `apps/mem_service/package-manifest.txt` freezes the current
   `installed-layout-v1` package contract: install roots, file classes, required
   contract checksums, binary self-description gate, required fixture gates, and
-  not-certified boundaries for cross-version/runtime-environment claims.
+  not-certified boundaries for cross-version/runtime-environment claims. It
+  also freezes the installed release-script payload so a published package can
+  carry its own post-release evidence verification entrypoints.
 - `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the
   release layout, then compiles the serving and pretraining examples from the
   installed public headers, installed SDK sources, and installed example
