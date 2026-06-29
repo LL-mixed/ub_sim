@@ -40,14 +40,14 @@
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_VERSION 1U
-#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1068U
-#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xbf0b8e75U
+#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U
+#define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3384U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x06bedc71U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3431U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x66f17809U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 29U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 19U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 20U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
@@ -76,6 +76,7 @@ static void usage(const char *argv0)
     printf(" [ops-certification-policy] [ops-certification-fixtures]");
     printf(" [ops-certification-evidence-fixtures]");
     printf(" [ops-certification-generate-evidence --rpm-file <path> --upgrade-rollback-marker <path>]");
+    printf(" [ops-certification-linux-ci-smoke --rpm-file <path> --upgrade-rollback-marker <path> --evidence-file <path>]");
     printf(" [ops-certification-verify --evidence-file <path>]");
     printf(" [package-manifest] [package-fixtures]");
     printf(" [durable-catalog-fixtures]");
@@ -2453,6 +2454,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "required_gate=ops-certification-linux-ci-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate=durable-catalog-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2569,6 +2574,10 @@ static int render_ops_certification_policy(char *policy,
                                 policy_len,
                                 &used,
                                 "evidence_generate=ops-certification-generate-evidence\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "evidence_ci_gate=ops-certification-linux-ci-smoke\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
@@ -2826,6 +2835,31 @@ static int read_text_file_limited(const char *path, char *payload, size_t payloa
     return 0;
 }
 
+static int write_text_file_limited(const char *path,
+                                   const char *payload,
+                                   size_t payload_len)
+{
+    FILE *file;
+
+    if (path == NULL || path[0] == '\0' || payload == NULL) {
+        return -1;
+    }
+    file = fopen(path, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    if (payload_len > 0 && fwrite(payload, 1, payload_len, file) != payload_len) {
+        fclose(file);
+        return -1;
+    }
+    if (fflush(file) != 0) {
+        fclose(file);
+        return -1;
+    }
+    fclose(file);
+    return 0;
+}
+
 static bool ops_certification_command_ok(const char *command)
 {
     int rc;
@@ -2981,11 +3015,14 @@ static int append_ops_certification_gate_status(char *evidence,
                                    passed ? "pass" : "fail");
 }
 
-static int run_ops_certification_generate_evidence(int argc, char **argv)
+static int render_ops_certification_generated_evidence(int argc,
+                                                       char **argv,
+                                                       char *evidence,
+                                                       size_t evidence_len,
+                                                       size_t *used_out)
 {
     const char *rpm_file = option_value(argc, argv, "--rpm-file");
     const char *upgrade_marker = option_value(argc, argv, "--upgrade-rollback-marker");
-    char evidence[4096];
     size_t used = 0;
     bool linux_host = ops_certification_host_is_linux();
     bool systemd_host = linux_host && ops_certification_systemd_is_available();
@@ -3001,80 +3038,140 @@ static int run_ops_certification_generate_evidence(int argc, char **argv)
     bool upgrade_pass = linux_host &&
                         ops_certification_upgrade_rollback_pass(upgrade_marker);
 
+    if (evidence == NULL || evidence_len == 0) {
+        return -1;
+    }
     evidence[0] = '\0';
     if (append_wire_schema_line(
             evidence,
-            sizeof(evidence),
+            evidence_len,
             &used,
             "mem_service_ops_certification_evidence_version=%u\n",
             MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION) != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "service_name=linqu_mem_service\n") != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "certification_scope=real-linux-operations\n") != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "evidence_os=%s\n",
                                 linux_host ? "linux" : "non-linux") != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "evidence_init=%s\n",
                                 systemd_host ? "systemd" : "not-systemd") != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "evidence_generator=ops-certification-generate-evidence\n") != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "ops_certification_policy_checksum=0x%08x\n",
                                 MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM) != 0 ||
         append_wire_schema_line(evidence,
-                                sizeof(evidence),
+                                evidence_len,
                                 &used,
                                 "package_manifest_checksum=0x%08x\n",
                                 MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
         append_ops_certification_gate_status(evidence,
-                                             sizeof(evidence),
+                                             evidence_len,
                                              &used,
                                              "linux_systemd_service_smoke",
                                              service_pass) != 0 ||
         append_ops_certification_gate_status(evidence,
-                                             sizeof(evidence),
+                                             evidence_len,
                                              &used,
                                              "linux_systemd_host_service_smoke",
                                              host_service_pass) != 0 ||
         append_ops_certification_gate_status(evidence,
-                                             sizeof(evidence),
+                                             evidence_len,
                                              &used,
                                              "prometheus_scrape_smoke",
                                              scrape_pass) != 0 ||
         append_ops_certification_gate_status(evidence,
-                                             sizeof(evidence),
+                                             evidence_len,
                                              &used,
                                              "prometheus_alertmanager_rule_smoke",
                                              alert_pass) != 0 ||
         append_ops_certification_gate_status(evidence,
-                                             sizeof(evidence),
+                                             evidence_len,
                                              &used,
                                              "rpm_package_smoke",
                                              rpm_pass) != 0 ||
         append_ops_certification_gate_status(evidence,
-                                             sizeof(evidence),
+                                             evidence_len,
                                              &used,
                                              "upgrade_rollback_deployment_smoke",
                                              upgrade_pass) != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_ops_certification_generate_evidence(int argc, char **argv)
+{
+    char evidence[4096];
+    size_t used = 0;
+
+    if (render_ops_certification_generated_evidence(
+            argc, argv, evidence, sizeof(evidence), &used) != 0) {
         fprintf(stderr,
                 "mem_service ops-certification-generate-evidence: render failed\n");
         return 1;
     }
     fwrite(evidence, 1, used, stdout);
+    return 0;
+}
+
+static int run_ops_certification_linux_ci_smoke(int argc, char **argv)
+{
+    const char *evidence_file = option_value(argc, argv, "--evidence-file");
+    char evidence[4096];
+    char reason[160];
+    size_t used = 0;
+
+    if (evidence_file == NULL || evidence_file[0] == '\0') {
+        fprintf(stderr,
+                "mem_service ops-certification-linux-ci-smoke: missing --evidence-file\n");
+        return 2;
+    }
+    if (!ops_certification_safe_path(evidence_file)) {
+        fprintf(stderr,
+                "mem_service ops-certification-linux-ci-smoke: unsafe evidence file\n");
+        return 2;
+    }
+    if (render_ops_certification_generated_evidence(
+            argc, argv, evidence, sizeof(evidence), &used) != 0) {
+        fprintf(stderr,
+                "mem_service ops-certification-linux-ci-smoke: render failed\n");
+        return 1;
+    }
+    if (write_text_file_limited(evidence_file, evidence, used) != 0) {
+        fprintf(stderr,
+                "mem_service ops-certification-linux-ci-smoke: evidence write failed\n");
+        return 1;
+    }
+    if (validate_ops_certification_evidence(evidence, reason, sizeof(reason)) != 0) {
+        fprintf(stderr,
+                "mem_service ops-certification-linux-ci-smoke: fail-closed "
+                "reason=%s evidence_file=%s\n",
+                reason,
+                evidence_file);
+        return 1;
+    }
+    printf("mem_service ops-certification-linux-ci-smoke: status=ok "
+           "certification_status=certified evidence_file=%s external_gates=6\n",
+           evidence_file);
     return 0;
 }
 
@@ -3393,6 +3490,7 @@ static int run_release_manifest(void)
     printf("ops_certification_evidence_schema=ops-certification-evidence-v1\n");
     printf("ops_certification_evidence_gate=ops-certification-evidence-fixtures\n");
     printf("ops_certification_generate=ops-certification-generate-evidence\n");
+    printf("ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke\n");
     printf("ops_certification_verify=ops-certification-verify --evidence-file\n");
     printf("real_systemd_environment=not-certified\n");
     printf("production_collector_alert_environment=not-certified\n");
@@ -3537,7 +3635,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 29U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 19U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 20U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -6670,6 +6768,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "ops-certification-generate-evidence") == 0) {
         return run_ops_certification_generate_evidence(argc, argv);
+    }
+    if (strcmp(argv[1], "ops-certification-linux-ci-smoke") == 0) {
+        return run_ops_certification_linux_ci_smoke(argc, argv);
     }
     if (strcmp(argv[1], "ops-certification-verify") == 0) {
         return run_ops_certification_verify(argc, argv);

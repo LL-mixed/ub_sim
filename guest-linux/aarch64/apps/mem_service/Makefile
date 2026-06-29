@@ -340,8 +340,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=3384$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x06bedc71$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=3431$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x66f17809$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -418,6 +418,7 @@ install-smoke: install
 	grep -q '^ops_certification_evidence_schema=ops-certification-evidence-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_evidence_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_generate=ops-certification-generate-evidence$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^real_systemd_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^production_collector_alert_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -482,7 +483,7 @@ install-smoke: install
 	grep -q '^native_package_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_runtime=not-executed-cross-compiled-arm64$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_file_count=29$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=19$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=20$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x0f9df008$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -492,11 +493,13 @@ install-smoke: install
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^cross_version_upgrade=certified$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^mem_service_ops_certification_policy_version=1$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^certification_status=not-certified$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^admission_rule=fail-closed-until-external-evidence$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^evidence_generate=ops-certification-generate-evidence$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
+	grep -q '^evidence_ci_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^external_gate=linux-systemd-service-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^external_gate=prometheus-alertmanager-rule-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^external_gate=rpm-package-smoke$$' $(INSTALL_DATADIR)/ops-certification-policy.txt

@@ -406,6 +406,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "ops-certification-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "ops-certification-evidence-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "ops-certification-generate-evidence")', cli_source)
+        self.assertIn('strcmp(argv[1], "ops-certification-linux-ci-smoke")', cli_source)
         self.assertIn('strcmp(argv[1], "ops-certification-verify")', cli_source)
         self.assertIn('strcmp(argv[1], "client-retry-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "api-abi-policy")', cli_source)
@@ -485,15 +486,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x0f9df008U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1068U", cli_source)
+        self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xbf0b8e75U",
+            "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3384U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3431U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x06bedc71U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x66f17809U",
             cli_source,
         )
         self.assertIn(
@@ -634,7 +635,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x06bedc71$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x66f17809$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
@@ -698,6 +699,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "^ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke$$",
+            cli_makefile,
+        )
+        self.assertIn(
             "^ops_certification_verify=ops-certification-verify --evidence-file$$",
             cli_makefile,
         )
@@ -744,7 +749,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0x06bedc71", release_manifest)
+        self.assertIn("package_manifest_checksum=0x66f17809", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -947,7 +952,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             package_manifest,
         )
         self.assertIn("installed_file_count=29", package_manifest)
-        self.assertIn("required_gate_count=19", package_manifest)
+        self.assertIn("required_gate_count=20", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn(
             "required_gate=upgrade-rollback-runtime-fixtures",
@@ -956,6 +961,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("required_gate=compat-runtime-fixtures", package_manifest)
         self.assertIn("required_gate=ops-certification-fixtures", package_manifest)
         self.assertIn("required_gate=ops-certification-evidence-fixtures", package_manifest)
+        self.assertIn("required_gate=ops-certification-linux-ci-smoke", package_manifest)
         self.assertIn("required_gate=package-tarball-smoke", package_manifest)
         self.assertIn("required_gate=package-deb-smoke", package_manifest)
         self.assertIn("contract=ops-certification-policy", package_manifest)
@@ -975,6 +981,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             "evidence_generate=ops-certification-generate-evidence",
+            ops_certification_policy,
+        )
+        self.assertIn(
+            "evidence_ci_gate=ops-certification-linux-ci-smoke",
             ops_certification_policy,
         )
         self.assertIn(

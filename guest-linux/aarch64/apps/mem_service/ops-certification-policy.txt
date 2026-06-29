@@ -6,6 +6,7 @@ admission_rule=fail-closed-until-external-evidence
 evidence_schema=ops-certification-evidence-v1
 evidence_verify=ops-certification-verify --evidence-file
 evidence_generate=ops-certification-generate-evidence
+evidence_ci_gate=ops-certification-linux-ci-smoke
 evidence_gate=ops-certification-evidence-fixtures
 local_gate=deployment-fixtures
 local_gate=collector-fixtures
