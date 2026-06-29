@@ -1817,8 +1817,8 @@ int main(int argc, char **argv)
         self.assertIn("version_smokes=1", fixtures.stdout)
         self.assertIn("restore_policy_smokes=1", fixtures.stdout)
         self.assertIn("config_security_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=7001", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x769279ef", fixtures.stdout)
+        self.assertIn("package_manifest_len=7238", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x7d247471", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1843,8 +1843,8 @@ int main(int argc, char **argv)
         self.assertIn("wire_version=1", version.stdout)
         self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", version.stdout)
         self.assertIn("api_abi_policy_checksum=0x5d95ae02", version.stdout)
-        self.assertIn("package_manifest_len=7001", version.stdout)
-        self.assertIn("package_manifest_checksum=0x769279ef", version.stdout)
+        self.assertIn("package_manifest_len=7238", version.stdout)
+        self.assertIn("package_manifest_checksum=0x7d247471", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
         self.assertIn("package_manifest_command=package-manifest", version.stdout)
         self.assertIn("config_security_gate=config-fixtures", version.stdout)
@@ -1854,17 +1854,17 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("service_version=0.1.0", fixtures.stdout)
-        self.assertIn("package_manifest_len=7001", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x769279ef", fixtures.stdout)
+        self.assertIn("package_manifest_len=7238", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x7d247471", fixtures.stdout)
 
     def test_package_manifest_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("package-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=7001", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x769279ef", fixtures.stdout)
-        self.assertIn("installed_files=44", fixtures.stdout)
+        self.assertIn("manifest_len=7238", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x7d247471", fixtures.stdout)
+        self.assertIn("installed_files=45", fixtures.stdout)
         self.assertIn("required_gates=26", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
@@ -1924,7 +1924,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x769279ef\n"
+            "package_manifest_checksum=0x7d247471\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1970,7 +1970,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x769279ef", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x7d247471", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2170,7 +2170,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0x769279ef\n"
+            "package_manifest_checksum=0x7d247471\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -2285,7 +2285,7 @@ int main(int argc, char **argv)
                 "--version",
                 "1",
                 "--checksum",
-                "7001",
+                "7238",
             )
             self.assertEqual(put.returncode, 0, put.stderr + put.stdout)
 
@@ -3390,6 +3390,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             package_manifest = (
                 destdir / "usr" / "share" / "lingqu" / "mem_service" / "package-manifest.txt"
             )
+            pkgconfig = destdir / "usr" / "lib" / "pkgconfig" / "lingqu-mem-service.pc"
             wire_schema = destdir / "usr" / "share" / "lingqu" / "mem_service" / "wire-schema.txt"
             admin_output_schema = (
                 destdir
@@ -3457,6 +3458,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertTrue(manifest.exists())
             self.assertTrue(package_manifest.exists())
+            self.assertTrue(pkgconfig.exists())
             self.assertTrue(wire_schema.exists())
             self.assertTrue(admin_output_schema.exists())
             self.assertTrue(upgrade_rollback_policy.exists())
@@ -3477,7 +3479,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x769279ef", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x7d247471", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),
@@ -3493,6 +3495,21 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn(
                 "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime",
                 manifest.read_text(),
+            )
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", manifest.read_text())
+            self.assertIn("pkgconfig_name=lingqu-mem-service", manifest.read_text())
+            self.assertIn("pkgconfig_cflags=-I${includedir}", manifest.read_text())
+            self.assertIn(
+                "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c",
+                manifest.read_text(),
+            )
+            self.assertIn("prefix=/usr", pkgconfig.read_text())
+            self.assertIn("includedir=${prefix}/include/lingqu/mem_service", pkgconfig.read_text())
+            self.assertIn("sourcedir=${prefix}/src/lingqu/mem_service", pkgconfig.read_text())
+            self.assertIn("Cflags: -I${includedir}", pkgconfig.read_text())
+            self.assertIn(
+                "sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c",
+                pkgconfig.read_text(),
             )
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
@@ -3648,7 +3665,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "rpm_package_runtime=requires-linux-rpm-toolchain",
                 package_manifest.read_text(),
             )
-            self.assertIn("installed_file_count=44", package_manifest.read_text())
+            self.assertIn("installed_file_count=45", package_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest.read_text())
+            self.assertIn("pkgconfig_name=lingqu-mem-service", package_manifest.read_text())
+            self.assertIn("pkgconfig_cflags=-I${includedir}", package_manifest.read_text())
+            self.assertIn(
+                "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c",
+                package_manifest.read_text(),
+            )
             self.assertIn(
                 "release_script_root=share/lingqu/mem_service/scripts",
                 package_manifest.read_text(),
@@ -3981,6 +4005,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "mem_service"
                 / "package-manifest.txt"
             )
+            pkgconfig = verify_root / "usr" / "lib" / "pkgconfig" / "lingqu-mem-service.pc"
 
             self.assertTrue(tarball.exists())
             self.assertIn("usr/bin/linqu_mem_service", listing.read_text())
@@ -3992,14 +4017,22 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "usr/share/lingqu/mem_service/package-manifest.txt",
                 listing.read_text(),
             )
+            self.assertIn("usr/lib/pkgconfig/lingqu-mem-service.pc", listing.read_text())
             self.assertTrue(release_manifest.exists())
             self.assertTrue(package_manifest.exists())
+            self.assertTrue(pkgconfig.exists())
             self.assertIn("distributable_package_format=tar", release_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", release_manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
                 release_manifest.read_text(),
             )
             self.assertIn("artifact_format=tar", package_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest.read_text())
+            self.assertIn(
+                "sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c",
+                pkgconfig.read_text(),
+            )
             self.assertIn(
                 "artifact_gate=package-tarball-smoke",
                 package_manifest.read_text(),
@@ -4061,6 +4094,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "mem_service"
                 / "package-manifest.txt"
             )
+            pkgconfig = data_root / "usr" / "lib" / "pkgconfig" / "lingqu-mem-service.pc"
 
             self.assertTrue(deb.exists())
             self.assertIn("debian-binary", listing.read_text())
@@ -4069,6 +4103,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("Package: linqu-mem-service", control.read_text())
             self.assertIn("Architecture: arm64", control.read_text())
             self.assertTrue((data_root / "usr" / "bin" / "linqu_mem_service").exists())
+            self.assertTrue(pkgconfig.exists())
             self.assertTrue(
                 (
                     data_root
@@ -4080,11 +4115,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 ).exists()
             )
             self.assertIn("native_package_format=deb", release_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", release_manifest.read_text())
             self.assertIn(
                 "native_package_gate=package-deb-smoke",
                 release_manifest.read_text(),
             )
             self.assertIn("native_package_format=deb", package_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest.read_text())
+            self.assertIn("prefix=/usr", pkgconfig.read_text())
             self.assertIn(
                 "native_package_gate=package-deb-smoke",
                 package_manifest.read_text(),
@@ -4144,14 +4182,19 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 / "mem_service"
                 / "package-manifest.txt"
             )
+            pkgconfig = verify_root / "usr" / "lib" / "pkgconfig" / "lingqu-mem-service.pc"
             self.assertTrue(rpm.exists())
             self.assertTrue((verify_root / "usr" / "bin" / "linqu_mem_service").exists())
+            self.assertTrue(pkgconfig.exists())
             self.assertIn("rpm_native_package_format=rpm", release_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", release_manifest.read_text())
             self.assertIn(
                 "rpm_native_package_gate=package-rpm-smoke",
                 release_manifest.read_text(),
             )
             self.assertIn("rpm_package_format=rpm", package_manifest.read_text())
+            self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest.read_text())
+            self.assertIn("prefix=/usr", pkgconfig.read_text())
             self.assertIn(
                 "rpm_package_gate=package-rpm-smoke",
                 package_manifest.read_text(),

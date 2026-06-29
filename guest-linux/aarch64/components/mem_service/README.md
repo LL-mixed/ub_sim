@@ -253,9 +253,9 @@ a Qwen3 adapter inspect build:
 - `apps/mem_service/release-manifest.txt` freezes the current minimal release
   contract: service version, core binary path, optional Qwen3 adapter path,
   binary self-description command, public headers, client SDK source files,
-  SDK example files, config/deploy artifacts, wire/schema versions, wire
-  schema manifest checksum, admin output schema checksum, operation IDs, and
-  status IDs.
+  SDK example files, installed `pkg-config` metadata, config/deploy artifacts,
+  wire/schema versions, wire schema manifest checksum, admin output schema
+  checksum, operation IDs, and status IDs.
 - `apps/mem_service/package-manifest.txt` freezes the current
   `installed-layout-v1` package contract: install roots, file classes, required
   contract checksums, binary self-description gate, required fixture gates, and
@@ -268,6 +268,9 @@ a Qwen3 adapter inspect build:
   installed public headers, installed SDK sources, and installed example
   sources. This proves external serving/pretraining clients can build against
   the installed SDK boundary without depending on daemon-private source files.
+  The install layout also writes `lib/pkgconfig/lingqu-mem-service.pc`, whose
+  `Cflags` and `sdk_sources` variables expose the installed header and source
+  roots to external builds without requiring callers to hard-code layout paths.
 - `make installed-sdk-runtime-smoke DESTDIR=<dir> PREFIX=/usr` builds on that
   installed SDK layout, starts the installed host daemon through its installed
   binary path, runs the installed serving and pretraining example clients
@@ -348,6 +351,9 @@ Build and validation entrypoints:
   units can be active in the same Linux CI run. It also installs the service units into
   `usr/lib/systemd/system/` while keeping the same files under
   `share/lingqu/mem_service/deploy/` as checked deployment manifests.
+  The same install step generates `usr/lib/pkgconfig/lingqu-mem-service.pc`
+  with the active `PREFIX`, so package installs use `/usr` while local
+  installs keep their chosen prefix in SDK discovery metadata.
   `installed-sdk-example-smoke` reuses that installed layout and compiles both
   SDK examples only from the installed include/source/example roots.
   `installed-sdk-runtime-smoke` then starts the installed host daemon and runs

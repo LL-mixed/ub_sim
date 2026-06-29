@@ -46,9 +46,9 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7001U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x769279efU
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 44U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7238U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x7d247471U
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 45U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 26U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
@@ -2494,6 +2494,22 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "pkgconfig=lib/pkgconfig/lingqu-mem-service.pc\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pkgconfig_name=lingqu-mem-service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pkgconfig_cflags=-I${includedir}\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "installed_sdk_example_smoke=installed-sdk-example-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2636,6 +2652,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "file_class=client_sources count=2\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=pkgconfig count=1\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4256,6 +4276,13 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "required_gate=version-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=installed-sdk-runtime-smoke\n") == NULL ||
+        strstr(manifest, "pkgconfig=lib/pkgconfig/lingqu-mem-service.pc\n") ==
+            NULL ||
+        strstr(manifest, "pkgconfig_name=lingqu-mem-service\n") == NULL ||
+        strstr(manifest, "pkgconfig_cflags=-I${includedir}\n") == NULL ||
+        strstr(manifest,
+               "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n") ==
+            NULL ||
         strstr(manifest, "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke\n") ==
             NULL ||
         strstr(manifest,
@@ -4296,6 +4323,7 @@ static int run_package_fixture_check(void)
                "release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh\n") ==
             NULL ||
         strstr(manifest, "file_class=release_scripts count=9\n") == NULL ||
+        strstr(manifest, "file_class=pkgconfig count=1\n") == NULL ||
         strstr(manifest, "binary_version_command=version\n") == NULL ||
         strstr(manifest, "binary_version_contract=text-kv\n") == NULL ||
         strstr(manifest, "binary_version_gate=version-fixtures\n") == NULL ||
@@ -4416,6 +4444,10 @@ static int run_release_manifest(void)
            MEM_SERVICE_CLIENT_API_COMPATIBILITY);
     printf("client_abi_compatibility=%s\n",
            MEM_SERVICE_CLIENT_ABI_COMPATIBILITY);
+    printf("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc\n");
+    printf("pkgconfig_name=lingqu-mem-service\n");
+    printf("pkgconfig_cflags=-I${includedir}\n");
+    printf("pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n");
     printf("compat_matrix=share/lingqu/mem_service/compat-matrix.txt\n");
     printf("compat_matrix_len=%u\n", MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN);
     printf("compat_matrix_checksum=0x%08x\n",
@@ -4650,7 +4682,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 44U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 45U ||
         MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 26U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
@@ -4701,6 +4733,7 @@ static int run_release_fixture_check(void)
            "public_headers=8 client_sources=2 examples=2 config_artifacts=6 "
            "host_artifacts=1 "
            "package_artifacts=4 "
+           "pkgconfig_artifacts=1 "
            "release_scripts=9 "
            "installed_sdk_runtime_smokes=1 "
            "version_smokes=1 "

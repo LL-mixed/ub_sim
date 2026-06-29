@@ -143,6 +143,7 @@ DATA_DIR=$(path_join "$INSTALL_PREFIX" "share/lingqu/mem_service")
 SCRIPT_INSTALL_DIR=$(path_join "$DATA_DIR" "scripts")
 CONFIG_DIR=$(path_join "$DATA_DIR" "config")
 DEPLOY_DIR=$(path_join "$DATA_DIR" "deploy")
+PKGCONFIG_FILE=$(path_join "$INSTALL_PREFIX" "lib/pkgconfig/lingqu-mem-service.pc")
 HOST_BIN=$(path_join "$INSTALL_PREFIX" "libexec/lingqu/mem_service/linqu_mem_service_host")
 CORE_BIN=$(path_join "$INSTALL_PREFIX" "bin/linqu_mem_service")
 SYSTEM_CONFIG_DIR=$(path_join "$INSTALL_ROOT" "etc/lingqu/mem_service")
@@ -156,6 +157,7 @@ require_file "$(path_join "$DATA_DIR" "wire-schema.txt")"
 require_file "$(path_join "$DATA_DIR" "admin-output-schema.txt")"
 require_file "$(path_join "$DATA_DIR" "upgrade-rollback-policy.txt")"
 require_file "$(path_join "$DATA_DIR" "ops-certification-policy.txt")"
+require_file "$PKGCONFIG_FILE"
 require_file "$(path_join "$CONFIG_DIR" "mem_service.runtime.conf")"
 require_file "$(path_join "$CONFIG_DIR" "mem_service.host.runtime.conf")"
 require_file "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.conf")"
@@ -174,11 +176,16 @@ require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "run_mem_service_release_c
 PACKAGE_MANIFEST=$(path_join "$DATA_DIR" "package-manifest.txt")
 RELEASE_MANIFEST=$(path_join "$DATA_DIR" "release-manifest.txt")
 require_grep "$PACKAGE_MANIFEST" '^package_format=installed-layout-v1$'
+require_grep "$PACKAGE_MANIFEST" '^pkgconfig=lib/pkgconfig/lingqu-mem-service[.]pc$'
+require_grep "$PACKAGE_MANIFEST" '^file_class=pkgconfig count=1$'
 require_grep "$PACKAGE_MANIFEST" '^file_class=release_scripts count=9$'
 require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$'
 require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh$'
 require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$'
 require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh$'
+require_grep "$RELEASE_MANIFEST" '^pkgconfig=lib/pkgconfig/lingqu-mem-service[.]pc$'
+require_grep "$PKGCONFIG_FILE" '^Cflags: -I[$][{]includedir[}]$'
+require_grep "$PKGCONFIG_FILE" '^sdk_sources=[$][{]sourcedir[}]/mem_service_client[.]c [$][{]sourcedir[}]/mem_service_wire_client[.]c$'
 require_grep "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.conf")" '^backend=snapshot+journal$'
 require_grep "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.host.conf")" '^metrics_listen=tcp:127[.]0[.]0[.]1:9901$'
 

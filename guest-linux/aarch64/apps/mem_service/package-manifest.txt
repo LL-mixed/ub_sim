@@ -31,6 +31,10 @@ default_endpoint=unix:/tmp/linqu_mem_service.sock
 data_root=share/lingqu/mem_service
 header_root=include/lingqu/mem_service
 source_root=src/lingqu/mem_service
+pkgconfig=lib/pkgconfig/lingqu-mem-service.pc
+pkgconfig_name=lingqu-mem-service
+pkgconfig_cflags=-I${includedir}
+pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c
 installed_sdk_example_smoke=installed-sdk-example-smoke
 installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile
 installed_sdk_runtime_smoke=installed-sdk-runtime-smoke
@@ -62,11 +66,12 @@ release_script=share/lingqu/mem_service/scripts/verify_mem_service_remote_transp
 release_script=share/lingqu/mem_service/scripts/verify_mem_service_remote_transport_bundle.sh
 release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh
 release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh
-installed_file_count=44
+installed_file_count=45
 file_class=core_binary count=1
 file_class=host_binary count=1
 file_class=public_headers count=8
 file_class=client_sources count=2
+file_class=pkgconfig count=1
 file_class=examples count=2
 file_class=contracts count=10
 file_class=configs count=4
