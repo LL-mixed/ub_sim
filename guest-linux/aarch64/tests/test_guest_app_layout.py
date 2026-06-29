@@ -1139,7 +1139,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xba9359e5$$" in app_makefile
+    assert "^package_manifest_checksum=0x1590a98b$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
@@ -1285,6 +1285,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "compat-old-new-fixtures")' in app_source
     assert 'strcmp(argv[1], "package-manifest")' in app_source
     assert 'strcmp(argv[1], "package-fixtures")' in app_source
+    assert 'strcmp(argv[1], "version")' in app_source
+    assert 'strcmp(argv[1], "version-fixtures")' in app_source
     assert 'strcmp(argv[1], "serve")' in app_source
     assert 'option_value(argc, argv, "--config")' in app_source
     assert 'option_value(argc, argv, "--metrics-listen")' in app_source
@@ -1361,8 +1363,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5277U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xba9359e5U" in app_source
+    assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5408U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1590a98bU" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1404,7 +1407,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0xba9359e5" in release_manifest
+    assert "service_version=0.1.0" in release_manifest
+    assert "package_manifest_checksum=0x1590a98b" in release_manifest
+    assert "binary_version_command=version" in release_manifest
+    assert "binary_version_contract=text-kv" in release_manifest
+    assert "binary_version_gate=version-fixtures" in release_manifest
     assert "service_auth_boundary=unix-socket-local-only" in release_manifest
     assert "metrics_auth_boundary=loopback-only" in release_manifest
     assert "config_security_gate=config-fixtures" in release_manifest
@@ -1539,8 +1546,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=5277" in release_manifest
-    assert "package_manifest_checksum=0xba9359e5" in release_manifest
+    assert "package_manifest_len=5408" in release_manifest
+    assert "package_manifest_checksum=0x1590a98b" in release_manifest
     assert "remote_payload_production_network_transport=not-certified" in release_manifest
     assert (
         "remote_payload_production_transport_evidence_schema=remote-transport-evidence-v1"
@@ -1701,10 +1708,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "systemd_unit_root=lib/systemd/system" in package_manifest
     assert "systemd_unit=lib/systemd/system/linqu_mem_service.service" in package_manifest
     assert "host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service" in package_manifest
+    assert "binary_version_command=version" in package_manifest
+    assert "binary_version_contract=text-kv" in package_manifest
+    assert "binary_version_gate=version-fixtures" in package_manifest
     assert "file_class=runtime_config count=2" in package_manifest
     assert "file_class=systemd_units count=2" in package_manifest
-    assert "required_gate_count=24" in package_manifest
+    assert "required_gate_count=25" in package_manifest
     assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
+    assert "required_gate=version-fixtures" in package_manifest
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"

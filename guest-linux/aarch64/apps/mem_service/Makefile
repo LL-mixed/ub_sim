@@ -186,6 +186,8 @@ linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)
 
 host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host --smoke
+	./linqu_mem_service_host version
+	./linqu_mem_service_host version-fixtures
 	./linqu_mem_service_host release-fixtures
 	./linqu_mem_service_host package-fixtures
 	./linqu_mem_service_host admin-output-fixtures
@@ -559,8 +561,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=5277$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xba9359e5$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=5408$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x1590a98b$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -580,6 +582,9 @@ install-smoke: install
 	grep -q '^rpm_native_package_runtime=requires-linux-rpm-toolchain$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^core_binary=bin/linqu_mem_service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^binary_version_command=version$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^binary_version_contract=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0xf4cf34c6$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -767,12 +772,16 @@ install-smoke: install
 	grep -q '^systemd_unit_root=lib/systemd/system$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^systemd_unit=lib/systemd/system/linqu_mem_service.service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^binary_version_command=version$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^binary_version_contract=text-kv$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=24$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=25$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -858,6 +867,8 @@ install-smoke: install
 	grep -q '^  - alert: LingquMemServiceDown$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^    expr: increase(lingqu_mem_service_fail_closed_count\[5m\]) > 0$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^    expr: lingqu_mem_service_request_latency_max_ms > 100$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host version
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host version-fixtures
 
 clean:
 	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3 linqu_mem_service_host

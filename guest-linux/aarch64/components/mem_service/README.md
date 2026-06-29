@@ -221,14 +221,15 @@ a Qwen3 adapter inspect build:
   to guest inference code that opts into that model path.
 - `lingqu_object_service.h` defines the object-service payload contract.
 - `apps/mem_service/release-manifest.txt` freezes the current minimal release
-  contract: core binary path, optional Qwen3 adapter path, public headers,
-  client SDK source files, SDK example files, config/deploy artifacts,
-  wire/schema versions, wire schema manifest checksum, admin output schema
-  checksum, operation IDs, and status IDs.
+  contract: service version, core binary path, optional Qwen3 adapter path,
+  binary self-description command, public headers, client SDK source files,
+  SDK example files, config/deploy artifacts, wire/schema versions, wire
+  schema manifest checksum, admin output schema checksum, operation IDs, and
+  status IDs.
 - `apps/mem_service/package-manifest.txt` freezes the current
   `installed-layout-v1` package contract: install roots, file classes, required
-  contract checksums, required fixture gates, and not-certified boundaries for
-  cross-version/runtime-environment claims.
+  contract checksums, binary self-description gate, required fixture gates, and
+  not-certified boundaries for cross-version/runtime-environment claims.
 - `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the
   release layout, then compiles the serving and pretraining examples from the
   installed public headers, installed SDK sources, and installed example
@@ -495,14 +496,16 @@ Keep the implementation layers separated:
   This layer must stay model-neutral and
   callable by external
   serving/pretraining processes.
-- Release/deployment: the current `release-manifest`, `wire-schema`,
+- Release/deployment: the current `version`, `version-fixtures`,
+  `release-manifest`, `wire-schema`,
   `admin-output-schema`, `upgrade-rollback-policy`, `package-manifest`,
   `api-abi-policy`,
   `compat-matrix`, `compat-old-new-fixtures`, `ops-certification-policy`,
   `config-fixtures`, `install-smoke`, and `installed-sdk-example-smoke`
   surfaces prove the minimum publishable layout for the daemon binary, public
   headers, client SDK sources, SDK examples, release manifest, wire schema
-  manifest, admin output schema artifact, upgrade/rollback policy artifact,
+  manifest, installed binary self-description contract, admin output schema
+  artifact, upgrade/rollback policy artifact,
   API/ABI policy artifact,
   compatibility matrix, v1 compatibility baseline, old/new schema-profile
   matrix, config schema/example, systemd-like deployment

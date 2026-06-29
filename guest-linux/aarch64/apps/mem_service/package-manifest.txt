@@ -23,6 +23,9 @@ package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy+runti
 prefix_default=/usr
 binary=bin/linqu_mem_service
 host_binary=libexec/lingqu/mem_service/linqu_mem_service_host
+binary_version_command=version
+binary_version_contract=text-kv
+binary_version_gate=version-fixtures
 optional_adapter=bin/linqu_mem_service_qwen3
 default_endpoint=unix:/tmp/linqu_mem_service.sock
 data_root=share/lingqu/mem_service
@@ -64,9 +67,10 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x627bf6a1
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=24
+required_gate_count=25
 required_gate=release-fixtures
 required_gate=package-fixtures
+required_gate=version-fixtures
 required_gate=admin-output-fixtures
 required_gate=upgrade-rollback-fixtures
 required_gate=upgrade-rollback-runtime-fixtures
