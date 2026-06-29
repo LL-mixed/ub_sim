@@ -648,6 +648,7 @@ install-smoke: install
 	grep -q '^remote_payload_production_transport_evidence_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_generate=remote-transport-generate-evidence$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^remote_payload_production_transport_verify=remote-transport-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^required_gate=remote-transport-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^payload_block_ingest=payload-inline,payload-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_journal=store-path.journal$$' $(INSTALL_DATADIR)/release-manifest.txt

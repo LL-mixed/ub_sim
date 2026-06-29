@@ -451,12 +451,15 @@ Keep the implementation layers separated:
   <path> --evidence-file <path>` is the consumer-side evidence generator: it
   fetches the producer payload through `transport-tcp-block-v1`, validates the
   local sealed copy, corrupts it to prove fail-closed quarantine, rejects
-  loopback sources, and requires a CI-produced network-partition marker. The
-  `remote-transport-evidence-fixtures` gate defines the required evidence
-  schema: non-loopback source address, cross-host topology,
-  `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum validation,
-  corruption fail-closed behavior, distinct producer/consumer hosts, and
-  network-partition fail-closed behavior.
+  loopback sources, and requires a CI-produced network-partition marker.
+  `scripts/run_mem_service_remote_transport_ci.sh` is the reusable wrapper for
+  that cross-host run; it builds `linqu_mem_service_host` if needed, runs the
+  generator, and re-runs `remote-transport-verify --evidence-file <path>` on
+  the generated artifact. The `remote-transport-evidence-fixtures` gate defines
+  the required evidence schema: non-loopback source address, cross-host
+  topology, `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum
+  validation, corruption fail-closed behavior, distinct producer/consumer
+  hosts, and network-partition fail-closed behavior.
   Real systemd environment smoke, production collector/alert environment
   integration smoke, product-grade restore policy, payload ownership, and
   cross-machine remote transport-backed block storage remain deployment work.

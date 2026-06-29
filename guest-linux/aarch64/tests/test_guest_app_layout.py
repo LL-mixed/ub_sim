@@ -241,6 +241,64 @@ def test_mem_service_linux_ops_evidence_verifier_is_reusable_and_dry_runnable():
     ) in dry_run.stdout
 
 
+def test_mem_service_remote_transport_ci_runner_is_reusable_and_dry_runnable():
+    runner_path = ROOT / "scripts" / "run_mem_service_remote_transport_ci.sh"
+    runner = runner_path.read_text()
+
+    assert runner_path.exists()
+    assert runner_path.stat().st_mode & 0o111
+    assert "--source tcp:IP:PORT" in runner
+    assert "--producer-host HOST" in runner
+    assert "--consumer-host HOST" in runner
+    assert "--network-partition-marker PATH" in runner
+    assert "remote-transport-generate-evidence" in runner
+    assert "remote-transport-verify --evidence-file" in runner
+    assert "source_address_non_loopback" not in runner
+    assert "non-loopback IPv4 address" in runner
+
+    missing_arg = subprocess.run(
+        [str(runner_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(runner_path),
+            "--source",
+            "tcp:10.0.0.11:9000",
+            "--producer-host",
+            "producer-a",
+            "--consumer-host",
+            "consumer-b",
+            "--network-partition-marker",
+            "/tmp/remote-transport.partition",
+            "--evidence-file",
+            "/tmp/remote-transport.evidence",
+            "--storage-root",
+            "/tmp/remote-transport.storage",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--source is required" in missing_arg.stderr
+    assert "make -C " in dry_run.stdout
+    assert "remote-transport-generate-evidence" in dry_run.stdout
+    assert "--source tcp:10.0.0.11:9000" in dry_run.stdout
+    assert "--producer-host producer-a" in dry_run.stdout
+    assert "--consumer-host consumer-b" in dry_run.stdout
+    assert "--network-partition-marker /tmp/remote-transport.partition" in dry_run.stdout
+    assert "--evidence-file /tmp/remote-transport.evidence" in dry_run.stdout
+    assert "--storage-root /tmp/remote-transport.storage" in dry_run.stdout
+    assert "remote-transport-verify --evidence-file /tmp/remote-transport.evidence" in dry_run.stdout
+
+
 def test_mem_service_ops_certification_bundle_verifier_is_reusable_and_dry_runnable():
     verifier_path = ROOT / "scripts" / "verify_mem_service_ops_certification_bundle.sh"
     verifier = verifier_path.read_text()
@@ -1330,6 +1388,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert (
         "remote_payload_production_transport_verify=remote-transport-verify --evidence-file"
+        in release_manifest
+    )
+    assert (
+        "remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh"
         in release_manifest
     )
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest
