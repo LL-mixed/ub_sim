@@ -191,6 +191,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host admin-output-fixtures
 	./linqu_mem_service_host upgrade-rollback-fixtures
 	./linqu_mem_service_host upgrade-rollback-runtime-fixtures
+	./linqu_mem_service_host restore-policy-fixtures
 	./linqu_mem_service_host alert-fixtures
 	./linqu_mem_service_host alert-integration-fixtures
 	./linqu_mem_service_host ops-certification-fixtures
@@ -558,8 +559,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=5033$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xa84d70d5$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=5159$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x50c6945d$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -604,6 +605,11 @@ install-smoke: install
 	grep -q '^payload_ownership_matrix=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_ownership_scope=artifact-query-expected-owner$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_ownership_gate=serving-fail-closed-fixtures,pretraining-fail-closed-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^restore_policy=transactional-staged-restore$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^restore_policy_scope=full-snapshot+paged-snapshot$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^restore_policy_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^restore_policy_fail_closed=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^restore_policy_live_state=unchanged-until-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_payload_text_kv_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_payload_typed_binary_format=typed-binary-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_payload_typed_binary_gate=typed-payload-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -757,16 +763,19 @@ install-smoke: install
 	grep -q '^host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=23$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=24$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^restore_policy=transactional-staged-restore$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^restore_policy_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt

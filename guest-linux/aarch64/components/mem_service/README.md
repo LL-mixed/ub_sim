@@ -479,9 +479,13 @@ Keep the implementation layers separated:
   validation, corruption fail-closed behavior, distinct producer/consumer
   hosts, and network-partition fail-closed behavior.
   Real systemd environment smoke, production collector/alert environment
-  integration smoke, product-grade restore policy, and cross-machine remote
-  transport-backed block storage remain deployment work. Artifact query payload
-  ownership is now an explicit opt-in contract: serving and pretraining clients
+  integration smoke, and cross-machine remote transport-backed block storage
+  remain deployment work. Product restore admission is now guarded by
+  `restore-policy-fixtures`: full snapshot and paged snapshot restore use
+  transactional staging, bad magic, out-of-order pages, record-count mismatch,
+  and cancelled staged commits fail closed, and live state remains unchanged
+  until a valid commit succeeds. Artifact query payload ownership is now an
+  explicit opt-in contract: serving and pretraining clients
   can send `expected_owner`, and the daemon rejects owner mismatches with
   `invalid_model_binding` through the existing fail-closed query path. The
   release contract records this as

@@ -61,12 +61,13 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x627bf6a1
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=23
+required_gate_count=24
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=admin-output-fixtures
 required_gate=upgrade-rollback-fixtures
 required_gate=upgrade-rollback-runtime-fixtures
+required_gate=restore-policy-fixtures
 required_gate=api-abi-fixtures
 required_gate=compat-fixtures
 required_gate=compat-runtime-fixtures
@@ -89,6 +90,8 @@ serving_api=typed-c-client-v1
 pretraining_api=typed-c-client-v1
 payload_ownership_matrix=certified
 payload_ownership_scope=artifact-query-expected-owner
+restore_policy=transactional-staged-restore
+restore_policy_gate=restore-policy-fixtures
 durable_backend=snapshot+journal
 payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1
 remote_payload_production_network_transport=not-certified

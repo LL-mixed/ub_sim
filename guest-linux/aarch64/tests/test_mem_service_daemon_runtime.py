@@ -1789,8 +1789,9 @@ int main(int argc, char **argv)
         self.assertIn("remote_transport_evidence_schemas=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=5033", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xa84d70d5", fixtures.stdout)
+        self.assertIn("restore_policy_smokes=1", fixtures.stdout)
+        self.assertIn("package_manifest_len=5159", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x50c6945d", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1811,14 +1812,35 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=5033", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xa84d70d5", fixtures.stdout)
+        self.assertIn("manifest_len=5159", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x50c6945d", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
-        self.assertIn("required_gates=23", fixtures.stdout)
+        self.assertIn("required_gates=24", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, PACKAGE_MANIFEST.read_text())
+
+    def test_restore_policy_fixtures_fail_closed_until_commit(self):
+        fixtures = self._run_client("restore-policy-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("restore_policy=transactional-staged-restore", fixtures.stdout)
+        self.assertIn(
+            "restore_scope=full-snapshot,paged-snapshot",
+            fixtures.stdout,
+        )
+        self.assertIn("full_restore=ok", fixtures.stdout)
+        self.assertIn("paged_restore=ok", fixtures.stdout)
+        self.assertIn(
+            "fail_closed_cases=bad-magic,out-of-order-page,record-count-mismatch,"
+            "cancelled-stage-commit",
+            fixtures.stdout,
+        )
+        self.assertIn("live_state=unchanged-until-commit", fixtures.stdout)
+        self.assertIn("invalid_session=2", fixtures.stdout)
+        self.assertIn("version_conflict=2", fixtures.stdout)
+        self.assertIn("fail_closed=4", fixtures.stdout)
 
     def test_ops_certification_policy_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("ops-certification-fixtures")
@@ -1842,7 +1864,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xa84d70d5\n"
+            "package_manifest_checksum=0x50c6945d\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1888,7 +1910,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0xa84d70d5", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x50c6945d", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2088,7 +2110,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xa84d70d5\n"
+            "package_manifest_checksum=0x50c6945d\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -3370,7 +3392,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xa84d70d5", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x50c6945d", manifest.read_text())
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),

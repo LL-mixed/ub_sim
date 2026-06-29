@@ -38,6 +38,7 @@ int mem_service_probe_transport_tcp_payload_block(
 int mem_service_run_serving_fail_closed_fixture_check(void);
 int mem_service_run_pretraining_fail_closed_fixture_check(void);
 int mem_service_run_typed_payload_fixture_check(void);
+int mem_service_run_restore_policy_fixture_check(void);
 int mem_service_run_upgrade_rollback_runtime_fixture_check(void);
 int mem_service_run_compat_runtime_fixture_check(void);
 int mem_service_run_compat_old_server_runtime_fixture_check(void);

@@ -4195,6 +4195,299 @@ int mem_service_run_journal_compaction_fixture_check(void)
     return 0;
 }
 
+int mem_service_run_restore_policy_fixture_check(void)
+{
+    static const char anchor_payload[] =
+        "key=restore-policy-anchor\n"
+        "version=1\n"
+        "checksum=1001\n"
+        "backing_len=64\n"
+        "idempotency_key=restore-policy-anchor-v1\n";
+    static const char bad_magic_snapshot[] =
+        "not_mem_service_store\n"
+        "record_count=0\n"
+        "audit_next_sequence=1\n"
+        "audit_event_count=0\n";
+    static const char begin_one_payload[] =
+        "action=begin\n"
+        "expected_records=1\n";
+    static const char begin_two_payload[] =
+        "action=begin\n"
+        "expected_records=2\n";
+    static const char wrong_page_payload[] =
+        "action=append\n"
+        "page_index=1\n"
+        "complete=1\n";
+    static const char commit_payload[] =
+        "action=commit\n";
+    static const char cancel_payload[] =
+        "action=cancel\n";
+    static const char page_request[] =
+        "start_index=0\n"
+        "max_records=1\n";
+    struct mem_service svc;
+    struct mem_service full_restored;
+    struct mem_service restored;
+    struct mem_service_record record;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char snapshot[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char page[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char append_payload[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN + 64U];
+    enum mem_service_wire_status status;
+    enum mem_service_wire_status bad_full_status;
+    enum mem_service_wire_status wrong_page_status;
+    enum mem_service_wire_status mismatch_commit_status;
+    enum mem_service_wire_status cancelled_commit_status;
+    enum mem_service_wire_status good_commit_status;
+    int failures = 0;
+
+    if (mem_service_init(&svc, true, true, true) != 0 ||
+        mem_service_init(&full_restored, true, true, true) != 0 ||
+        mem_service_init(&restored, true, true, true) != 0) {
+        fprintf(stderr, "mem_service restore-policy-fixtures: init failed\n");
+        return 1;
+    }
+    status = mem_service_handle_operation(&svc,
+                                          MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+                                          anchor_payload,
+                                          response,
+                                          sizeof(response),
+                                          NULL,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: anchor put failed status=%s\n",
+                mem_service_wire_status_name(status));
+        return 1;
+    }
+    status = mem_service_handle_operation(&svc,
+                                          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT,
+                                          "",
+                                          snapshot,
+                                          sizeof(snapshot),
+                                          NULL,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(snapshot, MEM_SERVICE_STORE_MAGIC) == NULL ||
+        strstr(snapshot, "key=restore-policy-anchor\n") == NULL) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: full snapshot export failed\n");
+        return 1;
+    }
+    status = mem_service_handle_operation(&svc,
+                                          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT_PAGE,
+                                          page_request,
+                                          page,
+                                          sizeof(page),
+                                          NULL,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        strstr(page, "snapshot_page=1\n") == NULL ||
+        strstr(page, "key=restore-policy-anchor\n") == NULL) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: paged snapshot export failed\n");
+        return 1;
+    }
+    status = mem_service_handle_operation(&full_restored,
+                                          MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                          snapshot,
+                                          response,
+                                          sizeof(response),
+                                          NULL,
+                                          NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        mem_service_get_record(&full_restored, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: full snapshot restore failed\n");
+        return 1;
+    }
+
+    bad_full_status = mem_service_handle_operation(&svc,
+                                                   MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                                   bad_magic_snapshot,
+                                                   response,
+                                                   sizeof(response),
+                                                   NULL,
+                                                   NULL);
+    if (bad_full_status != MEM_SERVICE_WIRE_STATUS_INVALID_SESSION ||
+        mem_service_get_record(&svc, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: bad full restore polluted live state\n");
+        failures -= 1;
+    }
+
+    status = mem_service_handle_operation(&svc,
+                                          MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                          begin_one_payload,
+                                          response,
+                                          sizeof(response),
+                                          NULL,
+                                          NULL);
+    wrong_page_status = mem_service_handle_operation(&svc,
+                                                     MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                                     wrong_page_payload,
+                                                     response,
+                                                     sizeof(response),
+                                                     NULL,
+                                                     NULL);
+    (void)mem_service_handle_operation(&svc,
+                                       MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                       cancel_payload,
+                                       response,
+                                       sizeof(response),
+                                       NULL,
+                                       NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        wrong_page_status != MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT ||
+        mem_service_get_record(&svc, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: out-of-order page did not fail closed\n");
+        failures -= 1;
+    }
+
+    int append_payload_len = snprintf(append_payload,
+                                      sizeof(append_payload),
+                                      "action=append\npage_index=0\n%s",
+                                      page);
+    if (append_payload_len < 0 ||
+        (size_t)append_payload_len >= sizeof(append_payload)) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: append payload truncated\n");
+        return 1;
+    }
+    status = mem_service_handle_operation(&svc,
+                                          MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                          begin_two_payload,
+                                          response,
+                                          sizeof(response),
+                                          NULL,
+                                          NULL);
+    if (status == MEM_SERVICE_WIRE_STATUS_OK) {
+        status = mem_service_handle_operation(&svc,
+                                              MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                              append_payload,
+                                              response,
+                                              sizeof(response),
+                                              NULL,
+                                              NULL);
+    }
+    mismatch_commit_status =
+        mem_service_handle_operation(&svc,
+                                     MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                     commit_payload,
+                                     response,
+                                     sizeof(response),
+                                     NULL,
+                                     NULL);
+    (void)mem_service_handle_operation(&svc,
+                                       MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                       cancel_payload,
+                                       response,
+                                       sizeof(response),
+                                       NULL,
+                                       NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        mismatch_commit_status != MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT ||
+        mem_service_get_record(&svc, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: count mismatch did not fail closed\n");
+        failures -= 1;
+    }
+
+    (void)mem_service_handle_operation(&svc,
+                                       MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                       begin_one_payload,
+                                       response,
+                                       sizeof(response),
+                                       NULL,
+                                       NULL);
+    (void)mem_service_handle_operation(&svc,
+                                       MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                       cancel_payload,
+                                       response,
+                                       sizeof(response),
+                                       NULL,
+                                       NULL);
+    cancelled_commit_status =
+        mem_service_handle_operation(&svc,
+                                     MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                     commit_payload,
+                                     response,
+                                     sizeof(response),
+                                     NULL,
+                                     NULL);
+    if (cancelled_commit_status != MEM_SERVICE_WIRE_STATUS_INVALID_SESSION ||
+        mem_service_get_record(&svc, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: cancelled stage did not fail closed\n");
+        failures -= 1;
+    }
+
+    status = mem_service_handle_operation(&restored,
+                                          MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                          begin_one_payload,
+                                          response,
+                                          sizeof(response),
+                                          NULL,
+                                          NULL);
+    if (status == MEM_SERVICE_WIRE_STATUS_OK) {
+        status = mem_service_handle_operation(&restored,
+                                              MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                              append_payload,
+                                              response,
+                                              sizeof(response),
+                                              NULL,
+                                              NULL);
+    }
+    good_commit_status = mem_service_handle_operation(&restored,
+                                                      MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT_PAGE,
+                                                      commit_payload,
+                                                      response,
+                                                      sizeof(response),
+                                                      NULL,
+                                                      NULL);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK ||
+        good_commit_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        mem_service_get_record(&restored, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: staged commit restore failed\n");
+        failures -= 1;
+    }
+    if (svc.metrics.invalid_session_count != 2U ||
+        svc.metrics.version_conflict_count != 2U ||
+        svc.metrics.fail_closed_count != 4U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: counter mismatch "
+                "invalid_session=%" PRIu64 " version_conflict=%" PRIu64
+                " fail_closed=%" PRIu64 "\n",
+                svc.metrics.invalid_session_count,
+                svc.metrics.version_conflict_count,
+                svc.metrics.fail_closed_count);
+        failures -= 1;
+    }
+    if (failures != 0) {
+        return 1;
+    }
+    printf("mem_service restore-policy-fixtures: status=ok "
+           "restore_policy=transactional-staged-restore "
+           "restore_scope=full-snapshot,paged-snapshot "
+           "full_restore=ok paged_restore=ok "
+           "fail_closed_cases=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit "
+           "live_state=unchanged-until-commit "
+           "invalid_session=%" PRIu64 " version_conflict=%" PRIu64
+           " fail_closed=%" PRIu64 "\n",
+           svc.metrics.invalid_session_count,
+           svc.metrics.version_conflict_count,
+           svc.metrics.fail_closed_count);
+    return 0;
+}
+
 int mem_service_run_upgrade_rollback_runtime_fixture_check(void)
 {
     static const char baseline_object_payload[] =

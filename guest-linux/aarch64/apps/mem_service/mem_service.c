@@ -45,10 +45,10 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5033U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa84d70d5U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 5159U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x50c6945dU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 23U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 24U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -70,6 +70,7 @@ static void usage(const char *argv0)
     printf("Usage: %s [--smoke] [--self-test]", argv0);
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
+    printf(" [restore-policy-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
@@ -2499,6 +2500,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "required_gate=restore-policy-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "required_gate=api-abi-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2584,6 +2589,14 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "payload_ownership_scope=artifact-query-expected-owner\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "restore_policy=transactional-staged-restore\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "restore_policy_gate=restore-policy-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3978,9 +3991,12 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=ops-certification-evidence-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=remote-transport-evidence-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
+        strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
         strstr(manifest, "payload_ownership_scope=artifact-query-expected-owner\n") == NULL ||
+        strstr(manifest, "restore_policy=transactional-staged-restore\n") == NULL ||
+        strstr(manifest, "restore_policy_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
         return 1;
@@ -4068,6 +4084,11 @@ static int run_release_manifest(void)
     printf("payload_ownership_matrix=certified\n");
     printf("payload_ownership_scope=artifact-query-expected-owner\n");
     printf("payload_ownership_gate=serving-fail-closed-fixtures,pretraining-fail-closed-fixtures\n");
+    printf("restore_policy=transactional-staged-restore\n");
+    printf("restore_policy_scope=full-snapshot+paged-snapshot\n");
+    printf("restore_policy_gate=restore-policy-fixtures\n");
+    printf("restore_policy_fail_closed=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit\n");
+    printf("restore_policy_live_state=unchanged-until-commit\n");
     printf("wire_payload_text_kv_format=text-kv\n");
     printf("wire_payload_typed_binary_format=typed-binary-v1\n");
     printf("wire_payload_typed_binary_gate=typed-payload-fixtures\n");
@@ -4295,7 +4316,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 35U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 23U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 24U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -4357,6 +4378,7 @@ static int run_release_fixture_check(void)
            "admin_output_schemas=1 "
            "upgrade_rollback_policies=1 "
            "upgrade_rollback_runtime_smokes=1 "
+           "restore_policy_smokes=1 "
            "compat_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
@@ -7468,6 +7490,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "upgrade-rollback-runtime-fixtures") == 0) {
         return mem_service_run_upgrade_rollback_runtime_fixture_check();
+    }
+    if (strcmp(argv[1], "restore-policy-fixtures") == 0) {
+        return mem_service_run_restore_policy_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();
