@@ -1764,7 +1764,7 @@ int main(int argc, char **argv)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=2", fixtures.stdout)
         self.assertIn("host_artifacts=1", fixtures.stdout)
-        self.assertIn("package_artifacts=3", fixtures.stdout)
+        self.assertIn("package_artifacts=4", fixtures.stdout)
         self.assertIn("deployment_smokes=1", fixtures.stdout)
         self.assertIn("service_manager_lifecycle_smokes=1", fixtures.stdout)
         self.assertIn("host_service_manager_smokes=1", fixtures.stdout)
@@ -1787,8 +1787,8 @@ int main(int argc, char **argv)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=3431", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x66f17809", fixtures.stdout)
+        self.assertIn("package_manifest_len=3688", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x7f3223a6", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1809,10 +1809,10 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=3431", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x66f17809", fixtures.stdout)
+        self.assertIn("manifest_len=3688", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x7f3223a6", fixtures.stdout)
         self.assertIn("installed_files=29", fixtures.stdout)
-        self.assertIn("required_gates=20", fixtures.stdout)
+        self.assertIn("required_gates=21", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1840,7 +1840,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x66f17809\n"
+            "package_manifest_checksum=0x7f3223a6\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1886,7 +1886,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x66f17809", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x7f3223a6", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -3182,7 +3182,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x66f17809", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x7f3223a6", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3193,6 +3193,12 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("native_package_gate=package-deb-smoke", manifest.read_text())
             self.assertIn(
                 "native_package_runtime=not-executed-cross-compiled-arm64",
+                manifest.read_text(),
+            )
+            self.assertIn("rpm_native_package_format=rpm", manifest.read_text())
+            self.assertIn("rpm_native_package_gate=package-rpm-smoke", manifest.read_text())
+            self.assertIn(
+                "rpm_native_package_runtime=requires-linux-rpm-toolchain",
                 manifest.read_text(),
             )
             self.assertIn("package_gate=package-fixtures", manifest.read_text())
@@ -3215,6 +3221,12 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "native_package_gate=package-deb-smoke",
                 package_manifest.read_text(),
             )
+            self.assertIn("rpm_package_format=rpm", package_manifest.read_text())
+            self.assertIn("rpm_package_gate=package-rpm-smoke", package_manifest.read_text())
+            self.assertIn(
+                "rpm_package_runtime=requires-linux-rpm-toolchain",
+                package_manifest.read_text(),
+            )
             self.assertIn("installed_file_count=29", package_manifest.read_text())
             self.assertIn("required_gate=package-fixtures", package_manifest.read_text())
             self.assertIn(
@@ -3223,6 +3235,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn(
                 "required_gate=package-deb-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "required_gate=package-rpm-smoke",
                 package_manifest.read_text(),
             )
             self.assertIn(
@@ -3503,6 +3519,73 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("native_package_format=deb", package_manifest.read_text())
             self.assertIn(
                 "native_package_gate=package-deb-smoke",
+                package_manifest.read_text(),
+            )
+
+    def test_make_package_rpm_smoke_is_toolchain_gated(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        has_rpm_toolchain = (
+            shutil.which("rpmbuild") and shutil.which("rpm2cpio") and shutil.which("cpio")
+        )
+        with tempfile.TemporaryDirectory(prefix="msvc_rpm_", dir=str(_tmp_parent())) as tmp:
+            package_out = Path(tmp) / "package"
+            result = subprocess.run(
+                [
+                    "make",
+                    "-C",
+                    str(app_dir),
+                    "CFLAGS=-O2 -Wall -Wextra",
+                    f"PACKAGE_OUT_DIR={package_out}",
+                    "package-rpm-smoke",
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["make", "-C", str(app_dir), "clean"],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            rpm = package_out / "linqu-mem-service-0.1.0-1.aarch64.rpm"
+            if not has_rpm_toolchain:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(rpm.exists())
+                self.assertIn("rpmbuild", result.stdout + result.stderr)
+                return
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            verify_root = package_out / "linqu_mem_service.rpm.verify"
+            release_manifest = (
+                verify_root
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "release-manifest.txt"
+            )
+            package_manifest = (
+                verify_root
+                / "usr"
+                / "share"
+                / "lingqu"
+                / "mem_service"
+                / "package-manifest.txt"
+            )
+            self.assertTrue(rpm.exists())
+            self.assertTrue((verify_root / "usr" / "bin" / "linqu_mem_service").exists())
+            self.assertIn("rpm_native_package_format=rpm", release_manifest.read_text())
+            self.assertIn(
+                "rpm_native_package_gate=package-rpm-smoke",
+                release_manifest.read_text(),
+            )
+            self.assertIn("rpm_package_format=rpm", package_manifest.read_text())
+            self.assertIn(
+                "rpm_package_gate=package-rpm-smoke",
                 package_manifest.read_text(),
             )
 

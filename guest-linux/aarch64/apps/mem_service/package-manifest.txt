@@ -13,6 +13,12 @@ native_package_arch=arm64
 native_package_payload=debian-binary+control.tar.gz+data.tar.gz
 native_package_gate=package-deb-smoke
 native_package_runtime=not-executed-cross-compiled-arm64
+rpm_package_format=rpm
+rpm_package_name=linqu-mem-service-0.1.0-1.aarch64.rpm
+rpm_package_arch=aarch64
+rpm_package_payload=rpm-cpio+metadata
+rpm_package_gate=package-rpm-smoke
+rpm_package_runtime=requires-linux-rpm-toolchain
 package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy
 prefix_default=/usr
 binary=bin/linqu_mem_service
@@ -43,7 +49,7 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x641e48ca
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=20
+required_gate_count=21
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=admin-output-fixtures
@@ -63,6 +69,7 @@ required_gate=durable-catalog-fixtures
 required_gate=host-artifact-smoke
 required_gate=package-tarball-smoke
 required_gate=package-deb-smoke
+required_gate=package-rpm-smoke
 required_gate=install-smoke
 serving_api=typed-c-client-v1
 pretraining_api=typed-c-client-v1

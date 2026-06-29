@@ -23,7 +23,7 @@
 - mutation 可选 idempotency 支持并有 replay/conflict 语义，且结合 `store` 与 journal 可跨重启恢复。
 - `audit-log` 与 `metrics` 已有最小实现与导出（含基本直方图、命中/未命中/失败关闭、idempotency 计数）。
 - 已支持外部进程调用栈：`mem_service_wire_client` + `mem_service_client`，并有 serving/pretraining 示例覆盖。
-- 发布/安装能力已打通：release manifest、package manifest、install-smoke、package-tarball-smoke、package-deb-smoke。
+- 发布/安装能力已打通：release manifest、package manifest、install-smoke、package-tarball-smoke、package-deb-smoke、package-rpm-smoke（rpm 需要 Linux rpm toolchain）。
 - 生产运维认证边界已显式化：`ops-certification-policy`、`ops-certification-fixtures`、`ops-certification-evidence-fixtures`、`ops-certification-generate-evidence`、`ops-certification-linux-ci-smoke`、release/package manifest 和 install-smoke 共同把真实 Linux systemd、Prometheus/Alertmanager、rpm、多发布渠道部署升级回滚列为外部硬门禁；当前状态 fail-closed 为 `not-certified`，避免用 simulator smoke 冒充生产认证。
 - 合约与门禁体系已具备：
   - wire / wire-schema / store / journal / compat 基础门禁
@@ -60,7 +60,7 @@
 ### 3.4 运维与部署闭环
 
 - 真实系统级部署门禁尚未补齐（真实 systemd 环境、真实生产采集/告警联调还未通过真实环境认证）。**已补齐本地可做的硬边界（2026-06-29，4.4a/4.4b/4.4c/4.4d）**：新增 `ops-certification-policy`、`ops-certification-fixtures`、`ops-certification-evidence-fixtures`、`ops-certification-generate-evidence`、`ops-certification-linux-ci-smoke` 和 `ops-certification-verify --evidence-file <path>`，将 `linux-systemd-service-smoke`、`linux-systemd-host-service-smoke`、`prometheus-scrape-smoke`、`prometheus-alertmanager-rule-smoke`、`rpm-package-smoke`、`upgrade-rollback-deployment-smoke` 固化为 release/package/install 门禁，并提供外部 Linux CI 证据生成、落盘与验收入口；当前 release manifest 明确 `real_systemd_environment=not-certified`、`production_collector_alert_environment=not-certified`、`rpm_package=not-certified`。**环境阻塞**：本机为 macOS dev，无 systemd/rpm/rpm2cpio，4.4 的"真实"通过仍需真实 Linux CI 运行 `ops-certification-linux-ci-smoke` 并产出可通过 verifier 的 evidence 文件；现状已有 systemd-like + collector + alert 的 simulator 级门禁（`installed-host-service-manager-smoke`、`collector-fixtures`、`alert-integration-fixtures`）。
-- 包分发（如 rpm）与多发布渠道跨版本升级验证仍有空白。**环境阻塞**：rpm 需 `rpmbuild`/`rpm2cpio` 才能诚实构建+校验（本机缺失）；deb + tar 双渠道已就绪。
+- 包分发的 rpm 入口已补齐为可复用发布门禁：`packaging/linqu-mem-service.spec`、`package-rpm`、`package-rpm-smoke` 已进入 release/package contract；**环境阻塞**：rpm 真实产物验收仍需 `rpmbuild`/`rpm2cpio`/`cpio` 的 Linux rpm toolchain，本机 macOS 只验证缺工具时 fail-closed；deb + tar 双渠道已就绪。
 
 ## 4. 补齐方案（执行顺序）
 
@@ -90,7 +90,7 @@
 3. ✅ 外部证据生成入口已补齐（2026-06-29，4.4c）：`ops-certification-generate-evidence --rpm-file <path> --upgrade-rollback-marker <path>` 在运行环境内探测 Linux/systemd、systemctl 服务状态、`/metrics` scrape、promtool alert rules、rpm2cpio 可解析 rpm，以及 CI 生成的 upgrade/rollback marker；任一条件不满足即输出 fail evidence，后续 verifier 会拒绝认证。
 4. ✅ 一键 Linux CI 认证门禁已补齐（2026-06-29，4.4d）：`ops-certification-linux-ci-smoke --rpm-file <path> --upgrade-rollback-marker <path> --evidence-file <path>` 在同一命令内生成 evidence、写入 evidence 文件、再调用同一 verifier 规则验收；任何真实 systemd/rpm/Prometheus/升级回滚条件不满足都会 fail-closed，并保留 evidence 文件用于 CI artifacts。
 5. 补齐真实系统部署验收（systemd 生命周期、指标采集、告警联调脚本），需要 Linux CI 实际安装/启动服务并运行 `ops-certification-linux-ci-smoke`。
-6. 增加多发布渠道产物一致性验证（含 rpm / 多格式 artifact），需要 rpm toolchain。
+6. ✅ rpm 发布入口已补齐（2026-06-29，4.4e）：新增 `packaging/linqu-mem-service.spec`、`package-rpm`、`package-rpm-smoke`，release/package manifest 记录 rpm 产物名、架构、payload、gate 与 `requires-linux-rpm-toolchain` 运行边界；本机缺 rpm 工具链时 fail-closed，不伪造认证。真实 rpm 产物一致性仍需 Linux rpm toolchain 执行 `package-rpm-smoke`。
 
 ### 4.5 数据面演进（非替代，增量）—— ✅ 已完成（2026-06-27）
 
@@ -104,7 +104,7 @@
   - ~~跨版本组合兼容闭环~~ ✅（4.1）
   - ~~durable 后端工程化（4.2）~~ ✅ 基本闭环（4.2a/b/c）；⏳ 仅剩 remote block backend（需 transport 层）
   - ~~serving/pretraining 负例矩阵（4.3）~~ ✅（4.3）
-  - 真实运维场景硬门禁（4.4）：✅ 本地 fail-closed admission policy、外部 evidence generator/verifier 与一键 Linux CI smoke gate 已接入 release/package/install；**真实通过仍环境阻塞**（需真实 Linux CI：systemd + rpm toolchain 运行 `ops-certification-linux-ci-smoke`），simulator 级门禁已就绪
+  - 真实运维场景硬门禁（4.4）：✅ 本地 fail-closed admission policy、外部 evidence generator/verifier、一键 Linux CI smoke gate 与 rpm package target 已接入 release/package/install；**真实通过仍环境阻塞**（需真实 Linux CI：systemd + rpm toolchain 运行 `package-rpm-smoke` 和 `ops-certification-linux-ci-smoke`），simulator 级门禁已就绪
   - ~~数据面 typed-binary 演进（4.5）~~ ✅（4.5）
 - 数据面演进（4.3 负例矩阵、4.5 typed payload）作为增量项继续推进。
 

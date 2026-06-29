@@ -44,12 +44,13 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3431U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x66f17809U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3688U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x7f3223a6U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 29U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 20U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 21U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
+#define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 848U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x8b516d14U
@@ -2262,6 +2263,31 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "rpm_package_format=rpm\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "rpm_package_name=%s\n",
+                                MEM_SERVICE_NATIVE_RPM_NAME) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "rpm_package_arch=aarch64\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "rpm_package_payload=rpm-cpio+metadata\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "rpm_package_gate=package-rpm-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "rpm_package_runtime=requires-linux-rpm-toolchain\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "package_scope=core-daemon+host-daemon+client-sdk+examples+contracts+deploy\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2471,6 +2497,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=package-deb-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=package-rpm-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3355,11 +3385,13 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=install-smoke\n") == NULL ||
         strstr(manifest, "artifact_gate=package-tarball-smoke\n") == NULL ||
         strstr(manifest, "native_package_gate=package-deb-smoke\n") == NULL ||
+        strstr(manifest, "rpm_package_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "required_gate=upgrade-rollback-runtime-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=compat-runtime-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=alert-integration-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=ops-certification-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=ops-certification-evidence-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=package-rpm-smoke\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
         fprintf(stderr, "mem_service package-fixtures: required manifest missing\n");
@@ -3397,6 +3429,11 @@ static int run_release_manifest(void)
     printf("native_package_arch=arm64\n");
     printf("native_package_gate=package-deb-smoke\n");
     printf("native_package_runtime=not-executed-cross-compiled-arm64\n");
+    printf("rpm_native_package=out/mem_service/%s\n", MEM_SERVICE_NATIVE_RPM_NAME);
+    printf("rpm_native_package_format=rpm\n");
+    printf("rpm_native_package_arch=aarch64\n");
+    printf("rpm_native_package_gate=package-rpm-smoke\n");
+    printf("rpm_native_package_runtime=requires-linux-rpm-toolchain\n");
     printf("core_binary=bin/linqu_mem_service\n");
     printf("qwen3_adapter_binary_optional=bin/linqu_mem_service_qwen3\n");
     printf("host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n");
@@ -3635,7 +3672,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 29U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 20U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 21U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -3684,7 +3721,7 @@ static int run_release_fixture_check(void)
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
            "public_headers=8 client_sources=2 examples=2 config_artifacts=3 "
            "host_artifacts=1 "
-           "package_artifacts=3 "
+           "package_artifacts=4 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
            "host_service_manager_smokes=1 "
            "collector_smokes=1 "

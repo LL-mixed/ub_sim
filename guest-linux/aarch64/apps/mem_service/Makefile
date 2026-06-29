@@ -52,6 +52,11 @@ MEM_SERVICE_PACKAGE_TARBALL_NAME := linqu_mem_service-installed-layout-v1.tar
 MEM_SERVICE_DEB_NAME := linqu-mem-service
 MEM_SERVICE_DEB_VERSION ?= 0.1.0-1
 MEM_SERVICE_DEB_ARCH ?= arm64
+MEM_SERVICE_RPM_NAME := linqu-mem-service
+MEM_SERVICE_RPM_VERSION ?= 0.1.0
+MEM_SERVICE_RPM_RELEASE ?= 1
+MEM_SERVICE_RPM_ARCH ?= aarch64
+MEM_SERVICE_RPM_SPEC := packaging/linqu-mem-service.spec
 
 PREFIX ?= /usr/local
 DESTDIR ?=
@@ -69,6 +74,13 @@ DEB_CONTROL_ROOT := $(DEB_BUILD_ROOT)/control
 DEB_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/linqu_mem_service.deb.verify
 DEB_PACKAGE := $(PACKAGE_OUT_DIR)/$(MEM_SERVICE_DEB_NAME)_$(MEM_SERVICE_DEB_VERSION)_$(MEM_SERVICE_DEB_ARCH).deb
 DEB_LIST := $(DEB_PACKAGE).list
+RPM_CC ?= aarch64-linux-gnu-gcc
+RPM_HOST_CC ?= $(RPM_CC)
+RPM_TOPDIR := $(PACKAGE_OUT_DIR)/rpmbuild
+RPM_STAGE_ROOT := $(PACKAGE_OUT_DIR)/linqu_mem_service.rpm.stage
+RPM_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/linqu_mem_service.rpm.verify
+RPM_SOURCE := $(RPM_TOPDIR)/SOURCES/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERSION).tar.gz
+RPM_PACKAGE := $(PACKAGE_OUT_DIR)/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERSION)-$(MEM_SERVICE_RPM_RELEASE).$(MEM_SERVICE_RPM_ARCH).rpm
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
 INSTALL_SRCDIR := $(DESTDIR)$(PREFIX)/src/lingqu/mem_service
@@ -136,7 +148,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -254,6 +266,34 @@ package-deb-smoke: package-deb
 	file $(DEB_VERIFY_ROOT)/data/usr/bin/linqu_mem_service | grep -q 'ELF 64-bit.*ARM aarch64'
 	file $(DEB_VERIFY_ROOT)/data/usr/libexec/lingqu/mem_service/linqu_mem_service_host | grep -q 'ELF 64-bit.*ARM aarch64'
 
+package-rpm:
+	command -v rpmbuild >/dev/null
+	command -v rpm2cpio >/dev/null
+	command -v cpio >/dev/null
+	mkdir -p $(PACKAGE_OUT_DIR)
+	rm -rf $(RPM_TOPDIR) $(RPM_STAGE_ROOT)
+	mkdir -p $(RPM_TOPDIR)/BUILD $(RPM_TOPDIR)/BUILDROOT $(RPM_TOPDIR)/RPMS $(RPM_TOPDIR)/SOURCES $(RPM_TOPDIR)/SPECS $(RPM_TOPDIR)/SRPMS
+	$(MAKE) install DESTDIR=$(abspath $(RPM_STAGE_ROOT)) PREFIX=$(PACKAGE_PREFIX) CC="$(RPM_CC)" CFLAGS="$(CFLAGS)" HOST_CC="$(RPM_HOST_CC)" HOST_CFLAGS="$(HOST_CFLAGS)"
+	tar -C $(RPM_STAGE_ROOT) -czf $(RPM_SOURCE) usr
+	cp $(MEM_SERVICE_RPM_SPEC) $(RPM_TOPDIR)/SPECS/linqu-mem-service.spec
+	rpmbuild -bb --target $(MEM_SERVICE_RPM_ARCH) --define "_topdir $(abspath $(RPM_TOPDIR))" --define "_mem_service_version $(MEM_SERVICE_RPM_VERSION)" --define "_mem_service_release $(MEM_SERVICE_RPM_RELEASE)" $(RPM_TOPDIR)/SPECS/linqu-mem-service.spec
+	cp $(RPM_TOPDIR)/RPMS/$(MEM_SERVICE_RPM_ARCH)/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERSION)-$(MEM_SERVICE_RPM_RELEASE).$(MEM_SERVICE_RPM_ARCH).rpm $(RPM_PACKAGE)
+
+package-rpm-smoke: package-rpm
+	test -f $(RPM_PACKAGE)
+	rm -rf $(RPM_VERIFY_ROOT)
+	mkdir -p $(RPM_VERIFY_ROOT)
+	cd $(RPM_VERIFY_ROOT) && rpm2cpio $(abspath $(RPM_PACKAGE)) | cpio -idmu
+	test -x $(RPM_VERIFY_ROOT)/usr/bin/linqu_mem_service
+	test -x $(RPM_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host
+	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
+	test -f $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
+	grep -q '^rpm_native_package_format=rpm$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
+	grep -q '^rpm_native_package_gate=package-rpm-smoke$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
+	grep -q '^rpm_package_format=rpm$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+
 print-release-manifest:
 	@cat $(MEM_SERVICE_RELEASE_MANIFEST)
 
@@ -340,8 +380,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=3431$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x66f17809$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=3688$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x7f3223a6$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -352,6 +392,11 @@ install-smoke: install
 	grep -q '^native_package_arch=arm64$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^native_package_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^native_package_runtime=not-executed-cross-compiled-arm64$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rpm_native_package=out/mem_service/linqu-mem-service-0.1.0-1.aarch64.rpm$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rpm_native_package_format=rpm$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rpm_native_package_arch=aarch64$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rpm_native_package_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^rpm_native_package_runtime=requires-linux-rpm-toolchain$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^core_binary=bin/linqu_mem_service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -482,8 +527,14 @@ install-smoke: install
 	grep -q '^native_package_payload=debian-binary+control.tar.gz+data.tar.gz$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_runtime=not-executed-cross-compiled-arm64$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^rpm_package_format=rpm$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^rpm_package_name=linqu-mem-service-0.1.0-1.aarch64.rpm$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^rpm_package_arch=aarch64$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^rpm_package_payload=rpm-cpio+metadata$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^rpm_package_runtime=requires-linux-rpm-toolchain$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_file_count=29$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=20$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=21$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x0f9df008$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -491,6 +542,7 @@ install-smoke: install
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt

@@ -208,6 +208,11 @@ a Qwen3 adapter inspect build:
   `installed-layout-v1` package contract: install roots, file classes, required
   contract checksums, required fixture gates, and not-certified boundaries for
   cross-version/runtime-environment claims.
+- `apps/mem_service/packaging/linqu-mem-service.spec` is the rpm package spec
+  used by `make package-rpm` and `make package-rpm-smoke`. The rpm smoke is a
+  Linux rpm-toolchain gate: it requires `rpmbuild`, `rpm2cpio`, and `cpio`; on
+  hosts without those tools it fails closed rather than certifying an rpm
+  artifact.
 
 Build and validation entrypoints:
 
@@ -374,10 +379,12 @@ Keep the implementation layers separated:
   fixture, installed-layout-v1 package contract, service-manager lifecycle contract, durable catalog layout contract,
   current-version-only upgrade/rollback gate, and explicit client
   retry policy.
-  They are not yet a rpm-style distributable package, real systemd environment smoke,
+  They are not yet a real systemd environment smoke,
   production collector/alert environment integration gate, or real deployment
   upgrade/rollback smoke; tar/deb packaging and old-server runtime-binary
-  compatibility are certified by in-tree gates.
+  compatibility are certified by in-tree gates, and rpm packaging has a
+  checked spec plus `package-rpm-smoke` gate that requires a Linux rpm
+  toolchain.
 - Transport/runtime: OBMM pool mapping, queue descriptors, cluster bootstrap,
   and guest handoff timing. This layer can depend on guest runtime facilities.
 - Model adapters: Qwen3 range/KV/engram placement and payload sizing. New model

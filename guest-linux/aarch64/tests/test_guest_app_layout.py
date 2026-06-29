@@ -729,11 +729,16 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_PACKAGE_TARBALL_NAME := linqu_mem_service-installed-layout-v1.tar" in app_makefile
     assert "MEM_SERVICE_DEB_NAME := linqu-mem-service" in app_makefile
     assert "MEM_SERVICE_DEB_ARCH ?= arm64" in app_makefile
+    assert "MEM_SERVICE_RPM_NAME := linqu-mem-service" in app_makefile
+    assert "MEM_SERVICE_RPM_ARCH ?= aarch64" in app_makefile
+    assert "MEM_SERVICE_RPM_SPEC := packaging/linqu-mem-service.spec" in app_makefile
     assert "PACKAGE_OUT_DIR ?= ../../../../out/mem_service" in app_makefile
     assert "package-tarball:" in app_makefile
     assert "package-tarball-smoke: package-tarball" in app_makefile
     assert "package-deb:" in app_makefile
     assert "package-deb-smoke: package-deb" in app_makefile
+    assert "package-rpm:" in app_makefile
+    assert "package-rpm-smoke: package-rpm" in app_makefile
     assert "install: $(MEM_SERVICE_RELEASE_MANIFEST)" in app_makefile
     assert "rm -f linqu_mem_service linqu_mem_service_host" in app_makefile
     assert '$(MAKE) -B linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"' in app_makefile
@@ -747,6 +752,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^distributable_package_gate=package-tarball-smoke$$" in app_makefile
     assert "^native_package_format=deb$$" in app_makefile
     assert "^native_package_gate=package-deb-smoke$$" in app_makefile
+    assert "^rpm_native_package_format=rpm$$" in app_makefile
+    assert "^rpm_native_package_gate=package-rpm-smoke$$" in app_makefile
     assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
     assert "examples/mem_service_serving_example.c" in app_makefile
     assert "examples/mem_service_pretraining_example.c" in app_makefile
@@ -774,7 +781,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x66f17809$$" in app_makefile
+    assert "^package_manifest_checksum=0x7f3223a6$$" in app_makefile
     assert "^package_gate=package-fixtures$$" in app_makefile
     assert "^upgrade_rollback_policy_checksum=0x0f9df008$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
@@ -952,8 +959,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3431U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x66f17809U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3688U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x7f3223a6U" in app_source
+    assert 'MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"' in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
     assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
     assert "render_package_manifest" in app_source
@@ -991,7 +999,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0x66f17809" in release_manifest
+    assert "package_manifest_checksum=0x7f3223a6" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
     assert (
         "distributable_package=out/mem_service/"
@@ -1005,6 +1013,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "native_package_arch=arm64" in release_manifest
     assert "native_package_gate=package-deb-smoke" in release_manifest
     assert "native_package_runtime=not-executed-cross-compiled-arm64" in release_manifest
+    assert "rpm_native_package=out/mem_service/linqu-mem-service-0.1.0-1.aarch64.rpm" in release_manifest
+    assert "rpm_native_package_format=rpm" in release_manifest
+    assert "rpm_native_package_arch=aarch64" in release_manifest
+    assert "rpm_native_package_gate=package-rpm-smoke" in release_manifest
+    assert "rpm_native_package_runtime=requires-linux-rpm-toolchain" in release_manifest
     assert "core_binary=bin/linqu_mem_service" in release_manifest
     assert (
         "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host"
@@ -1103,8 +1116,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=1968" in release_manifest
     assert "upgrade_rollback_policy_checksum=0x0f9df008" in release_manifest
-    assert "package_manifest_len=3431" in release_manifest
-    assert "package_manifest_checksum=0x66f17809" in release_manifest
+    assert "package_manifest_len=3688" in release_manifest
+    assert "package_manifest_checksum=0x7f3223a6" in release_manifest
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest
     assert "ops_certification_policy_len=1118" in release_manifest
     assert "ops_certification_policy_checksum=0xe77c644b" in release_manifest
@@ -1188,8 +1201,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "native_package_payload=debian-binary+control.tar.gz+data.tar.gz" in package_manifest
     assert "native_package_gate=package-deb-smoke" in package_manifest
     assert "native_package_runtime=not-executed-cross-compiled-arm64" in package_manifest
+    assert "rpm_package_format=rpm" in package_manifest
+    assert "rpm_package_name=linqu-mem-service-0.1.0-1.aarch64.rpm" in package_manifest
+    assert "rpm_package_arch=aarch64" in package_manifest
+    assert "rpm_package_payload=rpm-cpio+metadata" in package_manifest
+    assert "rpm_package_gate=package-rpm-smoke" in package_manifest
+    assert "rpm_package_runtime=requires-linux-rpm-toolchain" in package_manifest
     assert "installed_file_count=29" in package_manifest
-    assert "required_gate_count=20" in package_manifest
+    assert "required_gate_count=21" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
         "upgrade-rollback-policy.txt checksum=0x0f9df008"
@@ -1202,6 +1221,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "required_gate=ops-certification-linux-ci-smoke" in package_manifest
     assert "required_gate=package-tarball-smoke" in package_manifest
     assert "required_gate=package-deb-smoke" in package_manifest
+    assert "required_gate=package-rpm-smoke" in package_manifest
     assert "contract=ops-certification-policy" in package_manifest
     assert "cross_version_upgrade=certified" in package_manifest
     assert "alert: LingquMemServiceDown" in alert_rules

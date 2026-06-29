@@ -492,9 +492,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3431U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 3688U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x66f17809U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x7f3223a6U",
             cli_source,
         )
         self.assertIn(
@@ -503,6 +503,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"',
+            cli_source,
+        )
+        self.assertIn(
+            'MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"',
             cli_source,
         )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 848U", cli_source)
@@ -589,6 +593,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package-tarball-smoke: package-tarball", cli_makefile)
         self.assertIn("package-deb:", cli_makefile)
         self.assertIn("package-deb-smoke: package-deb", cli_makefile)
+        self.assertIn("package-rpm:", cli_makefile)
+        self.assertIn("package-rpm-smoke: package-rpm", cli_makefile)
         self.assertIn("install: $(MEM_SERVICE_RELEASE_MANIFEST)", cli_makefile)
         self.assertIn("rm -f linqu_mem_service linqu_mem_service_host", cli_makefile)
         self.assertIn(
@@ -635,12 +641,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x66f17809$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x7f3223a6$$", cli_makefile)
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
         self.assertIn("^native_package_format=deb$$", cli_makefile)
         self.assertIn("^native_package_gate=package-deb-smoke$$", cli_makefile)
+        self.assertIn("^rpm_native_package_format=rpm$$", cli_makefile)
+        self.assertIn("^rpm_native_package_gate=package-rpm-smoke$$", cli_makefile)
         self.assertIn("^upgrade_rollback_policy_checksum=0x0f9df008$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
@@ -749,7 +757,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
-        self.assertIn("package_manifest_checksum=0x66f17809", release_manifest)
+        self.assertIn("package_manifest_checksum=0x7f3223a6", release_manifest)
         self.assertIn("package_gate=package-fixtures", release_manifest)
         self.assertIn(
             "distributable_package=out/mem_service/"
@@ -768,6 +776,17 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("native_package_gate=package-deb-smoke", release_manifest)
         self.assertIn(
             "native_package_runtime=not-executed-cross-compiled-arm64",
+            release_manifest,
+        )
+        self.assertIn(
+            "rpm_native_package=out/mem_service/linqu-mem-service-0.1.0-1.aarch64.rpm",
+            release_manifest,
+        )
+        self.assertIn("rpm_native_package_format=rpm", release_manifest)
+        self.assertIn("rpm_native_package_arch=aarch64", release_manifest)
+        self.assertIn("rpm_native_package_gate=package-rpm-smoke", release_manifest)
+        self.assertIn(
+            "rpm_native_package_runtime=requires-linux-rpm-toolchain",
             release_manifest,
         )
         self.assertIn("upgrade_rollback_policy_checksum=0x0f9df008", release_manifest)
@@ -875,7 +894,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("examples=2", cli_source)
         self.assertIn("host_artifacts=1", cli_source)
-        self.assertIn("package_artifacts=3", cli_source)
+        self.assertIn("package_artifacts=4", cli_source)
         self.assertIn("config_artifacts=3", cli_source)
         self.assertIn("service_manager_lifecycle_smokes=1", cli_source)
         self.assertIn("host_service_manager_smokes=1", cli_source)
@@ -951,8 +970,20 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "native_package_runtime=not-executed-cross-compiled-arm64",
             package_manifest,
         )
+        self.assertIn("rpm_package_format=rpm", package_manifest)
+        self.assertIn(
+            "rpm_package_name=linqu-mem-service-0.1.0-1.aarch64.rpm",
+            package_manifest,
+        )
+        self.assertIn("rpm_package_arch=aarch64", package_manifest)
+        self.assertIn("rpm_package_payload=rpm-cpio+metadata", package_manifest)
+        self.assertIn("rpm_package_gate=package-rpm-smoke", package_manifest)
+        self.assertIn(
+            "rpm_package_runtime=requires-linux-rpm-toolchain",
+            package_manifest,
+        )
         self.assertIn("installed_file_count=29", package_manifest)
-        self.assertIn("required_gate_count=20", package_manifest)
+        self.assertIn("required_gate_count=21", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn(
             "required_gate=upgrade-rollback-runtime-fixtures",
@@ -964,6 +995,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("required_gate=ops-certification-linux-ci-smoke", package_manifest)
         self.assertIn("required_gate=package-tarball-smoke", package_manifest)
         self.assertIn("required_gate=package-deb-smoke", package_manifest)
+        self.assertIn("required_gate=package-rpm-smoke", package_manifest)
         self.assertIn("contract=ops-certification-policy", package_manifest)
         self.assertIn("cross_version_upgrade=certified", package_manifest)
         self.assertIn(

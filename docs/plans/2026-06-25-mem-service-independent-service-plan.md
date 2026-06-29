@@ -63,6 +63,7 @@
 | install layout smoke | `make -C guest-linux/aarch64/apps/mem_service install-smoke DESTDIR=<dir> PREFIX=/usr` 安装 binary/header/client source/SDK examples/release manifest/wire schema manifest/admin output schema/upgrade-rollback policy/API-ABI policy/compat matrix/v1 baseline/old-new schema-profile matrix/config/deploy/host deploy artifacts 并校验布局 | 已有最小版本 |
 | portable package artifact smoke | `make -C guest-linux/aarch64/apps/mem_service package-tarball-smoke CC=cc PREFIX=/usr` 生成 `linqu_mem_service-installed-layout-v1.tar`，解包后校验 binary/header/client source/examples/contracts/deploy，并运行 installed host daemon 的 smoke/package/release/deployment fixtures | 已有 portable tarball 版本 |
 | native deb package smoke | `make -C guest-linux/aarch64/apps/mem_service package-deb-smoke` 使用 `aarch64-linux-gnu-gcc` 生成 `linqu-mem-service_0.1.0-1_arm64.deb`，校验 `debian-binary`、`control.tar.gz`、`data.tar.gz`、control metadata、payload layout 和 arm64 ELF 类型；因为是交叉包，运行时 smoke 仍由 host/tarball gate 覆盖 | 已有 arm64 deb package 版本 |
+| native rpm package smoke | `make -C guest-linux/aarch64/apps/mem_service package-rpm-smoke` 使用 `packaging/linqu-mem-service.spec`、`rpmbuild`、`rpm2cpio` 和 `cpio` 生成并解包校验 `linqu-mem-service-0.1.0-1.aarch64.rpm`；macOS/缺工具环境必须 fail-closed | 已有 rpm gate；真实通过需 Linux rpm toolchain |
 | alert rules CLI | `linqu_mem_service alert-rules` 和 `alert-fixtures` 发布并冻结 Prometheus alert rules artifact，覆盖 service down、error、fail-closed、checksum mismatch 和 latency spike 的最小告警契约；`alert-integration-fixtures` 用 synthetic `/metrics` payload 校验规则引用当前 Prometheus text/http 指标契约 | 已有 portable contract 版本 |
 
 当前主要缺口：
@@ -74,7 +75,7 @@
 | durable service backend 仍是最小 snapshot+journal + storage-root layout + sealed local block | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；`serve --config storage_root=<dir>` 已能创建 `catalog/manifest.txt`、`blocks/`、`quarantine/`，并在省略 `store` 时派生 `catalog/store.snapshot` 完成重启恢复；`payload_block_backend=sealed-local-block-v1` 已支持 `payload_inline` 和 server-side `payload_path` 文件摄取写入 `blocks/<checksum>.block`，可绕开 4096B wire payload 限制处理本地大文件 payload，object/artifact 读取时重新校验长度/checksum，损坏则 `checksum_mismatch` fail-closed 并 best-effort quarantine；还缺产品级 durable catalog、journal truncation/atomicity policy、remote/chunked sealed payload block backend、migration |
 | serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix、`compat-runtime-fixtures` old/current client profile current-server runtime gate 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺旧 server runtime binary 组合矩阵、model/session mismatch 负例和 serving 集成矩阵 |
 | pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、package manifest CLI、源 manifest、wire schema manifest、admin output schema、upgrade/rollback policy、API/ABI policy artifact、compat matrix、v1 baseline、old/new schema-profile matrix、`compat-runtime-fixtures` current-server runtime gate、config schema、example config、host daemon artifact、systemd-like deployment manifest、host systemd-like deployment manifest、Prometheus alert rules artifact、`package-fixtures`、`deployment-fixtures`、`admin-output-fixtures`、`upgrade-rollback-fixtures`、`alert-fixtures`、`alert-integration-fixtures`、`api-abi-fixtures`、`host-artifact-smoke`、`package-tarball-smoke`、`package-deb-smoke`、`installed-host-service-manager-smoke`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、Prometheus metric prefix/type contract、current-version-only upgrade/rollback gate、`metrics_listen` config、`/metrics` scrape path contract、collector scrape contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest、install-smoke、portable tarball package artifact 和 arm64 deb package artifact；还缺旧 server runtime binary 组合包、跨版本升级/回滚、真实系统 systemd 环境门禁、真实生产采集器/告警环境门禁和 rpm 类 native package |
+| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、package manifest CLI、源 manifest、wire schema manifest、admin output schema、upgrade/rollback policy、API/ABI policy artifact、compat matrix、v1 baseline、old/new schema-profile matrix、`compat-runtime-fixtures` current-server runtime gate、config schema、example config、host daemon artifact、systemd-like deployment manifest、host systemd-like deployment manifest、Prometheus alert rules artifact、`package-fixtures`、`deployment-fixtures`、`admin-output-fixtures`、`upgrade-rollback-fixtures`、`alert-fixtures`、`alert-integration-fixtures`、`api-abi-fixtures`、`host-artifact-smoke`、`package-tarball-smoke`、`package-deb-smoke`、`package-rpm-smoke`、`installed-host-service-manager-smoke`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、Prometheus metric prefix/type contract、current-version-only upgrade/rollback gate、`metrics_listen` config、`/metrics` scrape path contract、collector scrape contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest、install-smoke、portable tarball package artifact、arm64 deb package artifact 和 rpm package gate；还缺真实 Linux CI 上的 rpm 产物验收、跨版本升级/回滚、真实系统 systemd 环境门禁、真实生产采集器/告警环境门禁 |
 
 ## 3. 目标架构
 
@@ -948,13 +949,16 @@ Recommended order:
    `admin-output-schema` artifact freezes metric names, Prometheus metric
    prefix/type, and admin CLI text-output fields for the minimal admin slice.
    The current `package-manifest` artifact freezes the installed-layout-v1
-   package contract, portable tar artifact, arm64 deb artifact, and required gates;
+   package contract, portable tar artifact, arm64 deb artifact, rpm artifact
+   gate, and required gates;
    `package-tarball-smoke` builds and extracts
    `linqu_mem_service-installed-layout-v1.tar`. `package-deb-smoke` builds
    `linqu-mem-service_0.1.0-1_arm64.deb` and validates Debian package
-   structure/control/data payload and arm64 ELF type. Because the deb is
-   cross-compiled, runtime execution remains covered by the host/tarball gates.
-   It is not yet an rpm package.
+   structure/control/data payload and arm64 ELF type. `package-rpm-smoke` uses
+   `packaging/linqu-mem-service.spec` with `rpmbuild`, `rpm2cpio`, and `cpio`
+   to build/extract the rpm package when a Linux rpm toolchain is available;
+   otherwise it fails closed. Because the packages are cross-compiled, runtime
+   execution remains covered by the host/tarball gates.
    The current `alert-rules` artifact freezes a minimal Prometheus alert rules
    bundle for service-down, error, fail-closed, checksum-mismatch, and latency
    signals. `alert-integration-fixtures` proves those rules reference the
@@ -969,7 +973,7 @@ Recommended order:
    gate proves old/current client profiles against the current server runtime
    handler, but does not certify old-server runtime binaries or cross-version migration.
    Remaining work is protocol
-   compatibility bundle, native rpm package artifact, cross-version
+   compatibility bundle, Linux-verified native rpm package artifact, cross-version
    upgrade/rollback smoke, real systemd environment smoke, production
    collector/alert environment integration smoke, old-server runtime-binary
    compatibility coverage, and old/new coverage for admin/metrics outputs.
