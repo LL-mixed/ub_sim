@@ -1785,10 +1785,10 @@ int main(int argc, char **argv)
         self.assertIn("alert_rules_len=1733", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0xbdff2246", fixtures.stdout)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
-        self.assertIn("ops_certification_policy_len=838", fixtures.stdout)
-        self.assertIn("ops_certification_policy_checksum=0xb6f55049", fixtures.stdout)
-        self.assertIn("package_manifest_len=3334", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xed23daca", fixtures.stdout)
+        self.assertIn("ops_certification_policy_len=991", fixtures.stdout)
+        self.assertIn("ops_certification_policy_checksum=0x8590ad51", fixtures.stdout)
+        self.assertIn("package_manifest_len=3384", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x0da5dde1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1809,10 +1809,10 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=3334", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xed23daca", fixtures.stdout)
+        self.assertIn("manifest_len=3384", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x0da5dde1", fixtures.stdout)
         self.assertIn("installed_files=29", fixtures.stdout)
-        self.assertIn("required_gates=18", fixtures.stdout)
+        self.assertIn("required_gates=19", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1822,8 +1822,8 @@ int main(int argc, char **argv)
         fixtures = self._run_client("ops-certification-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("policy_len=838", fixtures.stdout)
-        self.assertIn("policy_checksum=0xb6f55049", fixtures.stdout)
+        self.assertIn("policy_len=991", fixtures.stdout)
+        self.assertIn("policy_checksum=0x8590ad51", fixtures.stdout)
         self.assertIn("certification_status=not-certified", fixtures.stdout)
         self.assertIn(
             "admission_rule=fail-closed-until-external-evidence", fixtures.stdout
@@ -1832,6 +1832,52 @@ int main(int argc, char **argv)
         policy = self._run_client("ops-certification-policy")
         self.assertEqual(policy.returncode, 0, policy.stderr + policy.stdout)
         self.assertEqual(policy.stdout, OPS_CERTIFICATION_POLICY.read_text())
+
+        evidence = (
+            "mem_service_ops_certification_evidence_version=1\n"
+            "service_name=linqu_mem_service\n"
+            "certification_scope=real-linux-operations\n"
+            "evidence_os=linux\n"
+            "evidence_init=systemd\n"
+            "ops_certification_policy_checksum=0x8590ad51\n"
+            "package_manifest_checksum=0x0da5dde1\n"
+            "linux_systemd_service_smoke=pass\n"
+            "linux_systemd_host_service_smoke=pass\n"
+            "prometheus_scrape_smoke=pass\n"
+            "prometheus_alertmanager_rule_smoke=pass\n"
+            "rpm_package_smoke=pass\n"
+            "upgrade_rollback_deployment_smoke=pass\n"
+        )
+        bad_evidence = evidence.replace("rpm_package_smoke=pass", "rpm_package_smoke=fail")
+        with tempfile.TemporaryDirectory(prefix="msvc_ops_evidence_", dir=str(_tmp_parent())) as tmp:
+            evidence_path = Path(tmp) / "ops.evidence"
+            bad_evidence_path = Path(tmp) / "ops.bad.evidence"
+            evidence_path.write_text(evidence)
+            bad_evidence_path.write_text(bad_evidence)
+
+            verified = self._run_client(
+                "ops-certification-verify", "--evidence-file", str(evidence_path)
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr + verified.stdout)
+            self.assertIn("certification_status=certified", verified.stdout)
+            self.assertIn("external_gates=6", verified.stdout)
+
+            rejected = self._run_client(
+                "ops-certification-verify", "--evidence-file", str(bad_evidence_path)
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("fail-closed", rejected.stderr)
+            self.assertIn("rpm_package_smoke", rejected.stderr)
+
+        evidence_fixtures = self._run_client("ops-certification-evidence-fixtures")
+        self.assertEqual(
+            evidence_fixtures.returncode,
+            0,
+            evidence_fixtures.stderr + evidence_fixtures.stdout,
+        )
+        self.assertIn("evidence_schema=ops-certification-evidence-v1",
+                      evidence_fixtures.stdout)
+        self.assertIn("fail_closed=2", evidence_fixtures.stdout)
 
     def test_api_abi_policy_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("api-abi-fixtures")
@@ -3103,7 +3149,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xed23daca", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x0da5dde1", manifest.read_text())
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3174,8 +3220,12 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt",
                 manifest.read_text(),
             )
-            self.assertIn("ops_certification_policy_checksum=0xb6f55049", manifest.read_text())
+            self.assertIn("ops_certification_policy_checksum=0x8590ad51", manifest.read_text())
             self.assertIn("ops_certification_gate=ops-certification-fixtures",
+                          manifest.read_text())
+            self.assertIn("ops_certification_evidence_gate=ops-certification-evidence-fixtures",
+                          manifest.read_text())
+            self.assertIn("ops_certification_verify=ops-certification-verify --evidence-file",
                           manifest.read_text())
             self.assertIn("real_systemd_environment=not-certified", manifest.read_text())
             self.assertIn("production_collector_alert_environment=not-certified",

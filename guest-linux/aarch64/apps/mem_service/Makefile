@@ -162,6 +162,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host alert-fixtures
 	./linqu_mem_service_host alert-integration-fixtures
 	./linqu_mem_service_host ops-certification-fixtures
+	./linqu_mem_service_host ops-certification-evidence-fixtures
 	./linqu_mem_service_host api-abi-fixtures
 	./linqu_mem_service_host compat-runtime-fixtures
 	./linqu_mem_service_host compat-old-server-runtime-fixtures
@@ -184,6 +185,7 @@ package-tarball-smoke: package-tarball
 	grep -q '^usr/libexec/lingqu/mem_service/linqu_mem_service_host$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/package-manifest.txt$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/release-manifest.txt$$' $(PACKAGE_TARBALL_LIST)
+	grep -q '^usr/share/lingqu/mem_service/ops-certification-policy.txt$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/examples/mem_service_serving_example.c$$' $(PACKAGE_TARBALL_LIST)
 	grep -q '^usr/share/lingqu/mem_service/examples/mem_service_pretraining_example.c$$' $(PACKAGE_TARBALL_LIST)
 	rm -rf $(PACKAGE_VERIFY_ROOT)
@@ -193,6 +195,7 @@ package-tarball-smoke: package-tarball
 	test -x $(PACKAGE_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/include/lingqu/mem_service/mem_service_client.h
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/src/lingqu/mem_service/mem_service_client.c
+	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
 	grep -q '^package_format=installed-layout-v1$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^artifact_format=tar$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^artifact_gate=package-tarball-smoke$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
@@ -243,6 +246,7 @@ package-deb-smoke: package-deb
 	test -x $(DEB_VERIFY_ROOT)/data/usr/libexec/lingqu/mem_service/linqu_mem_service_host
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
 	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
+	test -f $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/ops-certification-policy.txt
 	grep -q '^native_package_format=deb$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^native_package_gate=package-deb-smoke$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^native_package_format=deb$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
@@ -285,8 +289,8 @@ print-compat-old-new-matrix:
 
 install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_SERVICE_WIRE_SCHEMA_MANIFEST) $(MEM_SERVICE_ADMIN_OUTPUT_SCHEMA) $(MEM_SERVICE_UPGRADE_ROLLBACK_POLICY) $(MEM_SERVICE_OPS_CERTIFICATION_POLICY) $(MEM_SERVICE_API_ABI_POLICY) $(MEM_SERVICE_COMPAT_MATRIX) $(MEM_SERVICE_COMPAT_BASELINE_V1) $(MEM_SERVICE_COMPAT_OLD_NEW_MATRIX) $(MEM_SERVICE_CONFIG_SCHEMA) $(MEM_SERVICE_CONFIG_EXAMPLE) $(MEM_SERVICE_DEPLOY_MANIFEST) $(MEM_SERVICE_HOST_DEPLOY_MANIFEST) $(MEM_SERVICE_ALERT_RULES)
 	rm -f linqu_mem_service linqu_mem_service_host
-	$(MAKE) linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"
-	$(MAKE) linqu_mem_service_host HOST_CC="$(HOST_CC)" HOST_CFLAGS="$(HOST_CFLAGS)"
+	$(MAKE) -B linqu_mem_service CC="$(CC)" CFLAGS="$(CFLAGS)"
+	$(MAKE) -B linqu_mem_service_host HOST_CC="$(HOST_CC)" HOST_CFLAGS="$(HOST_CFLAGS)"
 	mkdir -p $(INSTALL_BINDIR) $(INSTALL_INCLUDEDIR) $(INSTALL_SRCDIR) $(INSTALL_DATADIR) $(INSTALL_EXAMPLEDIR) $(INSTALL_CONFIGDIR) $(INSTALL_DEPLOYDIR) $(INSTALL_HOSTDIR)
 	cp linqu_mem_service $(INSTALL_BINDIR)/linqu_mem_service
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
@@ -336,8 +340,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=3334$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xed23daca$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=3384$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x0da5dde1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -411,6 +415,9 @@ install-smoke: install
 	grep -q '^alert_integration_smoke=alert-integration-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^ops_certification_evidence_schema=ops-certification-evidence-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^ops_certification_evidence_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^real_systemd_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^production_collector_alert_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rpm_package=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -474,7 +481,7 @@ install-smoke: install
 	grep -q '^native_package_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^native_package_runtime=not-executed-cross-compiled-arm64$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_file_count=29$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=18$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=19$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x0f9df008$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -483,6 +490,7 @@ install-smoke: install
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^cross_version_upgrade=certified$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^mem_service_ops_certification_policy_version=1$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
 	grep -q '^certification_status=not-certified$$' $(INSTALL_DATADIR)/ops-certification-policy.txt
