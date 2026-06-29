@@ -28,6 +28,8 @@ default_endpoint=unix:/tmp/linqu_mem_service.sock
 data_root=share/lingqu/mem_service
 header_root=include/lingqu/mem_service
 source_root=src/lingqu/mem_service
+installed_sdk_example_smoke=installed-sdk-example-smoke
+installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile
 config_root=share/lingqu/mem_service/config
 system_config_root=etc/lingqu/mem_service
 runtime_config=etc/lingqu/mem_service/mem_service.conf
@@ -59,7 +61,7 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x6509c49d
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=21
+required_gate_count=22
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=admin-output-fixtures
@@ -81,6 +83,7 @@ required_gate=package-tarball-smoke
 required_gate=package-deb-smoke
 required_gate=package-rpm-smoke
 required_gate=install-smoke
+required_gate=installed-sdk-example-smoke
 serving_api=typed-c-client-v1
 pretraining_api=typed-c-client-v1
 durable_backend=snapshot+journal

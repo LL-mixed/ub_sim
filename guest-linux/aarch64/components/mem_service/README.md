@@ -229,6 +229,11 @@ a Qwen3 adapter inspect build:
   `installed-layout-v1` package contract: install roots, file classes, required
   contract checksums, required fixture gates, and not-certified boundaries for
   cross-version/runtime-environment claims.
+- `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the
+  release layout, then compiles the serving and pretraining examples from the
+  installed public headers, installed SDK sources, and installed example
+  sources. This proves external serving/pretraining clients can build against
+  the installed SDK boundary without depending on daemon-private source files.
 - `apps/mem_service/packaging/linqu-mem-service.spec` is the rpm package spec
   used by `make package-rpm` and `make package-rpm-smoke`. The rpm smoke is a
   Linux rpm-toolchain gate: it requires `rpmbuild`, `rpm2cpio`, and `cpio`; on
@@ -302,7 +307,9 @@ Build and validation entrypoints:
   `/var/lib/lingqu/mem_service_host`, and metrics port `9901` so both systemd
   units can be active in the same Linux CI run. It also installs the service units into
   `usr/lib/systemd/system/` while keeping the same files under
-  `share/lingqu/mem_service/deploy/` as checked deployment manifests. The
+  `share/lingqu/mem_service/deploy/` as checked deployment manifests.
+  `installed-sdk-example-smoke` reuses that installed layout and compiles both
+  SDK examples only from the installed include/source/example roots. The
   installed systemd units point at that `/etc` runtime config path and declare
   `RuntimeDirectory=lingqu` plus service-specific `StateDirectory` values, so
   tar/deb/rpm package smokes verify the units and config are present instead of
@@ -440,7 +447,7 @@ Keep the implementation layers separated:
   `admin-output-schema`, `upgrade-rollback-policy`, `package-manifest`,
   `api-abi-policy`,
   `compat-matrix`, `compat-old-new-fixtures`, `ops-certification-policy`,
-  `config-fixtures`, and `install-smoke`
+  `config-fixtures`, `install-smoke`, and `installed-sdk-example-smoke`
   surfaces prove the minimum publishable layout for the daemon binary, public
   headers, client SDK sources, SDK examples, release manifest, wire schema
   manifest, admin output schema artifact, upgrade/rollback policy artifact,

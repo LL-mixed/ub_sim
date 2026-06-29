@@ -44,10 +44,10 @@
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
 #define MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4281U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x8952501fU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4457U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x774c92a1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 35U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 21U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 22U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -2326,6 +2326,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "installed_sdk_example_smoke=installed-sdk-example-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "config_root=share/lingqu/mem_service/config\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2546,6 +2554,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=install-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=installed-sdk-example-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3424,6 +3436,7 @@ static int run_package_fixture_check(void)
         strstr(manifest, "host_binary=libexec/lingqu/mem_service/linqu_mem_service_host\n") ==
             NULL ||
         strstr(manifest, "required_gate=install-smoke\n") == NULL ||
+        strstr(manifest, "required_gate=installed-sdk-example-smoke\n") == NULL ||
         strstr(manifest, "artifact_gate=package-tarball-smoke\n") == NULL ||
         strstr(manifest, "native_package_gate=package-deb-smoke\n") == NULL ||
         strstr(manifest, "rpm_package_gate=package-rpm-smoke\n") == NULL ||
@@ -3460,6 +3473,8 @@ static int run_release_manifest(void)
     printf("package_manifest_checksum=0x%08x\n",
            MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
     printf("package_gate=package-fixtures\n");
+    printf("installed_sdk_example_smoke=installed-sdk-example-smoke\n");
+    printf("installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile\n");
     printf("distributable_package=out/mem_service/%s\n",
            MEM_SERVICE_PACKAGE_TARBALL_NAME);
     printf("distributable_package_format=tar\n");
@@ -3727,7 +3742,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 35U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 21U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 22U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }

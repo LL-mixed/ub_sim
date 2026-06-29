@@ -1788,8 +1788,8 @@ int main(int argc, char **argv)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
         self.assertIn("ops_certification_policy_len=1118", fixtures.stdout)
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", fixtures.stdout)
-        self.assertIn("package_manifest_len=4281", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x8952501f", fixtures.stdout)
+        self.assertIn("package_manifest_len=4457", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x774c92a1", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1810,10 +1810,10 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=4281", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x8952501f", fixtures.stdout)
+        self.assertIn("manifest_len=4457", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x774c92a1", fixtures.stdout)
         self.assertIn("installed_files=35", fixtures.stdout)
-        self.assertIn("required_gates=21", fixtures.stdout)
+        self.assertIn("required_gates=22", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
@@ -1841,7 +1841,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x8952501f\n"
+            "package_manifest_checksum=0x774c92a1\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1887,7 +1887,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x8952501f", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x774c92a1", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -3009,6 +3009,25 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
         ]
         subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
 
+    def _run_installed_sdk_example_smoke(
+        self,
+        app_dir: Path,
+        destdir: Path,
+        package_out: Path,
+    ) -> None:
+        cmd = [
+            "make",
+            "-C",
+            str(app_dir),
+            "CC=cc",
+            "CFLAGS=-O2 -Wall -Wextra",
+            f"DESTDIR={destdir}",
+            f"PACKAGE_OUT_DIR={package_out}",
+            "PREFIX=/usr",
+            "installed-sdk-example-smoke",
+        ]
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+
     def _parse_exec_start(self, service_unit: Path) -> list[str]:
         for line in service_unit.read_text().splitlines():
             if line.startswith("ExecStart="):
@@ -3200,7 +3219,15 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x8952501f", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x774c92a1", manifest.read_text())
+            self.assertIn(
+                "installed_sdk_example_smoke=installed-sdk-example-smoke",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile",
+                manifest.read_text(),
+            )
             self.assertIn("distributable_package_format=tar", manifest.read_text())
             self.assertIn(
                 "distributable_package_gate=package-tarball-smoke",
@@ -3281,6 +3308,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn(
                 "required_gate=package-rpm-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "required_gate=installed-sdk-example-smoke",
                 package_manifest.read_text(),
             )
             self.assertIn(
@@ -3426,6 +3457,26 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 compat_old_new_matrix.read_text(),
                 COMPAT_OLD_NEW_MATRIX.read_text(),
             )
+
+    def test_installed_sdk_example_smoke_builds_external_clients(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        with tempfile.TemporaryDirectory(prefix="msvc_sdk_install_", dir=str(_tmp_parent())) as tmp:
+            destdir = Path(tmp) / "destdir"
+            package_out = Path(tmp) / "out"
+            try:
+                self._run_installed_sdk_example_smoke(app_dir, destdir, package_out)
+            finally:
+                subprocess.run(
+                    ["make", "-C", str(app_dir), "clean"],
+                    cwd=REPO_ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+            smoke_dir = package_out / "installed-sdk-example-smoke"
+            self.assertTrue((smoke_dir / "mem_service_serving_example").exists())
+            self.assertTrue((smoke_dir / "mem_service_pretraining_example").exists())
 
     @unittest.skipUnless(shutil.which("tar"), "tar is required")
     def test_make_package_tarball_smoke_creates_extractable_release_artifact(self):

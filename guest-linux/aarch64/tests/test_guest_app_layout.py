@@ -934,7 +934,13 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x8952501f$$" in app_makefile
+    assert "^package_manifest_checksum=0x774c92a1$$" in app_makefile
+    assert "installed-sdk-example-smoke: install" in app_makefile
+    assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
+    assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
+    assert "$(INSTALL_SRCDIR)/mem_service_client.c" in app_makefile
+    assert "$(INSTALL_SRCDIR)/mem_service_wire_client.c" in app_makefile
+    assert "^installed_sdk_example_smoke=installed-sdk-example-smoke$$" in app_makefile
     assert "^package_gate=package-fixtures$$" in app_makefile
     assert "^upgrade_rollback_policy_checksum=0x83e991c2$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
@@ -1122,8 +1128,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_alert_rules" in app_source
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4281U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x8952501fU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 4457U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x774c92a1U" in app_source
     assert 'MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"' in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
     assert 'MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"' in app_source
@@ -1162,7 +1168,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_release_manifest_version=1" in release_manifest
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
-    assert "package_manifest_checksum=0x8952501f" in release_manifest
+    assert "package_manifest_checksum=0x774c92a1" in release_manifest
+    assert "installed_sdk_example_smoke=installed-sdk-example-smoke" in release_manifest
     assert "package_gate=package-fixtures" in release_manifest
     assert (
         "distributable_package=out/mem_service/"
@@ -1283,8 +1290,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=1968" in release_manifest
     assert "upgrade_rollback_policy_checksum=0x83e991c2" in release_manifest
-    assert "package_manifest_len=4281" in release_manifest
-    assert "package_manifest_checksum=0x8952501f" in release_manifest
+    assert "package_manifest_len=4457" in release_manifest
+    assert "package_manifest_checksum=0x774c92a1" in release_manifest
     assert "ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt" in release_manifest
     assert "ops_certification_policy_len=1118" in release_manifest
     assert "ops_certification_policy_checksum=0xe77c644b" in release_manifest
@@ -1402,7 +1409,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "host_systemd_unit=lib/systemd/system/linqu_mem_service.host.service" in package_manifest
     assert "file_class=runtime_config count=2" in package_manifest
     assert "file_class=systemd_units count=2" in package_manifest
-    assert "required_gate_count=21" in package_manifest
+    assert "required_gate_count=22" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
         "upgrade-rollback-policy.txt checksum=0x83e991c2"
@@ -1416,6 +1423,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "required_gate=package-tarball-smoke" in package_manifest
     assert "required_gate=package-deb-smoke" in package_manifest
     assert "required_gate=package-rpm-smoke" in package_manifest
+    assert "required_gate=installed-sdk-example-smoke" in package_manifest
     assert "contract=ops-certification-policy" in package_manifest
     assert "cross_version_upgrade=certified" in package_manifest
     assert "alert: LingquMemServiceDown" in alert_rules
