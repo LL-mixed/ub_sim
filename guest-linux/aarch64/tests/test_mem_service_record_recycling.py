@@ -503,9 +503,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7238U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7432U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x7d247471U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x495685b7U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 45U", cli_source)
@@ -742,8 +742,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x7d247471$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x495685b7$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
+        self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
+        self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
+        self.assertIn(
+            "$(PKG_CONFIG) --define-prefix --variable=sdk_sources lingqu-mem-service",
+            cli_makefile,
+        )
         self.assertIn("installed-sdk-runtime-smoke: installed-sdk-example-smoke", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c", cli_makefile)
         self.assertIn("$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c", cli_makefile)
@@ -951,7 +957,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x7d247471", release_manifest)
+        self.assertIn("package_manifest_checksum=0x495685b7", release_manifest)
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", release_manifest)
         self.assertIn(
             "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
@@ -971,6 +977,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("restore_policy_scope=full-snapshot+paged-snapshot", release_manifest)
         self.assertIn("restore_policy_gate=restore-policy-fixtures", release_manifest)
         self.assertIn("installed_sdk_example_smoke=installed-sdk-example-smoke", release_manifest)
+        self.assertIn("installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke", release_manifest)
+        self.assertIn(
+            "installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile",
+            release_manifest,
+        )
         self.assertIn("installed_sdk_runtime_smoke=installed-sdk-runtime-smoke", release_manifest)
         self.assertIn(
             "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime",
@@ -1326,7 +1337,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("binary_version_command=version", package_manifest)
         self.assertIn("binary_version_contract=text-kv", package_manifest)
         self.assertIn("binary_version_gate=version-fixtures", package_manifest)
-        self.assertIn("required_gate_count=26", package_manifest)
+        self.assertIn("required_gate_count=27", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn("required_gate=version-fixtures", package_manifest)
         self.assertIn("required_gate=remote-transport-evidence-fixtures", package_manifest)
@@ -1342,7 +1353,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("required_gate=package-deb-smoke", package_manifest)
         self.assertIn("required_gate=package-rpm-smoke", package_manifest)
         self.assertIn("required_gate=installed-sdk-example-smoke", package_manifest)
+        self.assertIn("required_gate=installed-sdk-pkgconfig-smoke", package_manifest)
         self.assertIn("required_gate=installed-sdk-runtime-smoke", package_manifest)
+        self.assertIn("installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke", package_manifest)
+        self.assertIn(
+            "installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile",
+            package_manifest,
+        )
         self.assertIn("installed_sdk_runtime_smoke=installed-sdk-runtime-smoke", package_manifest)
         self.assertIn("required_gate=restore-policy-fixtures", package_manifest)
         self.assertIn("restore_policy=transactional-staged-restore", package_manifest)

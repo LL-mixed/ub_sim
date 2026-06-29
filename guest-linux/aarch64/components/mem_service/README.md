@@ -271,6 +271,11 @@ a Qwen3 adapter inspect build:
   The install layout also writes `lib/pkgconfig/lingqu-mem-service.pc`, whose
   `Cflags` and `sdk_sources` variables expose the installed header and source
   roots to external builds without requiring callers to hard-code layout paths.
+- `make installed-sdk-pkgconfig-smoke DESTDIR=<dir> PREFIX=/usr` verifies that
+  installed SDK discovery metadata is actually consumable by external builds:
+  it uses `pkg-config --define-prefix` to read the installed `Cflags` and
+  `sdk_sources`, then compiles the serving and pretraining examples from those
+  discovered values.
 - `make installed-sdk-runtime-smoke DESTDIR=<dir> PREFIX=/usr` builds on that
   installed SDK layout, starts the installed host daemon through its installed
   binary path, runs the installed serving and pretraining example clients
@@ -356,6 +361,9 @@ Build and validation entrypoints:
   installs keep their chosen prefix in SDK discovery metadata.
   `installed-sdk-example-smoke` reuses that installed layout and compiles both
   SDK examples only from the installed include/source/example roots.
+  `installed-sdk-pkgconfig-smoke` performs the same compile through
+  `pkg-config --define-prefix`, which is the expected integration path for
+  external serving/pretraining build systems.
   `installed-sdk-runtime-smoke` then starts the installed host daemon and runs
   those installed serving/pretraining clients against it over the public Unix
   socket API. The

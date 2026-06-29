@@ -1305,8 +1305,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x7d247471$$" in app_makefile
+    assert "^package_manifest_checksum=0x495685b7$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
+    assert "installed-sdk-pkgconfig-smoke: install" in app_makefile
+    assert "$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service" in app_makefile
+    assert "$(PKG_CONFIG) --define-prefix --variable=sdk_sources lingqu-mem-service" in app_makefile
     assert "installed-sdk-runtime-smoke: installed-sdk-example-smoke" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c" in app_makefile
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
@@ -1538,8 +1541,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7238U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x7d247471U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7432U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x495685b7U" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1582,7 +1585,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x7d247471" in release_manifest
+    assert "package_manifest_checksum=0x495685b7" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1593,6 +1596,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "restore_policy_scope=full-snapshot+paged-snapshot" in release_manifest
     assert "restore_policy_gate=restore-policy-fixtures" in release_manifest
     assert "installed_sdk_example_smoke=installed-sdk-example-smoke" in release_manifest
+    assert "installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke" in release_manifest
+    assert (
+        "installed_sdk_pkgconfig_smoke_scope="
+        "pkg-config-cflags+sdk-sources-external-client-compile"
+        in release_manifest
+    )
     assert "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke" in release_manifest
     assert "pkgconfig=lib/pkgconfig/lingqu-mem-service.pc" in release_manifest
     assert "pkgconfig_name=lingqu-mem-service" in release_manifest
@@ -1733,8 +1742,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=7238" in release_manifest
-    assert "package_manifest_checksum=0x7d247471" in release_manifest
+    assert "package_manifest_len=7432" in release_manifest
+    assert "package_manifest_checksum=0x495685b7" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -1999,7 +2008,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "file_class=systemd_units count=2" in package_manifest
     assert "file_class=pkgconfig count=1" in package_manifest
     assert "file_class=release_scripts count=9" in package_manifest
-    assert "required_gate_count=26" in package_manifest
+    assert "required_gate_count=27" in package_manifest
     assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
     assert "required_gate=version-fixtures" in package_manifest
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
@@ -2017,7 +2026,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "required_gate=package-deb-smoke" in package_manifest
     assert "required_gate=package-rpm-smoke" in package_manifest
     assert "required_gate=installed-sdk-example-smoke" in package_manifest
+    assert "required_gate=installed-sdk-pkgconfig-smoke" in package_manifest
     assert "required_gate=installed-sdk-runtime-smoke" in package_manifest
+    assert "installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke" in package_manifest
+    assert (
+        "installed_sdk_pkgconfig_smoke_scope="
+        "pkg-config-cflags+sdk-sources-external-client-compile"
+        in package_manifest
+    )
     assert "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke" in package_manifest
     assert "required_gate=restore-policy-fixtures" in package_manifest
     assert "restore_policy=transactional-staged-restore" in package_manifest
