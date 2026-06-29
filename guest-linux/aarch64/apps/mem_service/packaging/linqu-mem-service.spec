@@ -19,6 +19,7 @@ tar -xzf %{SOURCE0} -C %{_builddir}/%{name}-%{version}
 %install
 mkdir -p %{buildroot}
 cp -a %{_builddir}/%{name}-%{version}/usr %{buildroot}/
+cp -a %{_builddir}/%{name}-%{version}/etc %{buildroot}/
 
 %files
 /usr/bin/linqu_mem_service
@@ -26,3 +27,4 @@ cp -a %{_builddir}/%{name}-%{version}/usr %{buildroot}/
 /usr/include/lingqu/mem_service
 /usr/src/lingqu/mem_service
 /usr/share/lingqu/mem_service
+%config(noreplace) /etc/lingqu/mem_service/mem_service.conf
