@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 6679U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xf892f5e5U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 6807U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6910ef54U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 44U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 26U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2574,6 +2574,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -4247,6 +4255,11 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight\n") ==
             NULL ||
+        strstr(manifest, "linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh\n") ==
+            NULL ||
+        strstr(manifest,
+               "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight\n") ==
+            NULL ||
         strstr(manifest,
                "release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh\n") ==
             NULL ||
@@ -4445,6 +4458,8 @@ static int run_release_manifest(void)
     printf("linux_ops_evidence_verify=linux-ops-evidence-verify\n");
     printf("linux_ops_certification_bundle=linux-ops-certification-bundle\n");
     printf("linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify\n");
+    printf("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh\n");
+    printf("linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight\n");
     printf("release_certification_verify=release-certification-verify\n");
     printf("release_certification_verify_script=scripts/verify_mem_service_release_certification.sh\n");
     printf("release_certification_ci=scripts/run_mem_service_release_certification_ci.sh\n");

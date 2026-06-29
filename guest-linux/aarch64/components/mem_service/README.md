@@ -86,8 +86,11 @@ a Qwen3 adapter inspect build:
   `linux-ops-certification-bundle` and emits
   `ops-certification-linux-ci.evidence` plus
   `ops-certification-upgrade-rollback.marker` plus
-  `linqu-mem-service-ops-certification-bundle.tar`. After CI publishes the
-  evidence artifact, `scripts/verify_mem_service_linux_ops_evidence.sh
+  `linqu-mem-service-ops-certification-bundle.tar`.
+  `scripts/run_mem_service_linux_ops_ci.sh --preflight` checks the Linux/root/
+  systemd/rpm/promtool toolchain and rollback rpm prerequisites before running
+  the destructive deployment and rollback flow. After CI publishes the evidence
+  artifact, `scripts/verify_mem_service_linux_ops_evidence.sh
   --evidence-file <path>` rebuilds `linqu_mem_service_host` if needed and
   re-runs `ops-certification-verify --evidence-file <path>` as an independent
   artifact verifier. The app Makefile also exposes
@@ -107,15 +110,17 @@ a Qwen3 adapter inspect build:
   evidence verifier, remote-transport bundle verifier, and release
   certification verifier, a release certification CI wrapper, plus an
   installed-layout selfcheck. `package-manifest` records `release_script_root`,
-  each `release_script`, and `file_class=release_scripts count=9`; install,
-  tar, deb, and rpm smokes verify those scripts are present and executable.
+  each `release_script`, `linux_ops_ci`, `linux_ops_ci_preflight`, and
+  `file_class=release_scripts count=9`; install, tar, deb, and rpm smokes
+  verify those scripts are present and executable.
   `scripts/verify_mem_service_installed_layout.sh --no-runtime` validates the
   installed `bin/`, `libexec/`, `share/`, `etc/`, systemd, config, deploy, and
   manifest layout without requiring the source tree.
   `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
-  marker, and producer/consumer separation. The `release_certification_ci` and
+  marker, and producer/consumer separation. The `linux_ops_ci`,
+  `linux_ops_ci_preflight`, `release_certification_ci`, and
   `release_certification_preflight` manifest fields make those release gates
   machine-discoverable without reading this README.
   The evidence, bundle, and release verifiers first resolve the installed
