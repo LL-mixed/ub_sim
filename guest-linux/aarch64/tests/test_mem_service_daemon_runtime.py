@@ -3305,6 +3305,8 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                           manifest.read_text())
             self.assertIn("linux_ops_certification_smoke=linux-ops-certification-smoke",
                           manifest.read_text())
+            self.assertIn("linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke",
+                          manifest.read_text())
             self.assertIn("linux_ops_deployment_smoke=linux-ops-deployment-smoke",
                           manifest.read_text())
             self.assertIn("ops_certification_verify=ops-certification-verify --evidence-file",
@@ -3673,6 +3675,21 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="msvc_linux_deploy_", dir=str(_tmp_parent())) as tmp:
             package_out = Path(tmp) / "package"
             evidence = package_out / "ops-certification-linux-ci.evidence"
+            marker = package_out / "ops-certification-upgrade-rollback.marker"
+            upgrade = subprocess.run(
+                [
+                    "make",
+                    "-C",
+                    str(app_dir),
+                    "CFLAGS=-O2 -Wall -Wextra",
+                    f"PACKAGE_OUT_DIR={package_out}",
+                    "linux-ops-upgrade-rollback-smoke",
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
             result = subprocess.run(
                 [
                     "make",
@@ -3693,6 +3710,17 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+            )
+
+            self.assertNotEqual(upgrade.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertTrue(
+                "rpmbuild" in upgrade.stdout + upgrade.stderr
+                or "uname -s" in upgrade.stdout + upgrade.stderr
+                or "id -u" in upgrade.stdout + upgrade.stderr
+                or "/run/systemd/system" in upgrade.stdout + upgrade.stderr
+                or 'test -n ""' in upgrade.stdout + upgrade.stderr
+                or "OPS_CERTIFICATION_ROLLBACK_RPM" in upgrade.stdout + upgrade.stderr
             )
 
             self.assertNotEqual(result.returncode, 0)

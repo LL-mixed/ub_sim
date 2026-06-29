@@ -87,6 +87,7 @@ RPM_SOURCE := $(RPM_TOPDIR)/SOURCES/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VE
 RPM_PACKAGE := $(PACKAGE_OUT_DIR)/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERSION)-$(MEM_SERVICE_RPM_RELEASE).$(MEM_SERVICE_RPM_ARCH).rpm
 OPS_CERTIFICATION_EVIDENCE := $(PACKAGE_OUT_DIR)/ops-certification-linux-ci.evidence
 OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER := $(PACKAGE_OUT_DIR)/ops-certification-upgrade-rollback.marker
+OPS_CERTIFICATION_ROLLBACK_RPM ?=
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
 INSTALL_SRCDIR := $(DESTDIR)$(PREFIX)/src/lingqu/mem_service
@@ -156,7 +157,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-deployment-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -333,7 +334,43 @@ linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host
 	test -f $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)
 	./linqu_mem_service_host ops-certification-linux-ci-smoke --rpm-file $(abspath $(RPM_PACKAGE)) --upgrade-rollback-marker $(abspath $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)) --evidence-file $(abspath $(OPS_CERTIFICATION_EVIDENCE))
 
-linux-ops-deployment-smoke: package-rpm-smoke linqu_mem_service_host
+linux-ops-upgrade-rollback-smoke: package-rpm-smoke
+	test "$$(uname -s)" = Linux
+	test "$$(id -u)" = 0
+	test -d /run/systemd/system
+	command -v rpm >/dev/null
+	command -v systemctl >/dev/null
+	command -v curl >/dev/null
+	test -n "$(OPS_CERTIFICATION_ROLLBACK_RPM)"
+	test -f "$(OPS_CERTIFICATION_ROLLBACK_RPM)"
+	rpm -Uvh --replacepkgs $(abspath $(RPM_PACKAGE))
+	systemctl daemon-reload
+	systemctl restart linqu_mem_service.service
+	systemctl restart linqu_mem_service.host.service
+	systemctl is-active --quiet linqu_mem_service.service
+	systemctl is-active --quiet linqu_mem_service.host.service
+	curl -fsS http://127.0.0.1:9900/metrics | grep -q 'lingqu_mem_service_'
+	curl -fsS http://127.0.0.1:9901/metrics | grep -q 'lingqu_mem_service_'
+	rpm -Uvh --oldpackage --replacepkgs $(abspath $(OPS_CERTIFICATION_ROLLBACK_RPM))
+	systemctl daemon-reload
+	systemctl restart linqu_mem_service.service
+	systemctl restart linqu_mem_service.host.service
+	systemctl is-active --quiet linqu_mem_service.service
+	systemctl is-active --quiet linqu_mem_service.host.service
+	curl -fsS http://127.0.0.1:9900/metrics | grep -q 'lingqu_mem_service_'
+	curl -fsS http://127.0.0.1:9901/metrics | grep -q 'lingqu_mem_service_'
+	rpm -Uvh --replacepkgs $(abspath $(RPM_PACKAGE))
+	systemctl daemon-reload
+	systemctl restart linqu_mem_service.service
+	systemctl restart linqu_mem_service.host.service
+	systemctl is-active --quiet linqu_mem_service.service
+	systemctl is-active --quiet linqu_mem_service.host.service
+	curl -fsS http://127.0.0.1:9900/metrics | grep -q 'lingqu_mem_service_'
+	curl -fsS http://127.0.0.1:9901/metrics | grep -q 'lingqu_mem_service_'
+	mkdir -p $(PACKAGE_OUT_DIR)
+	printf '%s\n' 'upgrade_rollback_deployment_smoke=pass' 'current_rpm=$(abspath $(RPM_PACKAGE))' 'rollback_rpm=$(abspath $(OPS_CERTIFICATION_ROLLBACK_RPM))' > $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)
+
+linux-ops-deployment-smoke: linux-ops-upgrade-rollback-smoke linqu_mem_service_host
 	test "$$(uname -s)" = Linux
 	test "$$(id -u)" = 0
 	test -d /run/systemd/system
@@ -543,6 +580,7 @@ install-smoke: install
 	grep -q '^ops_certification_generate=ops-certification-generate-evidence$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_certification_smoke=linux-ops-certification-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^real_systemd_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt

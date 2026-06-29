@@ -218,13 +218,20 @@ a Qwen3 adapter inspect build:
   upgrade/rollback marker, and finally runs `ops-certification-linux-ci-smoke`
   to persist and verify the evidence file. It is expected to fail closed on
   developer hosts without the rpm/systemd/upgrade-rollback environment.
-- `make linux-ops-deployment-smoke` is the privileged real-Linux deployment
-  gate. It requires Linux, root, systemd, rpm, curl, promtool, and the
-  upgrade/rollback marker; installs the built rpm, daemon-reloads systemd,
-  starts both `linqu_mem_service.service` and
-  `linqu_mem_service.host.service`, scrapes metrics from the service and host
-  ports, checks the installed Prometheus rules, and then runs the same
-  `ops-certification-linux-ci-smoke` evidence verifier.
+- `make linux-ops-upgrade-rollback-smoke OPS_CERTIFICATION_ROLLBACK_RPM=<rpm>`
+  is the privileged real-Linux upgrade/rollback gate. It requires Linux, root,
+  systemd, rpm, curl, the built current rpm, and a readable rollback rpm; it
+  installs current, restarts/scrapes both systemd units, installs the rollback
+  rpm with `--oldpackage`, restarts/scrapes both units again, reinstalls
+  current, and only then writes the upgrade/rollback marker consumed by ops
+  certification.
+- `make linux-ops-deployment-smoke OPS_CERTIFICATION_ROLLBACK_RPM=<rpm>` is the
+  privileged real-Linux deployment gate. It runs the upgrade/rollback gate,
+  installs the built current rpm, daemon-reloads systemd, starts both
+  `linqu_mem_service.service` and `linqu_mem_service.host.service`, scrapes
+  metrics from the service and host ports, checks the installed Prometheus
+  rules, and then runs the same `ops-certification-linux-ci-smoke` evidence
+  verifier.
 
 Build and validation entrypoints:
 

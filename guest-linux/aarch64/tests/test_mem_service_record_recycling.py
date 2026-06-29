@@ -608,8 +608,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host",
             cli_makefile,
         )
+        self.assertIn("OPS_CERTIFICATION_ROLLBACK_RPM ?=", cli_makefile)
         self.assertIn(
-            "linux-ops-deployment-smoke: package-rpm-smoke linqu_mem_service_host",
+            "linux-ops-upgrade-rollback-smoke: package-rpm-smoke",
+            cli_makefile,
+        )
+        self.assertIn(
+            "linux-ops-deployment-smoke: linux-ops-upgrade-rollback-smoke linqu_mem_service_host",
             cli_makefile,
         )
         self.assertIn("install: $(MEM_SERVICE_RELEASE_MANIFEST)", cli_makefile)
@@ -736,6 +741,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$",
+            cli_makefile,
+        )
+        self.assertIn(
             "^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$",
             cli_makefile,
         )
@@ -820,6 +829,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             "linux_ops_certification_smoke=linux-ops-certification-smoke",
+            release_manifest,
+        )
+        self.assertIn(
+            "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke",
             release_manifest,
         )
         self.assertIn("upgrade_rollback_policy_checksum=0x0f9df008", release_manifest)
