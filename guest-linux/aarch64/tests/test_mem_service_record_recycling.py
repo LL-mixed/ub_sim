@@ -503,12 +503,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7432U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7517U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x495685b7U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x3b2ba516U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 45U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U", cli_source)
         self.assertIn(
             'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"',
             cli_source,
@@ -675,6 +675,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("$(MEM_SERVICE_HOST_DEPLOY_MANIFEST)", cli_makefile)
         self.assertIn("MEM_SERVICE_RELEASE_SCRIPTS :=", cli_makefile)
         self.assertIn("$(ROOT)/scripts/verify_mem_service_installed_layout.sh", cli_makefile)
+        self.assertIn("$(ROOT)/scripts/verify_mem_service_installed_sdk.sh", cli_makefile)
         self.assertIn("$(ROOT)/scripts/run_mem_service_linux_ops_ci.sh", cli_makefile)
         self.assertIn(
             "$(ROOT)/scripts/verify_mem_service_release_certification.sh",
@@ -742,7 +743,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x495685b7$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x3b2ba516$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
         self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
@@ -929,6 +930,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             "release_script=share/lingqu/mem_service/scripts/"
+            "verify_mem_service_installed_sdk.sh",
+            release_manifest,
+        )
+        self.assertIn(
+            "release_script=share/lingqu/mem_service/scripts/"
             "verify_mem_service_release_certification.sh",
             release_manifest,
         )
@@ -957,7 +963,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x495685b7", release_manifest)
+        self.assertIn("package_manifest_checksum=0x3b2ba516", release_manifest)
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", release_manifest)
         self.assertIn(
             "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
@@ -1256,7 +1262,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "rpm_package_runtime=requires-linux-rpm-toolchain",
             package_manifest,
         )
-        self.assertIn("installed_file_count=45", package_manifest)
+        self.assertIn("installed_file_count=46", package_manifest)
         self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest)
         self.assertIn("pkgconfig_name=lingqu-mem-service", package_manifest)
         self.assertIn("pkgconfig_cflags=-I${includedir}", package_manifest)
@@ -1291,6 +1297,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             "release_script=share/lingqu/mem_service/scripts/"
+            "verify_mem_service_installed_sdk.sh",
+            package_manifest,
+        )
+        self.assertIn(
+            "release_script=share/lingqu/mem_service/scripts/"
             "verify_mem_service_release_certification.sh",
             package_manifest,
         )
@@ -1307,7 +1318,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "run_mem_service_release_certification_ci.sh",
             package_manifest,
         )
-        self.assertIn("file_class=release_scripts count=9", package_manifest)
+        self.assertIn("file_class=release_scripts count=10", package_manifest)
         self.assertIn("system_config_root=etc/lingqu/mem_service", package_manifest)
         self.assertIn("runtime_config=etc/lingqu/mem_service/mem_service.conf", package_manifest)
         self.assertIn(

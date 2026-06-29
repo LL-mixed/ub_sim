@@ -168,6 +168,7 @@ require_file "$(path_join "$DEPLOY_DIR" "linqu_mem_service.prometheus-alerts.yml
 require_file "$(path_join "$SYSTEMD_DIR" "linqu_mem_service.service")"
 require_file "$(path_join "$SYSTEMD_DIR" "linqu_mem_service.host.service")"
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_installed_layout.sh")"
+require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_installed_sdk.sh")"
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_release_certification.sh")"
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_linux_ops_evidence.sh")"
 require_executable "$(path_join "$SCRIPT_INSTALL_DIR" "verify_mem_service_remote_transport_evidence.sh")"
@@ -178,10 +179,12 @@ RELEASE_MANIFEST=$(path_join "$DATA_DIR" "release-manifest.txt")
 require_grep "$PACKAGE_MANIFEST" '^package_format=installed-layout-v1$'
 require_grep "$PACKAGE_MANIFEST" '^pkgconfig=lib/pkgconfig/lingqu-mem-service[.]pc$'
 require_grep "$PACKAGE_MANIFEST" '^file_class=pkgconfig count=1$'
-require_grep "$PACKAGE_MANIFEST" '^file_class=release_scripts count=9$'
+require_grep "$PACKAGE_MANIFEST" '^file_class=release_scripts count=10$'
 require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$'
+require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh$'
 require_grep "$PACKAGE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh$'
 require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$'
+require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh$'
 require_grep "$RELEASE_MANIFEST" '^release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh$'
 require_grep "$RELEASE_MANIFEST" '^pkgconfig=lib/pkgconfig/lingqu-mem-service[.]pc$'
 require_grep "$PKGCONFIG_FILE" '^Cflags: -I[$][{]includedir[}]$'

@@ -29,6 +29,7 @@ Requirements:
   - network partition marker contains network_partition_fail_closed=pass
 
 Outputs:
+  - installed_sdk/
   - linux_ops/ops-certification-upgrade-rollback.marker
   - linux_ops/ops-certification-linux-ci.evidence
   - linux_ops/linqu-mem-service-ops-certification-bundle.tar
@@ -168,6 +169,40 @@ preflight_command() {
   return 0
 }
 
+is_installed_script_context() {
+  case "$SCRIPT_DIR" in
+    */share/lingqu/mem_service/scripts)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+print_sdk_gate_command() {
+  if is_installed_script_context; then
+    printf '%s/verify_mem_service_installed_sdk.sh --work-dir %s\n' \
+      "$SCRIPT_DIR" "$SDK_OUT_DIR"
+  else
+    printf 'make -C %s DESTDIR=%s PREFIX=/usr PACKAGE_OUT_DIR=%s installed-sdk-pkgconfig-smoke installed-sdk-runtime-smoke\n' \
+      "$APP_DIR" "$SDK_INSTALL_ROOT" "$SDK_PACKAGE_OUT_DIR"
+  fi
+}
+
+run_sdk_gate() {
+  if is_installed_script_context; then
+    "$SCRIPT_DIR/verify_mem_service_installed_sdk.sh" --work-dir "$SDK_OUT_DIR"
+  else
+    make -C "$APP_DIR" \
+      "DESTDIR=$SDK_INSTALL_ROOT" \
+      "PREFIX=/usr" \
+      "PACKAGE_OUT_DIR=$SDK_PACKAGE_OUT_DIR" \
+      installed-sdk-pkgconfig-smoke \
+      installed-sdk-runtime-smoke
+  fi
+}
+
 preflight_source() {
   local source="$1"
   local address="${source#tcp:}"
@@ -190,6 +225,9 @@ run_preflight() {
   preflight_require "$([[ -x "$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" ]] && echo 1 || echo 0)" "missing linux ops CI wrapper" || failures=$((failures + 1))
   preflight_require "$([[ -x "$SCRIPT_DIR/run_mem_service_remote_transport_ci.sh" ]] && echo 1 || echo 0)" "missing remote transport CI wrapper" || failures=$((failures + 1))
   preflight_require "$([[ -x "$SCRIPT_DIR/verify_mem_service_release_certification.sh" ]] && echo 1 || echo 0)" "missing release certification verifier" || failures=$((failures + 1))
+  if is_installed_script_context; then
+    preflight_require "$([[ -x "$SCRIPT_DIR/verify_mem_service_installed_sdk.sh" ]] && echo 1 || echo 0)" "missing installed SDK verifier" || failures=$((failures + 1))
+  fi
   preflight_require "$([[ -r "$ROLLBACK_RPM" ]] && echo 1 || echo 0)" "rollback rpm not readable: $ROLLBACK_RPM" || failures=$((failures + 1))
   preflight_require "$([[ -r "$PARTITION_MARKER" ]] && echo 1 || echo 0)" "network partition marker not readable: $PARTITION_MARKER" || failures=$((failures + 1))
   if [[ -r "$PARTITION_MARKER" ]] && ! grep -q '^network_partition_fail_closed=pass$' "$PARTITION_MARKER"; then
@@ -204,7 +242,7 @@ run_preflight() {
   preflight_require "$([[ "$(uname -s)" == "Linux" ]] && echo 1 || echo 0)" "requires Linux host" || failures=$((failures + 1))
   preflight_require "$([[ -d /run/systemd/system ]] && echo 1 || echo 0)" "requires systemd runtime at /run/systemd/system" || failures=$((failures + 1))
   preflight_require "$([[ "$EUID" -eq 0 ]] && echo 1 || echo 0)" "requires root privileges for rpm/systemd checks" || failures=$((failures + 1))
-  for tool in make rpmbuild rpm2cpio cpio rpm curl promtool; do
+  for tool in make cc pkg-config rpmbuild rpm2cpio cpio rpm curl promtool; do
     preflight_command "$tool" || failures=$((failures + 1))
   done
 
@@ -219,6 +257,9 @@ run_preflight() {
 
 OPS_OUT_DIR="$OUT_DIR/linux_ops"
 REMOTE_OUT_DIR="$OUT_DIR/remote_transport"
+SDK_OUT_DIR="$OUT_DIR/installed_sdk"
+SDK_INSTALL_ROOT="$SDK_OUT_DIR/install-root"
+SDK_PACKAGE_OUT_DIR="$SDK_OUT_DIR/package"
 RELEASE_VERIFY_WORK_DIR="$OUT_DIR/release-certification.verify"
 OPS_BUNDLE="$OPS_OUT_DIR/linqu-mem-service-ops-certification-bundle.tar"
 REMOTE_BUNDLE="$REMOTE_OUT_DIR/linqu-mem-service-remote-transport-bundle.tar"
@@ -232,6 +273,7 @@ if [[ "$PRE_FLIGHT" == "1" ]]; then
 fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  print_sdk_gate_command
   printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s --out-dir %s --dry-run\n' \
     "$SCRIPT_DIR" "$ROLLBACK_RPM" "$OPS_OUT_DIR"
   printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s --app-dir %s --dry-run\n' \
@@ -247,6 +289,8 @@ if [[ ! -d "$APP_DIR" ]]; then
 fi
 run_preflight
 mkdir -p "$OUT_DIR"
+
+run_sdk_gate
 
 "$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" \
   --rollback-rpm "$ROLLBACK_RPM" \

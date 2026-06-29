@@ -46,9 +46,9 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7432U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x495685b7U
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 45U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7517U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x3b2ba516U
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 27U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
@@ -2610,6 +2610,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2691,7 +2695,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=release_scripts count=9\n") != 0 ||
+                                "file_class=release_scripts count=10\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4325,6 +4329,9 @@ static int run_package_fixture_check(void)
                "release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh\n") ==
             NULL ||
         strstr(manifest,
+               "release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh\n") ==
+            NULL ||
+        strstr(manifest,
                "release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh\n") ==
             NULL ||
         strstr(manifest,
@@ -4342,7 +4349,7 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh\n") ==
             NULL ||
-        strstr(manifest, "file_class=release_scripts count=9\n") == NULL ||
+        strstr(manifest, "file_class=release_scripts count=10\n") == NULL ||
         strstr(manifest, "file_class=pkgconfig count=1\n") == NULL ||
         strstr(manifest, "binary_version_command=version\n") == NULL ||
         strstr(manifest, "binary_version_contract=text-kv\n") == NULL ||
@@ -4534,6 +4541,7 @@ static int run_release_manifest(void)
     printf("release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight\n");
     printf("release_script_root=share/lingqu/mem_service/scripts\n");
     printf("release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh\n");
+    printf("release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh\n");
     printf("release_script=share/lingqu/mem_service/scripts/run_mem_service_linux_ops_ci.sh\n");
     printf("release_script=share/lingqu/mem_service/scripts/verify_mem_service_linux_ops_evidence.sh\n");
     printf("release_script=share/lingqu/mem_service/scripts/verify_mem_service_ops_certification_bundle.sh\n");
@@ -4704,7 +4712,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 45U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
         MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 27U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
@@ -4756,7 +4764,7 @@ static int run_release_fixture_check(void)
            "host_artifacts=1 "
            "package_artifacts=4 "
            "pkgconfig_artifacts=1 "
-           "release_scripts=9 "
+           "release_scripts=10 "
            "installed_sdk_pkgconfig_smokes=1 "
            "installed_sdk_runtime_smokes=1 "
            "version_smokes=1 "

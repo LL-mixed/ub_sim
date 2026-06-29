@@ -107,17 +107,21 @@ a Qwen3 adapter inspect build:
 - The installed layout now ships the release verification scripts under
   `share/lingqu/mem_service/scripts/`: Linux ops CI, Linux ops evidence
   verifier, ops bundle verifier, remote-transport CI, remote-transport
-  evidence verifier, remote-transport bundle verifier, and release
-  certification verifier, a release certification CI wrapper, plus an
-  installed-layout selfcheck. `package-manifest` records `release_script_root`,
+  evidence verifier, remote-transport bundle verifier, release certification
+  verifier, a release certification CI wrapper, an installed-layout selfcheck,
+  and an installed SDK verifier. `package-manifest` records `release_script_root`,
   each `release_script`, `linux_ops_ci`, `linux_ops_ci_preflight`,
   `remote_payload_production_transport_ci`,
   `remote_payload_production_transport_ci_preflight`, and
-  `file_class=release_scripts count=9`; install, tar, deb, and rpm smokes
+  `file_class=release_scripts count=10`; install, tar, deb, and rpm smokes
   verify those scripts are present and executable.
   `scripts/verify_mem_service_installed_layout.sh --no-runtime` validates the
   installed `bin/`, `libexec/`, `share/`, `etc/`, systemd, config, deploy, and
   manifest layout without requiring the source tree.
+  `scripts/verify_mem_service_installed_sdk.sh` validates the installed
+  `pkg-config` metadata, compiles serving/pretraining clients from installed
+  SDK sources, and can run them against the installed host daemon without a
+  source checkout.
   `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
@@ -282,6 +286,12 @@ a Qwen3 adapter inspect build:
   against the daemon over a Unix socket, and checks the resulting service
   status. This proves the installed daemon and external clients cooperate at
   runtime without relying on source-tree private paths.
+- `scripts/verify_mem_service_installed_sdk.sh` is the source-checkout-free
+  equivalent shipped in the package. It derives the installed prefix from
+  `share/lingqu/mem_service/scripts/`, uses installed `pkg-config` metadata to
+  compile the serving/pretraining examples, and by default runs the resulting
+  clients against the installed host daemon. The release certification CI
+  wrapper runs this SDK gate before the Linux ops and remote transport phases.
 - `apps/mem_service/packaging/linqu-mem-service.spec` is the rpm package spec
   used by `make package-rpm` and `make package-rpm-smoke`. The rpm smoke is a
   Linux rpm-toolchain gate: it requires `rpmbuild`, `rpm2cpio`, and `cpio`; on
