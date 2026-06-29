@@ -105,9 +105,13 @@ a Qwen3 adapter inspect build:
   `share/lingqu/mem_service/scripts/`: Linux ops CI, Linux ops evidence
   verifier, ops bundle verifier, remote-transport CI, remote-transport
   evidence verifier, remote-transport bundle verifier, and release
-  certification verifier. `package-manifest` records `release_script_root`,
-  each `release_script`, and `file_class=release_scripts count=7`; install,
-  tar, deb, and rpm smokes verify those scripts are present and executable.
+  certification verifier, plus an installed-layout selfcheck. `package-manifest`
+  records `release_script_root`, each `release_script`, and
+  `file_class=release_scripts count=8`; install, tar, deb, and rpm smokes verify
+  those scripts are present and executable.
+  `scripts/verify_mem_service_installed_layout.sh --no-runtime` validates the
+  installed `bin/`, `libexec/`, `share/`, `etc/`, systemd, config, deploy, and
+  manifest layout without requiring the source tree.
   The evidence, bundle, and release verifiers first resolve the installed
   `libexec/lingqu/mem_service/linqu_mem_service_host` relative to that
   `share/` script directory, then fall back to the source-tree app directory
