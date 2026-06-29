@@ -467,7 +467,13 @@ Keep the implementation layers separated:
   `remote-transport-certification-bundle-verify REMOTE_TRANSPORT_BUNDLE=<path>`
   or `scripts/verify_mem_service_remote_transport_bundle.sh --bundle-file
   <path>` extracts the bundle safely, checks the manifest contract, and verifies
-  the embedded evidence again. The `remote-transport-evidence-fixtures` gate defines
+  the embedded evidence again. A release that publishes both Linux ops and
+  remote transport certification bundles can be checked with
+  `release-certification-verify` or
+  `scripts/verify_mem_service_release_certification.sh --ops-bundle-file <path>
+  --remote-transport-bundle-file <path>`; that command replays both bundle
+  verifiers and fails closed if either artifact is missing or invalid. The
+  `remote-transport-evidence-fixtures` gate defines
   the required evidence schema: non-loopback source address, cross-host
   topology, `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum
   validation, corruption fail-closed behavior, distinct producer/consumer

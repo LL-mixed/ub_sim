@@ -4118,6 +4118,8 @@ static int run_release_manifest(void)
     printf("linux_ops_evidence_verify=linux-ops-evidence-verify\n");
     printf("linux_ops_certification_bundle=linux-ops-certification-bundle\n");
     printf("linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify\n");
+    printf("release_certification_verify=release-certification-verify\n");
+    printf("release_certification_verify_script=scripts/verify_mem_service_release_certification.sh\n");
     printf("linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke\n");
     printf("linux_ops_deployment_smoke=linux-ops-deployment-smoke\n");
     printf("ops_certification_verify=ops-certification-verify --evidence-file\n");

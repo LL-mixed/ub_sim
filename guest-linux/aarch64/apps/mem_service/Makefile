@@ -97,6 +97,7 @@ REMOTE_TRANSPORT_BUNDLE_ROOT := $(PACKAGE_OUT_DIR)/remote-transport-bundle
 REMOTE_TRANSPORT_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-remote-transport-bundle.tar
 REMOTE_TRANSPORT_BUNDLE_MANIFEST := $(REMOTE_TRANSPORT_BUNDLE_ROOT)/remote-transport-bundle.manifest
 REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/remote-transport-bundle.verify
+RELEASE_CERTIFICATION_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/release-certification.verify
 INSTALLED_SDK_EXAMPLE_SMOKE_DIR := $(PACKAGE_OUT_DIR)/installed-sdk-example-smoke
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
@@ -167,7 +168,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify release-certification-verify install installed-sdk-example-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -389,6 +390,11 @@ remote-transport-certification-bundle: remote-transport-evidence-verify
 remote-transport-certification-bundle-verify: linqu_mem_service_host
 	test -f $(REMOTE_TRANSPORT_BUNDLE)
 	$(ROOT)/scripts/verify_mem_service_remote_transport_bundle.sh --bundle-file $(abspath $(REMOTE_TRANSPORT_BUNDLE)) --app-dir $(abspath .) --work-dir $(abspath $(REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT))
+
+release-certification-verify: linqu_mem_service_host
+	test -f $(OPS_CERTIFICATION_BUNDLE)
+	test -f $(REMOTE_TRANSPORT_BUNDLE)
+	$(ROOT)/scripts/verify_mem_service_release_certification.sh --ops-bundle-file $(abspath $(OPS_CERTIFICATION_BUNDLE)) --remote-transport-bundle-file $(abspath $(REMOTE_TRANSPORT_BUNDLE)) --app-dir $(abspath .) --work-dir $(abspath $(RELEASE_CERTIFICATION_VERIFY_ROOT))
 
 linux-ops-upgrade-rollback-smoke: package-rpm-smoke
 	test "$$(uname -s)" = Linux
@@ -648,6 +654,8 @@ install-smoke: install
 	grep -q '^linux_ops_evidence_verify=linux-ops-evidence-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_certification_bundle=linux-ops-certification-bundle$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_certification_verify=release-certification-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_certification_verify_script=scripts/verify_mem_service_release_certification.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt

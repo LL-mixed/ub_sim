@@ -755,6 +755,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "^release_certification_verify=release-certification-verify$$",
+            cli_makefile,
+        )
+        self.assertIn(
+            "^release_certification_verify_script=scripts/verify_mem_service_release_certification.sh$$",
+            cli_makefile,
+        )
+        self.assertIn(
             "^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$",
             cli_makefile,
         )

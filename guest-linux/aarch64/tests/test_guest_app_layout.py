@@ -434,6 +434,50 @@ def test_mem_service_remote_transport_bundle_verifier_is_reusable_and_dry_runnab
     assert "remote-transport-verify --evidence-file" in dry_run.stdout
 
 
+def test_mem_service_release_certification_verifier_is_reusable_and_dry_runnable():
+    verifier_path = ROOT / "scripts" / "verify_mem_service_release_certification.sh"
+    verifier = verifier_path.read_text()
+
+    assert verifier_path.exists()
+    assert verifier_path.stat().st_mode & 0o111
+    assert "--ops-bundle-file PATH" in verifier
+    assert "--remote-transport-bundle-file PATH" in verifier
+    assert "verify_mem_service_ops_certification_bundle.sh" in verifier
+    assert "verify_mem_service_remote_transport_bundle.sh" in verifier
+    assert "[mem-service-release-certification] PASS ops_bundle=" in verifier
+
+    missing_arg = subprocess.run(
+        [str(verifier_path), "--dry-run"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    dry_run = subprocess.run(
+        [
+            str(verifier_path),
+            "--ops-bundle-file",
+            "/tmp/linqu-mem-service-ops-certification-bundle.tar",
+            "--remote-transport-bundle-file",
+            "/tmp/linqu-mem-service-remote-transport-bundle.tar",
+            "--work-dir",
+            "/tmp/linqu-mem-service-release-certification.verify",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert missing_arg.returncode == 2
+    assert "--ops-bundle-file is required" in missing_arg.stderr
+    assert "verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu-mem-service-ops-certification-bundle.tar" in dry_run.stdout
+    assert "verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu-mem-service-remote-transport-bundle.tar" in dry_run.stdout
+    assert "/tmp/linqu-mem-service-release-certification.verify/ops" in dry_run.stdout
+    assert "/tmp/linqu-mem-service-release-certification.verify/remote-transport" in dry_run.stdout
+
+
 def test_app_validation_matrix_runner_dry_run_executes_without_qemu():
     runner = ROOT / "scripts" / "run_ub_app_validation_matrix.sh"
 
@@ -1041,6 +1085,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "./linqu_mem_service_host remote-transport-verify --evidence-file" in app_makefile
     assert "bundle_schema=linqu-mem-service-remote-transport-bundle-v1" in app_makefile
     assert "REMOTE_TRANSPORT_BUNDLE := $(PACKAGE_OUT_DIR)/linqu-mem-service-remote-transport-bundle.tar" in app_makefile
+    assert "release-certification-verify: linqu_mem_service_host" in app_makefile
+    assert "verify_mem_service_release_certification.sh" in app_makefile
+    assert "--ops-bundle-file $(abspath $(OPS_CERTIFICATION_BUNDLE))" in app_makefile
+    assert "--remote-transport-bundle-file $(abspath $(REMOTE_TRANSPORT_BUNDLE))" in app_makefile
     assert "linux-ops-upgrade-rollback-smoke: package-rpm-smoke" in app_makefile
     assert "linux-ops-deployment-smoke: linux-ops-upgrade-rollback-smoke linqu_mem_service_host" in app_makefile
     assert "install: $(MEM_SERVICE_RELEASE_MANIFEST)" in app_makefile
@@ -1122,6 +1170,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^linux_ops_evidence_verify=linux-ops-evidence-verify$$" in app_makefile
     assert "^linux_ops_certification_bundle=linux-ops-certification-bundle$$" in app_makefile
     assert "^linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify$$" in app_makefile
+    assert "^release_certification_verify=release-certification-verify$$" in app_makefile
+    assert "^release_certification_verify_script=scripts/verify_mem_service_release_certification.sh$$" in app_makefile
     assert "^linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke$$" in app_makefile
     assert "^linux_ops_deployment_smoke=linux-ops-deployment-smoke$$" in app_makefile
     assert "^ops_certification_verify=ops-certification-verify --evidence-file$$" in app_makefile
@@ -1525,6 +1575,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "linux_ops_evidence_verify=linux-ops-evidence-verify" in release_manifest
     assert "linux_ops_certification_bundle=linux-ops-certification-bundle" in release_manifest
     assert "linux_ops_certification_bundle_verify=linux-ops-certification-bundle-verify" in release_manifest
+    assert "release_certification_verify=release-certification-verify" in release_manifest
+    assert (
+        "release_certification_verify_script=scripts/verify_mem_service_release_certification.sh"
+        in release_manifest
+    )
     assert "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke" in release_manifest
     assert "linux_ops_deployment_smoke=linux-ops-deployment-smoke" in release_manifest
     assert "ops_certification_verify=ops-certification-verify --evidence-file" in release_manifest
