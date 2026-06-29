@@ -213,6 +213,11 @@ a Qwen3 adapter inspect build:
   Linux rpm-toolchain gate: it requires `rpmbuild`, `rpm2cpio`, and `cpio`; on
   hosts without those tools it fails closed rather than certifying an rpm
   artifact.
+- `make linux-ops-certification-smoke` is the Linux CI orchestration gate. It
+  first runs `package-rpm-smoke`, then requires the real deployment
+  upgrade/rollback marker, and finally runs `ops-certification-linux-ci-smoke`
+  to persist and verify the evidence file. It is expected to fail closed on
+  developer hosts without the rpm/systemd/upgrade-rollback environment.
 
 Build and validation entrypoints:
 

@@ -595,6 +595,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package-deb-smoke: package-deb", cli_makefile)
         self.assertIn("package-rpm:", cli_makefile)
         self.assertIn("package-rpm-smoke: package-rpm", cli_makefile)
+        self.assertIn(
+            "linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host",
+            cli_makefile,
+        )
         self.assertIn("install: $(MEM_SERVICE_RELEASE_MANIFEST)", cli_makefile)
         self.assertIn("rm -f linqu_mem_service linqu_mem_service_host", cli_makefile)
         self.assertIn(
@@ -711,6 +715,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "^linux_ops_certification_smoke=linux-ops-certification-smoke$$",
+            cli_makefile,
+        )
+        self.assertIn(
             "^ops_certification_verify=ops-certification-verify --evidence-file$$",
             cli_makefile,
         )
@@ -787,6 +795,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("rpm_native_package_gate=package-rpm-smoke", release_manifest)
         self.assertIn(
             "rpm_native_package_runtime=requires-linux-rpm-toolchain",
+            release_manifest,
+        )
+        self.assertIn(
+            "linux_ops_certification_smoke=linux-ops-certification-smoke",
             release_manifest,
         )
         self.assertIn("upgrade_rollback_policy_checksum=0x0f9df008", release_manifest)

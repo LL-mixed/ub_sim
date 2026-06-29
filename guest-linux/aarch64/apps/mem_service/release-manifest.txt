@@ -96,6 +96,7 @@ ops_certification_evidence_schema=ops-certification-evidence-v1
 ops_certification_evidence_gate=ops-certification-evidence-fixtures
 ops_certification_generate=ops-certification-generate-evidence
 ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke
+linux_ops_certification_smoke=linux-ops-certification-smoke
 ops_certification_verify=ops-certification-verify --evidence-file
 real_systemd_environment=not-certified
 production_collector_alert_environment=not-certified

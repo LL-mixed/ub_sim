@@ -81,6 +81,8 @@ RPM_STAGE_ROOT := $(PACKAGE_OUT_DIR)/linqu_mem_service.rpm.stage
 RPM_VERIFY_ROOT := $(PACKAGE_OUT_DIR)/linqu_mem_service.rpm.verify
 RPM_SOURCE := $(RPM_TOPDIR)/SOURCES/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERSION).tar.gz
 RPM_PACKAGE := $(PACKAGE_OUT_DIR)/$(MEM_SERVICE_RPM_NAME)-$(MEM_SERVICE_RPM_VERSION)-$(MEM_SERVICE_RPM_RELEASE).$(MEM_SERVICE_RPM_ARCH).rpm
+OPS_CERTIFICATION_EVIDENCE := $(PACKAGE_OUT_DIR)/ops-certification-linux-ci.evidence
+OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER := $(PACKAGE_OUT_DIR)/ops-certification-upgrade-rollback.marker
 INSTALL_BINDIR := $(DESTDIR)$(PREFIX)/bin
 INSTALL_INCLUDEDIR := $(DESTDIR)$(PREFIX)/include/lingqu/mem_service
 INSTALL_SRCDIR := $(DESTDIR)$(PREFIX)/src/lingqu/mem_service
@@ -148,7 +150,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke install install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -293,6 +295,10 @@ package-rpm-smoke: package-rpm
 	grep -q '^rpm_native_package_gate=package-rpm-smoke$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	grep -q '^rpm_package_format=rpm$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
+
+linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host
+	test -f $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)
+	./linqu_mem_service_host ops-certification-linux-ci-smoke --rpm-file $(abspath $(RPM_PACKAGE)) --upgrade-rollback-marker $(abspath $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)) --evidence-file $(abspath $(OPS_CERTIFICATION_EVIDENCE))
 
 print-release-manifest:
 	@cat $(MEM_SERVICE_RELEASE_MANIFEST)
@@ -464,6 +470,7 @@ install-smoke: install
 	grep -q '^ops_certification_evidence_gate=ops-certification-evidence-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_generate=ops-certification-generate-evidence$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^linux_ops_certification_smoke=linux-ops-certification-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_verify=ops-certification-verify --evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^real_systemd_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^production_collector_alert_environment=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt

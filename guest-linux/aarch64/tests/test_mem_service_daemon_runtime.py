@@ -3278,6 +3278,8 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                           manifest.read_text())
             self.assertIn("ops_certification_linux_ci_gate=ops-certification-linux-ci-smoke",
                           manifest.read_text())
+            self.assertIn("linux_ops_certification_smoke=linux-ops-certification-smoke",
+                          manifest.read_text())
             self.assertIn("ops_certification_verify=ops-certification-verify --evidence-file",
                           manifest.read_text())
             self.assertIn("real_systemd_environment=not-certified", manifest.read_text())
@@ -3587,6 +3589,42 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn(
                 "rpm_package_gate=package-rpm-smoke",
                 package_manifest.read_text(),
+            )
+
+    def test_linux_ops_certification_smoke_is_external_gate(self):
+        app_dir = ROOT / "apps" / "mem_service"
+        with tempfile.TemporaryDirectory(prefix="msvc_linux_ops_", dir=str(_tmp_parent())) as tmp:
+            package_out = Path(tmp) / "package"
+            evidence = package_out / "ops-certification-linux-ci.evidence"
+            result = subprocess.run(
+                [
+                    "make",
+                    "-C",
+                    str(app_dir),
+                    "CFLAGS=-O2 -Wall -Wextra",
+                    f"PACKAGE_OUT_DIR={package_out}",
+                    "linux-ops-certification-smoke",
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["make", "-C", str(app_dir), "clean"],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(evidence.exists())
+            self.assertTrue(
+                "rpmbuild" in result.stdout + result.stderr
+                or "ops-certification-linux-ci-smoke: fail-closed" in result.stderr
+                or "ops-certification-upgrade-rollback.marker" in result.stdout
+                + result.stderr
             )
 
     def test_installed_host_service_manager_and_collector_smoke(self):
