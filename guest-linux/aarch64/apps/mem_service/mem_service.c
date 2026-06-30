@@ -30,11 +30,11 @@
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
 #define MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_VERSION 1U
-#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U
-#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6719U
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2025U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x14ef3f65U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2127U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x6ebd34acU
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 2096U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0x05a9245cU
@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9126U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x9e550967U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9215U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x2dcdb432U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -749,6 +749,10 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
+                                "store_schema_version=1\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
                                 "catalog_layout=storage-root-v1\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
@@ -798,6 +802,10 @@ static int render_upgrade_rollback_policy(char *policy,
                                 policy_len,
                                 &used,
                                 "migration_policy=catalog-schema-version-migrate-legacy-to-v1-reject-future\n") != 0 ||
+        append_wire_schema_line(policy,
+                                policy_len,
+                                &used,
+                                "store_migration_policy=store-schema-version-migrate-legacy-to-v1-reject-future\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
@@ -3385,6 +3393,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "durable_store_schema_version=1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "durable_store_migration_policy=legacy-to-v1-reject-future\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -5063,7 +5079,7 @@ static int run_release_manifest(void)
     printf("restore_policy=transactional-staged-restore\n");
     printf("restore_policy_scope=full-snapshot+paged-snapshot\n");
     printf("restore_policy_gate=restore-policy-fixtures\n");
-    printf("restore_policy_fail_closed=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit\n");
+    printf("restore_policy_fail_closed=bad-magic,future-store-schema,malformed-store-schema,out-of-order-page,record-count-mismatch,cancelled-stage-commit\n");
     printf("restore_policy_live_state=unchanged-until-commit\n");
     printf("wire_payload_text_kv_format=text-kv\n");
     printf("wire_payload_typed_binary_format=typed-binary-v1\n");
@@ -5178,6 +5194,8 @@ static int run_release_manifest(void)
     printf("service_manager_lifecycle=serve-config-ready-scrape-sigterm\n");
     printf("service_manager_shutdown=signal-clean-stop\n");
     printf("durable_backend=snapshot+journal\n");
+    printf("durable_store_schema_version=1\n");
+    printf("durable_store_migration_policy=legacy-to-v1-reject-future\n");
     printf("durable_catalog=storage-root-v1\n");
     printf("durable_catalog_manifest=catalog/manifest.txt\n");
     printf("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n");
@@ -7326,6 +7344,10 @@ static int render_admin_output_schema(char *schema, size_t schema_len, size_t *u
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
+                                "snapshot_field=store_schema_version type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
                                 "snapshot_field=record_count type=u64\n") != 0 ||
         append_wire_schema_line(schema,
                                 schema_len,
@@ -7347,6 +7369,10 @@ static int render_admin_output_schema(char *schema, size_t schema_len, size_t *u
                                 schema_len,
                                 &used,
                                 "snapshot_page_field=store_magic type=string\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "snapshot_page_field=store_schema_version type=u32\n") != 0 ||
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
@@ -7481,6 +7507,10 @@ static int run_admin_output_fixture_check(void)
         strstr(schema, "metric_field=request_latency_max_ms type=gauge\n") ==
             NULL ||
         strstr(schema, "audit_record_delimiter=audit_begin/audit_end\n") ==
+            NULL ||
+        strstr(schema, "snapshot_field=store_schema_version type=u32\n") ==
+            NULL ||
+        strstr(schema, "snapshot_page_field=store_schema_version type=u32\n") ==
             NULL ||
         strstr(schema, "snapshot_page_field=next_index type=u64\n") == NULL ||
         strstr(schema, "fail_closed_status=checksum_mismatch\n") == NULL) {
@@ -8496,7 +8526,7 @@ static int run_export_snapshot_to(int argc, char **argv)
         if (!wrote_header) {
             record_count = mem_service_wire_payload_get_u64(&view, "record_count", 0);
             if (fprintf(file,
-                        "%s\nrecord_count=%" PRIu64 "\n",
+                        "%s\nstore_schema_version=1\nrecord_count=%" PRIu64 "\n",
                         MEM_SERVICE_CLI_STORE_MAGIC,
                         record_count) < 0) {
                 fclose(file);

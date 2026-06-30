@@ -115,12 +115,14 @@ audit_field=events_emitted type=u64
 audit_field=next_sequence type=u64
 audit_field=complete type=u32
 snapshot_export_magic=mem_service_store_v1
+snapshot_field=store_schema_version type=u32
 snapshot_field=record_count type=u64
 snapshot_field=audit_next_sequence type=u64
 snapshot_field=audit_event_count type=u64
 snapshot_record_delimiter=record_begin/record_end
 snapshot_page_field=snapshot_page type=u32
 snapshot_page_field=store_magic type=string
+snapshot_page_field=store_schema_version type=u32
 snapshot_page_field=record_count type=u64
 snapshot_page_field=start_index type=u64
 snapshot_page_field=next_index type=u64

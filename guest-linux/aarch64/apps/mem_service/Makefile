@@ -753,8 +753,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=9126$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x9e550967$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=9215$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x2dcdb432$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -791,13 +791,13 @@ install-smoke: install
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0xf4cf34c6$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^admin_output_schema_len=6624$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^admin_output_schema_checksum=0x7021f4cf$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^admin_output_schema_len=6719$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^admin_output_schema_checksum=0x7a09d525$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_len=2025$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0x14ef3f65$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_len=2127$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0x6ebd34ac$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -829,7 +829,7 @@ install-smoke: install
 	grep -q '^encryption_at_rest=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^encryption_policy_command=encryption-policy$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^encryption_policy_gate=encryption-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^restore_policy_fail_closed=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^restore_policy_fail_closed=bad-magic,future-store-schema,malformed-store-schema,out-of-order-page,record-count-mismatch,cancelled-stage-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^restore_policy_live_state=unchanged-until-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_payload_text_kv_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_payload_typed_binary_format=typed-binary-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -915,6 +915,8 @@ install-smoke: install
 	grep -q '^service_manager_lifecycle=serve-config-ready-scrape-sigterm$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^service_manager_shutdown=signal-clean-stop$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_backend=snapshot+journal$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^durable_store_schema_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^durable_store_migration_policy=legacy-to-v1-reject-future$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_catalog=storage-root-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^durable_catalog_manifest=catalog/manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -969,6 +971,7 @@ install-smoke: install
 	grep -q '^new_client_old_server=certified$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^catalog_schema_version=1$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^migration_policy=catalog-schema-version-migrate-legacy-to-v1-reject-future$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
+	grep -q '^store_migration_policy=store-schema-version-migrate-legacy-to-v1-reject-future$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
 	grep -q '^required_gate=alert-fixtures$$' $(INSTALL_DATADIR)/upgrade-rollback-policy.txt
@@ -1050,7 +1053,7 @@ install-smoke: install
 	grep -q '^encryption_policy_command=encryption-policy$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_policy_gate=encryption-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate_count=34$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x14ef3f65$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x6ebd34ac$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt

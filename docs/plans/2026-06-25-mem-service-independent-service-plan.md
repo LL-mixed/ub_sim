@@ -719,9 +719,9 @@ installable serving/pretraining SDK examples prove minimal two-process RPC smoke
 pretraining worker runtime gate proves typed multi-worker publish/resolve, checkpoint restart, stale/checksum fail-closed, and idempotency conflict
 shared text key/value payload helper, public operation schema contract, and request schema fixture gate exist
 wire-schema CLI and checked-in wire-schema.txt freeze the current operation/field manifest
-snapshot+journal carries completed idempotency records plus bounded audit records; storage_root layout, derived store recovery, catalog schema admission, legacy catalog manifest migration to v1, journal fsync, torn-tail recovery, threshold compaction, transactional restore, sealed-local/chunked/loopback/tcp-loopback block backends exist
+snapshot+journal carries completed idempotency records plus bounded audit records; storage_root layout, derived store recovery, catalog/store schema admission, legacy catalog manifest migration to v1, legacy store snapshot migration to v1, journal fsync, torn-tail recovery, threshold compaction, transactional restore, sealed-local/chunked/loopback/tcp-loopback block backends exist
 release/package manifests, version/readiness self-description, compat gates, old-server runtime gate, serving/pretraining fail-closed gates, config/deploy artifacts, SDK examples, install-smoke, package gates, installed SDK runtime smoke, Linux ops/remote transport/release certification wrappers exist
-remaining blockers are external Linux ops evidence, cross-host production remote transport evidence, real serving/pretraining SLA/capacity evidence, real encryption/key management, and full multi-version store/catalog migration policy
+remaining blockers are external Linux ops evidence, cross-host production remote transport evidence, real serving/pretraining SLA/capacity evidence, real encryption/key management, and future major-version store/catalog migration matrix
 ```
 
 ### 5.2 Gate Matrix

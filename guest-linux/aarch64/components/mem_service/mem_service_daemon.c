@@ -31,6 +31,8 @@
 #define MEM_SERVICE_TCP_SPEC_PREFIX "tcp:"
 #define MEM_SERVICE_STORE_MAGIC "mem_service_store_v1"
 #define MEM_SERVICE_JOURNAL_MAGIC "mem_service_journal_v1"
+#define MEM_SERVICE_STORE_SCHEMA_VERSION 1
+#define MEM_SERVICE_STORE_MAX_KNOWN_SCHEMA_VERSION 1
 #define MEM_SERVICE_DURABLE_CATALOG_MAGIC "mem_service_durable_catalog_v1"
 #define MEM_SERVICE_DURABLE_CATALOG_MANIFEST "manifest.txt"
 #define MEM_SERVICE_DURABLE_CATALOG_SCHEMA_VERSION 1
@@ -107,6 +109,14 @@ static bool mem_service_request_exceeds_payload_limit(
 static bool mem_service_payload_get_u64_checked(const char *payload,
                                                 const char *name,
                                                 uint64_t *out);
+static int mem_service_save_store(const struct mem_service *svc,
+                                  const char *store_path);
+static int mem_service_compact_journal(const char *store_path);
+static int mem_service_compact_journal_now(const char *store_path);
+static int mem_service_parse_schema_version_line(const char *line,
+                                                 const char *prefix,
+                                                 long max_known_version,
+                                                 bool *saw_version_out);
 static int mem_service_write_durable_catalog_manifest(const char *storage_root,
                                                       const char *store_path);
 static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc);
@@ -1495,6 +1505,7 @@ static int mem_service_import_snapshot_text(struct mem_service *svc,
     const char *cursor = snapshot;
     struct mem_service_store_import_state state;
     bool saw_magic = false;
+    bool saw_schema_version = false;
 
     if (svc == NULL || snapshot == NULL || snapshot[0] == '\0') {
         return -1;
@@ -1516,8 +1527,28 @@ static int mem_service_import_snapshot_text(struct mem_service *svc,
                 return -1;
             }
             saw_magic = true;
-        } else if (mem_service_import_store_line(svc, line, &state) != 0) {
-            return -1;
+        } else {
+            if (!state.in_record && !state.in_idempotency && !state.in_audit) {
+                int schema_rc = mem_service_parse_schema_version_line(
+                    line,
+                    "store_schema_version=",
+                    MEM_SERVICE_STORE_MAX_KNOWN_SCHEMA_VERSION,
+                    &saw_schema_version);
+
+                if (schema_rc < 0) {
+                    return -1;
+                }
+                if (schema_rc > 0) {
+                    if (newline == NULL) {
+                        break;
+                    }
+                    cursor = newline + 1;
+                    continue;
+                }
+            }
+            if (mem_service_import_store_line(svc, line, &state) != 0) {
+                return -1;
+            }
         }
         if (newline == NULL) {
             break;
@@ -1537,6 +1568,7 @@ static int mem_service_import_snapshot_records_text(struct mem_service *svc,
     const char *cursor = snapshot;
     struct mem_service_store_import_state state;
     size_t records_imported = 0;
+    bool saw_schema_version = false;
 
     if (svc == NULL || snapshot == NULL || snapshot[0] == '\0') {
         return -1;
@@ -1555,6 +1587,24 @@ static int mem_service_import_snapshot_records_text(struct mem_service *svc,
         line[line_len] = '\0';
         mem_service_trim_line(line);
         is_record_end = strcmp(line, "record_end") == 0;
+        if (!state.in_record && !state.in_idempotency && !state.in_audit) {
+            int schema_rc = mem_service_parse_schema_version_line(
+                line,
+                "store_schema_version=",
+                MEM_SERVICE_STORE_MAX_KNOWN_SCHEMA_VERSION,
+                &saw_schema_version);
+
+            if (schema_rc < 0) {
+                return -1;
+            }
+            if (schema_rc > 0) {
+                if (newline == NULL) {
+                    break;
+                }
+                cursor = newline + 1;
+                continue;
+            }
+        }
         if (line[0] != '\0' &&
             mem_service_import_store_line(svc, line, &state) != 0) {
             return -1;
@@ -1687,6 +1737,30 @@ static int mem_service_prepare_durable_catalog_layout(const char *storage_root)
     return 0;
 }
 
+static int mem_service_parse_schema_version_line(const char *line,
+                                                 const char *prefix,
+                                                 long max_known_version,
+                                                 bool *saw_version_out)
+{
+    long parsed;
+    char *end = NULL;
+    size_t prefix_len;
+
+    if (line == NULL || prefix == NULL || saw_version_out == NULL) {
+        return -1;
+    }
+    prefix_len = strlen(prefix);
+    if (strncmp(line, prefix, prefix_len) != 0) {
+        return 0;
+    }
+    parsed = strtol(line + prefix_len, &end, 10);
+    *saw_version_out = true;
+    if (end == line + prefix_len || *end != '\0') {
+        return -1;
+    }
+    return parsed <= 0 || parsed > max_known_version ? -1 : 1;
+}
+
 static int mem_service_admit_or_migrate_catalog_schema_version(
     const char *storage_root,
     const char *store_path)
@@ -1711,24 +1785,16 @@ static int mem_service_admit_or_migrate_catalog_schema_version(
     }
     while (fgets(line, sizeof(line), file) != NULL) {
         mem_service_trim_line(line);
-        if (strncmp(line,
-                    "catalog_schema_version=",
-                    sizeof("catalog_schema_version=") - 1U) == 0) {
-            long parsed;
-            char *end = NULL;
-
-            parsed = strtol(line + sizeof("catalog_schema_version=") - 1U,
-                            &end,
-                            10);
-            fclose(file);
-            if (end == line + sizeof("catalog_schema_version=") - 1U ||
-                *end != '\0') {
-                return -1;
+        {
+            int schema_rc = mem_service_parse_schema_version_line(
+                line,
+                "catalog_schema_version=",
+                MEM_SERVICE_DURABLE_CATALOG_MAX_KNOWN_VERSION,
+                &saw_schema_version);
+            if (schema_rc != 0) {
+                fclose(file);
+                return schema_rc < 0 ? -1 : 0;
             }
-            saw_schema_version = true;
-            return parsed > (long)MEM_SERVICE_DURABLE_CATALOG_MAX_KNOWN_VERSION
-                       ? -1
-                       : 0;
         }
     }
     fclose(file);
@@ -3451,12 +3517,18 @@ static enum mem_service_wire_status mem_service_validate_payload_block(
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
-static int mem_service_load_store(struct mem_service *svc, const char *store_path)
+static int mem_service_load_store(struct mem_service *svc,
+                                  const char *store_path,
+                                  bool *legacy_schema_out)
 {
     FILE *file;
     char line[512];
     struct mem_service_store_import_state state;
+    bool saw_schema_version = false;
 
+    if (legacy_schema_out != NULL) {
+        *legacy_schema_out = false;
+    }
     if (store_path == NULL || store_path[0] == '\0') {
         return 0;
     }
@@ -3480,12 +3552,30 @@ static int mem_service_load_store(struct mem_service *svc, const char *store_pat
         if (line[0] == '\0') {
             continue;
         }
+        if (!state.in_record && !state.in_idempotency && !state.in_audit) {
+            int schema_rc = mem_service_parse_schema_version_line(
+                line,
+                "store_schema_version=",
+                MEM_SERVICE_STORE_MAX_KNOWN_SCHEMA_VERSION,
+                &saw_schema_version);
+
+            if (schema_rc != 0) {
+                if (schema_rc < 0) {
+                    fclose(file);
+                    return -1;
+                }
+                continue;
+            }
+        }
         if (mem_service_import_store_line(svc, line, &state) != 0) {
             fclose(file);
             return -1;
         }
     }
     fclose(file);
+    if (legacy_schema_out != NULL && !saw_schema_version) {
+        *legacy_schema_out = true;
+    }
     return state.in_record || state.in_idempotency || state.in_audit ? -1 : 0;
 }
 
@@ -3541,10 +3631,20 @@ static int mem_service_load_journal(struct mem_service *svc, const char *store_p
 static int mem_service_load_durable_store(struct mem_service *svc,
                                           const char *store_path)
 {
-    if (mem_service_load_store(svc, store_path) != 0) {
+    bool legacy_schema = false;
+
+    if (mem_service_load_store(svc, store_path, &legacy_schema) != 0) {
         return -1;
     }
-    return mem_service_load_journal(svc, store_path);
+    if (mem_service_load_journal(svc, store_path) != 0) {
+        return -1;
+    }
+    if (legacy_schema &&
+        (mem_service_save_store(svc, store_path) != 0 ||
+         mem_service_compact_journal(store_path) != 0)) {
+        return -1;
+    }
+    return 0;
 }
 
 static int mem_service_save_record(FILE *file, const struct mem_service_record *record)
@@ -3820,10 +3920,12 @@ static int mem_service_save_store(const struct mem_service *svc, const char *sto
     }
     if (fprintf(file,
                 "%s\n"
+                "store_schema_version=%d\n"
                 "record_count=%zu\n"
                 "audit_next_sequence=%" PRIu64 "\n"
                 "audit_event_count=%" PRIu64 "\n",
                 MEM_SERVICE_STORE_MAGIC,
+                MEM_SERVICE_STORE_SCHEMA_VERSION,
                 svc->record_count,
                 svc->audit_next_sequence,
                 svc->audit_event_count) < 0) {
@@ -4054,6 +4156,12 @@ int mem_service_run_store_fixture_check(void)
         unlink(journal_path);
         return 1;
     }
+    if (!mem_service_file_contains(store_path, "store_schema_version=1\n")) {
+        fprintf(stderr, "mem_service store-fixtures: store schema missing\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
     if (mem_service_load_durable_store(&second, store_path) != 0) {
         fprintf(stderr, "mem_service store-fixtures: load failed path=%s\n", store_path);
         unlink(store_path);
@@ -4094,15 +4202,124 @@ int mem_service_run_store_fixture_check(void)
         fprintf(stderr, "mem_service store-fixtures: idempotency recovery mismatch\n");
         return 1;
     }
+    {
+        struct mem_service migrated;
+        struct mem_service_record legacy_record;
+        FILE *legacy_file = fopen(store_path, "w");
+
+        unlink(journal_path);
+        if (legacy_file == NULL ||
+            fprintf(legacy_file,
+                    "%s\n"
+                    "record_count=1\n"
+                    "audit_next_sequence=1\n"
+                    "audit_event_count=0\n"
+                    "record_begin\n"
+                    "kind=%u\n"
+                    "key=legacy-store-object\n"
+                    "version=11\n"
+                    "record_end\n",
+                    MEM_SERVICE_STORE_MAGIC,
+                    (uint32_t)MEM_SERVICE_RECORD_KVCACHE_OBJECT) < 0 ||
+            fclose(legacy_file) != 0) {
+            if (legacy_file != NULL) {
+                fclose(legacy_file);
+            }
+            fprintf(stderr, "mem_service store-fixtures: legacy store write failed\n");
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+        if (mem_service_init(&migrated, true, true, true) != 0 ||
+            mem_service_load_durable_store(&migrated, store_path) != 0 ||
+            mem_service_get_record(&migrated,
+                                   "legacy-store-object",
+                                   &legacy_record) != 0 ||
+            legacy_record.version != 11 ||
+            !mem_service_file_contains(store_path, "store_schema_version=1\n")) {
+            fprintf(stderr,
+                    "mem_service store-fixtures: legacy store migration failed\n");
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    {
+        struct mem_service rejected;
+        FILE *future_file = fopen(store_path, "w");
+
+        unlink(journal_path);
+        if (future_file == NULL ||
+            fprintf(future_file,
+                    "%s\n"
+                    "store_schema_version=99\n"
+                    "record_count=0\n"
+                    "audit_next_sequence=1\n"
+                    "audit_event_count=0\n",
+                    MEM_SERVICE_STORE_MAGIC) < 0 ||
+            fclose(future_file) != 0) {
+            if (future_file != NULL) {
+                fclose(future_file);
+            }
+            fprintf(stderr, "mem_service store-fixtures: future store write failed\n");
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+        if (mem_service_init(&rejected, true, true, true) != 0 ||
+            mem_service_load_durable_store(&rejected, store_path) == 0) {
+            fprintf(stderr,
+                    "mem_service store-fixtures: future store schema not refused\n");
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    {
+        struct mem_service rejected;
+        FILE *malformed_file = fopen(store_path, "w");
+
+        unlink(journal_path);
+        if (malformed_file == NULL ||
+            fprintf(malformed_file,
+                    "%s\n"
+                    "store_schema_version=1abc\n"
+                    "record_count=0\n"
+                    "audit_next_sequence=1\n"
+                    "audit_event_count=0\n",
+                    MEM_SERVICE_STORE_MAGIC) < 0 ||
+            fclose(malformed_file) != 0) {
+            if (malformed_file != NULL) {
+                fclose(malformed_file);
+            }
+            fprintf(stderr,
+                    "mem_service store-fixtures: malformed store write failed\n");
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+        if (mem_service_init(&rejected, true, true, true) != 0 ||
+            mem_service_load_durable_store(&rejected, store_path) == 0) {
+            fprintf(stderr,
+                    "mem_service store-fixtures: malformed store schema not refused\n");
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    unlink(store_path);
+    unlink(journal_path);
     printf("mem_service store-fixtures: status=ok records=%zu key=%s version=%" PRIu64
            " checksum=%" PRIu64 " idempotency_replay=%" PRIu64
-           " journal_events=%" PRIu64 "\n",
+           " journal_events=%" PRIu64
+           " store_schema_version=%d store_migration=legacy-to-v1\n",
            second.record_count,
            record.key,
            record.version,
            record.object_payload_checksum,
            second.metrics.idempotency_replay_count,
-           second.audit_event_count);
+           second.audit_event_count,
+           MEM_SERVICE_STORE_SCHEMA_VERSION);
     return 0;
 }
 
@@ -4501,6 +4718,18 @@ int mem_service_run_restore_policy_fixture_check(void)
         "record_count=0\n"
         "audit_next_sequence=1\n"
         "audit_event_count=0\n";
+    static const char bad_future_schema_snapshot[] =
+        "mem_service_store_v1\n"
+        "store_schema_version=99\n"
+        "record_count=0\n"
+        "audit_next_sequence=1\n"
+        "audit_event_count=0\n";
+    static const char bad_malformed_schema_snapshot[] =
+        "mem_service_store_v1\n"
+        "store_schema_version=1abc\n"
+        "record_count=0\n"
+        "audit_next_sequence=1\n"
+        "audit_event_count=0\n";
     static const char begin_one_payload[] =
         "action=begin\n"
         "expected_records=1\n";
@@ -4528,6 +4757,8 @@ int mem_service_run_restore_policy_fixture_check(void)
     char append_payload[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN + 64U];
     enum mem_service_wire_status status;
     enum mem_service_wire_status bad_full_status;
+    enum mem_service_wire_status bad_future_schema_status;
+    enum mem_service_wire_status bad_malformed_schema_status;
     enum mem_service_wire_status wrong_page_status;
     enum mem_service_wire_status mismatch_commit_status;
     enum mem_service_wire_status cancelled_commit_status;
@@ -4608,6 +4839,31 @@ int mem_service_run_restore_policy_fixture_check(void)
         record.version != 1U || record.object_payload_checksum != 1001U) {
         fprintf(stderr,
                 "mem_service restore-policy-fixtures: bad full restore polluted live state\n");
+        failures -= 1;
+    }
+    bad_future_schema_status =
+        mem_service_handle_operation(&svc,
+                                     MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                     bad_future_schema_snapshot,
+                                     response,
+                                     sizeof(response),
+                                     NULL,
+                                     NULL);
+    bad_malformed_schema_status =
+        mem_service_handle_operation(&svc,
+                                     MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
+                                     bad_malformed_schema_snapshot,
+                                     response,
+                                     sizeof(response),
+                                     NULL,
+                                     NULL);
+    if (bad_future_schema_status != MEM_SERVICE_WIRE_STATUS_INVALID_SESSION ||
+        bad_malformed_schema_status != MEM_SERVICE_WIRE_STATUS_INVALID_SESSION ||
+        mem_service_get_record(&svc, "restore-policy-anchor", &record) != 0 ||
+        record.version != 1U || record.object_payload_checksum != 1001U) {
+        fprintf(stderr,
+                "mem_service restore-policy-fixtures: schema version restore "
+                "did not fail closed\n");
         failures -= 1;
     }
 
@@ -4752,9 +5008,9 @@ int mem_service_run_restore_policy_fixture_check(void)
                 "mem_service restore-policy-fixtures: staged commit restore failed\n");
         failures -= 1;
     }
-    if (svc.metrics.invalid_session_count != 2U ||
+    if (svc.metrics.invalid_session_count != 4U ||
         svc.metrics.version_conflict_count != 2U ||
-        svc.metrics.fail_closed_count != 4U) {
+        svc.metrics.fail_closed_count != 6U) {
         fprintf(stderr,
                 "mem_service restore-policy-fixtures: counter mismatch "
                 "invalid_session=%" PRIu64 " version_conflict=%" PRIu64
@@ -4771,7 +5027,7 @@ int mem_service_run_restore_policy_fixture_check(void)
            "restore_policy=transactional-staged-restore "
            "restore_scope=full-snapshot,paged-snapshot "
            "full_restore=ok paged_restore=ok "
-           "fail_closed_cases=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit "
+           "fail_closed_cases=bad-magic,future-store-schema,malformed-store-schema,out-of-order-page,record-count-mismatch,cancelled-stage-commit "
            "live_state=unchanged-until-commit "
            "invalid_session=%" PRIu64 " version_conflict=%" PRIu64
            " fail_closed=%" PRIu64 "\n",
@@ -8307,10 +8563,12 @@ static enum mem_service_wire_status mem_service_export_snapshot(struct mem_servi
     if (mem_service_append_snapshot_text(response,
                                          response_len,
                                          &used,
-                                         "%s\nrecord_count=%zu\n"
+                                         "%s\nstore_schema_version=%d\n"
+                                         "record_count=%zu\n"
                                          "audit_next_sequence=%" PRIu64 "\n"
                                          "audit_event_count=%" PRIu64 "\n",
                                          MEM_SERVICE_STORE_MAGIC,
+                                         MEM_SERVICE_STORE_SCHEMA_VERSION,
                                          svc->record_count,
                                          svc->audit_next_sequence,
                                          svc->audit_event_count) != 0) {
@@ -8432,6 +8690,7 @@ static enum mem_service_wire_status mem_service_export_snapshot_page(
              response_len,
              "snapshot_page=1\n"
              "store_magic=%s\n"
+             "store_schema_version=%d\n"
              "record_count=%zu\n"
              "start_index=%zu\n"
              "next_index=%zu\n"
@@ -8439,6 +8698,7 @@ static enum mem_service_wire_status mem_service_export_snapshot_page(
              "complete=%u\n"
              "%s",
              MEM_SERVICE_STORE_MAGIC,
+             MEM_SERVICE_STORE_SCHEMA_VERSION,
              svc->record_count,
              start_index,
              next_index,
