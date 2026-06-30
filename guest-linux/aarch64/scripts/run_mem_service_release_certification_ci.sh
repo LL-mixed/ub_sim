@@ -237,6 +237,17 @@ linux_ops_rpm_args() {
   printf ' --rpm-file %s' "$RPM_FILE"
 }
 
+linux_ops_app_args() {
+  if is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]; then
+    return 0
+  fi
+  printf ' --app-dir %s' "$APP_DIR"
+}
+
+linux_ops_uses_installed_context() {
+  is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]
+}
+
 preflight_source() {
   local source="$1"
   local address="${source#tcp:}"
@@ -264,6 +275,9 @@ run_preflight() {
   if is_installed_script_context; then
     preflight_require "$([[ -x "$SCRIPT_DIR/verify_mem_service_installed_sdk.sh" ]] && echo 1 || echo 0)" "missing installed SDK verifier" || failures=$((failures + 1))
   fi
+  if linux_ops_uses_installed_context; then
+    preflight_require "$([[ -r "$RPM_FILE" ]] && echo 1 || echo 0)" "current rpm not readable: $RPM_FILE" || failures=$((failures + 1))
+  fi
   preflight_require "$([[ -r "$ROLLBACK_RPM" ]] && echo 1 || echo 0)" "rollback rpm not readable: $ROLLBACK_RPM" || failures=$((failures + 1))
   preflight_require "$([[ -r "$PARTITION_MARKER" ]] && echo 1 || echo 0)" "network partition marker not readable: $PARTITION_MARKER" || failures=$((failures + 1))
   if [[ -r "$PARTITION_MARKER" ]] && ! grep -q '^network_partition_fail_closed=pass$' "$PARTITION_MARKER"; then
@@ -278,7 +292,10 @@ run_preflight() {
   preflight_require "$([[ "$(uname -s)" == "Linux" ]] && echo 1 || echo 0)" "requires Linux host" || failures=$((failures + 1))
   preflight_require "$([[ -d /run/systemd/system ]] && echo 1 || echo 0)" "requires systemd runtime at /run/systemd/system" || failures=$((failures + 1))
   preflight_require "$([[ "$EUID" -eq 0 ]] && echo 1 || echo 0)" "requires root privileges for rpm/systemd checks" || failures=$((failures + 1))
-  for tool in make cc pkg-config rpmbuild rpm2cpio cpio rpm curl promtool; do
+  if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
+    preflight_command make || failures=$((failures + 1))
+  fi
+  for tool in cc pkg-config rpmbuild rpm2cpio cpio rpm systemctl journalctl curl promtool tar; do
     preflight_command "$tool" || failures=$((failures + 1))
   done
 
@@ -310,8 +327,8 @@ fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   print_sdk_gate_command
-  printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s --out-dir %s --dry-run\n' \
-    "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$OPS_OUT_DIR"
+  printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s%s --out-dir %s --dry-run\n' \
+    "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
   printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --dry-run\n' \
     "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
   printf '%s/verify_mem_service_release_certification.sh --ops-bundle-file %s --remote-transport-bundle-file %s%s --work-dir %s --dry-run\n' \
@@ -334,6 +351,9 @@ linux_ops_args=(
 )
 if [[ -n "$RPM_FILE" ]]; then
   linux_ops_args+=(--rpm-file "$RPM_FILE")
+fi
+if ! linux_ops_uses_installed_context; then
+  linux_ops_args+=(--app-dir "$APP_DIR")
 fi
 "$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" "${linux_ops_args[@]}"
 
