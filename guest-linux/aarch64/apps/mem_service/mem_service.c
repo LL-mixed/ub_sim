@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8072U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6d885c2dU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8239U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xf2aa25e8U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 28U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2966,6 +2966,22 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "deployment_quota_contract=max-records+max-payload-bytes\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "deployment_quota_gate=config-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "retention_policy=manual-configured\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "retention_policy_gate=config-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "deploy_root=share/lingqu/mem_service/deploy\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3352,7 +3368,7 @@ static int render_package_manifest(char *manifest,
 
 static int run_package_manifest(void)
 {
-    char manifest[8192];
+    char manifest[12288];
     size_t used = 0;
 
     if (render_package_manifest(manifest, sizeof(manifest), &used) != 0) {
@@ -4648,7 +4664,7 @@ static int run_remote_transport_evidence_fixture_check(void)
 
 static int run_package_fixture_check(void)
 {
-    char manifest[8192];
+    char manifest[12288];
     size_t used = 0;
     uint32_t checksum;
 
@@ -4775,6 +4791,12 @@ static int run_package_fixture_check(void)
         strstr(manifest, "release_readiness_gate=release-readiness-fixtures\n") ==
             NULL ||
         strstr(manifest, "required_gate=release-readiness-fixtures\n") == NULL ||
+        strstr(manifest,
+               "deployment_quota_contract=max-records+max-payload-bytes\n") ==
+            NULL ||
+        strstr(manifest, "deployment_quota_gate=config-fixtures\n") == NULL ||
+        strstr(manifest, "retention_policy=manual-configured\n") == NULL ||
+        strstr(manifest, "retention_policy_gate=config-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
@@ -4782,6 +4804,12 @@ static int run_package_fixture_check(void)
         strstr(manifest, "service_auth_boundary=unix-socket-local-only\n") == NULL ||
         strstr(manifest, "metrics_auth_boundary=loopback-only\n") == NULL ||
         strstr(manifest, "config_security_gate=config-fixtures\n") == NULL ||
+        strstr(manifest,
+               "deployment_quota_contract=max-records+max-payload-bytes\n") ==
+            NULL ||
+        strstr(manifest, "deployment_quota_gate=config-fixtures\n") == NULL ||
+        strstr(manifest, "retention_policy=manual-configured\n") == NULL ||
+        strstr(manifest, "retention_policy_gate=config-fixtures\n") == NULL ||
         strstr(manifest, "restore_policy=transactional-staged-restore\n") == NULL ||
         strstr(manifest, "restore_policy_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
@@ -4928,6 +4956,10 @@ static int run_release_manifest(void)
     printf("service_auth_boundary=unix-socket-local-only\n");
     printf("metrics_auth_boundary=loopback-only\n");
     printf("config_security_gate=config-fixtures\n");
+    printf("deployment_quota_contract=max-records+max-payload-bytes\n");
+    printf("deployment_quota_gate=config-fixtures\n");
+    printf("retention_policy=manual-configured\n");
+    printf("retention_policy_gate=config-fixtures\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
     printf("host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service\n");
     printf("systemd_unit=lib/systemd/system/linqu_mem_service.service\n");
@@ -5474,10 +5506,16 @@ struct mem_service_cli_config {
     bool has_store;
     bool has_storage_root;
     bool has_metrics_listen;
+    bool has_max_records;
+    bool has_max_payload_bytes;
+    bool has_retention;
+    uint64_t max_records;
+    uint64_t max_payload_bytes;
     char listen[160];
     char store[512];
     char storage_root[512];
     char metrics_listen[160];
+    char retention[80];
 };
 
 static void trim_ascii(char *value)
@@ -5507,15 +5545,22 @@ static void trim_ascii(char *value)
     }
 }
 
-static bool parse_config_u64(const char *value)
+static bool parse_config_u64_value(const char *value, uint64_t *parsed_out)
 {
     char *end = NULL;
+    unsigned long long parsed;
 
-    if (value == NULL || value[0] == '\0') {
+    if (value == NULL || value[0] == '\0' || value[0] == '-' ||
+        parsed_out == NULL) {
         return false;
     }
-    (void)strtoull(value, &end, 0);
-    return end != value && *end == '\0';
+    errno = 0;
+    parsed = strtoull(value, &end, 0);
+    if (errno != 0 || end == value || *end != '\0') {
+        return false;
+    }
+    *parsed_out = (uint64_t)parsed;
+    return true;
 }
 
 static int copy_config_value(char *out, size_t out_len, const char *value)
@@ -5605,14 +5650,30 @@ static int apply_config_field(struct mem_service_cli_config *config,
     if (strcmp(name, "adapter_enablement") == 0) {
         return strcmp(value, "core") == 0 || strcmp(value, "qwen3") == 0 ? 0 : -1;
     }
-    if (strcmp(name, "max_records") == 0 ||
-        strcmp(name, "max_payload_bytes") == 0) {
-        return parse_config_u64(value) ? 0 : -1;
+    if (strcmp(name, "max_records") == 0) {
+        if (!parse_config_u64_value(value, &config->max_records)) {
+            return -1;
+        }
+        config->has_max_records = true;
+        return 0;
+    }
+    if (strcmp(name, "max_payload_bytes") == 0) {
+        if (!parse_config_u64_value(value, &config->max_payload_bytes)) {
+            return -1;
+        }
+        config->has_max_payload_bytes = true;
+        return 0;
     }
     if (strcmp(name, "node_id") == 0 ||
-        strcmp(name, "cluster_id") == 0 ||
-        strcmp(name, "retention") == 0) {
+        strcmp(name, "cluster_id") == 0) {
         return value[0] != '\0' ? 0 : -1;
+    }
+    if (strcmp(name, "retention") == 0) {
+        if (copy_config_value(config->retention, sizeof(config->retention), value) != 0) {
+            return -1;
+        }
+        config->has_retention = true;
+        return 0;
     }
     return -1;
 }
@@ -5705,10 +5766,16 @@ static int run_config_fixture_check(void)
 {
     char valid_path[160];
     char invalid_path[160];
+    char invalid_quota_path[160];
+    char invalid_retention_path[160];
     struct mem_service_cli_config config;
     FILE *file;
+    uint64_t valid_max_records = 0;
+    uint64_t valid_max_payload_bytes = 0;
+    char valid_retention[80];
     int failures = 0;
 
+    valid_retention[0] = '\0';
     snprintf(valid_path,
              sizeof(valid_path),
              "/tmp/linqu_mem_service_config_fixture_%ld.conf",
@@ -5716,6 +5783,14 @@ static int run_config_fixture_check(void)
     snprintf(invalid_path,
              sizeof(invalid_path),
              "/tmp/linqu_mem_service_config_fixture_%ld_bad.conf",
+             (long)getpid());
+    snprintf(invalid_quota_path,
+             sizeof(invalid_quota_path),
+             "/tmp/linqu_mem_service_config_fixture_%ld_bad_quota.conf",
+             (long)getpid());
+    snprintf(invalid_retention_path,
+             sizeof(invalid_retention_path),
+             "/tmp/linqu_mem_service_config_fixture_%ld_bad_retention.conf",
              (long)getpid());
     file = fopen(valid_path, "w");
     if (file == NULL) {
@@ -5763,33 +5838,101 @@ static int run_config_fixture_check(void)
         unlink(invalid_path);
         return 1;
     }
+    file = fopen(invalid_quota_path, "w");
+    if (file == NULL) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        return 1;
+    }
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_fixture_bad_quota.sock\n"
+                "max_records=-1\n") < 0) {
+        fclose(file);
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        return 1;
+    }
+    if (fclose(file) != 0) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        return 1;
+    }
+    file = fopen(invalid_retention_path, "w");
+    if (file == NULL) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        return 1;
+    }
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_fixture_bad_retention.sock\n"
+                "retention=\n") < 0) {
+        fclose(file);
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        return 1;
+    }
+    if (fclose(file) != 0) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        return 1;
+    }
     if (load_mem_service_config(valid_path, &config, false) != 0 ||
         !config.has_listen ||
         !config.has_store ||
         !config.has_storage_root ||
         !config.has_metrics_listen ||
+        !config.has_max_records ||
+        !config.has_max_payload_bytes ||
+        !config.has_retention ||
         strcmp(config.listen, "unix:/tmp/linqu_mem_service_fixture.sock") != 0 ||
         strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0 ||
         strcmp(config.storage_root, "/tmp/linqu_mem_service_fixture") != 0 ||
-        strcmp(config.metrics_listen, "tcp:127.0.0.1:9900") != 0) {
+        strcmp(config.metrics_listen, "tcp:127.0.0.1:9900") != 0 ||
+        config.max_records != 1024U ||
+        config.max_payload_bytes != 4096U ||
+        strcmp(config.retention, "manual") != 0) {
         failures -= 1;
+    } else {
+        valid_max_records = config.max_records;
+        valid_max_payload_bytes = config.max_payload_bytes;
+        snprintf(valid_retention, sizeof(valid_retention), "%s", config.retention);
     }
     if (load_mem_service_config(invalid_path, &config, true) == 0) {
         failures -= 1;
     }
+    if (load_mem_service_config(invalid_quota_path, &config, true) == 0) {
+        failures -= 1;
+    }
+    if (load_mem_service_config(invalid_retention_path, &config, true) == 0) {
+        failures -= 1;
+    }
     unlink(valid_path);
     unlink(invalid_path);
+    unlink(invalid_quota_path);
+    unlink(invalid_retention_path);
     if (failures != 0) {
         fprintf(stderr, "mem_service config-fixtures: failed\n");
         return 1;
     }
     printf("mem_service config-fixtures: status=ok schema_version=%u listen=%s store=%s "
            "storage_root=%s service_auth_boundary=unix-socket-local-only "
-           "metrics_auth_boundary=loopback-only\n",
+           "metrics_auth_boundary=loopback-only quota_contract=max-records+max-payload-bytes "
+           "max_records=%" PRIu64 " max_payload_bytes=%" PRIu64
+           " retention=%s fail_closed_invalid=3\n",
            MEM_SERVICE_CONFIG_SCHEMA_VERSION,
            "unix:/tmp/linqu_mem_service_fixture.sock",
            "/tmp/linqu_mem_service_fixture.store",
-           "/tmp/linqu_mem_service_fixture");
+           "/tmp/linqu_mem_service_fixture",
+           valid_max_records,
+           valid_max_payload_bytes,
+           valid_retention);
     return 0;
 }
 

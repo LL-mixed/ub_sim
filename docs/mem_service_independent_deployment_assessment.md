@@ -332,7 +332,7 @@ product-grade append-only audit log with truncation/atomicity policy
 schema migration
 ```
 
-Rust 侧已有 `sim-memory` / durable store / prefix cache / execution artifact 相关模型；guest `mem_service` 当前有 snapshot+journal recovery、bounded retained audit ring、`storage_root` durable catalog layout manifest、catalog schema version admission、journal fsync/torn-tail recovery、threshold compaction、transactional restore policy，以及 `sealed-local-block-v1`、`sealed-chunked-block-v1`、`transport-loopback-block-v1`、`transport-tcp-block-v1` 的写入/校验/fail-closed quarantine gate。剩余缺口不再是本地 durable/remote/chunked backend 是否存在，而是真实跨主机 production remote transport evidence 和更长期的产品级 retention/quota/encryption policy。
+Rust 侧已有 `sim-memory` / durable store / prefix cache / execution artifact 相关模型；guest `mem_service` 当前有 snapshot+journal recovery、bounded retained audit ring、`storage_root` durable catalog layout manifest、catalog schema version admission、journal fsync/torn-tail recovery、threshold compaction、transactional restore policy，以及 `sealed-local-block-v1`、`sealed-chunked-block-v1`、`transport-loopback-block-v1`、`transport-tcp-block-v1` 的写入/校验/fail-closed quarantine gate。部署期 `max_records`、`max_payload_bytes` 和 `retention` 已有配置解析、非法值 fail-closed fixture 和 release/package manifest contract。剩余缺口不再是本地 durable/remote/chunked backend 是否存在，而是真实跨主机 production remote transport evidence，以及更长期的运行时 quota admission、retention GC、encryption 和多版本 catalog migration policy。
 
 ### 3.4 模型无关边界还没有完全闭合
 
