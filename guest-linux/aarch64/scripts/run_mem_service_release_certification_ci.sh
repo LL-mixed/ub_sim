@@ -239,6 +239,28 @@ release_verify_app_args() {
   printf ' --app-dir %s' "$APP_DIR"
 }
 
+print_release_verify_command() {
+  printf '%s/verify_mem_service_release_certification.sh --ops-bundle-file %s --remote-transport-bundle-file %s%s --work-dir %s --dry-run\n' \
+    "$SCRIPT_DIR" "$OPS_BUNDLE" "$REMOTE_BUNDLE" "$(release_verify_app_args)" "$RELEASE_VERIFY_WORK_DIR"
+}
+
+print_expanded_release_verify_dry_run() {
+  if is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]; then
+    "$SCRIPT_DIR/verify_mem_service_release_certification.sh" \
+      --ops-bundle-file "$OPS_BUNDLE" \
+      --remote-transport-bundle-file "$REMOTE_BUNDLE" \
+      --work-dir "$RELEASE_VERIFY_WORK_DIR" \
+      --dry-run
+    return
+  fi
+  "$SCRIPT_DIR/verify_mem_service_release_certification.sh" \
+    --ops-bundle-file "$OPS_BUNDLE" \
+    --remote-transport-bundle-file "$REMOTE_BUNDLE" \
+    --app-dir "$APP_DIR" \
+    --work-dir "$RELEASE_VERIFY_WORK_DIR" \
+    --dry-run
+}
+
 linux_ops_rpm_args() {
   if [[ -z "$RPM_FILE" ]]; then
     return 0
@@ -391,8 +413,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
     "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
   printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --dry-run\n' \
     "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
-  printf '%s/verify_mem_service_release_certification.sh --ops-bundle-file %s --remote-transport-bundle-file %s%s --work-dir %s --dry-run\n' \
-    "$SCRIPT_DIR" "$OPS_BUNDLE" "$REMOTE_BUNDLE" "$(release_verify_app_args)" "$RELEASE_VERIFY_WORK_DIR"
+  print_release_verify_command
+  print_expanded_release_verify_dry_run
   exit 0
 fi
 

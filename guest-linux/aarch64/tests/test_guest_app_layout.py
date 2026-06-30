@@ -433,6 +433,9 @@ def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnabl
     assert "--consumer-host consumer-b" in dry_run.stdout
     assert "--network-partition-marker /tmp/remote-transport.partition" in dry_run.stdout
     assert "verify_mem_service_release_certification.sh --ops-bundle-file" in dry_run.stdout
+    assert "verify_mem_service_ops_certification_bundle.sh --bundle-file" in dry_run.stdout
+    assert "verify_mem_service_remote_transport_bundle.sh --bundle-file" in dry_run.stdout
+    assert "release-readiness --ops-evidence-file" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification/linux_ops" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification/remote_transport" in dry_run.stdout
     assert preflight.returncode == 1
