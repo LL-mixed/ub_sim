@@ -732,6 +732,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("release-readiness --ops-evidence-file", cli_makefile)
         self.assertIn(
+            "$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_verify=",
+            cli_makefile,
+        )
+        self.assertIn(
+            "$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_readiness_gate=",
+            cli_makefile,
+        )
+        self.assertIn(
             "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify",
             cli_makefile,
         )

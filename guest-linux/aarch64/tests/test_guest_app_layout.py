@@ -1302,6 +1302,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify" in app_makefile
+    assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_verify=" in app_makefile
+    assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_readiness_gate=" in app_makefile
     verifier = (ROOT / "scripts" / "verify_mem_service_installed_layout.sh").read_text()
     assert "PKGCONFIG_FILE=" in verifier
     assert "lib/pkgconfig/lingqu-mem-service.pc" in verifier

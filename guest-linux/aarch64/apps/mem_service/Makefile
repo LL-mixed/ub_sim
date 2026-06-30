@@ -1101,6 +1101,8 @@ install-smoke: install
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host version
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host version-fixtures
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^overall_status=not-certified$$'
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_verify=scripts/verify_mem_service_release_certification.sh --ops-bundle-file --remote-transport-bundle-file$$'
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file$$'
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness-fixtures
 
 clean:
