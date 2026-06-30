@@ -107,6 +107,8 @@ static bool mem_service_request_exceeds_payload_limit(
 static bool mem_service_payload_get_u64_checked(const char *payload,
                                                 const char *name,
                                                 uint64_t *out);
+static int mem_service_write_durable_catalog_manifest(const char *storage_root,
+                                                      const char *store_path);
 static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc);
 static bool mem_service_apply_audit_retention(struct mem_service *svc,
                                               uint64_t max_audit_events);
@@ -1685,11 +1687,14 @@ static int mem_service_prepare_durable_catalog_layout(const char *storage_root)
     return 0;
 }
 
-static int mem_service_check_catalog_schema_version(const char *storage_root)
+static int mem_service_admit_or_migrate_catalog_schema_version(
+    const char *storage_root,
+    const char *store_path)
 {
     char manifest_path[512];
     char line[512];
     FILE *file;
+    bool saw_schema_version = false;
 
     if (storage_root == NULL || storage_root[0] == '\0') {
         return 0;
@@ -1716,15 +1721,20 @@ static int mem_service_check_catalog_schema_version(const char *storage_root)
                             &end,
                             10);
             fclose(file);
-            if (end == line + sizeof("catalog_schema_version=") - 1U) {
-                return 0;
+            if (end == line + sizeof("catalog_schema_version=") - 1U ||
+                *end != '\0') {
+                return -1;
             }
+            saw_schema_version = true;
             return parsed > (long)MEM_SERVICE_DURABLE_CATALOG_MAX_KNOWN_VERSION
                        ? -1
                        : 0;
         }
     }
     fclose(file);
+    if (!saw_schema_version && store_path != NULL && store_path[0] != '\0') {
+        return mem_service_write_durable_catalog_manifest(storage_root, store_path);
+    }
     return 0;
 }
 
@@ -6417,12 +6427,53 @@ int mem_service_run_durable_catalog_fixture_check(void)
         rmdir(storage_root);
         return 1;
     }
-    /* Migration policy: the current schema version (1) must be accepted by the
-     * serve-time gate, and an unknown future version must be refused. */
-    if (mem_service_check_catalog_schema_version(storage_root) != 0) {
+    /* Migration policy: current schema version (1) must be accepted, a legacy
+     * manifest without a schema version must be upgraded to v1, and an unknown
+     * future version must be refused. */
+    if (mem_service_admit_or_migrate_catalog_schema_version(storage_root,
+                                                            store_path) != 0) {
         fprintf(stderr,
                 "mem_service durable-catalog-fixtures: current schema version "
                 "rejected\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    {
+        FILE *legacy_file = fopen(manifest_path, "w");
+
+        if (legacy_file == NULL ||
+            fprintf(legacy_file,
+                    "%s\nlayout=storage-root-v1\nstore_path=%s\n",
+                    MEM_SERVICE_DURABLE_CATALOG_MAGIC,
+                    store_path) < 0 ||
+            fclose(legacy_file) != 0) {
+            if (legacy_file != NULL) {
+                fclose(legacy_file);
+            }
+            fprintf(stderr,
+                    "mem_service durable-catalog-fixtures: legacy manifest write "
+                    "failed\n");
+            unlink(manifest_path);
+            rmdir(quarantine_dir);
+            rmdir(block_dir);
+            rmdir(catalog_dir);
+            rmdir(storage_root);
+            return 1;
+        }
+    }
+    if (mem_service_admit_or_migrate_catalog_schema_version(storage_root,
+                                                            store_path) != 0 ||
+        !mem_service_file_contains(manifest_path,
+                                   "catalog_schema_version=1\n") ||
+        !mem_service_file_contains(manifest_path,
+                                   "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1")) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: legacy schema migration "
+                "failed\n");
         unlink(manifest_path);
         rmdir(quarantine_dir);
         rmdir(block_dir);
@@ -6466,10 +6517,53 @@ int mem_service_run_durable_catalog_fixture_check(void)
             return 1;
         }
     }
-    if (mem_service_check_catalog_schema_version(future_root) != -1) {
+    if (mem_service_admit_or_migrate_catalog_schema_version(future_root,
+                                                            store_path) !=
+        -1) {
         fprintf(stderr,
                 "mem_service durable-catalog-fixtures: unknown future schema "
                 "version not refused\n");
+        unlink(manifest_path);
+        rmdir(quarantine_dir);
+        rmdir(block_dir);
+        rmdir(catalog_dir);
+        rmdir(storage_root);
+        unlink(future_manifest_path);
+        rmdir(future_catalog_dir);
+        rmdir(future_root);
+        return 1;
+    }
+    {
+        FILE *malformed_file = fopen(future_manifest_path, "w");
+
+        if (malformed_file == NULL ||
+            fprintf(malformed_file,
+                    "%s\nlayout=storage-root-v1\ncatalog_schema_version=1abc\n",
+                    MEM_SERVICE_DURABLE_CATALOG_MAGIC) < 0 ||
+            fclose(malformed_file) != 0) {
+            if (malformed_file != NULL) {
+                fclose(malformed_file);
+            }
+            fprintf(stderr,
+                    "mem_service durable-catalog-fixtures: malformed manifest "
+                    "write failed\n");
+            unlink(manifest_path);
+            rmdir(quarantine_dir);
+            rmdir(block_dir);
+            rmdir(catalog_dir);
+            rmdir(storage_root);
+            unlink(future_manifest_path);
+            rmdir(future_catalog_dir);
+            rmdir(future_root);
+            return 1;
+        }
+    }
+    if (mem_service_admit_or_migrate_catalog_schema_version(future_root,
+                                                            store_path) !=
+        -1) {
+        fprintf(stderr,
+                "mem_service durable-catalog-fixtures: malformed schema version "
+                "not refused\n");
         unlink(manifest_path);
         rmdir(quarantine_dir);
         rmdir(block_dir);
@@ -6489,7 +6583,7 @@ int mem_service_run_durable_catalog_fixture_check(void)
     rmdir(future_catalog_dir);
     rmdir(future_root);
     printf("mem_service durable-catalog-fixtures: status=ok layout=storage-root-v1 "
-           "catalog_schema_version=%d migration_policy=accept-current-reject-future "
+           "catalog_schema_version=%d migration_policy=migrate-legacy-to-v1-reject-future "
            "manifest=%s store=%s payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1\n",
            MEM_SERVICE_DURABLE_CATALOG_SCHEMA_VERSION,
            MEM_SERVICE_DURABLE_CATALOG_MANIFEST,
@@ -11668,7 +11762,8 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
                 storage_root != NULL ? storage_root : "");
         return 1;
     }
-    if (mem_service_check_catalog_schema_version(storage_root) != 0) {
+    if (mem_service_admit_or_migrate_catalog_schema_version(storage_root,
+                                                            store_path) != 0) {
         fprintf(stderr,
                 "mem_service serve: unknown catalog schema version root=%s\n",
                 storage_root != NULL ? storage_root : "");
