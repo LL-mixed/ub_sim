@@ -1303,6 +1303,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run" in app_makefile
     assert "verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar" in app_makefile
     assert "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm" in app_makefile
+    assert "| grep -q 'release-readiness --ops-evidence-file'" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_verify=" in app_makefile

@@ -730,6 +730,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar",
             cli_makefile,
         )
+        self.assertIn(
+            "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm",
+            cli_makefile,
+        )
+        self.assertIn("| grep -q 'release-readiness --ops-evidence-file'", cli_makefile)
         self.assertIn("release-readiness --ops-evidence-file", cli_makefile)
         self.assertIn(
             "$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^release_certification_verify=",

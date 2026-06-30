@@ -706,6 +706,7 @@ install-smoke: install
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_linux_ops_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --out-dir /tmp/linqu_mem_service_linux_ops --dry-run | grep -q 'ops-certification-linux-ci-smoke --rpm-file'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --out-dir /tmp/linqu_mem_service_remote_transport --dry-run | grep -q 'verify_mem_service_remote_transport_bundle.sh --bundle-file'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'verify_mem_service_release_certification.sh --ops-bundle-file'
+	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh --no-runtime
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/package-manifest.txt
