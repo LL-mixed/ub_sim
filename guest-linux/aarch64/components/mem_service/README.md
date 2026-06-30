@@ -80,10 +80,14 @@ a Qwen3 adapter inspect build:
   persists the evidence, and verifies it as a single CI gate. Local fixtures
   cover the positive/negative parser behavior and the non-Linux fail-closed
   path.
-- `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm>`
-  is the recommended real-Linux CI wrapper for deployment certification. It
-  runs `linux-ops-deployment-smoke` followed by
-  `linux-ops-certification-bundle` and emits
+- `scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm>
+  [--rpm-file <current-rpm>]` is the recommended real-Linux CI wrapper for
+  deployment certification. In source-tree mode it runs
+  `linux-ops-deployment-smoke` followed by `linux-ops-certification-bundle`.
+  When run from an installed `share/` tree, it self-locates the installed host
+  binary and installed manifests, requires `--rpm-file <current-rpm>`, then
+  performs the rpm/systemd/metrics/alert/evidence/bundle flow without a source
+  checkout. Both modes emit
   `ops-certification-linux-ci.evidence` plus
   `ops-certification-upgrade-rollback.marker` plus
   `linqu-mem-service-ops-certification-bundle.tar`.
@@ -126,6 +130,9 @@ a Qwen3 adapter inspect build:
   installed host binary and installed manifests when it is run from an
   installed `share/` tree, so remote transport evidence and its bundle can be
   generated without a source checkout.
+  `scripts/run_mem_service_linux_ops_ci.sh` has the same installed self-location
+  behavior for real Linux ops certification; installed mode requires the current
+  rpm artifact through `--rpm-file` instead of rebuilding it from source.
   `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition

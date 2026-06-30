@@ -7,6 +7,7 @@ APP_DIR="$ROOT_DIR/apps/mem_service"
 APP_DIR_EXPLICIT=0
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/out/mem_service/release_certification_ci}"
 ROLLBACK_RPM=""
+RPM_FILE=""
 SOURCE=""
 PRODUCER_HOST=""
 CONSUMER_HOST=""
@@ -40,6 +41,8 @@ Outputs:
 
 Options:
   --rollback-rpm PATH              Previous-release rpm used for rollback validation.
+  --rpm-file PATH                  Current-release rpm used by installed Linux ops CI.
+                                   Source-tree mode builds this via Makefile when omitted.
   --source tcp:IP:PORT             Producer TCP payload source for remote transport evidence.
   --producer-host HOST             Producer host identity recorded in evidence.
   --consumer-host HOST             Consumer host identity recorded in evidence.
@@ -60,6 +63,14 @@ while (( $# > 0 )); do
         exit 2
       fi
       ROLLBACK_RPM="$2"
+      shift 2
+      ;;
+    --rpm-file)
+      if (( $# < 2 )); then
+        echo "--rpm-file requires a path" >&2
+        exit 2
+      fi
+      RPM_FILE="$2"
       shift 2
       ;;
     --source)
@@ -219,6 +230,13 @@ release_verify_app_args() {
   printf ' --app-dir %s' "$APP_DIR"
 }
 
+linux_ops_rpm_args() {
+  if [[ -z "$RPM_FILE" ]]; then
+    return 0
+  fi
+  printf ' --rpm-file %s' "$RPM_FILE"
+}
+
 preflight_source() {
   local source="$1"
   local address="${source#tcp:}"
@@ -292,8 +310,8 @@ fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   print_sdk_gate_command
-  printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s --out-dir %s --dry-run\n' \
-    "$SCRIPT_DIR" "$ROLLBACK_RPM" "$OPS_OUT_DIR"
+  printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s --out-dir %s --dry-run\n' \
+    "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$OPS_OUT_DIR"
   printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --dry-run\n' \
     "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
   printf '%s/verify_mem_service_release_certification.sh --ops-bundle-file %s --remote-transport-bundle-file %s%s --work-dir %s --dry-run\n' \
@@ -310,9 +328,14 @@ mkdir -p "$OUT_DIR"
 
 run_sdk_gate
 
-"$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" \
-  --rollback-rpm "$ROLLBACK_RPM" \
+linux_ops_args=(
+  --rollback-rpm "$ROLLBACK_RPM"
   --out-dir "$OPS_OUT_DIR"
+)
+if [[ -n "$RPM_FILE" ]]; then
+  linux_ops_args+=(--rpm-file "$RPM_FILE")
+fi
+"$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" "${linux_ops_args[@]}"
 
 remote_transport_args=(
   --source "$SOURCE"

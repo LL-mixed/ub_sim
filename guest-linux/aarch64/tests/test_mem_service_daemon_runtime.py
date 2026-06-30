@@ -3630,6 +3630,21 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
             )
+            linux_ops_ci_dry_run = subprocess.run(
+                [
+                    str(scripts_dir / "run_mem_service_linux_ops_ci.sh"),
+                    "--rollback-rpm",
+                    "/tmp/linqu-mem-service-prev.rpm",
+                    "--rpm-file",
+                    "/tmp/linqu-mem-service-current.rpm",
+                    "--out-dir",
+                    str(destdir / "linux-ops-ci"),
+                    "--dry-run",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
             installed_layout = subprocess.run(
                 [
                     str(scripts_dir / "verify_mem_service_installed_layout.sh"),
@@ -3655,6 +3670,8 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                     str(scripts_dir / "run_mem_service_release_certification_ci.sh"),
                     "--rollback-rpm",
                     "/tmp/linqu-mem-service-prev.rpm",
+                    "--rpm-file",
+                    "/tmp/linqu-mem-service-current.rpm",
                     "--source",
                     "tcp:10.0.0.11:9000",
                     "--producer-host",
@@ -3686,6 +3703,15 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 remote_ci_dry_run.stdout,
             )
             self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", remote_ci_dry_run.stdout)
+            self.assertIn(
+                f"{installed_host} ops-certification-linux-ci-smoke",
+                linux_ops_ci_dry_run.stdout,
+            )
+            self.assertIn(
+                "verify_mem_service_ops_certification_bundle.sh --bundle-file",
+                linux_ops_ci_dry_run.stdout,
+            )
+            self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", linux_ops_ci_dry_run.stdout)
             self.assertIn("[mem-service-installed-layout] PASS", installed_layout.stdout)
             self.assertIn(
                 "pkg-config --define-prefix --exists lingqu-mem-service",
@@ -3697,6 +3723,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn(
                 "verify_mem_service_installed_sdk.sh --work-dir",
+                release_ci_dry_run.stdout,
+            )
+            self.assertIn(
+                "--rpm-file /tmp/linqu-mem-service-current.rpm",
                 release_ci_dry_run.stdout,
             )
             self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", release_ci_dry_run.stdout)
