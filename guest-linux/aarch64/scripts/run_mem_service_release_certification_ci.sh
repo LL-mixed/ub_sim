@@ -401,6 +401,9 @@ if [[ "$PRE_FLIGHT" == "1" ]]; then
       "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
     printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --preflight\n' \
       "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
+    printf 'preflight: final release readiness gate after certification artifacts exist\n'
+    print_release_verify_command
+    print_expanded_release_verify_dry_run
     exit 0
   fi
   run_preflight

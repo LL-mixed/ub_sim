@@ -301,6 +301,7 @@ package-tarball-smoke: package-tarball
 	grep -q '^distributable_package_format=tar$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	grep -q '^distributable_package_gate=package-tarball-smoke$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh --no-runtime
 	$(PACKAGE_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host --smoke
 	$(PACKAGE_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host package-fixtures
@@ -381,6 +382,7 @@ package-deb-smoke: package-deb
 	grep -q '^native_package_gate=package-deb-smoke$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
 	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
 	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	file $(DEB_VERIFY_ROOT)/data/usr/bin/linqu_mem_service | grep -q 'ELF 64-bit.*ARM aarch64'
 	file $(DEB_VERIFY_ROOT)/data/usr/libexec/lingqu/mem_service/linqu_mem_service_host | grep -q 'ELF 64-bit.*ARM aarch64'
 
@@ -440,6 +442,7 @@ package-rpm-smoke: package-rpm
 	grep -q '^file_class=release_scripts count=10$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
 
 linux-ops-certification-smoke: package-rpm-smoke linqu_mem_service_host
 	test -f $(OPS_CERTIFICATION_UPGRADE_ROLLBACK_MARKER)
@@ -710,6 +713,7 @@ install-smoke: install
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --out-dir /tmp/linqu_mem_service_remote_transport --dry-run | grep -q 'verify_mem_service_remote_transport_bundle.sh --bundle-file'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'verify_mem_service_release_certification.sh --ops-bundle-file'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh --no-runtime
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
 	test -f $(INSTALL_DATADIR)/package-manifest.txt

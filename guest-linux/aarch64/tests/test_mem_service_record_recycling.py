@@ -734,6 +734,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm",
             cli_makefile,
         )
+        self.assertIn(
+            "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run",
+            cli_makefile,
+        )
         self.assertIn("| grep -q 'release-readiness --ops-evidence-file'", cli_makefile)
         self.assertIn("release-readiness --ops-evidence-file", cli_makefile)
         self.assertIn(
@@ -812,9 +816,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh",
             cli_makefile,
         )
+        self.assertIn(
+            "--preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'",
+            cli_makefile,
+        )
         self.assertGreaterEqual(
             cli_makefile.count("| grep -q 'release-readiness --ops-evidence-file'"),
-            4,
+            8,
         )
         self.assertIn("^upgrade_rollback_policy_checksum=0xf7943816$$", cli_makefile)
         self.assertIn(

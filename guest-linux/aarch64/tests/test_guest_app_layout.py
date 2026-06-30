@@ -401,6 +401,29 @@ def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnabl
         text=True,
         capture_output=True,
     )
+    preflight_dry_run = subprocess.run(
+        [
+            str(runner_path),
+            "--rollback-rpm",
+            "/tmp/linqu-mem-service-prev.rpm",
+            "--source",
+            "tcp:10.0.0.11:9000",
+            "--producer-host",
+            "producer-a",
+            "--consumer-host",
+            "consumer-b",
+            "--network-partition-marker",
+            "/tmp/remote-transport.partition",
+            "--out-dir",
+            "/tmp/linqu-mem-service-release-certification",
+            "--preflight",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     preflight = subprocess.run(
         [
             str(runner_path),
@@ -438,6 +461,11 @@ def test_mem_service_release_certification_ci_runner_is_reusable_and_dry_runnabl
     assert "release-readiness --ops-evidence-file" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification/linux_ops" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification/remote_transport" in dry_run.stdout
+    assert "preflight: final release readiness gate" in preflight_dry_run.stdout
+    assert "verify_mem_service_release_certification.sh --ops-bundle-file" in preflight_dry_run.stdout
+    assert "verify_mem_service_ops_certification_bundle.sh --bundle-file" in preflight_dry_run.stdout
+    assert "verify_mem_service_remote_transport_bundle.sh --bundle-file" in preflight_dry_run.stdout
+    assert "release-readiness --ops-evidence-file" in preflight_dry_run.stdout
     assert preflight.returncode == 1
     assert "PREFLIGHT FAIL" in preflight.stderr
     assert "rollback rpm not readable" in preflight.stderr
@@ -1255,7 +1283,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^rpm_native_package_format=rpm$$" in app_makefile
     assert "^rpm_native_package_gate=package-rpm-smoke$$" in app_makefile
     assert "$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh" in app_makefile
-    assert app_makefile.count("| grep -q 'release-readiness --ops-evidence-file'") >= 4
+    assert "--preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'" in app_makefile
+    assert app_makefile.count("| grep -q 'release-readiness --ops-evidence-file'") >= 8
     assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
     assert "examples/mem_service_serving_example.c" in app_makefile
     assert "examples/mem_service_pretraining_example.c" in app_makefile
@@ -1307,6 +1336,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run" in app_makefile
     assert "verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar" in app_makefile
     assert "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm" in app_makefile
+    assert "run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run" in app_makefile
     assert "| grep -q 'release-readiness --ops-evidence-file'" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify" in app_makefile
     assert "$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify" in app_makefile
