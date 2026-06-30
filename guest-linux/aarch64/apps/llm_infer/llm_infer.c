@@ -23,7 +23,9 @@
 #include "uburma_cmd_user_compat.h"
 #include "components/llm_infer/llm_infer.h"
 #include "components/mem_service/mem_service.h"
+#include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_qwen3.h"
+#include "components/mem_service/mem_service_wire_client.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
@@ -9027,8 +9029,330 @@ static int probe_real_dispatch_candidate(const char *role)
     return 0;
 }
 
-int main(void)
+static int llm_infer_mem_service_expect_ok(int rc,
+                                           enum mem_service_wire_status status,
+                                           const char *operation)
 {
+    if (rc != 0 || status != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "[llm_infer] mem_service %s failed rc=%d status=%u\n",
+                operation,
+                rc,
+                (unsigned)status);
+        return -1;
+    }
+    return 0;
+}
+
+static int llm_infer_mem_service_expect_not_found(int rc,
+                                                  enum mem_service_wire_status status,
+                                                  const char *operation)
+{
+    if (status == MEM_SERVICE_WIRE_STATUS_NOT_FOUND) {
+        return 0;
+    }
+    if (rc == 0 && status == MEM_SERVICE_WIRE_STATUS_OK) {
+        return 1;
+    }
+    fprintf(stderr,
+            "[llm_infer] mem_service %s failed rc=%d status=%u\n",
+            operation,
+            rc,
+            (unsigned)status);
+    return -1;
+}
+
+static int llm_infer_qwen3_serving_mem_service_verify(
+    const struct mem_service_client *client)
+{
+    struct mem_service_client_record record;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    struct mem_service_client_kv_selector kv_selector = {
+        .block_hash = "llm-infer/qwen3/kv/range-0",
+    };
+    struct mem_service_client_artifact_query runtime_query = {
+        .key = "llm-infer/qwen3/runtime/range-0",
+        .expected_session_id = "llm-infer-serving-session",
+        .expected_model_key = llm_infer_qwen3_model_key(),
+        .expected_artifact_kind = "hidden-range",
+        .expected_artifact_id = "range-0",
+        .has_expected_owner = true,
+        .expected_owner = 1,
+        .has_expected_version = true,
+        .expected_version = 7,
+        .has_expected_checksum = true,
+        .expected_checksum = 0x6c6c6d7100000007ULL,
+    };
+    struct mem_service_client_artifact_query execution_query = {
+        .key = "llm-infer/qwen3/execution/logits-0",
+        .expected_session_id = "llm-infer-serving-session",
+        .expected_model_key = llm_infer_qwen3_model_key(),
+        .expected_artifact_kind = "logits",
+        .expected_artifact_id = "logits-0",
+        .has_expected_version = true,
+        .expected_version = 8,
+        .has_expected_checksum = true,
+        .expected_checksum = 0x6c6c6d7100000008ULL,
+    };
+
+    if (llm_infer_mem_service_expect_ok(
+            mem_service_client_lookup_prefix_entry(client,
+                                                   "llm-infer-serving-request",
+                                                   "qwen3-serving-prefix",
+                                                   &record,
+                                                   &status),
+            status,
+            "lookup_prefix") != 0 ||
+        strcmp(record.block_hash, "llm-infer/qwen3/prefix/range-0") != 0 ||
+        strcmp(record.state, "filled") != 0) {
+        fprintf(stderr,
+                "[llm_infer] mem_service prefix verify failed "
+                "key=%s block_hash=%s state=%s hot_segment=%" PRIu64 " "
+                "last_result=%" PRIu64 " version=%" PRIu64 "\n",
+                record.key,
+                record.block_hash,
+                record.state,
+                record.hot_segment_id,
+                record.last_result_segment,
+                record.version);
+        return -1;
+    }
+    if (llm_infer_mem_service_expect_ok(
+            mem_service_client_resolve_kv_segment(client,
+                                                  &kv_selector,
+                                                  &record,
+                                                  &status),
+            status,
+            "resolve_kv") != 0 ||
+        strcmp(record.block_hash, "llm-infer/qwen3/kv/range-0") != 0 ||
+        record.hot_segment_id != W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET ||
+        strcmp(record.state, "filled") != 0) {
+        fprintf(stderr, "[llm_infer] mem_service kv verify failed\n");
+        return -1;
+    }
+    if (llm_infer_mem_service_expect_ok(
+            mem_service_client_resolve_runtime_handoff(client,
+                                                       &runtime_query,
+                                                       &record,
+                                                       &status),
+            status,
+            "resolve_runtime_handoff") != 0 ||
+        record.version != 7 ||
+        record.object_backing_len != llm_infer_qwen3_handoff_hidden_bytes(0)) {
+        fprintf(stderr, "[llm_infer] mem_service runtime verify failed\n");
+        return -1;
+    }
+    if (llm_infer_mem_service_expect_ok(
+            mem_service_client_query_execution_artifact(client,
+                                                        &execution_query,
+                                                        &record,
+                                                        &status),
+            status,
+            "query_execution_artifact") != 0 ||
+        record.version != 8 ||
+        record.object_payload_checksum != 0x6c6c6d7100000008ULL) {
+        fprintf(stderr, "[llm_infer] mem_service execution verify failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int llm_infer_qwen3_serving_mem_service_publish(
+    const struct mem_service_client *client)
+{
+    struct mem_service_client_record record;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    struct mem_service_client_block_entry prefix = {
+        .request_id = "llm-infer-serving-request",
+        .prefix_group = "qwen3-serving-prefix",
+        .group_id = "qwen3-serving-group",
+        .block_hash = "llm-infer/qwen3/prefix/range-0",
+        .idempotency_key = "llm-infer/qwen3/prefix/range-0/v1",
+        .has_placement_node = true,
+        .placement_node = 0,
+        .has_placement_level = true,
+        .placement_level = 2,
+        .has_hot_segment_id = true,
+        .hot_segment_id = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+        .state = "filled",
+        .has_result_segment_id = true,
+        .result_segment_id = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+    };
+    struct mem_service_client_block_entry kv = {
+        .request_id = "llm-infer-serving-request",
+        .prefix_group = "qwen3-serving-kv",
+        .group_id = "qwen3-serving-kv-group",
+        .block_hash = "llm-infer/qwen3/kv/range-0",
+        .idempotency_key = "llm-infer/qwen3/kv/range-0/v1",
+        .has_placement_node = true,
+        .placement_node = 0,
+        .has_placement_level = true,
+        .placement_level = 3,
+        .has_hot_segment_id = true,
+        .hot_segment_id = W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+        .state = "filled",
+        .has_result_segment_id = true,
+        .result_segment_id = W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+    };
+    struct mem_service_client_artifact runtime = {
+        .key = "llm-infer/qwen3/runtime/range-0",
+        .idempotency_key = "llm-infer/qwen3/runtime/range-0/v7",
+        .session_id = "llm-infer-serving-session",
+        .request_id = "llm-infer-serving-request",
+        .model_key = llm_infer_qwen3_model_key(),
+        .artifact_kind = "hidden-range",
+        .artifact_id = "range-0",
+        .has_owner = true,
+        .owner = 1,
+        .has_payload_kind = true,
+        .payload_kind = W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+        .has_backing_offset = true,
+        .backing_offset = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+        .has_backing_len = true,
+        .backing_len = 0,
+        .has_checksum = true,
+        .checksum = 0x6c6c6d7100000007ULL,
+        .has_version = true,
+        .version = 7,
+    };
+    struct mem_service_client_artifact execution = {
+        .key = "llm-infer/qwen3/execution/logits-0",
+        .idempotency_key = "llm-infer/qwen3/execution/logits-0/v8",
+        .session_id = "llm-infer-serving-session",
+        .request_id = "llm-infer-serving-request",
+        .model_key = llm_infer_qwen3_model_key(),
+        .artifact_kind = "logits",
+        .artifact_id = "logits-0",
+        .has_payload_kind = true,
+        .payload_kind = W4_QWEN3_OBMM_KIND_TERMINAL_LOGITS,
+        .has_backing_offset = true,
+        .backing_offset = W4_QWEN3_LOGITS_TABLE_BASE,
+        .has_backing_len = true,
+        .backing_len = W4_QWEN3_LOGITS_TABLE_ENTRY_BYTES,
+        .has_checksum = true,
+        .checksum = 0x6c6c6d7100000008ULL,
+        .has_version = true,
+        .version = 8,
+    };
+
+    runtime.backing_len = llm_infer_qwen3_handoff_hidden_bytes(0);
+    kv.has_result_segment_id = true;
+    if (llm_infer_mem_service_expect_ok(
+            mem_service_client_register_prefix_entry(client,
+                                                     &prefix,
+                                                     &record,
+                                                     &status),
+            status,
+            "register_prefix") != 0 ||
+        llm_infer_mem_service_expect_ok(
+            mem_service_client_publish_kv_segment(client,
+                                                  &kv,
+                                                  &record,
+                                                  &status),
+            status,
+            "publish_kv") != 0 ||
+        llm_infer_mem_service_expect_ok(
+            mem_service_client_publish_runtime_handoff(client,
+                                                       &runtime,
+                                                       &record,
+                                                       &status),
+            status,
+            "publish_runtime_handoff") != 0 ||
+        llm_infer_mem_service_expect_ok(
+            mem_service_client_register_execution_artifact(client,
+                                                           &execution,
+                                                           &record,
+                                                           &status),
+            status,
+            "register_execution_artifact") != 0) {
+        return -1;
+    }
+    return llm_infer_qwen3_serving_mem_service_verify(client);
+}
+
+static int run_llm_infer_mem_service_serving_mode(const char *connect_spec,
+                                                  bool publish)
+{
+    struct mem_service_client client;
+    struct mem_service_wire_client_options options;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    int preexisting;
+
+    if (connect_spec == NULL || connect_spec[0] == '\0') {
+        fprintf(stderr, "[llm_infer] missing mem_service connect spec\n");
+        return 2;
+    }
+    mem_service_wire_client_options_init(&options);
+    options.timeout_ms = 2000;
+    options.max_attempts = 3;
+    options.retry_backoff_ms = 10;
+    options.retry_on_timeout = 1;
+    mem_service_client_init_with_options(&client, connect_spec, &options);
+    if (llm_infer_mem_service_expect_ok(mem_service_client_health(&client, &status),
+                                        status,
+                                        "health") != 0 ||
+        llm_infer_mem_service_expect_ok(mem_service_client_ready(&client, &status),
+                                        status,
+                                        "ready") != 0) {
+        return 1;
+    }
+    if (publish) {
+        preexisting = llm_infer_mem_service_expect_not_found(
+            mem_service_client_lookup_prefix_entry(&client,
+                                                   "llm-infer-serving-request",
+                                                   "qwen3-serving-prefix",
+                                                   &(struct mem_service_client_record){0},
+                                                   &status),
+            status,
+            "preflight_lookup_prefix");
+        if (preexisting < 0) {
+            return 1;
+        }
+        if (llm_infer_qwen3_serving_mem_service_publish(&client) != 0) {
+            return 1;
+        }
+        printf("linqu_llm_infer_mem_service_serving_publish=ok "
+               "connect=%s model_key=%s preexisting=%u "
+               "prefix=llm-infer/qwen3/prefix/range-0 "
+               "kv=llm-infer/qwen3/kv/range-0 "
+               "runtime_hidden_bytes=%" PRIu64 " "
+               "kv_state_bytes=%" PRIu64 "\n",
+               connect_spec,
+               llm_infer_qwen3_model_key(),
+               preexisting > 0 ? 1U : 0U,
+               llm_infer_qwen3_handoff_hidden_bytes(0),
+               llm_infer_qwen3_range_kv_state_bytes(0, 1));
+        return 0;
+    }
+    if (llm_infer_qwen3_serving_mem_service_verify(&client) != 0) {
+        return 1;
+    }
+    printf("linqu_llm_infer_mem_service_serving_verify=ok "
+           "connect=%s model_key=%s warm_reuse=1 "
+           "prefix=llm-infer/qwen3/prefix/range-0 "
+           "kv=llm-infer/qwen3/kv/range-0 "
+           "runtime_version=7 execution_version=8\n",
+           connect_spec,
+           llm_infer_qwen3_model_key());
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--mem-service-serving-publish") == 0) {
+        return run_llm_infer_mem_service_serving_mode(argv[2], true);
+    }
+    if (argc == 3 && strcmp(argv[1], "--mem-service-serving-verify") == 0) {
+        return run_llm_infer_mem_service_serving_mode(argv[2], false);
+    }
+    if (argc != 1) {
+        fprintf(stderr,
+                "usage: linqu_llm_infer "
+                "[--mem-service-serving-publish unix:/path.sock] "
+                "[--mem-service-serving-verify unix:/path.sock]\n");
+        return 2;
+    }
+
     static const char *resource_candidates[] = {
         UB_RESOURCE0_WC_PATH,
         UB_RESOURCE1_WC_PATH,

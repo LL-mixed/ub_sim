@@ -26,6 +26,7 @@ APP_NAMES=(
   ssd_gsva_test
   mem_service
   llm_infer
+  pretraining_client
 )
 
 usage() {

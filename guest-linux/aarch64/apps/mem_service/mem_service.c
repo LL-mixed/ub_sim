@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9215U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x2dcdb432U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9354U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x26ad5518U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -95,6 +95,7 @@ static void usage(const char *argv0)
     printf(" [network-transport-block-fixtures]");
     printf(" [remote-block-backend-policy-fixtures]");
     printf(" [remote-transport-evidence-fixtures]");
+    printf(" [remote-transport-serve-fixture --listen tcp:<ipv4>:<port> --payload-len <bytes>]");
     printf(" [remote-transport-generate-evidence --source tcp:<ipv4>:<port> --producer-host <host> --consumer-host <host> --network-partition-marker <path> --evidence-file <path>]");
     printf(" [remote-transport-verify --evidence-file <path>]");
     printf(" [api-abi-policy] [api-abi-fixtures]");
@@ -2942,6 +2943,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "installed_sdk_runtime_reuse=installed-sdk-runtime-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_sdk_runtime_reuse_scope=daemon-restart+durable-store+serving+pretraining\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "config_root=share/lingqu/mem_service/config\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -4242,6 +4251,31 @@ static int run_remote_transport_verify(int argc, char **argv)
     return 0;
 }
 
+static int run_remote_transport_serve_fixture(int argc, char **argv)
+{
+    const char *listen_spec = option_value(argc, argv, "--listen");
+    const char *payload_len_arg = option_value(argc, argv, "--payload-len");
+    char *end = NULL;
+    unsigned long long payload_len;
+
+    if (listen_spec == NULL || payload_len_arg == NULL ||
+        listen_spec[0] == '\0' || payload_len_arg[0] == '\0') {
+        fprintf(stderr,
+                "mem_service remote-transport-serve-fixture: "
+                "missing --listen or --payload-len\n");
+        return 2;
+    }
+    payload_len = strtoull(payload_len_arg, &end, 10);
+    if (end == payload_len_arg || end == NULL || *end != '\0' ||
+        payload_len == 0ULL) {
+        fprintf(stderr,
+                "mem_service remote-transport-serve-fixture: invalid payload length\n");
+        return 2;
+    }
+    return mem_service_run_tcp_payload_fixture_source(listen_spec,
+                                                     (uint64_t)payload_len);
+}
+
 static bool remote_transport_parse_source_ip(const char *source,
                                              char *ip,
                                              size_t ip_len)
@@ -4843,6 +4877,11 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime\n") ==
             NULL ||
+        strstr(manifest, "installed_sdk_runtime_reuse=installed-sdk-runtime-smoke\n") ==
+            NULL ||
+        strstr(manifest,
+               "installed_sdk_runtime_reuse_scope=daemon-restart+durable-store+serving+pretraining\n") ==
+            NULL ||
         strstr(manifest, "release_script_root=share/lingqu/mem_service/scripts\n") ==
             NULL ||
         strstr(manifest,
@@ -5010,6 +5049,8 @@ static int run_release_manifest(void)
     printf("installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile\n");
     printf("installed_sdk_runtime_smoke=installed-sdk-runtime-smoke\n");
     printf("installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime\n");
+    printf("installed_sdk_runtime_reuse=installed-sdk-runtime-smoke\n");
+    printf("installed_sdk_runtime_reuse_scope=daemon-restart+durable-store+serving+pretraining\n");
     printf("distributable_package=out/mem_service/%s\n",
            MEM_SERVICE_PACKAGE_TARBALL_NAME);
     printf("distributable_package_format=tar\n");
@@ -9388,6 +9429,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "remote-transport-evidence-fixtures") == 0) {
         return run_remote_transport_evidence_fixture_check();
+    }
+    if (strcmp(argv[1], "remote-transport-serve-fixture") == 0) {
+        return run_remote_transport_serve_fixture(argc, argv);
     }
     if (strcmp(argv[1], "remote-transport-generate-evidence") == 0) {
         return run_remote_transport_generate_evidence(argc, argv);

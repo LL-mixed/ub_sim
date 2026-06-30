@@ -29,6 +29,7 @@ APP_ENTRIES=(
   "ssd_gsva_test|scripts/run_ub_two_node_ssd_gsva_test.sh|scripts/run_ub_eight_node_ssd_gsva_test.sh"
   "mem_service|scripts/run_ub_dual_node_mem_service.sh|scripts/run_ub_eight_node_mem_service.sh"
   "llm_infer|scripts/run_ub_dual_node_w4_guest.sh|scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh"
+  "pretraining_client|scripts/run_ub_dual_node_apps.sh --app pretraining_client_mem_service|"
 )
 W5_ENTRY="w5_inference_cluster|scripts/run_w5_cluster_qwen3_0_6b_2step.sh"
 
@@ -64,7 +65,7 @@ print_entries() {
   for entry in "${APP_ENTRIES[@]}"; do
     split_entry "$entry"
     parts=("${reply[@]}")
-    printf '%s 2-node=%s 8-node=%s\n' "$parts[1]" "$parts[2]" "$parts[3]"
+    printf '%s 2-node=%s 8-node=%s\n' "$parts[1]" "$parts[2]" "${parts[3]:-n/a}"
   done
   split_entry "$W5_ENTRY"
   parts=("${reply[@]}")
@@ -101,13 +102,22 @@ run_step() {
   local scope="$2"
   local rel_path="$3"
   local abs_path
+  local rel_script
+  local -a command_words
   local rc=0
 
-  abs_path="$(script_abs_path "$rel_path")"
+  if [[ -z "$rel_path" || "$rel_path" == "n/a" ]]; then
+    printf '[app-matrix] SKIP app=%s scope=%s status=N/A\n' "$app" "$scope" | tee -a "$REPORT_FILE"
+    return 0
+  fi
+  command_words=("${(@z)rel_path}")
+  rel_script="$command_words[1]"
+  abs_path="$(script_abs_path "$rel_script")"
   if [[ ! -x "$abs_path" ]]; then
-    echo "[app-matrix] FAIL: missing executable for $app $scope: $rel_path" >&2
+    echo "[app-matrix] FAIL: missing executable for $app $scope: $rel_script" >&2
     return 127
   fi
+  command_words[1]="$abs_path"
   if [[ "$RESUME" == "1" ]] && status_has_pass "$app" "$scope"; then
     printf '[app-matrix] SKIP app=%s scope=%s status=PASS cmd=%s\n' "$app" "$scope" "$rel_path" | tee -a "$REPORT_FILE"
     return 0
@@ -116,7 +126,7 @@ run_step() {
   if [[ "$DRY_RUN" == "1" ]]; then
     return 0
   fi
-  "$abs_path" || rc=$?
+  "${command_words[@]}" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     record_status "$app" "$scope" "PASS" "$rc" "$rel_path"
   else
@@ -160,12 +170,12 @@ run_app_entries() {
         run_step "$app" "2-node" "$parts[2]" || rc=$?
         ;;
       8-node)
-        run_step "$app" "8-node" "$parts[3]" || rc=$?
+        run_step "$app" "8-node" "${parts[3]:-}" || rc=$?
         ;;
       all|all-with-w5)
         run_step "$app" "2-node" "$parts[2]" || rc=$?
         if [[ "$rc" -eq 0 || "$CONTINUE_ON_FAIL" == "1" ]]; then
-          run_step "$app" "8-node" "$parts[3]" || rc=$?
+          run_step "$app" "8-node" "${parts[3]:-}" || rc=$?
         fi
         ;;
       *)

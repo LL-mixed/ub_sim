@@ -308,7 +308,11 @@ package-tarball-smoke: package-tarball
 	grep -q '^distributable_package_gate=package-tarball-smoke$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/release-manifest.txt
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_package_sdk --dry-run | grep -q 'mem_service_serving_example unix:/tmp/linqu_mem_service_package_sdk/mem_service.sock'
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_package_sdk --dry-run | grep -q 'mem_service_pretraining_example unix:/tmp/linqu_mem_service_package_sdk/mem_service.sock'
+	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-payload-len 8192 --dry-run | grep -q 'ssh -o BatchMode=yes -o ConnectTimeout=10 producer-a $(PACKAGE_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host'
+	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-bin /usr/libexec/lingqu/mem_service/linqu_mem_service_host --producer-payload-len 8192 --dry-run | grep -q 'ssh -o BatchMode=yes -o ConnectTimeout=10 producer-a'
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-payload-len 8192 --dry-run | grep -q -- '--producer-ssh producer-a'
+	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-bin /usr/libexec/lingqu/mem_service/linqu_mem_service_host --producer-payload-len 8192 --dry-run | grep -q 'producer-payload-len 8192'
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh --no-runtime
 	$(PACKAGE_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host --smoke
@@ -391,8 +395,11 @@ package-deb-smoke: package-deb
 	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh$$' $(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/release-manifest.txt
 	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_deb_sdk --dry-run | grep -q 'mem_service_serving_example unix:/tmp/linqu_mem_service_deb_sdk/mem_service.sock'
 	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_deb_sdk --dry-run | grep -q 'mem_service_pretraining_example unix:/tmp/linqu_mem_service_deb_sdk/mem_service.sock'
+	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-payload-len 8192 --dry-run | grep -q 'ssh -o BatchMode=yes -o ConnectTimeout=10 producer-a $(DEB_VERIFY_ROOT)/data/usr/libexec/lingqu/mem_service/linqu_mem_service_host'
+	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-payload-len 8192 --dry-run | grep -q -- '--producer-ssh producer-a'
 	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh --no-runtime
 	file $(DEB_VERIFY_ROOT)/data/usr/bin/linqu_mem_service | grep -q 'ELF 64-bit.*ARM aarch64'
 	file $(DEB_VERIFY_ROOT)/data/usr/libexec/lingqu/mem_service/linqu_mem_service_host | grep -q 'ELF 64-bit.*ARM aarch64'
 
@@ -686,6 +693,27 @@ installed-sdk-runtime-smoke: installed-sdk-example-smoke
 	done; \
 	$(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example unix:"$$socket"; \
 	$(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example unix:"$$socket"; \
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host status --connect unix:"$$socket"; \
+	kill "$$pid" >/dev/null 2>&1 || true; \
+	wait "$$pid" >/dev/null 2>&1 || true; \
+	rm -f "$$socket"; \
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host serve --listen unix:"$$socket" --store "$$store" > "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.restart.stdout" 2> "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.restart.stderr" & \
+	pid=$$!; \
+	i=0; \
+	while ! $(INSTALL_HOSTDIR)/linqu_mem_service_host ready --connect unix:"$$socket" >/dev/null 2>&1; do \
+		if ! kill -0 "$$pid" >/dev/null 2>&1; then \
+			cat "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.restart.stderr"; \
+			exit 1; \
+		fi; \
+		i=$$((i + 1)); \
+		if [ "$$i" -ge 100 ]; then \
+			cat "$(INSTALLED_SDK_RUNTIME_SMOKE_DIR)/daemon.restart.stderr"; \
+			exit 1; \
+		fi; \
+		sleep 0.05; \
+	done; \
+	$(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example unix:"$$socket"; \
+	$(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example unix:"$$socket"; \
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host status --connect unix:"$$socket"
 
 install-smoke: install
@@ -725,8 +753,10 @@ install-smoke: install
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_installed_sdk --preflight --dry-run | grep -q 'pkg-config --define-prefix --variable=sdk_sources lingqu-mem-service'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_linux_ops_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --out-dir /tmp/linqu_mem_service_linux_ops --dry-run | grep -q 'ops-certification-linux-ci-smoke --rpm-file'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --out-dir /tmp/linqu_mem_service_remote_transport --dry-run | grep -q 'verify_mem_service_remote_transport_bundle.sh --bundle-file'
+	$(INSTALL_SCRIPTSDIR)/run_mem_service_remote_transport_ci.sh --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-bin /usr/libexec/lingqu/mem_service/linqu_mem_service_host --producer-payload-len 8192 --dry-run | grep -q 'ssh -o BatchMode=yes -o ConnectTimeout=10 producer-a'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'verify_mem_service_release_certification.sh --ops-bundle-file'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --dry-run | grep -q 'release-readiness --ops-evidence-file'
+	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --producer-ssh producer-a --producer-bin /usr/libexec/lingqu/mem_service/linqu_mem_service_host --producer-payload-len 8192 --dry-run | grep -q 'producer-payload-len 8192'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_release_certification_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --source tcp:10.0.0.11:9000 --producer-host producer-a --consumer-host consumer-b --network-partition-marker /tmp/remote-transport.partition --preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh --no-runtime
 	test -f $(INSTALL_DATADIR)/release-manifest.txt
@@ -753,8 +783,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=9215$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x2dcdb432$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=9354$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x26ad5518$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -764,6 +794,8 @@ install-smoke: install
 	grep -q '^installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_runtime_smoke=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^installed_sdk_runtime_reuse=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^installed_sdk_runtime_reuse_scope=daemon-restart+durable-store+serving+pretraining$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package=out/mem_service/linqu_mem_service-installed-layout-v1.tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_format=tar$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^distributable_package_root=usr+etc$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -1079,6 +1111,8 @@ install-smoke: install
 	grep -q '^installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_sdk_runtime_smoke=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_sdk_runtime_smoke_scope=installed-host-daemon+serving+pretraining-runtime$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_sdk_runtime_reuse=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_sdk_runtime_reuse_scope=daemon-restart+durable-store+serving+pretraining$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^restore_policy=transactional-staged-restore$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^restore_policy_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=ops-certification-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt

@@ -61,7 +61,8 @@ Options:
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
-                      ssd_gsva_test, mem_service, llm_infer.
+                      ssd_gsva_test, mem_service, llm_infer,
+                      llm_infer_mem_service, pretraining_client_mem_service.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -125,6 +126,12 @@ append_app_selection() {
       ;;
     llm_infer)
       flag="linqu_llm_infer=1"
+      ;;
+    llm_infer_mem_service)
+      flag="linqu_llm_infer_mem_service=1"
+      ;;
+    pretraining_client_mem_service)
+      flag="linqu_pretraining_client_mem_service=1"
       ;;
     "")
       return 0
@@ -949,6 +956,7 @@ run_iteration() {
   local ssd_gsva_test_enabled=0
   local mem_service_enabled=0
   local w4_guest_enabled=0
+  local pretraining_client_mem_service_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
   local nodea_ssd_gsva_test_append=""
@@ -1006,6 +1014,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_llm_infer=1"* ]]; then
     w4_guest_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_pretraining_client_mem_service=1"* ]]; then
+    pretraining_client_mem_service_enabled=1
   fi
 
   if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
@@ -1567,6 +1578,40 @@ run_iteration() {
       *)
         echo "iteration ${iter}: nodeB mem_service smoke did not finish within ${RUN_SECS}s" >&2
         return 27
+        ;;
+    esac
+  fi
+
+  if [[ "$pretraining_client_mem_service_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" \
+      "linqu_pretraining_client mem_service publish restart verify done" \
+      "linqu_pretraining_client_mem_service_.* failed|pretraining record mismatch|expected not found" \
+      "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA pretraining client mem_service app reported failure" >&2
+        return 29
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA pretraining client mem_service app did not finish within ${RUN_SECS}s" >&2
+        return 29
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" \
+      "linqu_pretraining_client mem_service publish restart verify done" \
+      "linqu_pretraining_client_mem_service_.* failed|pretraining record mismatch|expected not found" \
+      "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB pretraining client mem_service app reported failure" >&2
+        return 29
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB pretraining client mem_service app did not finish within ${RUN_SECS}s" >&2
+        return 29
         ;;
     esac
   fi

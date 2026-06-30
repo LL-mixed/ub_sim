@@ -81,6 +81,166 @@ run_llm_infer() {
   run_binary "linqu_llm_infer" /bin/linqu_llm_infer
 }
 
+run_llm_infer_mem_service() {
+  local socket="/tmp/linqu_llm_infer_mem_service.sock"
+  local store="/tmp/linqu_llm_infer_mem_service.store"
+  local pid=""
+  local i=""
+
+  /bin/busybox rm -f "$socket" "$store" "$store.journal"
+  log "start linqu_mem_service for linqu_llm_infer"
+  /bin/linqu_mem_service serve --listen "unix:$socket" --store "$store" \
+    >/tmp/linqu_llm_infer_mem_service.daemon.stdout \
+    2>/tmp/linqu_llm_infer_mem_service.daemon.stderr &
+  pid=$!
+
+  i=0
+  while ! /bin/linqu_mem_service ready --connect "unix:$socket" >/dev/null 2>&1; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      cat /tmp/linqu_llm_infer_mem_service.daemon.stderr >&2 || true
+      log "linqu_mem_service exited before ready"
+      return 1
+    fi
+    i=$((i + 1))
+    if [ "$i" -ge 100 ]; then
+      cat /tmp/linqu_llm_infer_mem_service.daemon.stderr >&2 || true
+      log "linqu_mem_service did not become ready"
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  run_binary "linqu_llm_infer_mem_service_publish" \
+    /bin/linqu_llm_infer --mem-service-serving-publish "unix:$socket" || {
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+    return 1
+  }
+
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+
+  log "restart linqu_mem_service for linqu_llm_infer verify"
+  /bin/busybox rm -f "$socket"
+  /bin/linqu_mem_service serve --listen "unix:$socket" --store "$store" \
+    >/tmp/linqu_llm_infer_mem_service.restart.stdout \
+    2>/tmp/linqu_llm_infer_mem_service.restart.stderr &
+  pid=$!
+
+  i=0
+  while ! /bin/linqu_mem_service ready --connect "unix:$socket" >/dev/null 2>&1; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      cat /tmp/linqu_llm_infer_mem_service.restart.stderr >&2 || true
+      log "restarted linqu_mem_service exited before ready"
+      return 1
+    fi
+    i=$((i + 1))
+    if [ "$i" -ge 100 ]; then
+      cat /tmp/linqu_llm_infer_mem_service.restart.stderr >&2 || true
+      log "restarted linqu_mem_service did not become ready"
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  run_binary "linqu_llm_infer_mem_service_verify" \
+    /bin/linqu_llm_infer --mem-service-serving-verify "unix:$socket" || {
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+    return 1
+  }
+
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+  log "linqu_llm_infer mem_service publish restart verify done"
+  return 0
+}
+
+run_pretraining_client_mem_service() {
+  local socket="/tmp/linqu_pretraining_client_mem_service.sock"
+  local store="/tmp/linqu_pretraining_client_mem_service.store"
+  local pid=""
+  local i=""
+
+  /bin/busybox rm -f "$socket" "$store" "$store.journal"
+  log "start linqu_mem_service for linqu_pretraining_client"
+  /bin/linqu_mem_service serve --listen "unix:$socket" --store "$store" \
+    >/tmp/linqu_pretraining_client_mem_service.daemon.stdout \
+    2>/tmp/linqu_pretraining_client_mem_service.daemon.stderr &
+  pid=$!
+
+  i=0
+  while ! /bin/linqu_mem_service ready --connect "unix:$socket" >/dev/null 2>&1; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      cat /tmp/linqu_pretraining_client_mem_service.daemon.stderr >&2 || true
+      log "linqu_mem_service exited before ready"
+      return 1
+    fi
+    i=$((i + 1))
+    if [ "$i" -ge 100 ]; then
+      cat /tmp/linqu_pretraining_client_mem_service.daemon.stderr >&2 || true
+      log "linqu_mem_service did not become ready"
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  run_binary "linqu_pretraining_client_mem_service_publish" \
+    /bin/linqu_pretraining_client \
+    --mem-service-pretraining-publish "unix:$socket" || {
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+    return 1
+  }
+
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+
+  log "restart linqu_mem_service for linqu_pretraining_client verify"
+  /bin/busybox rm -f "$socket"
+  /bin/linqu_mem_service serve --listen "unix:$socket" --store "$store" \
+    >/tmp/linqu_pretraining_client_mem_service.restart.stdout \
+    2>/tmp/linqu_pretraining_client_mem_service.restart.stderr &
+  pid=$!
+
+  i=0
+  while ! /bin/linqu_mem_service ready --connect "unix:$socket" >/dev/null 2>&1; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      cat /tmp/linqu_pretraining_client_mem_service.restart.stderr >&2 || true
+      log "restarted linqu_mem_service exited before ready"
+      return 1
+    fi
+    i=$((i + 1))
+    if [ "$i" -ge 100 ]; then
+      cat /tmp/linqu_pretraining_client_mem_service.restart.stderr >&2 || true
+      log "restarted linqu_mem_service did not become ready"
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  run_binary "linqu_pretraining_client_mem_service_verify" \
+    /bin/linqu_pretraining_client \
+    --mem-service-pretraining-verify "unix:$socket" || {
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+    return 1
+  }
+
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+  log "linqu_pretraining_client mem_service publish restart verify done"
+  return 0
+}
+
 run_binary() {
   local name="$1"
   local path="$2"
@@ -749,6 +909,16 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_llm_infer_mem_service=1"; then
+    run_llm_infer_mem_service || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_pretraining_client_mem_service=1"; then
+    run_pretraining_client_mem_service || rc=$?
+    ran_any="1"
+  fi
+
   if [ "$rc" -ne 0 ]; then
     return "$rc"
   fi
@@ -851,6 +1021,12 @@ run_single_action() {
       ;;
     llm_infer)
       run_llm_infer
+      ;;
+    llm_infer_mem_service)
+      run_llm_infer_mem_service
+      ;;
+    pretraining_client_mem_service)
+      run_pretraining_client_mem_service
       ;;
     gsva_coh_test)
       gsva_test_mode=""

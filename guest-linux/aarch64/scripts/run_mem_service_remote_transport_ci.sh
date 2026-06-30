@@ -14,6 +14,11 @@ EVIDENCE_FILE=""
 BUNDLE_FILE=""
 STORAGE_ROOT=""
 HOST_BIN=""
+PRODUCER_SSH=""
+PRODUCER_BIN=""
+PRODUCER_PAYLOAD_LEN="4096"
+PRODUCER_LOG=""
+PRODUCER_PID=0
 BUNDLE_MODE=""
 INSTALLED_DATA_DIR=""
 REMOTE_TRANSPORT_BUNDLE_ROOT=""
@@ -29,7 +34,9 @@ Usage: run_mem_service_remote_transport_ci.sh --source tcp:IP:PORT --producer-ho
 Runs the mem_service cross-host remote transport evidence wrapper.
 
 Requirements:
-  - Producer host serves a one-shot payload at --source.
+  - Producer host serves a one-shot payload at --source. Use
+    linqu_mem_service_host remote-transport-serve-fixture --listen tcp:IP:PORT
+    --payload-len 4096 on the producer host.
   - Consumer host runs this script.
   - --source must use a non-loopback IPv4 address.
   - --producer-host and --consumer-host must be distinct.
@@ -49,6 +56,11 @@ Options:
   --storage-root DIR                Temporary storage root used by the probe.
   --out-dir DIR                     Output directory for default evidence/storage paths.
   --app-dir DIR                     mem_service app directory containing linqu_mem_service_host.
+  --producer-ssh HOST               Start the payload source through ssh before probing.
+                                    Uses non-interactive ssh with a 10s connect timeout.
+  --producer-bin PATH               Producer-side linqu_mem_service_host path.
+                                    Required with --producer-ssh in source-tree mode.
+  --producer-payload-len BYTES      Producer payload length. Defaults to 4096.
   --preflight                       Check prerequisites without running certification.
   --dry-run                         Print commands without running them.
   -h, --help                        Show this help.
@@ -129,6 +141,30 @@ while (( $# > 0 )); do
       APP_DIR="$2"
       shift 2
       ;;
+    --producer-ssh)
+      if (( $# < 2 )); then
+        echo "--producer-ssh requires a host value" >&2
+        exit 2
+      fi
+      PRODUCER_SSH="$2"
+      shift 2
+      ;;
+    --producer-bin)
+      if (( $# < 2 )); then
+        echo "--producer-bin requires a path" >&2
+        exit 2
+      fi
+      PRODUCER_BIN="$2"
+      shift 2
+      ;;
+    --producer-payload-len)
+      if (( $# < 2 )); then
+        echo "--producer-payload-len requires a byte count" >&2
+        exit 2
+      fi
+      PRODUCER_PAYLOAD_LEN="$2"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -178,6 +214,12 @@ fi
 REMOTE_TRANSPORT_BUNDLE_ROOT="$OUT_DIR/remote-transport-bundle"
 REMOTE_TRANSPORT_BUNDLE_MANIFEST="$REMOTE_TRANSPORT_BUNDLE_ROOT/remote-transport-bundle.manifest"
 REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT="$OUT_DIR/remote-transport-bundle.verify"
+PRODUCER_LOG="$OUT_DIR/remote-transport-producer.log"
+
+if [[ "$PRODUCER_PAYLOAD_LEN" != <-> || "$PRODUCER_PAYLOAD_LEN" -lt 1 ]]; then
+  echo "[mem-service-remote-transport-ci] FAIL: --producer-payload-len must be a positive integer" >&2
+  exit 2
+fi
 
 preflight_require() {
   local ok="$1"
@@ -265,6 +307,9 @@ run_preflight() {
   else
     preflight_command tar || failures=$((failures + 1))
   fi
+  if [[ -n "$PRODUCER_SSH" ]]; then
+    preflight_command ssh || failures=$((failures + 1))
+  fi
 
   if [[ "$failures" -ne 0 ]]; then
     echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL failures=$failures" >&2
@@ -293,7 +338,78 @@ create_installed_bundle() {
   test -f "$BUNDLE_FILE"
 }
 
+cleanup_producer() {
+  if [[ "$PRODUCER_PID" -ne 0 ]]; then
+    kill "$PRODUCER_PID" >/dev/null 2>&1 || true
+    wait "$PRODUCER_PID" >/dev/null 2>&1 || true
+    PRODUCER_PID=0
+  fi
+}
+
+start_producer_if_requested() {
+  local producer_bin
+  local i
+
+  if [[ -z "$PRODUCER_SSH" ]]; then
+    return 0
+  fi
+  producer_bin="$PRODUCER_BIN"
+  if [[ -z "$producer_bin" ]]; then
+    producer_bin="$HOST_BIN"
+  fi
+  mkdir -p "$(dirname "$PRODUCER_LOG")"
+  rm -f "$PRODUCER_LOG"
+  printf '[mem-service-remote-transport-ci] producer start ssh=%s listen=%s payload_len=%s log=%s\n' \
+    "$PRODUCER_SSH" "$SOURCE" "$PRODUCER_PAYLOAD_LEN" "$PRODUCER_LOG"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$PRODUCER_SSH" \
+    "$producer_bin" remote-transport-serve-fixture \
+    --listen "$SOURCE" \
+    --payload-len "$PRODUCER_PAYLOAD_LEN" \
+    > "$PRODUCER_LOG" 2>&1 &
+  PRODUCER_PID=$!
+  i=0
+  while ! grep -q 'remote-transport-serve-fixture: status=ready' "$PRODUCER_LOG" 2>/dev/null; do
+    if ! kill -0 "$PRODUCER_PID" >/dev/null 2>&1; then
+      cat "$PRODUCER_LOG" >&2
+      echo "[mem-service-remote-transport-ci] FAIL: producer exited before ready" >&2
+      PRODUCER_PID=0
+      return 1
+    fi
+    i=$((i + 1))
+    if [[ "$i" -ge 100 ]]; then
+      cat "$PRODUCER_LOG" >&2
+      echo "[mem-service-remote-transport-ci] FAIL: producer did not become ready" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 0
+}
+
+wait_for_producer_if_requested() {
+  if [[ "$PRODUCER_PID" -eq 0 ]]; then
+    return 0
+  fi
+  if ! wait "$PRODUCER_PID"; then
+    PRODUCER_PID=0
+    cat "$PRODUCER_LOG" >&2
+    echo "[mem-service-remote-transport-ci] FAIL: producer exited with error" >&2
+    return 1
+  fi
+  PRODUCER_PID=0
+  if ! grep -q 'remote-transport-serve-fixture: status=done' "$PRODUCER_LOG"; then
+    cat "$PRODUCER_LOG" >&2
+    echo "[mem-service-remote-transport-ci] FAIL: producer did not finish cleanly" >&2
+    return 1
+  fi
+  return 0
+}
+
 resolve_host_context
+if [[ -n "$PRODUCER_SSH" && -z "$PRODUCER_BIN" && "$BUNDLE_MODE" == "make" ]]; then
+  echo "[mem-service-remote-transport-ci] FAIL: --producer-bin is required with --producer-ssh in source-tree mode" >&2
+  exit 2
+fi
 
 printf '[mem-service-remote-transport-ci] RUN source=%s producer=%s consumer=%s evidence=%s bundle=%s\n' "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$EVIDENCE_FILE" "$BUNDLE_FILE"
 if [[ "$PRE_FLIGHT" == "1" ]]; then
@@ -304,6 +420,15 @@ fi
 if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$BUNDLE_MODE" == "make" ]]; then
     printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
+  fi
+  if [[ -n "$PRODUCER_SSH" ]]; then
+    producer_bin="$PRODUCER_BIN"
+    if [[ -z "$producer_bin" ]]; then
+      producer_bin="$HOST_BIN"
+    fi
+    printf 'ssh -o BatchMode=yes -o ConnectTimeout=10 %s %s remote-transport-serve-fixture --listen %s --payload-len %s\n' "$PRODUCER_SSH" "$producer_bin" "$SOURCE" "$PRODUCER_PAYLOAD_LEN"
+  else
+    printf '# producer: %s remote-transport-serve-fixture --listen %s --payload-len %s\n' "$HOST_BIN" "$SOURCE" "$PRODUCER_PAYLOAD_LEN"
   fi
   printf '%s remote-transport-generate-evidence --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --evidence-file %s --storage-root %s\n' "$HOST_BIN" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$EVIDENCE_FILE" "$STORAGE_ROOT"
   printf '%s remote-transport-verify --evidence-file %s\n' "$HOST_BIN" "$EVIDENCE_FILE"
@@ -332,6 +457,8 @@ if [[ "$BUNDLE_MODE" == "make" && ! -x "$HOST_BIN" ]]; then
   make -C "$APP_DIR" linqu_mem_service_host
 fi
 
+trap cleanup_producer EXIT INT TERM
+start_producer_if_requested
 "$HOST_BIN" remote-transport-generate-evidence \
   --source "$SOURCE" \
   --producer-host "$PRODUCER_HOST" \
@@ -339,6 +466,7 @@ fi
   --network-partition-marker "$PARTITION_MARKER" \
   --evidence-file "$EVIDENCE_FILE" \
   --storage-root "$STORAGE_ROOT"
+wait_for_producer_if_requested
 "$HOST_BIN" remote-transport-verify --evidence-file "$EVIDENCE_FILE"
 if [[ "$BUNDLE_MODE" == "make" ]]; then
   make -C "$APP_DIR" \

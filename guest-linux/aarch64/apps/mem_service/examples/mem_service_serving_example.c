@@ -48,8 +48,8 @@ int main(int argc, char **argv)
     };
     struct mem_service_client_block_entry kv = {
         .request_id = "serving-request-0",
-        .prefix_group = "serving-prefix-qwen3",
-        .group_id = "serving-group-0",
+        .prefix_group = "serving-kv-qwen3",
+        .group_id = "serving-kv-group-0",
         .block_hash = "serving-kv-block-0",
         .idempotency_key = "serving-kv-block-0/v1",
         .has_placement_node = true,

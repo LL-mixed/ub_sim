@@ -7274,6 +7274,88 @@ static int mem_service_start_tcp_payload_fixture_source(const uint8_t *payload,
     return 0;
 }
 
+int mem_service_run_tcp_payload_fixture_source(const char *listen_spec,
+                                               uint64_t payload_len)
+{
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    char bound_ip[INET_ADDRSTRLEN];
+    uint8_t *payload;
+    uint64_t checksum;
+    uint64_t i;
+    int server_fd;
+    int client_fd;
+    int reuse = 1;
+    int rc = 1;
+
+    if (listen_spec == NULL || listen_spec[0] == '\0' ||
+        payload_len == 0U || payload_len > (64ULL * 1024ULL * 1024ULL)) {
+        fprintf(stderr,
+                "mem_service remote-transport-serve-fixture: invalid listen or payload_len\n");
+        return 2;
+    }
+    payload = (uint8_t *)malloc((size_t)payload_len);
+    if (payload == NULL) {
+        fprintf(stderr,
+                "mem_service remote-transport-serve-fixture: payload allocation failed\n");
+        return 1;
+    }
+    for (i = 0U; i < payload_len; ++i) {
+        payload[i] = (uint8_t)((i * 13U) + 23U);
+    }
+    checksum = mem_service_checksum_bytes(payload, payload_len);
+    if (mem_service_parse_tcp_payload_source(listen_spec, &addr) != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-serve-fixture: invalid listen spec\n");
+        free(payload);
+        return 2;
+    }
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("mem_service remote-transport-serve-fixture: socket");
+        free(payload);
+        return 1;
+    }
+    (void)setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    if (bind(server_fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+        perror("mem_service remote-transport-serve-fixture: listen");
+        close(server_fd);
+        free(payload);
+        return 1;
+    }
+    if (inet_ntop(AF_INET, &addr.sin_addr, bound_ip, sizeof(bound_ip)) == NULL) {
+        snprintf(bound_ip, sizeof(bound_ip), "0.0.0.0");
+    }
+    printf("mem_service remote-transport-serve-fixture: status=ready "
+           "listen=tcp:%s:%u payload_len=%" PRIu64 " payload_checksum=0x%016" PRIx64 "\n",
+           bound_ip,
+           (unsigned)ntohs(addr.sin_port),
+           payload_len,
+           checksum);
+    fflush(stdout);
+    client_fd = accept(server_fd, NULL, NULL);
+    if (client_fd >= 0) {
+        rc = mem_service_fixture_write_all(client_fd, payload, (size_t)payload_len) == 0
+                 ? 0
+                 : 1;
+        close(client_fd);
+    }
+    close(server_fd);
+    free(payload);
+    if (rc != 0) {
+        fprintf(stderr,
+                "mem_service remote-transport-serve-fixture: payload write failed\n");
+        return 1;
+    }
+    printf("mem_service remote-transport-serve-fixture: status=done "
+           "payload_len=%" PRIu64 " payload_checksum=0x%016" PRIx64 "\n",
+           payload_len,
+           checksum);
+    return 0;
+}
+
 int mem_service_run_network_transport_block_fixture_check(void)
 {
     char storage_root[160];

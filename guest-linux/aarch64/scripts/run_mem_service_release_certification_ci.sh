@@ -12,6 +12,9 @@ SOURCE=""
 PRODUCER_HOST=""
 CONSUMER_HOST=""
 PARTITION_MARKER=""
+PRODUCER_SSH=""
+PRODUCER_BIN=""
+PRODUCER_PAYLOAD_LEN=""
 DRY_RUN=0
 PRE_FLIGHT=0
 
@@ -47,6 +50,10 @@ Options:
   --producer-host HOST             Producer host identity recorded in evidence.
   --consumer-host HOST             Consumer host identity recorded in evidence.
   --network-partition-marker PATH  Marker proving partition fail-closed behavior.
+  --producer-ssh HOST              Let remote transport CI start producer through ssh.
+  --producer-bin PATH              Producer-side linqu_mem_service_host path.
+                                   Required with --producer-ssh in source-tree mode.
+  --producer-payload-len BYTES     Producer payload length for ssh-started producer.
   --out-dir DIR                    Release certification output directory.
   --app-dir DIR                    mem_service app directory override for source-tree builds.
   --preflight                      Check prerequisites without running certification.
@@ -105,6 +112,30 @@ while (( $# > 0 )); do
       PARTITION_MARKER="$2"
       shift 2
       ;;
+    --producer-ssh)
+      if (( $# < 2 )); then
+        echo "--producer-ssh requires a host value" >&2
+        exit 2
+      fi
+      PRODUCER_SSH="$2"
+      shift 2
+      ;;
+    --producer-bin)
+      if (( $# < 2 )); then
+        echo "--producer-bin requires a path" >&2
+        exit 2
+      fi
+      PRODUCER_BIN="$2"
+      shift 2
+      ;;
+    --producer-payload-len)
+      if (( $# < 2 )); then
+        echo "--producer-payload-len requires a byte count" >&2
+        exit 2
+      fi
+      PRODUCER_PAYLOAD_LEN="$2"
+      shift 2
+      ;;
     --out-dir)
       if (( $# < 2 )); then
         echo "--out-dir requires a directory" >&2
@@ -160,6 +191,10 @@ if [[ -z "$CONSUMER_HOST" ]]; then
 fi
 if [[ -z "$PARTITION_MARKER" ]]; then
   echo "[mem-service-release-certification-ci] FAIL: --network-partition-marker is required" >&2
+  exit 2
+fi
+if [[ -n "$PRODUCER_PAYLOAD_LEN" && ("$PRODUCER_PAYLOAD_LEN" != <-> || "$PRODUCER_PAYLOAD_LEN" -lt 1) ]]; then
+  echo "[mem-service-release-certification-ci] FAIL: --producer-payload-len must be a positive integer" >&2
   exit 2
 fi
 
@@ -232,6 +267,18 @@ remote_transport_app_args() {
   printf ' --app-dir %s' "$APP_DIR"
 }
 
+remote_transport_producer_args() {
+  if [[ -n "$PRODUCER_SSH" ]]; then
+    printf ' --producer-ssh %s' "$PRODUCER_SSH"
+  fi
+  if [[ -n "$PRODUCER_BIN" ]]; then
+    printf ' --producer-bin %s' "$PRODUCER_BIN"
+  fi
+  if [[ -n "$PRODUCER_PAYLOAD_LEN" ]]; then
+    printf ' --producer-payload-len %s' "$PRODUCER_PAYLOAD_LEN"
+  fi
+}
+
 release_verify_app_args() {
   if is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]; then
     return 0
@@ -277,6 +324,16 @@ linux_ops_app_args() {
 
 linux_ops_uses_installed_context() {
   is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]
+}
+
+validate_producer_ssh_context() {
+  if [[ -n "$PRODUCER_SSH" && -z "$PRODUCER_BIN" ]]; then
+    if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
+      echo "[mem-service-release-certification-ci] FAIL: --producer-bin is required with --producer-ssh in source-tree mode" >&2
+      return 2
+    fi
+  fi
+  return 0
 }
 
 preflight_source() {
@@ -328,6 +385,9 @@ run_preflight() {
   if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
     preflight_command make || failures=$((failures + 1))
   fi
+  if [[ -n "$PRODUCER_SSH" ]]; then
+    preflight_command ssh || failures=$((failures + 1))
+  fi
   for tool in cc pkg-config rpmbuild rpm2cpio cpio rpm systemctl journalctl curl promtool tar; do
     preflight_command "$tool" || failures=$((failures + 1))
   done
@@ -364,6 +424,15 @@ run_preflight() {
       --out-dir "$REMOTE_OUT_DIR"
       --preflight
     )
+    if [[ -n "$PRODUCER_SSH" ]]; then
+      remote_transport_preflight_args+=(--producer-ssh "$PRODUCER_SSH")
+    fi
+    if [[ -n "$PRODUCER_BIN" ]]; then
+      remote_transport_preflight_args+=(--producer-bin "$PRODUCER_BIN")
+    fi
+    if [[ -n "$PRODUCER_PAYLOAD_LEN" ]]; then
+      remote_transport_preflight_args+=(--producer-payload-len "$PRODUCER_PAYLOAD_LEN")
+    fi
     if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
       remote_transport_preflight_args+=(--app-dir "$APP_DIR")
     fi
@@ -390,6 +459,8 @@ RELEASE_VERIFY_WORK_DIR="$OUT_DIR/release-certification.verify"
 OPS_BUNDLE="$OPS_OUT_DIR/linqu-mem-service-ops-certification-bundle.tar"
 REMOTE_BUNDLE="$REMOTE_OUT_DIR/linqu-mem-service-remote-transport-bundle.tar"
 
+validate_producer_ssh_context
+
 printf '[mem-service-release-certification-ci] RUN out=%s rollback_rpm=%s source=%s producer=%s consumer=%s\n' \
   "$OUT_DIR" "$ROLLBACK_RPM" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST"
 
@@ -399,8 +470,8 @@ if [[ "$PRE_FLIGHT" == "1" ]]; then
     print_sdk_preflight_command
     printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s%s --out-dir %s --preflight\n' \
       "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
-    printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --preflight\n' \
-      "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
+    printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s%s --preflight\n' \
+      "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_producer_args)" "$(remote_transport_app_args)"
     printf 'preflight: final release readiness gate after certification artifacts exist\n'
     print_release_verify_command
     print_expanded_release_verify_dry_run
@@ -414,8 +485,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   print_sdk_gate_command
   printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s%s --out-dir %s --dry-run\n' \
     "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
-  printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --dry-run\n' \
-    "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
+  printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s%s --dry-run\n' \
+    "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_producer_args)" "$(remote_transport_app_args)"
   print_release_verify_command
   print_expanded_release_verify_dry_run
   exit 0
@@ -449,6 +520,15 @@ remote_transport_args=(
   --network-partition-marker "$PARTITION_MARKER"
   --out-dir "$REMOTE_OUT_DIR"
 )
+if [[ -n "$PRODUCER_SSH" ]]; then
+  remote_transport_args+=(--producer-ssh "$PRODUCER_SSH")
+fi
+if [[ -n "$PRODUCER_BIN" ]]; then
+  remote_transport_args+=(--producer-bin "$PRODUCER_BIN")
+fi
+if [[ -n "$PRODUCER_PAYLOAD_LEN" ]]; then
+  remote_transport_args+=(--producer-payload-len "$PRODUCER_PAYLOAD_LEN")
+fi
 if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
   remote_transport_args+=(--app-dir "$APP_DIR")
 fi
