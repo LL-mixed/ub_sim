@@ -1817,8 +1817,8 @@ int main(int argc, char **argv)
         self.assertIn("version_smokes=1", fixtures.stdout)
         self.assertIn("restore_policy_smokes=1", fixtures.stdout)
         self.assertIn("config_security_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=7517", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x3b2ba516", fixtures.stdout)
+        self.assertIn("package_manifest_len=7689", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x73153de0", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1843,8 +1843,8 @@ int main(int argc, char **argv)
         self.assertIn("wire_version=1", version.stdout)
         self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", version.stdout)
         self.assertIn("api_abi_policy_checksum=0x5d95ae02", version.stdout)
-        self.assertIn("package_manifest_len=7517", version.stdout)
-        self.assertIn("package_manifest_checksum=0x3b2ba516", version.stdout)
+        self.assertIn("package_manifest_len=7689", version.stdout)
+        self.assertIn("package_manifest_checksum=0x73153de0", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
         self.assertIn("package_manifest_command=package-manifest", version.stdout)
         self.assertIn("config_security_gate=config-fixtures", version.stdout)
@@ -1854,16 +1854,16 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("service_version=0.1.0", fixtures.stdout)
-        self.assertIn("package_manifest_len=7517", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x3b2ba516", fixtures.stdout)
+        self.assertIn("package_manifest_len=7689", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x73153de0", fixtures.stdout)
 
     def test_package_manifest_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("package-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=7517", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x3b2ba516", fixtures.stdout)
+        self.assertIn("manifest_len=7689", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x73153de0", fixtures.stdout)
         self.assertIn("installed_files=46", fixtures.stdout)
         self.assertIn("required_gates=27", fixtures.stdout)
 
@@ -1924,7 +1924,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x3b2ba516\n"
+            "package_manifest_checksum=0x73153de0\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1970,7 +1970,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x3b2ba516", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x73153de0", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2170,7 +2170,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0x3b2ba516\n"
+            "package_manifest_checksum=0x73153de0\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -3498,7 +3498,15 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x3b2ba516", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x73153de0", manifest.read_text())
+            self.assertIn(
+                "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
+                manifest.read_text(),
+            )
+            self.assertIn(
+                "installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile",
+                manifest.read_text(),
+            )
             self.assertIn(
                 "installed_sdk_example_smoke=installed-sdk-example-smoke",
                 manifest.read_text(),
@@ -3948,6 +3956,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn(
                 "required_gate=installed-sdk-runtime-smoke",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
+                package_manifest.read_text(),
+            )
+            self.assertIn(
+                "installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile",
                 package_manifest.read_text(),
             )
             self.assertIn(

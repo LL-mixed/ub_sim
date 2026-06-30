@@ -730,9 +730,11 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=7517$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x3b2ba516$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=7689$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x73153de0$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -1000,6 +1002,8 @@ install-smoke: install
 	grep -q '^required_gate=installed-sdk-example-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=installed-sdk-pkgconfig-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^installed_sdk_runtime_smoke=installed-sdk-runtime-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt

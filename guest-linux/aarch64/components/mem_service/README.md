@@ -147,6 +147,7 @@ a Qwen3 adapter inspect build:
   hosts. The `linux_ops_ci`,
   `linux_ops_ci_preflight`, `remote_payload_production_transport_ci`,
   `remote_payload_production_transport_ci_preflight`,
+  `installed_sdk_preflight`, `installed_sdk_preflight_scope`,
   `release_certification_ci`, and `release_certification_preflight` manifest
   fields make those release gates machine-discoverable without reading this
   README.

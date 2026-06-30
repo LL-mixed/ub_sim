@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7517U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x3b2ba516U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7689U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x73153de0U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 27U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2510,6 +2510,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "installed_sdk_example_smoke=installed-sdk-example-smoke\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -4307,6 +4315,12 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n") ==
             NULL ||
+        strstr(manifest,
+               "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n") ==
+            NULL ||
+        strstr(manifest,
+               "installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile\n") ==
+            NULL ||
         strstr(manifest, "installed_sdk_runtime_smoke=installed-sdk-runtime-smoke\n") ==
             NULL ||
         strstr(manifest,
@@ -4390,6 +4404,8 @@ static int run_release_manifest(void)
     printf("package_manifest_checksum=0x%08x\n",
            MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
     printf("package_gate=package-fixtures\n");
+    printf("installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n");
+    printf("installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile\n");
     printf("installed_sdk_example_smoke=installed-sdk-example-smoke\n");
     printf("installed_sdk_example_smoke_scope=serving+pretraining-external-client-compile\n");
     printf("installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke\n");

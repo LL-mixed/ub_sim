@@ -503,9 +503,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7517U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7689U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x3b2ba516U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x73153de0U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U", cli_source)
@@ -743,7 +743,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x3b2ba516$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x73153de0$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
         self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
@@ -757,6 +757,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("$(INSTALL_SRCDIR)/mem_service_client.c", cli_makefile)
         self.assertIn("$(INSTALL_SRCDIR)/mem_service_wire_client.c", cli_makefile)
         self.assertIn("^installed_sdk_example_smoke=installed-sdk-example-smoke$$", cli_makefile)
+        self.assertIn(
+            "^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$",
+            cli_makefile,
+        )
+        self.assertIn(
+            "^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$",
+            cli_makefile,
+        )
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
@@ -963,7 +971,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x3b2ba516", release_manifest)
+        self.assertIn("package_manifest_checksum=0x73153de0", release_manifest)
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", release_manifest)
         self.assertIn(
             "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
@@ -982,6 +990,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("restore_policy=transactional-staged-restore", release_manifest)
         self.assertIn("restore_policy_scope=full-snapshot+paged-snapshot", release_manifest)
         self.assertIn("restore_policy_gate=restore-policy-fixtures", release_manifest)
+        self.assertIn(
+            "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
+            release_manifest,
+        )
+        self.assertIn(
+            "installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile",
+            release_manifest,
+        )
         self.assertIn("installed_sdk_example_smoke=installed-sdk-example-smoke", release_manifest)
         self.assertIn("installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke", release_manifest)
         self.assertIn(
@@ -1366,6 +1382,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("required_gate=installed-sdk-example-smoke", package_manifest)
         self.assertIn("required_gate=installed-sdk-pkgconfig-smoke", package_manifest)
         self.assertIn("required_gate=installed-sdk-runtime-smoke", package_manifest)
+        self.assertIn(
+            "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
+            package_manifest,
+        )
+        self.assertIn(
+            "installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile",
+            package_manifest,
+        )
         self.assertIn("installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke", package_manifest)
         self.assertIn(
             "installed_sdk_pkgconfig_smoke_scope=pkg-config-cflags+sdk-sources-external-client-compile",

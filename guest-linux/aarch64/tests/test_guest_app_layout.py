@@ -1311,7 +1311,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x3b2ba516$$" in app_makefile
+    assert "^package_manifest_checksum=0x73153de0$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-pkgconfig-smoke: install" in app_makefile
     assert "$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service" in app_makefile
@@ -1323,6 +1323,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(INSTALL_SRCDIR)/mem_service_wire_client.c" in app_makefile
     assert "$(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)" in app_makefile
     assert "^installed_sdk_example_smoke=installed-sdk-example-smoke$$" in app_makefile
+    assert (
+        "^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$"
+        in app_makefile
+    )
+    assert (
+        "^installed_sdk_preflight_scope="
+        "pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$"
+        in app_makefile
+    )
     assert "^package_gate=package-fixtures$$" in app_makefile
     assert "^upgrade_rollback_policy_checksum=0xf7943816$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
@@ -1547,8 +1556,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7517U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x3b2ba516U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7689U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x73153de0U" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
@@ -1591,7 +1600,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x3b2ba516" in release_manifest
+    assert "package_manifest_checksum=0x73153de0" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1601,6 +1610,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "restore_policy=transactional-staged-restore" in release_manifest
     assert "restore_policy_scope=full-snapshot+paged-snapshot" in release_manifest
     assert "restore_policy_gate=restore-policy-fixtures" in release_manifest
+    assert (
+        "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight"
+        in release_manifest
+    )
+    assert (
+        "installed_sdk_preflight_scope="
+        "pkg-config-cflags+sdk-sources+examples+host-binary-no-compile"
+        in release_manifest
+    )
     assert "installed_sdk_example_smoke=installed-sdk-example-smoke" in release_manifest
     assert "installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke" in release_manifest
     assert (
@@ -1748,8 +1766,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=7517" in release_manifest
-    assert "package_manifest_checksum=0x3b2ba516" in release_manifest
+    assert "package_manifest_len=7689" in release_manifest
+    assert "package_manifest_checksum=0x73153de0" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2044,6 +2062,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "required_gate=installed-sdk-example-smoke" in package_manifest
     assert "required_gate=installed-sdk-pkgconfig-smoke" in package_manifest
     assert "required_gate=installed-sdk-runtime-smoke" in package_manifest
+    assert (
+        "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight"
+        in package_manifest
+    )
+    assert (
+        "installed_sdk_preflight_scope="
+        "pkg-config-cflags+sdk-sources+examples+host-binary-no-compile"
+        in package_manifest
+    )
     assert "installed_sdk_pkgconfig_smoke=installed-sdk-pkgconfig-smoke" in package_manifest
     assert (
         "installed_sdk_pkgconfig_smoke_scope="
