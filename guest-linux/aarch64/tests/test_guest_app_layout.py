@@ -1621,6 +1621,24 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
+    assert "ops_certification_ci=scripts/run_mem_service_linux_ops_ci.sh" in app_source
+    assert (
+        "ops_certification_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight"
+        in app_source
+    )
+    assert "remote_transport_ci=scripts/run_mem_service_remote_transport_ci.sh" in app_source
+    assert (
+        "remote_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight"
+        in app_source
+    )
+    assert (
+        "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh"
+        in app_source
+    )
+    assert (
+        "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight"
+        in app_source
+    )
     assert "run_release_readiness_fixture_check" in app_source
     assert 'strcmp(argv[1], "restore-policy-fixtures")' in app_source
     assert "mem_service_run_restore_policy_fixture_check" in app_source

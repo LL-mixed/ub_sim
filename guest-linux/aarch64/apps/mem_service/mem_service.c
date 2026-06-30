@@ -2443,6 +2443,14 @@ static int render_release_readiness(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "ops_certification_ci=scripts/run_mem_service_linux_ops_ci.sh\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "ops_certification_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "ops_certification_evidence_verify=ops-certification-verify --evidence-file\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2456,7 +2464,23 @@ static int render_release_readiness(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "remote_transport_ci=scripts/run_mem_service_remote_transport_ci.sh\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "remote_transport_evidence_verify=remote-transport-verify --evidence-file\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2598,13 +2622,31 @@ static int run_release_readiness_fixture_check(void)
                "ops_certification_status=not-certified-until-external-evidence\n") ==
             NULL ||
         strstr(manifest,
+               "ops_certification_ci=scripts/run_mem_service_linux_ops_ci.sh\n") ==
+            NULL ||
+        strstr(manifest,
+               "ops_certification_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight\n") ==
+            NULL ||
+        strstr(manifest,
                "ops_certification_evidence_verify=ops-certification-verify --evidence-file\n") ==
             NULL ||
         strstr(manifest,
                "remote_transport_status=not-certified-until-cross-host-evidence\n") ==
             NULL ||
         strstr(manifest,
+               "remote_transport_ci=scripts/run_mem_service_remote_transport_ci.sh\n") ==
+            NULL ||
+        strstr(manifest,
+               "remote_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight\n") ==
+            NULL ||
+        strstr(manifest,
                "remote_transport_evidence_verify=remote-transport-verify --evidence-file\n") ==
+            NULL ||
+        strstr(manifest,
+               "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh\n") ==
+            NULL ||
+        strstr(manifest,
+               "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight\n") ==
             NULL ||
         strstr(manifest,
                "release_certification_verify=scripts/verify_mem_service_release_certification.sh --ops-bundle-file --remote-transport-bundle-file\n") ==

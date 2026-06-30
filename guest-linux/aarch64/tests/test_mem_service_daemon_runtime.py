@@ -1877,6 +1877,14 @@ int main(int argc, char **argv)
             readiness.stdout,
         )
         self.assertIn(
+            "ops_certification_ci=scripts/run_mem_service_linux_ops_ci.sh",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "ops_certification_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
+            readiness.stdout,
+        )
+        self.assertIn(
             "ops_certification_evidence_verify=ops-certification-verify --evidence-file",
             readiness.stdout,
         )
@@ -1885,7 +1893,23 @@ int main(int argc, char **argv)
             readiness.stdout,
         )
         self.assertIn(
+            "remote_transport_ci=scripts/run_mem_service_remote_transport_ci.sh",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "remote_transport_ci_preflight=scripts/run_mem_service_remote_transport_ci.sh --preflight",
+            readiness.stdout,
+        )
+        self.assertIn(
             "remote_transport_evidence_verify=remote-transport-verify --evidence-file",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight",
             readiness.stdout,
         )
         self.assertIn(
