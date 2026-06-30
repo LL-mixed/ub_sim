@@ -110,6 +110,8 @@ static bool mem_service_payload_get_u64_checked(const char *payload,
 static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc);
 static bool mem_service_apply_audit_retention(struct mem_service *svc,
                                               uint64_t max_audit_events);
+static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
+                                                   uint64_t max_checkpoint_records);
 static const char *mem_service_record_kind_name(enum mem_service_record_kind kind);
 static struct mem_service_idempotency_record *mem_service_find_idempotency_record(
     struct mem_service *svc,
@@ -8470,6 +8472,109 @@ static bool mem_service_apply_audit_retention(struct mem_service *svc,
     return pruned;
 }
 
+static bool mem_service_record_is_checkpoint(const struct mem_service_record *record)
+{
+    return record != NULL &&
+           record->in_use &&
+           record->kind == MEM_SERVICE_RECORD_TRAINING_ARTIFACT &&
+           strcmp(record->artifact_kind, "checkpoint") == 0;
+}
+
+static uint64_t mem_service_count_checkpoint_records(const struct mem_service *svc)
+{
+    uint64_t count = 0;
+    size_t i;
+
+    if (svc == NULL) {
+        return 0;
+    }
+    for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
+        if (mem_service_record_is_checkpoint(&svc->records[i])) {
+            count += 1U;
+        }
+    }
+    return count;
+}
+
+static size_t mem_service_find_oldest_checkpoint_record_index(
+    const struct mem_service *svc)
+{
+    size_t oldest = MEM_SERVICE_MAX_RECORDS;
+    size_t i;
+
+    if (svc == NULL) {
+        return oldest;
+    }
+    for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
+        const struct mem_service_record *record = &svc->records[i];
+
+        if (!mem_service_record_is_checkpoint(record)) {
+            continue;
+        }
+        if (oldest == MEM_SERVICE_MAX_RECORDS ||
+            record->version < svc->records[oldest].version ||
+            (record->version == svc->records[oldest].version &&
+             record->object_publish_monotonic_ms <
+                 svc->records[oldest].object_publish_monotonic_ms)) {
+            oldest = i;
+        }
+    }
+    return oldest;
+}
+
+static void mem_service_prune_idempotency_for_record_key(struct mem_service *svc,
+                                                         const char *record_key)
+{
+    size_t i;
+
+    if (svc == NULL || record_key == NULL || record_key[0] == '\0') {
+        return;
+    }
+    for (i = 0; i < MEM_SERVICE_MAX_IDEMPOTENCY_RECORDS; ++i) {
+        struct mem_service_idempotency_record *idem = &svc->idempotency_records[i];
+        char response_key[96];
+
+        if (!idem->in_use ||
+            idem->operation != MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT) {
+            continue;
+        }
+        response_key[0] = '\0';
+        if (mem_service_payload_get_string(idem->response,
+                                           "key",
+                                           response_key,
+                                           sizeof(response_key)) &&
+            strcmp(response_key, record_key) == 0) {
+            memset(idem, 0, sizeof(*idem));
+        }
+    }
+}
+
+static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
+                                                   uint64_t max_checkpoint_records)
+{
+    bool pruned = false;
+
+    if (svc == NULL || max_checkpoint_records == 0) {
+        return false;
+    }
+    while (mem_service_count_checkpoint_records(svc) > max_checkpoint_records) {
+        size_t oldest = mem_service_find_oldest_checkpoint_record_index(svc);
+        char key[96];
+
+        if (oldest == MEM_SERVICE_MAX_RECORDS) {
+            break;
+        }
+        snprintf(key, sizeof(key), "%s", svc->records[oldest].key);
+        memset(&svc->records[oldest], 0, sizeof(svc->records[oldest]));
+        if (svc->record_count > 0) {
+            svc->record_count -= 1U;
+        }
+        mem_service_prune_idempotency_for_record_key(svc, key);
+        pruned = true;
+    }
+    return pruned;
+}
+
 static enum mem_service_wire_status mem_service_audit_log(struct mem_service *svc,
                                                           const char *payload,
                                                           char *response,
@@ -9205,6 +9310,7 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
     bool idempotency_handled = false;
     bool audit_appended = false;
     bool audit_retention_pruned = false;
+    bool checkpoint_retention_pruned = false;
     enum mem_service_wire_status status =
         mem_service_try_idempotency_replay(svc,
                                            operation,
@@ -9237,6 +9343,15 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
                                                     response,
                                                     response_len,
                                                     storage_root);
+            if (status == MEM_SERVICE_WIRE_STATUS_OK &&
+                operation == MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT &&
+                limits != NULL &&
+                limits->max_checkpoint_records > 0) {
+                checkpoint_retention_pruned =
+                    mem_service_apply_checkpoint_retention(
+                        svc,
+                        limits->max_checkpoint_records);
+            }
         }
         mem_service_complete_idempotency_record(pending_idempotency,
                                                 operation,
@@ -9297,6 +9412,13 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
         mem_service_compact_journal_now(store_path) != 0) {
         fprintf(stderr,
                 "mem_service retention: compact_journal failed operation=%u\n",
+                (unsigned int)operation);
+    }
+    if (checkpoint_retention_pruned && store_path != NULL &&
+        (mem_service_save_store(svc, store_path) != 0 ||
+         mem_service_compact_journal_now(store_path) != 0)) {
+        fprintf(stderr,
+                "mem_service checkpoint-retention: durable sync failed operation=%u\n",
                 (unsigned int)operation);
     }
 
@@ -9620,6 +9742,174 @@ int mem_service_run_retention_fixture_check(void)
            limits.max_audit_events,
            recovered.audit_event_count,
            mem_service_audit_first_sequence(&recovered),
+           recovered.record_count);
+    return 0;
+}
+
+int mem_service_run_checkpoint_retention_fixture_check(void)
+{
+    struct mem_service svc;
+    struct mem_service recovered;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char store_path[176];
+    char journal_path[sizeof(store_path) + 16U];
+    size_t i;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_checkpoint_retention_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service checkpoint-retention-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    memset(&limits, 0, sizeof(limits));
+    limits.max_checkpoint_records = 2U;
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service checkpoint-retention-fixtures: init failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    for (i = 0; i < 4U; ++i) {
+        char payload[384];
+        enum mem_service_wire_status status;
+
+        snprintf(payload,
+                 sizeof(payload),
+                 "key=training/run/checkpoint-%zu\n"
+                 "session_id=train-session\n"
+                 "model_key=model-a\n"
+                 "artifact_kind=checkpoint\n"
+                 "artifact_id=checkpoint-%zu\n"
+                 "owner=7\n"
+                 "version=%zu\n"
+                 "checksum=%zu\n"
+                 "idempotency_key=checkpoint-retention-idem-%zu\n",
+                 i + 1U,
+                 i + 1U,
+                 i + 1U,
+                 700U + i,
+                 i + 1U);
+        status = mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+            payload,
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            &limits);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            fprintf(stderr,
+                    "mem_service checkpoint-retention-fixtures: checkpoint put failed i=%zu status=%s\n",
+                    i,
+                    mem_service_wire_status_name((uint32_t)status));
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    if (mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+            "key=training/run/gradient-1\n"
+            "session_id=train-session\n"
+            "model_key=model-a\n"
+            "artifact_kind=gradient\n"
+            "artifact_id=gradient-1\n"
+            "owner=7\n"
+            "version=1\n"
+            "checksum=900\n"
+            "idempotency_key=checkpoint-retention-gradient-idem\n",
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            &limits) != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service checkpoint-retention-fixtures: gradient put failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (svc.record_count != 3U ||
+        mem_service_count_checkpoint_records(&svc) != 2U ||
+        mem_service_find_record(&svc, "training/run/checkpoint-1") != NULL ||
+        mem_service_find_record(&svc, "training/run/checkpoint-2") != NULL ||
+        mem_service_find_record(&svc, "training/run/checkpoint-3") == NULL ||
+        mem_service_find_record(&svc, "training/run/checkpoint-4") == NULL ||
+        mem_service_find_record(&svc, "training/run/gradient-1") == NULL ||
+        mem_service_find_idempotency_record(&svc, "checkpoint-retention-idem-1") != NULL ||
+        mem_service_find_idempotency_record(&svc, "checkpoint-retention-idem-2") != NULL) {
+        fprintf(stderr,
+                "mem_service checkpoint-retention-fixtures: in-memory gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_QUERY_TRAINING_ARTIFACT,
+            "key=training/run/checkpoint-1\n"
+            "expected_artifact_kind=checkpoint\n",
+            response,
+            sizeof(response),
+            NULL,
+            NULL,
+            &limits) != MEM_SERVICE_WIRE_STATUS_NOT_FOUND) {
+        fprintf(stderr,
+                "mem_service checkpoint-retention-fixtures: old checkpoint query mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_init(&recovered, true, true, true) != 0 ||
+        mem_service_load_durable_store(&recovered, store_path) != 0) {
+        fprintf(stderr, "mem_service checkpoint-retention-fixtures: durable load failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (recovered.record_count != 3U ||
+        mem_service_count_checkpoint_records(&recovered) != 2U ||
+        mem_service_find_record(&recovered, "training/run/checkpoint-1") != NULL ||
+        mem_service_find_record(&recovered, "training/run/checkpoint-2") != NULL ||
+        mem_service_find_record(&recovered, "training/run/checkpoint-3") == NULL ||
+        mem_service_find_record(&recovered, "training/run/checkpoint-4") == NULL ||
+        mem_service_find_record(&recovered, "training/run/gradient-1") == NULL ||
+        mem_service_find_idempotency_record(&recovered,
+                                            "checkpoint-retention-idem-1") != NULL ||
+        mem_service_find_idempotency_record(&recovered,
+                                            "checkpoint-retention-idem-2") != NULL) {
+        fprintf(stderr,
+                "mem_service checkpoint-retention-fixtures: durable gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_file_contains(journal_path, "training/run/checkpoint-1") ||
+        mem_service_file_contains(journal_path, "training/run/checkpoint-2")) {
+        fprintf(stderr,
+                "mem_service checkpoint-retention-fixtures: journal gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    printf("mem_service checkpoint-retention-fixtures: status=ok "
+           "checkpoint_retention=latest max_checkpoint_records=%" PRIu64
+           " retained_checkpoints=%" PRIu64
+           " record_count=%zu non_checkpoint_retained=1 durable_reload=1 "
+           "idempotency_gc=1 journal_gc=1\n",
+           limits.max_checkpoint_records,
+           mem_service_count_checkpoint_records(&recovered),
            recovered.record_count);
     return 0;
 }
@@ -10092,6 +10382,17 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
         fprintf(stderr, "mem_service serve: retention save failed path=%s\n", store_path);
         return 1;
     }
+    if (limits != NULL && limits->max_checkpoint_records > 0 &&
+        mem_service_apply_checkpoint_retention(&svc,
+                                               limits->max_checkpoint_records) &&
+        store_path != NULL && store_path[0] != '\0' &&
+        (mem_service_save_store(&svc, store_path) != 0 ||
+         mem_service_compact_journal_now(store_path) != 0)) {
+        fprintf(stderr,
+                "mem_service serve: checkpoint retention save failed path=%s\n",
+                store_path);
+        return 1;
+    }
     if (mem_service_write_durable_catalog_manifest(storage_root, store_path) != 0) {
         fprintf(stderr,
                 "mem_service serve: durable catalog manifest failed root=%s\n",
@@ -10157,6 +10458,9 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     }
     if (limits != NULL && limits->max_audit_events > 0) {
         printf(" max_audit_events=%" PRIu64, limits->max_audit_events);
+    }
+    if (limits != NULL && limits->max_checkpoint_records > 0) {
+        printf(" max_checkpoint_records=%" PRIu64, limits->max_checkpoint_records);
     }
     printf("\n");
     fflush(stdout);

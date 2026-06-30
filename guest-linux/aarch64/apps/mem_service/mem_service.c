@@ -46,10 +46,10 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8623U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x49f0de19U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8790U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x23c41e12U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 31U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 32U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -74,7 +74,8 @@ static void usage(const char *argv0)
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
-    printf(" [runtime-quota-fixtures] [retention-fixtures] [encryption-fixtures]");
+    printf(" [runtime-quota-fixtures] [retention-fixtures]");
+    printf(" [checkpoint-retention-fixtures] [encryption-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
@@ -2984,6 +2985,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "checkpoint_retention_policy=manual-or-latest-limit\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "encryption_policy=explicit-none-only\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3232,6 +3241,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=retention-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=checkpoint-retention-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4849,6 +4862,11 @@ static int run_package_fixture_check(void)
         strstr(manifest, "retention_policy=manual-or-audit-log-limit\n") == NULL ||
         strstr(manifest,
                "retention_policy_gate=config-fixtures,retention-fixtures\n") == NULL ||
+        strstr(manifest,
+               "checkpoint_retention_policy=manual-or-latest-limit\n") == NULL ||
+        strstr(manifest,
+               "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
+            NULL ||
         strstr(manifest, "encryption_policy=explicit-none-only\n") == NULL ||
         strstr(manifest, "encryption_at_rest=not-certified\n") == NULL ||
         strstr(manifest, "encryption_policy_command=encryption-policy\n") == NULL ||
@@ -4859,6 +4877,7 @@ static int run_package_fixture_check(void)
         strstr(manifest, "runtime_quota_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=retention-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=checkpoint-retention-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=encryption-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
@@ -4874,6 +4893,11 @@ static int run_package_fixture_check(void)
         strstr(manifest, "retention_policy=manual-or-audit-log-limit\n") == NULL ||
         strstr(manifest,
                "retention_policy_gate=config-fixtures,retention-fixtures\n") == NULL ||
+        strstr(manifest,
+               "checkpoint_retention_policy=manual-or-latest-limit\n") == NULL ||
+        strstr(manifest,
+               "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
+            NULL ||
         strstr(manifest, "encryption_policy=explicit-none-only\n") == NULL ||
         strstr(manifest, "encryption_at_rest=not-certified\n") == NULL ||
         strstr(manifest, "encryption_policy_command=encryption-policy\n") == NULL ||
@@ -5032,6 +5056,8 @@ static int run_release_manifest(void)
     printf("deployment_quota_gate=config-fixtures\n");
     printf("retention_policy=manual-or-audit-log-limit\n");
     printf("retention_policy_gate=config-fixtures,retention-fixtures\n");
+    printf("checkpoint_retention_policy=manual-or-latest-limit\n");
+    printf("checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n");
     printf("encryption_policy=explicit-none-only\n");
     printf("encryption_at_rest=not-certified\n");
     printf("encryption_policy_command=encryption-policy\n");
@@ -5251,7 +5277,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 31U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 32U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -5323,6 +5349,7 @@ static int run_release_fixture_check(void)
            "restore_policy_smokes=1 "
            "runtime_quota_smokes=1 "
            "retention_smokes=1 "
+           "checkpoint_retention_smokes=1 "
            "encryption_policy_smokes=1 "
            "compat_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
@@ -5591,15 +5618,19 @@ struct mem_service_cli_config {
     bool has_max_payload_bytes;
     bool has_retention;
     bool has_max_audit_events;
+    bool has_checkpoint_retention;
+    bool has_max_checkpoint_records;
     bool has_encryption;
     uint64_t max_records;
     uint64_t max_payload_bytes;
     uint64_t max_audit_events;
+    uint64_t max_checkpoint_records;
     char listen[160];
     char store[512];
     char storage_root[512];
     char metrics_listen[160];
     char retention[80];
+    char checkpoint_retention[80];
     char encryption[40];
 };
 
@@ -5687,6 +5718,35 @@ static bool parse_retention_value(const char *value, uint64_t *max_audit_events_
     }
     if (max_audit_events_out != NULL) {
         *max_audit_events_out = max_audit_events;
+    }
+    return true;
+}
+
+static bool parse_checkpoint_retention_value(const char *value,
+                                             uint64_t *max_checkpoint_records_out)
+{
+    const char *prefix = "latest:";
+    uint64_t max_checkpoint_records;
+
+    if (value == NULL || value[0] == '\0') {
+        return false;
+    }
+    if (strcmp(value, "manual") == 0) {
+        if (max_checkpoint_records_out != NULL) {
+            *max_checkpoint_records_out = 0;
+        }
+        return true;
+    }
+    if (strncmp(value, prefix, strlen(prefix)) != 0) {
+        return false;
+    }
+    if (!parse_config_u64_value(value + strlen(prefix), &max_checkpoint_records) ||
+        max_checkpoint_records == 0 ||
+        max_checkpoint_records > MEM_SERVICE_MAX_RECORDS) {
+        return false;
+    }
+    if (max_checkpoint_records_out != NULL) {
+        *max_checkpoint_records_out = max_checkpoint_records;
     }
     return true;
 }
@@ -5795,6 +5855,22 @@ static int apply_config_field(struct mem_service_cli_config *config,
         }
         return 0;
     }
+    if (strcmp(name, "checkpoint_retention") == 0) {
+        uint64_t max_checkpoint_records = 0;
+
+        if (!parse_checkpoint_retention_value(value, &max_checkpoint_records) ||
+            copy_config_value(config->checkpoint_retention,
+                              sizeof(config->checkpoint_retention),
+                              value) != 0) {
+            return -1;
+        }
+        config->has_checkpoint_retention = true;
+        if (max_checkpoint_records > 0) {
+            config->has_max_checkpoint_records = true;
+            config->max_checkpoint_records = max_checkpoint_records;
+        }
+        return 0;
+    }
     if (strcmp(name, "encryption") == 0) {
         if (strcmp(value, "none") != 0 ||
             copy_config_value(config->encryption,
@@ -5898,16 +5974,19 @@ static int run_config_fixture_check(void)
     char invalid_path[160];
     char invalid_quota_path[160];
     char invalid_retention_path[160];
+    char invalid_checkpoint_retention_path[160];
     char invalid_encryption_path[160];
     struct mem_service_cli_config config;
     FILE *file;
     uint64_t valid_max_records = 0;
     uint64_t valid_max_payload_bytes = 0;
     char valid_retention[80];
+    char valid_checkpoint_retention[80];
     char valid_encryption[40];
     int failures = 0;
 
     valid_retention[0] = '\0';
+    valid_checkpoint_retention[0] = '\0';
     valid_encryption[0] = '\0';
     snprintf(valid_path,
              sizeof(valid_path),
@@ -5924,6 +6003,10 @@ static int run_config_fixture_check(void)
     snprintf(invalid_retention_path,
              sizeof(invalid_retention_path),
              "/tmp/linqu_mem_service_config_fixture_%ld_bad_retention.conf",
+             (long)getpid());
+    snprintf(invalid_checkpoint_retention_path,
+             sizeof(invalid_checkpoint_retention_path),
+             "/tmp/linqu_mem_service_config_fixture_%ld_bad_checkpoint_retention.conf",
              (long)getpid());
     snprintf(invalid_encryption_path,
              sizeof(invalid_encryption_path),
@@ -5943,6 +6026,7 @@ static int run_config_fixture_check(void)
                 "max_records=1024\n"
                 "max_payload_bytes=4096\n"
                 "retention=manual\n"
+                "checkpoint_retention=manual\n"
                 "encryption=none\n"
                 "auth_mode=none\n"
                 "metrics_mode=text-kv\n"
@@ -6027,6 +6111,7 @@ static int run_config_fixture_check(void)
         unlink(invalid_path);
         unlink(invalid_quota_path);
         unlink(invalid_retention_path);
+        unlink(invalid_checkpoint_retention_path);
         return 1;
     }
     if (fprintf(file,
@@ -6037,6 +6122,7 @@ static int run_config_fixture_check(void)
         unlink(invalid_path);
         unlink(invalid_quota_path);
         unlink(invalid_retention_path);
+        unlink(invalid_checkpoint_retention_path);
         unlink(invalid_encryption_path);
         return 1;
     }
@@ -6045,6 +6131,37 @@ static int run_config_fixture_check(void)
         unlink(invalid_path);
         unlink(invalid_quota_path);
         unlink(invalid_retention_path);
+        unlink(invalid_checkpoint_retention_path);
+        unlink(invalid_encryption_path);
+        return 1;
+    }
+    file = fopen(invalid_checkpoint_retention_path, "w");
+    if (file == NULL) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        unlink(invalid_encryption_path);
+        return 1;
+    }
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_fixture_bad_checkpoint_retention.sock\n"
+                "checkpoint_retention=latest:0\n") < 0) {
+        fclose(file);
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        unlink(invalid_checkpoint_retention_path);
+        unlink(invalid_encryption_path);
+        return 1;
+    }
+    if (fclose(file) != 0) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        unlink(invalid_checkpoint_retention_path);
         unlink(invalid_encryption_path);
         return 1;
     }
@@ -6056,6 +6173,7 @@ static int run_config_fixture_check(void)
         !config.has_max_records ||
         !config.has_max_payload_bytes ||
         !config.has_retention ||
+        !config.has_checkpoint_retention ||
         !config.has_encryption ||
         strcmp(config.listen, "unix:/tmp/linqu_mem_service_fixture.sock") != 0 ||
         strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0 ||
@@ -6064,12 +6182,17 @@ static int run_config_fixture_check(void)
         config.max_records != 1024U ||
         config.max_payload_bytes != 4096U ||
         strcmp(config.retention, "manual") != 0 ||
+        strcmp(config.checkpoint_retention, "manual") != 0 ||
         strcmp(config.encryption, "none") != 0) {
         failures -= 1;
     } else {
         valid_max_records = config.max_records;
         valid_max_payload_bytes = config.max_payload_bytes;
         snprintf(valid_retention, sizeof(valid_retention), "%s", config.retention);
+        snprintf(valid_checkpoint_retention,
+                 sizeof(valid_checkpoint_retention),
+                 "%s",
+                 config.checkpoint_retention);
         snprintf(valid_encryption, sizeof(valid_encryption), "%s", config.encryption);
     }
     if (load_mem_service_config(invalid_path, &config, true) == 0) {
@@ -6081,6 +6204,11 @@ static int run_config_fixture_check(void)
     if (load_mem_service_config(invalid_retention_path, &config, true) == 0) {
         failures -= 1;
     }
+    if (load_mem_service_config(invalid_checkpoint_retention_path,
+                                &config,
+                                true) == 0) {
+        failures -= 1;
+    }
     if (load_mem_service_config(invalid_encryption_path, &config, true) == 0) {
         failures -= 1;
     }
@@ -6088,6 +6216,7 @@ static int run_config_fixture_check(void)
     unlink(invalid_path);
     unlink(invalid_quota_path);
     unlink(invalid_retention_path);
+    unlink(invalid_checkpoint_retention_path);
     unlink(invalid_encryption_path);
     if (failures != 0) {
         fprintf(stderr, "mem_service config-fixtures: failed\n");
@@ -6097,8 +6226,8 @@ static int run_config_fixture_check(void)
            "storage_root=%s service_auth_boundary=unix-socket-local-only "
            "metrics_auth_boundary=loopback-only quota_contract=max-records+max-payload-bytes "
            "max_records=%" PRIu64 " max_payload_bytes=%" PRIu64
-           " retention=%s encryption=%s encryption_admission=explicit-none-only "
-           "fail_closed_invalid=4\n",
+           " retention=%s checkpoint_retention=%s encryption=%s "
+           "encryption_admission=explicit-none-only fail_closed_invalid=5\n",
            MEM_SERVICE_CONFIG_SCHEMA_VERSION,
            "unix:/tmp/linqu_mem_service_fixture.sock",
            "/tmp/linqu_mem_service_fixture.store",
@@ -6106,6 +6235,7 @@ static int run_config_fixture_check(void)
            valid_max_records,
            valid_max_payload_bytes,
            valid_retention,
+           valid_checkpoint_retention,
            valid_encryption);
     return 0;
 }
@@ -6232,12 +6362,15 @@ static int run_serve(int argc, char **argv)
         metrics_listen_spec =
             config.has_metrics_listen ? config.metrics_listen : metrics_listen_spec;
         if (config.has_max_records || config.has_max_payload_bytes ||
-            config.has_max_audit_events) {
+            config.has_max_audit_events ||
+            config.has_max_checkpoint_records) {
             limits.max_records = config.has_max_records ? config.max_records : 0U;
             limits.max_payload_bytes =
                 config.has_max_payload_bytes ? config.max_payload_bytes : 0U;
             limits.max_audit_events =
                 config.has_max_audit_events ? config.max_audit_events : 0U;
+            limits.max_checkpoint_records =
+                config.has_max_checkpoint_records ? config.max_checkpoint_records : 0U;
             limits_ptr = &limits;
         }
         if (store_path == NULL && storage_root != NULL &&
@@ -8816,6 +8949,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "retention-fixtures") == 0) {
         return mem_service_run_retention_fixture_check();
+    }
+    if (strcmp(argv[1], "checkpoint-retention-fixtures") == 0) {
+        return mem_service_run_checkpoint_retention_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();
