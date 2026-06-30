@@ -1248,10 +1248,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'f.write(b"!<arch>\\n")' in app_makefile
     assert "^distributable_package_format=tar$$" in app_makefile
     assert "^distributable_package_gate=package-tarball-smoke$$" in app_makefile
+    assert "$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh" in app_makefile
     assert "^native_package_format=deb$$" in app_makefile
     assert "^native_package_gate=package-deb-smoke$$" in app_makefile
+    assert "$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh" in app_makefile
     assert "^rpm_native_package_format=rpm$$" in app_makefile
     assert "^rpm_native_package_gate=package-rpm-smoke$$" in app_makefile
+    assert "$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh" in app_makefile
+    assert app_makefile.count("| grep -q 'release-readiness --ops-evidence-file'") >= 4
     assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
     assert "examples/mem_service_serving_example.c" in app_makefile
     assert "examples/mem_service_pretraining_example.c" in app_makefile

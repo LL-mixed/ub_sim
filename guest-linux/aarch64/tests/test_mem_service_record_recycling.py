@@ -796,10 +796,26 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^package_gate=package-fixtures$$", cli_makefile)
         self.assertIn("^distributable_package_format=tar$$", cli_makefile)
         self.assertIn("^distributable_package_gate=package-tarball-smoke$$", cli_makefile)
+        self.assertIn(
+            "$(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh",
+            cli_makefile,
+        )
         self.assertIn("^native_package_format=deb$$", cli_makefile)
         self.assertIn("^native_package_gate=package-deb-smoke$$", cli_makefile)
+        self.assertIn(
+            "$(DEB_VERIFY_ROOT)/data/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh",
+            cli_makefile,
+        )
         self.assertIn("^rpm_native_package_format=rpm$$", cli_makefile)
         self.assertIn("^rpm_native_package_gate=package-rpm-smoke$$", cli_makefile)
+        self.assertIn(
+            "$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh",
+            cli_makefile,
+        )
+        self.assertGreaterEqual(
+            cli_makefile.count("| grep -q 'release-readiness --ops-evidence-file'"),
+            4,
+        )
         self.assertIn("^upgrade_rollback_policy_checksum=0xf7943816$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
