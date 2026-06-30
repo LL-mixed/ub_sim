@@ -723,6 +723,7 @@ run_default_actions() {
     run_binary "linqu_mem_service_retention_fixtures" /bin/linqu_mem_service retention-fixtures || rc=$?
     run_binary "linqu_mem_service_checkpoint_retention_fixtures" /bin/linqu_mem_service checkpoint-retention-fixtures || rc=$?
     run_binary "linqu_mem_service_payload_gc_fixtures" /bin/linqu_mem_service payload-gc-fixtures || rc=$?
+    run_binary "linqu_mem_service_record_retention_fixtures" /bin/linqu_mem_service record-retention-fixtures || rc=$?
     run_binary "linqu_mem_service_encryption_fixtures" /bin/linqu_mem_service encryption-fixtures || rc=$?
     run_binary "linqu_mem_service_metrics_export_fixtures" /bin/linqu_mem_service metrics-export-fixtures || rc=$?
     run_binary "linqu_mem_service_collector_fixtures" /bin/linqu_mem_service collector-fixtures || rc=$?
@@ -826,6 +827,7 @@ run_single_action() {
       run_binary "linqu_mem_service_retention_fixtures" /bin/linqu_mem_service retention-fixtures &&
       run_binary "linqu_mem_service_checkpoint_retention_fixtures" /bin/linqu_mem_service checkpoint-retention-fixtures &&
       run_binary "linqu_mem_service_payload_gc_fixtures" /bin/linqu_mem_service payload-gc-fixtures &&
+      run_binary "linqu_mem_service_record_retention_fixtures" /bin/linqu_mem_service record-retention-fixtures &&
       run_binary "linqu_mem_service_encryption_fixtures" /bin/linqu_mem_service encryption-fixtures &&
       run_binary "linqu_mem_service_metrics_export_fixtures" /bin/linqu_mem_service metrics-export-fixtures &&
       run_binary "linqu_mem_service_collector_fixtures" /bin/linqu_mem_service collector-fixtures &&

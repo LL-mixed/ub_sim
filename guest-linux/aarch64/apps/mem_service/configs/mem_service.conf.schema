@@ -10,6 +10,7 @@ optional=max_records
 optional=max_payload_bytes
 optional=retention
 optional=checkpoint_retention
+optional=record_retention
 optional=encryption
 optional=auth_mode
 optional=metrics_mode
@@ -25,6 +26,7 @@ field=max_records type=u64 description=deployment record-capacity expectation
 field=max_payload_bytes type=u64 description=deployment wire-payload capacity expectation
 field=retention type=enum values=manual,audit-log:<events> description=audit retention policy
 field=checkpoint_retention type=enum values=manual,latest:<records> description=checkpoint record retention policy
+field=record_retention type=enum values=manual,latest:<records> description=global record retention policy
 field=encryption type=enum values=none description=explicit encryption policy; unsupported modes fail closed
 field=auth_mode type=enum values=none description=local-only deployment mode; network service endpoints are rejected
 field=metrics_mode type=enum values=text-kv description=current metrics export mode

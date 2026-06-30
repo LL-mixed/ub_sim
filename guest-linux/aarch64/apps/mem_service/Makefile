@@ -215,6 +215,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host retention-fixtures
 	./linqu_mem_service_host checkpoint-retention-fixtures
 	./linqu_mem_service_host payload-gc-fixtures
+	./linqu_mem_service_host record-retention-fixtures
 	./linqu_mem_service_host encryption-fixtures
 	./linqu_mem_service_host alert-fixtures
 	./linqu_mem_service_host alert-integration-fixtures
@@ -752,8 +753,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=8918$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xad66136e$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=9106$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xa8fdbde0$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -820,8 +821,10 @@ install-smoke: install
 	grep -q '^retention_policy_gate=config-fixtures,retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^checkpoint_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^payload_block_gc=checkpoint-retention-orphan-blocks$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^payload_block_gc_gate=payload-gc-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^record_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^record_retention_gate=config-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^payload_block_gc=record-and-checkpoint-retention-orphan-blocks$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^payload_block_gc_gate=payload-gc-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^encryption_policy=explicit-none-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^encryption_at_rest=not-certified$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^encryption_policy_command=encryption-policy$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -1038,13 +1041,15 @@ install-smoke: install
 	grep -q '^retention_policy_gate=config-fixtures,retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^checkpoint_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^payload_block_gc=checkpoint-retention-orphan-blocks$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^payload_block_gc_gate=payload-gc-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^record_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^record_retention_gate=config-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^payload_block_gc=record-and-checkpoint-retention-orphan-blocks$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^payload_block_gc_gate=payload-gc-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_policy=explicit-none-only$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_at_rest=not-certified$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_policy_command=encryption-policy$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_policy_gate=encryption-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=33$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=34$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1056,6 +1061,7 @@ install-smoke: install
 	grep -q '^required_gate=retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=checkpoint-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=payload-gc-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=record-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=encryption-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1117,25 +1123,32 @@ install-smoke: install
 	grep -q '^certified_pair=current-v1-client->old-v1-runtime-binary$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	grep -q '^certification_limit=none$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	grep -q '^mem_service_config_schema_version=1$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
+	grep -q '^optional=record_retention$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
+	grep -q '^field=record_retention type=enum values=manual,latest:<records> description=global record retention policy$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	grep -q '^listen=unix:/tmp/linqu_mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
+	grep -q '^record_retention=manual$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^metrics_listen=tcp:127.0.0.1:9900$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^listen=unix:/run/lingqu/mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
 	grep -q '^store=/var/lib/lingqu/mem_service/store.snapshot$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
 	grep -q '^storage_root=/var/lib/lingqu/mem_service$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
+	grep -q '^record_retention=manual$$' $(INSTALL_CONFIGDIR)/mem_service.runtime.conf
 	grep -q '^listen=unix:/run/lingqu/mem_service_host.sock$$' $(INSTALL_CONFIGDIR)/mem_service.host.runtime.conf
 	grep -q '^store=/var/lib/lingqu/mem_service_host/store.snapshot$$' $(INSTALL_CONFIGDIR)/mem_service.host.runtime.conf
 	grep -q '^storage_root=/var/lib/lingqu/mem_service_host$$' $(INSTALL_CONFIGDIR)/mem_service.host.runtime.conf
+	grep -q '^record_retention=manual$$' $(INSTALL_CONFIGDIR)/mem_service.host.runtime.conf
 	grep -q '^metrics_listen=tcp:127.0.0.1:9901$$' $(INSTALL_CONFIGDIR)/mem_service.host.runtime.conf
 	grep -q '^listen=unix:/run/lingqu/mem_service.sock$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^store=/var/lib/lingqu/mem_service/store.snapshot$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^storage_root=/var/lib/lingqu/mem_service$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
+	grep -q '^record_retention=manual$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^metrics_listen=tcp:127.0.0.1:9900$$' $(INSTALL_SYSCONFDIR)/mem_service.conf
 	grep -q '^listen=unix:/run/lingqu/mem_service_host.sock$$' $(INSTALL_SYSCONFDIR)/mem_service.host.conf
 	grep -q '^store=/var/lib/lingqu/mem_service_host/store.snapshot$$' $(INSTALL_SYSCONFDIR)/mem_service.host.conf
 	grep -q '^storage_root=/var/lib/lingqu/mem_service_host$$' $(INSTALL_SYSCONFDIR)/mem_service.host.conf
+	grep -q '^record_retention=manual$$' $(INSTALL_SYSCONFDIR)/mem_service.host.conf
 	grep -q '^metrics_listen=tcp:127.0.0.1:9901$$' $(INSTALL_SYSCONFDIR)/mem_service.host.conf
 	grep -q '^ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.service
 	grep -q '^ExecStart=/usr/libexec/lingqu/mem_service/linqu_mem_service_host serve --config /etc/lingqu/mem_service/mem_service.host.conf$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.host.service

@@ -114,6 +114,10 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
                                                    uint64_t max_checkpoint_records,
                                                    const char *storage_root,
                                                    uint64_t *payload_gc_out);
+static bool mem_service_apply_record_retention(struct mem_service *svc,
+                                               uint64_t max_retained_records,
+                                               const char *storage_root,
+                                               uint64_t *payload_gc_out);
 static const char *mem_service_record_kind_name(enum mem_service_record_kind kind);
 static struct mem_service_idempotency_record *mem_service_find_idempotency_record(
     struct mem_service *svc,
@@ -8755,6 +8759,31 @@ static size_t mem_service_find_oldest_checkpoint_record_index(
     return oldest;
 }
 
+static size_t mem_service_find_oldest_record_index(const struct mem_service *svc)
+{
+    size_t oldest = MEM_SERVICE_MAX_RECORDS;
+    size_t i;
+
+    if (svc == NULL) {
+        return oldest;
+    }
+    for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
+        const struct mem_service_record *record = &svc->records[i];
+
+        if (!record->in_use) {
+            continue;
+        }
+        if (oldest == MEM_SERVICE_MAX_RECORDS ||
+            record->version < svc->records[oldest].version ||
+            (record->version == svc->records[oldest].version &&
+             record->object_publish_monotonic_ms <
+                 svc->records[oldest].object_publish_monotonic_ms)) {
+            oldest = i;
+        }
+    }
+    return oldest;
+}
+
 static void mem_service_prune_idempotency_for_record_key(struct mem_service *svc,
                                                          const char *record_key)
 {
@@ -8767,8 +8796,7 @@ static void mem_service_prune_idempotency_for_record_key(struct mem_service *svc
         struct mem_service_idempotency_record *idem = &svc->idempotency_records[i];
         char response_key[96];
 
-        if (!idem->in_use ||
-            idem->operation != MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT) {
+        if (!idem->in_use) {
             continue;
         }
         response_key[0] = '\0';
@@ -8794,6 +8822,38 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
     }
     while (mem_service_count_checkpoint_records(svc) > max_checkpoint_records) {
         size_t oldest = mem_service_find_oldest_checkpoint_record_index(svc);
+        char key[96];
+
+        if (oldest == MEM_SERVICE_MAX_RECORDS) {
+            break;
+        }
+        snprintf(key, sizeof(key), "%s", svc->records[oldest].key);
+        (void)mem_service_gc_payload_block_if_orphaned(svc,
+                                                       oldest,
+                                                       storage_root,
+                                                       payload_gc_out);
+        memset(&svc->records[oldest], 0, sizeof(svc->records[oldest]));
+        if (svc->record_count > 0) {
+            svc->record_count -= 1U;
+        }
+        mem_service_prune_idempotency_for_record_key(svc, key);
+        pruned = true;
+    }
+    return pruned;
+}
+
+static bool mem_service_apply_record_retention(struct mem_service *svc,
+                                               uint64_t max_retained_records,
+                                               const char *storage_root,
+                                               uint64_t *payload_gc_out)
+{
+    bool pruned = false;
+
+    if (svc == NULL || max_retained_records == 0) {
+        return false;
+    }
+    while ((uint64_t)svc->record_count > max_retained_records) {
+        size_t oldest = mem_service_find_oldest_record_index(svc);
         char key[96];
 
         if (oldest == MEM_SERVICE_MAX_RECORDS) {
@@ -9550,6 +9610,7 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
     bool audit_appended = false;
     bool audit_retention_pruned = false;
     bool checkpoint_retention_pruned = false;
+    bool record_retention_pruned = false;
     enum mem_service_wire_status status =
         mem_service_try_idempotency_replay(svc,
                                            operation,
@@ -9590,6 +9651,17 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
                     mem_service_apply_checkpoint_retention(
                         svc,
                         limits->max_checkpoint_records,
+                        storage_root,
+                        NULL);
+            }
+            if (status == MEM_SERVICE_WIRE_STATUS_OK &&
+                mem_service_operation_mutates(operation, payload) &&
+                limits != NULL &&
+                limits->max_retained_records > 0) {
+                record_retention_pruned =
+                    mem_service_apply_record_retention(
+                        svc,
+                        limits->max_retained_records,
                         storage_root,
                         NULL);
             }
@@ -9660,6 +9732,13 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
          mem_service_compact_journal_now(store_path) != 0)) {
         fprintf(stderr,
                 "mem_service checkpoint-retention: durable sync failed operation=%u\n",
+                (unsigned int)operation);
+    }
+    if (record_retention_pruned && store_path != NULL &&
+        (mem_service_save_store(svc, store_path) != 0 ||
+         mem_service_compact_journal_now(store_path) != 0)) {
+        fprintf(stderr,
+                "mem_service record-retention: durable sync failed operation=%u\n",
                 (unsigned int)operation);
     }
 
@@ -10342,6 +10421,206 @@ int mem_service_run_payload_gc_fixture_check(void)
     return 0;
 }
 
+int mem_service_run_record_retention_fixture_check(void)
+{
+    static const char *payloads[5] = {
+        "orphan-record-payload",
+        "shared-record-payload",
+        "shared-record-payload",
+        "retained-record-payload-a",
+        "retained-record-payload-b",
+    };
+    struct mem_service svc;
+    struct mem_service recovered;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char storage_root[176];
+    char store_path[224];
+    char journal_path[sizeof(store_path) + 16U];
+    char blocks_dir[224];
+    char catalog_dir[224];
+    char quarantine_dir[224];
+    char orphan_block[256];
+    char shared_block[256];
+    char retained_block_a[256];
+    char retained_block_b[256];
+    uint64_t checksums[5];
+    size_t i;
+
+    snprintf(storage_root,
+             sizeof(storage_root),
+             "/tmp/linqu_mem_service_record_retention_fixture_%ld",
+             (long)getpid());
+    if (mem_service_join_path(blocks_dir,
+                              sizeof(blocks_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(catalog_dir,
+                              sizeof(catalog_dir),
+                              storage_root,
+                              "catalog") != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        mem_service_make_catalog_path(storage_root,
+                                      "store.snapshot",
+                                      store_path,
+                                      sizeof(store_path)) != 0 ||
+        mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: path setup failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    rmdir(blocks_dir);
+    rmdir(catalog_dir);
+    rmdir(quarantine_dir);
+    rmdir(storage_root);
+    if (mem_service_prepare_durable_catalog_layout(storage_root) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: storage setup failed\n");
+        return 1;
+    }
+    memset(&limits, 0, sizeof(limits));
+    limits.max_retained_records = 3U;
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: init failed\n");
+        rmdir(blocks_dir);
+        rmdir(catalog_dir);
+        rmdir(quarantine_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    for (i = 0U; i < 5U; ++i) {
+        char request[384];
+        enum mem_service_wire_status status;
+
+        checksums[i] = mem_service_checksum_bytes((const uint8_t *)payloads[i],
+                                                  (uint64_t)strlen(payloads[i]));
+        snprintf(request,
+                 sizeof(request),
+                 "key=record-retention-object-%zu\n"
+                 "owner=17\n"
+                 "version=%zu\n"
+                 "backing_len=%zu\n"
+                 "checksum=%" PRIu64 "\n"
+                 "payload_inline=%s\n"
+                 "idempotency_key=record-retention-idem-%zu\n",
+                 i + 1U,
+                 i + 1U,
+                 strlen(payloads[i]),
+                 checksums[i],
+                 payloads[i],
+                 i + 1U);
+        status = mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+            request,
+            response,
+            sizeof(response),
+            store_path,
+            storage_root,
+            &limits);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            fprintf(stderr,
+                    "mem_service record-retention-fixtures: put failed i=%zu status=%s\n",
+                    i,
+                    mem_service_wire_status_name((uint32_t)status));
+            unlink(store_path);
+            unlink(journal_path);
+            rmdir(blocks_dir);
+            rmdir(catalog_dir);
+            rmdir(quarantine_dir);
+            rmdir(storage_root);
+            return 1;
+        }
+    }
+    if (mem_service_make_payload_block_path(storage_root,
+                                            checksums[0],
+                                            orphan_block,
+                                            sizeof(orphan_block)) != 0 ||
+        mem_service_make_payload_block_path(storage_root,
+                                            checksums[2],
+                                            shared_block,
+                                            sizeof(shared_block)) != 0 ||
+        mem_service_make_payload_block_path(storage_root,
+                                            checksums[3],
+                                            retained_block_a,
+                                            sizeof(retained_block_a)) != 0 ||
+        mem_service_make_payload_block_path(storage_root,
+                                            checksums[4],
+                                            retained_block_b,
+                                            sizeof(retained_block_b)) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: block path failed\n");
+        return 1;
+    }
+    if (svc.record_count != 3U ||
+        mem_service_find_record(&svc, "record-retention-object-1") != NULL ||
+        mem_service_find_record(&svc, "record-retention-object-2") != NULL ||
+        mem_service_find_record(&svc, "record-retention-object-3") == NULL ||
+        mem_service_find_record(&svc, "record-retention-object-4") == NULL ||
+        mem_service_find_record(&svc, "record-retention-object-5") == NULL ||
+        mem_service_find_idempotency_record(&svc, "record-retention-idem-1") != NULL ||
+        mem_service_find_idempotency_record(&svc, "record-retention-idem-2") != NULL ||
+        access(orphan_block, F_OK) == 0 ||
+        access(shared_block, F_OK) != 0 ||
+        access(retained_block_a, F_OK) != 0 ||
+        access(retained_block_b, F_OK) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: retention mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        unlink(orphan_block);
+        unlink(shared_block);
+        unlink(retained_block_a);
+        unlink(retained_block_b);
+        rmdir(blocks_dir);
+        rmdir(catalog_dir);
+        rmdir(quarantine_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (mem_service_init(&recovered, true, true, true) != 0 ||
+        mem_service_load_durable_store(&recovered, store_path) != 0 ||
+        recovered.record_count != 3U ||
+        mem_service_find_record(&recovered, "record-retention-object-1") != NULL ||
+        mem_service_find_record(&recovered, "record-retention-object-2") != NULL ||
+        mem_service_find_record(&recovered, "record-retention-object-3") == NULL ||
+        mem_service_find_record(&recovered, "record-retention-object-4") == NULL ||
+        mem_service_find_record(&recovered, "record-retention-object-5") == NULL ||
+        mem_service_file_contains(journal_path, "record-retention-object-1") ||
+        mem_service_file_contains(journal_path, "record-retention-object-2")) {
+        fprintf(stderr, "mem_service record-retention-fixtures: durable mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        unlink(shared_block);
+        unlink(retained_block_a);
+        unlink(retained_block_b);
+        rmdir(blocks_dir);
+        rmdir(catalog_dir);
+        rmdir(quarantine_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    unlink(shared_block);
+    unlink(retained_block_a);
+    unlink(retained_block_b);
+    rmdir(blocks_dir);
+    rmdir(catalog_dir);
+    rmdir(quarantine_dir);
+    rmdir(storage_root);
+    printf("mem_service record-retention-fixtures: status=ok "
+           "record_retention=latest max_retained_records=%" PRIu64
+           " record_count=%zu pruned_records=2 payload_blocks_removed=1 "
+           "shared_block_retained=1 idempotency_gc=1 durable_reload=1 journal_gc=1\n",
+           limits.max_retained_records,
+           recovered.record_count);
+    return 0;
+}
+
 static int mem_service_handle_client(int client_fd,
                                      struct mem_service *svc,
                                      const char *store_path,
@@ -10820,6 +11099,19 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
          mem_service_compact_journal_now(store_path) != 0)) {
         fprintf(stderr,
                 "mem_service serve: checkpoint retention save failed path=%s\n",
+                store_path);
+        return 1;
+    }
+    if (limits != NULL && limits->max_retained_records > 0 &&
+        mem_service_apply_record_retention(&svc,
+                                           limits->max_retained_records,
+                                           storage_root,
+                                           NULL) &&
+        store_path != NULL && store_path[0] != '\0' &&
+        (mem_service_save_store(&svc, store_path) != 0 ||
+         mem_service_compact_journal_now(store_path) != 0)) {
+        fprintf(stderr,
+                "mem_service serve: record retention save failed path=%s\n",
                 store_path);
         return 1;
     }

@@ -17,6 +17,7 @@ struct mem_service_daemon_limits {
     uint64_t max_payload_bytes;
     uint64_t max_audit_events;
     uint64_t max_checkpoint_records;
+    uint64_t max_retained_records;
 };
 
 int mem_service_run_unix_daemon(const char *listen_spec);
@@ -48,6 +49,7 @@ int mem_service_run_runtime_quota_fixture_check(void);
 int mem_service_run_retention_fixture_check(void);
 int mem_service_run_checkpoint_retention_fixture_check(void);
 int mem_service_run_payload_gc_fixture_check(void);
+int mem_service_run_record_retention_fixture_check(void);
 int mem_service_probe_transport_tcp_payload_block(
     const char *storage_root,
     const char *payload_source,
