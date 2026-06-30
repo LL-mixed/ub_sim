@@ -21,7 +21,7 @@ field=storage_root type=string description=base directory for durable catalog ma
 field=backend type=enum values=snapshot,snapshot+journal description=current durable backend selector
 field=max_records type=u64 description=deployment record-capacity expectation
 field=max_payload_bytes type=u64 description=deployment wire-payload capacity expectation
-field=retention type=string description=retention policy label
+field=retention type=enum values=manual,audit-log:<events> description=audit retention policy
 field=auth_mode type=enum values=none description=local-only deployment mode; network service endpoints are rejected
 field=metrics_mode type=enum values=text-kv description=current metrics export mode
 field=metrics_listen type=string description=optional HTTP metrics endpoint, must be tcp:127.0.0.1:<port>

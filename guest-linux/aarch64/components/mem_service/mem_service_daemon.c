@@ -108,6 +108,8 @@ static bool mem_service_payload_get_u64_checked(const char *payload,
                                                 const char *name,
                                                 uint64_t *out);
 static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc);
+static bool mem_service_apply_audit_retention(struct mem_service *svc,
+                                              uint64_t max_audit_events);
 static const char *mem_service_record_kind_name(enum mem_service_record_kind kind);
 static struct mem_service_idempotency_record *mem_service_find_idempotency_record(
     struct mem_service *svc,
@@ -3667,24 +3669,13 @@ static int mem_service_count_lines_containing(const char *path,
     return 0;
 }
 
-static int mem_service_compact_journal(const char *store_path)
+static int mem_service_rewrite_journal_header(const char *journal_path)
 {
-    char journal_path[512];
     char tmp_path[512];
     FILE *file;
-    struct stat st;
 
-    if (store_path == NULL || store_path[0] == '\0') {
-        return 0;
-    }
-    if (mem_service_make_journal_path(store_path, journal_path, sizeof(journal_path)) != 0) {
-        return 0;
-    }
-    if (stat(journal_path, &st) != 0) {
-        return errno == ENOENT ? 0 : -1;
-    }
-    if ((uint64_t)st.st_size <= MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES) {
-        return 0;
+    if (journal_path == NULL || journal_path[0] == '\0') {
+        return -1;
     }
     if (snprintf(tmp_path,
                  sizeof(tmp_path),
@@ -3708,6 +3699,39 @@ static int mem_service_compact_journal(const char *store_path)
         return -1;
     }
     return 0;
+}
+
+static int mem_service_compact_journal(const char *store_path)
+{
+    char journal_path[512];
+    struct stat st;
+
+    if (store_path == NULL || store_path[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_make_journal_path(store_path, journal_path, sizeof(journal_path)) != 0) {
+        return 0;
+    }
+    if (stat(journal_path, &st) != 0) {
+        return errno == ENOENT ? 0 : -1;
+    }
+    if ((uint64_t)st.st_size <= MEM_SERVICE_JOURNAL_COMPACTION_THRESHOLD_BYTES) {
+        return 0;
+    }
+    return mem_service_rewrite_journal_header(journal_path);
+}
+
+static int mem_service_compact_journal_now(const char *store_path)
+{
+    char journal_path[512];
+
+    if (store_path == NULL || store_path[0] == '\0') {
+        return 0;
+    }
+    if (mem_service_make_journal_path(store_path, journal_path, sizeof(journal_path)) != 0) {
+        return 0;
+    }
+    return mem_service_rewrite_journal_header(journal_path);
 }
 
 int mem_service_run_store_fixture_check(void)
@@ -8412,6 +8436,40 @@ static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc)
     return svc->audit_next_sequence - svc->audit_event_count;
 }
 
+static bool mem_service_apply_audit_retention(struct mem_service *svc,
+                                              uint64_t max_audit_events)
+{
+    uint64_t first_kept_sequence;
+    uint64_t retained = 0;
+    size_t i;
+    bool pruned = false;
+
+    if (svc == NULL || max_audit_events == 0 ||
+        max_audit_events >= MEM_SERVICE_MAX_AUDIT_EVENTS ||
+        svc->audit_event_count <= max_audit_events ||
+        svc->audit_next_sequence == 0) {
+        return false;
+    }
+    first_kept_sequence = svc->audit_next_sequence > max_audit_events
+                              ? svc->audit_next_sequence - max_audit_events
+                              : 1U;
+    for (i = 0; i < MEM_SERVICE_MAX_AUDIT_EVENTS; ++i) {
+        struct mem_service_audit_event *event = &svc->audit_events[i];
+
+        if (!event->in_use) {
+            continue;
+        }
+        if (event->sequence < first_kept_sequence) {
+            memset(event, 0, sizeof(*event));
+            pruned = true;
+            continue;
+        }
+        retained += 1U;
+    }
+    svc->audit_event_count = retained;
+    return pruned;
+}
+
 static enum mem_service_wire_status mem_service_audit_log(struct mem_service *svc,
                                                           const char *payload,
                                                           char *response,
@@ -9146,6 +9204,7 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
     const struct mem_service_audit_event *audit_event = NULL;
     bool idempotency_handled = false;
     bool audit_appended = false;
+    bool audit_retention_pruned = false;
     enum mem_service_wire_status status =
         mem_service_try_idempotency_replay(svc,
                                            operation,
@@ -9193,6 +9252,10 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
                                                     response,
                                                     idempotency_handled,
                                                     &audit_event);
+    if (audit_appended && limits != NULL && limits->max_audit_events > 0) {
+        audit_retention_pruned =
+            mem_service_apply_audit_retention(svc, limits->max_audit_events);
+    }
     if (audit_appended && store_path != NULL &&
         (mem_service_append_journal(store_path,
                                     pending_idempotency,
@@ -9228,6 +9291,12 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
         mem_service_compact_journal(store_path) != 0) {
         fprintf(stderr,
                 "mem_service journal-compaction: compact_journal failed operation=%u\n",
+                (unsigned int)operation);
+    }
+    if (audit_retention_pruned && store_path != NULL &&
+        mem_service_compact_journal_now(store_path) != 0) {
+        fprintf(stderr,
+                "mem_service retention: compact_journal failed operation=%u\n",
                 (unsigned int)operation);
     }
 
@@ -9384,6 +9453,7 @@ int mem_service_run_runtime_quota_fixture_check(void)
 
     limits.max_records = 1U;
     limits.max_payload_bytes = 24U;
+    limits.max_audit_events = 0;
     if (mem_service_init(&svc, true, true, true) != 0) {
         fprintf(stderr, "mem_service runtime-quota-fixtures: init failed\n");
         return 1;
@@ -9440,6 +9510,117 @@ int mem_service_run_runtime_quota_fixture_check(void)
            limits.max_payload_bytes,
            svc.record_count,
            svc.metrics.capacity_exceeded_count);
+    return 0;
+}
+
+int mem_service_run_retention_fixture_check(void)
+{
+    struct mem_service svc;
+    struct mem_service recovered;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char store_path[160];
+    char journal_path[sizeof(store_path) + 16U];
+    size_t i;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_retention_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service retention-fixtures: journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    memset(&limits, 0, sizeof(limits));
+    limits.max_audit_events = 2U;
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service retention-fixtures: init failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    for (i = 0; i < 4U; ++i) {
+        char payload[160];
+        enum mem_service_wire_status status;
+
+        snprintf(payload,
+                 sizeof(payload),
+                 "key=retention-object-%zu\nversion=%zu\nchecksum=%zu\n"
+                 "backing_len=8\n",
+                 i + 1U,
+                 i + 1U,
+                 100U + i);
+        status = mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+            payload,
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            &limits);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            fprintf(stderr,
+                    "mem_service retention-fixtures: put failed i=%zu status=%s\n",
+                    i,
+                    mem_service_wire_status_name((uint32_t)status));
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    if (svc.record_count != 4U ||
+        svc.audit_event_count != 2U ||
+        mem_service_audit_first_sequence(&svc) != 3U ||
+        mem_service_find_audit_sequence(&svc, 1U) != NULL ||
+        mem_service_find_audit_sequence(&svc, 2U) != NULL ||
+        mem_service_find_audit_sequence(&svc, 3U) == NULL ||
+        mem_service_find_audit_sequence(&svc, 4U) == NULL) {
+        fprintf(stderr, "mem_service retention-fixtures: in-memory gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_init(&recovered, true, true, true) != 0 ||
+        mem_service_load_durable_store(&recovered, store_path) != 0) {
+        fprintf(stderr, "mem_service retention-fixtures: durable load failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (recovered.record_count != 4U ||
+        recovered.audit_event_count != 2U ||
+        mem_service_audit_first_sequence(&recovered) != 3U ||
+        mem_service_find_audit_sequence(&recovered, 1U) != NULL ||
+        mem_service_find_audit_sequence(&recovered, 2U) != NULL ||
+        mem_service_find_audit_sequence(&recovered, 3U) == NULL ||
+        mem_service_find_audit_sequence(&recovered, 4U) == NULL) {
+        fprintf(stderr, "mem_service retention-fixtures: durable gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_file_contains(journal_path, "retention-object-1") ||
+        mem_service_file_contains(journal_path, "retention-object-2")) {
+        fprintf(stderr, "mem_service retention-fixtures: journal gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    printf("mem_service retention-fixtures: status=ok "
+           "retention_policy=audit-log-limit max_audit_events=%" PRIu64
+           " retained_events=%" PRIu64 " first_sequence=%" PRIu64
+           " record_count=%zu durable_reload=1 journal_gc=1\n",
+           limits.max_audit_events,
+           recovered.audit_event_count,
+           mem_service_audit_first_sequence(&recovered),
+           recovered.record_count);
     return 0;
 }
 
@@ -9903,6 +10084,14 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
         fprintf(stderr, "mem_service serve: store load failed path=%s\n", store_path);
         return 1;
     }
+    if (limits != NULL && limits->max_audit_events > 0 &&
+        mem_service_apply_audit_retention(&svc, limits->max_audit_events) &&
+        store_path != NULL && store_path[0] != '\0' &&
+        (mem_service_save_store(&svc, store_path) != 0 ||
+         mem_service_compact_journal_now(store_path) != 0)) {
+        fprintf(stderr, "mem_service serve: retention save failed path=%s\n", store_path);
+        return 1;
+    }
     if (mem_service_write_durable_catalog_manifest(storage_root, store_path) != 0) {
         fprintf(stderr,
                 "mem_service serve: durable catalog manifest failed root=%s\n",
@@ -9965,6 +10154,9 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     }
     if (limits != NULL && limits->max_payload_bytes > 0) {
         printf(" max_payload_bytes=%" PRIu64, limits->max_payload_bytes);
+    }
+    if (limits != NULL && limits->max_audit_events > 0) {
+        printf(" max_audit_events=%" PRIu64, limits->max_audit_events);
     }
     printf("\n");
     fflush(stdout);

@@ -1162,6 +1162,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service config-fixtures" in run_app
     assert "linqu_mem_service_runtime_quota_fixtures" in run_app
     assert "/bin/linqu_mem_service runtime-quota-fixtures" in run_app
+    assert "linqu_mem_service_retention_fixtures" in run_app
+    assert "/bin/linqu_mem_service retention-fixtures" in run_app
     assert "linqu_mem_service_metrics_export_fixtures" in run_app
     assert "/bin/linqu_mem_service metrics-export-fixtures" in run_app
     assert "linqu_mem_service_collector_fixtures" in run_app
@@ -1363,7 +1365,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xa0d23f09$$" in app_makefile
+    assert "^package_manifest_checksum=0x6e04d36b$$" in app_makefile
+    assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-pkgconfig-smoke: install" in app_makefile
     assert "$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service" in app_makefile
@@ -1623,8 +1626,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8372U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa0d23f09U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8432U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6e04d36bU" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -1651,6 +1654,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_restore_policy_fixture_check" in app_source
     assert 'strcmp(argv[1], "runtime-quota-fixtures")' in app_source
     assert "mem_service_run_runtime_quota_fixture_check" in app_source
+    assert 'strcmp(argv[1], "retention-fixtures")' in app_source
+    assert "mem_service_run_retention_fixture_check" in app_source
     assert 'append_optional_payload_field(payload, payload_len, argc, argv, "--expected-owner", "expected_owner")' in app_source
     assert 'MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"' in app_source
     assert 'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"' in app_source
@@ -1691,7 +1696,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0xa0d23f09" in release_manifest
+    assert "package_manifest_checksum=0x6e04d36b" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1707,8 +1712,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "config_security_gate=config-fixtures" in release_manifest
     assert "deployment_quota_contract=max-records+max-payload-bytes" in release_manifest
     assert "deployment_quota_gate=config-fixtures" in release_manifest
-    assert "retention_policy=manual-configured" in release_manifest
-    assert "retention_policy_gate=config-fixtures" in release_manifest
+    assert "retention_policy=manual-or-audit-log-limit" in release_manifest
+    assert "retention_policy_gate=config-fixtures,retention-fixtures" in release_manifest
     assert "runtime_quota_admission=max-records+max-payload-bytes" in release_manifest
     assert "runtime_quota_gate=runtime-quota-fixtures" in release_manifest
     assert "restore_policy=transactional-staged-restore" in release_manifest
@@ -1870,8 +1875,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=8372" in release_manifest
-    assert "package_manifest_checksum=0xa0d23f09" in release_manifest
+    assert "package_manifest_len=8432" in release_manifest
+    assert "package_manifest_checksum=0x6e04d36b" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2154,11 +2159,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "file_class=systemd_units count=2" in package_manifest
     assert "file_class=pkgconfig count=1" in package_manifest
     assert "file_class=release_scripts count=10" in package_manifest
-    assert "required_gate_count=29" in package_manifest
+    assert "required_gate_count=30" in package_manifest
     assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
     assert "required_gate=version-fixtures" in package_manifest
     assert "required_gate=release-readiness-fixtures" in package_manifest
     assert "required_gate=runtime-quota-fixtures" in package_manifest
+    assert "required_gate=retention-fixtures" in package_manifest
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
@@ -2207,6 +2213,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "field=store type=string" in config_schema
     assert "field=storage_root type=string" in config_schema
     assert "field=backend type=enum values=snapshot,snapshot+journal" in config_schema
+    assert "field=retention type=enum values=manual,audit-log:<events>" in config_schema
     assert "field=metrics_listen type=string" in config_schema
     assert "must be tcp:127.0.0.1:<port>" in config_schema
     assert "listen=unix:/tmp/linqu_mem_service.sock" in config_example
@@ -2227,8 +2234,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "config_security_gate=config-fixtures" in package_manifest
     assert "deployment_quota_contract=max-records+max-payload-bytes" in package_manifest
     assert "deployment_quota_gate=config-fixtures" in package_manifest
-    assert "retention_policy=manual-configured" in package_manifest
-    assert "retention_policy_gate=config-fixtures" in package_manifest
+    assert "retention_policy=manual-or-audit-log-limit" in package_manifest
+    assert "retention_policy_gate=config-fixtures,retention-fixtures" in package_manifest
     assert "runtime_quota_admission=max-records+max-payload-bytes" in package_manifest
     assert "runtime_quota_gate=runtime-quota-fixtures" in package_manifest
     assert "ExecStart=/usr/bin/linqu_mem_service serve --config /etc/lingqu/mem_service/mem_service.conf" in deploy_manifest

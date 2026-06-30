@@ -302,6 +302,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             run_app,
         )
         self.assertIn(
+            'run_binary "linqu_mem_service_retention_fixtures" '
+            "/bin/linqu_mem_service retention-fixtures",
+            run_app,
+        )
+        self.assertIn(
             'run_binary "linqu_mem_service_collector_fixtures" '
             "/bin/linqu_mem_service collector-fixtures",
             run_app,
@@ -503,9 +508,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8372U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8432U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa0d23f09U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6e04d36bU",
             cli_source,
         )
         self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
@@ -547,11 +552,13 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "network-transport-block-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "restore-policy-fixtures")', cli_source)
         self.assertIn('strcmp(argv[1], "runtime-quota-fixtures")', cli_source)
+        self.assertIn('strcmp(argv[1], "retention-fixtures")', cli_source)
         self.assertIn("mem_service_run_chunked_block_fixture_check", cli_source)
         self.assertIn("mem_service_run_transport_block_fixture_check", cli_source)
         self.assertIn("mem_service_run_network_transport_block_fixture_check", cli_source)
         self.assertIn("mem_service_run_restore_policy_fixture_check", cli_source)
         self.assertIn("mem_service_run_runtime_quota_fixture_check", cli_source)
+        self.assertIn("mem_service_run_retention_fixture_check", cli_source)
         self.assertIn('strcmp(argv[1], "health")', cli_source)
         self.assertIn('strcmp(argv[1], "ready")', cli_source)
         self.assertIn('strcmp(argv[1], "status")', cli_source)
@@ -778,7 +785,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xa0d23f09$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x6e04d36b$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
         self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
@@ -1064,7 +1071,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0xa0d23f09", release_manifest)
+        self.assertIn("package_manifest_checksum=0x6e04d36b", release_manifest)
         self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             release_manifest,
@@ -1086,8 +1093,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("config_security_gate=config-fixtures", release_manifest)
         self.assertIn("deployment_quota_contract=max-records+max-payload-bytes", release_manifest)
         self.assertIn("deployment_quota_gate=config-fixtures", release_manifest)
-        self.assertIn("retention_policy=manual-configured", release_manifest)
-        self.assertIn("retention_policy_gate=config-fixtures", release_manifest)
+        self.assertIn("retention_policy=manual-or-audit-log-limit", release_manifest)
+        self.assertIn(
+            "retention_policy_gate=config-fixtures,retention-fixtures",
+            release_manifest,
+        )
         self.assertIn("runtime_quota_admission=max-records+max-payload-bytes", release_manifest)
         self.assertIn("runtime_quota_gate=runtime-quota-fixtures", release_manifest)
         self.assertIn("restore_policy=transactional-staged-restore", release_manifest)
@@ -1458,8 +1468,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("config_security_gate=config-fixtures", package_manifest)
         self.assertIn("deployment_quota_contract=max-records+max-payload-bytes", package_manifest)
         self.assertIn("deployment_quota_gate=config-fixtures", package_manifest)
-        self.assertIn("retention_policy=manual-configured", package_manifest)
-        self.assertIn("retention_policy_gate=config-fixtures", package_manifest)
+        self.assertIn("retention_policy=manual-or-audit-log-limit", package_manifest)
+        self.assertIn(
+            "retention_policy_gate=config-fixtures,retention-fixtures",
+            package_manifest,
+        )
         self.assertIn("runtime_quota_admission=max-records+max-payload-bytes", package_manifest)
         self.assertIn("runtime_quota_gate=runtime-quota-fixtures", package_manifest)
         self.assertIn("systemd_unit_root=lib/systemd/system", package_manifest)
@@ -1477,8 +1490,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("binary_version_command=version", package_manifest)
         self.assertIn("binary_version_contract=text-kv", package_manifest)
         self.assertIn("binary_version_gate=version-fixtures", package_manifest)
-        self.assertIn("required_gate_count=29", package_manifest)
+        self.assertIn("required_gate_count=30", package_manifest)
         self.assertIn("required_gate=runtime-quota-fixtures", package_manifest)
+        self.assertIn("required_gate=retention-fixtures", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn("required_gate=version-fixtures", package_manifest)
         self.assertIn("required_gate=release-readiness-fixtures", package_manifest)
@@ -1622,6 +1636,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("field=store type=string", config_schema)
         self.assertIn("field=storage_root type=string", config_schema)
         self.assertIn("field=backend type=enum values=snapshot,snapshot+journal", config_schema)
+        self.assertIn(
+            "field=retention type=enum values=manual,audit-log:<events>",
+            config_schema,
+        )
         self.assertIn("field=metrics_listen type=string", config_schema)
         self.assertIn("must be tcp:127.0.0.1:<port>", config_schema)
         self.assertIn("field=auth_mode type=enum values=none", config_schema)

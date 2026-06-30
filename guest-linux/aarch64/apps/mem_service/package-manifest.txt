@@ -58,8 +58,8 @@ metrics_auth_boundary=loopback-only
 config_security_gate=config-fixtures
 deployment_quota_contract=max-records+max-payload-bytes
 deployment_quota_gate=config-fixtures
-retention_policy=manual-configured
-retention_policy_gate=config-fixtures
+retention_policy=manual-or-audit-log-limit
+retention_policy_gate=config-fixtures,retention-fixtures
 runtime_quota_admission=max-records+max-payload-bytes
 runtime_quota_gate=runtime-quota-fixtures
 deploy_root=share/lingqu/mem_service/deploy
@@ -105,7 +105,7 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x627bf6a1
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0x05a9245c
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=29
+required_gate_count=30
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=version-fixtures
@@ -115,6 +115,7 @@ required_gate=upgrade-rollback-fixtures
 required_gate=upgrade-rollback-runtime-fixtures
 required_gate=restore-policy-fixtures
 required_gate=runtime-quota-fixtures
+required_gate=retention-fixtures
 required_gate=api-abi-fixtures
 required_gate=compat-fixtures
 required_gate=compat-runtime-fixtures
