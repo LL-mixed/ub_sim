@@ -111,7 +111,9 @@ static uint64_t mem_service_audit_first_sequence(const struct mem_service *svc);
 static bool mem_service_apply_audit_retention(struct mem_service *svc,
                                               uint64_t max_audit_events);
 static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
-                                                   uint64_t max_checkpoint_records);
+                                                   uint64_t max_checkpoint_records,
+                                                   const char *storage_root,
+                                                   uint64_t *payload_gc_out);
 static const char *mem_service_record_kind_name(enum mem_service_record_kind kind);
 static struct mem_service_idempotency_record *mem_service_find_idempotency_record(
     struct mem_service *svc,
@@ -2052,6 +2054,237 @@ static void mem_service_quarantine_transport_tcp_payload_block(
     }
     (void)mem_service_ensure_dir(quarantine_dir);
     (void)rename(dir_path, quarantine_path);
+}
+
+static bool mem_service_record_has_payload_block(
+    const struct mem_service_record *record)
+{
+    if (record == NULL || !record->in_use ||
+        record->object_payload_checksum == 0U) {
+        return false;
+    }
+    return record->object_payload_kind == MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK ||
+           record->object_payload_kind == MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK ||
+           record->object_payload_kind == MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK ||
+           record->object_payload_kind == MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK;
+}
+
+static bool mem_service_payload_block_is_referenced(
+    const struct mem_service *svc,
+    const struct mem_service_record *record,
+    size_t skip_index)
+{
+    size_t i;
+
+    if (svc == NULL || !mem_service_record_has_payload_block(record)) {
+        return false;
+    }
+    for (i = 0U; i < MEM_SERVICE_MAX_RECORDS; ++i) {
+        const struct mem_service_record *candidate = &svc->records[i];
+
+        if (i == skip_index || !candidate->in_use) {
+            continue;
+        }
+        if (candidate->object_payload_kind == record->object_payload_kind &&
+            candidate->object_payload_checksum == record->object_payload_checksum) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int mem_service_unlink_if_exists(const char *path)
+{
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+    if (unlink(path) == 0) {
+        return 1;
+    }
+    return errno == ENOENT ? 0 : -1;
+}
+
+static int mem_service_remove_sealed_local_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char block_path[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record == NULL ||
+        mem_service_make_payload_block_path(storage_root,
+                                            record->object_payload_checksum,
+                                            block_path,
+                                            sizeof(block_path)) != 0) {
+        return -1;
+    }
+    return mem_service_unlink_if_exists(block_path);
+}
+
+static int mem_service_remove_chunked_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char dir_path[512];
+    char manifest_path[512];
+    uint64_t chunks;
+    uint64_t index;
+    int removed = 0;
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record == NULL ||
+        mem_service_make_chunked_block_dir_path(storage_root,
+                                                record->object_payload_checksum,
+                                                dir_path,
+                                                sizeof(dir_path)) != 0) {
+        return -1;
+    }
+    chunks = (record->object_backing_len + MEM_SERVICE_CHUNKED_BLOCK_SIZE - 1U) /
+             MEM_SERVICE_CHUNKED_BLOCK_SIZE;
+    for (index = 0U; index < chunks; ++index) {
+        char chunk_path[512];
+        int rc;
+
+        if (index > UINT32_MAX ||
+            mem_service_make_chunked_block_chunk_path(dir_path,
+                                                      (uint32_t)index,
+                                                      chunk_path,
+                                                      sizeof(chunk_path)) != 0) {
+            return -1;
+        }
+        rc = mem_service_unlink_if_exists(chunk_path);
+        if (rc < 0) {
+            return -1;
+        }
+        removed += rc;
+    }
+    if (mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_CHUNKED_BLOCK_MANIFEST) != 0) {
+        return -1;
+    }
+    {
+        int rc = mem_service_unlink_if_exists(manifest_path);
+
+        if (rc < 0) {
+            return -1;
+        }
+        removed += rc;
+    }
+    if (rmdir(dir_path) == 0) {
+        removed += 1;
+    } else if (errno != ENOENT) {
+        return -1;
+    }
+    return removed > 0 ? 1 : 0;
+}
+
+static int mem_service_remove_transport_payload_block_dir(
+    const char *dir_path)
+{
+    char manifest_path[512];
+    char payload_path[512];
+    int removed = 0;
+    int rc;
+
+    if (dir_path == NULL || dir_path[0] == '\0' ||
+        mem_service_join_path(manifest_path,
+                              sizeof(manifest_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST) != 0 ||
+        mem_service_join_path(payload_path,
+                              sizeof(payload_path),
+                              dir_path,
+                              MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD) != 0) {
+        return -1;
+    }
+    rc = mem_service_unlink_if_exists(payload_path);
+    if (rc < 0) {
+        return -1;
+    }
+    removed += rc;
+    rc = mem_service_unlink_if_exists(manifest_path);
+    if (rc < 0) {
+        return -1;
+    }
+    removed += rc;
+    if (rmdir(dir_path) == 0) {
+        removed += 1;
+    } else if (errno != ENOENT) {
+        return -1;
+    }
+    return removed > 0 ? 1 : 0;
+}
+
+static int mem_service_remove_transport_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char dir_path[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record == NULL ||
+        mem_service_make_transport_block_dir_path(storage_root,
+                                                  record->object_payload_checksum,
+                                                  dir_path,
+                                                  sizeof(dir_path)) != 0) {
+        return -1;
+    }
+    return mem_service_remove_transport_payload_block_dir(dir_path);
+}
+
+static int mem_service_remove_transport_tcp_payload_block(
+    const char *storage_root,
+    const struct mem_service_record *record)
+{
+    char dir_path[512];
+
+    if (storage_root == NULL || storage_root[0] == '\0' ||
+        record == NULL ||
+        mem_service_make_transport_tcp_block_dir_path(storage_root,
+                                                      record->object_payload_checksum,
+                                                      dir_path,
+                                                      sizeof(dir_path)) != 0) {
+        return -1;
+    }
+    return mem_service_remove_transport_payload_block_dir(dir_path);
+}
+
+static bool mem_service_gc_payload_block_if_orphaned(
+    const struct mem_service *svc,
+    size_t record_index,
+    const char *storage_root,
+    uint64_t *payload_gc_out)
+{
+    const struct mem_service_record *record;
+    int rc = 0;
+
+    if (svc == NULL || record_index >= MEM_SERVICE_MAX_RECORDS ||
+        storage_root == NULL || storage_root[0] == '\0') {
+        return false;
+    }
+    record = &svc->records[record_index];
+    if (!mem_service_record_has_payload_block(record) ||
+        mem_service_payload_block_is_referenced(svc, record, record_index)) {
+        return false;
+    }
+    if (record->object_payload_kind == MEM_SERVICE_PAYLOAD_KIND_SEALED_LOCAL_BLOCK) {
+        rc = mem_service_remove_sealed_local_payload_block(storage_root, record);
+    } else if (record->object_payload_kind ==
+               MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK) {
+        rc = mem_service_remove_chunked_payload_block(storage_root, record);
+    } else if (record->object_payload_kind ==
+               MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK) {
+        rc = mem_service_remove_transport_payload_block(storage_root, record);
+    } else if (record->object_payload_kind ==
+               MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK) {
+        rc = mem_service_remove_transport_tcp_payload_block(storage_root, record);
+    }
+    if (rc > 0 && payload_gc_out != NULL) {
+        *payload_gc_out += 1U;
+    }
+    return rc > 0;
 }
 
 static int mem_service_parse_tcp_payload_source(const char *source,
@@ -8550,7 +8783,9 @@ static void mem_service_prune_idempotency_for_record_key(struct mem_service *svc
 }
 
 static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
-                                                   uint64_t max_checkpoint_records)
+                                                   uint64_t max_checkpoint_records,
+                                                   const char *storage_root,
+                                                   uint64_t *payload_gc_out)
 {
     bool pruned = false;
 
@@ -8565,6 +8800,10 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
             break;
         }
         snprintf(key, sizeof(key), "%s", svc->records[oldest].key);
+        (void)mem_service_gc_payload_block_if_orphaned(svc,
+                                                       oldest,
+                                                       storage_root,
+                                                       payload_gc_out);
         memset(&svc->records[oldest], 0, sizeof(svc->records[oldest]));
         if (svc->record_count > 0) {
             svc->record_count -= 1U;
@@ -9350,7 +9589,9 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
                 checkpoint_retention_pruned =
                     mem_service_apply_checkpoint_retention(
                         svc,
-                        limits->max_checkpoint_records);
+                        limits->max_checkpoint_records,
+                        storage_root,
+                        NULL);
             }
         }
         mem_service_complete_idempotency_record(pending_idempotency,
@@ -9914,6 +10155,193 @@ int mem_service_run_checkpoint_retention_fixture_check(void)
     return 0;
 }
 
+int mem_service_run_payload_gc_fixture_check(void)
+{
+    static const char *payloads[4] = {
+        "orphan-checkpoint-payload",
+        "shared-checkpoint-payload",
+        "shared-checkpoint-payload",
+        "latest-checkpoint-payload",
+    };
+    struct mem_service svc;
+    struct mem_service recovered;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char storage_root[176];
+    char store_path[224];
+    char journal_path[sizeof(store_path) + 16U];
+    char blocks_dir[224];
+    char catalog_dir[224];
+    char quarantine_dir[224];
+    char orphan_block[256];
+    char shared_block[256];
+    char latest_block[256];
+    uint64_t checksums[4];
+    size_t i;
+
+    snprintf(storage_root,
+             sizeof(storage_root),
+             "/tmp/linqu_mem_service_payload_gc_fixture_%ld",
+             (long)getpid());
+    if (mem_service_join_path(blocks_dir,
+                              sizeof(blocks_dir),
+                              storage_root,
+                              "blocks") != 0 ||
+        mem_service_join_path(catalog_dir,
+                              sizeof(catalog_dir),
+                              storage_root,
+                              "catalog") != 0 ||
+        mem_service_join_path(quarantine_dir,
+                              sizeof(quarantine_dir),
+                              storage_root,
+                              "quarantine") != 0 ||
+        mem_service_make_catalog_path(storage_root,
+                                      "store.snapshot",
+                                      store_path,
+                                      sizeof(store_path)) != 0 ||
+        mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr, "mem_service payload-gc-fixtures: path setup failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    rmdir(blocks_dir);
+    rmdir(catalog_dir);
+    rmdir(quarantine_dir);
+    rmdir(storage_root);
+    if (mem_service_prepare_durable_catalog_layout(storage_root) != 0) {
+        fprintf(stderr, "mem_service payload-gc-fixtures: storage setup failed\n");
+        return 1;
+    }
+    memset(&limits, 0, sizeof(limits));
+    limits.max_checkpoint_records = 2U;
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service payload-gc-fixtures: init failed\n");
+        rmdir(blocks_dir);
+        rmdir(catalog_dir);
+        rmdir(quarantine_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    for (i = 0U; i < 4U; ++i) {
+        char request[640];
+        enum mem_service_wire_status status;
+
+        checksums[i] = mem_service_checksum_bytes((const uint8_t *)payloads[i],
+                                                  (uint64_t)strlen(payloads[i]));
+        snprintf(request,
+                 sizeof(request),
+                 "key=training/gc/checkpoint-%zu\n"
+                 "session_id=gc-session\n"
+                 "model_key=gc-model\n"
+                 "artifact_kind=checkpoint\n"
+                 "artifact_id=checkpoint-%zu\n"
+                 "owner=11\n"
+                 "version=%zu\n"
+                 "backing_len=%zu\n"
+                 "checksum=%" PRIu64 "\n"
+                 "payload_inline=%s\n"
+                 "idempotency_key=payload-gc-checkpoint-%zu\n",
+                 i + 1U,
+                 i + 1U,
+                 i + 1U,
+                 strlen(payloads[i]),
+                 checksums[i],
+                 payloads[i],
+                 i + 1U);
+        status = mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+            request,
+            response,
+            sizeof(response),
+            store_path,
+            storage_root,
+            &limits);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            fprintf(stderr,
+                    "mem_service payload-gc-fixtures: register failed i=%zu status=%s\n",
+                    i,
+                    mem_service_wire_status_name((uint32_t)status));
+            unlink(store_path);
+            unlink(journal_path);
+            rmdir(blocks_dir);
+            rmdir(catalog_dir);
+            rmdir(quarantine_dir);
+            rmdir(storage_root);
+            return 1;
+        }
+    }
+    if (mem_service_make_payload_block_path(storage_root,
+                                            checksums[0],
+                                            orphan_block,
+                                            sizeof(orphan_block)) != 0 ||
+        mem_service_make_payload_block_path(storage_root,
+                                            checksums[2],
+                                            shared_block,
+                                            sizeof(shared_block)) != 0 ||
+        mem_service_make_payload_block_path(storage_root,
+                                            checksums[3],
+                                            latest_block,
+                                            sizeof(latest_block)) != 0) {
+        fprintf(stderr, "mem_service payload-gc-fixtures: block path failed\n");
+        return 1;
+    }
+    if (mem_service_find_record(&svc, "training/gc/checkpoint-1") != NULL ||
+        mem_service_find_record(&svc, "training/gc/checkpoint-2") != NULL ||
+        mem_service_find_record(&svc, "training/gc/checkpoint-3") == NULL ||
+        mem_service_find_record(&svc, "training/gc/checkpoint-4") == NULL ||
+        access(orphan_block, F_OK) == 0 ||
+        access(shared_block, F_OK) != 0 ||
+        access(latest_block, F_OK) != 0) {
+        fprintf(stderr, "mem_service payload-gc-fixtures: payload gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        unlink(orphan_block);
+        unlink(shared_block);
+        unlink(latest_block);
+        rmdir(blocks_dir);
+        rmdir(catalog_dir);
+        rmdir(quarantine_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    if (mem_service_init(&recovered, true, true, true) != 0 ||
+        mem_service_load_durable_store(&recovered, store_path) != 0 ||
+        recovered.record_count != 2U ||
+        mem_service_find_record(&recovered, "training/gc/checkpoint-3") == NULL ||
+        mem_service_find_record(&recovered, "training/gc/checkpoint-4") == NULL ||
+        mem_service_file_contains(journal_path, "training/gc/checkpoint-1") ||
+        mem_service_file_contains(journal_path, "training/gc/checkpoint-2")) {
+        fprintf(stderr, "mem_service payload-gc-fixtures: durable gc mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        unlink(shared_block);
+        unlink(latest_block);
+        rmdir(blocks_dir);
+        rmdir(catalog_dir);
+        rmdir(quarantine_dir);
+        rmdir(storage_root);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    unlink(shared_block);
+    unlink(latest_block);
+    rmdir(blocks_dir);
+    rmdir(catalog_dir);
+    rmdir(quarantine_dir);
+    rmdir(storage_root);
+    printf("mem_service payload-gc-fixtures: status=ok "
+           "payload_gc=checkpoint-retention-orphan-blocks "
+           "payload_blocks_removed=1 shared_block_retained=1 "
+           "retained_payload_blocks=2 record_count=%zu durable_reload=1 journal_gc=1\n",
+           recovered.record_count);
+    return 0;
+}
+
 static int mem_service_handle_client(int client_fd,
                                      struct mem_service *svc,
                                      const char *store_path,
@@ -10384,7 +10812,9 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     }
     if (limits != NULL && limits->max_checkpoint_records > 0 &&
         mem_service_apply_checkpoint_retention(&svc,
-                                               limits->max_checkpoint_records) &&
+                                               limits->max_checkpoint_records,
+                                               storage_root,
+                                               NULL) &&
         store_path != NULL && store_path[0] != '\0' &&
         (mem_service_save_store(&svc, store_path) != 0 ||
          mem_service_compact_journal_now(store_path) != 0)) {

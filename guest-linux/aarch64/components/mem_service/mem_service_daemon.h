@@ -47,6 +47,7 @@ int mem_service_run_network_transport_block_fixture_check(void);
 int mem_service_run_runtime_quota_fixture_check(void);
 int mem_service_run_retention_fixture_check(void);
 int mem_service_run_checkpoint_retention_fixture_check(void);
+int mem_service_run_payload_gc_fixture_check(void);
 int mem_service_probe_transport_tcp_payload_block(
     const char *storage_root,
     const char *payload_source,

@@ -1166,6 +1166,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "/bin/linqu_mem_service retention-fixtures" in run_app
     assert "linqu_mem_service_checkpoint_retention_fixtures" in run_app
     assert "/bin/linqu_mem_service checkpoint-retention-fixtures" in run_app
+    assert "linqu_mem_service_payload_gc_fixtures" in run_app
+    assert "/bin/linqu_mem_service payload-gc-fixtures" in run_app
     assert "linqu_mem_service_encryption_fixtures" in run_app
     assert "/bin/linqu_mem_service encryption-fixtures" in run_app
     assert "linqu_mem_service_metrics_export_fixtures" in run_app
@@ -1369,9 +1371,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x23c41e12$$" in app_makefile
+    assert "^package_manifest_checksum=0xad66136e$$" in app_makefile
     assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host checkpoint-retention-fixtures" in app_makefile
+    assert "./linqu_mem_service_host payload-gc-fixtures" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-pkgconfig-smoke: install" in app_makefile
     assert "$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service" in app_makefile
@@ -1631,8 +1634,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8790U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x23c41e12U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8918U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xad66136eU" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -1663,6 +1666,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_retention_fixture_check" in app_source
     assert 'strcmp(argv[1], "checkpoint-retention-fixtures")' in app_source
     assert "mem_service_run_checkpoint_retention_fixture_check" in app_source
+    assert 'strcmp(argv[1], "payload-gc-fixtures")' in app_source
+    assert "mem_service_run_payload_gc_fixture_check" in app_source
     assert 'strcmp(argv[1], "encryption-policy")' in app_source
     assert 'strcmp(argv[1], "encryption-fixtures")' in app_source
     assert "run_encryption_fixture_check" in app_source
@@ -1706,7 +1711,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x23c41e12" in release_manifest
+    assert "package_manifest_checksum=0xad66136e" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1729,6 +1734,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures"
         in release_manifest
     )
+    assert "payload_block_gc=checkpoint-retention-orphan-blocks" in release_manifest
+    assert "payload_block_gc_gate=payload-gc-fixtures" in release_manifest
     assert "encryption_policy=explicit-none-only" in release_manifest
     assert "encryption_at_rest=not-certified" in release_manifest
     assert "encryption_policy_command=encryption-policy" in release_manifest
@@ -1894,8 +1901,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=8790" in release_manifest
-    assert "package_manifest_checksum=0x23c41e12" in release_manifest
+    assert "package_manifest_len=8918" in release_manifest
+    assert "package_manifest_checksum=0xad66136e" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2178,13 +2185,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "file_class=systemd_units count=2" in package_manifest
     assert "file_class=pkgconfig count=1" in package_manifest
     assert "file_class=release_scripts count=10" in package_manifest
-    assert "required_gate_count=32" in package_manifest
+    assert "required_gate_count=33" in package_manifest
     assert "required_gate=remote-transport-evidence-fixtures" in package_manifest
     assert "required_gate=version-fixtures" in package_manifest
     assert "required_gate=release-readiness-fixtures" in package_manifest
     assert "required_gate=runtime-quota-fixtures" in package_manifest
     assert "required_gate=retention-fixtures" in package_manifest
     assert "required_gate=checkpoint-retention-fixtures" in package_manifest
+    assert "required_gate=payload-gc-fixtures" in package_manifest
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
@@ -2268,6 +2276,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures"
         in package_manifest
     )
+    assert "payload_block_gc=checkpoint-retention-orphan-blocks" in package_manifest
+    assert "payload_block_gc_gate=payload-gc-fixtures" in package_manifest
     assert "encryption_policy=explicit-none-only" in package_manifest
     assert "encryption_at_rest=not-certified" in package_manifest
     assert "encryption_policy_command=encryption-policy" in package_manifest

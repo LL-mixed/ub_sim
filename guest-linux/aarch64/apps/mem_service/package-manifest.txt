@@ -62,6 +62,8 @@ retention_policy=manual-or-audit-log-limit
 retention_policy_gate=config-fixtures,retention-fixtures
 checkpoint_retention_policy=manual-or-latest-limit
 checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures
+payload_block_gc=checkpoint-retention-orphan-blocks
+payload_block_gc_gate=payload-gc-fixtures
 encryption_policy=explicit-none-only
 encryption_at_rest=not-certified
 encryption_policy_command=encryption-policy
@@ -111,7 +113,7 @@ contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x627bf6a1
 contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0x05a9245c
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
-required_gate_count=32
+required_gate_count=33
 required_gate=release-fixtures
 required_gate=package-fixtures
 required_gate=version-fixtures
@@ -123,6 +125,7 @@ required_gate=restore-policy-fixtures
 required_gate=runtime-quota-fixtures
 required_gate=retention-fixtures
 required_gate=checkpoint-retention-fixtures
+required_gate=payload-gc-fixtures
 required_gate=encryption-fixtures
 required_gate=api-abi-fixtures
 required_gate=compat-fixtures

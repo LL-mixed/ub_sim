@@ -46,10 +46,10 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8790U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x23c41e12U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8918U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xad66136eU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 32U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 33U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -75,7 +75,7 @@ static void usage(const char *argv0)
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
     printf(" [runtime-quota-fixtures] [retention-fixtures]");
-    printf(" [checkpoint-retention-fixtures] [encryption-fixtures]");
+    printf(" [checkpoint-retention-fixtures] [payload-gc-fixtures] [encryption-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
@@ -2993,6 +2993,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "payload_block_gc=checkpoint-retention-orphan-blocks\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "payload_block_gc_gate=payload-gc-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "encryption_policy=explicit-none-only\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3245,6 +3253,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=checkpoint-retention-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=payload-gc-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4867,6 +4879,9 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
             NULL ||
+        strstr(manifest, "payload_block_gc=checkpoint-retention-orphan-blocks\n") ==
+            NULL ||
+        strstr(manifest, "payload_block_gc_gate=payload-gc-fixtures\n") == NULL ||
         strstr(manifest, "encryption_policy=explicit-none-only\n") == NULL ||
         strstr(manifest, "encryption_at_rest=not-certified\n") == NULL ||
         strstr(manifest, "encryption_policy_command=encryption-policy\n") == NULL ||
@@ -4878,6 +4893,7 @@ static int run_package_fixture_check(void)
         strstr(manifest, "required_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=retention-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=checkpoint-retention-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=payload-gc-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=encryption-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
@@ -4898,6 +4914,9 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
             NULL ||
+        strstr(manifest, "payload_block_gc=checkpoint-retention-orphan-blocks\n") ==
+            NULL ||
+        strstr(manifest, "payload_block_gc_gate=payload-gc-fixtures\n") == NULL ||
         strstr(manifest, "encryption_policy=explicit-none-only\n") == NULL ||
         strstr(manifest, "encryption_at_rest=not-certified\n") == NULL ||
         strstr(manifest, "encryption_policy_command=encryption-policy\n") == NULL ||
@@ -5058,6 +5077,8 @@ static int run_release_manifest(void)
     printf("retention_policy_gate=config-fixtures,retention-fixtures\n");
     printf("checkpoint_retention_policy=manual-or-latest-limit\n");
     printf("checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n");
+    printf("payload_block_gc=checkpoint-retention-orphan-blocks\n");
+    printf("payload_block_gc_gate=payload-gc-fixtures\n");
     printf("encryption_policy=explicit-none-only\n");
     printf("encryption_at_rest=not-certified\n");
     printf("encryption_policy_command=encryption-policy\n");
@@ -5277,7 +5298,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 32U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 33U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -5350,6 +5371,7 @@ static int run_release_fixture_check(void)
            "runtime_quota_smokes=1 "
            "retention_smokes=1 "
            "checkpoint_retention_smokes=1 "
+           "payload_gc_smokes=1 "
            "encryption_policy_smokes=1 "
            "compat_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
@@ -8952,6 +8974,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "checkpoint-retention-fixtures") == 0) {
         return mem_service_run_checkpoint_retention_fixture_check();
+    }
+    if (strcmp(argv[1], "payload-gc-fixtures") == 0) {
+        return mem_service_run_payload_gc_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();
