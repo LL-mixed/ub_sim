@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9106U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa8fdbde0U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9122U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x221916e1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2994,7 +2994,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "record_retention_policy=manual-or-latest-limit\n") != 0 ||
+                                "record_retention_policy=manual-or-global-latest-or-kind-latest\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4892,7 +4892,9 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
             NULL ||
-        strstr(manifest, "record_retention_policy=manual-or-latest-limit\n") == NULL ||
+        strstr(manifest,
+               "record_retention_policy=manual-or-global-latest-or-kind-latest\n") ==
+            NULL ||
         strstr(manifest,
                "record_retention_gate=config-fixtures,record-retention-fixtures\n") ==
             NULL ||
@@ -4935,7 +4937,9 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
             NULL ||
-        strstr(manifest, "record_retention_policy=manual-or-latest-limit\n") == NULL ||
+        strstr(manifest,
+               "record_retention_policy=manual-or-global-latest-or-kind-latest\n") ==
+            NULL ||
         strstr(manifest,
                "record_retention_gate=config-fixtures,record-retention-fixtures\n") ==
             NULL ||
@@ -5105,7 +5109,7 @@ static int run_release_manifest(void)
     printf("retention_policy_gate=config-fixtures,retention-fixtures\n");
     printf("checkpoint_retention_policy=manual-or-latest-limit\n");
     printf("checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n");
-    printf("record_retention_policy=manual-or-latest-limit\n");
+    printf("record_retention_policy=manual-or-global-latest-or-kind-latest\n");
     printf("record_retention_gate=config-fixtures,record-retention-fixtures\n");
     printf("payload_block_gc=record-and-checkpoint-retention-orphan-blocks\n");
     printf("payload_block_gc_gate=payload-gc-fixtures,record-retention-fixtures\n");
@@ -5681,6 +5685,7 @@ struct mem_service_cli_config {
     uint64_t max_audit_events;
     uint64_t max_checkpoint_records;
     uint64_t max_retained_records;
+    uint32_t max_retained_record_kind;
     char listen[160];
     char store[512];
     char storage_root[512];
@@ -5808,11 +5813,56 @@ static bool parse_checkpoint_retention_value(const char *value,
     return true;
 }
 
+static bool parse_record_kind_name(const char *value, uint32_t *record_kind_out)
+{
+    struct record_kind_name {
+        const char *name;
+        uint32_t kind;
+    };
+    static const struct record_kind_name names[] = {
+        {"prefix-group", MEM_SERVICE_RECORD_PREFIX_GROUP},
+        {"request-prefix", MEM_SERVICE_RECORD_REQUEST_PREFIX},
+        {"block-meta", MEM_SERVICE_RECORD_BLOCK_META},
+        {"weight-tile", MEM_SERVICE_RECORD_WEIGHT_TILE},
+        {"kvcache-object", MEM_SERVICE_RECORD_KVCACHE_OBJECT},
+        {"hidden-range-input", MEM_SERVICE_RECORD_HIDDEN_RANGE_INPUT},
+        {"hidden-range-output", MEM_SERVICE_RECORD_HIDDEN_RANGE_OUTPUT},
+        {"layer-range-placement", MEM_SERVICE_RECORD_LAYER_RANGE_PLACEMENT},
+        {"model-token-result", MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT},
+        {"model-engram-history", MEM_SERVICE_RECORD_MODEL_ENGRAM_HISTORY},
+        {"model-engram-candidates", MEM_SERVICE_RECORD_MODEL_ENGRAM_CANDIDATES},
+        {"model-engram-selected", MEM_SERVICE_RECORD_MODEL_ENGRAM_SELECTED},
+        {"model-engram-state", MEM_SERVICE_RECORD_MODEL_ENGRAM_STATE},
+        {"runtime-handoff", MEM_SERVICE_RECORD_RUNTIME_HANDOFF},
+        {"execution-artifact", MEM_SERVICE_RECORD_EXECUTION_ARTIFACT},
+        {"training-artifact", MEM_SERVICE_RECORD_TRAINING_ARTIFACT},
+    };
+    size_t i;
+
+    if (value == NULL || value[0] == '\0') {
+        return false;
+    }
+    for (i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (strcmp(value, names[i].name) == 0) {
+            if (record_kind_out != NULL) {
+                *record_kind_out = names[i].kind;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool parse_record_retention_value(const char *value,
-                                         uint64_t *max_retained_records_out)
+                                         uint64_t *max_retained_records_out,
+                                         uint32_t *retained_record_kind_out)
 {
     const char *prefix = "latest:";
+    const char *kind_prefix = "kind:";
     uint64_t max_retained_records;
+    const char *latest_value = value;
+    char kind_name[80];
+    uint32_t retained_record_kind = 0U;
 
     if (value == NULL || value[0] == '\0') {
         return false;
@@ -5821,18 +5871,44 @@ static bool parse_record_retention_value(const char *value,
         if (max_retained_records_out != NULL) {
             *max_retained_records_out = 0;
         }
+        if (retained_record_kind_out != NULL) {
+            *retained_record_kind_out = 0U;
+        }
         return true;
     }
-    if (strncmp(value, prefix, strlen(prefix)) != 0) {
+    if (strncmp(value, kind_prefix, strlen(kind_prefix)) == 0) {
+        const char *kind_start = value + strlen(kind_prefix);
+        const char *kind_end = strstr(kind_start, ":latest:");
+        size_t kind_len;
+
+        if (kind_end == NULL || kind_end == kind_start) {
+            return false;
+        }
+        kind_len = (size_t)(kind_end - kind_start);
+        if (kind_len >= sizeof(kind_name)) {
+            return false;
+        }
+        memcpy(kind_name, kind_start, kind_len);
+        kind_name[kind_len] = '\0';
+        if (!parse_record_kind_name(kind_name, &retained_record_kind)) {
+            return false;
+        }
+        latest_value = kind_end + 1U;
+    }
+    if (strncmp(latest_value, prefix, strlen(prefix)) != 0) {
         return false;
     }
-    if (!parse_config_u64_value(value + strlen(prefix), &max_retained_records) ||
+    if (!parse_config_u64_value(latest_value + strlen(prefix),
+                                &max_retained_records) ||
         max_retained_records == 0 ||
         max_retained_records > MEM_SERVICE_MAX_RECORDS) {
         return false;
     }
     if (max_retained_records_out != NULL) {
         *max_retained_records_out = max_retained_records;
+    }
+    if (retained_record_kind_out != NULL) {
+        *retained_record_kind_out = retained_record_kind;
     }
     return true;
 }
@@ -5959,8 +6035,11 @@ static int apply_config_field(struct mem_service_cli_config *config,
     }
     if (strcmp(name, "record_retention") == 0) {
         uint64_t max_retained_records = 0;
+        uint32_t retained_record_kind = 0U;
 
-        if (!parse_record_retention_value(value, &max_retained_records) ||
+        if (!parse_record_retention_value(value,
+                                          &max_retained_records,
+                                          &retained_record_kind) ||
             copy_config_value(config->record_retention,
                               sizeof(config->record_retention),
                               value) != 0) {
@@ -5970,6 +6049,7 @@ static int apply_config_field(struct mem_service_cli_config *config,
         if (max_retained_records > 0) {
             config->has_max_retained_records = true;
             config->max_retained_records = max_retained_records;
+            config->max_retained_record_kind = retained_record_kind;
         }
         return 0;
     }
@@ -6136,7 +6216,7 @@ static int run_config_fixture_check(void)
                 "max_payload_bytes=4096\n"
                 "retention=manual\n"
                 "checkpoint_retention=manual\n"
-                "record_retention=manual\n"
+                "record_retention=kind:training-artifact:latest:2\n"
                 "encryption=none\n"
                 "auth_mode=none\n"
                 "metrics_mode=text-kv\n"
@@ -6287,7 +6367,7 @@ static int run_config_fixture_check(void)
     }
     if (fprintf(file,
                 "listen=unix:/tmp/linqu_mem_service_fixture_bad_record_retention.sock\n"
-                "record_retention=latest:0\n") < 0) {
+                "record_retention=kind:unknown-record:latest:2\n") < 0) {
         fclose(file);
         unlink(valid_path);
         unlink(invalid_path);
@@ -6318,6 +6398,7 @@ static int run_config_fixture_check(void)
         !config.has_retention ||
         !config.has_checkpoint_retention ||
         !config.has_record_retention ||
+        !config.has_max_retained_records ||
         !config.has_encryption ||
         strcmp(config.listen, "unix:/tmp/linqu_mem_service_fixture.sock") != 0 ||
         strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0 ||
@@ -6325,9 +6406,11 @@ static int run_config_fixture_check(void)
         strcmp(config.metrics_listen, "tcp:127.0.0.1:9900") != 0 ||
         config.max_records != 1024U ||
         config.max_payload_bytes != 4096U ||
+        config.max_retained_records != 2U ||
+        config.max_retained_record_kind != MEM_SERVICE_RECORD_TRAINING_ARTIFACT ||
         strcmp(config.retention, "manual") != 0 ||
         strcmp(config.checkpoint_retention, "manual") != 0 ||
-        strcmp(config.record_retention, "manual") != 0 ||
+        strcmp(config.record_retention, "kind:training-artifact:latest:2") != 0 ||
         strcmp(config.encryption, "none") != 0) {
         failures -= 1;
     } else {
@@ -6528,6 +6611,8 @@ static int run_serve(int argc, char **argv)
                 config.has_max_checkpoint_records ? config.max_checkpoint_records : 0U;
             limits.max_retained_records =
                 config.has_max_retained_records ? config.max_retained_records : 0U;
+            limits.max_retained_record_kind =
+                config.has_max_retained_records ? config.max_retained_record_kind : 0U;
             limits_ptr = &limits;
         }
         if (store_path == NULL && storage_root != NULL &&

@@ -116,6 +116,7 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
                                                    uint64_t *payload_gc_out);
 static bool mem_service_apply_record_retention(struct mem_service *svc,
                                                uint64_t max_retained_records,
+                                               uint32_t retained_record_kind,
                                                const char *storage_root,
                                                uint64_t *payload_gc_out);
 static const char *mem_service_record_kind_name(enum mem_service_record_kind kind);
@@ -8759,7 +8760,39 @@ static size_t mem_service_find_oldest_checkpoint_record_index(
     return oldest;
 }
 
-static size_t mem_service_find_oldest_record_index(const struct mem_service *svc)
+static bool mem_service_record_matches_retention_kind(
+    const struct mem_service_record *record,
+    uint32_t retained_record_kind)
+{
+    return record != NULL && record->in_use &&
+           (retained_record_kind == 0U ||
+            (uint32_t)record->kind == retained_record_kind);
+}
+
+static uint64_t mem_service_count_retained_kind_records(
+    const struct mem_service *svc,
+    uint32_t retained_record_kind)
+{
+    uint64_t count = 0;
+    size_t i;
+
+    if (svc == NULL) {
+        return 0;
+    }
+    if (retained_record_kind == 0U) {
+        return (uint64_t)svc->record_count;
+    }
+    for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
+        if (mem_service_record_matches_retention_kind(&svc->records[i],
+                                                      retained_record_kind)) {
+            count += 1U;
+        }
+    }
+    return count;
+}
+
+static size_t mem_service_find_oldest_record_index(const struct mem_service *svc,
+                                                   uint32_t retained_record_kind)
 {
     size_t oldest = MEM_SERVICE_MAX_RECORDS;
     size_t i;
@@ -8770,7 +8803,8 @@ static size_t mem_service_find_oldest_record_index(const struct mem_service *svc
     for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
         const struct mem_service_record *record = &svc->records[i];
 
-        if (!record->in_use) {
+        if (!mem_service_record_matches_retention_kind(record,
+                                                       retained_record_kind)) {
             continue;
         }
         if (oldest == MEM_SERVICE_MAX_RECORDS ||
@@ -8844,6 +8878,7 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
 
 static bool mem_service_apply_record_retention(struct mem_service *svc,
                                                uint64_t max_retained_records,
+                                               uint32_t retained_record_kind,
                                                const char *storage_root,
                                                uint64_t *payload_gc_out)
 {
@@ -8852,8 +8887,10 @@ static bool mem_service_apply_record_retention(struct mem_service *svc,
     if (svc == NULL || max_retained_records == 0) {
         return false;
     }
-    while ((uint64_t)svc->record_count > max_retained_records) {
-        size_t oldest = mem_service_find_oldest_record_index(svc);
+    while (mem_service_count_retained_kind_records(svc, retained_record_kind) >
+           max_retained_records) {
+        size_t oldest =
+            mem_service_find_oldest_record_index(svc, retained_record_kind);
         char key[96];
 
         if (oldest == MEM_SERVICE_MAX_RECORDS) {
@@ -9662,6 +9699,7 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
                     mem_service_apply_record_retention(
                         svc,
                         limits->max_retained_records,
+                        limits->max_retained_record_kind,
                         storage_root,
                         NULL);
             }
@@ -10421,6 +10459,8 @@ int mem_service_run_payload_gc_fixture_check(void)
     return 0;
 }
 
+static int mem_service_run_record_retention_kind_fixture_check(void);
+
 int mem_service_run_record_retention_fixture_check(void)
 {
     static const char *payloads[5] = {
@@ -10618,6 +10658,153 @@ int mem_service_run_record_retention_fixture_check(void)
            "shared_block_retained=1 idempotency_gc=1 durable_reload=1 journal_gc=1\n",
            limits.max_retained_records,
            recovered.record_count);
+    return mem_service_run_record_retention_kind_fixture_check();
+}
+
+static int mem_service_run_record_retention_kind_fixture_check(void)
+{
+    struct mem_service svc;
+    struct mem_service recovered;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char store_path[176];
+    char journal_path[sizeof(store_path) + 16U];
+    size_t i;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_record_retention_kind_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr,
+                "mem_service record-retention-fixtures: kind journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    memset(&limits, 0, sizeof(limits));
+    limits.max_retained_records = 2U;
+    limits.max_retained_record_kind = MEM_SERVICE_RECORD_TRAINING_ARTIFACT;
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: kind init failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+            "key=record-retention-kind-object\n"
+            "owner=3\n"
+            "version=1\n"
+            "backing_len=8\n"
+            "checksum=1901\n"
+            "idempotency_key=record-retention-kind-object-idem\n",
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            &limits) != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr, "mem_service record-retention-fixtures: kind object put failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    for (i = 0U; i < 4U; ++i) {
+        char request[384];
+        enum mem_service_wire_status status;
+
+        snprintf(request,
+                 sizeof(request),
+                 "key=training/kind-retention/artifact-%zu\n"
+                 "session_id=kind-retention-session\n"
+                 "model_key=kind-retention-model\n"
+                 "artifact_kind=gradient\n"
+                 "artifact_id=gradient-%zu\n"
+                 "owner=9\n"
+                 "version=%zu\n"
+                 "checksum=%zu\n"
+                 "idempotency_key=record-retention-kind-artifact-%zu\n",
+                 i + 1U,
+                 i + 1U,
+                 i + 1U,
+                 2100U + i,
+                 i + 1U);
+        status = mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+            request,
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            &limits);
+        if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+            fprintf(stderr,
+                    "mem_service record-retention-fixtures: kind artifact failed i=%zu status=%s\n",
+                    i,
+                    mem_service_wire_status_name((uint32_t)status));
+            unlink(store_path);
+            unlink(journal_path);
+            return 1;
+        }
+    }
+    if (svc.record_count != 3U ||
+        mem_service_count_retained_kind_records(
+            &svc,
+            MEM_SERVICE_RECORD_TRAINING_ARTIFACT) != 2U ||
+        mem_service_find_record(&svc, "record-retention-kind-object") == NULL ||
+        mem_service_find_record(&svc, "training/kind-retention/artifact-1") != NULL ||
+        mem_service_find_record(&svc, "training/kind-retention/artifact-2") != NULL ||
+        mem_service_find_record(&svc, "training/kind-retention/artifact-3") == NULL ||
+        mem_service_find_record(&svc, "training/kind-retention/artifact-4") == NULL ||
+        mem_service_find_idempotency_record(&svc,
+                                            "record-retention-kind-artifact-1") != NULL ||
+        mem_service_find_idempotency_record(&svc,
+                                            "record-retention-kind-artifact-2") != NULL) {
+        fprintf(stderr, "mem_service record-retention-fixtures: kind retention mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_init(&recovered, true, true, true) != 0 ||
+        mem_service_load_durable_store(&recovered, store_path) != 0 ||
+        recovered.record_count != 3U ||
+        mem_service_count_retained_kind_records(
+            &recovered,
+            MEM_SERVICE_RECORD_TRAINING_ARTIFACT) != 2U ||
+        mem_service_find_record(&recovered, "record-retention-kind-object") == NULL ||
+        mem_service_find_record(&recovered, "training/kind-retention/artifact-1") !=
+            NULL ||
+        mem_service_find_record(&recovered, "training/kind-retention/artifact-2") !=
+            NULL ||
+        mem_service_find_record(&recovered, "training/kind-retention/artifact-3") ==
+            NULL ||
+        mem_service_find_record(&recovered, "training/kind-retention/artifact-4") ==
+            NULL ||
+        mem_service_file_contains(journal_path,
+                                  "training/kind-retention/artifact-1") ||
+        mem_service_file_contains(journal_path,
+                                  "training/kind-retention/artifact-2")) {
+        fprintf(stderr, "mem_service record-retention-fixtures: kind durable mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    printf("mem_service record-retention-kind-fixtures: status=ok "
+           "record_retention=kind:training-artifact:latest "
+           "max_retained_records=%" PRIu64
+           " retained_training_artifacts=%" PRIu64
+           " non_matching_object_retained=1 pruned_records=2 "
+           "idempotency_gc=1 durable_reload=1 journal_gc=1\n",
+           limits.max_retained_records,
+           mem_service_count_retained_kind_records(
+               &recovered,
+               MEM_SERVICE_RECORD_TRAINING_ARTIFACT));
     return 0;
 }
 
@@ -11105,6 +11292,7 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     if (limits != NULL && limits->max_retained_records > 0 &&
         mem_service_apply_record_retention(&svc,
                                            limits->max_retained_records,
+                                           limits->max_retained_record_kind,
                                            storage_root,
                                            NULL) &&
         store_path != NULL && store_path[0] != '\0' &&

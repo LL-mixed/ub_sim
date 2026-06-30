@@ -18,6 +18,7 @@ struct mem_service_daemon_limits {
     uint64_t max_audit_events;
     uint64_t max_checkpoint_records;
     uint64_t max_retained_records;
+    uint32_t max_retained_record_kind;
 };
 
 int mem_service_run_unix_daemon(const char *listen_spec);

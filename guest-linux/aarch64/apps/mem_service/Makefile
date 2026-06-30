@@ -753,8 +753,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=9106$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xa8fdbde0$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=9122$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x221916e1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -821,7 +821,7 @@ install-smoke: install
 	grep -q '^retention_policy_gate=config-fixtures,retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^checkpoint_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^record_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^record_retention_policy=manual-or-global-latest-or-kind-latest$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^record_retention_gate=config-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_block_gc=record-and-checkpoint-retention-orphan-blocks$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^payload_block_gc_gate=payload-gc-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -1041,7 +1041,7 @@ install-smoke: install
 	grep -q '^retention_policy_gate=config-fixtures,retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^checkpoint_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^record_retention_policy=manual-or-latest-limit$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^record_retention_policy=manual-or-global-latest-or-kind-latest$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^record_retention_gate=config-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^payload_block_gc=record-and-checkpoint-retention-orphan-blocks$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^payload_block_gc_gate=payload-gc-fixtures,record-retention-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1124,7 +1124,7 @@ install-smoke: install
 	grep -q '^certification_limit=none$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	grep -q '^mem_service_config_schema_version=1$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	grep -q '^optional=record_retention$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
-	grep -q '^field=record_retention type=enum values=manual,latest:<records> description=global record retention policy$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
+	grep -q '^field=record_retention type=enum values=manual,latest:<records>,kind:<record-kind>:latest:<records> description=global or kind-scoped record retention policy$$' $(INSTALL_CONFIGDIR)/mem_service.conf.schema
 	grep -q '^listen=unix:/tmp/linqu_mem_service.sock$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^backend=snapshot+journal$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
 	grep -q '^record_retention=manual$$' $(INSTALL_CONFIGDIR)/mem_service.example.conf
