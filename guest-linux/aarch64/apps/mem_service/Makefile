@@ -700,6 +700,7 @@ install-smoke: install
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu_mem_service_ops_bundle.tar --dry-run | grep -q '$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run | grep -q '$(INSTALL_HOSTDIR)/linqu_mem_service_host remote-transport-verify'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar --remote-transport-bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run | grep -q 'verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu_mem_service_ops_bundle.tar --work-dir'
+	$(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar --remote-transport-bundle-file /tmp/linqu_mem_service_remote_transport_bundle.tar --dry-run | grep -q 'release-readiness --ops-evidence-file'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_installed_sdk --dry-run | grep -q 'pkg-config --define-prefix --exists lingqu-mem-service'
 	$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_installed_sdk --preflight --dry-run | grep -q 'pkg-config --define-prefix --variable=sdk_sources lingqu-mem-service'
 	$(INSTALL_SCRIPTSDIR)/run_mem_service_linux_ops_ci.sh --rollback-rpm /tmp/linqu-mem-service-prev.rpm --out-dir /tmp/linqu_mem_service_linux_ops --dry-run | grep -q 'ops-certification-linux-ci-smoke --rpm-file'
@@ -730,8 +731,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=7964$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x6640b991$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=8072$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x6d885c2d$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -858,6 +859,7 @@ install-smoke: install
 	grep -q '^linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_certification_verify=release-certification-verify$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_certification_verify_script=scripts/verify_mem_service_release_certification.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_script_root=share/lingqu/mem_service/scripts$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -975,6 +977,7 @@ install-smoke: install
 	grep -q '^release_script_root=share/lingqu/mem_service/scripts$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^release_certification_ci=scripts/run_mem_service_release_certification_ci.sh$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$' $(INSTALL_DATADIR)/package-manifest.txt

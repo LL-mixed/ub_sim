@@ -3,7 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEFAULT_APP_DIR="$ROOT_DIR/apps/mem_service"
 APP_DIR=""
+HOST_BIN=""
 OPS_BUNDLE_FILE=""
 REMOTE_TRANSPORT_BUNDLE_FILE=""
 WORK_DIR=""
@@ -28,6 +30,53 @@ Options:
   --dry-run                              Print the verification commands without running them.
   -h, --help                             Show this help.
 EOF
+}
+
+resolve_host_bin() {
+  local installed_host
+
+  if [[ -n "$APP_DIR" ]]; then
+    HOST_BIN="$APP_DIR/linqu_mem_service_host"
+    if [[ ! -x "$HOST_BIN" ]]; then
+      make -C "$APP_DIR" linqu_mem_service_host
+    fi
+    return
+  fi
+
+  installed_host="$(cd "$SCRIPT_DIR/../../../.." && pwd)/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    HOST_BIN="$installed_host"
+    return
+  fi
+
+  APP_DIR="$DEFAULT_APP_DIR"
+  HOST_BIN="$APP_DIR/linqu_mem_service_host"
+  if [[ ! -d "$APP_DIR" ]]; then
+    echo "[mem-service-release-certification] FAIL: app directory not found: $APP_DIR" >&2
+    exit 1
+  fi
+  if [[ ! -x "$HOST_BIN" ]]; then
+    make -C "$APP_DIR" linqu_mem_service_host
+  fi
+}
+
+print_readiness_command() {
+  local installed_host
+  local ops_evidence="$OPS_VERIFY_WORK_DIR/ops-certification-linux-ci.evidence"
+  local remote_evidence="$REMOTE_TRANSPORT_VERIFY_WORK_DIR/remote-transport.evidence"
+
+  if [[ -n "$APP_DIR" ]]; then
+    printf '%s/linqu_mem_service_host release-readiness --ops-evidence-file %s --remote-transport-evidence-file %s\n' "$APP_DIR" "$ops_evidence" "$remote_evidence"
+    return
+  fi
+
+  installed_host="$(cd "$SCRIPT_DIR/../../../.." && pwd)/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    printf '%s release-readiness --ops-evidence-file %s --remote-transport-evidence-file %s\n' "$installed_host" "$ops_evidence" "$remote_evidence"
+    return
+  fi
+
+  printf '%s/linqu_mem_service_host release-readiness --ops-evidence-file %s --remote-transport-evidence-file %s\n' "$DEFAULT_APP_DIR" "$ops_evidence" "$remote_evidence"
 }
 
 while (( $# > 0 )); do
@@ -104,6 +153,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     printf '%s/verify_mem_service_ops_certification_bundle.sh --bundle-file %s --work-dir %s\n' "$SCRIPT_DIR" "$OPS_BUNDLE_FILE" "$OPS_VERIFY_WORK_DIR"
     printf '%s/verify_mem_service_remote_transport_bundle.sh --bundle-file %s --work-dir %s\n' "$SCRIPT_DIR" "$REMOTE_TRANSPORT_BUNDLE_FILE" "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
   fi
+  print_readiness_command
   exit 0
 fi
 
@@ -133,5 +183,11 @@ else
     --bundle-file "$REMOTE_TRANSPORT_BUNDLE_FILE" \
     --work-dir "$REMOTE_TRANSPORT_VERIFY_WORK_DIR"
 fi
+
+resolve_host_bin
+"$HOST_BIN" release-readiness \
+  --ops-evidence-file "$OPS_VERIFY_WORK_DIR/ops-certification-linux-ci.evidence" \
+  --remote-transport-evidence-file "$REMOTE_TRANSPORT_VERIFY_WORK_DIR/remote-transport.evidence" \
+  | grep -q '^overall_status=certified$'
 
 printf '[mem-service-release-certification] PASS ops_bundle=%s remote_transport_bundle=%s\n' "$OPS_BUNDLE_FILE" "$REMOTE_TRANSPORT_BUNDLE_FILE"

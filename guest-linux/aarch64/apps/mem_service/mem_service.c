@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7964U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6640b991U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8072U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6d885c2dU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 28U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2938,6 +2938,10 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -4670,6 +4674,9 @@ static int run_package_fixture_check(void)
         strstr(manifest,
                "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight\n") ==
             NULL ||
+        strstr(manifest,
+               "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") ==
+            NULL ||
         strstr(manifest, "linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh\n") ==
             NULL ||
         strstr(manifest,
@@ -4903,6 +4910,7 @@ static int run_release_manifest(void)
     printf("release_certification_verify_script=scripts/verify_mem_service_release_certification.sh\n");
     printf("release_certification_ci=scripts/run_mem_service_release_certification_ci.sh\n");
     printf("release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight\n");
+    printf("release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file\n");
     printf("release_script_root=share/lingqu/mem_service/scripts\n");
     printf("release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh\n");
     printf("release_script=share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh\n");

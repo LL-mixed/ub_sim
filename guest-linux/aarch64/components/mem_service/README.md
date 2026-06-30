@@ -576,7 +576,9 @@ Keep the implementation layers separated:
   `release-certification-verify` or
   `scripts/verify_mem_service_release_certification.sh --ops-bundle-file <path>
   --remote-transport-bundle-file <path>`; that command replays both bundle
-  verifiers and fails closed if either artifact is missing or invalid. The
+  verifiers, then calls `release-readiness --ops-evidence-file
+  --remote-transport-evidence-file` on the extracted evidence and fails closed
+  unless the final readiness report reaches `overall_status=certified`. The
   `remote-transport-evidence-fixtures` gate defines
   the required evidence schema: non-loopback source address, cross-host
   topology, `transport-tcp-block-v1`, TCP/IPv4, payload round-trip, checksum

@@ -615,6 +615,7 @@ def test_mem_service_release_certification_verifier_is_reusable_and_dry_runnable
     assert "--ops-bundle-file is required" in missing_arg.stderr
     assert "verify_mem_service_ops_certification_bundle.sh --bundle-file /tmp/linqu-mem-service-ops-certification-bundle.tar" in dry_run.stdout
     assert "verify_mem_service_remote_transport_bundle.sh --bundle-file /tmp/linqu-mem-service-remote-transport-bundle.tar" in dry_run.stdout
+    assert "release-readiness --ops-evidence-file" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification.verify/ops" in dry_run.stdout
     assert "/tmp/linqu-mem-service-release-certification.verify/remote-transport" in dry_run.stdout
 
@@ -1311,7 +1312,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x6640b991$$" in app_makefile
+    assert "^package_manifest_checksum=0x6d885c2d$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-pkgconfig-smoke: install" in app_makefile
     assert "$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service" in app_makefile
@@ -1370,6 +1371,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^release_certification_verify_script=scripts/verify_mem_service_release_certification.sh$$" in app_makefile
     assert "^release_certification_ci=scripts/run_mem_service_release_certification_ci.sh$$" in app_makefile
     assert "^release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight$$" in app_makefile
+    assert (
+        "^release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file$$"
+        in app_makefile
+    )
     assert "^linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh$$" in app_makefile
     assert "^linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight$$" in app_makefile
     assert "^remote_payload_production_transport_ci=scripts/run_mem_service_remote_transport_ci.sh$$" in app_makefile
@@ -1563,8 +1568,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7964U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6640b991U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8072U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6d885c2dU" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -1611,7 +1616,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x6640b991" in release_manifest
+    assert "package_manifest_checksum=0x6d885c2d" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1784,8 +1789,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=7964" in release_manifest
-    assert "package_manifest_checksum=0x6640b991" in release_manifest
+    assert "package_manifest_len=8072" in release_manifest
+    assert "package_manifest_checksum=0x6d885c2d" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -1894,6 +1899,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight"
         in release_manifest
     )
+    assert (
+        "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file"
+        in release_manifest
+    )
     assert "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke" in release_manifest
     assert "linux_ops_deployment_smoke=linux-ops-deployment-smoke" in release_manifest
     assert "ops_certification_verify=ops-certification-verify --evidence-file" in release_manifest
@@ -1998,6 +2007,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh" in package_manifest
     assert (
         "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight"
+        in package_manifest
+    )
+    assert (
+        "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file"
         in package_manifest
     )
     assert "linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh" in package_manifest

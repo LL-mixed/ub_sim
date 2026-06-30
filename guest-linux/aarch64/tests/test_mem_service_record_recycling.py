@@ -503,9 +503,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7964U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8072U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6640b991U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6d885c2dU",
             cli_source,
         )
         self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
@@ -730,6 +730,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "verify_mem_service_release_certification.sh --ops-bundle-file /tmp/linqu_mem_service_ops_bundle.tar",
             cli_makefile,
         )
+        self.assertIn("release-readiness --ops-evidence-file", cli_makefile)
         self.assertIn(
             "$(INSTALL_HOSTDIR)/linqu_mem_service_host ops-certification-verify",
             cli_makefile,
@@ -747,7 +748,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x6640b991$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x6d885c2d$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
         self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
@@ -874,6 +875,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "^release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file$$",
+            cli_makefile,
+        )
+        self.assertIn(
             "^linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh$$",
             cli_makefile,
         )
@@ -985,7 +990,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x6640b991", release_manifest)
+        self.assertIn("package_manifest_checksum=0x6d885c2d", release_manifest)
         self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             release_manifest,
@@ -1309,6 +1314,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("release_certification_ci=scripts/run_mem_service_release_certification_ci.sh", package_manifest)
         self.assertIn(
             "release_certification_preflight=scripts/run_mem_service_release_certification_ci.sh --preflight",
+            package_manifest,
+        )
+        self.assertIn(
+            "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             package_manifest,
         )
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", package_manifest)
