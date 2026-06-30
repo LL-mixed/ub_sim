@@ -586,6 +586,7 @@ def test_mem_service_release_certification_verifier_is_reusable_and_dry_runnable
     assert "installed libexec binary" in verifier
     assert "source-tree app directory" in verifier
     assert "[mem-service-release-certification] PASS ops_bundle=" in verifier
+    assert "readiness=certified" in verifier
 
     missing_arg = subprocess.run(
         [str(verifier_path), "--dry-run"],

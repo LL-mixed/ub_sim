@@ -10,6 +10,7 @@ OPS_BUNDLE_FILE=""
 REMOTE_TRANSPORT_BUNDLE_FILE=""
 WORK_DIR=""
 DRY_RUN=0
+READINESS_OUTPUT=""
 
 usage() {
   cat <<'EOF'
@@ -185,9 +186,13 @@ else
 fi
 
 resolve_host_bin
-"$HOST_BIN" release-readiness \
+READINESS_OUTPUT="$("$HOST_BIN" release-readiness \
   --ops-evidence-file "$OPS_VERIFY_WORK_DIR/ops-certification-linux-ci.evidence" \
-  --remote-transport-evidence-file "$REMOTE_TRANSPORT_VERIFY_WORK_DIR/remote-transport.evidence" \
-  | grep -q '^overall_status=certified$'
+  --remote-transport-evidence-file "$REMOTE_TRANSPORT_VERIFY_WORK_DIR/remote-transport.evidence")"
+if ! printf '%s\n' "$READINESS_OUTPUT" | grep -q '^overall_status=certified$'; then
+  printf '%s\n' "$READINESS_OUTPUT" >&2
+  echo "[mem-service-release-certification] FAIL: release readiness is not certified" >&2
+  exit 1
+fi
 
-printf '[mem-service-release-certification] PASS ops_bundle=%s remote_transport_bundle=%s\n' "$OPS_BUNDLE_FILE" "$REMOTE_TRANSPORT_BUNDLE_FILE"
+printf '[mem-service-release-certification] PASS ops_bundle=%s remote_transport_bundle=%s readiness=certified\n' "$OPS_BUNDLE_FILE" "$REMOTE_TRANSPORT_BUNDLE_FILE"

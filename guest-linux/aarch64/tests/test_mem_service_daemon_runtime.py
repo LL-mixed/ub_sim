@@ -2067,6 +2067,7 @@ int main(int argc, char **argv)
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("[mem-service-release-certification] PASS", result.stdout)
+        self.assertIn("readiness=certified", result.stdout)
 
     def test_package_manifest_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("package-fixtures")
