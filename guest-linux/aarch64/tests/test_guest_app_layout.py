@@ -1373,7 +1373,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xe5832228$$" in app_makefile
+    assert "^package_manifest_checksum=0x28945f1f$$" in app_makefile
     assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host checkpoint-retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host payload-gc-fixtures" in app_makefile
@@ -1637,8 +1637,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9132U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xe5832228U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9126U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x28945f1fU" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -1716,7 +1716,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0xe5832228" in release_manifest
+    assert "package_manifest_checksum=0x28945f1f" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1739,7 +1739,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures"
         in release_manifest
     )
-    assert "record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest" in release_manifest
+    assert "record_retention_policy=manual-or-global-kind-tenant-latest-or-ttl" in release_manifest
     assert "record_retention_gate=config-fixtures,record-retention-fixtures" in release_manifest
     assert (
         "payload_block_gc=record-and-checkpoint-retention-orphan-blocks"
@@ -1914,8 +1914,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0x7021f4cf" in release_manifest
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
-    assert "package_manifest_len=9132" in release_manifest
-    assert "package_manifest_checksum=0xe5832228" in release_manifest
+    assert "package_manifest_len=9126" in release_manifest
+    assert "package_manifest_checksum=0x28945f1f" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2257,7 +2257,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "field=backend type=enum values=snapshot,snapshot+journal" in config_schema
     assert "field=retention type=enum values=manual,audit-log:<events>" in config_schema
     assert "field=checkpoint_retention type=enum values=manual,latest:<records>" in config_schema
-    assert "field=record_retention type=enum values=manual,latest:<records>,kind:<record-kind>:latest:<records>,tenant:<owner-node>:latest:<records>" in config_schema
+    assert "field=record_retention type=enum values=manual,latest:<records>,ttl-ms:<age-ms>,kind:<record-kind>:latest:<records>,kind:<record-kind>:ttl-ms:<age-ms>,tenant:<owner-node>:latest:<records>,tenant:<owner-node>:ttl-ms:<age-ms>" in config_schema
     assert "field=encryption type=enum values=none" in config_schema
     assert "unsupported modes fail closed" in config_schema
     assert "field=metrics_listen type=string" in config_schema
@@ -2294,7 +2294,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures"
         in package_manifest
     )
-    assert "record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest" in package_manifest
+    assert "record_retention_policy=manual-or-global-kind-tenant-latest-or-ttl" in package_manifest
     assert "record_retention_gate=config-fixtures,record-retention-fixtures" in package_manifest
     assert (
         "payload_block_gc=record-and-checkpoint-retention-orphan-blocks"

@@ -18,6 +18,7 @@ struct mem_service_daemon_limits {
     uint64_t max_audit_events;
     uint64_t max_checkpoint_records;
     uint64_t max_retained_records;
+    uint64_t max_retained_record_age_ms;
     uint32_t max_retained_record_kind;
     bool max_retained_record_tenant_enabled;
     uint32_t max_retained_record_tenant;

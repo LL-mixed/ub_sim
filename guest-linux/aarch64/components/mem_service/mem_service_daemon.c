@@ -116,6 +116,7 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
                                                    uint64_t *payload_gc_out);
 static bool mem_service_apply_record_retention(struct mem_service *svc,
                                                uint64_t max_retained_records,
+                                               uint64_t max_retained_record_age_ms,
                                                uint32_t retained_record_kind,
                                                bool retained_record_tenant_enabled,
                                                uint32_t retained_record_tenant,
@@ -8892,6 +8893,7 @@ static bool mem_service_apply_checkpoint_retention(struct mem_service *svc,
 
 static bool mem_service_apply_record_retention(struct mem_service *svc,
                                                uint64_t max_retained_records,
+                                               uint64_t max_retained_record_age_ms,
                                                uint32_t retained_record_kind,
                                                bool retained_record_tenant_enabled,
                                                uint32_t retained_record_tenant,
@@ -8900,7 +8902,8 @@ static bool mem_service_apply_record_retention(struct mem_service *svc,
 {
     bool pruned = false;
 
-    if (svc == NULL || max_retained_records == 0) {
+    if (svc == NULL ||
+        (max_retained_records == 0 && max_retained_record_age_ms == 0)) {
         return false;
     }
     while (mem_service_count_retained_kind_records(
@@ -8908,7 +8911,8 @@ static bool mem_service_apply_record_retention(struct mem_service *svc,
                retained_record_kind,
                retained_record_tenant_enabled,
                retained_record_tenant) >
-           max_retained_records) {
+           max_retained_records &&
+           max_retained_records > 0) {
         size_t oldest = mem_service_find_oldest_record_index(
             svc,
             retained_record_kind,
@@ -8930,6 +8934,38 @@ static bool mem_service_apply_record_retention(struct mem_service *svc,
         }
         mem_service_prune_idempotency_for_record_key(svc, key);
         pruned = true;
+    }
+    if (max_retained_record_age_ms > 0) {
+        uint64_t now_ms = mem_service_wall_clock_ms();
+        size_t i;
+
+        for (i = 0; i < MEM_SERVICE_MAX_RECORDS; ++i) {
+            char key[96];
+            struct mem_service_record *record = &svc->records[i];
+
+            if (!mem_service_record_matches_retention_kind(
+                    record,
+                    retained_record_kind,
+                    retained_record_tenant_enabled,
+                    retained_record_tenant) ||
+                record->object_publish_monotonic_ms == 0 ||
+                record->object_publish_monotonic_ms > now_ms ||
+                now_ms - record->object_publish_monotonic_ms <=
+                    max_retained_record_age_ms) {
+                continue;
+            }
+            snprintf(key, sizeof(key), "%s", record->key);
+            (void)mem_service_gc_payload_block_if_orphaned(svc,
+                                                           i,
+                                                           storage_root,
+                                                           payload_gc_out);
+            memset(record, 0, sizeof(*record));
+            if (svc->record_count > 0) {
+                svc->record_count -= 1U;
+            }
+            mem_service_prune_idempotency_for_record_key(svc, key);
+            pruned = true;
+        }
     }
     return pruned;
 }
@@ -9717,11 +9753,13 @@ static enum mem_service_wire_status mem_service_handle_operation_with_limits(
             if (status == MEM_SERVICE_WIRE_STATUS_OK &&
                 mem_service_operation_mutates(operation, payload) &&
                 limits != NULL &&
-                limits->max_retained_records > 0) {
+                (limits->max_retained_records > 0 ||
+                 limits->max_retained_record_age_ms > 0)) {
                 record_retention_pruned =
                     mem_service_apply_record_retention(
                         svc,
                         limits->max_retained_records,
+                        limits->max_retained_record_age_ms,
                         limits->max_retained_record_kind,
                         limits->max_retained_record_tenant_enabled,
                         limits->max_retained_record_tenant,
@@ -10486,6 +10524,7 @@ int mem_service_run_payload_gc_fixture_check(void)
 
 static int mem_service_run_record_retention_kind_fixture_check(void);
 static int mem_service_run_record_retention_tenant_fixture_check(void);
+static int mem_service_run_record_retention_ttl_fixture_check(void);
 
 int mem_service_run_record_retention_fixture_check(void)
 {
@@ -11022,6 +11061,160 @@ static int mem_service_run_record_retention_tenant_fixture_check(void)
            "idempotency_gc=1 durable_reload=1 journal_gc=1\n",
            limits.max_retained_records,
            mem_service_count_retained_kind_records(&recovered, 0U, true, 7U));
+    return mem_service_run_record_retention_ttl_fixture_check();
+}
+
+static int mem_service_run_record_retention_ttl_fixture_check(void)
+{
+    static struct mem_service svc;
+    static struct mem_service recovered;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    char store_path[176];
+    char journal_path[sizeof(store_path) + 16U];
+    struct mem_service_record *old_artifact;
+    struct mem_service_record *fresh_artifact;
+    uint64_t now_ms;
+
+    snprintf(store_path,
+             sizeof(store_path),
+             "/tmp/linqu_mem_service_record_retention_ttl_fixture_%ld.store",
+             (long)getpid());
+    if (mem_service_make_journal_path(store_path,
+                                      journal_path,
+                                      sizeof(journal_path)) != 0) {
+        fprintf(stderr,
+                "mem_service record-retention-fixtures: ttl journal path failed\n");
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    memset(&limits, 0, sizeof(limits));
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service record-retention-fixtures: ttl init failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+            "key=training/ttl-retention/old-artifact\n"
+            "session_id=ttl-retention-session\n"
+            "model_key=ttl-retention-model\n"
+            "artifact_kind=gradient\n"
+            "artifact_id=old-gradient\n"
+            "owner=7\n"
+            "version=1\n"
+            "checksum=3101\n"
+            "idempotency_key=record-retention-ttl-old-artifact\n",
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            NULL) != MEM_SERVICE_WIRE_STATUS_OK ||
+        mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT,
+            "key=training/ttl-retention/fresh-artifact\n"
+            "session_id=ttl-retention-session\n"
+            "model_key=ttl-retention-model\n"
+            "artifact_kind=gradient\n"
+            "artifact_id=fresh-gradient\n"
+            "owner=7\n"
+            "version=2\n"
+            "checksum=3102\n"
+            "idempotency_key=record-retention-ttl-fresh-artifact\n",
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            NULL) != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service record-retention-fixtures: ttl artifact setup failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    old_artifact = mem_service_find_record(&svc, "training/ttl-retention/old-artifact");
+    fresh_artifact =
+        mem_service_find_record(&svc, "training/ttl-retention/fresh-artifact");
+    now_ms = mem_service_wall_clock_ms();
+    if (old_artifact == NULL || fresh_artifact == NULL || now_ms <= 120000U) {
+        fprintf(stderr,
+                "mem_service record-retention-fixtures: ttl timestamp setup failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    old_artifact->object_publish_monotonic_ms = now_ms - 120000U;
+    fresh_artifact->object_publish_monotonic_ms = now_ms;
+    memset(&limits, 0, sizeof(limits));
+    limits.max_retained_record_age_ms = 60000U;
+    limits.max_retained_record_kind = MEM_SERVICE_RECORD_TRAINING_ARTIFACT;
+    if (mem_service_handle_operation_with_limits(
+            &svc,
+            MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+            "key=record-retention-ttl-trigger-object\n"
+            "owner=7\n"
+            "version=1\n"
+            "backing_len=8\n"
+            "checksum=3301\n",
+            response,
+            sizeof(response),
+            store_path,
+            NULL,
+            &limits) != MEM_SERVICE_WIRE_STATUS_OK) {
+        fprintf(stderr,
+                "mem_service record-retention-fixtures: ttl trigger failed\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (svc.record_count != 2U ||
+        mem_service_find_record(&svc, "training/ttl-retention/old-artifact") !=
+            NULL ||
+        mem_service_find_record(&svc, "training/ttl-retention/fresh-artifact") ==
+            NULL ||
+        mem_service_find_record(&svc, "record-retention-ttl-trigger-object") ==
+            NULL ||
+        mem_service_find_idempotency_record(&svc,
+                                            "record-retention-ttl-old-artifact") !=
+            NULL ||
+        mem_service_find_idempotency_record(&svc,
+                                            "record-retention-ttl-fresh-artifact") ==
+            NULL) {
+        fprintf(stderr, "mem_service record-retention-fixtures: ttl mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    if (mem_service_init(&recovered, true, true, true) != 0 ||
+        mem_service_load_durable_store(&recovered, store_path) != 0 ||
+        recovered.record_count != 2U ||
+        mem_service_find_record(&recovered,
+                                "training/ttl-retention/old-artifact") != NULL ||
+        mem_service_find_record(&recovered,
+                                "training/ttl-retention/fresh-artifact") == NULL ||
+        mem_service_find_record(&recovered,
+                                "record-retention-ttl-trigger-object") == NULL ||
+        mem_service_file_contains(journal_path,
+                                  "training/ttl-retention/old-artifact")) {
+        fprintf(stderr,
+                "mem_service record-retention-fixtures: ttl durable mismatch\n");
+        unlink(store_path);
+        unlink(journal_path);
+        return 1;
+    }
+    unlink(store_path);
+    unlink(journal_path);
+    printf("mem_service record-retention-ttl-fixtures: status=ok "
+           "record_retention=kind:training-artifact:ttl-ms "
+           "max_retained_record_age_ms=%" PRIu64
+           " pruned_expired_records=1 fresh_record_retained=1 "
+           "non_matching_object_retained=1 idempotency_gc=1 "
+           "durable_reload=1 journal_gc=1\n",
+           limits.max_retained_record_age_ms);
     return 0;
 }
 
@@ -11506,9 +11699,12 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
                 store_path);
         return 1;
     }
-    if (limits != NULL && limits->max_retained_records > 0 &&
+    if (limits != NULL &&
+        (limits->max_retained_records > 0 ||
+         limits->max_retained_record_age_ms > 0) &&
         mem_service_apply_record_retention(&svc,
                                            limits->max_retained_records,
+                                           limits->max_retained_record_age_ms,
                                            limits->max_retained_record_kind,
                                            limits->max_retained_record_tenant_enabled,
                                            limits->max_retained_record_tenant,

@@ -528,9 +528,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9132U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9126U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xe5832228U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x28945f1fU",
             cli_source,
         )
         self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
@@ -810,7 +810,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xe5832228$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x28945f1f$$", cli_makefile)
         self.assertIn("./linqu_mem_service_host checkpoint-retention-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host payload-gc-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host record-retention-fixtures", cli_makefile)
@@ -1099,7 +1099,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0xe5832228", release_manifest)
+        self.assertIn("package_manifest_checksum=0x28945f1f", release_manifest)
         self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             release_manifest,
@@ -1131,7 +1131,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures",
             release_manifest,
         )
-        self.assertIn("record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest", release_manifest)
+        self.assertIn("record_retention_policy=manual-or-global-kind-tenant-latest-or-ttl", release_manifest)
         self.assertIn(
             "record_retention_gate=config-fixtures,record-retention-fixtures",
             release_manifest,
@@ -1528,7 +1528,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures",
             package_manifest,
         )
-        self.assertIn("record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest", package_manifest)
+        self.assertIn("record_retention_policy=manual-or-global-kind-tenant-latest-or-ttl", package_manifest)
         self.assertIn(
             "record_retention_gate=config-fixtures,record-retention-fixtures",
             package_manifest,
@@ -1721,7 +1721,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             config_schema,
         )
         self.assertIn(
-            "field=record_retention type=enum values=manual,latest:<records>,kind:<record-kind>:latest:<records>,tenant:<owner-node>:latest:<records>",
+            "field=record_retention type=enum values=manual,latest:<records>,ttl-ms:<age-ms>,kind:<record-kind>:latest:<records>,kind:<record-kind>:ttl-ms:<age-ms>,tenant:<owner-node>:latest:<records>,tenant:<owner-node>:ttl-ms:<age-ms>",
             config_schema,
         )
         self.assertIn("field=encryption type=enum values=none", config_schema)

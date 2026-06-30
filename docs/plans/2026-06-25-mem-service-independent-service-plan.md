@@ -76,7 +76,7 @@
 | 生产 Linux ops evidence 未取得 | 本地 release/package/install/SDK/runtime gates 已具备，但 `release-readiness` 在缺少真实 Linux systemd/rpm/Prometheus/Alertmanager/upgrade-rollback bundle 时仍必须输出 `overall_status=not-certified`。 |
 | 跨主机 production remote transport evidence 未取得 | loopback/TCP-loopback transport backend 和 evidence/bundle verifier 已具备，但真实多机 producer/consumer 分区与 non-loopback source 证据缺失时不能宣称 production remote transport certified。 |
 | 外部 serving/pretraining 系统 SLA 未验证 | installed SDK runtime smoke 已证明协同功能正确，但真实业务 serving/training 系统的 latency、capacity、failure recovery 和 quorum 行为仍需外部集成压测。 |
-| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission、quarantine、部署期 quota/retention/encryption 配置 contract、`max_records`/`max_payload_bytes` daemon runtime admission、audit-log retention GC、checkpoint record retention、global/kind/tenant-scoped record retention、checkpoint/global/kind/tenant-scoped retention 驱动的 orphan payload block GC、explicit-none-only encryption fail-closed admission，以及 quota/capacity pressure 的 Prometheus rule contract；TTL retention 策略、真实 at-rest/data-plane encryption/key management、多版本 catalog migration 和真实业务容量策略仍需要产品化。 |
+| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission、quarantine、部署期 quota/retention/encryption 配置 contract、`max_records`/`max_payload_bytes` daemon runtime admission、audit-log retention GC、checkpoint record retention、global/kind/tenant/TTL-scoped record retention、checkpoint/global/kind/tenant/TTL-scoped retention 驱动的 orphan payload block GC、explicit-none-only encryption fail-closed admission，以及 quota/capacity pressure 的 Prometheus rule contract；真实 at-rest/data-plane encryption/key management、多版本 catalog migration 和真实业务容量策略仍需要产品化。 |
 
 ## 3. 目标架构
 
@@ -255,7 +255,7 @@ existing W5/Qwen3 tests remain green
    - 当前 `--store`、`<store>.journal` 和 full `export-snapshot` 会保存 completed idempotency record；`store-fixtures` 覆盖 save/load 后 replay/conflict，`journal-fixtures` 覆盖 append-only journal replay 恢复，daemon runtime 测试在允许 Unix socket bind 的环境覆盖 `serve --store` 重启后的 replay/conflict。
    - 当前 `audit-log` 已有 bounded retained ring，覆盖 mutating operation 和 fail-closed status，并随 `--store`、`<store>.journal` 和 full snapshot 持久化。
    - 当前 `compat-matrix` 已冻结 release-time retry/idempotency/audit/snapshot/journal 兼容规则，`compat-baseline-v1` 已冻结 old-v1-client 到 current-server 的最小 baseline，`compat-old-new-matrix` 已冻结覆盖 23 个 operation 的 v1 old/new schema-profile matrix，`compat-runtime-fixtures` 已覆盖 old/current client profile 到 current server runtime handler 的 serving/pretraining/idempotency/fail-closed 路径。
-   - 后续重点转为真实外部系统接入后的 SLA、capacity、TTL retention 策略、真实 at-rest/data-plane encryption/key management 和多版本迁移策略。
+   - 后续重点转为真实外部系统接入后的 SLA、capacity、真实 at-rest/data-plane encryption/key management 和多版本迁移策略。
 7. 定义 compatibility rules：
    - minor version backward compatible。
    - major version requires explicit negotiation。
@@ -721,7 +721,7 @@ shared text key/value payload helper, public operation schema contract, and requ
 wire-schema CLI and checked-in wire-schema.txt freeze the current operation/field manifest
 snapshot+journal carries completed idempotency records plus bounded audit records; storage_root layout, derived store recovery, catalog schema admission, journal fsync, torn-tail recovery, threshold compaction, transactional restore, sealed-local/chunked/loopback/tcp-loopback block backends exist
 release/package manifests, version/readiness self-description, compat gates, old-server runtime gate, serving/pretraining fail-closed gates, config/deploy artifacts, SDK examples, install-smoke, package gates, installed SDK runtime smoke, Linux ops/remote transport/release certification wrappers exist
-remaining blockers are external Linux ops evidence, cross-host production remote transport evidence, real serving/pretraining SLA/capacity evidence, and longer-term TTL retention policy, real encryption/key management, and migration policy
+remaining blockers are external Linux ops evidence, cross-host production remote transport evidence, real serving/pretraining SLA/capacity evidence, real encryption/key management, and migration policy
 ```
 
 ### 5.2 Gate Matrix
