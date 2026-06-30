@@ -1363,7 +1363,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x4e9344fe$$" in app_makefile
+    assert "^package_manifest_checksum=0xa0d23f09$$" in app_makefile
     assert "installed-sdk-example-smoke: install" in app_makefile
     assert "installed-sdk-pkgconfig-smoke: install" in app_makefile
     assert "$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service" in app_makefile
@@ -1405,8 +1405,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^rollback_policy=current-version-only$$" in app_makefile
     assert "^old_server_runtime_binary=certified$$" in app_makefile
     assert "^alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml$$" in app_makefile
-    assert "^alert_rules_checksum=0xbdff2246$$" in app_makefile
-    assert "^alert_rule_count=5$$" in app_makefile
+    assert "^alert_rules_checksum=0x05a9245c$$" in app_makefile
+    assert "^alert_rule_count=6$$" in app_makefile
+    assert "^    expr: increase(lingqu_mem_service_capacity_exceeded_count\\[5m\\]) > 0$$" in app_makefile
     assert "^alert_integration_smoke=alert-integration-fixtures$$" in app_makefile
     assert "^ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt$$" in app_makefile
     assert "^ops_certification_gate=ops-certification-fixtures$$" in app_makefile
@@ -1603,8 +1604,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_upgrade_rollback_policy" in app_source
     assert "run_upgrade_rollback_fixture_check" in app_source
     assert "mem_service_run_upgrade_rollback_runtime_fixture_check" in app_source
-    assert "MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U" in app_source
-    assert "MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U" in app_source
+    assert "MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 2096U" in app_source
+    assert "MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0x05a9245cU" in app_source
     assert "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U" in app_source
     assert "MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU" in app_source
     assert "MEM_SERVICE_OPS_CERTIFICATION_EVIDENCE_VERSION 1U" in app_source
@@ -1623,7 +1624,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
     assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8372U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4e9344feU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa0d23f09U" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -1690,7 +1691,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x4e9344fe" in release_manifest
+    assert "package_manifest_checksum=0xa0d23f09" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -1796,8 +1797,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "old_server_runtime_binary=certified" in release_manifest
     assert "alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml" in release_manifest
     assert "alert_rules_format=prometheus-rules-yaml" in release_manifest
-    assert "alert_rules_checksum=0xbdff2246" in release_manifest
-    assert "alert_rule_count=5" in release_manifest
+    assert "alert_rules_checksum=0x05a9245c" in release_manifest
+    assert "alert_rule_count=6" in release_manifest
     assert "alert_rules_gate=alert-fixtures" in release_manifest
     assert "alert_integration_smoke=alert-integration-fixtures" in release_manifest
     assert "api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt" in release_manifest
@@ -1870,7 +1871,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "upgrade_rollback_policy_len=2019" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf7943816" in release_manifest
     assert "package_manifest_len=8372" in release_manifest
-    assert "package_manifest_checksum=0x4e9344fe" in release_manifest
+    assert "package_manifest_checksum=0xa0d23f09" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"

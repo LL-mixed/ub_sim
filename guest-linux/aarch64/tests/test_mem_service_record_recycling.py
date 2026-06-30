@@ -505,7 +505,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
         self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8372U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4e9344feU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa0d23f09U",
             cli_source,
         )
         self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
@@ -778,7 +778,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x4e9344fe$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0xa0d23f09$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
         self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
@@ -900,8 +900,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml$$",
             cli_makefile,
         )
-        self.assertIn("^alert_rules_checksum=0xbdff2246$$", cli_makefile)
-        self.assertIn("^alert_rule_count=5$$", cli_makefile)
+        self.assertIn("^alert_rules_checksum=0x05a9245c$$", cli_makefile)
+        self.assertIn("^alert_rule_count=6$$", cli_makefile)
+        self.assertIn(
+            "^    expr: increase(lingqu_mem_service_capacity_exceeded_count\\[5m\\]) > 0$$",
+            cli_makefile,
+        )
         self.assertIn("^alert_integration_smoke=alert-integration-fixtures$$", cli_makefile)
         self.assertIn(
             "^ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt$$",
@@ -1060,7 +1064,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x4e9344fe", release_manifest)
+        self.assertIn("package_manifest_checksum=0xa0d23f09", release_manifest)
         self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             release_manifest,
@@ -1222,8 +1226,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml",
             release_manifest,
         )
-        self.assertIn("alert_rules_checksum=0xbdff2246", release_manifest)
-        self.assertIn("alert_rule_count=5", release_manifest)
+        self.assertIn("alert_rules_checksum=0x05a9245c", release_manifest)
+        self.assertIn("alert_rule_count=6", release_manifest)
         self.assertIn("alert_rules_gate=alert-fixtures", release_manifest)
         self.assertIn("alert_integration_smoke=alert-integration-fixtures", release_manifest)
         self.assertIn(
@@ -1557,6 +1561,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn(
             "increase(lingqu_mem_service_checksum_mismatch_count[5m]) > 0",
+            alert_rules,
+        )
+        self.assertIn(
+            "increase(lingqu_mem_service_capacity_exceeded_count[5m]) > 0",
             alert_rules,
         )
         self.assertIn("lingqu_mem_service_request_latency_max_ms > 100", alert_rules)

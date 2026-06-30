@@ -103,7 +103,7 @@ contract=api-abi-policy path=share/lingqu/mem_service/api-abi-policy.txt checksu
 contract=compat-matrix path=share/lingqu/mem_service/compat-matrix.txt checksum=0x61d07124
 contract=compat-baseline-v1 path=share/lingqu/mem_service/compat-baseline-v1.txt checksum=0x1e017705
 contract=compat-old-new-matrix path=share/lingqu/mem_service/compat-old-new-matrix.txt checksum=0x627bf6a1
-contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0xbdff2246
+contract=alert-rules path=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml checksum=0x05a9245c
 contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt checksum=0xe77c644b
 required_gate_count=29
 required_gate=release-fixtures

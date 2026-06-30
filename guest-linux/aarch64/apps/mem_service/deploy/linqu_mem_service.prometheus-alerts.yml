@@ -39,6 +39,15 @@ groups:
     annotations:
       summary: mem_service detected a corrupt payload or ref
       runbook: quarantine corrupt block and verify producer checksums
+  - alert: LingquMemServiceCapacityExceeded
+    expr: increase(lingqu_mem_service_capacity_exceeded_count[5m]) > 0
+    for: 1m
+    labels:
+      severity: warning
+      service: linqu_mem_service
+    annotations:
+      summary: mem_service capacity or quota admission rejected writes
+      runbook: inspect quota settings, storage capacity, and client write rate
   - alert: LingquMemServiceHighLatency
     expr: lingqu_mem_service_request_latency_max_ms > 100
     for: 5m

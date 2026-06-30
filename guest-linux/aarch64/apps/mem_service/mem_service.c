@@ -36,9 +36,9 @@
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2019U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xf7943816U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
-#define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 1733U
-#define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0xbdff2246U
-#define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 5U
+#define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 2096U
+#define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0x05a9245cU
+#define MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT 6U
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_VERSION 1U
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U
 #define MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM 0xe77c644bU
@@ -47,7 +47,7 @@
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
 #define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8372U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4e9344feU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa0d23f09U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 29U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -5184,7 +5184,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_ALERT_RULES_EXPECTED_LEN == 0U ||
         MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT != 5U) {
+        MEM_SERVICE_ALERT_RULES_EXPECTED_RULE_COUNT != 6U) {
         fprintf(stderr, "mem_service release-fixtures: alert rules fixture missing\n");
         failures -= 1;
     }
@@ -7274,6 +7274,42 @@ static int render_alert_rules(char *rules, size_t rules_len, size_t *used_out)
         append_wire_schema_line(rules,
                                 rules_len,
                                 &used,
+                                "  - alert: LingquMemServiceCapacityExceeded\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    expr: increase(lingqu_mem_service_capacity_exceeded_count[5m]) > 0\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    for: 1m\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    labels:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      severity: warning\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      service: linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "    annotations:\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      summary: mem_service capacity or quota admission rejected writes\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
+                                "      runbook: inspect quota settings, storage capacity, and client write rate\n") != 0 ||
+        append_wire_schema_line(rules,
+                                rules_len,
+                                &used,
                                 "  - alert: LingquMemServiceHighLatency\n") != 0 ||
         append_wire_schema_line(rules,
                                 rules_len,
@@ -7383,6 +7419,7 @@ static int run_alert_fixture_check(void)
     if (strstr(rules, "alert: LingquMemServiceDown\n") == NULL ||
         strstr(rules, "lingqu_mem_service_fail_closed_count") == NULL ||
         strstr(rules, "lingqu_mem_service_checksum_mismatch_count") == NULL ||
+        strstr(rules, "lingqu_mem_service_capacity_exceeded_count") == NULL ||
         strstr(rules, "lingqu_mem_service_request_latency_max_ms") == NULL ||
         strstr(rules, "severity: critical\n") == NULL) {
         fprintf(stderr, "mem_service alert-fixtures: required alert missing\n");
@@ -7406,6 +7443,7 @@ static int run_alert_integration_fixture_check(void)
         "error_count=1\n"
         "fail_closed_count=1\n"
         "checksum_mismatch_count=1\n"
+        "capacity_exceeded_count=1\n"
         "request_latency_max_ms=101\n";
     char rules[8192];
     char response[4096];
@@ -7438,6 +7476,9 @@ static int run_alert_integration_fixture_check(void)
                                        "lingqu_mem_service_checksum_mismatch_count",
                                        "counter") ||
         !collector_metric_type_present(body,
+                                       "lingqu_mem_service_capacity_exceeded_count",
+                                       "counter") ||
+        !collector_metric_type_present(body,
                                        "lingqu_mem_service_request_latency_max_ms",
                                        "gauge")) {
         fprintf(stderr,
@@ -7450,6 +7491,9 @@ static int run_alert_integration_fixture_check(void)
             NULL ||
         strstr(rules,
                "increase(lingqu_mem_service_checksum_mismatch_count[5m]) > 0") ==
+            NULL ||
+        strstr(rules,
+               "increase(lingqu_mem_service_capacity_exceeded_count[5m]) > 0") ==
             NULL ||
         strstr(rules, "lingqu_mem_service_request_latency_max_ms > 100") == NULL) {
         fprintf(stderr,
@@ -7466,6 +7510,9 @@ static int run_alert_integration_fixture_check(void)
                                          "lingqu_mem_service_checksum_mismatch_count",
                                          1) ||
         !collector_metric_value_at_least(body,
+                                         "lingqu_mem_service_capacity_exceeded_count",
+                                         1) ||
+        !collector_metric_value_at_least(body,
                                          "lingqu_mem_service_request_latency_max_ms",
                                          101)) {
         fprintf(stderr,
@@ -7473,7 +7520,7 @@ static int run_alert_integration_fixture_check(void)
         return 1;
     }
     printf("mem_service alert-integration-fixtures: status=ok "
-           "collector=prometheus-text-http alert_rules=5 referenced_metrics=4 "
+           "collector=prometheus-text-http alert_rules=6 referenced_metrics=5 "
            "synthetic_targets=1\n");
     return 0;
 }

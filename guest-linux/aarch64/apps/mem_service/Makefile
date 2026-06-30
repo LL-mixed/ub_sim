@@ -749,7 +749,7 @@ install-smoke: install
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest_len=8372$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x4e9344fe$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0xa0d23f09$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -859,9 +859,9 @@ install-smoke: install
 	grep -q '^collector_scrape_contract=prometheus-text-http-v0.0.4$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^alert_rules=share/lingqu/mem_service/deploy/linqu_mem_service.prometheus-alerts.yml$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^alert_rules_format=prometheus-rules-yaml$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^alert_rules_len=1733$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^alert_rules_checksum=0xbdff2246$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^alert_rule_count=5$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules_len=2096$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rules_checksum=0x05a9245c$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^alert_rule_count=6$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^alert_rules_gate=alert-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^alert_integration_smoke=alert-integration-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^ops_certification_policy=share/lingqu/mem_service/ops-certification-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -1119,6 +1119,7 @@ install-smoke: install
 	grep -q '^StateDirectory=lingqu/mem_service_host$$' $(INSTALL_SYSTEMDUNITDIR)/linqu_mem_service.host.service
 	grep -q '^  - alert: LingquMemServiceDown$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^    expr: increase(lingqu_mem_service_fail_closed_count\[5m\]) > 0$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
+	grep -q '^    expr: increase(lingqu_mem_service_capacity_exceeded_count\[5m\]) > 0$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	grep -q '^    expr: lingqu_mem_service_request_latency_max_ms > 100$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host version
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host version-fixtures

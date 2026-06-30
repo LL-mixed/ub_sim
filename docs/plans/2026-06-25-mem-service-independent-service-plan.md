@@ -65,7 +65,7 @@
 | native deb package smoke | `make -C guest-linux/aarch64/apps/mem_service package-deb-smoke` 使用 `aarch64-linux-gnu-gcc` 生成 `linqu-mem-service_0.1.0-1_arm64.deb`，校验 `debian-binary`、`control.tar.gz`、`data.tar.gz`、control metadata、payload layout 和 arm64 ELF 类型；因为是交叉包，运行时 smoke 仍由 host/tarball gate 覆盖 | 已有 arm64 deb package 版本 |
 | native rpm package smoke | `make -C guest-linux/aarch64/apps/mem_service package-rpm-smoke` 使用 `packaging/linqu-mem-service.spec`、`rpmbuild`、`rpm2cpio` 和 `cpio` 生成并解包校验 `linqu-mem-service-0.1.0-1.aarch64.rpm`；macOS/缺工具环境必须 fail-closed | 已有 rpm gate；真实通过需 Linux rpm toolchain |
 | Linux ops certification smoke | `make -C guest-linux/aarch64/apps/mem_service linux-ops-certification-smoke` 串联 `package-rpm-smoke`、真实升级/回滚 marker 和 `ops-certification-linux-ci-smoke`，生成并验证 `ops-certification-linux-ci.evidence`；缺 rpm/systemd/marker 时 fail-closed | 已有编排入口；真实通过需 Linux CI |
-| alert rules CLI | `linqu_mem_service alert-rules` 和 `alert-fixtures` 发布并冻结 Prometheus alert rules artifact，覆盖 service down、error、fail-closed、checksum mismatch 和 latency spike 的最小告警契约；`alert-integration-fixtures` 用 synthetic `/metrics` payload 校验规则引用当前 Prometheus text/http 指标契约 | 已有 portable contract 版本 |
+| alert rules CLI | `linqu_mem_service alert-rules` 和 `alert-fixtures` 发布并冻结 Prometheus alert rules artifact，覆盖 service down、error、fail-closed、checksum mismatch、quota/capacity pressure 和 latency spike 的最小告警契约；`alert-integration-fixtures` 用 synthetic `/metrics` payload 校验规则引用当前 Prometheus text/http 指标契约 | 已有 portable contract 版本 |
 
 当前主要缺口：
 
@@ -76,7 +76,7 @@
 | 生产 Linux ops evidence 未取得 | 本地 release/package/install/SDK/runtime gates 已具备，但 `release-readiness` 在缺少真实 Linux systemd/rpm/Prometheus/Alertmanager/upgrade-rollback bundle 时仍必须输出 `overall_status=not-certified`。 |
 | 跨主机 production remote transport evidence 未取得 | loopback/TCP-loopback transport backend 和 evidence/bundle verifier 已具备，但真实多机 producer/consumer 分区与 non-loopback source 证据缺失时不能宣称 production remote transport certified。 |
 | 外部 serving/pretraining 系统 SLA 未验证 | installed SDK runtime smoke 已证明协同功能正确，但真实业务 serving/training 系统的 latency、capacity、failure recovery 和 quorum 行为仍需外部集成压测。 |
-| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission、quarantine、部署期 quota/retention 配置 contract，以及 `max_records`/`max_payload_bytes` 的 daemon runtime admission；自动 retention GC、quota 告警、encryption、多版本 catalog migration 和真实业务容量策略仍需要产品化。 |
+| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission、quarantine、部署期 quota/retention 配置 contract、`max_records`/`max_payload_bytes` daemon runtime admission，以及 quota/capacity pressure 的 Prometheus rule contract；自动 retention GC、encryption、多版本 catalog migration 和真实业务容量策略仍需要产品化。 |
 
 ## 3. 目标架构
 
@@ -255,7 +255,7 @@ existing W5/Qwen3 tests remain green
    - 当前 `--store`、`<store>.journal` 和 full `export-snapshot` 会保存 completed idempotency record；`store-fixtures` 覆盖 save/load 后 replay/conflict，`journal-fixtures` 覆盖 append-only journal replay 恢复，daemon runtime 测试在允许 Unix socket bind 的环境覆盖 `serve --store` 重启后的 replay/conflict。
    - 当前 `audit-log` 已有 bounded retained ring，覆盖 mutating operation 和 fail-closed status，并随 `--store`、`<store>.journal` 和 full snapshot 持久化。
    - 当前 `compat-matrix` 已冻结 release-time retry/idempotency/audit/snapshot/journal 兼容规则，`compat-baseline-v1` 已冻结 old-v1-client 到 current-server 的最小 baseline，`compat-old-new-matrix` 已冻结覆盖 23 个 operation 的 v1 old/new schema-profile matrix，`compat-runtime-fixtures` 已覆盖 old/current client profile 到 current server runtime handler 的 serving/pretraining/idempotency/fail-closed 路径。
-   - 后续重点转为真实外部系统接入后的 SLA、capacity、运行时 quota admission、retention GC、encryption 和多版本迁移策略。
+   - 后续重点转为真实外部系统接入后的 SLA、capacity、retention GC、encryption 和多版本迁移策略。
 7. 定义 compatibility rules：
    - minor version backward compatible。
    - major version requires explicit negotiation。
@@ -964,10 +964,11 @@ Recommended order:
    Because the packages are cross-compiled, runtime execution remains covered
    by the host/tarball gates until the real Linux CI gate passes.
    The current `alert-rules` artifact freezes a minimal Prometheus alert rules
-   bundle for service-down, error, fail-closed, checksum-mismatch, and latency
-   signals. `alert-integration-fixtures` proves those rules reference the
-   current exported metrics contract with a synthetic target; it does not prove
-   a real Prometheus/Alertmanager deployment.
+   bundle for service-down, error, fail-closed, checksum-mismatch,
+   quota/capacity pressure, and latency signals. `alert-integration-fixtures`
+   proves those rules reference the current exported metrics contract with a
+   synthetic target; it does not prove a real Prometheus/Alertmanager
+   deployment.
    The current `upgrade-rollback-policy` artifact freezes the
    current-version-only admission rule and required gates; the
    `upgrade-rollback-runtime-fixtures` gate now proves same-version restart
