@@ -730,8 +730,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=7689$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x73153de0$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=7859$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x1b603fa6$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -760,6 +760,9 @@ install-smoke: install
 	grep -q '^binary_version_command=version$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^binary_version_contract=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_readiness_command=release-readiness$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_readiness_contract=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_readiness_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0xf4cf34c6$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -984,15 +987,19 @@ install-smoke: install
 	grep -q '^binary_version_command=version$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^binary_version_contract=text-kv$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_readiness_command=release-readiness$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_readiness_contract=text-kv$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_readiness_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=pkgconfig count=1$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=release_scripts count=10$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=27$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=28$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1088,6 +1095,8 @@ install-smoke: install
 	grep -q '^    expr: lingqu_mem_service_request_latency_max_ms > 100$$' $(INSTALL_DEPLOYDIR)/linqu_mem_service.prometheus-alerts.yml
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host version
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host version-fixtures
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness | grep -q '^overall_status=not-certified$$'
+	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness-fixtures
 
 clean:
 	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3 linqu_mem_service_host

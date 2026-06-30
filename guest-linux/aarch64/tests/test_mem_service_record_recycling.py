@@ -503,11 +503,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7689U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7859U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x73153de0U",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1b603fa6U",
             cli_source,
         )
+        self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
+        self.assertIn('strcmp(argv[1], "release-readiness-fixtures")', cli_source)
+        self.assertIn("render_release_readiness", cli_source)
+        self.assertIn("run_release_readiness_fixture_check", cli_source)
         self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U", cli_source)
         self.assertIn(
             'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"',
@@ -743,7 +747,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x73153de0$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x1b603fa6$$", cli_makefile)
         self.assertIn("installed-sdk-example-smoke: install", cli_makefile)
         self.assertIn("installed-sdk-pkgconfig-smoke: install", cli_makefile)
         self.assertIn("$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service", cli_makefile)
@@ -757,6 +761,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("$(INSTALL_SRCDIR)/mem_service_client.c", cli_makefile)
         self.assertIn("$(INSTALL_SRCDIR)/mem_service_wire_client.c", cli_makefile)
         self.assertIn("^installed_sdk_example_smoke=installed-sdk-example-smoke$$", cli_makefile)
+        self.assertIn("^release_readiness_command=release-readiness$$", cli_makefile)
+        self.assertIn("^release_readiness_contract=text-kv$$", cli_makefile)
+        self.assertIn(
+            "^release_readiness_gate=release-readiness-fixtures$$",
+            cli_makefile,
+        )
         self.assertIn(
             "^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$",
             cli_makefile,
@@ -971,7 +981,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x73153de0", release_manifest)
+        self.assertIn("package_manifest_checksum=0x1b603fa6", release_manifest)
         self.assertIn("linux_ops_ci=scripts/run_mem_service_linux_ops_ci.sh", release_manifest)
         self.assertIn(
             "linux_ops_ci_preflight=scripts/run_mem_service_linux_ops_ci.sh --preflight",
@@ -1364,9 +1374,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("binary_version_command=version", package_manifest)
         self.assertIn("binary_version_contract=text-kv", package_manifest)
         self.assertIn("binary_version_gate=version-fixtures", package_manifest)
-        self.assertIn("required_gate_count=27", package_manifest)
+        self.assertIn("required_gate_count=28", package_manifest)
         self.assertIn("required_gate=package-fixtures", package_manifest)
         self.assertIn("required_gate=version-fixtures", package_manifest)
+        self.assertIn("required_gate=release-readiness-fixtures", package_manifest)
         self.assertIn("required_gate=remote-transport-evidence-fixtures", package_manifest)
         self.assertIn(
             "required_gate=upgrade-rollback-runtime-fixtures",

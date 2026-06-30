@@ -280,14 +280,21 @@ a Qwen3 adapter inspect build:
   binary self-description command, public headers, client SDK source files,
   SDK example files, installed `pkg-config` metadata, config/deploy artifacts,
   wire/schema versions, wire schema manifest checksum, admin output schema
-  checksum, operation IDs, and status IDs.
+  checksum, release-readiness command/gate, operation IDs, and status IDs.
 - `apps/mem_service/package-manifest.txt` freezes the current
   `installed-layout-v1` package contract: install roots, file classes, required
-  contract checksums, binary self-description gate, required fixture gates, and
-  not-certified boundaries for cross-version/runtime-environment claims. It
+  contract checksums, binary self-description gate, release-readiness gate,
+  required fixture gates, and not-certified boundaries for
+  cross-version/runtime-environment claims. It
   also freezes the installed release-script payload so a published package can
   carry its own post-release evidence verification entrypoints without
   requiring a source checkout for the default verifier path.
+- `release-readiness` emits a stable text-kv readiness report for release
+  tooling. It reports the installed SDK contract, serving/pretraining runtime
+  gate, Linux ops certification status, cross-host remote transport status, and
+  `overall_status=not-certified` until the Linux ops and remote transport
+  certification bundles are provided. `release-readiness-fixtures` keeps that
+  report format in the package required gate set.
 - `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the
   release layout, then compiles the serving and pretraining examples from the
   installed public headers, installed SDK sources, and installed example
@@ -587,7 +594,8 @@ Keep the implementation layers separated:
   callable by external
   serving/pretraining processes.
 - Release/deployment: the current `version`, `version-fixtures`,
-  `release-manifest`, `wire-schema`,
+  `release-readiness`, `release-readiness-fixtures`, `release-manifest`,
+  `wire-schema`,
   `admin-output-schema`, `upgrade-rollback-policy`, `package-manifest`,
   `api-abi-policy`,
   `compat-matrix`, `compat-old-new-fixtures`, `ops-certification-policy`,

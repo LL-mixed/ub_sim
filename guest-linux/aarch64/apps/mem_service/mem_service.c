@@ -46,10 +46,10 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7689U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x73153de0U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7859U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1b603fa6U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 27U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 28U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -70,6 +70,7 @@ static void usage(const char *argv0)
 {
     printf("Usage: %s [--smoke] [--self-test]", argv0);
     printf(" [version] [version-fixtures]");
+    printf(" [release-readiness] [release-readiness-fixtures]");
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
@@ -2344,6 +2345,153 @@ static int run_version_fixture_check(void)
     return 0;
 }
 
+static int render_release_readiness(char *manifest,
+                                    size_t manifest_len,
+                                    size_t *used_out)
+{
+    size_t used = 0;
+
+    if (manifest == NULL || manifest_len == 0) {
+        return -1;
+    }
+    manifest[0] = '\0';
+    if (append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "mem_service_release_readiness_version=1\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "service_name=linqu_mem_service\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "service_version=%s\n",
+                                MEM_SERVICE_RELEASE_VERSION) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "readiness_contract=text-kv\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "package_manifest_len=%u\n",
+                                MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "package_manifest_checksum=0x%08x\n",
+                                MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_manifest_command=release-manifest\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "package_manifest_command=package-manifest\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "installed_sdk_contract=machine-discoverable\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "serving_pretraining_runtime=certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "serving_pretraining_runtime_gate=installed-sdk-runtime-smoke\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "ops_certification_status=not-certified-until-external-evidence\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "ops_certification_required_bundle=linqu-mem-service-ops-certification-bundle.tar\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_transport_status=not-certified-until-cross-host-evidence\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_transport_required_bundle=linqu-mem-service-remote-transport-bundle.tar\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "overall_status=not-certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "blocking_external_evidence=linux-ops-certification-bundle,remote-transport-certification-bundle\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_readiness_gate=release-readiness-fixtures\n") != 0) {
+        return -1;
+    }
+    if (used_out != NULL) {
+        *used_out = used;
+    }
+    return 0;
+}
+
+static int run_release_readiness(void)
+{
+    char manifest[2048];
+    size_t used = 0;
+
+    if (render_release_readiness(manifest, sizeof(manifest), &used) != 0) {
+        fprintf(stderr, "mem_service release-readiness: render failed\n");
+        return 1;
+    }
+    fwrite(manifest, 1, used, stdout);
+    return 0;
+}
+
+static int run_release_readiness_fixture_check(void)
+{
+    char manifest[2048];
+    size_t used = 0;
+
+    if (render_release_readiness(manifest, sizeof(manifest), &used) != 0) {
+        fprintf(stderr, "mem_service release-readiness-fixtures: render failed\n");
+        return 1;
+    }
+    if (strstr(manifest, "mem_service_release_readiness_version=1\n") == NULL ||
+        strstr(manifest, "readiness_contract=text-kv\n") == NULL ||
+        strstr(manifest, "installed_sdk_contract=machine-discoverable\n") == NULL ||
+        strstr(manifest, "serving_pretraining_runtime=certified\n") == NULL ||
+        strstr(manifest,
+               "ops_certification_status=not-certified-until-external-evidence\n") ==
+            NULL ||
+        strstr(manifest,
+               "remote_transport_status=not-certified-until-cross-host-evidence\n") ==
+            NULL ||
+        strstr(manifest, "overall_status=not-certified\n") == NULL ||
+        strstr(manifest,
+               "blocking_external_evidence=linux-ops-certification-bundle,remote-transport-certification-bundle\n") ==
+            NULL ||
+        strstr(manifest, "release_readiness_gate=release-readiness-fixtures\n") ==
+            NULL) {
+        fprintf(stderr,
+                "mem_service release-readiness-fixtures: required field missing\n");
+        return 1;
+    }
+    printf("mem_service release-readiness-fixtures: status=ok "
+           "overall_status=not-certified "
+           "blocking_external_evidence=2 package_manifest_checksum=0x%08x\n",
+           MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
+    (void)used;
+    return 0;
+}
+
 static int render_package_manifest(char *manifest,
                                    size_t manifest_len,
                                    size_t *used_out)
@@ -2470,6 +2618,18 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "binary_version_gate=version-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_readiness_command=release-readiness\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_readiness_contract=text-kv\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_readiness_gate=release-readiness-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2770,6 +2930,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=version-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=release-readiness-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4368,6 +4532,11 @@ static int run_package_fixture_check(void)
         strstr(manifest, "binary_version_command=version\n") == NULL ||
         strstr(manifest, "binary_version_contract=text-kv\n") == NULL ||
         strstr(manifest, "binary_version_gate=version-fixtures\n") == NULL ||
+        strstr(manifest, "release_readiness_command=release-readiness\n") == NULL ||
+        strstr(manifest, "release_readiness_contract=text-kv\n") == NULL ||
+        strstr(manifest, "release_readiness_gate=release-readiness-fixtures\n") ==
+            NULL ||
+        strstr(manifest, "required_gate=release-readiness-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
@@ -4433,6 +4602,9 @@ static int run_release_manifest(void)
     printf("binary_version_command=version\n");
     printf("binary_version_contract=text-kv\n");
     printf("binary_version_gate=version-fixtures\n");
+    printf("release_readiness_command=release-readiness\n");
+    printf("release_readiness_contract=text-kv\n");
+    printf("release_readiness_gate=release-readiness-fixtures\n");
     printf("host_daemon_artifact_smoke=host-artifact-smoke\n");
     printf("default_endpoint=%s\n", mem_service_default_unix_socket_spec());
     printf("wire_version=%u\n", MEM_SERVICE_WIRE_VERSION);
@@ -4729,7 +4901,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 27U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 28U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -4784,6 +4956,7 @@ static int run_release_fixture_check(void)
            "installed_sdk_pkgconfig_smokes=1 "
            "installed_sdk_runtime_smokes=1 "
            "version_smokes=1 "
+           "release_readiness_smokes=1 "
            "config_security_smokes=1 "
            "systemd_units=2 "
            "deployment_smokes=1 service_manager_lifecycle_smokes=1 "
@@ -7862,6 +8035,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "version-fixtures") == 0) {
         return run_version_fixture_check();
+    }
+    if (strcmp(argv[1], "release-readiness") == 0) {
+        return run_release_readiness();
+    }
+    if (strcmp(argv[1], "release-readiness-fixtures") == 0) {
+        return run_release_readiness_fixture_check();
     }
     if (strcmp(argv[1], "wire-fixtures") == 0) {
         return mem_service_run_wire_fixture_check();
