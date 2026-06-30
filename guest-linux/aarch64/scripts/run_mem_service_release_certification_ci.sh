@@ -50,7 +50,7 @@ Options:
   --out-dir DIR                    Release certification output directory.
   --app-dir DIR                    mem_service app directory override for source-tree builds.
   --preflight                      Check prerequisites without running certification.
-  --dry-run                        Print the certification commands without running them.
+  --dry-run                        Print the certification or preflight commands without running them.
   -h, --help                       Show this help.
 EOF
 }
@@ -265,6 +265,8 @@ preflight_source() {
 
 run_preflight() {
   local failures=0
+  local -a linux_ops_preflight_args
+  local -a remote_transport_preflight_args
 
   if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
     preflight_require "$([[ -d "$APP_DIR" ]] && echo 1 || echo 0)" "app directory not found: $APP_DIR" || failures=$((failures + 1))
@@ -299,6 +301,38 @@ run_preflight() {
     preflight_command "$tool" || failures=$((failures + 1))
   done
 
+  if [[ "$failures" -eq 0 ]]; then
+    linux_ops_preflight_args=(
+      --rollback-rpm "$ROLLBACK_RPM"
+      --out-dir "$OPS_OUT_DIR"
+      --preflight
+    )
+    if [[ -n "$RPM_FILE" ]]; then
+      linux_ops_preflight_args+=(--rpm-file "$RPM_FILE")
+    fi
+    if ! linux_ops_uses_installed_context; then
+      linux_ops_preflight_args+=(--app-dir "$APP_DIR")
+    fi
+    if ! "$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" "${linux_ops_preflight_args[@]}"; then
+      failures=$((failures + 1))
+    fi
+
+    remote_transport_preflight_args=(
+      --source "$SOURCE"
+      --producer-host "$PRODUCER_HOST"
+      --consumer-host "$CONSUMER_HOST"
+      --network-partition-marker "$PARTITION_MARKER"
+      --out-dir "$REMOTE_OUT_DIR"
+      --preflight
+    )
+    if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
+      remote_transport_preflight_args+=(--app-dir "$APP_DIR")
+    fi
+    if ! "$SCRIPT_DIR/run_mem_service_remote_transport_ci.sh" "${remote_transport_preflight_args[@]}"; then
+      failures=$((failures + 1))
+    fi
+  fi
+
   if [[ "$failures" -ne 0 ]]; then
     echo "[mem-service-release-certification-ci] PREFLIGHT FAIL failures=$failures" >&2
     return 1
@@ -321,6 +355,14 @@ printf '[mem-service-release-certification-ci] RUN out=%s rollback_rpm=%s source
   "$OUT_DIR" "$ROLLBACK_RPM" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST"
 
 if [[ "$PRE_FLIGHT" == "1" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'preflight: release wrapper local checks\n'
+    printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s%s --out-dir %s --preflight\n' \
+      "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
+    printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --preflight\n' \
+      "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
+    exit 0
+  fi
   run_preflight
   exit $?
 fi

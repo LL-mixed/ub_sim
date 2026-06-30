@@ -3686,6 +3686,28 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
             )
+            release_preflight_dry_run = subprocess.run(
+                [
+                    str(scripts_dir / "run_mem_service_release_certification_ci.sh"),
+                    "--rollback-rpm",
+                    "/tmp/linqu-mem-service-prev.rpm",
+                    "--rpm-file",
+                    "/tmp/linqu-mem-service-current.rpm",
+                    "--source",
+                    "tcp:10.0.0.11:9000",
+                    "--producer-host",
+                    "producer-a",
+                    "--consumer-host",
+                    "consumer-b",
+                    "--network-partition-marker",
+                    "/tmp/remote-transport.partition",
+                    "--preflight",
+                    "--dry-run",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
             self.assertIn(
                 f"{installed_host} ops-certification-verify",
                 ops_dry_run.stdout,
@@ -3730,6 +3752,22 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 release_ci_dry_run.stdout,
             )
             self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", release_ci_dry_run.stdout)
+            self.assertIn(
+                "run_mem_service_linux_ops_ci.sh --rollback-rpm "
+                "/tmp/linqu-mem-service-prev.rpm --rpm-file "
+                "/tmp/linqu-mem-service-current.rpm",
+                release_preflight_dry_run.stdout,
+            )
+            self.assertIn(
+                "run_mem_service_remote_transport_ci.sh --source "
+                "tcp:10.0.0.11:9000",
+                release_preflight_dry_run.stdout,
+            )
+            self.assertIn("--preflight", release_preflight_dry_run.stdout)
+            self.assertNotIn(
+                "/share/lingqu/mem_service/apps/mem_service",
+                release_preflight_dry_run.stdout,
+            )
             self.assertIn(
                 "release_script_root=share/lingqu/mem_service/scripts",
                 manifest.read_text(),

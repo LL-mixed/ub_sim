@@ -136,7 +136,12 @@ a Qwen3 adapter inspect build:
   `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
-  marker, and producer/consumer separation. The `linux_ops_ci`,
+  marker, and producer/consumer separation. When those local checks pass it
+  delegates to the Linux ops and remote transport wrappers with `--preflight`,
+  so the release-level gate uses the same installed/source-tree mode checks as
+  the child stages. `--preflight --dry-run` prints that preflight plan without
+  touching systemd or rpm, which is useful for validating installed-package CI
+  argument routing on non-Linux developer hosts. The `linux_ops_ci`,
   `linux_ops_ci_preflight`, `remote_payload_production_transport_ci`,
   `remote_payload_production_transport_ci_preflight`,
   `release_certification_ci`, and `release_certification_preflight` manifest
