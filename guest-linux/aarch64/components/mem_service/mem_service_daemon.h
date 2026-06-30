@@ -19,6 +19,8 @@ struct mem_service_daemon_limits {
     uint64_t max_checkpoint_records;
     uint64_t max_retained_records;
     uint32_t max_retained_record_kind;
+    bool max_retained_record_tenant_enabled;
+    uint32_t max_retained_record_tenant;
 };
 
 int mem_service_run_unix_daemon(const char *listen_spec);

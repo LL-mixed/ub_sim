@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9122U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x221916e1U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9132U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xe5832228U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -2994,7 +2994,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "record_retention_policy=manual-or-global-latest-or-kind-latest\n") != 0 ||
+                                "record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4893,7 +4893,7 @@ static int run_package_fixture_check(void)
                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
             NULL ||
         strstr(manifest,
-               "record_retention_policy=manual-or-global-latest-or-kind-latest\n") ==
+               "record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest\n") ==
             NULL ||
         strstr(manifest,
                "record_retention_gate=config-fixtures,record-retention-fixtures\n") ==
@@ -4938,7 +4938,7 @@ static int run_package_fixture_check(void)
                "checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n") ==
             NULL ||
         strstr(manifest,
-               "record_retention_policy=manual-or-global-latest-or-kind-latest\n") ==
+               "record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest\n") ==
             NULL ||
         strstr(manifest,
                "record_retention_gate=config-fixtures,record-retention-fixtures\n") ==
@@ -5109,7 +5109,7 @@ static int run_release_manifest(void)
     printf("retention_policy_gate=config-fixtures,retention-fixtures\n");
     printf("checkpoint_retention_policy=manual-or-latest-limit\n");
     printf("checkpoint_retention_gate=config-fixtures,checkpoint-retention-fixtures\n");
-    printf("record_retention_policy=manual-or-global-latest-or-kind-latest\n");
+    printf("record_retention_policy=manual-or-global-latest-or-kind-or-tenant-latest\n");
     printf("record_retention_gate=config-fixtures,record-retention-fixtures\n");
     printf("payload_block_gc=record-and-checkpoint-retention-orphan-blocks\n");
     printf("payload_block_gc_gate=payload-gc-fixtures,record-retention-fixtures\n");
@@ -5686,6 +5686,8 @@ struct mem_service_cli_config {
     uint64_t max_checkpoint_records;
     uint64_t max_retained_records;
     uint32_t max_retained_record_kind;
+    bool max_retained_record_tenant_enabled;
+    uint32_t max_retained_record_tenant;
     char listen[160];
     char store[512];
     char storage_root[512];
@@ -5855,14 +5857,19 @@ static bool parse_record_kind_name(const char *value, uint32_t *record_kind_out)
 
 static bool parse_record_retention_value(const char *value,
                                          uint64_t *max_retained_records_out,
-                                         uint32_t *retained_record_kind_out)
+                                         uint32_t *retained_record_kind_out,
+                                         bool *retained_record_tenant_enabled_out,
+                                         uint32_t *retained_record_tenant_out)
 {
     const char *prefix = "latest:";
     const char *kind_prefix = "kind:";
+    const char *tenant_prefix = "tenant:";
     uint64_t max_retained_records;
     const char *latest_value = value;
     char kind_name[80];
     uint32_t retained_record_kind = 0U;
+    bool retained_record_tenant_enabled = false;
+    uint32_t retained_record_tenant = 0U;
 
     if (value == NULL || value[0] == '\0') {
         return false;
@@ -5873,6 +5880,12 @@ static bool parse_record_retention_value(const char *value,
         }
         if (retained_record_kind_out != NULL) {
             *retained_record_kind_out = 0U;
+        }
+        if (retained_record_tenant_enabled_out != NULL) {
+            *retained_record_tenant_enabled_out = false;
+        }
+        if (retained_record_tenant_out != NULL) {
+            *retained_record_tenant_out = 0U;
         }
         return true;
     }
@@ -5894,6 +5907,29 @@ static bool parse_record_retention_value(const char *value,
             return false;
         }
         latest_value = kind_end + 1U;
+    } else if (strncmp(value, tenant_prefix, strlen(tenant_prefix)) == 0) {
+        const char *tenant_start = value + strlen(tenant_prefix);
+        const char *tenant_end = strstr(tenant_start, ":latest:");
+        uint64_t parsed_tenant;
+        char tenant_name[32];
+        size_t tenant_len;
+
+        if (tenant_end == NULL || tenant_end == tenant_start) {
+            return false;
+        }
+        tenant_len = (size_t)(tenant_end - tenant_start);
+        if (tenant_len >= sizeof(tenant_name)) {
+            return false;
+        }
+        memcpy(tenant_name, tenant_start, tenant_len);
+        tenant_name[tenant_len] = '\0';
+        if (!parse_config_u64_value(tenant_name, &parsed_tenant) ||
+            parsed_tenant > UINT32_MAX) {
+            return false;
+        }
+        retained_record_tenant_enabled = true;
+        retained_record_tenant = (uint32_t)parsed_tenant;
+        latest_value = tenant_end + 1U;
     }
     if (strncmp(latest_value, prefix, strlen(prefix)) != 0) {
         return false;
@@ -5909,6 +5945,12 @@ static bool parse_record_retention_value(const char *value,
     }
     if (retained_record_kind_out != NULL) {
         *retained_record_kind_out = retained_record_kind;
+    }
+    if (retained_record_tenant_enabled_out != NULL) {
+        *retained_record_tenant_enabled_out = retained_record_tenant_enabled;
+    }
+    if (retained_record_tenant_out != NULL) {
+        *retained_record_tenant_out = retained_record_tenant;
     }
     return true;
 }
@@ -6036,10 +6078,14 @@ static int apply_config_field(struct mem_service_cli_config *config,
     if (strcmp(name, "record_retention") == 0) {
         uint64_t max_retained_records = 0;
         uint32_t retained_record_kind = 0U;
+        bool retained_record_tenant_enabled = false;
+        uint32_t retained_record_tenant = 0U;
 
         if (!parse_record_retention_value(value,
                                           &max_retained_records,
-                                          &retained_record_kind) ||
+                                          &retained_record_kind,
+                                          &retained_record_tenant_enabled,
+                                          &retained_record_tenant) ||
             copy_config_value(config->record_retention,
                               sizeof(config->record_retention),
                               value) != 0) {
@@ -6050,6 +6096,9 @@ static int apply_config_field(struct mem_service_cli_config *config,
             config->has_max_retained_records = true;
             config->max_retained_records = max_retained_records;
             config->max_retained_record_kind = retained_record_kind;
+            config->max_retained_record_tenant_enabled =
+                retained_record_tenant_enabled;
+            config->max_retained_record_tenant = retained_record_tenant;
         }
         return 0;
     }
@@ -6163,6 +6212,10 @@ static int run_config_fixture_check(void)
     FILE *file;
     uint64_t valid_max_records = 0;
     uint64_t valid_max_payload_bytes = 0;
+    uint64_t tenant_retention_records = 0;
+    uint32_t tenant_retention_kind = 0U;
+    bool tenant_retention_enabled = false;
+    uint32_t tenant_retention_owner = 0U;
     char valid_retention[80];
     char valid_checkpoint_retention[80];
     char valid_record_retention[80];
@@ -6427,6 +6480,24 @@ static int run_config_fixture_check(void)
                  config.record_retention);
         snprintf(valid_encryption, sizeof(valid_encryption), "%s", config.encryption);
     }
+    if (!parse_record_retention_value("tenant:7:latest:2",
+                                      &tenant_retention_records,
+                                      &tenant_retention_kind,
+                                      &tenant_retention_enabled,
+                                      &tenant_retention_owner) ||
+        tenant_retention_records != 2U ||
+        tenant_retention_kind != 0U ||
+        !tenant_retention_enabled ||
+        tenant_retention_owner != 7U) {
+        failures -= 1;
+    }
+    if (parse_record_retention_value("tenant:not-a-number:latest:2",
+                                     &tenant_retention_records,
+                                     &tenant_retention_kind,
+                                     &tenant_retention_enabled,
+                                     &tenant_retention_owner)) {
+        failures -= 1;
+    }
     if (load_mem_service_config(invalid_path, &config, true) == 0) {
         failures -= 1;
     }
@@ -6462,7 +6533,8 @@ static int run_config_fixture_check(void)
            "storage_root=%s service_auth_boundary=unix-socket-local-only "
            "metrics_auth_boundary=loopback-only quota_contract=max-records+max-payload-bytes "
            "max_records=%" PRIu64 " max_payload_bytes=%" PRIu64
-           " retention=%s checkpoint_retention=%s record_retention=%s encryption=%s "
+           " retention=%s checkpoint_retention=%s record_retention=%s "
+           "tenant_record_retention=tenant:%u:latest:%" PRIu64 " encryption=%s "
            "encryption_admission=explicit-none-only fail_closed_invalid=6\n",
            MEM_SERVICE_CONFIG_SCHEMA_VERSION,
            "unix:/tmp/linqu_mem_service_fixture.sock",
@@ -6473,6 +6545,8 @@ static int run_config_fixture_check(void)
            valid_retention,
            valid_checkpoint_retention,
            valid_record_retention,
+           tenant_retention_owner,
+           tenant_retention_records,
            valid_encryption);
     return 0;
 }
@@ -6613,6 +6687,11 @@ static int run_serve(int argc, char **argv)
                 config.has_max_retained_records ? config.max_retained_records : 0U;
             limits.max_retained_record_kind =
                 config.has_max_retained_records ? config.max_retained_record_kind : 0U;
+            limits.max_retained_record_tenant_enabled =
+                config.has_max_retained_records &&
+                config.max_retained_record_tenant_enabled;
+            limits.max_retained_record_tenant =
+                config.has_max_retained_records ? config.max_retained_record_tenant : 0U;
             limits_ptr = &limits;
         }
         if (store_path == NULL && storage_root != NULL &&
