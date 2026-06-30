@@ -1283,6 +1283,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^rpm_native_package_format=rpm$$" in app_makefile
     assert "^rpm_native_package_gate=package-rpm-smoke$$" in app_makefile
     assert "$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh" in app_makefile
+    assert "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_package_sdk --dry-run" in app_makefile
+    assert "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_deb_sdk --dry-run" in app_makefile
+    assert "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_rpm_sdk --dry-run" in app_makefile
+    assert "mem_service_serving_example unix:/tmp/linqu_mem_service_package_sdk/mem_service.sock" in app_makefile
+    assert "mem_service_pretraining_example unix:/tmp/linqu_mem_service_package_sdk/mem_service.sock" in app_makefile
     assert "--preflight --dry-run | grep -q 'release-readiness --ops-evidence-file'" in app_makefile
     assert app_makefile.count("| grep -q 'release-readiness --ops-evidence-file'") >= 8
     assert "MEM_SERVICE_CLIENT_EXAMPLES :=" in app_makefile
@@ -1326,6 +1331,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh" in app_makefile
     assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_sdk.sh" in app_makefile
     assert "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_installed_sdk --dry-run" in app_makefile
+    assert "mem_service_serving_example unix:/tmp/linqu_mem_service_installed_sdk/mem_service.sock" in app_makefile
+    assert "mem_service_pretraining_example unix:/tmp/linqu_mem_service_installed_sdk/mem_service.sock" in app_makefile
     assert "$(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh --no-runtime" in app_makefile
     assert "lingqu-mem-service.pc" in app_makefile
     assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_release_certification.sh" in app_makefile

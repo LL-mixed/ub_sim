@@ -711,6 +711,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile,
         )
         self.assertIn(
+            "mem_service_serving_example unix:/tmp/linqu_mem_service_installed_sdk/mem_service.sock",
+            cli_makefile,
+        )
+        self.assertIn(
+            "mem_service_pretraining_example unix:/tmp/linqu_mem_service_installed_sdk/mem_service.sock",
+            cli_makefile,
+        )
+        self.assertIn(
             "verify_mem_service_linux_ops_evidence.sh --evidence-file /tmp/linqu_mem_service_ops.evidence --dry-run",
             cli_makefile,
         )
@@ -814,6 +822,26 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^rpm_native_package_gate=package-rpm-smoke$$", cli_makefile)
         self.assertIn(
             "$(RPM_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_package_sdk --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_deb_sdk --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "verify_mem_service_installed_sdk.sh --work-dir /tmp/linqu_mem_service_rpm_sdk --dry-run",
+            cli_makefile,
+        )
+        self.assertIn(
+            "mem_service_serving_example unix:/tmp/linqu_mem_service_package_sdk/mem_service.sock",
+            cli_makefile,
+        )
+        self.assertIn(
+            "mem_service_pretraining_example unix:/tmp/linqu_mem_service_package_sdk/mem_service.sock",
             cli_makefile,
         )
         self.assertIn(
