@@ -1819,8 +1819,8 @@ int main(int argc, char **argv)
         self.assertIn("release_readiness_smokes=1", fixtures.stdout)
         self.assertIn("restore_policy_smokes=1", fixtures.stdout)
         self.assertIn("config_security_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=8239", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xf2aa25e8", fixtures.stdout)
+        self.assertIn("package_manifest_len=8372", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x4e9344fe", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1845,8 +1845,8 @@ int main(int argc, char **argv)
         self.assertIn("wire_version=1", version.stdout)
         self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", version.stdout)
         self.assertIn("api_abi_policy_checksum=0x5d95ae02", version.stdout)
-        self.assertIn("package_manifest_len=8239", version.stdout)
-        self.assertIn("package_manifest_checksum=0xf2aa25e8", version.stdout)
+        self.assertIn("package_manifest_len=8372", version.stdout)
+        self.assertIn("package_manifest_checksum=0x4e9344fe", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
         self.assertIn("package_manifest_command=package-manifest", version.stdout)
         self.assertIn("config_security_gate=config-fixtures", version.stdout)
@@ -1856,16 +1856,16 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("service_version=0.1.0", fixtures.stdout)
-        self.assertIn("package_manifest_len=8239", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xf2aa25e8", fixtures.stdout)
+        self.assertIn("package_manifest_len=8372", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x4e9344fe", fixtures.stdout)
 
     def test_release_readiness_cli_reports_external_certification_blockers(self):
         readiness = self._run_client("release-readiness")
         self.assertEqual(readiness.returncode, 0, readiness.stderr + readiness.stdout)
         self.assertIn("mem_service_release_readiness_version=1", readiness.stdout)
         self.assertIn("readiness_contract=text-kv", readiness.stdout)
-        self.assertIn("package_manifest_len=8239", readiness.stdout)
-        self.assertIn("package_manifest_checksum=0xf2aa25e8", readiness.stdout)
+        self.assertIn("package_manifest_len=8372", readiness.stdout)
+        self.assertIn("package_manifest_checksum=0x4e9344fe", readiness.stdout)
         self.assertIn(
             "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
             readiness.stdout,
@@ -1947,7 +1947,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xf2aa25e8\n"
+            "package_manifest_checksum=0x4e9344fe\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1962,7 +1962,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xf2aa25e8\n"
+            "package_manifest_checksum=0x4e9344fe\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -1998,7 +1998,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xf2aa25e8\n"
+            "package_manifest_checksum=0x4e9344fe\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -2013,7 +2013,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xf2aa25e8\n"
+            "package_manifest_checksum=0x4e9344fe\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -2106,14 +2106,23 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=8239", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xf2aa25e8", fixtures.stdout)
+        self.assertIn("manifest_len=8372", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x4e9344fe", fixtures.stdout)
         self.assertIn("installed_files=46", fixtures.stdout)
-        self.assertIn("required_gates=28", fixtures.stdout)
+        self.assertIn("required_gates=29", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
         self.assertEqual(manifest.returncode, 0, manifest.stderr + manifest.stdout)
         self.assertEqual(manifest.stdout, PACKAGE_MANIFEST.read_text())
+
+    def test_runtime_quota_fixtures_cover_record_and_payload_limits(self):
+        fixtures = self._run_client("runtime-quota-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("runtime_quota=max-records+max-payload-bytes", fixtures.stdout)
+        self.assertIn("max_records=1", fixtures.stdout)
+        self.assertIn("max_payload_bytes=24", fixtures.stdout)
+        self.assertIn("capacity_exceeded=1", fixtures.stdout)
 
     def test_config_fixtures_enforce_local_auth_boundary(self):
         fixtures = self._run_client("config-fixtures")
@@ -2132,6 +2141,98 @@ int main(int argc, char **argv)
         self.assertIn("max_payload_bytes=4096", fixtures.stdout)
         self.assertIn("retention=manual", fixtures.stdout)
         self.assertIn("fail_closed_invalid=3", fixtures.stdout)
+
+    def test_daemon_config_runtime_quota_admission(self):
+        quota_config = self.root / "quota.conf"
+        quota_config.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"store={self.store}\n"
+            "backend=snapshot+journal\n"
+            "max_records=1\n"
+            "max_payload_bytes=4096\n"
+            "retention=manual\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+        )
+        proc = self._start_server(config_path=quota_config)
+        try:
+            first = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "quota-object-1",
+                "--version",
+                "1",
+                "--checksum",
+                "11",
+                "--backing-len",
+                "8",
+            )
+            self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+            self.assertIn("status=ok", first.stdout)
+            second = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "quota-object-2",
+                "--version",
+                "2",
+                "--checksum",
+                "22",
+                "--backing-len",
+                "8",
+            )
+            self.assertNotEqual(second.returncode, 0, second.stderr + second.stdout)
+            self.assertIn("status=capacity_exceeded", second.stdout)
+            self.assertIn("quota=max_records", second.stdout)
+            status = self._run_client("status", "--connect", f"unix:{self.socket}")
+            self.assertEqual(status.returncode, 0, status.stderr + status.stdout)
+            self.assertIn("record_count=1", status.stdout)
+            metrics = self._run_client("metrics", "--connect", f"unix:{self.socket}")
+            self.assertEqual(metrics.returncode, 0, metrics.stderr + metrics.stdout)
+            self.assertIn("capacity_exceeded_count=1", metrics.stdout)
+        finally:
+            stdout, _, _ = self._stop_server_and_collect(proc)
+        self.assertIn("max_records=1", stdout)
+        self.assertIn("max_payload_bytes=4096", stdout)
+
+        payload_config = self.root / "payload-quota.conf"
+        payload_config.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"store={self.root / 'payload.store'}\n"
+            "backend=snapshot+journal\n"
+            "max_records=1024\n"
+            "max_payload_bytes=24\n"
+            "retention=manual\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+        )
+        payload_proc = self._start_server(config_path=payload_config)
+        try:
+            rejected = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "payload-quota-object",
+                "--version",
+                "1",
+                "--checksum",
+                "33",
+                "--backing-len",
+                "8",
+            )
+            self.assertNotEqual(rejected.returncode, 0, rejected.stderr + rejected.stdout)
+            self.assertIn("status=capacity_exceeded", rejected.stdout)
+            self.assertIn("quota=max_payload_bytes", rejected.stdout)
+            metrics = self._run_client("metrics", "--connect", f"unix:{self.socket}")
+            self.assertEqual(metrics.returncode, 0, metrics.stderr + metrics.stdout)
+            self.assertIn("capacity_exceeded_count=1", metrics.stdout)
+        finally:
+            stdout, _, _ = self._stop_server_and_collect(payload_proc)
+        self.assertIn("max_payload_bytes=24", stdout)
 
     def test_restore_policy_fixtures_fail_closed_until_commit(self):
         fixtures = self._run_client("restore-policy-fixtures")
@@ -2176,7 +2277,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xf2aa25e8\n"
+            "package_manifest_checksum=0x4e9344fe\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -2222,7 +2323,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0xf2aa25e8", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x4e9344fe", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2422,7 +2523,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xf2aa25e8\n"
+            "package_manifest_checksum=0x4e9344fe\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -3750,7 +3851,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xf2aa25e8", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x4e9344fe", manifest.read_text())
             self.assertIn(
                 "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
                 manifest.read_text(),

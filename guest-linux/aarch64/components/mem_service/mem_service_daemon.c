@@ -70,6 +70,15 @@ static enum mem_service_wire_status mem_service_handle_operation(
     size_t response_len,
     const char *store_path,
     const char *storage_root);
+static enum mem_service_wire_status mem_service_handle_operation_with_limits(
+    struct mem_service *svc,
+    enum mem_service_wire_operation operation,
+    const char *payload,
+    char *response,
+    size_t response_len,
+    const char *store_path,
+    const char *storage_root,
+    const struct mem_service_daemon_limits *limits);
 static enum mem_service_wire_status mem_service_dispatch_operation(
     struct mem_service *svc,
     enum mem_service_wire_operation operation,
@@ -88,6 +97,13 @@ static void mem_service_record_operation_metrics(
 static bool mem_service_status_is_fail_closed(enum mem_service_wire_status status);
 static bool mem_service_operation_mutates(enum mem_service_wire_operation operation,
                                           const char *payload);
+static uint64_t mem_service_estimate_new_record_count(
+    struct mem_service *svc,
+    enum mem_service_wire_operation operation,
+    const char *payload);
+static bool mem_service_request_exceeds_payload_limit(
+    uint32_t payload_len,
+    const struct mem_service_daemon_limits *limits);
 static bool mem_service_payload_get_u64_checked(const char *payload,
                                                 const char *name,
                                                 uint64_t *out);
@@ -9113,14 +9129,15 @@ static bool mem_service_append_audit_event(struct mem_service *svc,
     return true;
 }
 
-static enum mem_service_wire_status mem_service_handle_operation(
+static enum mem_service_wire_status mem_service_handle_operation_with_limits(
     struct mem_service *svc,
     enum mem_service_wire_operation operation,
     const char *payload,
     char *response,
     size_t response_len,
     const char *store_path,
-    const char *storage_root)
+    const char *storage_root,
+    const struct mem_service_daemon_limits *limits)
 {
     uint64_t start_ms = mem_service_monotonic_ms();
     uint64_t end_ms;
@@ -9139,12 +9156,29 @@ static enum mem_service_wire_status mem_service_handle_operation(
                                            &idempotency_handled);
 
     if (!idempotency_handled) {
-        status = mem_service_dispatch_operation(svc,
-                                                operation,
-                                                payload,
-                                                response,
-                                                response_len,
-                                                storage_root);
+        uint64_t new_records =
+            mem_service_estimate_new_record_count(svc, operation, payload);
+
+        if (limits != NULL && limits->max_records > 0 && new_records > 0 &&
+            (new_records == UINT64_MAX ||
+             (uint64_t)svc->record_count >= limits->max_records ||
+             new_records > limits->max_records - (uint64_t)svc->record_count)) {
+            status = MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED;
+            snprintf(response,
+                     response_len,
+                     "status=capacity_exceeded\nquota=max_records\nmax_records=%" PRIu64
+                     "\nrecord_count=%zu\nrequired_records=%" PRIu64 "\n",
+                     limits->max_records,
+                     svc->record_count,
+                     new_records == UINT64_MAX ? 0U : new_records);
+        } else {
+            status = mem_service_dispatch_operation(svc,
+                                                    operation,
+                                                    payload,
+                                                    response,
+                                                    response_len,
+                                                    storage_root);
+        }
         mem_service_complete_idempotency_record(pending_idempotency,
                                                 operation,
                                                 payload,
@@ -9203,6 +9237,25 @@ static enum mem_service_wire_status mem_service_handle_operation(
     return status;
 }
 
+static enum mem_service_wire_status mem_service_handle_operation(
+    struct mem_service *svc,
+    enum mem_service_wire_operation operation,
+    const char *payload,
+    char *response,
+    size_t response_len,
+    const char *store_path,
+    const char *storage_root)
+{
+    return mem_service_handle_operation_with_limits(svc,
+                                                    operation,
+                                                    payload,
+                                                    response,
+                                                    response_len,
+                                                    store_path,
+                                                    storage_root,
+                                                    NULL);
+}
+
 static bool mem_service_operation_mutates(enum mem_service_wire_operation operation,
                                           const char *payload)
 {
@@ -9227,10 +9280,174 @@ static bool mem_service_operation_mutates(enum mem_service_wire_operation operat
     }
 }
 
+static uint64_t mem_service_estimate_new_key_record_count(struct mem_service *svc,
+                                                          const char *payload)
+{
+    struct mem_service_record shape;
+    struct mem_service_record *record;
+    char key[sizeof(shape.key)];
+
+    if (!mem_service_payload_get_string(payload, "key", key, sizeof(key))) {
+        return UINT64_MAX;
+    }
+    record = mem_service_find_record(svc, key);
+    return record == NULL ? 1U : 0U;
+}
+
+static uint64_t mem_service_estimate_new_kv_record_count(struct mem_service *svc,
+                                                         const char *payload)
+{
+    struct mem_service_record shape;
+    char block_hash[sizeof(shape.block_hash)];
+    char block_key[96];
+
+    if (!mem_service_payload_get_string(payload,
+                                        "block_hash",
+                                        block_hash,
+                                        sizeof(block_hash))) {
+        return UINT64_MAX;
+    }
+    mem_service_build_block_key_from_hash(block_hash, block_key, sizeof(block_key));
+    return mem_service_find_record(svc, block_key) == NULL ? 1U : 0U;
+}
+
+static uint64_t mem_service_estimate_new_prefix_record_count(struct mem_service *svc,
+                                                             const char *payload)
+{
+    struct mem_service_record shape;
+    char request_id[sizeof(shape.request_id)];
+    char prefix_group[sizeof(shape.prefix_group)];
+    char prefix_key[96];
+    uint64_t new_records = 0;
+    uint64_t new_kv_records;
+
+    if (!mem_service_payload_get_string(payload,
+                                        "request_id",
+                                        request_id,
+                                        sizeof(request_id)) ||
+        !mem_service_payload_get_string(payload,
+                                        "prefix_group",
+                                        prefix_group,
+                                        sizeof(prefix_group))) {
+        return UINT64_MAX;
+    }
+    mem_service_build_prefix_key_from_parts(request_id,
+                                            prefix_group,
+                                            prefix_key,
+                                            sizeof(prefix_key));
+    if (mem_service_find_record(svc, prefix_key) == NULL) {
+        new_records += 1U;
+    }
+    new_kv_records = mem_service_estimate_new_kv_record_count(svc, payload);
+    if (new_kv_records == UINT64_MAX) {
+        return UINT64_MAX;
+    }
+    return new_records + new_kv_records;
+}
+
+static uint64_t mem_service_estimate_new_record_count(
+    struct mem_service *svc,
+    enum mem_service_wire_operation operation,
+    const char *payload)
+{
+    switch (operation) {
+    case MEM_SERVICE_WIRE_OP_PUT_OBJECT:
+    case MEM_SERVICE_WIRE_OP_PUBLISH_RUNTIME_HANDOFF:
+    case MEM_SERVICE_WIRE_OP_REGISTER_EXECUTION_ARTIFACT:
+    case MEM_SERVICE_WIRE_OP_REGISTER_TRAINING_ARTIFACT:
+        return mem_service_estimate_new_key_record_count(svc, payload);
+    case MEM_SERVICE_WIRE_OP_PUBLISH_KV_SEGMENT:
+        return mem_service_estimate_new_kv_record_count(svc, payload);
+    case MEM_SERVICE_WIRE_OP_REGISTER_PREFIX_ENTRY:
+        return mem_service_estimate_new_prefix_record_count(svc, payload);
+    default:
+        return mem_service_operation_mutates(operation, payload) ? UINT64_MAX : 0U;
+    }
+}
+
+static bool mem_service_request_exceeds_payload_limit(
+    uint32_t payload_len,
+    const struct mem_service_daemon_limits *limits)
+{
+    return limits != NULL && limits->max_payload_bytes > 0 &&
+           payload_len > limits->max_payload_bytes;
+}
+
+int mem_service_run_runtime_quota_fixture_check(void)
+{
+    struct mem_service svc;
+    struct mem_service_daemon_limits limits;
+    char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
+    enum mem_service_wire_status first_status;
+    enum mem_service_wire_status update_status;
+    enum mem_service_wire_status second_status;
+
+    limits.max_records = 1U;
+    limits.max_payload_bytes = 24U;
+    if (mem_service_init(&svc, true, true, true) != 0) {
+        fprintf(stderr, "mem_service runtime-quota-fixtures: init failed\n");
+        return 1;
+    }
+    first_status = mem_service_handle_operation_with_limits(
+        &svc,
+        MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+        "key=runtime-quota-1\nversion=1\nchecksum=11\nbacking_len=8\n",
+        response,
+        sizeof(response),
+        NULL,
+        NULL,
+        &limits);
+    update_status = mem_service_handle_operation_with_limits(
+        &svc,
+        MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+        "key=runtime-quota-1\nversion=2\nchecksum=12\nbacking_len=8\n",
+        response,
+        sizeof(response),
+        NULL,
+        NULL,
+        &limits);
+    second_status = mem_service_handle_operation_with_limits(
+        &svc,
+        MEM_SERVICE_WIRE_OP_PUT_OBJECT,
+        "key=runtime-quota-2\nversion=1\nchecksum=22\nbacking_len=8\n",
+        response,
+        sizeof(response),
+        NULL,
+        NULL,
+        &limits);
+    if (first_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        update_status != MEM_SERVICE_WIRE_STATUS_OK ||
+        second_status != MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED ||
+        strstr(response, "quota=max_records\n") == NULL ||
+        svc.record_count != 1U ||
+        svc.metrics.capacity_exceeded_count != 1U) {
+        fprintf(stderr,
+                "mem_service runtime-quota-fixtures: max_records admission mismatch\n");
+        return 1;
+    }
+    if (!mem_service_request_exceeds_payload_limit(25U, &limits) ||
+        mem_service_request_exceeds_payload_limit(24U, &limits) ||
+        mem_service_request_exceeds_payload_limit(1024U, NULL)) {
+        fprintf(stderr,
+                "mem_service runtime-quota-fixtures: max_payload_bytes admission mismatch\n");
+        return 1;
+    }
+    printf("mem_service runtime-quota-fixtures: status=ok "
+           "runtime_quota=max-records+max-payload-bytes "
+           "max_records=%" PRIu64 " max_payload_bytes=%" PRIu64
+           " record_count=%zu capacity_exceeded=%" PRIu64 "\n",
+           limits.max_records,
+           limits.max_payload_bytes,
+           svc.record_count,
+           svc.metrics.capacity_exceeded_count);
+    return 0;
+}
+
 static int mem_service_handle_client(int client_fd,
                                      struct mem_service *svc,
                                      const char *store_path,
-                                     const char *storage_root)
+                                     const char *storage_root,
+                                     const struct mem_service_daemon_limits *limits)
 {
     struct mem_service_wire_header request;
     enum mem_service_wire_status status;
@@ -9249,6 +9466,17 @@ static int mem_service_handle_client(int client_fd,
                                          MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED,
                                          "capacity_exceeded\n");
     }
+    if (mem_service_request_exceeds_payload_limit(request.payload_len, limits)) {
+        mem_service_record_operation_metrics(
+            svc,
+            (enum mem_service_wire_operation)request.operation,
+            MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED,
+            0);
+        return mem_service_send_response(client_fd,
+                                         &request,
+                                         MEM_SERVICE_WIRE_STATUS_CAPACITY_EXCEEDED,
+                                         "status=capacity_exceeded\nquota=max_payload_bytes\n");
+    }
     if (mem_service_read_payload(client_fd,
                                  request_payload,
                                  request.payload_len,
@@ -9258,14 +9486,15 @@ static int mem_service_handle_client(int client_fd,
                                          MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH,
                                          "checksum_mismatch\n");
     }
-    status = mem_service_handle_operation(
+    status = mem_service_handle_operation_with_limits(
         svc,
         (enum mem_service_wire_operation)request.operation,
         (const char *)request_payload,
         response_payload,
         sizeof(response_payload),
         store_path,
-        storage_root);
+        storage_root,
+        limits);
     return mem_service_send_response(client_fd,
                                      &request,
                                      status,
@@ -9625,6 +9854,21 @@ int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
     const char *metrics_listen_spec,
     const char *storage_root)
 {
+    return mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
+        listen_spec,
+        store_path,
+        metrics_listen_spec,
+        storage_root,
+        NULL);
+}
+
+int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
+    const char *listen_spec,
+    const char *store_path,
+    const char *metrics_listen_spec,
+    const char *storage_root,
+    const struct mem_service_daemon_limits *limits)
+{
     struct mem_service svc;
     struct sockaddr_un addr;
     const char *path = mem_service_unix_path_from_spec(listen_spec);
@@ -9716,6 +9960,12 @@ int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
     if (storage_root != NULL && storage_root[0] != '\0') {
         printf(" storage_root=%s", storage_root);
     }
+    if (limits != NULL && limits->max_records > 0) {
+        printf(" max_records=%" PRIu64, limits->max_records);
+    }
+    if (limits != NULL && limits->max_payload_bytes > 0) {
+        printf(" max_payload_bytes=%" PRIu64, limits->max_payload_bytes);
+    }
     printf("\n");
     fflush(stdout);
     while (!mem_service_daemon_stop) {
@@ -9751,7 +10001,8 @@ int mem_service_run_unix_daemon_with_store_metrics_and_catalog(
                 if (mem_service_handle_client(client_fd,
                                               &svc,
                                               store_path,
-                                              storage_root) != 0) {
+                                              storage_root,
+                                              limits) != 0) {
                     fprintf(stderr, "mem_service serve: client request failed\n");
                 }
                 close(client_fd);

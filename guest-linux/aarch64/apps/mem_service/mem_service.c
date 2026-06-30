@@ -46,10 +46,10 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8239U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xf2aa25e8U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8372U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x4e9344feU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 28U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 29U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -74,6 +74,7 @@ static void usage(const char *argv0)
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
+    printf(" [runtime-quota-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
@@ -2982,6 +2983,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "runtime_quota_admission=max-records+max-payload-bytes\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "runtime_quota_gate=runtime-quota-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "deploy_root=share/lingqu/mem_service/deploy\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3198,6 +3207,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=restore-policy-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=runtime-quota-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4797,6 +4810,11 @@ static int run_package_fixture_check(void)
         strstr(manifest, "deployment_quota_gate=config-fixtures\n") == NULL ||
         strstr(manifest, "retention_policy=manual-configured\n") == NULL ||
         strstr(manifest, "retention_policy_gate=config-fixtures\n") == NULL ||
+        strstr(manifest,
+               "runtime_quota_admission=max-records+max-payload-bytes\n") ==
+            NULL ||
+        strstr(manifest, "runtime_quota_gate=runtime-quota-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
@@ -4810,6 +4828,10 @@ static int run_package_fixture_check(void)
         strstr(manifest, "deployment_quota_gate=config-fixtures\n") == NULL ||
         strstr(manifest, "retention_policy=manual-configured\n") == NULL ||
         strstr(manifest, "retention_policy_gate=config-fixtures\n") == NULL ||
+        strstr(manifest,
+               "runtime_quota_admission=max-records+max-payload-bytes\n") ==
+            NULL ||
+        strstr(manifest, "runtime_quota_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "restore_policy=transactional-staged-restore\n") == NULL ||
         strstr(manifest, "restore_policy_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "cross_version_upgrade=certified\n") == NULL) {
@@ -4960,6 +4982,8 @@ static int run_release_manifest(void)
     printf("deployment_quota_gate=config-fixtures\n");
     printf("retention_policy=manual-configured\n");
     printf("retention_policy_gate=config-fixtures\n");
+    printf("runtime_quota_admission=max-records+max-payload-bytes\n");
+    printf("runtime_quota_gate=runtime-quota-fixtures\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
     printf("host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service\n");
     printf("systemd_unit=lib/systemd/system/linqu_mem_service.service\n");
@@ -5173,7 +5197,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 28U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 29U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -5243,6 +5267,7 @@ static int run_release_fixture_check(void)
            "upgrade_rollback_policies=1 "
            "upgrade_rollback_runtime_smokes=1 "
            "restore_policy_smokes=1 "
+           "runtime_quota_smokes=1 "
            "compat_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
@@ -5972,8 +5997,11 @@ static int run_serve(int argc, char **argv)
     const char *storage_root = NULL;
     char derived_store[512];
     struct mem_service_cli_config config;
+    struct mem_service_daemon_limits limits;
+    const struct mem_service_daemon_limits *limits_ptr = NULL;
 
     derived_store[0] = '\0';
+    memset(&limits, 0, sizeof(limits));
     if ((config_path == NULL && option_present(argc, argv, "--config")) ||
         parse_socket_arg(argc, argv, "--listen", &listen_spec) != 0) {
         return 2;
@@ -5987,6 +6015,12 @@ static int run_serve(int argc, char **argv)
         storage_root = config.has_storage_root ? config.storage_root : NULL;
         metrics_listen_spec =
             config.has_metrics_listen ? config.metrics_listen : metrics_listen_spec;
+        if (config.has_max_records || config.has_max_payload_bytes) {
+            limits.max_records = config.has_max_records ? config.max_records : 0U;
+            limits.max_payload_bytes =
+                config.has_max_payload_bytes ? config.max_payload_bytes : 0U;
+            limits_ptr = &limits;
+        }
         if (store_path == NULL && storage_root != NULL &&
             derive_store_from_storage_root(derived_store,
                                            sizeof(derived_store),
@@ -6009,10 +6043,12 @@ static int run_serve(int argc, char **argv)
     if (metrics_listen_override != NULL) {
         metrics_listen_spec = metrics_listen_override;
     }
-    return mem_service_run_unix_daemon_with_store_metrics_and_catalog(listen_spec,
-                                                                     store_path,
-                                                                     metrics_listen_spec,
-                                                                     storage_root);
+    return mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
+        listen_spec,
+        store_path,
+        metrics_listen_spec,
+        storage_root,
+        limits_ptr);
 }
 
 static int run_client_status(int argc,
@@ -8502,6 +8538,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "restore-policy-fixtures") == 0) {
         return mem_service_run_restore_policy_fixture_check();
+    }
+    if (strcmp(argv[1], "runtime-quota-fixtures") == 0) {
+        return mem_service_run_runtime_quota_fixture_check();
     }
     if (strcmp(argv[1], "durable-catalog-fixtures") == 0) {
         return mem_service_run_durable_catalog_fixture_check();

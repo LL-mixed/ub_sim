@@ -76,7 +76,7 @@
 | 生产 Linux ops evidence 未取得 | 本地 release/package/install/SDK/runtime gates 已具备，但 `release-readiness` 在缺少真实 Linux systemd/rpm/Prometheus/Alertmanager/upgrade-rollback bundle 时仍必须输出 `overall_status=not-certified`。 |
 | 跨主机 production remote transport evidence 未取得 | loopback/TCP-loopback transport backend 和 evidence/bundle verifier 已具备，但真实多机 producer/consumer 分区与 non-loopback source 证据缺失时不能宣称 production remote transport certified。 |
 | 外部 serving/pretraining 系统 SLA 未验证 | installed SDK runtime smoke 已证明协同功能正确，但真实业务 serving/training 系统的 latency、capacity、failure recovery 和 quorum 行为仍需外部集成压测。 |
-| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission、quarantine，以及部署期 quota/retention 配置 contract；运行时 record-quota admission、自动 retention GC、quota 告警、encryption 和多版本 catalog migration 仍需要产品化策略。 |
+| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission、quarantine、部署期 quota/retention 配置 contract，以及 `max_records`/`max_payload_bytes` 的 daemon runtime admission；自动 retention GC、quota 告警、encryption、多版本 catalog migration 和真实业务容量策略仍需要产品化。 |
 
 ## 3. 目标架构
 

@@ -211,6 +211,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host upgrade-rollback-fixtures
 	./linqu_mem_service_host upgrade-rollback-runtime-fixtures
 	./linqu_mem_service_host restore-policy-fixtures
+	./linqu_mem_service_host runtime-quota-fixtures
 	./linqu_mem_service_host alert-fixtures
 	./linqu_mem_service_host alert-integration-fixtures
 	./linqu_mem_service_host ops-certification-fixtures
@@ -747,8 +748,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=8239$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xf2aa25e8$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=8372$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x4e9344fe$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -809,6 +810,8 @@ install-smoke: install
 	grep -q '^restore_policy=transactional-staged-restore$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^restore_policy_scope=full-snapshot+paged-snapshot$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^restore_policy_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^runtime_quota_admission=max-records+max-payload-bytes$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^runtime_quota_gate=runtime-quota-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^restore_policy_fail_closed=bad-magic,out-of-order-page,record-count-mismatch,cancelled-stage-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^restore_policy_live_state=unchanged-until-commit$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_payload_text_kv_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -1015,7 +1018,9 @@ install-smoke: install
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=pkgconfig count=1$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=release_scripts count=10$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^required_gate_count=28$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^runtime_quota_admission=max-records+max-payload-bytes$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^runtime_quota_gate=runtime-quota-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate_count=29$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0xf7943816$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1023,6 +1028,7 @@ install-smoke: install
 	grep -q '^required_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=upgrade-rollback-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=restore-policy-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^required_gate=runtime-quota-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-tarball-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-deb-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
