@@ -9,10 +9,11 @@ CC_CMD=${CC:-cc}
 PKG_CONFIG_CMD=${PKG_CONFIG:-pkg-config}
 DRY_RUN=0
 NO_RUNTIME=0
+PRE_FLIGHT=0
 
 usage() {
   cat <<'EOF'
-Usage: verify_mem_service_installed_sdk.sh [--root DIR] [--prefix DIR] [--work-dir DIR] [--no-runtime] [--dry-run]
+Usage: verify_mem_service_installed_sdk.sh [--root DIR] [--prefix DIR] [--work-dir DIR] [--preflight] [--no-runtime] [--dry-run]
 
 Verifies the installed mem_service SDK without requiring a source checkout.
 
@@ -24,6 +25,8 @@ Options:
   --work-dir DIR    Build/runtime scratch directory.
   --cc CMD          C compiler used to compile installed SDK examples.
   --pkg-config CMD  pkg-config command used to discover installed SDK metadata.
+  --preflight       Check installed SDK prerequisites without compiling or
+                    starting the daemon.
   --no-runtime      Compile the external clients but do not start the daemon.
   --dry-run         Print the checks without running them.
   -h, --help        Show this help.
@@ -187,6 +190,10 @@ while [ "$#" -gt 0 ]; do
       PKG_CONFIG_CMD=$2
       shift 2
       ;;
+    --preflight)
+      PRE_FLIGHT=1
+      shift
+      ;;
     --no-runtime)
       NO_RUNTIME=1
       shift
@@ -225,12 +232,29 @@ require_file "$PRETRAINING_EXAMPLE"
 require_executable "$HOST_BIN"
 
 if [ "$DRY_RUN" -eq 0 ]; then
-  rm -rf "$WORK_DIR"
-  mkdir -p "$WORK_DIR"
   PKG_CONFIG_PATH=$PKGCONFIG_DIR "$PKG_CONFIG_CMD" --define-prefix --exists lingqu-mem-service ||
     fail "pkg-config cannot resolve lingqu-mem-service"
+  cflags=$(PKG_CONFIG_PATH=$PKGCONFIG_DIR "$PKG_CONFIG_CMD" --define-prefix --cflags lingqu-mem-service)
+  sdk_sources=$(PKG_CONFIG_PATH=$PKGCONFIG_DIR "$PKG_CONFIG_CMD" --define-prefix --variable=sdk_sources lingqu-mem-service)
+  [ -n "$cflags" ] || fail "pkg-config returned empty Cflags"
+  [ -n "$sdk_sources" ] || fail "pkg-config returned empty sdk_sources"
 else
   printf 'PKG_CONFIG_PATH=%s %s --define-prefix --exists lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
+  printf 'PKG_CONFIG_PATH=%s %s --define-prefix --cflags lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
+  printf 'PKG_CONFIG_PATH=%s %s --define-prefix --variable=sdk_sources lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
+fi
+
+if [ "$PRE_FLIGHT" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 0 ]; then
+    printf '[mem-service-installed-sdk] PREFLIGHT PASS root=%s prefix=%s\n' \
+      "$INSTALL_ROOT" "$INSTALL_PREFIX"
+  fi
+  exit 0
+fi
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  rm -rf "$WORK_DIR"
+  mkdir -p "$WORK_DIR"
 fi
 
 compile_example "$SERVING_EXAMPLE" "$WORK_DIR/mem_service_serving_example"

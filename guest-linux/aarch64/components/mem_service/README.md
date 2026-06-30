@@ -125,7 +125,9 @@ a Qwen3 adapter inspect build:
   `scripts/verify_mem_service_installed_sdk.sh` validates the installed
   `pkg-config` metadata, compiles serving/pretraining clients from installed
   SDK sources, and can run them against the installed host daemon without a
-  source checkout.
+  source checkout. `--preflight` checks the installed SDK layout, compiler,
+  `pkg-config` discovery, non-empty `Cflags`, non-empty `sdk_sources`, example
+  sources, and host binary without compiling or starting the daemon.
   `scripts/run_mem_service_remote_transport_ci.sh` also self-locates the
   installed host binary and installed manifests when it is run from an
   installed `share/` tree, so remote transport evidence and its bundle can be
@@ -137,11 +139,12 @@ a Qwen3 adapter inspect build:
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
   marker, and producer/consumer separation. When those local checks pass it
-  delegates to the Linux ops and remote transport wrappers with `--preflight`,
-  so the release-level gate uses the same installed/source-tree mode checks as
-  the child stages. `--preflight --dry-run` prints that preflight plan without
-  touching systemd or rpm, which is useful for validating installed-package CI
-  argument routing on non-Linux developer hosts. The `linux_ops_ci`,
+  delegates to the installed SDK, Linux ops, and remote transport wrappers with
+  `--preflight`, so the release-level gate uses the same installed/source-tree
+  mode checks as the child stages. `--preflight --dry-run` prints that
+  preflight plan without touching systemd or rpm, which is useful for
+  validating installed-package CI argument routing on non-Linux developer
+  hosts. The `linux_ops_ci`,
   `linux_ops_ci_preflight`, `remote_payload_production_transport_ci`,
   `remote_payload_production_transport_ci_preflight`,
   `release_certification_ci`, and `release_certification_preflight` manifest

@@ -3665,6 +3665,18 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
             )
+            installed_sdk_preflight_dry_run = subprocess.run(
+                [
+                    str(scripts_dir / "verify_mem_service_installed_sdk.sh"),
+                    "--work-dir",
+                    str(destdir / "sdk-work"),
+                    "--preflight",
+                    "--dry-run",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
             release_ci_dry_run = subprocess.run(
                 [
                     str(scripts_dir / "run_mem_service_release_certification_ci.sh"),
@@ -3740,6 +3752,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 installed_sdk_dry_run.stdout,
             )
             self.assertIn(
+                "pkg-config --define-prefix --variable=sdk_sources lingqu-mem-service",
+                installed_sdk_preflight_dry_run.stdout,
+            )
+            self.assertIn(
                 "verify_mem_service_release_certification.sh --ops-bundle-file",
                 release_ci_dry_run.stdout,
             )
@@ -3753,6 +3769,14 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", release_ci_dry_run.stdout)
             self.assertIn(
+                "verify_mem_service_installed_sdk.sh --work-dir",
+                release_preflight_dry_run.stdout,
+            )
+            self.assertIn(
+                "--preflight",
+                release_preflight_dry_run.stdout,
+            )
+            self.assertIn(
                 "run_mem_service_linux_ops_ci.sh --rollback-rpm "
                 "/tmp/linqu-mem-service-prev.rpm --rpm-file "
                 "/tmp/linqu-mem-service-current.rpm",
@@ -3763,7 +3787,6 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "tcp:10.0.0.11:9000",
                 release_preflight_dry_run.stdout,
             )
-            self.assertIn("--preflight", release_preflight_dry_run.stdout)
             self.assertNotIn(
                 "/share/lingqu/mem_service/apps/mem_service",
                 release_preflight_dry_run.stdout,

@@ -203,6 +203,15 @@ print_sdk_gate_command() {
   fi
 }
 
+print_sdk_preflight_command() {
+  if is_installed_script_context; then
+    printf '%s/verify_mem_service_installed_sdk.sh --work-dir %s --preflight\n' \
+      "$SCRIPT_DIR" "$SDK_OUT_DIR"
+  else
+    printf 'preflight: source-tree installed SDK gate is covered by make/cc/pkg-config checks\n'
+  fi
+}
+
 run_sdk_gate() {
   if is_installed_script_context; then
     "$SCRIPT_DIR/verify_mem_service_installed_sdk.sh" --work-dir "$SDK_OUT_DIR"
@@ -302,6 +311,14 @@ run_preflight() {
   done
 
   if [[ "$failures" -eq 0 ]]; then
+    if is_installed_script_context; then
+      if ! "$SCRIPT_DIR/verify_mem_service_installed_sdk.sh" \
+        --work-dir "$SDK_OUT_DIR" \
+        --preflight; then
+        failures=$((failures + 1))
+      fi
+    fi
+
     linux_ops_preflight_args=(
       --rollback-rpm "$ROLLBACK_RPM"
       --out-dir "$OPS_OUT_DIR"
@@ -357,6 +374,7 @@ printf '[mem-service-release-certification-ci] RUN out=%s rollback_rpm=%s source
 if [[ "$PRE_FLIGHT" == "1" ]]; then
   if [[ "$DRY_RUN" == "1" ]]; then
     printf 'preflight: release wrapper local checks\n'
+    print_sdk_preflight_command
     printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s%s%s --out-dir %s --preflight\n' \
       "$SCRIPT_DIR" "$ROLLBACK_RPM" "$(linux_ops_rpm_args)" "$(linux_ops_app_args)" "$OPS_OUT_DIR"
     printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --preflight\n' \
