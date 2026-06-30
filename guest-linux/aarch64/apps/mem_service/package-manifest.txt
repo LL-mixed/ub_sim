@@ -28,6 +28,7 @@ binary_version_contract=text-kv
 binary_version_gate=version-fixtures
 release_readiness_command=release-readiness
 release_readiness_contract=text-kv
+release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file
 release_readiness_gate=release-readiness-fixtures
 optional_adapter=bin/linqu_mem_service_qwen3
 default_endpoint=unix:/tmp/linqu_mem_service.sock

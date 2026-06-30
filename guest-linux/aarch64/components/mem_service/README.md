@@ -292,9 +292,15 @@ a Qwen3 adapter inspect build:
 - `release-readiness` emits a stable text-kv readiness report for release
   tooling. It reports the installed SDK contract, serving/pretraining runtime
   gate, Linux ops certification status, cross-host remote transport status, and
-  `overall_status=not-certified` until the Linux ops and remote transport
-  certification bundles are provided. `release-readiness-fixtures` keeps that
-  report format in the package required gate set.
+  `overall_status=not-certified` until external evidence is provided. With
+  `--ops-evidence-file <path> --remote-transport-evidence-file <path>`, it
+  replays the same ops and remote transport evidence validators used by the
+  standalone verifier commands and emits `overall_status=certified` only when
+  both pass. Bundle extraction and tar-safety checks remain in the installed
+  release verifier scripts; the readiness CLI consumes the verified evidence
+  files as the final machine-readable release gate.
+  `release-readiness-fixtures` keeps the default fail-closed report, certified
+  report, and stale evidence rejection in the package required gate set.
 - `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the
   release layout, then compiles the serving and pretraining examples from the
   installed public headers, installed SDK sources, and installed example

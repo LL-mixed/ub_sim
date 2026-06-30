@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7859U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x1b603fa6U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 7964U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6640b991U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 28U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -70,7 +70,7 @@ static void usage(const char *argv0)
 {
     printf("Usage: %s [--smoke] [--self-test]", argv0);
     printf(" [version] [version-fixtures]");
-    printf(" [release-readiness] [release-readiness-fixtures]");
+    printf(" [release-readiness [--ops-evidence-file <path> --remote-transport-evidence-file <path>]] [release-readiness-fixtures]");
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
@@ -167,6 +167,17 @@ static int append_wire_schema_line(char *manifest,
 }
 
 static const char *option_value(int argc, char **argv, const char *option_name);
+static int validate_ops_certification_evidence(const char *evidence,
+                                               char *reason,
+                                               size_t reason_len);
+static int validate_remote_transport_evidence(const char *evidence,
+                                              char *reason,
+                                              size_t reason_len);
+static int read_text_file_limited(const char *path, char *payload, size_t payload_len);
+static int append_ops_certification_valid_evidence(char *evidence,
+                                                   size_t evidence_len);
+static int append_remote_transport_valid_evidence(char *evidence,
+                                                  size_t evidence_len);
 
 static size_t wire_schema_operation_count(void)
 {
@@ -2347,9 +2358,23 @@ static int run_version_fixture_check(void)
 
 static int render_release_readiness(char *manifest,
                                     size_t manifest_len,
-                                    size_t *used_out)
+                                    size_t *used_out,
+                                    bool ops_certified,
+                                    bool remote_transport_certified)
 {
     size_t used = 0;
+    const char *ops_status = ops_certified
+                                 ? "certified"
+                                 : "not-certified-until-external-evidence";
+    const char *remote_status = remote_transport_certified
+                                    ? "certified"
+                                    : "not-certified-until-cross-host-evidence";
+    const char *overall_status = ops_certified && remote_transport_certified
+                                     ? "certified"
+                                     : "not-certified";
+    const char *blocking_evidence = ops_certified && remote_transport_certified
+                                        ? "none"
+                                        : "linux-ops-certification-bundle,remote-transport-certification-bundle";
 
     if (manifest == NULL || manifest_len == 0) {
         return -1;
@@ -2409,7 +2434,8 @@ static int render_release_readiness(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "ops_certification_status=not-certified-until-external-evidence\n") != 0 ||
+                                "ops_certification_status=%s\n",
+                                ops_status) != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2417,7 +2443,12 @@ static int render_release_readiness(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "remote_transport_status=not-certified-until-cross-host-evidence\n") != 0 ||
+                                "ops_certification_evidence_verify=ops-certification-verify --evidence-file\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "remote_transport_status=%s\n",
+                                remote_status) != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2425,11 +2456,21 @@ static int render_release_readiness(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "overall_status=not-certified\n") != 0 ||
+                                "remote_transport_evidence_verify=remote-transport-verify --evidence-file\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "blocking_external_evidence=linux-ops-certification-bundle,remote-transport-certification-bundle\n") != 0 ||
+                                "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "overall_status=%s\n",
+                                overall_status) != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "blocking_external_evidence=%s\n",
+                                blocking_evidence) != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -2442,12 +2483,85 @@ static int render_release_readiness(char *manifest,
     return 0;
 }
 
-static int run_release_readiness(void)
+static int run_release_readiness(int argc, char **argv)
 {
-    char manifest[2048];
+    const char *ops_path = option_value(argc, argv, "--ops-evidence-file");
+    const char *remote_path =
+        option_value(argc, argv, "--remote-transport-evidence-file");
+    char manifest[3072];
+    char ops_evidence[4096];
+    char remote_evidence[2048];
+    char reason[160];
     size_t used = 0;
+    bool verify_evidence = ops_path != NULL || remote_path != NULL;
+    bool ops_certified = false;
+    bool remote_transport_certified = false;
+    int i;
 
-    if (render_release_readiness(manifest, sizeof(manifest), &used) != 0) {
+    for (i = 2; i < argc; ++i) {
+        if (strcmp(argv[i], "--ops-evidence-file") == 0 ||
+            strcmp(argv[i], "--remote-transport-evidence-file") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr,
+                        "mem_service release-readiness: option requires a path: %s\n",
+                        argv[i]);
+                return 2;
+            }
+            ++i;
+            continue;
+        }
+        fprintf(stderr,
+                "mem_service release-readiness: unexpected argument: %s\n",
+                argv[i]);
+        return 2;
+    }
+
+    if (verify_evidence) {
+        if (ops_path == NULL || ops_path[0] == '\0' ||
+            remote_path == NULL || remote_path[0] == '\0') {
+            fprintf(stderr,
+                    "mem_service release-readiness: both --ops-evidence-file "
+                    "and --remote-transport-evidence-file are required\n");
+            return 2;
+        }
+        if (read_text_file_limited(ops_path, ops_evidence, sizeof(ops_evidence)) != 0) {
+            fprintf(stderr, "mem_service release-readiness: ops evidence read failed\n");
+            return 1;
+        }
+        if (validate_ops_certification_evidence(ops_evidence,
+                                                reason,
+                                                sizeof(reason)) != 0) {
+            fprintf(stderr,
+                    "mem_service release-readiness: fail-closed "
+                    "scope=ops reason=%s\n",
+                    reason);
+            return 1;
+        }
+        if (read_text_file_limited(remote_path,
+                                   remote_evidence,
+                                   sizeof(remote_evidence)) != 0) {
+            fprintf(stderr,
+                    "mem_service release-readiness: remote transport evidence "
+                    "read failed\n");
+            return 1;
+        }
+        if (validate_remote_transport_evidence(remote_evidence,
+                                               reason,
+                                               sizeof(reason)) != 0) {
+            fprintf(stderr,
+                    "mem_service release-readiness: fail-closed "
+                    "scope=remote-transport reason=%s\n",
+                    reason);
+            return 1;
+        }
+        ops_certified = true;
+        remote_transport_certified = true;
+    }
+    if (render_release_readiness(manifest,
+                                 sizeof(manifest),
+                                 &used,
+                                 ops_certified,
+                                 remote_transport_certified) != 0) {
         fprintf(stderr, "mem_service release-readiness: render failed\n");
         return 1;
     }
@@ -2457,10 +2571,14 @@ static int run_release_readiness(void)
 
 static int run_release_readiness_fixture_check(void)
 {
-    char manifest[2048];
+    char manifest[3072];
+    char valid[3072];
+    char invalid[3072];
+    char ops_evidence[2048];
+    char remote_evidence[2048];
     size_t used = 0;
 
-    if (render_release_readiness(manifest, sizeof(manifest), &used) != 0) {
+    if (render_release_readiness(manifest, sizeof(manifest), &used, false, false) != 0) {
         fprintf(stderr, "mem_service release-readiness-fixtures: render failed\n");
         return 1;
     }
@@ -2472,7 +2590,16 @@ static int run_release_readiness_fixture_check(void)
                "ops_certification_status=not-certified-until-external-evidence\n") ==
             NULL ||
         strstr(manifest,
+               "ops_certification_evidence_verify=ops-certification-verify --evidence-file\n") ==
+            NULL ||
+        strstr(manifest,
                "remote_transport_status=not-certified-until-cross-host-evidence\n") ==
+            NULL ||
+        strstr(manifest,
+               "remote_transport_evidence_verify=remote-transport-verify --evidence-file\n") ==
+            NULL ||
+        strstr(manifest,
+               "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") ==
             NULL ||
         strstr(manifest, "overall_status=not-certified\n") == NULL ||
         strstr(manifest,
@@ -2484,9 +2611,50 @@ static int run_release_readiness_fixture_check(void)
                 "mem_service release-readiness-fixtures: required field missing\n");
         return 1;
     }
+    if (append_ops_certification_valid_evidence(ops_evidence, sizeof(ops_evidence)) != 0 ||
+        append_remote_transport_valid_evidence(remote_evidence,
+                                               sizeof(remote_evidence)) != 0) {
+        fprintf(stderr,
+                "mem_service release-readiness-fixtures: evidence render failed\n");
+        return 1;
+    }
+    if (validate_ops_certification_evidence(ops_evidence, invalid, sizeof(invalid)) != 0 ||
+        validate_remote_transport_evidence(remote_evidence,
+                                           invalid,
+                                           sizeof(invalid)) != 0) {
+        fprintf(stderr,
+                "mem_service release-readiness-fixtures: valid evidence rejected\n");
+        return 1;
+    }
+    if (render_release_readiness(valid, sizeof(valid), &used, true, true) != 0 ||
+        strstr(valid, "ops_certification_status=certified\n") == NULL ||
+        strstr(valid, "remote_transport_status=certified\n") == NULL ||
+        strstr(valid, "overall_status=certified\n") == NULL ||
+        strstr(valid, "blocking_external_evidence=none\n") == NULL) {
+        fprintf(stderr,
+                "mem_service release-readiness-fixtures: certified readiness missing\n");
+        return 1;
+    }
+    strcpy(invalid, ops_evidence);
+    {
+        char *gate = strstr(invalid, "rpm_package_smoke=pass\n");
+
+        if (gate == NULL) {
+            return 1;
+        }
+        memcpy(gate, "rpm_package_smoke=fail\n", strlen("rpm_package_smoke=fail\n"));
+    }
+    if (validate_ops_certification_evidence(invalid, manifest, sizeof(manifest)) == 0 ||
+        strstr(manifest, "rpm_package_smoke") == NULL) {
+        fprintf(stderr,
+                "mem_service release-readiness-fixtures: invalid evidence accepted\n");
+        return 1;
+    }
     printf("mem_service release-readiness-fixtures: status=ok "
-           "overall_status=not-certified "
-           "blocking_external_evidence=2 package_manifest_checksum=0x%08x\n",
+           "default_overall_status=not-certified "
+           "certified_overall_status=certified "
+           "blocking_external_evidence=2 evidence_positive=2 fail_closed=1 "
+           "package_manifest_checksum=0x%08x\n",
            MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM);
     (void)used;
     return 0;
@@ -2626,6 +2794,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "release_readiness_contract=text-kv\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4534,6 +4706,9 @@ static int run_package_fixture_check(void)
         strstr(manifest, "binary_version_gate=version-fixtures\n") == NULL ||
         strstr(manifest, "release_readiness_command=release-readiness\n") == NULL ||
         strstr(manifest, "release_readiness_contract=text-kv\n") == NULL ||
+        strstr(manifest,
+               "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") ==
+            NULL ||
         strstr(manifest, "release_readiness_gate=release-readiness-fixtures\n") ==
             NULL ||
         strstr(manifest, "required_gate=release-readiness-fixtures\n") == NULL ||
@@ -4604,6 +4779,7 @@ static int run_release_manifest(void)
     printf("binary_version_gate=version-fixtures\n");
     printf("release_readiness_command=release-readiness\n");
     printf("release_readiness_contract=text-kv\n");
+    printf("release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n");
     printf("release_readiness_gate=release-readiness-fixtures\n");
     printf("host_daemon_artifact_smoke=host-artifact-smoke\n");
     printf("default_endpoint=%s\n", mem_service_default_unix_socket_spec());
@@ -8037,7 +8213,7 @@ int main(int argc, char **argv)
         return run_version_fixture_check();
     }
     if (strcmp(argv[1], "release-readiness") == 0) {
-        return run_release_readiness();
+        return run_release_readiness(argc, argv);
     }
     if (strcmp(argv[1], "release-readiness-fixtures") == 0) {
         return run_release_readiness_fixture_check();

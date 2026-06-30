@@ -730,8 +730,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=7859$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0x1b603fa6$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=7964$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x6640b991$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -762,6 +762,7 @@ install-smoke: install
 	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_readiness_command=release-readiness$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_readiness_contract=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^release_readiness_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -989,6 +990,7 @@ install-smoke: install
 	grep -q '^binary_version_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^release_readiness_command=release-readiness$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^release_readiness_contract=text-kv$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^release_readiness_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=runtime_config count=2$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^file_class=systemd_units count=2$$' $(INSTALL_DATADIR)/package-manifest.txt

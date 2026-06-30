@@ -1818,8 +1818,8 @@ int main(int argc, char **argv)
         self.assertIn("release_readiness_smokes=1", fixtures.stdout)
         self.assertIn("restore_policy_smokes=1", fixtures.stdout)
         self.assertIn("config_security_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=7859", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x1b603fa6", fixtures.stdout)
+        self.assertIn("package_manifest_len=7964", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x6640b991", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1844,8 +1844,8 @@ int main(int argc, char **argv)
         self.assertIn("wire_version=1", version.stdout)
         self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", version.stdout)
         self.assertIn("api_abi_policy_checksum=0x5d95ae02", version.stdout)
-        self.assertIn("package_manifest_len=7859", version.stdout)
-        self.assertIn("package_manifest_checksum=0x1b603fa6", version.stdout)
+        self.assertIn("package_manifest_len=7964", version.stdout)
+        self.assertIn("package_manifest_checksum=0x6640b991", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
         self.assertIn("package_manifest_command=package-manifest", version.stdout)
         self.assertIn("config_security_gate=config-fixtures", version.stdout)
@@ -1855,16 +1855,16 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("service_version=0.1.0", fixtures.stdout)
-        self.assertIn("package_manifest_len=7859", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0x1b603fa6", fixtures.stdout)
+        self.assertIn("package_manifest_len=7964", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x6640b991", fixtures.stdout)
 
     def test_release_readiness_cli_reports_external_certification_blockers(self):
         readiness = self._run_client("release-readiness")
         self.assertEqual(readiness.returncode, 0, readiness.stderr + readiness.stdout)
         self.assertIn("mem_service_release_readiness_version=1", readiness.stdout)
         self.assertIn("readiness_contract=text-kv", readiness.stdout)
-        self.assertIn("package_manifest_len=7859", readiness.stdout)
-        self.assertIn("package_manifest_checksum=0x1b603fa6", readiness.stdout)
+        self.assertIn("package_manifest_len=7964", readiness.stdout)
+        self.assertIn("package_manifest_checksum=0x6640b991", readiness.stdout)
         self.assertIn(
             "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
             readiness.stdout,
@@ -1876,7 +1876,19 @@ int main(int argc, char **argv)
             readiness.stdout,
         )
         self.assertIn(
+            "ops_certification_evidence_verify=ops-certification-verify --evidence-file",
+            readiness.stdout,
+        )
+        self.assertIn(
             "remote_transport_status=not-certified-until-cross-host-evidence",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "remote_transport_evidence_verify=remote-transport-verify --evidence-file",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             readiness.stdout,
         )
         self.assertIn("overall_status=not-certified", readiness.stdout)
@@ -1888,16 +1900,70 @@ int main(int argc, char **argv)
         fixtures = self._run_client("release-readiness-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("overall_status=not-certified", fixtures.stdout)
+        self.assertIn("default_overall_status=not-certified", fixtures.stdout)
+        self.assertIn("certified_overall_status=certified", fixtures.stdout)
+        self.assertIn("evidence_positive=2", fixtures.stdout)
+        self.assertIn("fail_closed=1", fixtures.stdout)
         self.assertIn("blocking_external_evidence=2", fixtures.stdout)
+
+    def test_release_readiness_cli_certifies_verified_evidence_files(self):
+        ops_evidence = (
+            "mem_service_ops_certification_evidence_version=1\n"
+            "service_name=linqu_mem_service\n"
+            "certification_scope=real-linux-operations\n"
+            "evidence_os=linux\n"
+            "evidence_init=systemd\n"
+            "ops_certification_policy_checksum=0xe77c644b\n"
+            "package_manifest_checksum=0x6640b991\n"
+            "linux_systemd_service_smoke=pass\n"
+            "linux_systemd_host_service_smoke=pass\n"
+            "prometheus_scrape_smoke=pass\n"
+            "prometheus_alertmanager_rule_smoke=pass\n"
+            "rpm_package_smoke=pass\n"
+            "upgrade_rollback_deployment_smoke=pass\n"
+        )
+        remote_evidence = (
+            "mem_service_remote_transport_evidence_version=1\n"
+            "service_name=linqu_mem_service\n"
+            "certification_scope=production-network-transport\n"
+            "transport_backend=transport-tcp-block-v1\n"
+            "transport_protocol=tcp-ipv4\n"
+            "transport_topology=cross-host\n"
+            "package_manifest_checksum=0x6640b991\n"
+            "source_address_non_loopback=pass\n"
+            "payload_block_round_trip=pass\n"
+            "payload_checksum_validation=pass\n"
+            "payload_corruption_fail_closed=pass\n"
+            "producer_consumer_distinct_hosts=pass\n"
+            "network_partition_fail_closed=pass\n"
+        )
+        with tempfile.TemporaryDirectory(dir=_tmp_parent()) as tmpdir:
+            ops_path = Path(tmpdir) / "ops.evidence"
+            remote_path = Path(tmpdir) / "remote.evidence"
+            ops_path.write_text(ops_evidence)
+            remote_path.write_text(remote_evidence)
+
+            readiness = self._run_client(
+                "release-readiness",
+                "--ops-evidence-file",
+                str(ops_path),
+                "--remote-transport-evidence-file",
+                str(remote_path),
+            )
+
+        self.assertEqual(readiness.returncode, 0, readiness.stderr + readiness.stdout)
+        self.assertIn("ops_certification_status=certified", readiness.stdout)
+        self.assertIn("remote_transport_status=certified", readiness.stdout)
+        self.assertIn("overall_status=certified", readiness.stdout)
+        self.assertIn("blocking_external_evidence=none", readiness.stdout)
 
     def test_package_manifest_cli_matches_checked_in_contract(self):
         fixtures = self._run_client("package-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=7859", fixtures.stdout)
-        self.assertIn("manifest_checksum=0x1b603fa6", fixtures.stdout)
+        self.assertIn("manifest_len=7964", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x6640b991", fixtures.stdout)
         self.assertIn("installed_files=46", fixtures.stdout)
         self.assertIn("required_gates=28", fixtures.stdout)
 
@@ -1958,7 +2024,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0x1b603fa6\n"
+            "package_manifest_checksum=0x6640b991\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -2004,7 +2070,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0x1b603fa6", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x6640b991", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2204,7 +2270,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0x1b603fa6\n"
+            "package_manifest_checksum=0x6640b991\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -3532,7 +3598,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0x1b603fa6", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x6640b991", manifest.read_text())
             self.assertIn(
                 "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
                 manifest.read_text(),
