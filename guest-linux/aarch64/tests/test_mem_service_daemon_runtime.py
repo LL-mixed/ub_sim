@@ -3611,6 +3611,25 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
             )
+            remote_ci_dry_run = subprocess.run(
+                [
+                    str(scripts_dir / "run_mem_service_remote_transport_ci.sh"),
+                    "--source",
+                    "tcp:10.0.0.11:9000",
+                    "--producer-host",
+                    "producer-a",
+                    "--consumer-host",
+                    "consumer-b",
+                    "--network-partition-marker",
+                    "/tmp/remote-transport.partition",
+                    "--out-dir",
+                    str(destdir / "remote-transport-ci"),
+                    "--dry-run",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
             installed_layout = subprocess.run(
                 [
                     str(scripts_dir / "verify_mem_service_installed_layout.sh"),
@@ -3658,6 +3677,15 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 f"{installed_host} remote-transport-verify",
                 remote_dry_run.stdout,
             )
+            self.assertIn(
+                f"{installed_host} remote-transport-generate-evidence",
+                remote_ci_dry_run.stdout,
+            )
+            self.assertIn(
+                "verify_mem_service_remote_transport_bundle.sh --bundle-file",
+                remote_ci_dry_run.stdout,
+            )
+            self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", remote_ci_dry_run.stdout)
             self.assertIn("[mem-service-installed-layout] PASS", installed_layout.stdout)
             self.assertIn(
                 "pkg-config --define-prefix --exists lingqu-mem-service",
@@ -3671,6 +3699,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "verify_mem_service_installed_sdk.sh --work-dir",
                 release_ci_dry_run.stdout,
             )
+            self.assertNotIn("/share/lingqu/mem_service/apps/mem_service", release_ci_dry_run.stdout)
             self.assertIn(
                 "release_script_root=share/lingqu/mem_service/scripts",
                 manifest.read_text(),

@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_DIR="$ROOT_DIR/apps/mem_service"
+DEFAULT_APP_DIR="$ROOT_DIR/apps/mem_service"
+APP_DIR=""
 OUT_DIR="$ROOT_DIR/out/mem_service/remote_transport_ci"
 SOURCE=""
 PRODUCER_HOST=""
@@ -12,6 +13,12 @@ PARTITION_MARKER=""
 EVIDENCE_FILE=""
 BUNDLE_FILE=""
 STORAGE_ROOT=""
+HOST_BIN=""
+BUNDLE_MODE=""
+INSTALLED_DATA_DIR=""
+REMOTE_TRANSPORT_BUNDLE_ROOT=""
+REMOTE_TRANSPORT_BUNDLE_MANIFEST=""
+REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT=""
 DRY_RUN=0
 PRE_FLIGHT=0
 
@@ -168,6 +175,9 @@ fi
 if [[ -z "$STORAGE_ROOT" ]]; then
   STORAGE_ROOT="$OUT_DIR/storage"
 fi
+REMOTE_TRANSPORT_BUNDLE_ROOT="$OUT_DIR/remote-transport-bundle"
+REMOTE_TRANSPORT_BUNDLE_MANIFEST="$REMOTE_TRANSPORT_BUNDLE_ROOT/remote-transport-bundle.manifest"
+REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT="$OUT_DIR/remote-transport-bundle.verify"
 
 preflight_require() {
   local ok="$1"
@@ -188,6 +198,33 @@ preflight_command() {
   return 0
 }
 
+installed_prefix() {
+  cd "$SCRIPT_DIR/../../../.." && pwd
+}
+
+resolve_host_context() {
+  local installed_root
+  local installed_host
+  if [[ -n "$APP_DIR" ]]; then
+    HOST_BIN="$APP_DIR/linqu_mem_service_host"
+    BUNDLE_MODE="make"
+    return
+  fi
+
+  installed_root="$(installed_prefix)"
+  installed_host="$installed_root/libexec/lingqu/mem_service/linqu_mem_service_host"
+  if [[ -x "$installed_host" ]]; then
+    HOST_BIN="$installed_host"
+    INSTALLED_DATA_DIR="$installed_root/share/lingqu/mem_service"
+    BUNDLE_MODE="installed"
+    return
+  fi
+
+  APP_DIR="$DEFAULT_APP_DIR"
+  HOST_BIN="$APP_DIR/linqu_mem_service_host"
+  BUNDLE_MODE="make"
+}
+
 preflight_source() {
   local source="$1"
   local address="${source#tcp:}"
@@ -206,7 +243,13 @@ preflight_source() {
 run_preflight() {
   local failures=0
 
-  preflight_require "$([[ -d "$APP_DIR" ]] && echo 1 || echo 0)" "app directory not found: $APP_DIR" || failures=$((failures + 1))
+  if [[ "$BUNDLE_MODE" == "make" ]]; then
+    preflight_require "$([[ -d "$APP_DIR" ]] && echo 1 || echo 0)" "app directory not found: $APP_DIR" || failures=$((failures + 1))
+  else
+    preflight_require "$([[ -x "$HOST_BIN" ]] && echo 1 || echo 0)" "host binary not executable: $HOST_BIN" || failures=$((failures + 1))
+    preflight_require "$([[ -f "$INSTALLED_DATA_DIR/release-manifest.txt" ]] && echo 1 || echo 0)" "installed release manifest not found: $INSTALLED_DATA_DIR/release-manifest.txt" || failures=$((failures + 1))
+    preflight_require "$([[ -f "$INSTALLED_DATA_DIR/package-manifest.txt" ]] && echo 1 || echo 0)" "installed package manifest not found: $INSTALLED_DATA_DIR/package-manifest.txt" || failures=$((failures + 1))
+  fi
   preflight_require "$([[ -r "$PARTITION_MARKER" ]] && echo 1 || echo 0)" "network partition marker not readable: $PARTITION_MARKER" || failures=$((failures + 1))
   if [[ -r "$PARTITION_MARKER" ]] && ! grep -q '^network_partition_fail_closed=pass$' "$PARTITION_MARKER"; then
     echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: network partition marker must contain network_partition_fail_closed=pass" >&2
@@ -217,7 +260,11 @@ run_preflight() {
     echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL: producer and consumer hosts must differ" >&2
     failures=$((failures + 1))
   fi
-  preflight_command make || failures=$((failures + 1))
+  if [[ "$BUNDLE_MODE" == "make" ]]; then
+    preflight_command make || failures=$((failures + 1))
+  else
+    preflight_command tar || failures=$((failures + 1))
+  fi
 
   if [[ "$failures" -ne 0 ]]; then
     echo "[mem-service-remote-transport-ci] PREFLIGHT FAIL failures=$failures" >&2
@@ -228,6 +275,26 @@ run_preflight() {
   return 0
 }
 
+create_installed_bundle() {
+  rm -rf "$REMOTE_TRANSPORT_BUNDLE_ROOT"
+  mkdir -p "$REMOTE_TRANSPORT_BUNDLE_ROOT"
+  cp "$EVIDENCE_FILE" "$REMOTE_TRANSPORT_BUNDLE_ROOT/remote-transport.evidence"
+  cp "$INSTALLED_DATA_DIR/release-manifest.txt" "$REMOTE_TRANSPORT_BUNDLE_ROOT/release-manifest.txt"
+  cp "$INSTALLED_DATA_DIR/package-manifest.txt" "$REMOTE_TRANSPORT_BUNDLE_ROOT/package-manifest.txt"
+  printf '%s\n' \
+    'bundle_schema=linqu-mem-service-remote-transport-bundle-v1' \
+    'bundle_gate=remote-transport-certification-bundle' \
+    'evidence_verify_gate=remote-transport-evidence-verify' \
+    'evidence=remote-transport.evidence' \
+    'release_manifest=release-manifest.txt' \
+    'package_manifest=package-manifest.txt' \
+    > "$REMOTE_TRANSPORT_BUNDLE_MANIFEST"
+  tar -C "$REMOTE_TRANSPORT_BUNDLE_ROOT" -cf "$BUNDLE_FILE" .
+  test -f "$BUNDLE_FILE"
+}
+
+resolve_host_context
+
 printf '[mem-service-remote-transport-ci] RUN source=%s producer=%s consumer=%s evidence=%s bundle=%s\n' "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$EVIDENCE_FILE" "$BUNDLE_FILE"
 if [[ "$PRE_FLIGHT" == "1" ]]; then
   run_preflight
@@ -235,14 +302,21 @@ if [[ "$PRE_FLIGHT" == "1" ]]; then
 fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
-  printf '%s/linqu_mem_service_host remote-transport-generate-evidence --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --evidence-file %s --storage-root %s\n' "$APP_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$EVIDENCE_FILE" "$STORAGE_ROOT"
-  printf '%s/linqu_mem_service_host remote-transport-verify --evidence-file %s\n' "$APP_DIR" "$EVIDENCE_FILE"
-  printf 'make -C %s PACKAGE_OUT_DIR=%s REMOTE_TRANSPORT_EVIDENCE=%s REMOTE_TRANSPORT_BUNDLE=%s remote-transport-certification-bundle remote-transport-certification-bundle-verify\n' "$APP_DIR" "$OUT_DIR" "$EVIDENCE_FILE" "$BUNDLE_FILE"
+  if [[ "$BUNDLE_MODE" == "make" ]]; then
+    printf 'make -C %s linqu_mem_service_host\n' "$APP_DIR"
+  fi
+  printf '%s remote-transport-generate-evidence --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --evidence-file %s --storage-root %s\n' "$HOST_BIN" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$EVIDENCE_FILE" "$STORAGE_ROOT"
+  printf '%s remote-transport-verify --evidence-file %s\n' "$HOST_BIN" "$EVIDENCE_FILE"
+  if [[ "$BUNDLE_MODE" == "make" ]]; then
+    printf 'make -C %s PACKAGE_OUT_DIR=%s REMOTE_TRANSPORT_EVIDENCE=%s REMOTE_TRANSPORT_BUNDLE=%s remote-transport-certification-bundle remote-transport-certification-bundle-verify\n' "$APP_DIR" "$OUT_DIR" "$EVIDENCE_FILE" "$BUNDLE_FILE"
+  else
+    printf 'tar -C %s -cf %s .\n' "$REMOTE_TRANSPORT_BUNDLE_ROOT" "$BUNDLE_FILE"
+    printf '%s/verify_mem_service_remote_transport_bundle.sh --bundle-file %s --work-dir %s\n' "$SCRIPT_DIR" "$BUNDLE_FILE" "$REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT"
+  fi
   exit 0
 fi
 
-if [[ ! -d "$APP_DIR" ]]; then
+if [[ "$BUNDLE_MODE" == "make" && ! -d "$APP_DIR" ]]; then
   echo "[mem-service-remote-transport-ci] FAIL: app directory not found: $APP_DIR" >&2
   exit 1
 fi
@@ -254,23 +328,30 @@ fi
 run_preflight
 mkdir -p "$(dirname "$EVIDENCE_FILE")" "$STORAGE_ROOT"
 mkdir -p "$(dirname "$BUNDLE_FILE")"
-if [[ ! -x "$APP_DIR/linqu_mem_service_host" ]]; then
+if [[ "$BUNDLE_MODE" == "make" && ! -x "$HOST_BIN" ]]; then
   make -C "$APP_DIR" linqu_mem_service_host
 fi
 
-"$APP_DIR/linqu_mem_service_host" remote-transport-generate-evidence \
+"$HOST_BIN" remote-transport-generate-evidence \
   --source "$SOURCE" \
   --producer-host "$PRODUCER_HOST" \
   --consumer-host "$CONSUMER_HOST" \
   --network-partition-marker "$PARTITION_MARKER" \
   --evidence-file "$EVIDENCE_FILE" \
   --storage-root "$STORAGE_ROOT"
-"$APP_DIR/linqu_mem_service_host" remote-transport-verify --evidence-file "$EVIDENCE_FILE"
-make -C "$APP_DIR" \
-  PACKAGE_OUT_DIR="$OUT_DIR" \
-  REMOTE_TRANSPORT_EVIDENCE="$EVIDENCE_FILE" \
-  REMOTE_TRANSPORT_BUNDLE="$BUNDLE_FILE" \
-  remote-transport-certification-bundle \
-  remote-transport-certification-bundle-verify
+"$HOST_BIN" remote-transport-verify --evidence-file "$EVIDENCE_FILE"
+if [[ "$BUNDLE_MODE" == "make" ]]; then
+  make -C "$APP_DIR" \
+    PACKAGE_OUT_DIR="$OUT_DIR" \
+    REMOTE_TRANSPORT_EVIDENCE="$EVIDENCE_FILE" \
+    REMOTE_TRANSPORT_BUNDLE="$BUNDLE_FILE" \
+    remote-transport-certification-bundle \
+    remote-transport-certification-bundle-verify
+else
+  create_installed_bundle
+  "$SCRIPT_DIR/verify_mem_service_remote_transport_bundle.sh" \
+    --bundle-file "$BUNDLE_FILE" \
+    --work-dir "$REMOTE_TRANSPORT_BUNDLE_VERIFY_ROOT"
+fi
 
 printf '[mem-service-remote-transport-ci] PASS evidence=%s bundle=%s\n' "$EVIDENCE_FILE" "$BUNDLE_FILE"

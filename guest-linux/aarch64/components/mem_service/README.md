@@ -122,6 +122,10 @@ a Qwen3 adapter inspect build:
   `pkg-config` metadata, compiles serving/pretraining clients from installed
   SDK sources, and can run them against the installed host daemon without a
   source checkout.
+  `scripts/run_mem_service_remote_transport_ci.sh` also self-locates the
+  installed host binary and installed manifests when it is run from an
+  installed `share/` tree, so remote transport evidence and its bundle can be
+  generated without a source checkout.
   `scripts/run_mem_service_release_certification_ci.sh --preflight` checks the
   destructive release-certification prerequisites first: Linux/systemd/root,
   rpm/promtool toolchain, rollback rpm, remote transport source, partition
@@ -131,10 +135,11 @@ a Qwen3 adapter inspect build:
   `release_certification_ci`, and `release_certification_preflight` manifest
   fields make those release gates machine-discoverable without reading this
   README.
-  The evidence, bundle, and release verifiers first resolve the installed
-  `libexec/lingqu/mem_service/linqu_mem_service_host` relative to that
-  `share/` script directory, then fall back to the source-tree app directory
-  only when the installed host binary is absent or `--app-dir` is supplied.
+  The evidence, bundle, release verifiers, and installed release CI wrapper
+  first resolve the installed `libexec/lingqu/mem_service/linqu_mem_service_host`
+  relative to that `share/` script directory, then fall back to the source-tree
+  app directory only when the installed host binary is absent or `--app-dir` is
+  supplied.
 - `mem_service_daemon.c` contains the model-neutral Unix-socket service loop,
   public wire schema checks, the minimal object,
   prefix, KV, runtime handoff, execution artifact, and training artifact RPC

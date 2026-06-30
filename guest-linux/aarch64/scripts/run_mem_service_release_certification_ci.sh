@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="$ROOT_DIR/apps/mem_service"
+APP_DIR_EXPLICIT=0
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/out/mem_service/release_certification_ci}"
 ROLLBACK_RPM=""
 SOURCE=""
@@ -107,6 +108,7 @@ while (( $# > 0 )); do
         exit 2
       fi
       APP_DIR="$2"
+      APP_DIR_EXPLICIT=1
       shift 2
       ;;
     --dry-run)
@@ -203,6 +205,20 @@ run_sdk_gate() {
   fi
 }
 
+remote_transport_app_args() {
+  if is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]; then
+    return 0
+  fi
+  printf ' --app-dir %s' "$APP_DIR"
+}
+
+release_verify_app_args() {
+  if is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]; then
+    return 0
+  fi
+  printf ' --app-dir %s' "$APP_DIR"
+}
+
 preflight_source() {
   local source="$1"
   local address="${source#tcp:}"
@@ -221,7 +237,9 @@ preflight_source() {
 run_preflight() {
   local failures=0
 
-  preflight_require "$([[ -d "$APP_DIR" ]] && echo 1 || echo 0)" "app directory not found: $APP_DIR" || failures=$((failures + 1))
+  if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
+    preflight_require "$([[ -d "$APP_DIR" ]] && echo 1 || echo 0)" "app directory not found: $APP_DIR" || failures=$((failures + 1))
+  fi
   preflight_require "$([[ -x "$SCRIPT_DIR/run_mem_service_linux_ops_ci.sh" ]] && echo 1 || echo 0)" "missing linux ops CI wrapper" || failures=$((failures + 1))
   preflight_require "$([[ -x "$SCRIPT_DIR/run_mem_service_remote_transport_ci.sh" ]] && echo 1 || echo 0)" "missing remote transport CI wrapper" || failures=$((failures + 1))
   preflight_require "$([[ -x "$SCRIPT_DIR/verify_mem_service_release_certification.sh" ]] && echo 1 || echo 0)" "missing release certification verifier" || failures=$((failures + 1))
@@ -276,14 +294,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   print_sdk_gate_command
   printf '%s/run_mem_service_linux_ops_ci.sh --rollback-rpm %s --out-dir %s --dry-run\n' \
     "$SCRIPT_DIR" "$ROLLBACK_RPM" "$OPS_OUT_DIR"
-  printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s --app-dir %s --dry-run\n' \
-    "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$APP_DIR"
-  printf '%s/verify_mem_service_release_certification.sh --ops-bundle-file %s --remote-transport-bundle-file %s --app-dir %s --work-dir %s --dry-run\n' \
-    "$SCRIPT_DIR" "$OPS_BUNDLE" "$REMOTE_BUNDLE" "$APP_DIR" "$RELEASE_VERIFY_WORK_DIR"
+  printf '%s/run_mem_service_remote_transport_ci.sh --source %s --producer-host %s --consumer-host %s --network-partition-marker %s --out-dir %s%s --dry-run\n' \
+    "$SCRIPT_DIR" "$SOURCE" "$PRODUCER_HOST" "$CONSUMER_HOST" "$PARTITION_MARKER" "$REMOTE_OUT_DIR" "$(remote_transport_app_args)"
+  printf '%s/verify_mem_service_release_certification.sh --ops-bundle-file %s --remote-transport-bundle-file %s%s --work-dir %s --dry-run\n' \
+    "$SCRIPT_DIR" "$OPS_BUNDLE" "$REMOTE_BUNDLE" "$(release_verify_app_args)" "$RELEASE_VERIFY_WORK_DIR"
   exit 0
 fi
 
-if [[ ! -d "$APP_DIR" ]]; then
+if (! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]) && [[ ! -d "$APP_DIR" ]]; then
   echo "[mem-service-release-certification-ci] FAIL: app directory not found: $APP_DIR" >&2
   exit 1
 fi
@@ -296,19 +314,30 @@ run_sdk_gate
   --rollback-rpm "$ROLLBACK_RPM" \
   --out-dir "$OPS_OUT_DIR"
 
-"$SCRIPT_DIR/run_mem_service_remote_transport_ci.sh" \
-  --source "$SOURCE" \
-  --producer-host "$PRODUCER_HOST" \
-  --consumer-host "$CONSUMER_HOST" \
-  --network-partition-marker "$PARTITION_MARKER" \
-  --out-dir "$REMOTE_OUT_DIR" \
-  --app-dir "$APP_DIR"
+remote_transport_args=(
+  --source "$SOURCE"
+  --producer-host "$PRODUCER_HOST"
+  --consumer-host "$CONSUMER_HOST"
+  --network-partition-marker "$PARTITION_MARKER"
+  --out-dir "$REMOTE_OUT_DIR"
+)
+if ! is_installed_script_context || [[ "$APP_DIR_EXPLICIT" == "1" ]]; then
+  remote_transport_args+=(--app-dir "$APP_DIR")
+fi
+"$SCRIPT_DIR/run_mem_service_remote_transport_ci.sh" "${remote_transport_args[@]}"
 
-"$SCRIPT_DIR/verify_mem_service_release_certification.sh" \
-  --ops-bundle-file "$OPS_BUNDLE" \
-  --remote-transport-bundle-file "$REMOTE_BUNDLE" \
-  --app-dir "$APP_DIR" \
-  --work-dir "$RELEASE_VERIFY_WORK_DIR"
+if is_installed_script_context && [[ "$APP_DIR_EXPLICIT" == "0" ]]; then
+  "$SCRIPT_DIR/verify_mem_service_release_certification.sh" \
+    --ops-bundle-file "$OPS_BUNDLE" \
+    --remote-transport-bundle-file "$REMOTE_BUNDLE" \
+    --work-dir "$RELEASE_VERIFY_WORK_DIR"
+else
+  "$SCRIPT_DIR/verify_mem_service_release_certification.sh" \
+    --ops-bundle-file "$OPS_BUNDLE" \
+    --remote-transport-bundle-file "$REMOTE_BUNDLE" \
+    --app-dir "$APP_DIR" \
+    --work-dir "$RELEASE_VERIFY_WORK_DIR"
+fi
 
 printf '[mem-service-release-certification-ci] PASS ops_bundle=%s remote_transport_bundle=%s verify_work_dir=%s\n' \
   "$OPS_BUNDLE" "$REMOTE_BUNDLE" "$RELEASE_VERIFY_WORK_DIR"
