@@ -69,14 +69,14 @@
 
 当前主要缺口：
 
-| 缺口 | 对用户的影响 |
+> 当前 authoritative 状态以本表为准。
+
+| 当前缺口 | 对用户的影响 |
 | --- | --- |
-| service API 仍是最小业务路径 | 已覆盖 object/prefix/KV/runtime handoff/execution artifact/training artifact、最小 typed C client、显式 client timeout、opt-in retry/backoff、最小 mutation idempotency key、`--store`/`<store>.journal` idempotency 跨重启 replay/conflict、bounded audit-log、最小 admin、最小 metrics、Prometheus text metrics export、Prometheus alert rules artifact、synthetic alert integration fixture、`deployment-fixtures` 中的 `/metrics` HTTP response envelope、`serve --metrics-listen tcp:<ipv4>:<port>` 真实 HTTP listener、collector fixture、installed-host collector smoke、请求 latency histogram、对象级 `inspect-object`、最小 `export-snapshot`、分页 `export-snapshot-page`、`export-snapshot-to` snapshot 组装、事务化分页 `restore-snapshot`、最小 restart recovery、最小 API/ABI policy、最小 release compat matrix、v1 baseline、old/new schema-profile matrix 和 `compat-runtime-fixtures` current-server runtime gate；还缺旧 server runtime binary 组合矩阵、真实生产采集器/告警环境集成门禁和产品级 restore/durable policy |
-| wire payload schema 仍是 key/value 文本 | 已有 envelope/enum/checksum/header-init fixture gate、共享 text key/value payload helper、public operation schema contract、当前 request schema fixture gate、可安装的 wire schema manifest，23 个当前 RPC 的 canonical request payload corpus 和真实 handler response corpus，以及覆盖 23 个 operation 的 old-minimal/current-plus-future schema-profile compatibility fixtures；还缺 binary/typed payload schema、旧 server runtime binary 组合测试和跨版本 compatibility fixtures |
-| durable service backend 仍是最小 snapshot+journal + storage-root layout + sealed local block | 已能通过 `serve --store` 恢复 committed metadata/ref snapshot、completed idempotency record 和 retained audit event journal；`serve --config storage_root=<dir>` 已能创建 `catalog/manifest.txt`、`blocks/`、`quarantine/`，并在省略 `store` 时派生 `catalog/store.snapshot` 完成重启恢复；`payload_block_backend=sealed-local-block-v1` 已支持 `payload_inline` 和 server-side `payload_path` 文件摄取写入 `blocks/<checksum>.block`，可绕开 4096B wire payload 限制处理本地大文件 payload，object/artifact 读取时重新校验长度/checksum，损坏则 `checksum_mismatch` fail-closed 并 best-effort quarantine；还缺产品级 durable catalog、journal truncation/atomicity policy、remote/chunked sealed payload block backend、migration |
-| serving client contract 仍是最小 C API | 已有 typed C client、显式 client timeout、opt-in retry/backoff/timeout retry、可选 mutation `idempotency_key`、`--store` 跨重启 replay/conflict、最小 compat matrix、old/new schema-profile matrix、`compat-runtime-fixtures` old/current client profile current-server runtime gate 和可安装 serving example，覆盖 prefix/KV/runtime handoff/execution artifact 两进程 smoke；还缺旧 server runtime binary 组合矩阵、model/session mismatch 负例和 serving 集成矩阵 |
-| pretraining object contract 已有 SDK typed wrapper，但 wire/schema 仍是最小 artifact envelope | 已有 dataset/sample/checkpoint/gradient/optimizer-state 和 `training-step-commit` pretraining helper、可安装 pretraining example、CLI commit/resolve 命令，以及外部 worker runtime test 覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、bounded audit record、append-only idempotency/audit journal 和 idempotency conflict；训练系统还缺专用 binary typed schema、产品级 multi-worker commit barrier/quorum 和产品级多 worker 一致性 |
-| release/deploy contract 仍是最小布局 | 已有 release manifest CLI、package manifest CLI、源 manifest、wire schema manifest、admin output schema、upgrade/rollback policy、API/ABI policy artifact、compat matrix、v1 baseline、old/new schema-profile matrix、`compat-runtime-fixtures` current-server runtime gate、config schema、example config、host daemon artifact、systemd-like deployment manifest、host systemd-like deployment manifest、Prometheus alert rules artifact、`package-fixtures`、`deployment-fixtures`、`admin-output-fixtures`、`upgrade-rollback-fixtures`、`alert-fixtures`、`alert-integration-fixtures`、`api-abi-fixtures`、`host-artifact-smoke`、`package-tarball-smoke`、`package-deb-smoke`、`package-rpm-smoke`、`linux-ops-certification-smoke`、`installed-host-service-manager-smoke`、`durable-catalog-fixtures`、SDK examples、Prometheus text metrics export manifest entry、Prometheus metric prefix/type contract、current-version-only upgrade/rollback gate、`metrics_listen` config、`/metrics` scrape path contract、collector scrape contract、真实 HTTP listener runtime scrape 测试、portable service-manager lifecycle smoke、storage-root catalog layout manifest、install-smoke、portable tarball package artifact、arm64 deb package artifact 和 rpm package gate；还缺真实 Linux CI 上的 rpm 产物验收、跨版本升级/回滚、真实系统 systemd 环境门禁、真实生产采集器/告警环境门禁 |
+| 生产 Linux ops evidence 未取得 | 本地 release/package/install/SDK/runtime gates 已具备，但 `release-readiness` 在缺少真实 Linux systemd/rpm/Prometheus/Alertmanager/upgrade-rollback bundle 时仍必须输出 `overall_status=not-certified`。 |
+| 跨主机 production remote transport evidence 未取得 | loopback/TCP-loopback transport backend 和 evidence/bundle verifier 已具备，但真实多机 producer/consumer 分区与 non-loopback source 证据缺失时不能宣称 production remote transport certified。 |
+| 外部 serving/pretraining 系统 SLA 未验证 | installed SDK runtime smoke 已证明协同功能正确，但真实业务 serving/training 系统的 latency、capacity、failure recovery 和 quorum 行为仍需外部集成压测。 |
+| 长期产品策略未定义完整 | 当前已有 durable gate、compaction、restore admission 和 quarantine；retention、quota、encryption、多版本 catalog migration 仍需要产品化策略。 |
 
 ## 3. 目标架构
 
@@ -255,7 +255,7 @@ existing W5/Qwen3 tests remain green
    - 当前 `--store`、`<store>.journal` 和 full `export-snapshot` 会保存 completed idempotency record；`store-fixtures` 覆盖 save/load 后 replay/conflict，`journal-fixtures` 覆盖 append-only journal replay 恢复，daemon runtime 测试在允许 Unix socket bind 的环境覆盖 `serve --store` 重启后的 replay/conflict。
    - 当前 `audit-log` 已有 bounded retained ring，覆盖 mutating operation 和 fail-closed status，并随 `--store`、`<store>.journal` 和 full snapshot 持久化。
    - 当前 `compat-matrix` 已冻结 release-time retry/idempotency/audit/snapshot/journal 兼容规则，`compat-baseline-v1` 已冻结 old-v1-client 到 current-server 的最小 baseline，`compat-old-new-matrix` 已冻结覆盖 23 个 operation 的 v1 old/new schema-profile matrix，`compat-runtime-fixtures` 已覆盖 old/current client profile 到 current server runtime handler 的 serving/pretraining/idempotency/fail-closed 路径。
-   - 后续还要补旧 server runtime binary full old/new compatibility matrix 和产品级 journal truncation/atomicity policy。
+   - 后续重点转为真实外部系统接入后的 SLA、capacity、retention/quota/encryption 和多版本迁移策略。
 7. 定义 compatibility rules：
    - minor version backward compatible。
    - major version requires explicit negotiation。
@@ -699,7 +699,7 @@ client can run serving and pretraining smoke against deployed service
 | L5 | Pretraining ready | training workers 可通过 service 协同 |
 | L6 | Release ready | 有 artifact、install、config、compat、release gates |
 
-当前评估：`L4-minimal`。
+当前评估：`L6-local-release-ready / external-evidence-blocked`。
 
 理由：
 
@@ -712,16 +712,16 @@ qwen3 record names are adapter aliases, not core enum names
 linqu_mem_service serve can run as a Unix-socket service process
 linqu_mem_service health/ready can call the service over the wire envelope
 business RPC operations are encoded for object/prefix/KV/runtime/execution/training minimal paths
-no binary typed object/prefix/KV/pretraining payload schema
+typed-binary-v1 payload evolution gate exists alongside text-kv
 lightweight Unix RPC client transport exists without linking daemon/server/core
 typed C client wrappers exist for object/prefix/KV/runtime/execution/training RPC and pretraining dataset/sample/checkpoint/gradient/optimizer/training-step commit helpers without linking daemon/server/core
 installable serving/pretraining SDK examples prove minimal two-process RPC smoke against the daemon
 pretraining worker runtime gate proves typed multi-worker publish/resolve, checkpoint restart, stale/checksum fail-closed, and idempotency conflict
 shared text key/value payload helper, public operation schema contract, and request schema fixture gate exist
 wire-schema CLI and checked-in wire-schema.txt freeze the current operation/field manifest
-minimal --store snapshot+journal exists and carries completed idempotency records plus bounded audit records; storage_root layout manifest, derived store recovery, and sealed-local-block-v1 inline/file payload write/verify exist, but no production durable catalog/remote chunked sealed block backend or journal truncation/atomicity policy
-minimal release manifest CLI, wire schema manifest, compat matrix, v1 baseline, old/new schema-profile matrix, compat-runtime current-server gate, config/deploy artifacts, SDK examples, and install-smoke layout exist
-no old-server runtime binary compatibility matrix, model/session mismatch matrix, or product-grade multi-worker pretraining commit/audit matrix
+snapshot+journal carries completed idempotency records plus bounded audit records; storage_root layout, derived store recovery, catalog schema admission, journal fsync, torn-tail recovery, threshold compaction, transactional restore, sealed-local/chunked/loopback/tcp-loopback block backends exist
+release/package manifests, version/readiness self-description, compat gates, old-server runtime gate, serving/pretraining fail-closed gates, config/deploy artifacts, SDK examples, install-smoke, package gates, installed SDK runtime smoke, Linux ops/remote transport/release certification wrappers exist
+remaining blockers are external Linux ops evidence, cross-host production remote transport evidence, real serving/pretraining SLA/capacity evidence, and longer-term retention/quota/encryption/migration policy
 ```
 
 ### 5.2 Gate Matrix

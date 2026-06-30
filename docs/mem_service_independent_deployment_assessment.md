@@ -2,7 +2,7 @@
 
 ## 1. 结论
 
-当前 `mem_service` 可以作为 guest-side link-time component、standalone guest core smoke app、最小 Unix-socket service process、最小 object/prefix/KV/runtime handoff/execution artifact/training artifact RPC service，以及 Qwen3 adapter inspect app 独立存在，但还不能作为可独立发布、独立部署、面向任意 LLM serving 或 pretraining 系统协同工作的通用 Memory Service。
+当前 `mem_service` 已经从 guest-side link-time component 推进为具备独立二进制、Unix-socket daemon、外部 SDK、serving/pretraining 示例、安装布局、打包 smoke、release readiness 与外部认证证据入口的 Memory Service。它已经可以作为本地可发布、可安装、可协同的独立服务形态存在；但还不能宣传为生产环境完全认证的通用 Memory Service，因为真实 Linux systemd/rpm/Prometheus/Alertmanager 和跨主机 remote transport 证据仍然缺失。
 
 更准确的状态是：
 
@@ -11,11 +11,11 @@
 | 组件独立性 | 已从 `llm_infer` app 中拆出 `components/mem_service`，并有 model-neutral `mem_service_core.h` | 成立 |
 | guest 独立 app | `apps/mem_service` 可构建 core-only `/bin/linqu_mem_service` 和 Qwen3 adapter `/bin/linqu_mem_service_qwen3` | 成立 |
 | W5/LLM 协同 | 已支持 Qwen3 range/KV/engram/object handoff 路径 | 成立，但偏 Qwen3/W5 验证路径 |
-| 独立发布 | 已有最小 release manifest CLI、package manifest CLI、wire schema manifest CLI、admin output schema artifact/fixture、upgrade/rollback policy artifact/fixture、same-version `upgrade-rollback-runtime-fixtures` runtime gate、`compat-runtime-fixtures` old/current client profile runtime gate、Prometheus alert rules artifact/fixture、synthetic alert integration fixture、API/ABI policy artifact/fixture、compat matrix/baseline/old-new schema-profile CLI、config schema/example、systemd-like deployment manifest、host daemon artifact、host systemd-like deployment manifest、源 manifest、pretraining refs 与 pretraining step commit client API profiles、Makefile `install-smoke`、`package-tarball-smoke` portable tarball artifact、`package-deb-smoke` arm64 Debian package artifact、`package-rpm-smoke` rpm package gate（需 Linux rpm toolchain）、`linux-ops-certification-smoke` Linux CI 编排入口、public header/client source/SDK examples/schema/admin-output/upgrade-policy/alert-rules/package/API-ABI/compat/config/deploy/host manifest 安装布局；仍缺真实 Linux CI 上的 rpm 产物验收和真实跨版本升级/回滚系统门禁 | 部分成立 |
-| 独立部署 | 已有 `serve --config`、`serve`/`health`/`ready`、`status`/`list-records`/`metrics`/`metrics-export`/`audit-log`/`inspect-object`/`export-snapshot`/`export-snapshot-page`/`export-snapshot-to`/`restore-snapshot` 最小 admin、object/prefix/KV/runtime handoff/execution artifact/training artifact Unix-socket RPC 闭环，共享 text key/value payload helper、public operation schema contract、lightweight Unix RPC client transport、typed C client wrapper 与 schema fixture gate，以及 `--store` 最小 metadata/ref restart/online restore recovery；写路径已有最小 `idempotency_key` replay/conflict 语义，completed idempotency record 与 bounded audit record 会随 `--store`、`<store>.journal` 和 full snapshot 持久化，支持跨重启 replay/conflict 与 audit 查询，`api-abi-policy` 已冻结 client API/ABI version、public record ABI size、wire/header/schema version 和 old/new/upgrade/rollback policy，`admin-output-schema` 已冻结当前 status/list-records/metrics/audit/snapshot/restore 文本输出、Prometheus metric prefix/type 和 fail-closed status 字段，`upgrade-rollback-policy` 已冻结 current-version-only admission、same-version restart/restore 依赖门禁和旧 server runtime binary 未认证状态，`upgrade-rollback-runtime-fixtures` 已证明 same-version store+journal restart、snapshot restore、baseline rollback、idempotency replay、stale/checksum fail-closed 和未知 snapshot generation 拒绝，`compat-runtime-fixtures` 已证明 old v1 minimal client profile 与 current v1 extended client profile 都能访问 current server runtime handler，并覆盖 serving object/runtime-handoff/execution-artifact、pretraining commit、idempotency replay/conflict 和 fail-closed 计数，`alert-rules` 已冻结最小 Prometheus service-down/error/fail-closed/checksum-mismatch/latency alert rules artifact，`alert-integration-fixtures` 已用 synthetic `/metrics` payload 证明告警表达式引用当前导出的 Prometheus text/http 指标契约，`compat-matrix` 已冻结当前 wire/schema、retry、idempotency、audit、snapshot、journal 兼容规则并纳入 `compat-runtime-fixtures`，`compat-baseline-v1` 已冻结 old-v1-client 到 current-server 的最小 baseline，`compat-old-new-matrix` 已冻结 v1 old/new schema-profile matrix 和 current-server runtime case，`metrics` 已包含最小请求 latency histogram、audit-log 计数和 idempotency replay/conflict 计数，`metrics-export --format prometheus-text` 已能导出 Prometheus text exposition，`serve --metrics-listen tcp:<ipv4>:<port>` 已提供真实 `/metrics` HTTP listener 并有 runtime scrape 测试，`service_manager_lifecycle` runtime smoke 已覆盖 config 启动、ready/health、HTTP scrape、SIGTERM stop 和 socket cleanup，`host-artifact-smoke` 已覆盖 host daemon artifact 构建后的 core smoke、release fixtures、admin-output fixtures、upgrade/rollback fixtures、upgrade/rollback runtime fixtures、compat runtime fixtures、alert fixtures、alert integration fixtures、API/ABI fixtures、collector fixtures 和 deployment fixtures，`installed-host-service-manager-smoke` 已覆盖从安装后的 host service unit `ExecStart` 启动 `libexec/lingqu/mem_service/linqu_mem_service_host`、ready/health、HTTP scrape、collector metrics parse、SIGTERM stop 和 socket cleanup，`storage_root` 已能创建 `catalog/manifest.txt`、`blocks/`、`quarantine/` 并在省略 `store` 时派生 `catalog/store.snapshot` 完成重启恢复，`payload_block_backend=sealed-local-block-v1` 已支持 `payload_inline` 与 server-side `payload_path` 文件摄取写入 `blocks/<checksum>.block`，可绕开 4096B wire payload 限制处理本地大文件 payload，并在 object/artifact 读取时 checksum fail-closed，`deployment-fixtures` 已校验 systemd-like manifest 和 `/metrics` Prometheus HTTP response envelope，`restore-snapshot` 已能对大 snapshot 走事务化分页恢复，仍缺真实系统 systemd 环境门禁、真实生产采集器/告警环境集成门禁、产品级 durable catalog/atomic persistence policy 和 remote/chunked block backend | 部分成立 |
-| 任意 LLM serving/pretraining 协同 | LLM serving 与 pretraining 的最小 artifact 语义已有 RPC，外部进程可链接 typed C client + lightweight transport 而不链接 daemon/server/core；当前已有可安装 serving/pretraining SDK examples、pretraining dataset/sample/checkpoint/gradient/optimizer 和 training-step commit helper、CLI commit/resolve step 命令、显式 timeout、opt-in retry/backoff/timeout-retry、最小 mutation idempotency key、bounded audit-log、最小 compat matrix/v1 baseline/old-new schema-profile matrix、`compat-runtime-fixtures` current-server runtime compatibility gate、`--store`/`<store>.journal` 跨重启 replay/conflict、`storage_root` catalog layout + derived store 重启恢复，以及 `sealed-local-block-v1` inline/file payload block 写入/校验，并通过两进程 daemon smoke；pretraining worker runtime gate 已覆盖多 worker publish/resolve、global-step committed marker、checkpoint restart、stale/checksum fail-closed、audit 记录和 idempotency conflict；binary typed schema、旧 server runtime binary 组合矩阵、完整集成矩阵、产品级 durable catalog/block backend、release-grade deployment contract 还缺 | 部分成立 |
+| 独立发布 | 已有 release/package manifest、wire/admin/API-ABI/compat/upgrade/ops policy contract、version/release-readiness 自描述、tar/deb/rpm package gates、安装后 layout/SDK/runtime smoke、发布包内复验脚本、Linux ops CI wrapper、remote transport CI wrapper 和 release certification verifier；rpm 与真实 ops 认证在无 Linux rpm/systemd 环境时 fail-closed | 本地发布链路成立；生产认证需外部证据 |
+| 独立部署 | 已有 `serve --config`、Unix-socket daemon、host daemon、systemd unit 安装布局、runtime config、metrics HTTP listener、collector/alert simulator gate、service-manager lifecycle smoke、storage_root catalog、snapshot+journal、journal fsync/torn-tail recovery/threshold compaction、transactional restore policy、sealed local/chunked/loopback/TCP-loopback block backend | 本地部署链路成立；真实 systemd/collector/alert 需 Linux CI 证据 |
+| 任意 LLM serving/pretraining 协同 | 外部进程可通过 installed SDK、pkg-config、typed C client 和 examples 与 daemon 协同；installed SDK runtime smoke 已实际跑通 serving prefix/KV/runtime handoff/execution artifact 与 pretraining artifact/training-step-commit；serving/pretraining fail-closed matrix 和 payload ownership gate 已认证 | 本地协同链路成立；跨主机生产 remote transport 需外部证据 |
 
-所以当前不能把它宣传为“可独立部署的 mem service 产品”。它已经具备成为独立服务的核心雏形，但仍处在 simulator guest component + W5 integration component 阶段。
+所以当前可以把它定位为“本地 release-ready、外部证据 fail-closed 的独立 mem service”。不能把它宣传为“生产环境完全认证”，因为 release-readiness 在缺少 Linux ops bundle 与 remote transport bundle 时仍会输出 `overall_status=not-certified`。
 
 ## 2. 已经具备的独立能力
 
@@ -332,7 +332,7 @@ product-grade append-only audit log with truncation/atomicity policy
 schema migration
 ```
 
-Rust 侧已有 `sim-memory` / durable store / prefix cache / execution artifact 相关模型；guest `mem_service` 当前有最小 snapshot+journal recovery、bounded retained audit ring、`storage_root` durable catalog layout manifest，以及 `sealed-local-block-v1` 的 inline payload 与 server-side payload file 摄取/校验；但还没有接入产品级 durable catalog、remote/chunked sealed payload block backend、schema migration 和 journal truncation/atomicity policy。
+Rust 侧已有 `sim-memory` / durable store / prefix cache / execution artifact 相关模型；guest `mem_service` 当前有 snapshot+journal recovery、bounded retained audit ring、`storage_root` durable catalog layout manifest、catalog schema version admission、journal fsync/torn-tail recovery、threshold compaction、transactional restore policy，以及 `sealed-local-block-v1`、`sealed-chunked-block-v1`、`transport-loopback-block-v1`、`transport-tcp-block-v1` 的写入/校验/fail-closed quarantine gate。剩余缺口不再是本地 durable/remote/chunked backend 是否存在，而是真实跨主机 production remote transport evidence 和更长期的产品级 retention/quota/encryption policy。
 
 ### 3.4 模型无关边界还没有完全闭合
 
@@ -561,11 +561,11 @@ No in-process linking is required for the serving app to publish/resolve KV and 
 需要做：
 
 1. 将当前 `storage_root` catalog layout 扩展为产品级 durable catalog backend。
-2. 将当前 `sealed-local-block-v1` inline/file payload backend 扩展为 remote/chunked sealed payload backend。
-3. 定义 snapshot/restore。
-4. 定义 append-only audit log。
-5. 定义 schema migration。
-6. 定义 retention/quarantine/trust policy。
+2. 保持 `sealed-local-block-v1`、`sealed-chunked-block-v1`、`transport-loopback-block-v1` 和 `transport-tcp-block-v1` 的 release gates 继续随 manifest 演进。
+3. 维护 transactional snapshot/restore 与 paged restore admission。
+4. 维护 append-only audit log、journal fsync/torn-tail recovery 与 threshold compaction。
+5. 扩展 schema migration 到多版本 catalog 迁移。
+6. 定义 retention/quota/encryption/quarantine/trust policy。
 
 完成标准：
 
