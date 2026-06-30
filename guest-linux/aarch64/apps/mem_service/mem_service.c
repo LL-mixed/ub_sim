@@ -46,10 +46,10 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8432U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x6e04d36bU
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 8623U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x49f0de19U
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
-#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 30U
+#define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 31U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
@@ -74,13 +74,14 @@ static void usage(const char *argv0)
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
-    printf(" [runtime-quota-fixtures] [retention-fixtures]");
+    printf(" [runtime-quota-fixtures] [retention-fixtures] [encryption-fixtures]");
     printf(" [metrics-export-fixtures] [collector-fixtures] [deployment-fixtures]");
     printf(" [admin-output-schema] [admin-output-fixtures]");
     printf(" [upgrade-rollback-policy] [upgrade-rollback-fixtures]");
     printf(" [upgrade-rollback-runtime-fixtures]");
     printf(" [alert-rules] [alert-fixtures] [alert-integration-fixtures]");
     printf(" [ops-certification-policy] [ops-certification-fixtures]");
+    printf(" [encryption-policy]");
     printf(" [ops-certification-evidence-fixtures]");
     printf(" [ops-certification-generate-evidence --rpm-file <path> --upgrade-rollback-marker <path>]");
     printf(" [ops-certification-linux-ci-smoke --rpm-file <path> --upgrade-rollback-marker <path> --evidence-file <path>]");
@@ -2983,6 +2984,22 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "encryption_policy=explicit-none-only\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "encryption_at_rest=not-certified\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "encryption_policy_command=encryption-policy\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "encryption_policy_gate=encryption-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "runtime_quota_admission=max-records+max-payload-bytes\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3215,6 +3232,10 @@ static int render_package_manifest(char *manifest,
                                 manifest_len,
                                 &used,
                                 "required_gate=retention-fixtures\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "required_gate=encryption-fixtures\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3595,6 +3616,19 @@ static int run_ops_certification_fixture_check(void)
            MEM_SERVICE_OPS_CERTIFICATION_POLICY_VERSION,
            MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN,
            MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_CHECKSUM);
+    return 0;
+}
+
+static int run_encryption_policy(void)
+{
+    printf("mem_service_encryption_policy_version=1\n");
+    printf("encryption_at_rest=not-certified\n");
+    printf("supported_config_encryption=none\n");
+    printf("unsupported_encryption_admission=fail-closed\n");
+    printf("key_management=not-certified\n");
+    printf("data_plane_encryption=not-certified\n");
+    printf("config_gate=config-fixtures\n");
+    printf("policy_gate=encryption-fixtures\n");
     return 0;
 }
 
@@ -4815,12 +4849,17 @@ static int run_package_fixture_check(void)
         strstr(manifest, "retention_policy=manual-or-audit-log-limit\n") == NULL ||
         strstr(manifest,
                "retention_policy_gate=config-fixtures,retention-fixtures\n") == NULL ||
+        strstr(manifest, "encryption_policy=explicit-none-only\n") == NULL ||
+        strstr(manifest, "encryption_at_rest=not-certified\n") == NULL ||
+        strstr(manifest, "encryption_policy_command=encryption-policy\n") == NULL ||
+        strstr(manifest, "encryption_policy_gate=encryption-fixtures\n") == NULL ||
         strstr(manifest,
                "runtime_quota_admission=max-records+max-payload-bytes\n") ==
             NULL ||
         strstr(manifest, "runtime_quota_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=runtime-quota-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=retention-fixtures\n") == NULL ||
+        strstr(manifest, "required_gate=encryption-fixtures\n") == NULL ||
         strstr(manifest, "required_gate=restore-policy-fixtures\n") == NULL ||
         strstr(manifest, "contract=ops-certification-policy ") == NULL ||
         strstr(manifest, "payload_ownership_matrix=certified\n") == NULL ||
@@ -4835,6 +4874,10 @@ static int run_package_fixture_check(void)
         strstr(manifest, "retention_policy=manual-or-audit-log-limit\n") == NULL ||
         strstr(manifest,
                "retention_policy_gate=config-fixtures,retention-fixtures\n") == NULL ||
+        strstr(manifest, "encryption_policy=explicit-none-only\n") == NULL ||
+        strstr(manifest, "encryption_at_rest=not-certified\n") == NULL ||
+        strstr(manifest, "encryption_policy_command=encryption-policy\n") == NULL ||
+        strstr(manifest, "encryption_policy_gate=encryption-fixtures\n") == NULL ||
         strstr(manifest,
                "runtime_quota_admission=max-records+max-payload-bytes\n") ==
             NULL ||
@@ -4989,6 +5032,10 @@ static int run_release_manifest(void)
     printf("deployment_quota_gate=config-fixtures\n");
     printf("retention_policy=manual-or-audit-log-limit\n");
     printf("retention_policy_gate=config-fixtures,retention-fixtures\n");
+    printf("encryption_policy=explicit-none-only\n");
+    printf("encryption_at_rest=not-certified\n");
+    printf("encryption_policy_command=encryption-policy\n");
+    printf("encryption_policy_gate=encryption-fixtures\n");
     printf("runtime_quota_admission=max-records+max-payload-bytes\n");
     printf("runtime_quota_gate=runtime-quota-fixtures\n");
     printf("deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.service\n");
@@ -5204,7 +5251,7 @@ static int run_release_fixture_check(void)
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 30U) {
+        MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 31U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
     }
@@ -5276,6 +5323,7 @@ static int run_release_fixture_check(void)
            "restore_policy_smokes=1 "
            "runtime_quota_smokes=1 "
            "retention_smokes=1 "
+           "encryption_policy_smokes=1 "
            "compat_runtime_smokes=1 "
            "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
@@ -5543,6 +5591,7 @@ struct mem_service_cli_config {
     bool has_max_payload_bytes;
     bool has_retention;
     bool has_max_audit_events;
+    bool has_encryption;
     uint64_t max_records;
     uint64_t max_payload_bytes;
     uint64_t max_audit_events;
@@ -5551,6 +5600,7 @@ struct mem_service_cli_config {
     char storage_root[512];
     char metrics_listen[160];
     char retention[80];
+    char encryption[40];
 };
 
 static void trim_ascii(char *value)
@@ -5745,6 +5795,16 @@ static int apply_config_field(struct mem_service_cli_config *config,
         }
         return 0;
     }
+    if (strcmp(name, "encryption") == 0) {
+        if (strcmp(value, "none") != 0 ||
+            copy_config_value(config->encryption,
+                              sizeof(config->encryption),
+                              value) != 0) {
+            return -1;
+        }
+        config->has_encryption = true;
+        return 0;
+    }
     return -1;
 }
 
@@ -5838,14 +5898,17 @@ static int run_config_fixture_check(void)
     char invalid_path[160];
     char invalid_quota_path[160];
     char invalid_retention_path[160];
+    char invalid_encryption_path[160];
     struct mem_service_cli_config config;
     FILE *file;
     uint64_t valid_max_records = 0;
     uint64_t valid_max_payload_bytes = 0;
     char valid_retention[80];
+    char valid_encryption[40];
     int failures = 0;
 
     valid_retention[0] = '\0';
+    valid_encryption[0] = '\0';
     snprintf(valid_path,
              sizeof(valid_path),
              "/tmp/linqu_mem_service_config_fixture_%ld.conf",
@@ -5862,6 +5925,10 @@ static int run_config_fixture_check(void)
              sizeof(invalid_retention_path),
              "/tmp/linqu_mem_service_config_fixture_%ld_bad_retention.conf",
              (long)getpid());
+    snprintf(invalid_encryption_path,
+             sizeof(invalid_encryption_path),
+             "/tmp/linqu_mem_service_config_fixture_%ld_bad_encryption.conf",
+             (long)getpid());
     file = fopen(valid_path, "w");
     if (file == NULL) {
         return 1;
@@ -5876,6 +5943,7 @@ static int run_config_fixture_check(void)
                 "max_records=1024\n"
                 "max_payload_bytes=4096\n"
                 "retention=manual\n"
+                "encryption=none\n"
                 "auth_mode=none\n"
                 "metrics_mode=text-kv\n"
                 "metrics_listen=tcp:127.0.0.1:9900\n"
@@ -5953,6 +6021,33 @@ static int run_config_fixture_check(void)
         unlink(invalid_retention_path);
         return 1;
     }
+    file = fopen(invalid_encryption_path, "w");
+    if (file == NULL) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        return 1;
+    }
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_fixture_bad_encryption.sock\n"
+                "encryption=aes-256-gcm\n") < 0) {
+        fclose(file);
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        unlink(invalid_encryption_path);
+        return 1;
+    }
+    if (fclose(file) != 0) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        unlink(invalid_quota_path);
+        unlink(invalid_retention_path);
+        unlink(invalid_encryption_path);
+        return 1;
+    }
     if (load_mem_service_config(valid_path, &config, false) != 0 ||
         !config.has_listen ||
         !config.has_store ||
@@ -5961,18 +6056,21 @@ static int run_config_fixture_check(void)
         !config.has_max_records ||
         !config.has_max_payload_bytes ||
         !config.has_retention ||
+        !config.has_encryption ||
         strcmp(config.listen, "unix:/tmp/linqu_mem_service_fixture.sock") != 0 ||
         strcmp(config.store, "/tmp/linqu_mem_service_fixture.store") != 0 ||
         strcmp(config.storage_root, "/tmp/linqu_mem_service_fixture") != 0 ||
         strcmp(config.metrics_listen, "tcp:127.0.0.1:9900") != 0 ||
         config.max_records != 1024U ||
         config.max_payload_bytes != 4096U ||
-        strcmp(config.retention, "manual") != 0) {
+        strcmp(config.retention, "manual") != 0 ||
+        strcmp(config.encryption, "none") != 0) {
         failures -= 1;
     } else {
         valid_max_records = config.max_records;
         valid_max_payload_bytes = config.max_payload_bytes;
         snprintf(valid_retention, sizeof(valid_retention), "%s", config.retention);
+        snprintf(valid_encryption, sizeof(valid_encryption), "%s", config.encryption);
     }
     if (load_mem_service_config(invalid_path, &config, true) == 0) {
         failures -= 1;
@@ -5983,10 +6081,14 @@ static int run_config_fixture_check(void)
     if (load_mem_service_config(invalid_retention_path, &config, true) == 0) {
         failures -= 1;
     }
+    if (load_mem_service_config(invalid_encryption_path, &config, true) == 0) {
+        failures -= 1;
+    }
     unlink(valid_path);
     unlink(invalid_path);
     unlink(invalid_quota_path);
     unlink(invalid_retention_path);
+    unlink(invalid_encryption_path);
     if (failures != 0) {
         fprintf(stderr, "mem_service config-fixtures: failed\n");
         return 1;
@@ -5995,14 +6097,83 @@ static int run_config_fixture_check(void)
            "storage_root=%s service_auth_boundary=unix-socket-local-only "
            "metrics_auth_boundary=loopback-only quota_contract=max-records+max-payload-bytes "
            "max_records=%" PRIu64 " max_payload_bytes=%" PRIu64
-           " retention=%s fail_closed_invalid=3\n",
+           " retention=%s encryption=%s encryption_admission=explicit-none-only "
+           "fail_closed_invalid=4\n",
            MEM_SERVICE_CONFIG_SCHEMA_VERSION,
            "unix:/tmp/linqu_mem_service_fixture.sock",
            "/tmp/linqu_mem_service_fixture.store",
            "/tmp/linqu_mem_service_fixture",
            valid_max_records,
            valid_max_payload_bytes,
-           valid_retention);
+           valid_retention,
+           valid_encryption);
+    return 0;
+}
+
+static int run_encryption_fixture_check(void)
+{
+    char valid_path[160];
+    char invalid_path[160];
+    struct mem_service_cli_config config;
+    FILE *file;
+
+    snprintf(valid_path,
+             sizeof(valid_path),
+             "/tmp/linqu_mem_service_encryption_fixture_%ld.conf",
+             (long)getpid());
+    snprintf(invalid_path,
+             sizeof(invalid_path),
+             "/tmp/linqu_mem_service_encryption_fixture_%ld_bad.conf",
+             (long)getpid());
+    file = fopen(valid_path, "w");
+    if (file == NULL) {
+        return 1;
+    }
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_encryption_fixture.sock\n"
+                "encryption=none\n") < 0) {
+        fclose(file);
+        unlink(valid_path);
+        return 1;
+    }
+    if (fclose(file) != 0) {
+        unlink(valid_path);
+        return 1;
+    }
+    file = fopen(invalid_path, "w");
+    if (file == NULL) {
+        unlink(valid_path);
+        return 1;
+    }
+    if (fprintf(file,
+                "listen=unix:/tmp/linqu_mem_service_encryption_fixture_bad.sock\n"
+                "encryption=aes-256-gcm\n") < 0) {
+        fclose(file);
+        unlink(valid_path);
+        unlink(invalid_path);
+        return 1;
+    }
+    if (fclose(file) != 0) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        return 1;
+    }
+    if (load_mem_service_config(valid_path, &config, true) != 0 ||
+        !config.has_encryption ||
+        strcmp(config.encryption, "none") != 0 ||
+        load_mem_service_config(invalid_path, &config, true) == 0) {
+        unlink(valid_path);
+        unlink(invalid_path);
+        fprintf(stderr, "mem_service encryption-fixtures: failed\n");
+        return 1;
+    }
+    unlink(valid_path);
+    unlink(invalid_path);
+    printf("mem_service encryption-fixtures: status=ok "
+           "encryption_policy=explicit-none-only "
+           "encryption_at_rest=not-certified "
+           "unsupported_encryption_admission=fail-closed "
+           "fail_closed_invalid=1\n");
     return 0;
 }
 
@@ -8600,6 +8771,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "ops-certification-fixtures") == 0) {
         return run_ops_certification_fixture_check();
+    }
+    if (strcmp(argv[1], "encryption-policy") == 0) {
+        return run_encryption_policy();
+    }
+    if (strcmp(argv[1], "encryption-fixtures") == 0) {
+        return run_encryption_fixture_check();
     }
     if (strcmp(argv[1], "ops-certification-evidence-fixtures") == 0) {
         return run_ops_certification_evidence_fixture_check();
