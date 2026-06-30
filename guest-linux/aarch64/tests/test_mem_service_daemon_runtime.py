@@ -1889,6 +1889,14 @@ int main(int argc, char **argv)
             readiness.stdout,
         )
         self.assertIn(
+            "release_certification_verify=scripts/verify_mem_service_release_certification.sh --ops-bundle-file --remote-transport-bundle-file",
+            readiness.stdout,
+        )
+        self.assertIn(
+            "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file",
+            readiness.stdout,
+        )
+        self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             readiness.stdout,
         )

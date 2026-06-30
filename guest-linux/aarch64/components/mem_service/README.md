@@ -298,7 +298,10 @@ a Qwen3 adapter inspect build:
   standalone verifier commands and emits `overall_status=certified` only when
   both pass. Bundle extraction and tar-safety checks remain in the installed
   release verifier scripts; the readiness CLI consumes the verified evidence
-  files as the final machine-readable release gate.
+  files as the final machine-readable release gate. The same report also
+  exposes `release_certification_verify`, so release tooling that starts from
+  binary self-description can discover the full bundle verifier entrypoint
+  without scraping the checked-in release manifest.
   `release-readiness-fixtures` keeps the default fail-closed report, certified
   report, and stale evidence rejection in the package required gate set.
 - `make installed-sdk-example-smoke DESTDIR=<dir> PREFIX=/usr` installs the

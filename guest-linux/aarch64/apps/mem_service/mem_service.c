@@ -2460,6 +2460,14 @@ static int render_release_readiness(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "release_certification_verify=scripts/verify_mem_service_release_certification.sh --ops-bundle-file --remote-transport-bundle-file\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -2597,6 +2605,12 @@ static int run_release_readiness_fixture_check(void)
             NULL ||
         strstr(manifest,
                "remote_transport_evidence_verify=remote-transport-verify --evidence-file\n") ==
+            NULL ||
+        strstr(manifest,
+               "release_certification_verify=scripts/verify_mem_service_release_certification.sh --ops-bundle-file --remote-transport-bundle-file\n") ==
+            NULL ||
+        strstr(manifest,
+               "release_certification_readiness_gate=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") ==
             NULL ||
         strstr(manifest,
                "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file\n") ==
