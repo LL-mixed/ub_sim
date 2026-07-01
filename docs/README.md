@@ -25,6 +25,8 @@ Current validation entry points:
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)
   - assessment of whether `mem_service` can be independently released/deployed, current component capabilities, blockers, and the service-productization plan for LLM serving and pretraining integration
+- [mem_service_implementation_summary.md](mem_service_implementation_summary.md)
+  - implementation summary for `mem_service`, including current service capabilities, serving/pretraining integration, release/deployment gates, validation status, and remaining production-certification gaps
 - [drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md](drafts/qwen3_0_6b_engram_obmm_simpler_8node_design.md)
   - draft design for combining CPU-side engram policy, OBMM shmem pool transport, and simpler-backed Qwen3 0.6B forward in an 8-node simulation path
 - [plans/2026-05-22-paper-engram-alignment-plan.md](plans/2026-05-22-paper-engram-alignment-plan.md)
