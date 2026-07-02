@@ -864,6 +864,12 @@ def build_report(
             "passed_nodes": summary.get("passed_nodes", ""),
             "output": parsed["decode_output"],
         },
+        "execution": {
+            "worker_timing_records": parse_int(summary.get("worker_timing_records")),
+            "idle_timing_records": parse_int(summary.get("idle_timing_records")),
+            "handoff_timing_records": parse_int(summary.get("handoff_timing_records")),
+            "engram_timing_records": parse_int(summary.get("engram_timing_records")),
+        },
         "shortpath": {
             "lookup_hits": parse_int(memory.get("lookup_hits")),
             "actions": memory.get("actions", ""),
@@ -928,6 +934,55 @@ def build_report(
         "context_guard": context_guard_result,
         "prefix_cache_guard": prefix_cache_guard_result,
     }
+
+
+def print_prefix_cache_benefit_comparison(comparison):
+    print(f"w5_prefix_cache_benefit: status={comparison['status']}")
+    for label in ("baseline", "prefix"):
+        report = comparison[label]
+        counts = comparison[f"{label}_counts"]
+        prefix_cache = report["prefix_cache"]
+        gsva = report["gsva"]
+        timing = report["timing"]
+        execution = report["execution"]
+        print(
+            "benefit_run: "
+            f"label={label} status={report['status']} run_id={report['run_id']} "
+            f"prefix_cache_ids={prefix_cache['ids']} "
+            f"prefix_cache_action={prefix_cache['actions']} "
+            f"prefix_cache_kv_hits={prefix_cache['kv_hits']} "
+            f"gsva_reads={gsva['reads']} gsva_writebacks={gsva['writebacks']} "
+            f"round_sum_ms={timing['round_sum_ms']} "
+            f"post_step0_avg_round_ms={timing['post_step0_avg_round_ms']} "
+            f"compute_sum_ms={timing['compute_sum_ms']} "
+            f"publish_sum_ms={timing['publish_sum_ms']} "
+            f"range_forwards={counts['range_forwards']} "
+            f"runtime_inputs={counts['runtime_inputs']} "
+            f"runtime_outputs={counts['runtime_outputs']} "
+            f"worker_timing_records={execution['worker_timing_records']} "
+            f"idle_timing_records={execution['idle_timing_records']}"
+        )
+    for name, metric in comparison["metrics"].items():
+        print(
+            "benefit_delta: "
+            f"metric={name} baseline={metric['baseline']} "
+            f"prefix={metric['prefix']} delta={metric['delta']} "
+            f"reduction_pct={format_optional_float(metric['reduction_pct'])} "
+            f"speedup={format_optional_float(metric['speedup'])}"
+        )
+    prefix = comparison["prefix"]
+    gsva_timing = prefix["gsva"]["timing"]
+    print(
+        "benefit_gsva: "
+        f"prefix_cache_kv_hits={prefix['prefix_cache']['kv_hits']} "
+        f"gsva_reads={prefix['gsva']['reads']} "
+        f"gsva_writebacks={prefix['gsva']['writebacks']} "
+        f"lookup_ms={gsva_timing['lookup_ms']} "
+        f"map_read_ms={gsva_timing['map_read_ms']} "
+        f"overhead_ms={comparison['gsva_overhead_ms']}"
+    )
+    for issue in comparison["issues"]:
+        print(f"issue: {issue}")
 
 
 def print_text_report(report):
@@ -1086,6 +1141,120 @@ def delta_text(value, baseline):
     return str(value - baseline)
 
 
+def benefit_metric(baseline_value, prefix_value):
+    delta = prefix_value - baseline_value
+    reduction_pct = None
+    if baseline_value:
+        reduction_pct = round((baseline_value - prefix_value) * 100.0 / baseline_value, 1)
+    speedup = None
+    if prefix_value:
+        speedup = round(baseline_value / prefix_value, 2)
+    return {
+        "baseline": baseline_value,
+        "prefix": prefix_value,
+        "delta": delta,
+        "reduction_pct": reduction_pct,
+        "speedup": speedup,
+    }
+
+
+def format_optional_float(value):
+    if value is None:
+        return "n/a"
+    return str(value)
+
+
+def full_pipeline_counts(report):
+    steps = report["decode"]["steps_observed"]
+    node_count = split_count(report["decode"]["passed_nodes"])[1] or 8
+    total = steps * node_count
+    return {
+        "range_forwards": total,
+        "runtime_inputs": max(total - 1, 0),
+        "runtime_outputs": total,
+    }
+
+
+def effective_execution_counts(report):
+    if report["shortpath"]["actions"] == "jump-to-terminal":
+        return {
+            "range_forwards": report["shortpath"]["actual_range_forwards"],
+            "runtime_inputs": report["shortpath"]["actual_runtime_inputs"],
+            "runtime_outputs": report["shortpath"]["actual_runtime_outputs"],
+        }
+    return full_pipeline_counts(report)
+
+
+def build_prefix_cache_benefit_comparison(baseline_summary, prefix_summary, args):
+    output_guard = output_guard_from_args(args)
+    context_guard = context_guard_from_args(args)
+    baseline = build_report(baseline_summary, output_guard, context_guard)
+    prefix = build_report(prefix_summary, output_guard, context_guard)
+    issues = []
+    for label, report in (("baseline", baseline), ("prefix", prefix)):
+        for issue in report["issues"]:
+            issues.append(f"{label}: {issue}")
+    if decode_output_key(baseline) != decode_output_key(prefix):
+        issues.append("baseline/prefix decode_output mismatch")
+    if prefix["prefix_cache"]["actions"] != "reuse":
+        issues.append(
+            f"prefix run did not reuse prefix cache action={prefix['prefix_cache']['actions']}"
+        )
+    if prefix["prefix_cache"]["kv_hits"] <= 0:
+        issues.append(
+            f"prefix run has no prefix-cache KV hits value={prefix['prefix_cache']['kv_hits']}"
+        )
+    if prefix["gsva"]["reads"] <= 0:
+        issues.append(f"prefix run has no GSVA KV reads value={prefix['gsva']['reads']}")
+    if baseline["prefix_cache"]["actions"] == "reuse":
+        issues.append("baseline run already reused prefix cache")
+
+    baseline_counts = effective_execution_counts(baseline)
+    prefix_counts = effective_execution_counts(prefix)
+    metrics = {
+        "round_sum_ms": benefit_metric(
+            baseline["timing"]["round_sum_ms"], prefix["timing"]["round_sum_ms"]
+        ),
+        "post_step0_avg_round_ms": benefit_metric(
+            baseline["timing"]["post_step0_avg_round_ms"],
+            prefix["timing"]["post_step0_avg_round_ms"],
+        ),
+        "compute_sum_ms": benefit_metric(
+            baseline["timing"]["compute_sum_ms"], prefix["timing"]["compute_sum_ms"]
+        ),
+        "publish_sum_ms": benefit_metric(
+            baseline["timing"]["publish_sum_ms"], prefix["timing"]["publish_sum_ms"]
+        ),
+        "range_forwards": benefit_metric(
+            baseline_counts["range_forwards"],
+            prefix_counts["range_forwards"],
+        ),
+        "runtime_inputs": benefit_metric(
+            baseline_counts["runtime_inputs"],
+            prefix_counts["runtime_inputs"],
+        ),
+        "runtime_outputs": benefit_metric(
+            baseline_counts["runtime_outputs"],
+            prefix_counts["runtime_outputs"],
+        ),
+        "worker_timing_records": benefit_metric(
+            baseline["execution"]["worker_timing_records"],
+            prefix["execution"]["worker_timing_records"],
+        ),
+    }
+    gsva_timing = prefix["gsva"]["timing"]
+    return {
+        "status": "pass" if not issues else "fail",
+        "issues": issues,
+        "baseline": baseline,
+        "prefix": prefix,
+        "baseline_counts": baseline_counts,
+        "prefix_counts": prefix_counts,
+        "metrics": metrics,
+        "gsva_overhead_ms": gsva_timing["lookup_ms"] + gsva_timing["map_read_ms"],
+    }
+
+
 def build_prefix_cache_comparison(baseline_summary, prefix_summary, mismatch_summary, args):
     output_guard = output_guard_from_args(args)
     context_guard = context_guard_from_args(args)
@@ -1185,6 +1354,13 @@ def main(argv):
         type=Path,
         help="Compare no-prefix baseline, prefix-cache reuse, and mismatched-prefix recompute summaries.",
     )
+    parser.add_argument(
+        "--compare-prefix-cache-benefit",
+        nargs=2,
+        metavar=("BASELINE", "PREFIX"),
+        type=Path,
+        help="Compare baseline and GSVA-backed prefix-cache reuse summaries for benefit attribution.",
+    )
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument(
         "--tokenizer-dir",
@@ -1223,6 +1399,22 @@ def main(argv):
     )
     args = parser.parse_args(argv)
 
+    if args.compare_prefix_cache_benefit:
+        for summary in args.compare_prefix_cache_benefit:
+            if not summary.is_file():
+                print(f"summary file is missing: {summary}", file=sys.stderr)
+                return 2
+        comparison = build_prefix_cache_benefit_comparison(
+            args.compare_prefix_cache_benefit[0],
+            args.compare_prefix_cache_benefit[1],
+            args,
+        )
+        if args.json_output:
+            print(json.dumps(comparison, indent=2, sort_keys=True))
+        else:
+            print_prefix_cache_benefit_comparison(comparison)
+        return 0 if comparison["status"] == "pass" else 1
+
     if args.compare_prefix_cache:
         for summary in args.compare_prefix_cache:
             if not summary.is_file():
@@ -1241,7 +1433,10 @@ def main(argv):
         return 0 if comparison["status"] == "pass" else 1
 
     if args.summary is None:
-        parser.error("summary is required unless --compare-prefix-cache is used")
+        parser.error(
+            "summary is required unless --compare-prefix-cache or "
+            "--compare-prefix-cache-benefit is used"
+        )
     if not args.summary.is_file():
         print(f"summary file is missing: {args.summary}", file=sys.stderr)
         return 2
