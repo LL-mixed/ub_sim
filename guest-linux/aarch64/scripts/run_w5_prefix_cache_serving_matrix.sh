@@ -219,11 +219,14 @@ write_case_config() {
       printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "$shortpath_execute"
     fi
     if [[ -n "$decision_run_id" ]]; then
+      printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=0\n'
       printf 'SIM_W5_MEMORY_DECISION_STORE=%s\n' "$OUT_DIR/w5_memory_runtime_boundary_lookup.$decision_run_id.json"
       printf 'SIM_W5_MEMORY_DECISION_OBJECT_STORE=%s\n' "$OUT_DIR/w5_object_service_store.$decision_run_id.json"
       if [[ "$include_boundary_selector" != "0" ]]; then
         printf 'SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=%s\n' "$decision_run_id"
       fi
+    elif [[ "$label" != "shared-prefix-seed" ]]; then
+      printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=0\n'
     fi
   } >> "$case_config"
   echo "$case_config"
@@ -361,10 +364,10 @@ while (( comparison_index <= ${#reuse_summaries[@]} )); do
   reuse_summary="${reuse_summaries[$comparison_index]}"
   echo "[w5_prefix_cache_serving_matrix] benefit_comparison=$reuse_label baseline=$seed_summary reuse=$reuse_summary"
   if (( DRY_RUN )); then
-    printf '%q ' "$REPORT" --compare-prefix-cache-benefit "$seed_summary" "$reuse_summary"
+    printf '%q ' "$REPORT" --compare-prefix-cache-benefit "$seed_summary" "$reuse_summary" --allow-prefix-cache-output-mismatch
     printf '\n'
   else
-    "$REPORT" --compare-prefix-cache-benefit "$seed_summary" "$reuse_summary"
+    "$REPORT" --compare-prefix-cache-benefit "$seed_summary" "$reuse_summary" --allow-prefix-cache-output-mismatch
   fi
   (( comparison_index += 1 ))
 done

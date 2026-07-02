@@ -54,7 +54,13 @@ def shorten(value, limit=220):
 
 
 def csv_or_none(values):
-    ordered = sorted({value for value in values if value and value != "none"})
+    ordered = sorted(
+        {
+            str(value)
+            for value in values
+            if value is not None and str(value) not in ("", "none")
+        }
+    )
     return ",".join(ordered) if ordered else "none"
 
 
@@ -62,7 +68,12 @@ def csv_or_none_ordered(values):
     seen = set()
     ordered = []
     for value in values:
-        if not value or value == "none" or value in seen:
+        if value is None:
+            continue
+        value = str(value)
+        if value in ("", "none"):
+            continue
+        if value in seen:
             continue
         seen.add(value)
         ordered.append(value)

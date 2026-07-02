@@ -768,6 +768,7 @@ class W5InferenceRunReportTest(unittest.TestCase):
                 runtime_inputs,
                 runtime_outputs,
                 gsva_line="",
+                token_ids="[81378, 374]",
             ):
                 write_artifacts(out_dir, run_id)
                 registry = out_dir / f"w5_memory_registry.{run_id}"
@@ -787,7 +788,7 @@ class W5InferenceRunReportTest(unittest.TestCase):
                         "paper_engram_context_records=0 fused_simt_context_records=0 "
                         "fused_simt_vendor_context_records=0"
                     ),
-                    "decode_output: token_ids=[81378, 374]",
+                    f"decode_output: token_ids={token_ids}",
                     (
                         f"timing_step: step=0 nodes=8/8 round_ms={round0} "
                         "max_compute_window_ms=10 max_publish_ms=1 max_barrier_ms=0"
@@ -860,23 +861,81 @@ class W5InferenceRunReportTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("w5_prefix_cache_benefit: status=pass", result.stdout)
-        self.assertIn(
-            "benefit_delta: metric=round_sum_ms baseline=170 prefix=70 "
-            "delta=-100 reduction_pct=58.8 speedup=2.43",
-            result.stdout,
-        )
-        self.assertIn(
-            "benefit_delta: metric=range_forwards baseline=16 prefix=2 "
-            "delta=-14 reduction_pct=87.5 speedup=8.0",
-            result.stdout,
-        )
-        self.assertIn(
-            "benefit_gsva: prefix_cache_kv_hits=1 gsva_reads=1 "
-            "gsva_writebacks=4 lookup_ms=3 map_read_ms=1 overhead_ms=4",
-            result.stdout,
-        )
-        self.assertNotIn("issue:", result.stdout)
+            self.assertIn("w5_prefix_cache_benefit: status=pass", result.stdout)
+            self.assertIn(
+                "benefit_delta: metric=round_sum_ms baseline=170 prefix=70 "
+                "delta=-100 reduction_pct=58.8 speedup=2.43",
+                result.stdout,
+            )
+            self.assertIn(
+                "benefit_delta: metric=range_forwards baseline=16 prefix=2 "
+                "delta=-14 reduction_pct=87.5 speedup=8.0",
+                result.stdout,
+            )
+            self.assertIn(
+                "benefit_gsva: prefix_cache_kv_hits=1 gsva_reads=1 "
+                "gsva_writebacks=4 lookup_ms=3 map_read_ms=1 overhead_ms=4",
+                result.stdout,
+            )
+            self.assertNotIn("issue:", result.stdout)
+
+            prefix_suffix_fork = write_case(
+                "prefix-suffix-fork",
+                (
+                    "memory_service_summary: service=lingqu_memory_service "
+                    "records=10 steps=2/2 "
+                    "stages=qwen3_w5_memory_decision_contract:8,"
+                    "qwen3_w5_memory_prefix_cache_kv_loaded:1 "
+                    "shortpath_ids=runtime_service_catalog support_ids=boundary_registry "
+                    "actions=jump-to-terminal artifact_kinds=logits prefetch_ids=none "
+                    "prefix_cache_ids=prefix-cache-reuse/runtime-test "
+                    "prefix_cache_actions=reuse prefix_cache_kv_hits=1 "
+                    "prefix_cache_kv_nodes=1 prefix_cache_gsva_rejections=0 "
+                    "gsva_kv_refs=5 gsva_reads=1 gsva_writebacks=4 "
+                    "gsva_kv_nodes=1 lookup_hits=2 "
+                    "hit_registry_indexes=none hit_registry_steps=none hit_positions=none"
+                ),
+                35,
+                45,
+                2,
+                14,
+                2,
+                1,
+                0,
+                "gsva_timing: records=1 lookup_ms=3 map_read_ms=1 avoided_compute_ms=0",
+                token_ids="[81378, 999]",
+            )
+
+            strict_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--compare-prefix-cache-benefit",
+                    str(baseline),
+                    str(prefix_suffix_fork),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(1, strict_result.returncode)
+            self.assertIn("baseline/prefix decode_output mismatch", strict_result.stdout)
+
+            relaxed_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--compare-prefix-cache-benefit",
+                    str(baseline),
+                    str(prefix_suffix_fork),
+                    "--allow-prefix-cache-output-mismatch",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("w5_prefix_cache_benefit: status=pass", relaxed_result.stdout)
+            self.assertNotIn("decode_output mismatch", relaxed_result.stdout)
 
     def test_reports_fused_simt_context_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:

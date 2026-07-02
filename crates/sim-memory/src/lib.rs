@@ -14755,6 +14755,112 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_concurrent_lookups_preserve_longest_live_hit_and_usage() {
+        let service = std::sync::Arc::new(std::sync::Mutex::new(LingquMemoryService::new()));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(9));
+        let short_key = sample_prefix_cache_key(8, 0x1001);
+        let medium_key = sample_prefix_cache_key(12, 0x1002);
+        let long_key = sample_prefix_cache_key(16, 0x1003);
+        let expired_longer_key = sample_prefix_cache_key(20, 0x1004);
+
+        {
+            let mut service_guard = service.lock().expect("lock service");
+            for (artifact_id, key, expires_at_us) in [
+                ("prefix-cache/live-short", short_key.clone(), Some(500)),
+                ("prefix-cache/live-medium", medium_key.clone(), Some(500)),
+                ("prefix-cache/live-long", long_key.clone(), Some(500)),
+                (
+                    "prefix-cache/expired-longer",
+                    expired_longer_key.clone(),
+                    Some(100),
+                ),
+            ] {
+                service_guard
+                    .register_prefix_cache_artifact(PrefixCacheArtifact {
+                        artifact_id: artifact_id.to_string(),
+                        key,
+                        kv_artifact_ids: Vec::new(),
+                        durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                            format!("block/{artifact_id}"),
+                            0,
+                            64,
+                            0x1234,
+                        )],
+                        hot_object_refs: Vec::new(),
+                        dtype: TensorDType::F32,
+                        shape: vec![8, 4],
+                        confidence_milli: 950,
+                        state: ExecutionArtifactState::Verified,
+                        checksum: 0x9001,
+                        version: 1,
+                        created_at_us: 10,
+                        expires_at_us,
+                        last_used_at_us: 10,
+                        use_count: 1,
+                    })
+                    .unwrap();
+            }
+        }
+
+        let mut handles = Vec::new();
+        for request_index in 0..8 {
+            let service = std::sync::Arc::clone(&service);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let short_key = short_key.clone();
+            let medium_key = medium_key.clone();
+            let long_key = long_key.clone();
+            let expired_longer_key = expired_longer_key.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut service_guard = service.lock().expect("lock service");
+                service_guard
+                    .lookup_prefix_cache(
+                        PrefixCacheLookupRequest {
+                            request_id: format!("prefix-lookup/concurrent/{request_index}"),
+                            candidate_keys: vec![
+                                short_key,
+                                medium_key,
+                                long_key,
+                                expired_longer_key,
+                            ],
+                            min_confidence_milli: 900,
+                            allow_verify: false,
+                            created_at_us: 120,
+                        },
+                        120,
+                    )
+                    .unwrap()
+                    .reuse_plan
+            }));
+        }
+
+        barrier.wait();
+        let plans = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("join concurrent lookup"))
+            .collect::<Vec<_>>();
+        for plan in plans {
+            assert_eq!(plan.action, PrefixCacheReuseAction::Reuse);
+            assert_eq!(plan.artifact_id.as_deref(), Some("prefix-cache/live-long"));
+            assert_eq!(plan.matched_prefix_token_count, 16);
+        }
+
+        let service_guard = service.lock().expect("lock service");
+        let live_long = service_guard
+            .prefix_cache_artifact("prefix-cache/live-long")
+            .expect("live-long artifact");
+        assert_eq!(live_long.last_used_at_us, 120);
+        assert_eq!(live_long.use_count, 9);
+        assert_eq!(
+            service_guard
+                .prefix_cache_artifact("prefix-cache/live-short")
+                .expect("live-short artifact")
+                .use_count,
+            1
+        );
+    }
+
+    #[test]
     fn prefix_cache_lookup_miss_is_auditable() {
         let mut service = LingquMemoryService::new();
         let response = service

@@ -1261,7 +1261,10 @@ def build_prefix_cache_benefit_comparison(baseline_summary, prefix_summary, args
     for label, report in (("baseline", baseline), ("prefix", prefix)):
         for issue in report["issues"]:
             issues.append(f"{label}: {issue}")
-    if decode_output_key(baseline) != decode_output_key(prefix):
+    if (
+        decode_output_key(baseline) != decode_output_key(prefix)
+        and not args.allow_prefix_cache_output_mismatch
+    ):
         issues.append("baseline/prefix decode_output mismatch")
     if prefix["prefix_cache"]["actions"] != "reuse":
         issues.append(
@@ -1429,6 +1432,14 @@ def main(argv):
         metavar=("BASELINE", "PREFIX"),
         type=Path,
         help="Compare baseline and GSVA-backed prefix-cache reuse summaries for benefit attribution.",
+    )
+    parser.add_argument(
+        "--allow-prefix-cache-output-mismatch",
+        action="store_true",
+        help=(
+            "Allow baseline and prefix-cache benefit runs to diverge in decode output. "
+            "Use only for shared-prefix serving cases with intentionally different suffixes."
+        ),
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument(
