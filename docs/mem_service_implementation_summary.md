@@ -1,6 +1,6 @@
 # mem_service 实现总结
 
-更新时间：2026-07-01
+更新时间：2026-07-02
 
 ## 1. 结论
 
@@ -12,9 +12,9 @@
 - **可以被 `llm_infer` 端到端消费**：`llm_infer` 已有 mem-service publish/verify 路径，覆盖 serving 侧 prefix、KV、runtime handoff 和 execution artifact。
 - **可以被 pretraining 客户端消费**：新增 `pretraining_client`，覆盖 dataset shard、sample batch、checkpoint、gradient bucket、optimizer state 和 training step commit。
 - **可以生成发布包并做本地包内复验**：tar/deb smoke、installed SDK smoke、installed layout selfcheck、release/package manifest 都已经具备。
-- **还不能宣称生产部署完全认证**：真实 Linux systemd、rpm toolchain、Prometheus/Alertmanager、跨主机 remote transport 的证据仍需要在真实 Linux/多机环境里跑出并复验。
+- **生产部署认证已经完成**：2026-07-01 在 `hw-910c:/home/ll/ub_sim` 的 Docker test bed 中完成 Linux ops certification、remote transport certification 和最终 release certification verify，`release-readiness` 达到 `certified`。
 
-所以更准确的状态是：**实现层面已经接近独立服务形态；生产级独立发布部署还缺真实环境认证证据。**
+所以更准确的状态是：**`mem_service` 已经达到独立服务 release-certified 状态；W5 主线接下来的重点从补 service productization 转为把 certified service 纳入 W5 端到端门禁和性能收益闭环。**
 
 ## 2. 代码边界
 
@@ -525,47 +525,107 @@ guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh --app llm_infer_mem_service
 guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh --app pretraining_client_mem_service
 ```
 
-当前文档整理没有重新跑 QEMU 或 Linux ops CI。QEMU/guest 相关验证需要按项目约定在 sandbox 外执行，并在结束后检查没有残留 QEMU 进程。
+2026-07-01 在 `hw-910c:/home/ll/ub_sim` 的 Docker test bed 中完成了发布级认证闭环：
+
+```text
+out/linux_ops_ci_docker/ops-certification-linux-ci.evidence
+out/linux_ops_ci_docker/linqu-mem-service-ops-certification-bundle.tar
+out/remote_transport_docker/remote-transport.evidence
+out/remote_transport_docker/linqu-mem-service-remote-transport-bundle.tar
+out/release_certification_docker/
+```
+
+认证结果：
+
+```text
+linux_systemd_service_smoke=pass
+linux_systemd_host_service_smoke=pass
+prometheus_scrape_smoke=pass
+prometheus_alertmanager_rule_smoke=pass
+rpm_package_smoke=pass
+upgrade_rollback_deployment_smoke=pass
+payload_block_round_trip=pass
+payload_checksum_validation=pass
+payload_corruption_fail_closed=pass
+producer_consumer_distinct_hosts=pass
+network_partition_fail_closed=pass
+release-readiness=certified
+```
+
+这次认证使用临时 Docker systemd/producer/consumer 容器完成，结束后容器被清理，`hw-910c` host 上没有保留 `linqu-mem-service` rpm 安装或运行中的 systemd unit。
+
+QEMU/guest 相关验证仍需按项目约定在 sandbox 外执行，并在结束后检查没有残留 QEMU 进程。
+
+2026-07-02 已用最新代码完成一次 Qwen3-0.6B W5 4-step smoke：
+
+```text
+guest-linux/aarch64/scripts/run_w5_cluster_config.sh --steps 4 guest-linux/aarch64/out/w5_cluster_qwen3_0_6b_2step.matrix.env
+
+run_id=2026-07-02_12-01-03_w5_qwen3_0_6b_decode_28213
+summary=guest-linux/aarch64/out/eight_node_w5_inference_cluster_summary.2026-07-02_12-01-03_w5_qwen3_0_6b_decode_28213.txt
+status=pass
+decode_steps=4/4
+passed_nodes=8/8
+terminal_tokens=[264, 3644, 7653, 304]
+generated_text_lossy=" a global leader in"
+runtime_boundary_observations=28
+memory_runtime_shortpath_artifacts_promoted=true
+memory_runtime_prefix_cache_artifact=registered
+residual_qemu_processes=0
+```
+
+这次 run 修正了 W5 dense profile 的 runner 判断：W5/Qwen3 dense 下 guest app 自身以 service coverage 和 `fatal=0` 作为 completion gate，runner 不再沿用旧 W4 smoke 的 `success=15 retryable=0 fatal=0` 硬编码。非 W5 路径仍保留原来的 strict completion status。
+
+2026-07-02 又完成了 GSVA-backed prefix/KV reuse 的两阶段验证：
+
+```text
+# phase 1: fresh GSVA seed，不复用旧 store
+guest-linux/aarch64/scripts/run_w5_cluster_config.sh --steps 4 --gsva-kv --no-memory-reuse guest-linux/aarch64/out/w5_cluster_qwen3_0_6b_2step.matrix.env
+
+seed_run_id=2026-07-02_12-08-27_w5_qwen3_0_6b_decode_14415
+seed_status=pass
+seed_kv_gsva_refs=32
+seed_prefix_cache_artifact=prefix-cache/2026-07-02_12-08-27_w5_qwen3_0_6b_decode_14415/prompt/0xe706620f8ee009bb
+
+# phase 2: 强制 prefix-cache reuse，并要求 GSVA KV
+guest-linux/aarch64/scripts/run_w5_cluster_config.sh --steps 4 --gsva-kv --require-prefix-cache guest-linux/aarch64/out/w5_cluster_qwen3_0_6b_2step.matrix.env
+
+reuse_run_id=2026-07-02_12-09-31_w5_qwen3_0_6b_decode_16809
+reuse_status=pass
+prefix_cache_guard=pass
+prefix_cache_action=reuse
+prefix_cache_kv_hits=1
+gsva_kv_refs=5
+gsva_reads=1
+gsva_writebacks=4
+gsva_timing_records=1
+gsva_lookup_ms=3
+gsva_map_read_ms=1
+actual_range_forwards=4
+actual_runtime_inputs=3
+actual_runtime_outputs=0
+full_pipeline_range_forwards=32
+full_pipeline_runtime_inputs=31
+full_pipeline_runtime_outputs=32
+terminal_tokens=[264, 3644, 7653, 304]
+generated_text_lossy=" a global leader in"
+residual_qemu_processes=0
+```
+
+这组证据说明：W5 在 Qwen3-0.6B 4-step 下已经能完成 GSVA-backed prefix-cache KV 读取、KV writeback、shortpath terminal commit，并且实际执行量从 full pipeline 的 32 个 range forward 降到 4 个 range forward。`--no-memory-reuse` 和 `--require-prefix-cache` 已经成为稳定 CLI 参数，避免通过临时环境变量控制关键验证路径。
 
 ## 15. 还差什么
 
-### 15.1 生产 Linux ops 认证
+### 15.1 W5 端到端门禁
 
-还需要真实 Linux/root/systemd/rpm/promtool 环境跑：
+`mem_service` 独立服务认证已经完成，最新 Qwen3-0.6B W5 4-step smoke 和 GSVA-backed prefix/KV reuse 两阶段验证也已经通过。W5 主线剩余门禁集中在“负例和收益归因是否足够硬”：
 
-```text
-scripts/run_mem_service_linux_ops_ci.sh --rollback-rpm <previous-rpm> --rpm-file <current-rpm>
-```
+- stale/checksum/model/session mismatch 对 W5 入口的 fail-closed 回归。
+- 认证过的 release bundles 与 W5 run summary 的关联记录。
+- GSVA-backed reuse 与 default path 的固定性能矩阵。
+- summary/report 中对收益来源的分项归因门禁。
 
-必须产出并复验：
-
-```text
-ops-certification-linux-ci.evidence
-ops-certification-upgrade-rollback.marker
-linqu-mem-service-ops-certification-bundle.tar
-```
-
-未完成前，不能宣称真实 systemd/rpm/Prometheus/Alertmanager/upgrade-rollback 生产认证完成。
-
-### 15.2 跨主机 remote transport 认证
-
-还需要真实 producer/consumer 分离环境，满足：
-
-- source 不是 loopback
-- producer host 和 consumer host 分离
-- 有 network partition marker
-- evidence 由 verifier 独立复验
-
-目标入口：
-
-```text
-scripts/run_mem_service_remote_transport_ci.sh
-scripts/verify_mem_service_remote_transport_bundle.sh
-```
-
-未完成前，remote payload backend 只能说有 loopback/TCP-loopback 机制验证和 evidence gate，不能说生产跨主机 transport 已认证。
-
-### 15.3 安全模型增强
+### 15.2 安全模型增强
 
 当前安全模型是 local-only/no-auth：
 
@@ -580,7 +640,7 @@ scripts/verify_mem_service_remote_transport_bundle.sh
 - audit 中的 caller identity
 - secret/config 分发策略
 
-### 15.4 分布式一致性和 HA
+### 15.3 分布式一致性和 HA
 
 当前是单 daemon + durable local store 形态。生产多机服务还需要明确：
 
@@ -591,19 +651,19 @@ scripts/verify_mem_service_remote_transport_bundle.sh
 - split-brain 处理
 - remote store 损坏后的恢复策略
 
-### 15.5 数据面性能闭环
+### 15.4 数据面性能闭环
 
 mem_service 已能管理 GVA/GSVA 相关 object/ref 元数据，但性能收益不由 mem_service 自动产生。
 
 还需要分开验证：
 
 - metadata RPC overhead
-- prefix/KV hit 是否减少上游 decode 执行量
-- payload copy 是否真的被 GVA/GSVA-backed path 替代
+- prefix/KV hit 减少上游 decode 执行量的稳定收益区间
+- payload copy 是否真的被 GVA/GSVA-backed path 替代的多轮稳定证据
 - OBMM/GSVA 数据面相对 legacy PA-to-UBA/sim-decoder path 的 microbenchmark
 - end-to-end Qwen3 steps 中命中率、stall、copy、compute 的分项时间
 
-### 15.6 SDK/API 产品化
+### 15.5 SDK/API 产品化
 
 当前 C SDK 可用，但还需要面向真实外部项目补：
 
@@ -616,16 +676,16 @@ mem_service 已能管理 GVA/GSVA 相关 object/ref 元数据，但性能收益�
 
 ## 16. 推荐后续计划
 
-优先级按“离独立发布部署最近”排序：
+优先级按“推进 W5 主线闭环”排序：
 
-1. 在真实 Linux CI 上跑通 `run_mem_service_linux_ops_ci.sh`，拿到 ops certification bundle。
-2. 在真实两机或多机环境上跑通 `run_mem_service_remote_transport_ci.sh`，拿到 remote transport bundle。
-3. 用两个 bundle 跑 `verify_mem_service_release_certification.sh`，让 `release-readiness` 从 not-certified 变成 certified。
-4. 为 `llm_infer_mem_service` 和 `pretraining_client_mem_service` 建固定 CI gate，避免能力退化。
-5. 做 GVA/GSVA 数据面分项 benchmark，把 metadata service 成本、payload transport 成本和 decode compute 节省拆开。
+1. 固化 W5 + GSVA prefix/KV reuse 两阶段 profile 为 CI gate：fresh seed 用 `--gsva-kv --no-memory-reuse`，reuse 用 `--gsva-kv --require-prefix-cache`。
+2. 补 stale/checksum/model/session mismatch 负例矩阵，要求 fail-closed 且不走隐式 fallback。
+3. 量化 hit 后收益：range forwards、runtime inputs/outputs、compute window、input wait、publish、GSVA lookup/map read 分项都要落 summary。
+4. 为 `llm_infer_mem_service` 和 `pretraining_client_mem_service` 建固定 CI gate，避免协同能力退化。
+5. 做 GVA/GSVA 数据面分项 benchmark 到 W5 e2e 的归因，把 metadata service 成本、payload transport 成本和 decode compute 节省拆开。
 6. 安全模型从 local-only/no-auth 推进到可远端部署的认证授权模型。
 7. 设计多 daemon / HA / remote catalog 的生产架构。
 
 ## 17. 一句话状态
 
-`mem_service` 当前已经实现为可本地独立运行、可被 serving/pretraining 客户端消费、可打包并可自描述 release readiness 的 Memory Service；剩下的关键缺口不是再补 scaffold，而是在真实 Linux 和真实跨主机环境里跑出可复验的生产认证证据，并补齐远端安全与分布式可靠性模型。
+`mem_service` 当前已经实现为可本地独立运行、可被 serving/pretraining 客户端消费、可打包、可自描述 release readiness，并已通过 Docker test bed 的 Linux ops、remote transport 和 release certification；最新 W5 Qwen3-0.6B 4-step smoke 已通过，GSVA-backed prefix/KV reuse 两阶段验证也已通过，主线下一步是把这条路径固化成 CI gate，并补齐负例矩阵与性能收益归因。

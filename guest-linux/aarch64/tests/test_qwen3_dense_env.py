@@ -821,8 +821,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--steps N", config_runner_text)
         self.assertIn("--validate-only", config_runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
+        self.assertIn("--require-prefix-cache", config_runner_text)
+        self.assertIn("--no-memory-reuse", config_runner_text)
         self.assertIn("STEPS_OVERRIDE", config_runner_text)
         self.assertIn("GSVA_KV_OVERRIDE", config_runner_text)
+        self.assertIn("REQUIRE_PREFIX_CACHE_OVERRIDE", config_runner_text)
+        self.assertIn("DISABLE_MEMORY_REUSE_OVERRIDE", config_runner_text)
         self.assertIn("validate_w5_cluster_config", config_runner_text)
         self.assertNotIn("DEMO_WAIT_SECS", config_runner_text)
         self.assertIn("W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH", config_runner_text)
@@ -921,6 +925,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
                 "SIM_W5_VALIDATE_ONLY=",
                 "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=",
+                "SIM_W5_MEMORY_REUSE_DISABLE=0",
                 "SIM_W5_MEMORY_REUSE_OUT_DIR=",
                 "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
                 "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
@@ -2069,6 +2074,85 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE requires SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", result.stderr)
+
+    def test_w5_cluster_config_runner_require_prefix_cache_cli_sets_env(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            run_id = "2026-05-26_02-00-00_w5_qwen3_14b_decode_222"
+            (out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json").write_text("{}", encoding="utf-8")
+            (out_dir / f"w5_object_service_store.{run_id}.json").write_text("{}", encoding="utf-8")
+            self.write_w5_boundary_only_summary(out_dir, run_id, steps=2)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--print-env", "--require-prefix-cache", str(config_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE=1", result.stdout)
+        self.assertIn(
+            f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json",
+            result.stdout,
+        )
+
+    def test_w5_cluster_config_runner_no_memory_reuse_cli_leaves_reuse_unset(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            run_id = "2026-05-26_02-00-00_w5_qwen3_14b_decode_222"
+            (out_dir / f"w5_memory_runtime_boundary_lookup.{run_id}.json").write_text("{}", encoding="utf-8")
+            (out_dir / f"w5_object_service_store.{run_id}.json").write_text("{}", encoding="utf-8")
+            self.write_w5_boundary_only_summary(out_dir, run_id, steps=2)
+            weights_path = tmp_path / "qwen3"
+            weights_path.mkdir()
+            config_path = tmp_path / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
+                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(config_runner), "--print-env", "--no-memory-reuse", str(config_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("SIM_W5_MEMORY_REUSE_DISABLE=1", result.stdout)
+        self.assertIn("SIM_W5_MEMORY_DECISION_STORE=", result.stdout)
+        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE=", result.stdout)
+        self.assertIn("SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=", result.stdout)
 
     def test_w5_cluster_config_runner_validate_only_rejects_decision_store_without_selector(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

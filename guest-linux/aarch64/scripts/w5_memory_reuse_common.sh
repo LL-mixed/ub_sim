@@ -84,6 +84,11 @@ w5_resolve_memory_reuse_config() {
   local reuse_optional=0
   local reuse_auto=0
   local explicit_reuse_selector=0
+  case "${SIM_W5_MEMORY_REUSE_DISABLE:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+  esac
   if [[ -z "$reuse_run_id" ]]; then
     if [[ -n "${SIM_W5_MEMORY_DECISION_STORE:-}" ||
           -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" ||

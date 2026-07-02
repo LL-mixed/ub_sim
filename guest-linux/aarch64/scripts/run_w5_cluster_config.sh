@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--gsva-kv] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -26,6 +26,8 @@ CONFIG_PATH=""
 STEPS_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
 GSVA_KV_OVERRIDE=0
+REQUIRE_PREFIX_CACHE_OVERRIDE=0
+DISABLE_MEMORY_REUSE_OVERRIDE=0
 SIM_W5_REQUIRE_PREFIX_CACHE="${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
 
 while (( $# > 0 )); do
@@ -40,6 +42,14 @@ while (( $# > 0 )); do
       ;;
     --gsva-kv)
       GSVA_KV_OVERRIDE=1
+      shift
+      ;;
+    --require-prefix-cache)
+      REQUIRE_PREFIX_CACHE_OVERRIDE=1
+      shift
+      ;;
+    --no-memory-reuse)
+      DISABLE_MEMORY_REUSE_OVERRIDE=1
       shift
       ;;
     --post-run-prune)
@@ -139,6 +149,12 @@ if [[ -n "$KEEP_LATEST_OVERRIDE" ]]; then
 fi
 if (( GSVA_KV_OVERRIDE )); then
   export SIM_W5_MEMORY_GSVA_KV=1
+fi
+if (( REQUIRE_PREFIX_CACHE_OVERRIDE )); then
+  export SIM_W5_REQUIRE_PREFIX_CACHE=1
+fi
+if (( DISABLE_MEMORY_REUSE_OVERRIDE )); then
+  export SIM_W5_MEMORY_REUSE_DISABLE=1
 fi
 
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
@@ -366,6 +382,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_W5_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
   printf 'SIM_W5_VALIDATE_ONLY=%s\n' "${SIM_W5_VALIDATE_ONLY:-}"
   printf 'SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=%s\n' "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}"
+  printf 'SIM_W5_MEMORY_REUSE_DISABLE=%s\n' "${SIM_W5_MEMORY_REUSE_DISABLE:-0}"
   printf 'SIM_W5_MEMORY_REUSE_OUT_DIR=%s\n' "${SIM_W5_MEMORY_REUSE_OUT_DIR:-}"
   printf 'SIM_W5_MEMORY_DECISION_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_STORE:-}"
   printf 'SIM_W5_MEMORY_DECISION_OBJECT_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}"
