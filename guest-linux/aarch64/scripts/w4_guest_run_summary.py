@@ -1315,7 +1315,8 @@ def emit_memory_service_summary(memory_records, worker_events, expected_steps, o
         f"hit_positions={csv_or_none_ordered(record.get('position') for record in lookup_hits)} "
         f"prefix_cache_reject_policy={prefix_cache_reject_policy} "
         f"prefix_cache_recompute_range_forwards={prefix_cache_recompute_range_forwards} "
-        f"prefix_cache_reject_then_recompute={prefix_cache_reject_then_recompute}"
+        f"prefix_cache_reject_then_recompute={prefix_cache_reject_then_recompute} "
+        f"prefix_cache_matched_tokens={csv_or_none(record.get('prefix_cache_matched_tokens') for record in memory_records)}"
     )
 
     if boundary_records:
@@ -1342,7 +1343,8 @@ def emit_memory_service_summary(memory_records, worker_events, expected_steps, o
                 f"lookup_hits={len(step_hits)} "
                 f"hit_registry_indexes={csv_or_none_ordered(record.get('registry_index') for record in step_hits)} "
                 f"hit_registry_steps={csv_or_none_ordered(lookup_hit_registry_step(record) for record in step_hits)} "
-                f"hit_positions={csv_or_none_ordered(record.get('position') for record in step_hits)}"
+                f"hit_positions={csv_or_none_ordered(record.get('position') for record in step_hits)} "
+                f"prefix_cache_matched_tokens={csv_or_none(record.get('prefix_cache_matched_tokens') for record in records)}"
             )
 
 

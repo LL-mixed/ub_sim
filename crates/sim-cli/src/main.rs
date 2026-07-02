@@ -11802,6 +11802,10 @@ fn w5_memory_decision_env_vars(
                 plan.artifact_id.clone().unwrap_or_default(),
             ),
             (
+                "SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS".to_string(),
+                plan.matched_prefix_token_count.to_string(),
+            ),
+            (
                 "SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM".to_string(),
                 format!("{:#x}", plan.proof_checksum),
             ),
@@ -12531,17 +12535,17 @@ fn w5_kv_hot_object_ref_from_object_service(
     let record = object_service
         .latest_record(object_key)
         .ok_or_else(|| anyhow::anyhow!("missing Object Service KV record {object_key}"))?;
-    if record.version != version
-        || record.bytes != bytes
+    if record.bytes != bytes
         || record.checksum != checksum
         || u32::try_from(record.owner_entity.unwrap_or(record.producer_entity)).ok()
             != Some(owner_entity)
         || u32::try_from(record.producer_entity).ok() != Some(producer_entity)
     {
         anyhow::bail!(
-            "Object Service KV record metadata mismatch key={} version={} bytes={} checksum={:#x}",
+            "Object Service KV record metadata mismatch key={} guest_version={} host_version={} bytes={} checksum={:#x}",
             object_key,
             version,
+            record.version,
             bytes,
             checksum
         );
@@ -14682,11 +14686,22 @@ fn w5_prefix_cache_key_for_prompt(
     if prompt_tokens.is_empty() {
         return Ok(None);
     }
+    let model = qwen3_runtime_model_binding(runtime)?;
+    w5_prefix_cache_key_for_prompt_with_model(runtime, model, prompt_tokens)
+}
+
+fn w5_prefix_cache_key_for_prompt_with_model(
+    runtime: &Qwen3DenseGuestRuntime,
+    model: sim_memory::InferenceModelBinding,
+    prompt_tokens: &[u64],
+) -> anyhow::Result<Option<sim_memory::PrefixCacheKey>> {
+    if prompt_tokens.is_empty() {
+        return Ok(None);
+    }
     let mut token_bytes = Vec::with_capacity(prompt_tokens.len() * std::mem::size_of::<u64>());
     for token in prompt_tokens {
         token_bytes.extend_from_slice(&token.to_le_bytes());
     }
-    let model = qwen3_runtime_model_binding(runtime)?;
     let layout_key = format!(
         "qwen3-kv-layout/{}/{}/{}/{}/{}",
         runtime.profile.num_hidden_layers,
@@ -14722,16 +14737,30 @@ fn w5_prefix_cache_lookup_request_for_prompt(
     prompt_tokens: &[u64],
     created_at_us: u64,
 ) -> anyhow::Result<Option<sim_memory::PrefixCacheLookupRequest>> {
-    let Some(key) = w5_prefix_cache_key_for_prompt(runtime, prompt_tokens)? else {
+    let Some(full_prompt_key) = w5_prefix_cache_key_for_prompt(runtime, prompt_tokens)? else {
         return Ok(None);
     };
+    let model = full_prompt_key.model.clone();
+    let mut candidate_keys = Vec::with_capacity(prompt_tokens.len());
+    candidate_keys.push(full_prompt_key.clone());
+    for prefix_len in (1..prompt_tokens.len()).rev() {
+        let Some(prefix_key) = w5_prefix_cache_key_for_prompt_with_model(
+            runtime,
+            model.clone(),
+            &prompt_tokens[..prefix_len],
+        )?
+        else {
+            continue;
+        };
+        candidate_keys.push(prefix_key);
+    }
     let request_id = format!(
         "w5/{}/prompt/{:#x}",
-        runtime.model_key, key.prefix_token_hash
+        runtime.model_key, full_prompt_key.prefix_token_hash
     );
     let request = sim_memory::PrefixCacheLookupRequest {
         request_id,
-        candidate_keys: vec![key],
+        candidate_keys,
         min_confidence_milli: 900,
         allow_verify: false,
         created_at_us,
@@ -16593,7 +16622,8 @@ mod tests {
         w5_memory_prefix_cache_kv_stream_env_from_refs,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
-        w5_paper_engram_eval_evidence_from_summary, w5_runtime_tensor_payload_checksum,
+        w5_paper_engram_eval_evidence_from_summary, w5_prefix_cache_key_for_prompt,
+        w5_prefix_cache_lookup_request_for_prompt, w5_runtime_tensor_payload_checksum,
         w5_try_approximate_boundary_lookup, CompletionStatus, EngramSimtArtifactConfig,
         LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
         LingquMemoryDurableStoreSnapshot, LingquObjectKind, LingquObjectLocality,
@@ -19077,6 +19107,93 @@ mod tests {
         assert_eq!(fields[14], "7");
         assert_eq!(fields[15], "0");
         assert_eq!(fields[16], "3567");
+    }
+
+    #[test]
+    fn w5_prefix_cache_lookup_request_includes_shared_prefix_candidates() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_w5_prefix_cache_candidates_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp dir");
+        let weights_dir = root.join("Qwen3-0.6B");
+        fs::create_dir_all(&weights_dir).expect("create weights dir");
+        fs::write(
+            weights_dir.join("config.json"),
+            r#"{
+                "_name_or_path": "Qwen/Qwen3-0.6B",
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(
+            weights_dir.join("tokenizer.json"),
+            br#"{"model":{"vocab":{}}}"#,
+        )
+        .expect("write tokenizer");
+        fs::write(weights_dir.join("model.safetensors"), b"stub").expect("write weights");
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: false,
+            step_count: 1,
+            prompt: None,
+            prompt_token_ids: None,
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(weights_dir),
+            w5_profile: None,
+            sampler: Qwen3SamplerConfig::default(),
+            engram: Qwen3EngramConfig::default(),
+            memory_bootstrap: None,
+            memory_decisions: None,
+            memory_observation_store_path: None,
+            memory_runtime_boundary_lookup: false,
+            memory_post_run_promote: false,
+            memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
+        };
+        let runtime = qwen3_guest_dense_runtime(&args).expect("dense runtime");
+        let request = w5_prefix_cache_lookup_request_for_prompt(&runtime, &[10, 11, 12, 13], 20)
+            .expect("lookup request")
+            .expect("non-empty prompt request");
+
+        assert_eq!(
+            request
+                .candidate_keys
+                .iter()
+                .map(|key| key.prefix_token_count)
+                .collect::<Vec<_>>(),
+            vec![4, 3, 2, 1]
+        );
+        assert!(request.request_id.starts_with("w5/qwen3-0-6b/prompt/"));
+        assert_eq!(
+            request.candidate_keys[0].prefix_token_hash,
+            w5_prefix_cache_key_for_prompt(&runtime, &[10, 11, 12, 13])
+                .expect("full key")
+                .expect("full key present")
+                .prefix_token_hash
+        );
+        assert_eq!(
+            request.candidate_keys[1].prefix_token_hash,
+            w5_prefix_cache_key_for_prompt(&runtime, &[10, 11, 12])
+                .expect("prefix key")
+                .expect("prefix key present")
+                .prefix_token_hash
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -30639,10 +30756,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         }
         if let Some(plan) = &decisions.prefix_cache {
             println!(
-                "  memory_prefix_cache_reuse_plan: id={} action={} artifact_id={} artifact_checksum={} proof_checksum={:#x}",
+                "  memory_prefix_cache_reuse_plan: id={} action={} artifact_id={} matched_prefix_tokens={} artifact_checksum={} proof_checksum={:#x}",
                 plan.plan_id,
                 w5_prefix_cache_reuse_action_name(plan.action),
                 plan.artifact_id.as_deref().unwrap_or(""),
+                plan.matched_prefix_token_count,
                 decisions
                     .prefix_cache_artifact
                     .as_ref()

@@ -1857,6 +1857,8 @@ pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN: u16 = 26;
 pub const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
 pub const SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT: &str = "SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT";
 const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
+const SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM: &str = "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM";
+const SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH: &str = "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH";
 pub const SIM_QWEN3_GUEST_ENGRAM_STATE_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_STATE_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF: &str =
@@ -2900,6 +2902,18 @@ fn qwen3_object_service_payload_index_view_from_path(
     snapshot_path: &Path,
     object_ref: LingquObmmObjectRefWire,
 ) -> Result<Qwen3ObjectBackedOperandView, String> {
+    qwen3_object_service_payload_index_view_from_path_with_version_policy(
+        snapshot_path,
+        object_ref,
+        true,
+    )
+}
+
+fn qwen3_object_service_payload_index_view_from_path_with_version_policy(
+    snapshot_path: &Path,
+    object_ref: LingquObmmObjectRefWire,
+    require_version_match: bool,
+) -> Result<Qwen3ObjectBackedOperandView, String> {
     let index_path = qwen3_object_service_payload_index_path(snapshot_path);
     let mapped_file = qwen3_map_file_read_only(&index_path).map_err(|err| {
         format!(
@@ -2956,7 +2970,7 @@ fn qwen3_object_service_payload_index_view_from_path(
         if key_hash != object_ref.key_hash
             || owner_entity != object_ref.owner_entity
             || producer_entity != object_ref.producer_entity
-            || object_version != object_ref.object_version
+            || (require_version_match && object_version != object_ref.object_version)
             || payload_bytes != object_ref.payload_bytes
             || payload_checksum != object_ref.payload_checksum
         {
@@ -3184,6 +3198,45 @@ fn qwen3_engram_context_payload_get(
     qwen3_object_registry_get(object_ref)
 }
 
+fn qwen3_w5_prefix_cache_kv_stream_refs() -> Vec<String> {
+    let mut refs = Vec::new();
+    if let Ok(inline) = std::env::var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM) {
+        refs.extend(
+            inline
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if let Ok(path) = std::env::var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH) {
+        let path = path.trim();
+        if !path.is_empty() {
+            if let Ok(contents) = fs::read_to_string(path) {
+                refs.extend(
+                    contents
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(str::to_string),
+                );
+            }
+        }
+    }
+    refs
+}
+
+fn qwen3_w5_prefix_cache_kv_stream_contains_ref(object_ref: &LingquObmmObjectRefWire) -> bool {
+    qwen3_w5_prefix_cache_kv_stream_refs().iter().any(|entry| {
+        let Some(ref_hex) = entry.split(':').nth(6) else {
+            return false;
+        };
+        qwen3_obmm_object_ref_wire_from_hex(ref_hex)
+            .map(|candidate| candidate == *object_ref)
+            .unwrap_or(false)
+    })
+}
+
 fn qwen3_runtime_object_payload_view(
     object_ref: LingquObmmObjectRefWire,
     surface: &LocalGuestUapiSurface,
@@ -3194,8 +3247,25 @@ fn qwen3_runtime_object_payload_view(
     if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
         match qwen3_object_service_payload_index_view_from_path(&snapshot_path, object_ref) {
             Ok(view) => return Ok(view),
-            Err(_) if qwen3_object_registry_explicit_dir().is_some() => {}
-            Err(err) => return Err(err),
+            Err(err) => {
+                let snapshot_ref_missing =
+                    err.contains("qwen3_object_service_payload_index_ref_missing");
+                if !snapshot_ref_missing {
+                    return Err(err);
+                }
+                if qwen3_w5_prefix_cache_kv_stream_contains_ref(&object_ref) {
+                    return Err(err);
+                }
+                if let Ok(view) =
+                    qwen3_object_service_payload_index_view_from_path_with_version_policy(
+                        &snapshot_path,
+                        object_ref,
+                        false,
+                    )
+                {
+                    return Ok(view);
+                }
+            }
         }
     }
     if let Some(registry_dir) = qwen3_object_registry_explicit_dir() {
@@ -23832,7 +23902,8 @@ mod tests {
         qwen3_object_service_snapshot_hydrate_payloads, qwen3_object_service_snapshot_put,
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
         qwen3_paper_engram_state_manifest_from_payload, qwen3_paper_engram_state_manifest_payload,
-        qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
+        qwen3_register_range_forward_objects, qwen3_runtime_object_payload_view,
+        qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
         run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
@@ -23863,6 +23934,7 @@ mod tests {
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+        SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM, SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH,
         W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
         W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
@@ -23899,9 +23971,10 @@ mod tests {
         dfs::{DfsReadReq, DfsServiceProfile, DfsWriteReq},
         object::{
             LingquObjectKind, LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
-            LingquObjectResolveReq, LingquObjectServiceSnapshot, LingquObjectServiceStub,
-            LingquObjectState, LingquObjectVersionSelector, LingquObmmObjectRefWire,
-            LingquPayloadBackend, LingquPayloadPlacement,
+            LingquObjectRecord, LingquObjectResolveReq, LingquObjectServiceProfile,
+            LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectState,
+            LingquObjectVersionSelector, LingquObmmObjectRefWire, LingquPayloadBackend,
+            LingquPayloadPlacement,
         },
         shmem::{ShmemGetReq, ShmemPutReq, ShmemServiceProfile, DEFAULT_MAX_SEGMENT_BYTES},
     };
@@ -31580,6 +31653,195 @@ mod tests {
                     "{err}"
                 );
 
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_runtime_object_payload_view_allows_registry_for_dynamic_snapshot_miss() {
+        run_simpler_native_test_isolated(
+            "qwen3_runtime_object_payload_view_allows_registry_for_dynamic_snapshot_miss",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_dynamic_snapshot_miss_registry_{}",
+                    std::process::id()
+                ));
+                let snapshot_path = std::env::temp_dir().join(format!(
+                    "ub_sim_dynamic_snapshot_miss_{}.json",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                let _ =
+                    std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
+                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM);
+                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
+
+                let empty_snapshot = LingquObjectServiceSnapshot {
+                    profile: LingquObjectServiceProfile::default(),
+                    records: Vec::new(),
+                };
+                write_test_object_service_payload_index(&snapshot_path, &empty_snapshot);
+
+                let payload = vec![0x5au8; 256];
+                let object_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    0,
+                    0,
+                    1,
+                    0x1234,
+                    0,
+                    payload.len() as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&payload),
+                );
+                qwen3_object_registry_put(&object_ref, &payload).expect("registry put");
+
+                let view = qwen3_runtime_object_payload_view(object_ref, &test_surface())
+                    .expect("dynamic snapshot miss should resolve from registry");
+                assert_eq!(view.bytes(), payload.as_slice());
+
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                let _ =
+                    std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_runtime_object_payload_view_rejects_prefix_cache_snapshot_miss() {
+        run_simpler_native_test_isolated(
+            "qwen3_runtime_object_payload_view_rejects_prefix_cache_snapshot_miss",
+            || {
+                let registry_dir = std::env::temp_dir().join(format!(
+                    "ub_sim_prefix_snapshot_miss_registry_{}",
+                    std::process::id()
+                ));
+                let snapshot_path = std::env::temp_dir().join(format!(
+                    "ub_sim_prefix_snapshot_miss_{}.json",
+                    std::process::id()
+                ));
+                let stream_path = std::env::temp_dir().join(format!(
+                    "ub_sim_prefix_snapshot_miss_stream_{}.txt",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                let _ =
+                    std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
+                let _ = std::fs::remove_file(&stream_path);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
+                std::env::set_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH, &stream_path);
+                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM);
+
+                let empty_snapshot = LingquObjectServiceSnapshot {
+                    profile: LingquObjectServiceProfile::default(),
+                    records: Vec::new(),
+                };
+                write_test_object_service_payload_index(&snapshot_path, &empty_snapshot);
+
+                let payload = vec![0xa5u8; 256];
+                let object_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    1,
+                    1,
+                    1,
+                    0x5678,
+                    0,
+                    payload.len() as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&payload),
+                );
+                qwen3_object_registry_put(&object_ref, &payload).expect("registry put");
+                std::fs::write(
+                    &stream_path,
+                    format!(
+                        "0:3:8:2:4:8:{}:{}:{}\n",
+                        qwen3_obmm_object_ref_wire_to_hex(&object_ref),
+                        object_ref.payload_bytes,
+                        object_ref.payload_checksum
+                    ),
+                )
+                .expect("write prefix stream");
+
+                let err = qwen3_runtime_object_payload_view(object_ref, &test_surface())
+                    .expect_err("prefix-cache snapshot miss must fail closed");
+                assert!(
+                    err.contains("qwen3_object_service_payload_index_ref_missing"),
+                    "{err}"
+                );
+
+                let _ = std::fs::remove_dir_all(&registry_dir);
+                let _ =
+                    std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
+                let _ = std::fs::remove_file(&stream_path);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_runtime_object_payload_view_accepts_dynamic_snapshot_version_skew() {
+        run_simpler_native_test_isolated(
+            "qwen3_runtime_object_payload_view_accepts_dynamic_snapshot_version_skew",
+            || {
+                let snapshot_path = std::env::temp_dir().join(format!(
+                    "ub_sim_dynamic_snapshot_version_skew_{}.json",
+                    std::process::id()
+                ));
+                let _ =
+                    std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM);
+                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
+
+                let key = "hidden/qwen3-0-6b/node2/range-runtime-input/decode-step0";
+                let payload = vec![0x7bu8; 256];
+                let checksum = qwen3_dense_reference_range_object_payload_checksum(&payload);
+                let snapshot = LingquObjectServiceSnapshot {
+                    profile: LingquObjectServiceProfile::default(),
+                    records: vec![LingquObjectRecord {
+                        key: key.to_string(),
+                        kind: LingquObjectKind::RuntimeTensor,
+                        version: 2,
+                        state: LingquObjectState::Committed,
+                        producer_entity: 0,
+                        owner_entity: Some(0),
+                        bytes: payload.len() as u64,
+                        checksum,
+                        dtype: None,
+                        shape: Vec::new(),
+                        layout: None,
+                        placements: Vec::new(),
+                        payload_bytes: payload.clone(),
+                        created_at_us: 1,
+                        committed_at_us: Some(2),
+                        expires_at_us: None,
+                    }],
+                };
+                write_test_object_service_payload_index(&snapshot_path, &snapshot);
+
+                let object_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    0,
+                    0,
+                    1,
+                    qwen3_lingqu_key_hash(key),
+                    0,
+                    payload.len() as u64,
+                    checksum,
+                );
+                let view = qwen3_runtime_object_payload_view(object_ref, &test_surface())
+                    .expect("dynamic snapshot version skew should resolve by checksum");
+                assert_eq!(view.bytes(), payload.as_slice());
+
+                let _ =
+                    std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
             },
         );

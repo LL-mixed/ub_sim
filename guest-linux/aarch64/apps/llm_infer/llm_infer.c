@@ -1986,6 +1986,8 @@ struct w4_qwen3_memory_decision_config {
     char prefix_cache_artifact_id[256];
     char prefix_cache_artifact_checksum[64];
     char prefix_cache_artifact_ref[160];
+    char prefix_cache_matched_tokens[64];
+    uint64_t prefix_cache_matched_token_count;
     char prefix_cache_proof_checksum[64];
     uint64_t prefix_cache_kv_stream_expected_count;
     uint64_t prefix_cache_kv_stream_count;
@@ -6635,9 +6637,18 @@ static int parse_qwen3_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF",
                       config->prefix_cache_artifact_ref,
                       sizeof(config->prefix_cache_artifact_ref));
+    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS",
+                      config->prefix_cache_matched_tokens,
+                      sizeof(config->prefix_cache_matched_tokens));
     env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM",
                       config->prefix_cache_proof_checksum,
                       sizeof(config->prefix_cache_proof_checksum));
+    if (str_nonempty(config->prefix_cache_matched_tokens) &&
+        parse_u64_field("prefix_cache_matched_tokens",
+                        config->prefix_cache_matched_tokens,
+                        &config->prefix_cache_matched_token_count) != 0) {
+        return -1;
+    }
 
     has_shortpath = str_nonempty(config->shortpath_decision_id);
     has_shortpath_stream = config->shortpath_stream_count > 0;
@@ -6823,6 +6834,15 @@ static int parse_qwen3_memory_decision_config(
                 str_nonempty(config->prefix_cache_artifact_id) ?
                     config->prefix_cache_artifact_id :
                     "unset");
+        return -1;
+    }
+    if (has_prefix_cache && strcmp(config->prefix_cache_action, "reuse") == 0 &&
+        config->prefix_cache_matched_token_count == 0) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 memory prefix-cache matched tokens missing "
+                "plan_id=%s action=%s\n",
+                config->prefix_cache_reuse_plan_id,
+                config->prefix_cache_action);
         return -1;
     }
     return 0;
@@ -7088,6 +7108,20 @@ static int qwen3_memory_prefix_cache_kv_ref(
                entry->gsva_checksum);
     }
     return 1;
+}
+
+static bool qwen3_memory_prefix_cache_partial_prefill_active(
+    const struct w4_qwen3_memory_decision_config *config,
+    uint64_t guest_decode_step,
+    uint64_t local_prompt_tokens)
+{
+    if (!config || !config->enabled ||
+        strcmp(config->prefix_cache_action, "reuse") != 0 ||
+        config->prefix_cache_matched_token_count == 0 ||
+        guest_decode_step != 0) {
+        return false;
+    }
+    return config->prefix_cache_matched_token_count < local_prompt_tokens;
 }
 
 static int qwen3_registry_payload_path(
@@ -9833,6 +9867,7 @@ int main(int argc, char **argv)
                    " prefix_cache_id=%s"
                    " prefix_cache_action=%s prefix_cache_artifact_checksum=%s"
                    " prefix_cache_artifact_ref_chars=%zu"
+                   " prefix_cache_matched_tokens=%s"
                    " source=env_contract target=range_boundary_reader status=ok\n",
                    role,
                    w4_cluster_role_index(role, cluster_node_count, &local_node) ?
@@ -9886,7 +9921,10 @@ int main(int argc, char **argv)
                        "none",
                    str_nonempty(qwen3_memory_decision_config.prefix_cache_artifact_ref) ?
                        strlen(qwen3_memory_decision_config.prefix_cache_artifact_ref) :
-                       (size_t)0);
+                       (size_t)0,
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_matched_tokens) ?
+                       qwen3_memory_decision_config.prefix_cache_matched_tokens :
+                       "0");
         }
     }
     snprintf(request_id, sizeof(request_id), "w4-%s-request-0", role);
@@ -11582,6 +11620,7 @@ decode_round_start:
                    " prefix_cache_id=%s"
                    " prefix_cache_action=%s prefix_cache_artifact_checksum=%s"
                    " prefix_cache_artifact_ref_chars=%zu"
+                   " prefix_cache_matched_tokens=%s"
                    " source=lingqu_memory_service target=range_forward_boundary status=validated\n",
                    dispatch_node + 1U,
                    guest_decode_step,
@@ -11636,17 +11675,25 @@ decode_round_start:
                        "none",
                    str_nonempty(qwen3_memory_decision_config.prefix_cache_artifact_ref) ?
                        strlen(qwen3_memory_decision_config.prefix_cache_artifact_ref) :
-                       (size_t)0);
+                       (size_t)0,
+                   str_nonempty(qwen3_memory_decision_config.prefix_cache_matched_tokens) ?
+                       qwen3_memory_decision_config.prefix_cache_matched_tokens :
+                       "0");
         }
         {
             uint32_t object_ref_count = 0;
+            bool prefix_cache_partial_prefill =
+                qwen3_memory_prefix_cache_partial_prefill_active(
+                    &qwen3_memory_decision_config,
+                    guest_decode_step,
+                    qwen3_round_input_token_count);
             uint8_t empty_object_ref_table[W4_QWEN3_OBJECT_REF_MAX_COUNT *
                                            W4_QWEN3_OBJECT_REF_BYTES] = {0};
 
             if (layer_start > 0U || guest_decode_step > 0) {
                 object_ref_count++;
             }
-            if (guest_decode_step > 0) {
+            if (guest_decode_step > 0 || prefix_cache_partial_prefill) {
                 object_ref_count++;
             }
             object_ref_count +=
@@ -11711,6 +11758,7 @@ decode_round_start:
         uint32_t layer_end = 0U;
         uint32_t next_node = 0U;
         uint32_t object_ref_write_index = 0U;
+        bool prefix_cache_partial_prefill = false;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
             mem_service_qwen3_layer_range_for_node(dispatch_node,
@@ -11722,6 +11770,23 @@ decode_round_start:
                     "[w4_guest] fail qwen3 runtime range input placement unavailable role=%s nodes=%u\n",
                     role,
                     cluster_node_count);
+            goto out;
+        }
+        prefix_cache_partial_prefill =
+            qwen3_memory_prefix_cache_partial_prefill_active(
+                &qwen3_memory_decision_config,
+                guest_decode_step,
+                qwen3_round_input_token_count);
+        if (prefix_cache_partial_prefill &&
+            qwen3_round_input_token_count !=
+                qwen3_memory_decision_config.prefix_cache_matched_token_count + 1U) {
+            fprintf(stderr,
+                    "[w4_guest] fail qwen3 w5 partial prefix-cache suffix unsupported"
+                    " matched_tokens=%" PRIu64
+                    " local_prompt_tokens=%" PRIu64
+                    " supported_suffix_tokens=1\n",
+                    qwen3_memory_decision_config.prefix_cache_matched_token_count,
+                    qwen3_round_input_token_count);
             goto out;
         }
         if (layer_start > 0U || guest_decode_step > 0) {
@@ -11920,10 +11985,11 @@ decode_round_start:
             input_found_ms = input_wait_start_ms;
             input_loaded_ms = input_found_ms;
         }
-        if (guest_decode_step > 0) {
+        if (guest_decode_step > 0 || prefix_cache_partial_prefill) {
             struct lingqu_obmm_object_ref_wire prefix_cache_kv_ref;
             struct mem_service_object_payload_view previous_kv_view;
-            uint64_t kv_source_step = guest_decode_step - 1U;
+            uint64_t kv_source_step =
+                prefix_cache_partial_prefill ? 0U : guest_decode_step - 1U;
             uint64_t requested_kv_source_step = kv_source_step;
             int prefix_cache_kv_ref_state;
             int previous_kv_state;
@@ -11932,13 +11998,18 @@ decode_round_start:
             memset(&previous_kv_view, 0, sizeof(previous_kv_view));
             kv_resolve_start_ms = monotonic_ms();
             prefix_cache_kv_ref_state =
-                qwen3_memory_prefix_cache_kv_ref(&qwen3_memory_decision_config,
-                                                 dispatch_node,
-                                                 layer_start,
-                                                 layer_end,
-                                                 kv_source_step,
-                                                 &prefix_cache_kv_ref,
-                                                 &kv_loaded_from_gsva);
+                prefix_cache_partial_prefill || !qwen3_memory_prefix_cache_partial_prefill_active(
+                    &qwen3_memory_decision_config,
+                    0,
+                    qwen3_prompt_base_token_count) ?
+                    qwen3_memory_prefix_cache_kv_ref(&qwen3_memory_decision_config,
+                                                     dispatch_node,
+                                                     layer_start,
+                                                     layer_end,
+                                                     kv_source_step,
+                                                     &prefix_cache_kv_ref,
+                                                     &kv_loaded_from_gsva) :
+                    0;
             if (prefix_cache_kv_ref_state < 0) {
                 goto out;
             }
@@ -11957,18 +12028,31 @@ decode_round_start:
                        " plan_id=%s artifact_id=%s kv_bytes=%" PRIu64
                        " kv_checksum=0x%016" PRIx64
                        " key_hash=0x%016" PRIx64 " version=%" PRIu64
+                       " matched_tokens=%" PRIu64
+                       " partial_prefill=%u"
                        " source=lingqu_memory_service target=uapi_object_ref"
                        " materialize=none status=ok\n",
                        dispatch_node + 1U,
                        guest_decode_step,
-                       guest_decode_step - 1U,
+                       kv_source_step,
                        qwen3_memory_decision_config.prefix_cache_reuse_plan_id,
                        qwen3_memory_decision_config.prefix_cache_artifact_id,
                        prefix_cache_kv_ref.payload_bytes,
                        prefix_cache_kv_ref.payload_checksum,
                        prefix_cache_kv_ref.key_hash,
-                       prefix_cache_kv_ref.object_version);
+                       prefix_cache_kv_ref.object_version,
+                       qwen3_memory_decision_config.prefix_cache_matched_token_count,
+                       prefix_cache_partial_prefill ? 1U : 0U);
             } else {
+                if (prefix_cache_partial_prefill) {
+                    fprintf(stderr,
+                            "[w4_guest] fail qwen3 w5 partial prefix-cache kv missing"
+                            " node=%u step=%" PRIu64 " matched_tokens=%" PRIu64 "\n",
+                            dispatch_node + 1U,
+                            guest_decode_step,
+                            qwen3_memory_decision_config.prefix_cache_matched_token_count);
+                    goto out;
+                }
                 previous_kv_state =
                     mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
                         &db_service,

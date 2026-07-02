@@ -523,6 +523,7 @@ def validate(
     context_guard=None,
     require_device_gsva=False,
     require_prefix_cache=False,
+    expect_prefix_cache_matched_tokens=None,
 ):
     issues = []
     summary = parsed["summary"]
@@ -720,6 +721,14 @@ def validate(
     )
     for issue in prefix_cache_guard_result["issues"]:
         issues.append(f"prefix-cache guard: {issue}")
+    if expect_prefix_cache_matched_tokens is not None:
+        matched_tokens = memory.get("prefix_cache_matched_tokens", "")
+        actual = parse_int(matched_tokens, -1)
+        if actual != expect_prefix_cache_matched_tokens:
+            issues.append(
+                "prefix-cache matched token mismatch "
+                f"expected={expect_prefix_cache_matched_tokens} actual={matched_tokens or ''}"
+            )
 
     artifact_sizes = {}
     for label, limit in ARTIFACT_LIMITS.items():
@@ -832,6 +841,7 @@ def build_report(
     context_guard=None,
     require_device_gsva=False,
     require_prefix_cache=False,
+    expect_prefix_cache_matched_tokens=None,
 ):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
@@ -849,6 +859,7 @@ def build_report(
         context_guard,
         require_device_gsva,
         require_prefix_cache,
+        expect_prefix_cache_matched_tokens,
     )
     summary = parsed["summary"]
     memory = parsed["memory_service"]
@@ -884,6 +895,7 @@ def build_report(
         "prefix_cache": {
             "ids": memory.get("prefix_cache_ids", ""),
             "actions": memory.get("prefix_cache_actions", ""),
+            "matched_tokens": parse_int(memory.get("prefix_cache_matched_tokens")),
             "kv_hits": parse_int(memory.get("prefix_cache_kv_hits")),
             "kv_nodes": memory.get("prefix_cache_kv_nodes", ""),
             "gsva_rejections": parse_int(memory.get("prefix_cache_gsva_rejections")),
@@ -951,6 +963,7 @@ def print_prefix_cache_benefit_comparison(comparison):
             f"prefix_cache_ids={prefix_cache['ids']} "
             f"prefix_cache_action={prefix_cache['actions']} "
             f"prefix_cache_kv_hits={prefix_cache['kv_hits']} "
+            f"prefix_cache_matched_tokens={prefix_cache['matched_tokens']} "
             f"gsva_reads={gsva['reads']} gsva_writebacks={gsva['writebacks']} "
             f"round_sum_ms={timing['round_sum_ms']} "
             f"post_step0_avg_round_ms={timing['post_step0_avg_round_ms']} "
@@ -1043,7 +1056,8 @@ def print_text_report(report):
         f"gsva_rejection_reasons={prefix_cache['gsva_rejection_reasons']} "
         f"reject_policy={prefix_cache['reject_policy']} "
         f"recompute_range_forwards={prefix_cache['recompute_range_forwards']} "
-        f"reject_then_recompute={prefix_cache['reject_then_recompute']}"
+        f"reject_then_recompute={prefix_cache['reject_then_recompute']} "
+        f"matched_tokens={prefix_cache['matched_tokens']}"
     )
     gsva = report["gsva"]
     print(
@@ -1323,6 +1337,7 @@ def print_prefix_cache_comparison(comparison):
             f"prefix_cache_ids={prefix_cache['ids']} "
             f"prefix_cache_action={prefix_cache['actions']} "
             f"prefix_cache_kv_hits={prefix_cache['kv_hits']} "
+            f"prefix_cache_matched_tokens={prefix_cache['matched_tokens']} "
             f"round_sum_ms={timing['round_sum_ms']} "
             f"post_step0_avg_round_ms={timing['post_step0_avg_round_ms']} "
             f"range_forwards={report['shortpath']['actual_range_forwards']} "
@@ -1397,6 +1412,12 @@ def main(argv):
         action="store_true",
         help="Require prefix-cache reuse hit and evidence.",
     )
+    parser.add_argument(
+        "--expect-prefix-cache-matched-tokens",
+        type=int,
+        default=None,
+        help="Require prefix-cache reuse to report this matched prefix token count.",
+    )
     args = parser.parse_args(argv)
 
     if args.compare_prefix_cache_benefit:
@@ -1447,6 +1468,7 @@ def main(argv):
         context_guard_from_args(args),
         args.require_device_gsva,
         prefix_cache_guard_from_args(args),
+        args.expect_prefix_cache_matched_tokens,
     )
     if args.json_output:
         print(json.dumps(report, indent=2, sort_keys=True))
