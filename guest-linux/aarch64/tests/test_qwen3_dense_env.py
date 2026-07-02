@@ -737,6 +737,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         generic = script_dir / "run_ub_w5_inference_cluster.sh"
         config_runner = script_dir / "run_w5_cluster_config.sh"
         realistic_matrix_runner = script_dir / "run_w5_prefix_cache_realistic_matrix.sh"
+        serving_matrix_runner = script_dir / "run_w5_prefix_cache_serving_matrix.sh"
         stable_w5_runner = script_dir / "run_w5_cluster_qwen3_0_6b_2step.sh"
         summary = script_dir / "w5_inference_cluster_summary.py"
         launcher = script_dir / "launch_ub_eight_node_headless.sh"
@@ -749,6 +750,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertTrue(config_runner.stat().st_mode & 0o111)
         self.assertTrue(realistic_matrix_runner.exists())
         self.assertTrue(realistic_matrix_runner.stat().st_mode & 0o111)
+        self.assertTrue(serving_matrix_runner.exists())
+        self.assertTrue(serving_matrix_runner.stat().st_mode & 0o111)
         self.assertTrue(summary.exists())
         self.assertTrue(summary.stat().st_mode & 0o111)
 
@@ -756,6 +759,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         generic_text = generic.read_text(encoding="utf-8")
         config_runner_text = config_runner.read_text(encoding="utf-8")
         realistic_matrix_runner_text = realistic_matrix_runner.read_text(encoding="utf-8")
+        serving_matrix_runner_text = serving_matrix_runner.read_text(encoding="utf-8")
         stable_w5_runner_text = stable_w5_runner.read_text(encoding="utf-8")
         legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         launcher_text = launcher.read_text(encoding="utf-8")
@@ -854,6 +858,17 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--compare-prefix-cache-benefit", realistic_matrix_runner_text)
         self.assertIn("run_w5_cluster_config.sh", realistic_matrix_runner_text)
         self.assertIn("w5_inference_run_report.py", realistic_matrix_runner_text)
+        self.assertIn("--same-prefix-runs N", serving_matrix_runner_text)
+        self.assertIn("--shared-prefix-token-ids CSV", serving_matrix_runner_text)
+        self.assertIn("--suffix-b-token-ids CSV", serving_matrix_runner_text)
+        self.assertIn("--compare-prefix-cache-benefit", serving_matrix_runner_text)
+        self.assertIn("--compare-prefix-cache", serving_matrix_runner_text)
+        self.assertIn("expect_fail_closed=true", serving_matrix_runner_text)
+        self.assertIn("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
+        self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", serving_matrix_runner_text)
+        self.assertIn("SIM_W5_MEMORY_SHORTPATH_EXECUTE", serving_matrix_runner_text)
+        self.assertIn('write_case_config request-b "$prompt_b" "$OUT_DIR" "$seed_run_id" 0 0', serving_matrix_runner_text)
+        self.assertIn('include_boundary_selector="${6:-1}"', serving_matrix_runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
         self.assertIn("SIM_W5_VALIDATE_ONLY", config_runner_text)
@@ -1011,6 +1026,78 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("--steps must be a positive integer: 0", result.stderr)
+
+    def test_w5_prefix_cache_serving_matrix_runner_dry_run(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        matrix_runner = script_dir / "run_w5_prefix_cache_serving_matrix.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5.env"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=4",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-0.6b",
+                        "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    str(matrix_runner),
+                    "--dry-run",
+                    "--steps",
+                    "8",
+                    "--same-prefix-runs",
+                    "2",
+                    "--shared-prefix-token-ids",
+                    "10,11,12",
+                    "--suffix-a-token-ids",
+                    "13",
+                    "--suffix-b-token-ids",
+                    "14",
+                    str(config_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("=== W5 Prefix Cache Serving Matrix ===", result.stdout)
+        self.assertIn("Steps:            8", result.stdout)
+        self.assertIn("Same-prefix runs: 2", result.stdout)
+        self.assertIn("Shared prefix:    10,11,12", result.stdout)
+        self.assertIn("Prompt A:         10,11,12,13", result.stdout)
+        self.assertIn("Prompt B:         10,11,12,14", result.stdout)
+        self.assertEqual(result.stdout.count("--no-memory-reuse"), 1)
+        self.assertEqual(result.stdout.count("--require-prefix-cache"), 3)
+        self.assertEqual(result.stdout.count("--compare-prefix-cache-benefit"), 2)
+        self.assertEqual(result.stdout.count("--compare-prefix-cache "), 1)
+        self.assertIn("run=divergent-suffix-request-b", result.stdout)
+        self.assertIn("expect-fail", result.stdout)
+        self.assertIn("run_w5_cluster_config.sh", result.stdout)
+        self.assertIn("w5_inference_run_report.py", result.stdout)
+
+    def test_w5_prefix_cache_serving_matrix_runner_rejects_invalid_args(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        matrix_runner = script_dir / "run_w5_prefix_cache_serving_matrix.sh"
+
+        result = subprocess.run(
+            [str(matrix_runner), "--dry-run", "--suffix-a-token-ids", "13", "--suffix-b-token-ids", "13"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "--suffix-a-token-ids and --suffix-b-token-ids must differ",
+            result.stderr,
+        )
 
     def test_w5_cluster_config_runner_prints_post_run_maintenance_flags(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
