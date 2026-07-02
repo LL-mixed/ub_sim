@@ -1275,6 +1275,11 @@ def emit_memory_service_summary(memory_records, worker_events, expected_steps, o
         for record in memory_records
         if record["stage"] == "qwen3_w5_memory_prefix_cache_gsva_rejected"
     ]
+    prefix_cache_suffix_replays = [
+        record
+        for record in memory_records
+        if record["stage"] == "qwen3_w5_memory_prefix_cache_suffix_replay_token"
+    ]
     prefix_cache_recompute_range_forwards = (
         worker_events["range_forwards"] if prefix_cache_gsva_rejections else 0
     )
@@ -1316,7 +1321,9 @@ def emit_memory_service_summary(memory_records, worker_events, expected_steps, o
         f"prefix_cache_reject_policy={prefix_cache_reject_policy} "
         f"prefix_cache_recompute_range_forwards={prefix_cache_recompute_range_forwards} "
         f"prefix_cache_reject_then_recompute={prefix_cache_reject_then_recompute} "
-        f"prefix_cache_matched_tokens={csv_or_none(record.get('prefix_cache_matched_tokens') for record in memory_records)}"
+        f"prefix_cache_matched_tokens={csv_or_none(record.get('prefix_cache_matched_tokens') for record in memory_records)} "
+        f"prefix_cache_suffix_replay_tokens={len(prefix_cache_suffix_replays)} "
+        f"prefix_cache_suffix_replay_steps={csv_or_none_ordered(record.get('step') for record in prefix_cache_suffix_replays)}"
     )
 
     if boundary_records:

@@ -9121,6 +9121,12 @@ impl LingquMemoryService {
                     .then_with(|| left.artifact_id.cmp(&right.artifact_id))
             })
             .cloned();
+        if let Some(candidate) = candidate.as_ref() {
+            if let Some(stored) = self.prefix_cache_artifacts.get_mut(&candidate.artifact_id) {
+                stored.last_used_at_us = now_us;
+                stored.use_count = stored.use_count.saturating_add(1);
+            }
+        }
 
         let reuse_plan = if let Some(artifact) = candidate.as_ref() {
             let action = if artifact.state == ExecutionArtifactState::Verified {
@@ -9214,6 +9220,53 @@ impl LingquMemoryService {
         };
         response.validate()?;
         Ok(response)
+    }
+
+    pub fn prune_prefix_cache_artifacts(
+        &mut self,
+        now_us: u64,
+        max_artifacts: usize,
+    ) -> MemoryResult<Vec<String>> {
+        let mut evicted = Vec::new();
+        let expired = self
+            .prefix_cache_artifacts
+            .values()
+            .filter(|artifact| {
+                artifact
+                    .expires_at_us
+                    .map(|expires_at_us| expires_at_us <= now_us)
+                    .unwrap_or(false)
+            })
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect::<Vec<_>>();
+        for artifact_id in expired {
+            if self.prefix_cache_artifacts.remove(&artifact_id).is_some() {
+                evicted.push(artifact_id);
+            }
+        }
+
+        if self.prefix_cache_artifacts.len() > max_artifacts {
+            let mut candidates = self
+                .prefix_cache_artifacts
+                .values()
+                .map(|artifact| {
+                    (
+                        artifact.last_used_at_us,
+                        artifact.use_count,
+                        artifact.created_at_us,
+                        artifact.artifact_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            candidates.sort();
+            let overflow = self.prefix_cache_artifacts.len() - max_artifacts;
+            for (_, _, _, artifact_id) in candidates.into_iter().take(overflow) {
+                if self.prefix_cache_artifacts.remove(&artifact_id).is_some() {
+                    evicted.push(artifact_id);
+                }
+            }
+        }
+        Ok(evicted)
     }
 
     pub fn boundary_lookup(
@@ -14500,6 +14553,204 @@ mod tests {
                 .unwrap()
                 .reason,
             "prefix_cache_hit"
+        );
+    }
+
+    #[test]
+    fn prefix_cache_lookup_skips_expired_long_candidate_and_uses_shorter_live_prefix() {
+        let mut service = LingquMemoryService::new();
+        let short_key = sample_prefix_cache_key(8, 0x1111);
+        let long_key = sample_prefix_cache_key(16, 0x2222);
+        service
+            .register_prefix_cache_artifact(PrefixCacheArtifact {
+                artifact_id: "prefix-cache/live-short".to_string(),
+                key: short_key.clone(),
+                kv_artifact_ids: Vec::new(),
+                durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                    "block/prefix/live-short",
+                    0,
+                    64,
+                    0x1234,
+                )],
+                hot_object_refs: Vec::new(),
+                dtype: TensorDType::F32,
+                shape: vec![8, 4],
+                confidence_milli: 950,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x9001,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(100),
+                last_used_at_us: 10,
+                use_count: 1,
+            })
+            .unwrap();
+        service
+            .register_prefix_cache_artifact(PrefixCacheArtifact {
+                artifact_id: "prefix-cache/expired-long".to_string(),
+                key: long_key.clone(),
+                kv_artifact_ids: Vec::new(),
+                durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                    "block/prefix/expired-long",
+                    0,
+                    128,
+                    0x5678,
+                )],
+                hot_object_refs: Vec::new(),
+                dtype: TensorDType::F32,
+                shape: vec![16, 4],
+                confidence_milli: 1000,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x9002,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(50),
+                last_used_at_us: 10,
+                use_count: 1,
+            })
+            .unwrap();
+
+        let response = service
+            .lookup_prefix_cache(
+                PrefixCacheLookupRequest {
+                    request_id: "prefix-lookup/expired-long".to_string(),
+                    candidate_keys: vec![short_key, long_key],
+                    min_confidence_milli: 900,
+                    allow_verify: false,
+                    created_at_us: 60,
+                },
+                60,
+            )
+            .unwrap();
+
+        assert_eq!(response.reuse_plan.action, PrefixCacheReuseAction::Reuse);
+        assert_eq!(
+            response.reuse_plan.artifact_id.as_deref(),
+            Some("prefix-cache/live-short")
+        );
+        assert_eq!(response.reuse_plan.matched_prefix_token_count, 8);
+    }
+
+    #[test]
+    fn prefix_cache_lookup_misses_when_only_candidate_is_expired() {
+        let mut service = LingquMemoryService::new();
+        let key = sample_prefix_cache_key(8, 0x1111);
+        service
+            .register_prefix_cache_artifact(PrefixCacheArtifact {
+                artifact_id: "prefix-cache/expired".to_string(),
+                key: key.clone(),
+                kv_artifact_ids: Vec::new(),
+                durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                    "block/prefix/expired",
+                    0,
+                    64,
+                    0x1234,
+                )],
+                hot_object_refs: Vec::new(),
+                dtype: TensorDType::F32,
+                shape: vec![8, 4],
+                confidence_milli: 950,
+                state: ExecutionArtifactState::Verified,
+                checksum: 0x9001,
+                version: 1,
+                created_at_us: 10,
+                expires_at_us: Some(50),
+                last_used_at_us: 10,
+                use_count: 1,
+            })
+            .unwrap();
+
+        let response = service
+            .lookup_prefix_cache(
+                PrefixCacheLookupRequest {
+                    request_id: "prefix-lookup/expired-only".to_string(),
+                    candidate_keys: vec![key],
+                    min_confidence_milli: 900,
+                    allow_verify: false,
+                    created_at_us: 60,
+                },
+                60,
+            )
+            .unwrap();
+
+        assert_eq!(response.reuse_plan.action, PrefixCacheReuseAction::Miss);
+        assert_eq!(response.reuse_plan.reason, "prefix_cache_miss");
+        assert_eq!(response.artifact, None);
+    }
+
+    #[test]
+    fn prefix_cache_prune_removes_expired_and_lru_artifacts() {
+        let mut service = LingquMemoryService::new();
+        let hot_key = sample_prefix_cache_key(8, 0x1001);
+        let cold_key = sample_prefix_cache_key(8, 0x1002);
+        let expired_key = sample_prefix_cache_key(8, 0x1003);
+        for (artifact_id, key, last_used_at_us, use_count, expires_at_us) in [
+            ("prefix-cache/hot", hot_key.clone(), 40, 3, Some(200)),
+            ("prefix-cache/cold", cold_key.clone(), 20, 1, Some(200)),
+            ("prefix-cache/expired", expired_key, 90, 9, Some(100)),
+        ] {
+            service
+                .register_prefix_cache_artifact(PrefixCacheArtifact {
+                    artifact_id: artifact_id.to_string(),
+                    key,
+                    kv_artifact_ids: Vec::new(),
+                    durable_payload_refs: vec![LingquBlockPayloadRef::new(
+                        format!("block/{artifact_id}"),
+                        0,
+                        64,
+                        0x1234,
+                    )],
+                    hot_object_refs: Vec::new(),
+                    dtype: TensorDType::F32,
+                    shape: vec![8, 4],
+                    confidence_milli: 950,
+                    state: ExecutionArtifactState::Verified,
+                    checksum: 0x9001,
+                    version: 1,
+                    created_at_us: 10,
+                    expires_at_us,
+                    last_used_at_us,
+                    use_count,
+                })
+                .unwrap();
+        }
+
+        service
+            .lookup_prefix_cache(
+                PrefixCacheLookupRequest {
+                    request_id: "prefix-lookup/hot".to_string(),
+                    candidate_keys: vec![hot_key],
+                    min_confidence_milli: 900,
+                    allow_verify: false,
+                    created_at_us: 120,
+                },
+                120,
+            )
+            .unwrap();
+
+        let evicted = service.prune_prefix_cache_artifacts(120, 1).unwrap();
+
+        assert_eq!(
+            evicted,
+            vec![
+                "prefix-cache/expired".to_string(),
+                "prefix-cache/cold".to_string()
+            ]
+        );
+        assert!(service.prefix_cache_artifact("prefix-cache/hot").is_some());
+        assert_eq!(
+            service
+                .prefix_cache_artifact("prefix-cache/hot")
+                .unwrap()
+                .last_used_at_us,
+            120
+        );
+        assert_eq!(
+            service
+                .prefix_cache_artifact("prefix-cache/hot")
+                .unwrap()
+                .use_count,
+            4
         );
     }
 

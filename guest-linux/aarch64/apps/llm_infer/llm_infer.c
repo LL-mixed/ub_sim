@@ -9474,6 +9474,8 @@ int main(int argc, char **argv)
     struct w4_qwen3_engram_config qwen3_engram_config;
     uint64_t qwen3_terminal_tokens[256];
     uint64_t qwen3_terminal_token_count = 0;
+    uint64_t qwen3_prefix_cache_replay_suffix_tokens[256];
+    uint64_t qwen3_prefix_cache_replay_suffix_token_count = 0;
     uint64_t qwen3_round_input_tokens[1024];
     uint64_t qwen3_round_input_token_count = 0;
     uint64_t qwen3_prompt_base_token_count = 0;
@@ -9569,6 +9571,9 @@ int main(int argc, char **argv)
     memset(&supernode_clock, 0, sizeof(supernode_clock));
     memset(&qwen3_memory_decision_config, 0, sizeof(qwen3_memory_decision_config));
     memset(&qwen3_sampler_config, 0, sizeof(qwen3_sampler_config));
+    memset(qwen3_prefix_cache_replay_suffix_tokens,
+           0,
+           sizeof(qwen3_prefix_cache_replay_suffix_tokens));
     memset(&qwen3_pre_resolved_range_input_view,
            0,
            sizeof(qwen3_pre_resolved_range_input_view));
@@ -9758,6 +9763,24 @@ int main(int argc, char **argv)
         }
     }
     if (parse_qwen3_memory_decision_config(&qwen3_memory_decision_config) != 0) {
+        return 1;
+    }
+    parse_env_u64_csv_bounded(
+        "SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS",
+        qwen3_prefix_cache_replay_suffix_tokens,
+        sizeof(qwen3_prefix_cache_replay_suffix_tokens) /
+            sizeof(qwen3_prefix_cache_replay_suffix_tokens[0]),
+        &qwen3_prefix_cache_replay_suffix_token_count);
+    if (qwen3_prefix_cache_replay_suffix_token_count > 0 &&
+        (!qwen3_memory_decision_config.enabled ||
+         strcmp(qwen3_memory_decision_config.prefix_cache_action, "reuse") != 0)) {
+        fprintf(stderr,
+                "[w4_guest] fail qwen3 w5 prefix-cache suffix replay requires reuse"
+                " replay_tokens=%" PRIu64 " action=%s\n",
+                qwen3_prefix_cache_replay_suffix_token_count,
+                str_nonempty(qwen3_memory_decision_config.prefix_cache_action) ?
+                    qwen3_memory_decision_config.prefix_cache_action :
+                    "unset");
         return 1;
     }
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
@@ -11777,18 +11800,6 @@ decode_round_start:
                 &qwen3_memory_decision_config,
                 guest_decode_step,
                 qwen3_round_input_token_count);
-        if (prefix_cache_partial_prefill &&
-            qwen3_round_input_token_count !=
-                qwen3_memory_decision_config.prefix_cache_matched_token_count + 1U) {
-            fprintf(stderr,
-                    "[w4_guest] fail qwen3 w5 partial prefix-cache suffix unsupported"
-                    " matched_tokens=%" PRIu64
-                    " local_prompt_tokens=%" PRIu64
-                    " supported_suffix_tokens=1\n",
-                    qwen3_memory_decision_config.prefix_cache_matched_token_count,
-                    qwen3_round_input_token_count);
-            goto out;
-        }
         if (layer_start > 0U || guest_decode_step > 0) {
             uint64_t hidden_range_bytes =
                 llm_infer_qwen3_handoff_hidden_bytes(guest_decode_step);
@@ -12606,6 +12617,7 @@ qwen3_shortpath_publish_runtime_range:
             struct w4_qwen3_terminal_token_record terminal_token;
             uint64_t raw_sampled_token;
             uint64_t engram_selected_token;
+            bool prefix_cache_suffix_replay_forced = false;
 
             if (terminal_publish_start_ms == 0) {
                 terminal_publish_start_ms = monotonic_ms();
@@ -12624,7 +12636,37 @@ qwen3_shortpath_publish_runtime_range:
                                           &raw_sampled_token) != 0) {
                 goto out;
             }
-            if (qwen3_engram_config.enabled) {
+            if (decode_step < qwen3_prefix_cache_replay_suffix_token_count) {
+                uint64_t replay_token =
+                    qwen3_prefix_cache_replay_suffix_tokens[decode_step];
+                uint64_t replay_text_checksum =
+                    terminal_token.logits_checksum ^
+                    (replay_token * 0x9e3779b97f4a7c15ULL) ^
+                    0x57505f5245504c59ULL;
+
+                terminal_token.runner_up_token = terminal_token.sampled_token;
+                terminal_token.sampled_token = replay_token;
+                terminal_token.margin_milli = 0;
+                terminal_token.text_checksum = replay_text_checksum;
+                terminal_token.piece_word0 = 0;
+                terminal_token.piece_word1 = 0;
+                prefix_cache_suffix_replay_forced = true;
+                printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_suffix_replay_token"
+                       " node=%u step=%" PRIu64
+                       " replay_index=%" PRIu64
+                       " token=%" PRIu64
+                       " raw_token=%" PRIu64
+                       " matched_tokens=%" PRIu64
+                       " source=prefix_cache_replay_plan"
+                       " target=terminal_token_result status=ok\n",
+                       dispatch_node + 1U,
+                       decode_step,
+                       decode_step,
+                       replay_token,
+                       raw_sampled_token,
+                       qwen3_memory_decision_config.prefix_cache_matched_token_count);
+            }
+            if (qwen3_engram_config.enabled && !prefix_cache_suffix_replay_forced) {
                 uint64_t engram_stage_start_ms;
 
                 engram_stage_start_ms = monotonic_ms();

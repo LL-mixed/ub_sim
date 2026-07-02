@@ -372,6 +372,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", runner_text)
+        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT", runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", runner_text)
         self.assertIn("SIM_W5_MEMORY_DECISION_STORE", launcher_text)
@@ -394,6 +395,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", launcher_text)
+        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT", launcher_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", launcher_text)
 
@@ -570,7 +572,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_memory_prefix_cache_partial_prefill_active", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", guest_source)
-        self.assertIn("partial prefix-cache suffix unsupported", guest_source)
+        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", guest_source)
+        self.assertIn("qwen3_w5_memory_prefix_cache_suffix_replay_token", guest_source)
+        self.assertNotIn("partial prefix-cache suffix unsupported", guest_source)
         self.assertIn("W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE", guest_source)
         self.assertIn("qwen3_w5_memory_prefix_cache_kv_loaded", guest_source)
         self.assertIn("source=lingqu_memory_service target=uapi_object_ref", guest_source)
@@ -872,7 +876,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--shared-prefix-token-ids CSV", serving_matrix_runner_text)
         self.assertIn("--suffix-b-token-ids CSV", serving_matrix_runner_text)
         self.assertIn("--expect-prefix-cache-matched-tokens", serving_matrix_runner_text)
-        self.assertIn("single-token suffix A/B", serving_matrix_runner_text)
+        self.assertIn("--expect-prefix-cache-suffix-replay-tokens", serving_matrix_runner_text)
+        self.assertIn("multi-token suffixes", serving_matrix_runner_text)
         self.assertIn("expect_fail_closed=true", serving_matrix_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
         self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", serving_matrix_runner_text)
@@ -1068,9 +1073,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                     "--shared-prefix-token-ids",
                     "10,11,12",
                     "--suffix-a-token-ids",
-                    "13",
+                    "13,15,17",
                     "--suffix-b-token-ids",
-                    "14",
+                    "14,16,18",
                     str(config_path),
                 ],
                 check=True,
@@ -1083,15 +1088,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("Same-prefix runs: 2", result.stdout)
         self.assertIn("Shared prefix:    10,11,12", result.stdout)
         self.assertIn("Shared tokens:    3", result.stdout)
-        self.assertIn("Prompt A:         10,11,12,13", result.stdout)
-        self.assertIn("Prompt B:         10,11,12,14", result.stdout)
+        self.assertIn("Suffix A replay:  2", result.stdout)
+        self.assertIn("Suffix B replay:  2", result.stdout)
+        self.assertIn("Prompt A:         10,11,12,13,15,17", result.stdout)
+        self.assertIn("Prompt B:         10,11,12,14,16,18", result.stdout)
         self.assertEqual(result.stdout.count("--no-memory-reuse"), 1)
-        self.assertEqual(result.stdout.count("--require-prefix-cache"), 7)
-        self.assertEqual(result.stdout.count("--expect-prefix-cache-matched-tokens"), 3)
-        self.assertEqual(result.stdout.count("--compare-prefix-cache-benefit"), 0)
+        self.assertEqual(result.stdout.count("--require-prefix-cache"), 9)
+        self.assertEqual(result.stdout.count("--expect-prefix-cache-matched-tokens"), 4)
+        self.assertEqual(result.stdout.count("--expect-prefix-cache-suffix-replay-tokens"), 4)
+        self.assertEqual(result.stdout.count("--compare-prefix-cache-benefit"), 4)
         self.assertEqual(result.stdout.count("--compare-prefix-cache "), 0)
+        self.assertIn("benefit_comparisons=4", result.stdout)
         self.assertIn("run=seed-shared-prefix", result.stdout)
-        self.assertIn("run=divergent-suffix-request-b", result.stdout)
+        self.assertIn("run=reuse-request-b-1", result.stdout)
+        self.assertIn("run=reuse-request-b-2", result.stdout)
         self.assertIn("expect-fail", result.stdout)
         self.assertIn("run_w5_cluster_config.sh", result.stdout)
         self.assertIn("w5_inference_run_report.py", result.stdout)
@@ -1112,16 +1122,6 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "--suffix-a-token-ids and --suffix-b-token-ids must differ",
             result.stderr,
         )
-        result = subprocess.run(
-            [str(matrix_runner), "--dry-run", "--suffix-a-token-ids", "13,15", "--suffix-b-token-ids", "14"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("requires single-token suffix A/B", result.stderr)
-
     def test_w5_cluster_config_runner_prints_post_run_maintenance_flags(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"

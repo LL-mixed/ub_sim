@@ -14771,6 +14771,45 @@ fn w5_prefix_cache_lookup_request_for_prompt(
     Ok(Some(request))
 }
 
+fn qwen3_token_ids_csv(tokens: &[u64]) -> String {
+    tokens
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn w5_prefix_cache_guest_prompt_and_replay_suffix(
+    prompt_tokens: &[u64],
+    bundle: Option<&W5MemoryDecisionBundle>,
+) -> anyhow::Result<(Vec<u64>, Vec<u64>)> {
+    let Some(plan) = bundle.and_then(|bundle| bundle.prefix_cache.as_ref()) else {
+        return Ok((prompt_tokens.to_vec(), Vec::new()));
+    };
+    if plan.action != sim_memory::PrefixCacheReuseAction::Reuse {
+        return Ok((prompt_tokens.to_vec(), Vec::new()));
+    }
+    let matched = usize::try_from(plan.matched_prefix_token_count)
+        .context("prefix-cache matched token count exceeds usize")?;
+    if matched >= prompt_tokens.len() {
+        if matched > prompt_tokens.len() {
+            anyhow::bail!(
+                "prefix-cache matched tokens exceed prompt length: matched={} prompt_tokens={}",
+                matched,
+                prompt_tokens.len()
+            );
+        }
+        return Ok((prompt_tokens.to_vec(), Vec::new()));
+    }
+    if matched == 0 {
+        anyhow::bail!("prefix-cache reuse reported zero matched tokens");
+    }
+
+    let guest_prompt_len = matched + 1;
+    let replay_suffix = prompt_tokens[guest_prompt_len..].to_vec();
+    Ok((prompt_tokens[..guest_prompt_len].to_vec(), replay_suffix))
+}
+
 fn cli_now_us() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -16622,25 +16661,26 @@ mod tests {
         w5_memory_prefix_cache_kv_stream_env_from_refs,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
         w5_memory_should_publish_engram_state, w5_object_service_payload_index_path,
-        w5_paper_engram_eval_evidence_from_summary, w5_prefix_cache_key_for_prompt,
-        w5_prefix_cache_lookup_request_for_prompt, w5_runtime_tensor_payload_checksum,
-        w5_try_approximate_boundary_lookup, CompletionStatus, EngramSimtArtifactConfig,
-        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
-        LingquMemoryDurableStoreSnapshot, LingquObjectKind, LingquObjectLocality,
-        LingquObjectMetadata, LingquObjectPublishReq, LingquObjectServiceProfile,
-        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectState,
-        LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
-        MemoryCatalogSnapshot, PaperEngramGateManifest, PaperEngramModuleListFilters,
-        PaperEngramTableShardManifest, PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
-        W5MemoryBootstrapConfig, W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle,
-        W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef,
-        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        w5_paper_engram_eval_evidence_from_summary, w5_prefix_cache_guest_prompt_and_replay_suffix,
+        w5_prefix_cache_key_for_prompt, w5_prefix_cache_lookup_request_for_prompt,
+        w5_runtime_tensor_payload_checksum, w5_try_approximate_boundary_lookup, CompletionStatus,
+        EngramSimtArtifactConfig, LingquDurableSim, LingquDurableSimSnapshot,
+        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
+        LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectServiceProfile, LingquObjectServiceSnapshot, LingquObjectServiceStub,
+        LingquObjectState, LingquObjectVersionSelector, LingquPayloadBackend,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
+        PaperEngramModuleListFilters, PaperEngramTableShardManifest, PaperEngramTrainingMode,
+        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
+        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
+        W5JumpToTerminalExpectedWorkerCounts, W5MemoryBootstrapConfig,
+        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
+        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryShortpathKvArtifact,
+        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
@@ -19194,6 +19234,47 @@ mod tests {
                 .prefix_token_hash
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn w5_prefix_cache_guest_prompt_replays_multi_token_suffix() {
+        let bundle = W5MemoryDecisionBundle {
+            shortpath: None,
+            shortpath_artifact: None,
+            shortpath_entries: Vec::new(),
+            shortpath_kv_artifacts: Vec::new(),
+            online_boundary_lookup: false,
+            prefetch: None,
+            prefetch_artifacts: Vec::new(),
+            prefix_cache: Some(sim_memory::PrefixCacheReusePlan {
+                plan_id: "prefix-cache-reuse/test".to_string(),
+                request_id: "w5/test".to_string(),
+                action: sim_memory::PrefixCacheReuseAction::Reuse,
+                artifact_id: Some("prefix-cache/test".to_string()),
+                matched_prefix_token_count: 3,
+                layer_start: 0,
+                layer_end: 28,
+                position_start: 0,
+                position_end: 3,
+                confidence_milli: 1000,
+                verify_required: false,
+                proof_checksum: 0x1234,
+                reason: "prefix_cache_hit".to_string(),
+                created_at_us: 10,
+                version: 1,
+            }),
+            prefix_cache_artifact: None,
+            prefix_cache_kv_artifacts: Vec::new(),
+        };
+
+        let (guest_prompt, replay_suffix) = w5_prefix_cache_guest_prompt_and_replay_suffix(
+            &[10, 11, 12, 13, 15, 17],
+            Some(&bundle),
+        )
+        .expect("split prefix-cache prompt");
+
+        assert_eq!(guest_prompt, vec![10, 11, 12, 13]);
+        assert_eq!(replay_suffix, vec![15, 17]);
     }
 
     #[test]
@@ -30536,6 +30617,27 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     } else {
         None
     };
+    let (guest_prompt_history_tokens, prefix_cache_replay_suffix_tokens) =
+        w5_prefix_cache_guest_prompt_and_replay_suffix(
+            &prompt_history_tokens,
+            memory_decisions.as_ref(),
+        )?;
+    if !prefix_cache_replay_suffix_tokens.is_empty()
+        && args.step_count <= prefix_cache_replay_suffix_tokens.len()
+    {
+        anyhow::bail!(
+            "prefix-cache suffix replay requires steps > replay suffix tokens: steps={} replay_suffix_tokens={}",
+            args.step_count,
+            prefix_cache_replay_suffix_tokens.len()
+        );
+    }
+    let guest_prompt_token_ids = if prefix_cache_replay_suffix_tokens.is_empty() {
+        prompt_token_ids.clone()
+    } else {
+        qwen3_token_ids_csv(&guest_prompt_history_tokens)
+    };
+    let prefix_cache_replay_suffix_token_ids =
+        qwen3_token_ids_csv(&prefix_cache_replay_suffix_tokens);
     let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let w5_profile =
         resolve_w5_inference_profile(args.w5_profile.as_deref(), &runtime, &effective_engram)?;
@@ -30768,6 +30870,13 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
                     .unwrap_or_else(|| "none".to_string()),
                 plan.proof_checksum
             );
+            if !prefix_cache_replay_suffix_tokens.is_empty() {
+                println!(
+                    "  memory_prefix_cache_suffix_replay: initial_prompt_tokens={} replay_suffix_tokens={} status=enabled",
+                    guest_prompt_history_tokens.len(),
+                    prefix_cache_replay_suffix_tokens.len()
+                );
+            }
         }
     }
     if let Some(publication) = &memory_decision_publication {
@@ -31016,7 +31125,11 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             "SIM_QWEN3_GUEST_PROMPT",
             args.prompt.clone().unwrap_or_default(),
         )
-        .env("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", prompt_token_ids)
+        .env("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", guest_prompt_token_ids)
+        .env(
+            "SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS",
+            prefix_cache_replay_suffix_token_ids,
+        )
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

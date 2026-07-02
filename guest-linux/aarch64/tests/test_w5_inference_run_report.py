@@ -262,7 +262,9 @@ class W5InferenceRunReportTest(unittest.TestCase):
                             "artifact_kinds=none prefetch_ids=none "
                             "prefix_cache_ids=prefix-cache-reuse/runtime-test "
                             "prefix_cache_actions=reuse prefix_cache_kv_hits=1 "
-                            "prefix_cache_kv_nodes=1 prefix_cache_matched_tokens=3 "
+                            "prefix_cache_kv_nodes=1 prefix_cache_matched_tokens=3,3 "
+                            "prefix_cache_suffix_replay_tokens=2 "
+                            "prefix_cache_suffix_replay_steps=0,1 "
                             "prefix_cache_gsva_rejections=0 "
                             "prefix_cache_gsva_rejection_reasons=none "
                             "gsva_kv_refs=1 gsva_reads=1 "
@@ -390,7 +392,9 @@ class W5InferenceRunReportTest(unittest.TestCase):
                             "artifact_kinds=none prefetch_ids=none "
                             "prefix_cache_ids=prefix-cache-reuse/runtime-test "
                             "prefix_cache_actions=reuse prefix_cache_kv_hits=1 "
-                            "prefix_cache_kv_nodes=1 prefix_cache_matched_tokens=3 "
+                            "prefix_cache_kv_nodes=1 prefix_cache_matched_tokens=3,3 "
+                            "prefix_cache_suffix_replay_tokens=2 "
+                            "prefix_cache_suffix_replay_steps=0,1 "
                             "prefix_cache_gsva_rejections=0 "
                             "prefix_cache_gsva_rejection_reasons=none "
                             "gsva_kv_refs=1 gsva_reads=1 "
@@ -413,6 +417,8 @@ class W5InferenceRunReportTest(unittest.TestCase):
                     "--require-prefix-cache",
                     "--expect-prefix-cache-matched-tokens",
                     "3",
+                    "--expect-prefix-cache-suffix-replay-tokens",
+                    "2",
                 ],
                 check=True,
                 capture_output=True,
@@ -427,6 +433,8 @@ class W5InferenceRunReportTest(unittest.TestCase):
                     "--require-prefix-cache",
                     "--expect-prefix-cache-matched-tokens",
                     "4",
+                    "--expect-prefix-cache-suffix-replay-tokens",
+                    "2",
                 ],
                 check=False,
                 capture_output=True,
@@ -436,10 +444,12 @@ class W5InferenceRunReportTest(unittest.TestCase):
 
         self.assertIn("prefix_cache_guard: status=pass required=true", result.stdout)
         self.assertIn("matched_tokens=3", result.stdout)
+        self.assertIn("suffix_replay_tokens=2", result.stdout)
+        self.assertIn("effective_generated_steps=0", result.stdout)
         self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
         self.assertNotIn("issue:", result.stdout)
         self.assertEqual(mismatch.returncode, 1)
-        self.assertIn("prefix-cache matched token mismatch expected=4 actual=3", mismatch.stdout)
+        self.assertIn("prefix-cache matched token mismatch expected=4 actual=3,3", mismatch.stdout)
 
     def test_rejects_prefix_cache_guard_when_prefix_cache_miss(self):
         with tempfile.TemporaryDirectory() as tmp:

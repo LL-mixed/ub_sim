@@ -9,8 +9,8 @@ SAME_PREFIX_RUNS=2
 DRY_RUN=0
 INCLUDE_EVICTION=1
 SHARED_PREFIX_TOKEN_IDS="81378,37585,374"
-SUFFIX_A_TOKEN_IDS="13"
-SUFFIX_B_TOKEN_IDS="14"
+SUFFIX_A_TOKEN_IDS="13,15,17"
+SUFFIX_B_TOKEN_IDS="14,16,18"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -23,13 +23,14 @@ usage: run_w5_prefix_cache_serving_matrix.sh [--steps N] [--same-prefix-runs N] 
 Runs a W5 prefix-cache serving matrix:
   1. seed the shared prefix, GSVA KV writeback, memory reuse disabled
   2. one or more request A runs with shared prefix plus suffix A that must hit the prefix cache
-  3. request B with the same shared prefix plus divergent suffix B that must hit the same prefix
+  3. request A and request B alternate for every same-prefix run; both must hit the shared prefix
   4. an evicted/empty reuse-store request A that must fail closed when prefix cache is required
 
-The current W5 guest runtime supports partial-prefix reuse for a single suffix token. Multi-token
-suffix prefill is intentionally rejected until W5 can replay every suffix token over the prefix KV.
+The W5 guest runtime replays multi-token suffixes by starting from the matched prefix KV,
+running the first suffix token as the step-0 input, and forcing the remaining suffix tokens
+as replay terminal tokens before normal generation resumes.
 
-Defaults: --steps 8 --same-prefix-runs 2 --suffix-a-token-ids 13 --suffix-b-token-ids 14.
+Defaults: --steps 8 --same-prefix-runs 2 --suffix-a-token-ids 13,15,17 --suffix-b-token-ids 14,16,18.
 USAGE
 }
 
@@ -157,10 +158,6 @@ for token_csv in "$SUFFIX_A_TOKEN_IDS" "$SUFFIX_B_TOKEN_IDS"; do
     exit 2
   fi
 done
-if [[ ! "$SUFFIX_A_TOKEN_IDS" =~ '^[0-9]+$' || ! "$SUFFIX_B_TOKEN_IDS" =~ '^[0-9]+$' ]]; then
-  echo "W5 partial prefix-cache serving matrix currently requires single-token suffix A/B" >&2
-  exit 2
-fi
 if [[ "$SUFFIX_A_TOKEN_IDS" == "$SUFFIX_B_TOKEN_IDS" ]]; then
   echo "--suffix-a-token-ids and --suffix-b-token-ids must differ for divergent suffix coverage" >&2
   exit 2
@@ -292,8 +289,14 @@ run_expected_fail_closed() {
 prompt_a="$(join_prompt_tokens "$SHARED_PREFIX_TOKEN_IDS" "$SUFFIX_A_TOKEN_IDS")"
 prompt_b="$(join_prompt_tokens "$SHARED_PREFIX_TOKEN_IDS" "$SUFFIX_B_TOKEN_IDS")"
 shared_prefix_token_count="$(token_csv_count "$SHARED_PREFIX_TOKEN_IDS")"
+suffix_a_token_count="$(token_csv_count "$SUFFIX_A_TOKEN_IDS")"
+suffix_b_token_count="$(token_csv_count "$SUFFIX_B_TOKEN_IDS")"
+suffix_a_replay_count=$(( suffix_a_token_count > 0 ? suffix_a_token_count - 1 : 0 ))
+suffix_b_replay_count=$(( suffix_b_token_count > 0 ? suffix_b_token_count - 1 : 0 ))
 config_seed_prefix="$(write_case_config shared-prefix-seed "$SHARED_PREFIX_TOKEN_IDS")"
 config_evicted="$(write_case_config request-a-evicted "$prompt_a" "$EMPTY_REUSE_OUT_DIR")"
+typeset -a reuse_summaries
+typeset -a reuse_labels
 
 echo "=== W5 Prefix Cache Serving Matrix ==="
 echo "Profile:          $PROFILE"
@@ -303,6 +306,8 @@ echo "Shared prefix:    $SHARED_PREFIX_TOKEN_IDS"
 echo "Shared tokens:    $shared_prefix_token_count"
 echo "Suffix A:         ${SUFFIX_A_TOKEN_IDS:-<empty>}"
 echo "Suffix B:         ${SUFFIX_B_TOKEN_IDS:-<empty>}"
+echo "Suffix A replay:  $suffix_a_replay_count"
+echo "Suffix B replay:  $suffix_b_replay_count"
 echo "Prompt A:         $prompt_a"
 echo "Prompt B:         $prompt_b"
 echo "Config:           $CONFIG_PATH"
@@ -320,33 +325,48 @@ echo "[w5_prefix_cache_serving_matrix] seed_summary=$seed_summary"
 config_a="$(write_case_config request-a-reuse "$prompt_a" "$OUT_DIR" "$seed_run_id" 0 0)"
 config_b="$(write_case_config request-b "$prompt_b" "$OUT_DIR" "$seed_run_id" 0 0)"
 
-first_reuse_summary=""
 reuse_index=1
 while (( reuse_index <= SAME_PREFIX_RUNS )); do
   run_case "reuse-request-a-$reuse_index" "$config_a" --require-prefix-cache
   if (( DRY_RUN )); then
     reuse_summary="$OUT_DIR/eight_node_w5_inference_cluster_summary.<reuse-request-a-$reuse_index-run>.txt"
-    printf '%q ' "$REPORT" "$reuse_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count"
+    printf '%q ' "$REPORT" "$reuse_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_a_replay_count"
     printf '\n'
   else
     reuse_summary="$(latest_summary)"
     echo "[w5_prefix_cache_serving_matrix] reuse_summary=$reuse_summary"
-    "$REPORT" "$reuse_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count"
+    "$REPORT" "$reuse_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_a_replay_count"
   fi
-  if [[ -z "$first_reuse_summary" ]]; then
-    first_reuse_summary="$reuse_summary"
-    run_case divergent-suffix-request-b "$config_b" --require-prefix-cache
-    if (( DRY_RUN )); then
-      mismatch_summary="$OUT_DIR/eight_node_w5_inference_cluster_summary.<divergent-suffix-request-b-run>.txt"
-      printf '%q ' "$REPORT" "$mismatch_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count"
-      printf '\n'
-    else
-      mismatch_summary="$(latest_summary)"
-      echo "[w5_prefix_cache_serving_matrix] mismatch_summary=$mismatch_summary"
-      "$REPORT" "$mismatch_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count"
-    fi
+  reuse_labels+=("reuse-request-a-$reuse_index")
+  reuse_summaries+=("$reuse_summary")
+  run_case "reuse-request-b-$reuse_index" "$config_b" --require-prefix-cache
+  if (( DRY_RUN )); then
+    reuse_b_summary="$OUT_DIR/eight_node_w5_inference_cluster_summary.<reuse-request-b-$reuse_index-run>.txt"
+    printf '%q ' "$REPORT" "$reuse_b_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_b_replay_count"
+    printf '\n'
+  else
+    reuse_b_summary="$(latest_summary)"
+    echo "[w5_prefix_cache_serving_matrix] reuse_b_summary=$reuse_b_summary"
+    "$REPORT" "$reuse_b_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_b_replay_count"
   fi
+  reuse_labels+=("reuse-request-b-$reuse_index")
+  reuse_summaries+=("$reuse_b_summary")
   (( reuse_index += 1 ))
+done
+
+echo "[w5_prefix_cache_serving_matrix] benefit_comparisons=${#reuse_summaries[@]}"
+comparison_index=1
+while (( comparison_index <= ${#reuse_summaries[@]} )); do
+  reuse_label="${reuse_labels[$comparison_index]}"
+  reuse_summary="${reuse_summaries[$comparison_index]}"
+  echo "[w5_prefix_cache_serving_matrix] benefit_comparison=$reuse_label baseline=$seed_summary reuse=$reuse_summary"
+  if (( DRY_RUN )); then
+    printf '%q ' "$REPORT" --compare-prefix-cache-benefit "$seed_summary" "$reuse_summary"
+    printf '\n'
+  else
+    "$REPORT" --compare-prefix-cache-benefit "$seed_summary" "$reuse_summary"
+  fi
+  (( comparison_index += 1 ))
 done
 
 if (( INCLUDE_EVICTION )); then

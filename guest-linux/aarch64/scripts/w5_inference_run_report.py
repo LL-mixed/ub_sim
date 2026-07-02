@@ -143,6 +143,31 @@ def parse_int(value, default=0):
         return default
 
 
+def parse_int_values(value):
+    if value is None:
+        return []
+    values = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if not item or item == "none":
+            continue
+        try:
+            values.append(int(item, 0))
+        except ValueError:
+            continue
+    return values
+
+
+def parse_uniform_int(value, default=0):
+    values = parse_int_values(value)
+    if not values:
+        return default
+    unique_values = sorted(set(values))
+    if len(unique_values) == 1:
+        return unique_values[0]
+    return default
+
+
 def split_count(value):
     if not value or "/" not in value:
         return (0, 0)
@@ -524,6 +549,7 @@ def validate(
     require_device_gsva=False,
     require_prefix_cache=False,
     expect_prefix_cache_matched_tokens=None,
+    expect_prefix_cache_suffix_replay_tokens=None,
 ):
     issues = []
     summary = parsed["summary"]
@@ -723,11 +749,21 @@ def validate(
         issues.append(f"prefix-cache guard: {issue}")
     if expect_prefix_cache_matched_tokens is not None:
         matched_tokens = memory.get("prefix_cache_matched_tokens", "")
-        actual = parse_int(matched_tokens, -1)
-        if actual != expect_prefix_cache_matched_tokens:
+        actual_values = parse_int_values(matched_tokens)
+        if not actual_values or any(
+            actual != expect_prefix_cache_matched_tokens for actual in actual_values
+        ):
             issues.append(
                 "prefix-cache matched token mismatch "
                 f"expected={expect_prefix_cache_matched_tokens} actual={matched_tokens or ''}"
+            )
+    if expect_prefix_cache_suffix_replay_tokens is not None:
+        replay_tokens = memory.get("prefix_cache_suffix_replay_tokens", "")
+        actual = parse_int(replay_tokens, -1)
+        if actual != expect_prefix_cache_suffix_replay_tokens:
+            issues.append(
+                "prefix-cache suffix replay token mismatch "
+                f"expected={expect_prefix_cache_suffix_replay_tokens} actual={replay_tokens or ''}"
             )
 
     artifact_sizes = {}
@@ -842,6 +878,7 @@ def build_report(
     require_device_gsva=False,
     require_prefix_cache=False,
     expect_prefix_cache_matched_tokens=None,
+    expect_prefix_cache_suffix_replay_tokens=None,
 ):
     run_id = infer_run_id(summary_path)
     parsed = parse_summary(summary_path)
@@ -860,6 +897,7 @@ def build_report(
         require_device_gsva,
         require_prefix_cache,
         expect_prefix_cache_matched_tokens,
+        expect_prefix_cache_suffix_replay_tokens,
     )
     summary = parsed["summary"]
     memory = parsed["memory_service"]
@@ -872,6 +910,14 @@ def build_report(
         "decode": {
             "steps_expected": parse_int(summary.get("decode_steps_expected")),
             "steps_observed": parse_int(summary.get("decode_steps_observed")),
+            "suffix_replay_steps": parse_int(
+                memory.get("prefix_cache_suffix_replay_tokens")
+            ),
+            "effective_generated_steps": max(
+                parse_int(summary.get("decode_steps_observed"))
+                - parse_int(memory.get("prefix_cache_suffix_replay_tokens")),
+                0,
+            ),
             "passed_nodes": summary.get("passed_nodes", ""),
             "output": parsed["decode_output"],
         },
@@ -895,7 +941,10 @@ def build_report(
         "prefix_cache": {
             "ids": memory.get("prefix_cache_ids", ""),
             "actions": memory.get("prefix_cache_actions", ""),
-            "matched_tokens": parse_int(memory.get("prefix_cache_matched_tokens")),
+            "matched_tokens": parse_uniform_int(memory.get("prefix_cache_matched_tokens")),
+            "suffix_replay_tokens": parse_int(
+                memory.get("prefix_cache_suffix_replay_tokens")
+            ),
             "kv_hits": parse_int(memory.get("prefix_cache_kv_hits")),
             "kv_nodes": memory.get("prefix_cache_kv_nodes", ""),
             "gsva_rejections": parse_int(memory.get("prefix_cache_gsva_rejections")),
@@ -964,6 +1013,7 @@ def print_prefix_cache_benefit_comparison(comparison):
             f"prefix_cache_action={prefix_cache['actions']} "
             f"prefix_cache_kv_hits={prefix_cache['kv_hits']} "
             f"prefix_cache_matched_tokens={prefix_cache['matched_tokens']} "
+            f"prefix_cache_suffix_replay_tokens={prefix_cache['suffix_replay_tokens']} "
             f"gsva_reads={gsva['reads']} gsva_writebacks={gsva['writebacks']} "
             f"round_sum_ms={timing['round_sum_ms']} "
             f"post_step0_avg_round_ms={timing['post_step0_avg_round_ms']} "
@@ -1008,7 +1058,9 @@ def print_text_report(report):
     print(
         "decode: "
         f"steps={decode['steps_observed']}/{decode['steps_expected']} "
-        f"passed_nodes={decode['passed_nodes']}"
+        f"passed_nodes={decode['passed_nodes']} "
+        f"suffix_replay_steps={decode['suffix_replay_steps']} "
+        f"effective_generated_steps={decode['effective_generated_steps']}"
     )
     for line in decode["output"]:
         print(line)
@@ -1057,7 +1109,8 @@ def print_text_report(report):
         f"reject_policy={prefix_cache['reject_policy']} "
         f"recompute_range_forwards={prefix_cache['recompute_range_forwards']} "
         f"reject_then_recompute={prefix_cache['reject_then_recompute']} "
-        f"matched_tokens={prefix_cache['matched_tokens']}"
+        f"matched_tokens={prefix_cache['matched_tokens']} "
+        f"suffix_replay_tokens={prefix_cache['suffix_replay_tokens']}"
     )
     gsva = report["gsva"]
     print(
@@ -1338,6 +1391,7 @@ def print_prefix_cache_comparison(comparison):
             f"prefix_cache_action={prefix_cache['actions']} "
             f"prefix_cache_kv_hits={prefix_cache['kv_hits']} "
             f"prefix_cache_matched_tokens={prefix_cache['matched_tokens']} "
+            f"prefix_cache_suffix_replay_tokens={prefix_cache['suffix_replay_tokens']} "
             f"round_sum_ms={timing['round_sum_ms']} "
             f"post_step0_avg_round_ms={timing['post_step0_avg_round_ms']} "
             f"range_forwards={report['shortpath']['actual_range_forwards']} "
@@ -1418,6 +1472,12 @@ def main(argv):
         default=None,
         help="Require prefix-cache reuse to report this matched prefix token count.",
     )
+    parser.add_argument(
+        "--expect-prefix-cache-suffix-replay-tokens",
+        type=int,
+        default=None,
+        help="Require prefix-cache reuse to report this suffix replay token count.",
+    )
     args = parser.parse_args(argv)
 
     if args.compare_prefix_cache_benefit:
@@ -1469,6 +1529,7 @@ def main(argv):
         args.require_device_gsva,
         prefix_cache_guard_from_args(args),
         args.expect_prefix_cache_matched_tokens,
+        args.expect_prefix_cache_suffix_replay_tokens,
     )
     if args.json_output:
         print(json.dumps(report, indent=2, sort_keys=True))
