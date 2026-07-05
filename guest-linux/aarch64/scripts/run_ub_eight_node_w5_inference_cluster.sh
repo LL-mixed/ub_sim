@@ -53,6 +53,7 @@ SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID="${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLA
 SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR="${SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR:-}"
 SIM_W5_MEMORY_GSVA_KV="${SIM_W5_MEMORY_GSVA_KV:-}"
 SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH="${SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH:-}"
+SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-$OUT_DIR/w5_memory_object_store.${RUN_ID}.json}"
 SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-$OUT_DIR/w5_object_service_store.${RUN_ID}.json}"
 SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-$OUT_DIR/w5_memory_engram_state.${RUN_ID}.json}"
@@ -98,6 +99,7 @@ export SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID
 export SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR
 export SIM_W5_MEMORY_GSVA_KV
 export SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH
+export SIM_W5_SERVING_QUEUE
 export SIM_W5_MEMORY_STORE
 export SIM_W5_MEMORY_OBJECT_STORE
 export SIM_W5_MEMORY_ENGRAM_STATE
@@ -407,6 +409,10 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
   fi
   if (( memory_decision_reuse )) && [[ -n "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR" ]]; then
     cli_args+=(--memory-prefix-cache-service-addr "$SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR")
+  fi
+  if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
+    echo "[w5_inference_cluster] serving_queue=1 launch_mode=ready_only" >&2
+    exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"
   fi
   echo "[w5_inference_cluster] runtime_boundary_lookup=$memory_runtime_lookup online_boundary_lookup=$memory_online_lookup observation_store=$SIM_W5_MEMORY_OBSERVATION_STORE decision_reuse=$memory_decision_reuse decision_store=$SIM_W5_MEMORY_DECISION_STORE" >&2
   "${SIM_CLI_BIN}" "${cli_args[@]}"

@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Validate W5 serving-entry request files.
-
-The current W5 QEMU path accepts one request through guest environment
-variables. This tool defines the stable multi-request input surface that the
-nodeA serving loop will consume next, and can print the exact current one-shot
-environment for each request.
-"""
+"""Validate W5 serving-entry request files and runtime queue input."""
 
 from __future__ import annotations
 
@@ -166,6 +160,19 @@ def print_current_one_shot_env(requests: list[ServingRequest], entry_node: str) 
                 print(f"{env_name}={request.fields[field_name]}")
 
 
+def request_to_line(request: ServingRequest) -> str:
+    parts = [f"{key}={request.fields[key]}" for key in REQUIRED_FIELDS]
+    for field_name in OPTIONAL_ENV_FIELDS:
+        if field_name in request.fields:
+            parts.append(f"{field_name}={request.fields[field_name]}")
+    return " ".join(parts)
+
+
+def print_request_lines(requests: list[ServingRequest]) -> None:
+    for request in requests:
+        print(request_to_line(request))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate W5 serving-entry request files."
@@ -190,6 +197,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-current-one-shot-env",
         action="store_true",
         help="print the env mapping accepted by the current one-shot W5 path",
+    )
+    parser.add_argument(
+        "--print-request-lines",
+        action="store_true",
+        help="print normalized request lines accepted by the runtime serving queue",
     )
     parser.add_argument(
         "--print-request-count",
@@ -226,14 +238,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_current_one_shot_env:
         print_current_one_shot_env(requests, args.entry_node)
         return 0
+    if args.print_request_lines:
+        print_request_lines(requests)
+        return 0
 
     print_summary(requests, args.entry_node)
     print(
-        "w5_serving_entry: status=blocked "
-        "reason=nodeA_serving_request_loop_not_implemented",
-        file=sys.stderr,
+        "w5_serving_entry: status=ready "
+        "mode=runtime_queue transport=serial fanout=cluster"
     )
-    return 2
+    return 0
 
 
 if __name__ == "__main__":

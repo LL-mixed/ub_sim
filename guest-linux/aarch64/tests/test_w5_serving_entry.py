@@ -12,6 +12,7 @@ class W5ServingEntryTest(unittest.TestCase):
         self.script_dir = self.repo / "guest-linux" / "aarch64" / "scripts"
         self.entry_py = self.script_dir / "w5_serving_entry.py"
         self.entry_sh = self.script_dir / "run_w5_serving_entry.sh"
+        self.submit_py = self.script_dir / "w5_serving_submit.py"
 
     def run_entry(self, *args):
         return subprocess.run(
@@ -76,15 +77,38 @@ class W5ServingEntryTest(unittest.TestCase):
         self.assertIn("SIM_QWEN3_SAMPLER_TOP_K=20", result.stdout)
         self.assertIn("SIM_QWEN3_SAMPLER_SEED=7", result.stdout)
 
-    def test_default_mode_refuses_to_pretend_runtime_loop_exists(self):
+    def test_default_mode_reports_runtime_queue_ready(self):
         temp_dir, request_path = self.write_requests(
             "request_id=req-a prompt_token_ids=81378,37585,374 decode_steps=4\n"
         )
         with temp_dir:
             result = self.run_entry("--requests", str(request_path))
 
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("reason=nodeA_serving_request_loop_not_implemented", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("status=ready mode=runtime_queue", result.stdout)
+
+    def test_print_request_lines_normalizes_queue_input(self):
+        temp_dir, request_path = self.write_requests(
+            (
+                "request_id=req-a sampler_seed=7 prompt_token_ids=81378,37585,374 "
+                "decode_steps=4 prefix_cache_required=1\n"
+            )
+        )
+        with temp_dir:
+            result = self.run_entry(
+                "--requests",
+                str(request_path),
+                "--print-request-lines",
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            (
+                "request_id=req-a prompt_token_ids=81378,37585,374 "
+                "decode_steps=4 sampler_seed=7 prefix_cache_required=1"
+            ),
+        )
 
     def test_rejects_invalid_request_file(self):
         temp_dir, request_path = self.write_requests(
@@ -133,6 +157,41 @@ class W5ServingEntryTest(unittest.TestCase):
         self.assertEqual(steps.returncode, 0, steps.stderr)
         self.assertEqual(count.stdout.strip(), "2")
         self.assertEqual(steps.stdout.strip(), "5")
+
+    def test_submit_dry_run_validates_request_and_cluster_fanout(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            tmp_path = Path(tmp)
+            env_path = tmp_path / "headless.env"
+            env_lines = [
+                f"export RUN_DIR='{tmp_path}'",
+                "export SIM_W5_SERVING_QUEUE='1'",
+            ]
+            for node in "ABCDEFGH":
+                sock_path = tmp_path / f"node{node}.sock"
+                env_lines.append(f"export NODE{node}_SERIAL_SOCKET='{sock_path}'")
+            env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.submit_py),
+                    "--env-file",
+                    str(env_path),
+                    "--request-line",
+                    "request_id=req-a prompt_token_ids=81378,37585 decode_steps=2",
+                    "--dry-run",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "would_submit request_id=req-a fanout=cluster targets=8",
+            result.stdout,
+        )
 
 
 if __name__ == "__main__":

@@ -67,6 +67,7 @@ SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT="${SIM_W5_MEMORY_PREFIX_CACHE_KV_STRE
 SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH="${SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH:-}"
 SIM_W5_MEMORY_GSVA_KV="${SIM_W5_MEMORY_GSVA_KV:-}"
 SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH="${SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH:-}"
+SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_8host_single_domain.yaml}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
@@ -196,8 +197,9 @@ start_node() {
   local pid_file="$7"
   local qmp_socket="$8"
   local node_append_extra="$APPEND_EXTRA linqu_ipourma_ipv4=$local_ip"
+  local qemu_pid
 
-  env \
+  nohup env \
     UB_FM_NODE_ID="$node_id" \
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
@@ -356,7 +358,9 @@ start_node() {
       -initrd "$INITRAMFS_IMAGE" \
       -append "console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}" \
       >"$qemu_log" 2>&1 &
-  echo $! > "$pid_file"
+  qemu_pid=$!
+  disown "$qemu_pid" >/dev/null 2>&1 || true
+  echo "$qemu_pid" > "$pid_file"
 }
 
 need_cmd python3
@@ -509,6 +513,7 @@ export SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT='${SIM_W5_MEMORY_PREFIX_CACHE_
 export SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH='${SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH:-}'
 export SIM_W5_MEMORY_GSVA_KV='${SIM_W5_MEMORY_GSVA_KV:-}'
 export SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH='${SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH:-}'
+export SIM_W5_SERVING_QUEUE='${SIM_W5_SERVING_QUEUE:-0}'
 export NODEA_SERIAL_SOCKET='$SERIAL_DIR/nodeA.${SOCKET_SUFFIX}.sock'
 export NODEB_SERIAL_SOCKET='$SERIAL_DIR/nodeB.${SOCKET_SUFFIX}.sock'
 export NODEC_SERIAL_SOCKET='$SERIAL_DIR/nodeC.${SOCKET_SUFFIX}.sock'

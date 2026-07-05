@@ -51,6 +51,7 @@ else
 fi
 RUN_INITRAMFS_DIR="$OUT_DIR/initramfs.${RUN_ID_BASE}"
 RUN_INITRAMFS_IMAGE="$OUT_DIR/initramfs.${RUN_ID_BASE}.cpio.gz"
+RUN_ENV_FILE=""
 # Use a short unique suffix for the shared dir to stay under macOS 104-byte UNIX socket path limit.
 _SHORT_SHARED_SUFFIX="$(printf '%s' "$RUN_ID_BASE" | cksum | cut -d' ' -f1)_${RANDOM}"
 UB_FM_SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ubqe_${_SHORT_SHARED_SUFFIX}}"
@@ -94,6 +95,7 @@ SIM_W5_SERVING_REQUESTS_FILE="${SIM_W5_SERVING_REQUESTS_FILE:-}"
 SIM_W5_SERVING_REQUESTS_FILE_GUEST="$SIM_W5_SERVING_REQUESTS_FILE"
 SIM_W5_SERVING_REQUEST_COUNT="${SIM_W5_SERVING_REQUEST_COUNT:-}"
 SIM_W5_SERVING_DECODE_STEPS_TOTAL="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-}"
+SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-}"
 SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-}"
 SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-}"
@@ -731,6 +733,8 @@ export SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"
 export SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE_GUEST"
 export SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT"
 export SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL"
+export SIM_W5_SERVING_QUEUE="$SIM_W5_SERVING_QUEUE"
+export SIM_W5_REQUIRE_PREFIX_CACHE="$SIM_W5_REQUIRE_PREFIX_CACHE"
 export SIM_W5_MEMORY_STORE="$SIM_W5_MEMORY_STORE"
 export SIM_W5_MEMORY_OBJECT_STORE="$SIM_W5_MEMORY_OBJECT_STORE"
 export SIM_W5_MEMORY_ENGRAM_STATE="$SIM_W5_MEMORY_ENGRAM_STATE"
@@ -792,6 +796,7 @@ DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
 DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
 DEFAULT_SIM_QWEN3_SAMPLER_SEED="\$SIM_QWEN3_SAMPLER_SEED"
 DEFAULT_SIM_W5_REQUIRE_PREFIX_CACHE="\$SIM_W5_REQUIRE_PREFIX_CACHE"
+export SIM_W5_SERVING_BASE_RUN_ID="\$DEFAULT_SIM_W5_RUN_ID"
 
 is_positive_uint() {
   case "\$1" in
@@ -955,7 +960,41 @@ run_serving_requests_file() {
   return 0
 }
 
-if [ -n "\$SIM_W5_SERVING_REQUESTS_FILE" ]; then
+run_serving_stdin_queue() {
+  local line request_index rc
+
+  request_index=0
+  log "serving_entry ready mode=serial-line role=\$LINQU_UB_ROLE entry=nodeA"
+  while IFS= read -r line; do
+    case "\$line" in
+      ""|\#*)
+        continue
+        ;;
+      __W5_SERVING_STOP__)
+        log "serving_entry stop requests=\$request_index role=\$LINQU_UB_ROLE"
+        return 0
+        ;;
+    esac
+    if ! apply_serving_request_line "\$line"; then
+      return 1
+    fi
+    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
+    run_llm_infer_once
+    rc=\$?
+    if [ "\$rc" != "0" ]; then
+      log "FAIL: serving_entry request_failed index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
+      return "\$rc"
+    fi
+    log "serving_entry request_done index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+    request_index=\$((request_index + 1))
+  done < /dev/ttyAMA0
+  log "serving_entry queue_closed requests=\$request_index role=\$LINQU_UB_ROLE"
+  return 0
+}
+
+if [ "\$SIM_W5_SERVING_QUEUE" = "1" ]; then
+  run_serving_stdin_queue
+elif [ -n "\$SIM_W5_SERVING_REQUESTS_FILE" ]; then
   run_serving_requests_file "\$SIM_W5_SERVING_REQUESTS_FILE"
 else
   run_llm_infer_once
@@ -1560,6 +1599,7 @@ prepare_environment() {
   mkdir -p "$RUN_DIR" "$OUT_DIR"
   : > "$TRACE_FILE"
   env_file="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh"
+  RUN_ENV_FILE="$env_file"
   control_log="$RUN_DIR/control.log"
   validate_qwen3_weights_path || return 1
   qwen3_dense_apply_config_env
@@ -1625,6 +1665,7 @@ prepare_environment() {
     SIM_W5_SERVING_REQUESTS_FILE_GUEST="$SIM_W5_SERVING_REQUESTS_FILE_GUEST" \
     SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT" \
     SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL" \
+    SIM_W5_SERVING_QUEUE="$SIM_W5_SERVING_QUEUE" \
     SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE" \
     SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE" \
     SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND" \
@@ -1688,13 +1729,25 @@ prepare_environment() {
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
+    if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
+      trace "wait W5 serving entry ready: $node_id"
+      if ! wait_for_log_pattern "$guest_log" "\\[w4guest8:initramfs\\] serving_entry ready mode=serial-line role=$node_id entry=nodeA" "$BOOT_WAIT_SECS"; then
+        trace "FAIL: W5 serving entry ready timeout for $node_id"
+        return 1
+      fi
+      continue
+    fi
     trace "wait initramfs runner gate: $node_id"
     if ! wait_for_log_pattern "$guest_log" "\\[w4guest8:initramfs\\] start step=0 $node_id" "$BOOT_WAIT_SECS"; then
       trace "FAIL: initramfs runner gate timeout for $node_id"
       return 1
     fi
   done
-  trace "initramfs runner gate ok for all eight nodes"
+  if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
+    trace "W5 serving entry ready for all eight nodes env_file=$env_file"
+  else
+    trace "initramfs runner gate ok for all eight nodes"
+  fi
   return 0
 }
 
@@ -1711,6 +1764,13 @@ main() {
   if ! prepare_environment; then
     [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
     exit 1
+  fi
+
+  if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
+    trace "PASS: W5 serving queue ready env_file=$RUN_ENV_FILE"
+    echo "W5 serving queue ready"
+    echo "$RUN_ENV_FILE"
+    exit 0
   fi
 
   if ! run_w4_app 0; then
