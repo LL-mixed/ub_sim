@@ -3248,22 +3248,27 @@ fn qwen3_runtime_object_payload_view(
         match qwen3_object_service_payload_index_view_from_path(&snapshot_path, object_ref) {
             Ok(view) => return Ok(view),
             Err(err) => {
+                let snapshot_index_missing = err
+                    .contains("qwen3_object_service_payload_index_map_failed")
+                    && err.contains("stat_failed");
                 let snapshot_ref_missing =
                     err.contains("qwen3_object_service_payload_index_ref_missing");
-                if !snapshot_ref_missing {
+                if !snapshot_ref_missing && !snapshot_index_missing {
                     return Err(err);
                 }
                 if qwen3_w5_prefix_cache_kv_stream_contains_ref(&object_ref) {
                     return Err(err);
                 }
-                if let Ok(view) =
-                    qwen3_object_service_payload_index_view_from_path_with_version_policy(
-                        &snapshot_path,
-                        object_ref,
-                        false,
-                    )
-                {
-                    return Ok(view);
+                if snapshot_ref_missing {
+                    if let Ok(view) =
+                        qwen3_object_service_payload_index_view_from_path_with_version_policy(
+                            &snapshot_path,
+                            object_ref,
+                            false,
+                        )
+                    {
+                        return Ok(view);
+                    }
                 }
             }
         }
@@ -4174,6 +4179,15 @@ fn qwen3_lingqu_key_hash(key: &str) -> u64 {
         })
 }
 
+fn qwen3_w5_run_scope_hash() -> Option<u64> {
+    std::env::var("SIM_W5_RUN_ID")
+        .ok()
+        .or_else(|| std::env::var("RUN_ID").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| qwen3_lingqu_key_hash(&value))
+}
+
 fn qwen3_dense_runtime_model_key() -> String {
     std::env::var("SIM_QWEN3_DENSE_MODEL_KEY")
         .ok()
@@ -4282,23 +4296,40 @@ fn qwen3_register_range_forward_objects_for_step(
     } else {
         contract.next_node
     };
-    let hidden_key = if terminal_range {
-        format!(
+    let scope_hash = qwen3_w5_run_scope_hash();
+    let hidden_key = match (terminal_range, scope_hash) {
+        (true, Some(scope)) => format!(
+            "hidden/{model_key}/scope/{scope:016x}/node{}/range-runtime-output/decode-step{decode_step}",
+            target_node + 1
+        ),
+        (false, Some(scope)) => format!(
+            "hidden/{model_key}/scope/{scope:016x}/node{}/range-runtime-input/decode-step{decode_step}",
+            target_node + 1
+        ),
+        (true, None) => format!(
             "hidden/{model_key}/node{}/range-runtime-output/decode-step{decode_step}",
             target_node + 1
+        ),
+        (false, None) => format!(
+            "hidden/{model_key}/node{}/range-runtime-input/decode-step{decode_step}",
+            target_node + 1
+        ),
+    };
+    let kv_key = if let Some(scope) = scope_hash {
+        format!(
+            "kvcache/{model_key}/scope/{scope:016x}/node{}/layers-{}-{}/decode-step{decode_step}",
+            contract.node + 1,
+            contract.layer_start,
+            contract.layer_end
         )
     } else {
         format!(
-            "hidden/{model_key}/node{}/range-runtime-input/decode-step{decode_step}",
-            target_node + 1
+            "kvcache/{model_key}/node{}/layers-{}-{}/decode-step{decode_step}",
+            contract.node + 1,
+            contract.layer_start,
+            contract.layer_end
         )
     };
-    let kv_key = format!(
-        "kvcache/{model_key}/node{}/layers-{}-{}/decode-step{decode_step}",
-        contract.node + 1,
-        contract.layer_start,
-        contract.layer_end
-    );
     let (hidden_dtype, hidden_shape, hidden_layout) =
         qwen3_range_forward_hidden_tensor_metadata(summary);
     if let Some(snapshot_path) = object_service_snapshot {
@@ -32123,6 +32154,100 @@ mod tests {
                     "explicit legacy registry dir should receive hidden payload"
                 );
                 let _ = std::fs::remove_dir_all(&registry_dir);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_range_forward_snapshot_uses_w5_run_scope_keys() {
+        run_simpler_native_test_isolated(
+            "qwen3_range_forward_snapshot_uses_w5_run_scope_keys",
+            || {
+                const HIDDEN_BYTES: usize = 16;
+                const KV_BYTES: usize = 32;
+
+                let model_key = format!("qwen3-scoped-range-test-{}", std::process::id());
+                let run_id = "w5-serving-scope-test";
+                let scope_hash = qwen3_lingqu_key_hash(run_id);
+                let root = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_scoped_snapshot_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(&root).expect("create scoped snapshot dir");
+                let snapshot_path = root.join("lingqu_object_service_snapshot.json");
+
+                std::env::set_var("SIM_QWEN3_DENSE_MODEL_KEY", &model_key);
+                std::env::set_var("SIM_W5_RUN_ID", run_id);
+                std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
+
+                let contract = Qwen3GuestRangeComputeContract {
+                    node: 0,
+                    layer_start: 0,
+                    layer_end: 4,
+                    next_node: 1,
+                    pipeline_nodes: 8,
+                    total_layers: 28,
+                    hidden_bytes: HIDDEN_BYTES as u32,
+                };
+                let hidden_payload = vec![0x31u8; HIDDEN_BYTES];
+                let kv_payload = vec![0x71u8; KV_BYTES];
+                let hidden_checksum =
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden_payload);
+                let kv_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_payload);
+                let summary = Qwen3DenseReferenceRangeForwardSummary {
+                    node: u64::from(contract.node),
+                    layer_start: u64::from(contract.layer_start),
+                    layer_end: u64::from(contract.layer_end),
+                    layer_count: u64::from(contract.layer_end - contract.layer_start),
+                    next_node: u64::from(contract.next_node),
+                    pipeline_nodes: u64::from(contract.pipeline_nodes),
+                    total_layers: u64::from(contract.total_layers),
+                    hidden_bytes: HIDDEN_BYTES as u64,
+                    input_tensor_checksum: 1,
+                    output_tensor_checksum: hidden_checksum,
+                    range_layer_checksum: 2,
+                    real_layer_execution_count: 0,
+                    first_layer_output_checksum: hidden_checksum,
+                    final_layer_output_checksum: hidden_checksum,
+                    input_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_payload: hidden_payload,
+                    kv_state_bytes: KV_BYTES as u64,
+                    kv_state_checksum: kv_checksum,
+                    kv_state_payload: kv_payload,
+                    engram_context_report: None,
+                };
+
+                qwen3_register_range_forward_objects(contract, &[], &summary)
+                    .expect("publish scoped Object Service snapshot");
+                let snapshot_bytes =
+                    std::fs::read(&snapshot_path).expect("read scoped metadata snapshot");
+                let snapshot = LingquObjectServiceSnapshot::from_json_bytes(&snapshot_bytes)
+                    .expect("decode scoped metadata snapshot");
+                let hidden_key = format!(
+                    "hidden/{model_key}/scope/{scope_hash:016x}/node2/range-runtime-input/decode-step0"
+                );
+                let kv_key = format!(
+                    "kvcache/{model_key}/scope/{scope_hash:016x}/node1/layers-0-4/decode-step0"
+                );
+                assert!(
+                    snapshot
+                        .records
+                        .iter()
+                        .any(|record| record.key == hidden_key),
+                    "scoped hidden key missing from Object Service snapshot"
+                );
+                assert!(
+                    snapshot.records.iter().any(|record| record.key == kv_key),
+                    "scoped KV key missing from Object Service snapshot"
+                );
+
+                std::env::remove_var("SIM_QWEN3_DENSE_MODEL_KEY");
+                std::env::remove_var("SIM_W5_RUN_ID");
+                std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
+                let _ = std::fs::remove_dir_all(&root);
             },
         );
     }

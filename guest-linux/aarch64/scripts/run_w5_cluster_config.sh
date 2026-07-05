@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--serve-requests FILE] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -27,6 +27,7 @@ CONFIG_PATH=""
 STEPS_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
 REQUESTS_OVERRIDE=""
+SERVE_REQUESTS_OVERRIDE=""
 GSVA_KV_OVERRIDE=0
 REQUIRE_PREFIX_CACHE_OVERRIDE=0
 DISABLE_MEMORY_REUSE_OVERRIDE=0
@@ -44,6 +45,21 @@ while (( $# > 0 )); do
       ;;
     --serve-queue)
       SERVE_QUEUE=1
+      shift
+      ;;
+    --serve-requests)
+      if (( $# < 2 )); then
+        echo "--serve-requests requires a value" >&2
+        usage
+        exit 2
+      fi
+      SERVE_QUEUE=1
+      SERVE_REQUESTS_OVERRIDE="$2"
+      shift 2
+      ;;
+    --serve-requests=*)
+      SERVE_QUEUE=1
+      SERVE_REQUESTS_OVERRIDE="${1#--serve-requests=}"
       shift
       ;;
     --gsva-kv)
@@ -181,6 +197,9 @@ fi
 if (( SERVE_QUEUE )); then
   export SIM_W5_SERVING_QUEUE=1
 fi
+if [[ -n "$SERVE_REQUESTS_OVERRIDE" ]]; then
+  export SIM_W5_SERVING_SUBMIT_REQUESTS_FILE="$SERVE_REQUESTS_OVERRIDE"
+fi
 
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
@@ -269,6 +288,20 @@ validate_w5_cluster_config() {
      { bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; }; then
     echo "SIM_W5_SERVING_QUEUE cannot be combined with post-run maintenance" >&2
     return 2
+  fi
+  if [[ -n "${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}" ]]; then
+    if ! bool_enabled "${SIM_W5_SERVING_QUEUE:-0}"; then
+      echo "SIM_W5_SERVING_SUBMIT_REQUESTS_FILE requires SIM_W5_SERVING_QUEUE=1" >&2
+      return 2
+    fi
+    if [[ ! -f "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" ]]; then
+      echo "W5 serving submit request file is missing: $SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" >&2
+      return 2
+    fi
+    if ! "$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --validate-only >/dev/null; then
+      echo "W5 serving submit request file is invalid: $SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" >&2
+      return 2
+    fi
   fi
   if [[ -n "${SIM_W5_SERVING_REQUESTS_FILE:-}" ]]; then
     if bool_enabled "${SIM_W5_SERVING_QUEUE:-0}"; then
@@ -418,6 +451,7 @@ if (( PRINT_ENV )); then
   printf 'SIM_QWEN3_GUEST_DECODE_STEPS=%s\n' "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   printf 'SIM_W5_SERVING_REQUESTS_FILE=%s\n' "${SIM_W5_SERVING_REQUESTS_FILE:-}"
   printf 'SIM_W5_SERVING_QUEUE=%s\n' "${SIM_W5_SERVING_QUEUE:-0}"
+  printf 'SIM_W5_SERVING_SUBMIT_REQUESTS_FILE=%s\n' "${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}"
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
   printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"

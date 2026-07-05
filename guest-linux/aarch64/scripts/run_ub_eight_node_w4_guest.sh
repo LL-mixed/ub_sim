@@ -96,6 +96,15 @@ SIM_W5_SERVING_REQUESTS_FILE_GUEST="$SIM_W5_SERVING_REQUESTS_FILE"
 SIM_W5_SERVING_REQUEST_COUNT="${SIM_W5_SERVING_REQUEST_COUNT:-}"
 SIM_W5_SERVING_DECODE_STEPS_TOTAL="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-}"
 SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
+if [[ -n "$SIM_UAPI_W5_PROFILE" &&
+      "$SIM_W5_SERVING_QUEUE" == "1" &&
+      -z "$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" &&
+      -z "$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" ]]; then
+  SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$OUT_DIR/w5_serving_object_service_store.${RUN_ID_BASE}.json"
+  SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
+fi
+SIM_W5_SERVING_SUBMIT_REQUESTS_FILE="${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}"
+SIM_W5_SERVING_SUBMIT_WAIT_SECS="${SIM_W5_SERVING_SUBMIT_WAIT_SECS:-900}"
 SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-}"
 SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-}"
 SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-}"
@@ -898,7 +907,7 @@ apply_serving_request_line() {
       return 1
       ;;
   esac
-  SIM_W5_RUN_ID="\${DEFAULT_SIM_W5_RUN_ID}.\${SIM_W5_SERVING_REQUEST_ID}"
+  SIM_W5_RUN_ID="\$DEFAULT_SIM_W5_RUN_ID"
   export SIM_W5_RUN_ID
   export SIM_W5_SERVING_REQUEST_ID
   export SIM_QWEN3_GUEST_DECODE_STEPS
@@ -1768,6 +1777,23 @@ main() {
 
   if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
     trace "PASS: W5 serving queue ready env_file=$RUN_ENV_FILE"
+    if [[ -n "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" ]]; then
+      trace "submit W5 serving requests file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE env_file=$RUN_ENV_FILE"
+      if ! "$SCRIPT_DIR/run_w5_serving_submit.sh" \
+          --env-file "$RUN_ENV_FILE" \
+          --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" \
+          --wait-done \
+          --wait-timeout "$SIM_W5_SERVING_SUBMIT_WAIT_SECS"; then
+        trace "FAIL: W5 serving submit failed file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
+        [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+        exit 1
+      fi
+      trace "PASS: W5 serving requests completed file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
+      [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+      echo "W5 serving requests completed"
+      echo "$RUN_ENV_FILE"
+      exit 0
+    fi
     echo "W5 serving queue ready"
     echo "$RUN_ENV_FILE"
     exit 0
