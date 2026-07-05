@@ -772,6 +772,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         stable_w5_runner = script_dir / "run_w5_cluster_qwen3_0_6b_2step.sh"
         summary = script_dir / "w5_inference_cluster_summary.py"
         launcher = script_dir / "launch_ub_eight_node_headless.sh"
+        build_initramfs = script_dir / "build_initramfs.sh"
 
         self.assertTrue(runner.exists())
         self.assertTrue(runner.stat().st_mode & 0o111)
@@ -795,6 +796,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         launcher_text = launcher.read_text(encoding="utf-8")
         summary_text = summary.read_text(encoding="utf-8")
+        build_initramfs_text = build_initramfs.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
         self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
@@ -889,9 +891,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_SERVING_REQUESTS_FILE", config_runner_text)
         self.assertIn("SIM_W5_SERVING_QUEUE", config_runner_text)
         self.assertIn("SIM_W5_SERVING_INGRESS", config_runner_text)
-        self.assertIn("SIM_W5_SERVING_WORKER_REQUEST_ID", config_runner_text)
         self.assertIn("SIM_W5_SERVING_SUBMIT_REQUESTS_FILE", config_runner_text)
         self.assertIn("w5_serving_entry.py", config_runner_text)
+        self.assertIn("W5_SERVING_CONTROL_APP_SRC", build_initramfs_text)
+        self.assertIn("linqu_w5_serving_control", build_initramfs_text)
         self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"', stable_w5_runner_text)
@@ -920,6 +923,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("run_serving_nodea_worker_queue", legacy_runner_text)
         self.assertIn("serving_entry ready mode=serial-line", legacy_runner_text)
         self.assertIn("serving_entry ready mode=nodeA-worker", legacy_runner_text)
+        self.assertIn("serving_entry request_publish source=nodeA", legacy_runner_text)
+        self.assertIn("serving_entry worker_received", legacy_runner_text)
+        self.assertIn("/bin/linqu_w5_serving_control publish", legacy_runner_text)
+        self.assertIn("/bin/linqu_w5_serving_control wait", legacy_runner_text)
         self.assertIn("done < /dev/ttyAMA0", legacy_runner_text)
         self.assertIn("W5 serving queue ready", legacy_runner_text)
         self.assertIn("run_w5_serving_submit.sh", legacy_runner_text)
@@ -1005,7 +1012,6 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_W5_SERVING_QUEUE=0",
                 "SIM_W5_SERVING_INGRESS=cluster",
-                "SIM_W5_SERVING_WORKER_REQUEST_ID=",
                 "SIM_W5_SERVING_SUBMIT_REQUESTS_FILE=",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
@@ -1150,7 +1156,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn(f"SIM_W5_SERVING_SUBMIT_REQUESTS_FILE={requests_path}", result.stdout)
         self.assertIn("SIM_W5_SERVING_REQUESTS_FILE=\n", result.stdout)
 
-    def test_w5_cluster_config_runner_accepts_nodea_ingress_for_single_matching_request(self):
+    def test_w5_cluster_config_runner_accepts_nodea_ingress_for_dynamic_request(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
 
@@ -1189,10 +1195,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertIn("SIM_W5_SERVING_QUEUE=1", result.stdout)
         self.assertIn("SIM_W5_SERVING_INGRESS=nodeA", result.stdout)
-        self.assertIn("SIM_W5_SERVING_WORKER_REQUEST_ID=req-a", result.stdout)
         self.assertIn(f"SIM_W5_SERVING_SUBMIT_REQUESTS_FILE={requests_path}", result.stdout)
 
-    def test_w5_cluster_config_runner_rejects_nodea_ingress_prompt_mismatch(self):
+    def test_w5_cluster_config_runner_rejects_nodea_ingress_multi_request_until_rearm(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
 
@@ -1212,7 +1217,13 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 encoding="utf-8",
             )
             requests_path.write_text(
-                "request_id=req-a prompt_token_ids=81378,37585,999 decode_steps=1\n",
+                "\n".join(
+                    [
+                        "request_id=req-a prompt_token_ids=81378,37585,999 decode_steps=1",
+                        "request_id=req-b prompt_token_ids=81378,37585,374 decode_steps=1",
+                    ]
+                )
+                + "\n",
                 encoding="utf-8",
             )
             result = subprocess.run(
@@ -1231,7 +1242,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn(
-            "SIM_W5_SERVING_INGRESS=nodeA currently requires request prompt_token_ids",
+            "SIM_W5_SERVING_INGRESS=nodeA currently requires exactly one request",
             result.stderr,
         )
 

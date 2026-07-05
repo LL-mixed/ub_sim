@@ -147,6 +147,21 @@ static void mem_service_cleanup_cluster_slots(struct mem_service_cluster_runtime
     }
 }
 
+static void mem_service_cluster_runtime_mark_closed(struct mem_service_cluster_runtime *rt)
+{
+    int i;
+
+    if (!rt) {
+        return;
+    }
+    rt->obmm_fd = -1;
+    rt->local_idx = -1;
+    for (i = 0; i < MEM_SERVICE_CLUSTER_MAX_NODES; ++i) {
+        rt->slots[i].region.fd = -1;
+        rt->egress_import[i].fd = -1;
+    }
+}
+
 int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx)
 {
     struct mem_service_cluster_slot *slot;
@@ -256,12 +271,16 @@ static void mem_service_cluster_runtime_reset(struct mem_service_cluster_runtime
         close(rt->obmm_fd);
     }
     memset(rt, 0, sizeof(*rt));
-    rt->obmm_fd = -1;
-    rt->local_idx = -1;
+    mem_service_cluster_runtime_mark_closed(rt);
     rt->payload_arena_base = 0;
     rt->payload_arena_next = 0;
     rt->payload_arena_high_water = 0;
     rt->pool_layout_reported = false;
+}
+
+void mem_service_cluster_runtime_destroy(struct mem_service_cluster_runtime *rt)
+{
+    mem_service_cluster_runtime_reset(rt);
 }
 
 int mem_service_cluster_runtime_require(struct mem_service_cluster_runtime *rt)

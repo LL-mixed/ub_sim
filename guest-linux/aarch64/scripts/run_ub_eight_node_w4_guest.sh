@@ -97,7 +97,6 @@ SIM_W5_SERVING_REQUEST_COUNT="${SIM_W5_SERVING_REQUEST_COUNT:-}"
 SIM_W5_SERVING_DECODE_STEPS_TOTAL="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-}"
 SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_W5_SERVING_INGRESS="${SIM_W5_SERVING_INGRESS:-cluster}"
-SIM_W5_SERVING_WORKER_REQUEST_ID="${SIM_W5_SERVING_WORKER_REQUEST_ID:-}"
 if [[ -n "$SIM_UAPI_W5_PROFILE" &&
       "$SIM_W5_SERVING_QUEUE" == "1" &&
       -z "$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" &&
@@ -746,7 +745,6 @@ export SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT"
 export SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL"
 export SIM_W5_SERVING_QUEUE="$SIM_W5_SERVING_QUEUE"
 export SIM_W5_SERVING_INGRESS="$SIM_W5_SERVING_INGRESS"
-export SIM_W5_SERVING_WORKER_REQUEST_ID="$SIM_W5_SERVING_WORKER_REQUEST_ID"
 export SIM_W5_REQUIRE_PREFIX_CACHE="$SIM_W5_REQUIRE_PREFIX_CACHE"
 export SIM_W5_MEMORY_STORE="$SIM_W5_MEMORY_STORE"
 export SIM_W5_MEMORY_OBJECT_STORE="$SIM_W5_MEMORY_OBJECT_STORE"
@@ -928,13 +926,31 @@ run_llm_infer_once() {
   local rc
 
   log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} run_id=\${SIM_W5_RUN_ID:-none}"
-  if /bin/linqu_llm_infer; then
+  set +e
+  /bin/linqu_llm_infer
+  rc=\$?
+  set -e
+  if [ "\$rc" = "0" ]; then
     log "linqu_llm_infer completed \$LINQU_UB_ROLE request_id=\${SIM_W5_SERVING_REQUEST_ID:-none}"
     return 0
   fi
-  rc=\$?
   log "FAIL: linqu_llm_infer failed \$LINQU_UB_ROLE request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} rc=\$rc"
   return "\$rc"
+}
+
+publish_serving_request_line_to_workers() {
+  local line="\$1"
+
+  if [ "\$SIM_W5_SERVING_INGRESS" != "nodeA" ] || [ "\$LINQU_UB_ROLE" != "nodeA" ]; then
+    return 0
+  fi
+  log "serving_entry request_publish source=nodeA request_id=\$SIM_W5_SERVING_REQUEST_ID transport=obmm_spsc"
+  if ! /bin/linqu_w5_serving_control publish --request-line "\$line"; then
+    log "FAIL: serving_entry request_publish_failed request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+    return 1
+  fi
+  log "serving_entry request_published source=nodeA request_id=\$SIM_W5_SERVING_REQUEST_ID transport=obmm_spsc"
+  return 0
 }
 
 run_serving_requests_file() {
@@ -953,6 +969,9 @@ run_serving_requests_file() {
         ;;
     esac
     if ! apply_serving_request_line "\$line"; then
+      return 1
+    fi
+    if ! publish_serving_request_line_to_workers "\$line"; then
       return 1
     fi
     log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
@@ -991,6 +1010,9 @@ run_serving_stdin_queue() {
     if ! apply_serving_request_line "\$line"; then
       return 1
     fi
+    if ! publish_serving_request_line_to_workers "\$line"; then
+      return 1
+    fi
     log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
     run_llm_infer_once
     rc=\$?
@@ -1006,17 +1028,25 @@ run_serving_stdin_queue() {
 }
 
 run_serving_nodea_worker_queue() {
+  local request_file="/tmp/w5_serving_request.\$LINQU_UB_ROLE"
+  local line
   local rc
 
-  if [ -z "\$SIM_W5_SERVING_WORKER_REQUEST_ID" ]; then
-    log "FAIL: nodeA ingress worker missing SIM_W5_SERVING_WORKER_REQUEST_ID role=\$LINQU_UB_ROLE"
+  rm -f "\$request_file"
+  log "serving_entry ready mode=nodeA-worker role=\$LINQU_UB_ROLE entry=nodeA"
+  log "serving_entry worker_wait index=0 role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc"
+  if ! /bin/linqu_w5_serving_control wait --source-node nodeA --out "\$request_file"; then
+    log "FAIL: serving_entry worker_wait_failed role=\$LINQU_UB_ROLE source=nodeA"
     return 1
   fi
-  reset_serving_request_env
-  SIM_W5_SERVING_REQUEST_ID="\$SIM_W5_SERVING_WORKER_REQUEST_ID"
-  export SIM_W5_SERVING_REQUEST_ID
-  log "serving_entry ready mode=nodeA-worker role=\$LINQU_UB_ROLE entry=nodeA"
-  log "serving_entry worker_wait index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA"
+  if ! IFS= read -r line < "\$request_file"; then
+    log "FAIL: serving_entry worker_request_missing role=\$LINQU_UB_ROLE source=nodeA path=\$request_file"
+    return 1
+  fi
+  if ! apply_serving_request_line "\$line"; then
+    return 1
+  fi
+  log "serving_entry worker_received index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
   run_llm_infer_once
   rc=\$?
   if [ "\$rc" != "0" ]; then
@@ -1706,7 +1736,6 @@ prepare_environment() {
     SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL" \
     SIM_W5_SERVING_QUEUE="$SIM_W5_SERVING_QUEUE" \
     SIM_W5_SERVING_INGRESS="$SIM_W5_SERVING_INGRESS" \
-    SIM_W5_SERVING_WORKER_REQUEST_ID="$SIM_W5_SERVING_WORKER_REQUEST_ID" \
     SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE" \
     SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE" \
     SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND" \
