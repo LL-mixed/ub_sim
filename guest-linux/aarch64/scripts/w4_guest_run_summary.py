@@ -1337,6 +1337,61 @@ def emit_memory_service_summary(memory_records, worker_events, expected_steps, o
         f"prefix_cache_suffix_replay_steps={csv_or_none_ordered(record.get('step') for record in prefix_cache_suffix_replays)}"
     )
 
+    request_records = collections.defaultdict(list)
+    for record in memory_records:
+        request_id = record.get("request_id")
+        if request_id and request_id != "none":
+            request_records[request_id].append(record)
+    for request_id in sorted(request_records):
+        records = request_records[request_id]
+        request_stages = collections.Counter(record["stage"] for record in records)
+        request_steps = sorted({record["step"] for record in records if record["step"] >= 0})
+        request_prefix_cache_kv_hits = [
+            record
+            for record in records
+            if record["stage"] == "qwen3_w5_memory_prefix_cache_kv_loaded"
+        ]
+        request_gsva_kv_reads = [
+            record
+            for record in records
+            if record["stage"] == "qwen3_w5_memory_gsva_kv_loaded"
+        ]
+        request_gsva_kv_writebacks = [
+            record
+            for record in records
+            if record["stage"] == "qwen3_w5_memory_gsva_kv_writeback"
+        ]
+        request_prefix_cache_gsva_rejections = [
+            record
+            for record in records
+            if record["stage"] == "qwen3_w5_memory_prefix_cache_gsva_rejected"
+        ]
+        request_prefix_cache_suffix_replays = [
+            record
+            for record in records
+            if record["stage"] == "qwen3_w5_memory_prefix_cache_suffix_replay_token"
+        ]
+        output.append(
+            "memory_service_request: "
+            f"request_id={request_id} "
+            f"records={len(records)} "
+            f"steps={csv_or_none_ordered(request_steps)} "
+            f"stages={','.join(f'{stage}:{count}' for stage, count in sorted(request_stages.items()))} "
+            f"prefix_cache_ids={csv_or_none(record.get('prefix_cache_id') for record in records)} "
+            f"prefix_cache_actions={csv_or_none(record.get('prefix_cache_action') for record in records)} "
+            f"prefix_cache_kv_hits={len(request_prefix_cache_kv_hits)} "
+            f"prefix_cache_kv_nodes={csv_or_none_ordered(record.get('node') for record in request_prefix_cache_kv_hits)} "
+            f"prefix_cache_gsva_rejections={len(request_prefix_cache_gsva_rejections)} "
+            f"prefix_cache_gsva_rejection_reasons={csv_or_none(record.get('reason') for record in request_prefix_cache_gsva_rejections)} "
+            f"gsva_kv_refs={len(request_gsva_kv_reads) + len(request_gsva_kv_writebacks)} "
+            f"gsva_reads={len(request_gsva_kv_reads)} "
+            f"gsva_writebacks={len(request_gsva_kv_writebacks)} "
+            f"gsva_kv_nodes={csv_or_none_ordered(record.get('node') for record in request_gsva_kv_reads + request_gsva_kv_writebacks)} "
+            f"prefix_cache_matched_tokens={csv_or_none(record.get('prefix_cache_matched_tokens') for record in records)} "
+            f"prefix_cache_suffix_replay_tokens={len(request_prefix_cache_suffix_replays)} "
+            f"prefix_cache_suffix_replay_steps={csv_or_none_ordered(record.get('step') for record in request_prefix_cache_suffix_replays)}"
+        )
+
     if boundary_records:
         by_step = collections.defaultdict(list)
         for record in boundary_records:

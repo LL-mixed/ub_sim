@@ -1942,6 +1942,7 @@ struct w4_qwen3_shortpath_kv_stream_entry {
 struct w4_qwen3_memory_decision_config {
     bool enabled;
     char service[64];
+    char serving_request_id[128];
     char decision_store[256];
     char shortpath_lookup_mode[64];
     char boundary_lookup_backend[64];
@@ -5666,6 +5667,15 @@ static uint64_t qwen3_memory_shortpath_catalog_entry_count(
         0;
 }
 
+static const char *qwen3_memory_serving_request_id(
+    const struct w4_qwen3_memory_decision_config *config)
+{
+    if (!config || !str_nonempty(config->serving_request_id)) {
+        return "llm-infer-serving-request";
+    }
+    return config->serving_request_id;
+}
+
 static int parse_u32_field(const char *label, const char *value, uint32_t *out)
 {
     char *end = NULL;
@@ -6232,6 +6242,7 @@ static int parse_qwen3_memory_prefix_cache_kv_stream_entry(
                    " entry_index=%" PRIu64
                    " accepted_index=%" PRIu64
                    " node=%u step=%" PRIu64
+                   " request_id=%s"
                    " previous_step=%" PRIu64
                    " backend=%s segment_id=%s"
                    " bytes=%" PRIu64
@@ -6248,6 +6259,7 @@ static int parse_qwen3_memory_prefix_cache_kv_stream_entry(
                    *count,
                    parsed.target_node,
                    parsed.step_index + 1U,
+                   qwen3_memory_serving_request_id(config),
                    parsed.step_index,
                    fields[9],
                    fields[10][0] == '\0' ? "unset" : fields[10],
@@ -6389,6 +6401,15 @@ static int parse_qwen3_memory_decision_config(
     env_copy_or_empty("SIM_W5_MEMORY_SERVICE",
                       config->service,
                       sizeof(config->service));
+    env_copy_or_empty("SIM_W5_SERVING_REQUEST_ID",
+                      config->serving_request_id,
+                      sizeof(config->serving_request_id));
+    if (!str_nonempty(config->serving_request_id)) {
+        snprintf(config->serving_request_id,
+                 sizeof(config->serving_request_id),
+                 "%s",
+                 "llm-infer-serving-request");
+    }
     env_copy_or_empty("SIM_W5_MEMORY_DECISION_STORE",
                       config->decision_store,
                       sizeof(config->decision_store));
@@ -7090,6 +7111,7 @@ static int qwen3_memory_prefix_cache_kv_ref(
         }
         printf("[w4_guest] stage qwen3_w5_memory_gsva_kv_loaded"
                " node=%u step=%" PRIu64
+               " request_id=%s"
                " previous_step=%" PRIu64
                " backend=gsva segment_id=%s base=0x%016" PRIx64
                " bytes=%" PRIu64 " token=0x%016" PRIx64
@@ -7098,6 +7120,7 @@ static int qwen3_memory_prefix_cache_kv_ref(
                " source=prefix_cache target=uapi_object_ref status=ok\n",
                local_node + 1U,
                decode_step + 1U,
+               qwen3_memory_serving_request_id(config),
                decode_step,
                entry->gsva_segment_id,
                entry->gsva_base,
@@ -11631,7 +11654,8 @@ decode_round_start:
         round_next_node = next_node;
         if (qwen3_memory_decision_config.enabled) {
             printf("[w4_guest] stage qwen3_w5_memory_boundary_decision local=node%u"
-                   " step=%" PRIu64 " layers=[%u,%u) next=node%u shortpath_id=%s"
+                   " step=%" PRIu64 " request_id=%s"
+                   " layers=[%u,%u) next=node%u shortpath_id=%s"
                    " lookup_backend=%s lookup_mode=%s"
                    " shortpath_support_id=%s"
                    " shortpath_action=%s shortpath_artifact_kind=%s"
@@ -11647,6 +11671,8 @@ decode_round_start:
                    " source=lingqu_memory_service target=range_forward_boundary status=validated\n",
                    dispatch_node + 1U,
                    guest_decode_step,
+                   qwen3_memory_serving_request_id(
+                       &qwen3_memory_decision_config),
                    layer_start,
                    layer_end,
                    next_node + 1U,
@@ -12036,6 +12062,7 @@ decode_round_start:
                 kv_loaded_ms = monotonic_ms();
                 printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_kv_loaded"
                        " node=%u step=%" PRIu64 " previous_step=%" PRIu64
+                       " request_id=%s"
                        " plan_id=%s artifact_id=%s kv_bytes=%" PRIu64
                        " kv_checksum=0x%016" PRIx64
                        " key_hash=0x%016" PRIx64 " version=%" PRIu64
@@ -12046,6 +12073,8 @@ decode_round_start:
                        dispatch_node + 1U,
                        guest_decode_step,
                        kv_source_step,
+                       qwen3_memory_serving_request_id(
+                           &qwen3_memory_decision_config),
                        qwen3_memory_decision_config.prefix_cache_reuse_plan_id,
                        qwen3_memory_decision_config.prefix_cache_artifact_id,
                        prefix_cache_kv_ref.payload_bytes,
@@ -12653,6 +12682,7 @@ qwen3_shortpath_publish_runtime_range:
                 prefix_cache_suffix_replay_forced = true;
                 printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_suffix_replay_token"
                        " node=%u step=%" PRIu64
+                       " request_id=%s"
                        " replay_index=%" PRIu64
                        " token=%" PRIu64
                        " raw_token=%" PRIu64
@@ -12661,6 +12691,8 @@ qwen3_shortpath_publish_runtime_range:
                        " target=terminal_token_result status=ok\n",
                        dispatch_node + 1U,
                        decode_step,
+                       qwen3_memory_serving_request_id(
+                           &qwen3_memory_decision_config),
                        decode_step,
                        replay_token,
                        raw_sampled_token,

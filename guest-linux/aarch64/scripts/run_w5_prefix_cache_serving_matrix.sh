@@ -209,11 +209,13 @@ write_case_config() {
   local decision_run_id="${4:-}"
   local shortpath_execute="${5:-}"
   local include_boundary_selector="${6:-1}"
+  local serving_request_id="${7:-$label}"
   local case_config="$MATRIX_TMP_DIR/$label.env"
   cp "$CONFIG_PATH" "$case_config"
   {
     printf '\n'
     printf 'SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=%s\n' "$prompt_tokens"
+    printf 'SIM_W5_SERVING_REQUEST_ID=%s\n' "$serving_request_id"
     printf 'SIM_W5_MEMORY_REUSE_OUT_DIR=%s\n' "$reuse_out_dir"
     if [[ -n "$shortpath_execute" ]]; then
       printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "$shortpath_execute"

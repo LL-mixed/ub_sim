@@ -567,9 +567,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         cli_source = (
             Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"
         ).read_text(encoding="utf-8")
+        eight_node_runner = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "run_ub_eight_node_w4_guest.sh"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("qwen3_memory_prefix_cache_kv_ref", guest_source)
         self.assertIn("qwen3_memory_prefix_cache_partial_prefill_active", guest_source)
+        self.assertIn("SIM_W5_SERVING_REQUEST_ID", guest_source)
+        self.assertIn("qwen3_memory_serving_request_id", guest_source)
+        self.assertIn("request_id=%s", guest_source)
+        self.assertIn('SIM_W5_SERVING_REQUEST_ID="${SIM_W5_SERVING_REQUEST_ID:-}"', eight_node_runner)
+        self.assertIn('export SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"', eight_node_runner)
+        self.assertIn('SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"', eight_node_runner)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", guest_source)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", guest_source)

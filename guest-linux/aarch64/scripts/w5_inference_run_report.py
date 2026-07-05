@@ -506,6 +506,7 @@ def parse_summary(summary_path):
         "context_summaries": {},
         "decode_output": [],
         "bad_markers": [],
+        "memory_service_requests": [],
     }
 
     for line in lines:
@@ -517,6 +518,8 @@ def parse_summary(summary_path):
             parsed["decode_output"].append(line)
         elif line.startswith("memory_service_summary: "):
             parsed["memory_service"] = parse_pairs(line)
+        elif line.startswith("memory_service_request: "):
+            parsed["memory_service_requests"].append(parse_pairs(line))
         elif line.startswith("guest_worker_shortpath_summary: "):
             parsed["shortpath"] = parse_pairs(line)
         elif line.startswith("w5_device_summary: "):
@@ -973,6 +976,37 @@ def build_report(
                 ),
             },
         },
+        "serving_requests": [
+            {
+                "request_id": request.get("request_id", ""),
+                "records": parse_int(request.get("records")),
+                "steps": request.get("steps", ""),
+                "prefix_cache_ids": request.get("prefix_cache_ids", ""),
+                "prefix_cache_actions": request.get("prefix_cache_actions", ""),
+                "prefix_cache_kv_hits": parse_int(request.get("prefix_cache_kv_hits")),
+                "prefix_cache_kv_nodes": request.get("prefix_cache_kv_nodes", ""),
+                "prefix_cache_gsva_rejections": parse_int(
+                    request.get("prefix_cache_gsva_rejections")
+                ),
+                "prefix_cache_gsva_rejection_reasons": request.get(
+                    "prefix_cache_gsva_rejection_reasons", ""
+                ),
+                "gsva_kv_refs": parse_int(request.get("gsva_kv_refs")),
+                "gsva_reads": parse_int(request.get("gsva_reads")),
+                "gsva_writebacks": parse_int(request.get("gsva_writebacks")),
+                "gsva_kv_nodes": request.get("gsva_kv_nodes", ""),
+                "prefix_cache_matched_tokens": request.get(
+                    "prefix_cache_matched_tokens", ""
+                ),
+                "prefix_cache_suffix_replay_tokens": parse_int(
+                    request.get("prefix_cache_suffix_replay_tokens")
+                ),
+                "prefix_cache_suffix_replay_steps": request.get(
+                    "prefix_cache_suffix_replay_steps", ""
+                ),
+            }
+            for request in parsed["memory_service_requests"]
+        ],
         "device": {
             "records": parse_int(parsed["device"].get("records")),
             "tensor_consumers": parse_int(parsed["device"].get("tensor_consumers")),
@@ -1112,6 +1146,24 @@ def print_text_report(report):
         f"matched_tokens={prefix_cache['matched_tokens']} "
         f"suffix_replay_tokens={prefix_cache['suffix_replay_tokens']}"
     )
+    for request in report["serving_requests"]:
+        print(
+            "serving_request: "
+            f"request_id={request['request_id']} "
+            f"records={request['records']} steps={request['steps']} "
+            f"prefix_cache_ids={request['prefix_cache_ids']} "
+            f"prefix_cache_actions={request['prefix_cache_actions']} "
+            f"prefix_cache_kv_hits={request['prefix_cache_kv_hits']} "
+            f"prefix_cache_kv_nodes={request['prefix_cache_kv_nodes']} "
+            f"prefix_cache_gsva_rejections={request['prefix_cache_gsva_rejections']} "
+            f"prefix_cache_gsva_rejection_reasons={request['prefix_cache_gsva_rejection_reasons']} "
+            f"gsva_reads={request['gsva_reads']} "
+            f"gsva_writebacks={request['gsva_writebacks']} "
+            f"gsva_kv_nodes={request['gsva_kv_nodes']} "
+            f"matched_tokens={request['prefix_cache_matched_tokens']} "
+            f"suffix_replay_tokens={request['prefix_cache_suffix_replay_tokens']} "
+            f"suffix_replay_steps={request['prefix_cache_suffix_replay_steps']}"
+        )
     gsva = report["gsva"]
     print(
         "gsva: "

@@ -272,6 +272,23 @@ class W5InferenceRunReportTest(unittest.TestCase):
                             "hit_registry_indexes=none hit_registry_steps=none "
                             "hit_positions=none"
                         ),
+                        (
+                            "memory_service_request: request_id=req-shared-prefix "
+                            "records=4 steps=0,1 "
+                            "stages=qwen3_w5_memory_gsva_kv_loaded:1,"
+                            "qwen3_w5_memory_prefix_cache_kv_loaded:1,"
+                            "qwen3_w5_memory_prefix_cache_suffix_replay_token:2 "
+                            "prefix_cache_ids=prefix-cache-reuse/runtime-test "
+                            "prefix_cache_actions=reuse prefix_cache_kv_hits=1 "
+                            "prefix_cache_kv_nodes=1 "
+                            "prefix_cache_gsva_rejections=0 "
+                            "prefix_cache_gsva_rejection_reasons=none "
+                            "gsva_kv_refs=1 gsva_reads=1 "
+                            "gsva_writebacks=0 gsva_kv_nodes=1 "
+                            "prefix_cache_matched_tokens=3 "
+                            "prefix_cache_suffix_replay_tokens=2 "
+                            "prefix_cache_suffix_replay_steps=0,1"
+                        ),
                         "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
                     ]
                 )
@@ -289,6 +306,11 @@ class W5InferenceRunReportTest(unittest.TestCase):
         self.assertIn("w5_run_report: status=pass run_id=run", result.stdout)
         self.assertIn("artifact: label=prefix_cache_kv_stream bytes=10", result.stdout)
         self.assertIn("gsva: kv_refs=1 reads=1 writebacks=0 kv_nodes=1", result.stdout)
+        self.assertIn(
+            "serving_request: request_id=req-shared-prefix records=4 steps=0,1",
+            result.stdout,
+        )
+        self.assertIn("prefix_cache_kv_hits=1", result.stdout)
         self.assertIn(
             "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
             result.stdout,

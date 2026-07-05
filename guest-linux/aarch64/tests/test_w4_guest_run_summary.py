@@ -646,7 +646,8 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     [
                         (
                             "[w4_guest] stage qwen3_w5_memory_prefix_cache_gsva_rejected "
-                            "entry_index=0 accepted_index=0 node=1 step=1 previous_step=0 "
+                            "entry_index=0 accepted_index=0 node=1 step=1 "
+                            "request_id=req-stale previous_step=0 "
                             "backend=gsva segment_id=gsva/run/node1 bytes=2048 gsva_bytes=2048 "
                             "token=0x1234 epoch=1 expected_epoch=2 retired=0 "
                             "checksum=0xdef expected_checksum=0xdef reason=epoch_mismatch "
@@ -686,6 +687,11 @@ class W4GuestRunSummaryTest(unittest.TestCase):
         self.assertIn("prefix_cache_reject_policy=cache_reject_then_recompute", result.stdout)
         self.assertIn("prefix_cache_recompute_range_forwards=1", result.stdout)
         self.assertIn("prefix_cache_reject_then_recompute=1", result.stdout)
+        self.assertIn(
+            "memory_service_request: request_id=req-stale records=1 steps=1",
+            result.stdout,
+        )
+        self.assertIn("prefix_cache_gsva_rejections=1", result.stdout)
         self.assertIn(
             "gsva_timing: records=1 lookup_ms=2 map_read_ms=1 avoided_compute_ms=0",
             result.stdout,
