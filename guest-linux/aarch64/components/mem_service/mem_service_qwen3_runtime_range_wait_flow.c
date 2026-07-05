@@ -11,6 +11,32 @@
 #include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
+static void mem_service_qwen3_format_runtime_wait_token_key(
+    char *key,
+    size_t key_len,
+    uint64_t decode_step)
+{
+    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+
+    if (!key || key_len == 0) {
+        return;
+    }
+    if (run_scope_hash != 0) {
+        snprintf(key,
+                 key_len,
+                 "tokens/%s/scope/%016" PRIx64 "/decode-step%" PRIu64,
+                 mem_service_qwen3_model_key(),
+                 run_scope_hash,
+                 decode_step);
+        return;
+    }
+    snprintf(key,
+             key_len,
+             "tokens/%s/decode-step%" PRIu64,
+             mem_service_qwen3_model_key(),
+             decode_step);
+}
+
 static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     uint32_t local_node,
     uint32_t cluster_node_count,
@@ -25,8 +51,8 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     struct mem_service_record remote_hidden_output;
     struct obmm_desc handoff_desc;
     struct obmm_desc terminal_desc;
-    char ingress_key[96];
-    char token_result_key[96];
+    char ingress_key[256];
+    char token_result_key[256];
     long deadline;
     long wait_enter_ms;
     long found_local_ms = 0;
@@ -75,7 +101,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     if (local_placement.layer_start == 0) {
         struct mem_service_record token_record;
         struct mem_service_cluster_slot *owner_slot;
-        char token_result_key[96];
+        char token_result_key[256];
         struct obmm_desc token_desc;
         uint64_t payload_words[8];
         uint64_t checksum;
@@ -326,11 +352,10 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
 
         attempts++;
         if (allow_terminal_commit) {
-            snprintf(token_result_key,
-                     sizeof(token_result_key),
-                     "tokens/%s/decode-step%" PRIu64,
-                     mem_service_qwen3_model_key(),
-                     decode_step);
+            mem_service_qwen3_format_runtime_wait_token_key(
+                token_result_key,
+                sizeof(token_result_key),
+                decode_step);
             if (!terminal_desc_found) {
                 for (int owner_idx = 0;
                      !terminal_desc_found && owner_idx < rt->node_count;

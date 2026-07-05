@@ -139,8 +139,14 @@ def load_requests(path: Path) -> list[ServingRequest]:
 def print_summary(requests: list[ServingRequest], entry_node: str) -> None:
     print(
         "w5_serving_entry: "
-        f"status=valid requests={len(requests)} entry={entry_node} mode=sequential"
+        f"status=valid requests={len(requests)} "
+        f"total_decode_steps={total_decode_steps(requests)} "
+        f"entry={entry_node} mode=sequential"
     )
+
+
+def total_decode_steps(requests: list[ServingRequest]) -> int:
+    return sum(int(request.decode_steps) for request in requests)
 
 
 def print_current_one_shot_env(requests: list[ServingRequest], entry_node: str) -> None:
@@ -185,6 +191,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the env mapping accepted by the current one-shot W5 path",
     )
+    parser.add_argument(
+        "--print-request-count",
+        action="store_true",
+        help="print only the number of requests",
+    )
+    parser.add_argument(
+        "--print-total-decode-steps",
+        action="store_true",
+        help="print only the sum of decode_steps across requests",
+    )
     return parser
 
 
@@ -198,6 +214,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"w5_serving_entry: status=invalid reason={exc}", file=sys.stderr)
         return 2
 
+    if args.print_request_count:
+        print(len(requests))
+        return 0
+    if args.print_total_decode_steps:
+        print(total_decode_steps(requests))
+        return 0
     if args.validate_only:
         print_summary(requests, args.entry_node)
         return 0

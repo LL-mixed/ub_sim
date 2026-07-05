@@ -10,6 +10,32 @@
 #include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
+static void mem_service_qwen3_format_token_result_key(
+    char *key,
+    size_t key_len,
+    uint64_t decode_step)
+{
+    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+
+    if (!key || key_len == 0) {
+        return;
+    }
+    if (run_scope_hash != 0) {
+        snprintf(key,
+                 key_len,
+                 "tokens/%s/scope/%016" PRIx64 "/decode-step%" PRIu64,
+                 mem_service_qwen3_model_key(),
+                 run_scope_hash,
+                 decode_step);
+        return;
+    }
+    snprintf(key,
+             key_len,
+             "tokens/%s/decode-step%" PRIu64,
+             mem_service_qwen3_model_key(),
+             decode_step);
+}
+
 static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     struct mem_service *svc,
     uint32_t local_node,
@@ -28,7 +54,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_token_result;
     struct mem_service_qwen3_layer_range_placement local_placement;
-    char token_result_key[96];
+    char token_result_key[256];
     uint64_t payload_words[8];
     uint64_t token_result_offset;
     uint64_t checksum;
@@ -85,11 +111,9 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     }
     (void)msync(base + token_result_offset, MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES, MS_SYNC);
 
-    snprintf(token_result_key,
-             sizeof(token_result_key),
-             "tokens/%s/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             decode_step);
+    mem_service_qwen3_format_token_result_key(token_result_key,
+                                              sizeof(token_result_key),
+                                              decode_step);
     producer_publish_monotonic_ms = obmm_now_ms();
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
@@ -294,18 +318,16 @@ int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *s
                                                      uint64_t *sampled_token_out)
 {
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
-    char token_result_key[96];
+    char token_result_key[256];
     long deadline;
     bool first_scan = true;
 
     if (!svc) {
         return -1;
     }
-    snprintf(token_result_key,
-             sizeof(token_result_key),
-             "tokens/%s/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             decode_step);
+    mem_service_qwen3_format_token_result_key(token_result_key,
+                                              sizeof(token_result_key),
+                                              decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (first_scan || obmm_now_ms() < deadline) {
         first_scan = false;

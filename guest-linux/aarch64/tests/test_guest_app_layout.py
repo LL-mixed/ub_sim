@@ -3227,7 +3227,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     assert "DEMO_WAIT_SECS" not in w4_four_runner
     assert "DEMO_WAIT_SECS" not in w4_eight_runner
     assert "$APP_WAIT_SECS" in w4_four_runner
-    assert "APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS" in w4_eight_runner
+    assert "APP_WAIT_SECS * ${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}" in w4_eight_runner
     assert "switching to /bin/run_app app boot flow" in four_node_smoke
     assert "switching to /bin/run_demo app boot flow" not in four_node_smoke
     assert "linqu_w4_demo" not in w4_runner

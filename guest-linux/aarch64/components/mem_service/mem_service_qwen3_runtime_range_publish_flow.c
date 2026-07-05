@@ -10,6 +10,74 @@
 #include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
+static void mem_service_qwen3_format_runtime_range_key(
+    char *key,
+    size_t key_len,
+    bool terminal_range,
+    uint32_t target_node,
+    uint64_t decode_step)
+{
+    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+
+    if (!key || key_len == 0) {
+        return;
+    }
+    if (run_scope_hash != 0) {
+        snprintf(key,
+                 key_len,
+                 terminal_range ?
+                     "hidden/%s/scope/%016" PRIx64 "/node%u/range-runtime-output/decode-step%" PRIu64 :
+                     "hidden/%s/scope/%016" PRIx64 "/node%u/range-runtime-input/decode-step%" PRIu64,
+                 mem_service_qwen3_model_key(),
+                 run_scope_hash,
+                 target_node + 1U,
+                 decode_step);
+        return;
+    }
+    snprintf(key,
+             key_len,
+             terminal_range ?
+                 "hidden/%s/node%u/range-runtime-output/decode-step%" PRIu64 :
+                 "hidden/%s/node%u/range-runtime-input/decode-step%" PRIu64,
+             mem_service_qwen3_model_key(),
+             target_node + 1U,
+             decode_step);
+}
+
+static void mem_service_qwen3_format_runtime_kv_key(
+    char *key,
+    size_t key_len,
+    uint32_t local_node,
+    const struct mem_service_qwen3_layer_range_placement *placement,
+    uint64_t decode_step)
+{
+    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+
+    if (!key || key_len == 0 || !placement) {
+        return;
+    }
+    if (run_scope_hash != 0) {
+        snprintf(key,
+                 key_len,
+                 "kvcache/%s/scope/%016" PRIx64 "/node%u/layers-%u-%u/decode-step%" PRIu64,
+                 mem_service_qwen3_model_key(),
+                 run_scope_hash,
+                 local_node + 1U,
+                 placement->layer_start,
+                 placement->layer_end,
+                 decode_step);
+        return;
+    }
+    snprintf(key,
+             key_len,
+             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
+             mem_service_qwen3_model_key(),
+             local_node + 1U,
+             placement->layer_start,
+             placement->layer_end,
+             decode_step);
+}
+
 int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service *svc,
                                                        uint32_t local_node,
                                                        uint32_t cluster_node_count,
@@ -28,8 +96,8 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     struct mem_service_qwen3_layer_range_placement local_placement;
     uint32_t target_node;
     bool terminal_range;
-    char local_hidden_output_key[96];
-    char local_kv_state_key[96];
+    char local_hidden_output_key[256];
+    char local_kv_state_key[256];
     uint64_t checksum;
     uint64_t kv_checksum = 0;
     uint64_t kv_state_offset = 0;
@@ -120,22 +188,16 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                 payload_len,
                 MS_SYNC);
     (void)msync(base + kv_state_offset, kv_payload_len, MS_SYNC);
-    snprintf(local_hidden_output_key,
-             sizeof(local_hidden_output_key),
-             terminal_range ?
-                 "hidden/%s/node%u/range-runtime-output/decode-step%" PRIu64 :
-                 "hidden/%s/node%u/range-runtime-input/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             target_node + 1U,
-             decode_step);
-    snprintf(local_kv_state_key,
-             sizeof(local_kv_state_key),
-             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             local_node + 1U,
-             local_placement.layer_start,
-             local_placement.layer_end,
-             decode_step);
+    mem_service_qwen3_format_runtime_range_key(local_hidden_output_key,
+                                               sizeof(local_hidden_output_key),
+                                               terminal_range,
+                                               target_node,
+                                               decode_step);
+    mem_service_qwen3_format_runtime_kv_key(local_kv_state_key,
+                                            sizeof(local_kv_state_key),
+                                            local_node,
+                                            &local_placement,
+                                            decode_step);
     producer_publish_monotonic_ms = obmm_now_ms();
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;

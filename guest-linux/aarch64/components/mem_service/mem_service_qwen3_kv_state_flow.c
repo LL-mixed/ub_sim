@@ -9,6 +9,40 @@
 #include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
+static void mem_service_qwen3_format_kv_state_key(
+    char *key,
+    size_t key_len,
+    uint32_t local_node,
+    const struct mem_service_qwen3_layer_range_placement *placement,
+    uint64_t decode_step)
+{
+    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+
+    if (!key || key_len == 0 || !placement) {
+        return;
+    }
+    if (run_scope_hash != 0) {
+        snprintf(key,
+                 key_len,
+                 "kvcache/%s/scope/%016" PRIx64 "/node%u/layers-%u-%u/decode-step%" PRIu64,
+                 mem_service_qwen3_model_key(),
+                 run_scope_hash,
+                 local_node + 1U,
+                 placement->layer_start,
+                 placement->layer_end,
+                 decode_step);
+        return;
+    }
+    snprintf(key,
+             key_len,
+             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
+             mem_service_qwen3_model_key(),
+             local_node + 1U,
+             placement->layer_start,
+             placement->layer_end,
+             decode_step);
+}
+
 int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
     struct mem_service *svc,
     uint32_t local_node,
@@ -22,7 +56,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_kv_state;
     struct mem_service_qwen3_layer_range_placement local_placement;
-    char local_kv_state_key[96];
+    char local_kv_state_key[256];
     uint64_t kv_checksum;
     uint64_t kv_state_offset = 0;
     uint64_t kv_state_block_bytes = 0;
@@ -76,14 +110,11 @@ int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
         return -1;
     }
     (void)msync(base + kv_state_offset, kv_payload_len, MS_SYNC);
-    snprintf(local_kv_state_key,
-             sizeof(local_kv_state_key),
-             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             local_node + 1U,
-             local_placement.layer_start,
-             local_placement.layer_end,
-             decode_step);
+    mem_service_qwen3_format_kv_state_key(local_kv_state_key,
+                                          sizeof(local_kv_state_key),
+                                          local_node,
+                                          &local_placement,
+                                          decode_step);
     producer_publish_monotonic_ms = obmm_now_ms();
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
@@ -167,7 +198,7 @@ int mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_qwen3_layer_range_placement local_placement;
     struct mem_service_record kv_state;
-    char kv_state_key[96];
+    char kv_state_key[256];
     uint64_t checksum;
 
     if (!view_out) {
@@ -190,14 +221,11 @@ int mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr) {
         return -1;
     }
-    snprintf(kv_state_key,
-             sizeof(kv_state_key),
-             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             local_node + 1U,
-             local_placement.layer_start,
-             local_placement.layer_end,
-             kv_step);
+    mem_service_qwen3_format_kv_state_key(kv_state_key,
+                                          sizeof(kv_state_key),
+                                          local_node,
+                                          &local_placement,
+                                          kv_step);
     memset(&kv_state, 0, sizeof(kv_state));
     {
         struct mem_service_record *local_record = mem_service_find_record(svc, kv_state_key);

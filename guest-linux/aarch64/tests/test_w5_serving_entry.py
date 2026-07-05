@@ -46,7 +46,8 @@ class W5ServingEntryTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "w5_serving_entry: status=valid requests=2 entry=nodeA mode=sequential",
+            "w5_serving_entry: status=valid requests=2 total_decode_steps=6 "
+            "entry=nodeA mode=sequential",
             result.stdout,
         )
 
@@ -110,6 +111,28 @@ class W5ServingEntryTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("w5_serving_entry: status=valid requests=1", result.stdout)
+
+    def test_prints_request_count_and_total_decode_steps_for_runner_integration(self):
+        temp_dir, request_path = self.write_requests(
+            "\n".join(
+                [
+                    "request_id=req-a prompt_token_ids=81378,37585,374 decode_steps=2",
+                    "request_id=req-b prompt_token_ids=81378,37585,374,17 decode_steps=3",
+                ]
+            )
+        )
+        with temp_dir:
+            count = self.run_entry(
+                "--requests", str(request_path), "--print-request-count"
+            )
+            steps = self.run_entry(
+                "--requests", str(request_path), "--print-total-decode-steps"
+            )
+
+        self.assertEqual(count.returncode, 0, count.stderr)
+        self.assertEqual(steps.returncode, 0, steps.stderr)
+        self.assertEqual(count.stdout.strip(), "2")
+        self.assertEqual(steps.stdout.strip(), "5")
 
 
 if __name__ == "__main__":

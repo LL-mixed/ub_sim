@@ -235,7 +235,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("APP_WAIT_SECS * 1000", runner_text)
         self.assertIn("SIM_QWEN3_RUNTIME_RANGE_WAIT_MS", runner_text)
         self.assertIn(
-            "APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000",
+            "APP_WAIT_SECS * ${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS} * 1000",
             runner_text,
         )
         self.assertIn("SIM_UAPI_W5_PROFILE", launcher_text)
@@ -737,6 +737,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             guest_source,
         )
         self.assertIn("mem_service_obmm_service_v0_try_resolve_range_kv_state_view", guest_source)
+        self.assertIn("mem_service_qwen3_format_kv_state_key", db_service_source)
+        self.assertIn("kvcache/%s/scope/%016", db_service_source)
+        self.assertIn("mem_service_qwen3_format_token_result_key", db_service_source)
+        self.assertIn("tokens/%s/scope/%016", db_service_source)
+        self.assertIn("mem_service_qwen3_format_runtime_range_key", db_service_source)
+        self.assertIn("hidden/%s/scope/%016", db_service_source)
         self.assertNotIn("while (candidate > 0U)", guest_source)
         self.assertIn("qwen3_decode_round_idle_timing", guest_source)
         self.assertIn('engram_range_work_item ? "ok" : "idle"', guest_source)
@@ -852,6 +858,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
         self.assertIn("--steps N", config_runner_text)
+        self.assertIn("--requests FILE", config_runner_text)
         self.assertIn("--validate-only", config_runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
@@ -874,6 +881,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", config_runner_text)
         self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", config_runner_text)
+        self.assertIn("SIM_W5_SERVING_REQUESTS_FILE", config_runner_text)
+        self.assertIn("w5_serving_entry.py", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
         self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"', stable_w5_runner_text)
@@ -896,6 +905,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('write_case_config shared-prefix-seed "$SHARED_PREFIX_TOKEN_IDS"', serving_matrix_runner_text)
         self.assertIn('write_case_config request-b "$prompt_b" "$OUT_DIR" "$seed_run_id" 0 0', serving_matrix_runner_text)
         self.assertIn('include_boundary_selector="${6:-1}"', serving_matrix_runner_text)
+        self.assertIn("stage_w5_serving_requests_file", legacy_runner_text)
+        self.assertIn("run_serving_requests_file", legacy_runner_text)
+        self.assertIn("serving_entry request_start", legacy_runner_text)
+        self.assertIn("SIM_W5_SERVING_DECODE_STEPS_TOTAL", legacy_runner_text)
+        self.assertIn("kvcache/qwen3[-.0-9a-z]*(/scope/", legacy_runner_text)
         self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
         self.assertIn("SIM_W5_VALIDATE_ONLY", config_runner_text)
@@ -967,6 +981,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_QWEN3_GUEST_ENGRAM_POOL=",
                 "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                 "SIM_QWEN3_GUEST_DECODE_STEPS=3",
+                "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
                 "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
@@ -996,6 +1011,49 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH=/tmp/engram-simt/libkernel.so",
             ],
         )
+
+    def test_w5_cluster_config_runner_accepts_serving_requests_file(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "w5.env"
+            requests_path = Path(tmp) / "requests.txt"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                        "SIM_QWEN3_GUEST_DECODE_STEPS=2",
+                        "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            requests_path.write_text(
+                "\n".join(
+                    [
+                        "request_id=req-a prompt_token_ids=81378,37585,374 decode_steps=2",
+                        "request_id=req-b prompt_token_ids=81378,37585,374,17 decode_steps=3",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    str(config_runner),
+                    "--print-env",
+                    "--requests",
+                    str(requests_path),
+                    str(config_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(f"SIM_W5_SERVING_REQUESTS_FILE={requests_path}", result.stdout)
 
     def test_w5_prefix_cache_realistic_matrix_runner_dry_run(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

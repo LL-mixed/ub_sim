@@ -90,6 +90,10 @@ SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}"
 SIM_W5_SERVING_REQUEST_ID="${SIM_W5_SERVING_REQUEST_ID:-}"
+SIM_W5_SERVING_REQUESTS_FILE="${SIM_W5_SERVING_REQUESTS_FILE:-}"
+SIM_W5_SERVING_REQUESTS_FILE_GUEST="$SIM_W5_SERVING_REQUESTS_FILE"
+SIM_W5_SERVING_REQUEST_COUNT="${SIM_W5_SERVING_REQUEST_COUNT:-}"
+SIM_W5_SERVING_DECODE_STEPS_TOTAL="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-}"
 SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-}"
 SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-}"
 SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-}"
@@ -233,6 +237,44 @@ stage_w5_memory_prefix_cache_kv_stream() {
   cp "$stream_path" "$stream_guest_file"
   SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH_GUEST="$stream_guest_path"
   trace "prepare: staged W5 Memory prefix-cache KV stream source=$stream_path guest=$stream_guest_path"
+}
+
+resolve_w5_serving_requests_config() {
+  local requests_path="$SIM_W5_SERVING_REQUESTS_FILE"
+
+  if [[ -z "$requests_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$requests_path" ]]; then
+    trace "FAIL: W5 serving request file is missing path=$requests_path"
+    return 1
+  fi
+  if ! "$SCRIPT_DIR/w5_serving_entry.py" --requests "$requests_path" --validate-only >/dev/null; then
+    trace "FAIL: W5 serving request file is invalid path=$requests_path"
+    return 1
+  fi
+  if [[ -z "$SIM_W5_SERVING_REQUEST_COUNT" ]]; then
+    SIM_W5_SERVING_REQUEST_COUNT="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$requests_path" --print-request-count)"
+  fi
+  if [[ -z "$SIM_W5_SERVING_DECODE_STEPS_TOTAL" ]]; then
+    SIM_W5_SERVING_DECODE_STEPS_TOTAL="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$requests_path" --print-total-decode-steps)"
+  fi
+  trace "prepare: W5 serving requests requests=$SIM_W5_SERVING_REQUEST_COUNT total_decode_steps=$SIM_W5_SERVING_DECODE_STEPS_TOTAL path=$requests_path"
+}
+
+stage_w5_serving_requests_file() {
+  local requests_path="$SIM_W5_SERVING_REQUESTS_FILE"
+  local requests_guest_path="/tmp/w5_serving_requests.txt"
+  local requests_guest_file="$RUN_INITRAMFS_DIR$requests_guest_path"
+
+  if [[ -z "$requests_path" ]]; then
+    return 0
+  fi
+  resolve_w5_serving_requests_config || return 1
+  mkdir -p "$(dirname "$requests_guest_file")"
+  cp "$requests_path" "$requests_guest_file"
+  SIM_W5_SERVING_REQUESTS_FILE_GUEST="$requests_guest_path"
+  trace "prepare: staged W5 serving requests source=$requests_path guest=$requests_guest_path requests=$SIM_W5_SERVING_REQUEST_COUNT total_decode_steps=$SIM_W5_SERVING_DECODE_STEPS_TOTAL"
 }
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
@@ -686,6 +728,9 @@ export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"
 export SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE"
 export SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"
+export SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE_GUEST"
+export SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT"
+export SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL"
 export SIM_W5_MEMORY_STORE="$SIM_W5_MEMORY_STORE"
 export SIM_W5_MEMORY_OBJECT_STORE="$SIM_W5_MEMORY_OBJECT_STORE"
 export SIM_W5_MEMORY_ENGRAM_STATE="$SIM_W5_MEMORY_ENGRAM_STATE"
@@ -739,12 +784,181 @@ export SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
 export SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="$SIM_W4_UAPI_COMPLETION_TIMEOUT_MS"
 export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
 
-log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP"
-if /bin/linqu_llm_infer; then
-  log "linqu_llm_infer completed \$LINQU_UB_ROLE"
-else
+DEFAULT_SIM_W5_RUN_ID="\$SIM_W5_RUN_ID"
+DEFAULT_SIM_QWEN3_GUEST_DECODE_STEPS="\$SIM_QWEN3_GUEST_DECODE_STEPS"
+DEFAULT_SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+DEFAULT_SIM_QWEN3_SAMPLER_TOP_K="\$SIM_QWEN3_SAMPLER_TOP_K"
+DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
+DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
+DEFAULT_SIM_QWEN3_SAMPLER_SEED="\$SIM_QWEN3_SAMPLER_SEED"
+DEFAULT_SIM_W5_REQUIRE_PREFIX_CACHE="\$SIM_W5_REQUIRE_PREFIX_CACHE"
+
+is_positive_uint() {
+  case "\$1" in
+    ""|0|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+is_token_csv() {
+  case "\$1" in
+    ""|,*|*,|*,,*|*[!0-9,]*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+reset_serving_request_env() {
+  SIM_W5_RUN_ID="\$DEFAULT_SIM_W5_RUN_ID"
+  SIM_W5_SERVING_REQUEST_ID=""
+  SIM_QWEN3_GUEST_DECODE_STEPS="\$DEFAULT_SIM_QWEN3_GUEST_DECODE_STEPS"
+  SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$DEFAULT_SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+  SIM_QWEN3_SAMPLER_TOP_K="\$DEFAULT_SIM_QWEN3_SAMPLER_TOP_K"
+  SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI"
+  SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
+  SIM_QWEN3_SAMPLER_SEED="\$DEFAULT_SIM_QWEN3_SAMPLER_SEED"
+  SIM_W5_REQUIRE_PREFIX_CACHE="\$DEFAULT_SIM_W5_REQUIRE_PREFIX_CACHE"
+}
+
+apply_serving_request_line() {
+  local line="\$1"
+  local field key value
+
+  reset_serving_request_env
+  for field in \$line; do
+    case "\$field" in
+      \#*)
+        break
+        ;;
+      *=*)
+        key="\${field%%=*}"
+        value="\${field#*=}"
+        ;;
+      *)
+        log "FAIL: invalid serving request token token=\$field"
+        return 1
+        ;;
+    esac
+    case "\$key" in
+      request_id)
+        SIM_W5_SERVING_REQUEST_ID="\$value"
+        ;;
+      prompt_token_ids)
+        SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$value"
+        ;;
+      decode_steps)
+        SIM_QWEN3_GUEST_DECODE_STEPS="\$value"
+        ;;
+      sampler_top_k)
+        SIM_QWEN3_SAMPLER_TOP_K="\$value"
+        ;;
+      sampler_top_p_milli)
+        SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$value"
+        ;;
+      sampler_temperature_milli)
+        SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$value"
+        ;;
+      sampler_seed)
+        SIM_QWEN3_SAMPLER_SEED="\$value"
+        ;;
+      prefix_cache_required)
+        SIM_W5_REQUIRE_PREFIX_CACHE="\$value"
+        ;;
+      *)
+        log "FAIL: unsupported serving request field key=\$key"
+        return 1
+        ;;
+    esac
+  done
+  if [ -z "\$SIM_W5_SERVING_REQUEST_ID" ]; then
+    log "FAIL: serving request missing request_id"
+    return 1
+  fi
+  if ! is_token_csv "\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"; then
+    log "FAIL: serving request has invalid prompt_token_ids request_id=\$SIM_W5_SERVING_REQUEST_ID"
+    return 1
+  fi
+  if ! is_positive_uint "\$SIM_QWEN3_GUEST_DECODE_STEPS"; then
+    log "FAIL: serving request has invalid decode_steps request_id=\$SIM_W5_SERVING_REQUEST_ID value=\$SIM_QWEN3_GUEST_DECODE_STEPS"
+    return 1
+  fi
+  case "\$SIM_W5_REQUIRE_PREFIX_CACHE" in
+    0|1)
+      ;;
+    *)
+      log "FAIL: serving request has invalid prefix_cache_required request_id=\$SIM_W5_SERVING_REQUEST_ID value=\$SIM_W5_REQUIRE_PREFIX_CACHE"
+      return 1
+      ;;
+  esac
+  SIM_W5_RUN_ID="\${DEFAULT_SIM_W5_RUN_ID}.\${SIM_W5_SERVING_REQUEST_ID}"
+  export SIM_W5_RUN_ID
+  export SIM_W5_SERVING_REQUEST_ID
+  export SIM_QWEN3_GUEST_DECODE_STEPS
+  export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS
+  export SIM_QWEN3_SAMPLER_TOP_K
+  export SIM_QWEN3_SAMPLER_TOP_P_MILLI
+  export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI
+  export SIM_QWEN3_SAMPLER_SEED
+  export SIM_W5_REQUIRE_PREFIX_CACHE
+  return 0
+}
+
+run_llm_infer_once() {
+  local rc
+
+  log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} run_id=\${SIM_W5_RUN_ID:-none}"
+  if /bin/linqu_llm_infer; then
+    log "linqu_llm_infer completed \$LINQU_UB_ROLE request_id=\${SIM_W5_SERVING_REQUEST_ID:-none}"
+    return 0
+  fi
   rc=\$?
-  log "FAIL: linqu_llm_infer failed \$LINQU_UB_ROLE rc=\$rc"
+  log "FAIL: linqu_llm_infer failed \$LINQU_UB_ROLE request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} rc=\$rc"
+  return "\$rc"
+}
+
+run_serving_requests_file() {
+  local request_file="\$1"
+  local line request_index rc
+
+  request_index=0
+  if [ ! -f "\$request_file" ]; then
+    log "FAIL: serving request file missing path=\$request_file"
+    return 1
+  fi
+  while IFS= read -r line || [ -n "\$line" ]; do
+    case "\$line" in
+      ""|\#*)
+        continue
+        ;;
+    esac
+    if ! apply_serving_request_line "\$line"; then
+      return 1
+    fi
+    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
+    run_llm_infer_once
+    rc=\$?
+    if [ "\$rc" != "0" ]; then
+      log "FAIL: serving_entry request_failed index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
+      return "\$rc"
+    fi
+    log "serving_entry request_done index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+    request_index=\$((request_index + 1))
+  done < "\$request_file"
+  if [ "\$request_index" = "0" ]; then
+    log "FAIL: serving request file had no runnable requests path=\$request_file"
+    return 1
+  fi
+  log "serving_entry completed requests=\$request_index role=\$LINQU_UB_ROLE"
+  return 0
+}
+
+if [ -n "\$SIM_W5_SERVING_REQUESTS_FILE" ]; then
+  run_serving_requests_file "\$SIM_W5_SERVING_REQUESTS_FILE"
+else
+  run_llm_infer_once
 fi
 
 log "entering shell after w4 guest runner"
@@ -768,6 +982,7 @@ build_w4_initramfs() {
   stage_w5_memory_shortpath_stream
   stage_w5_memory_shortpath_kv_stream
   stage_w5_memory_prefix_cache_kv_stream
+  stage_w5_serving_requests_file
   write_w4_initramfs_runner
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -1199,10 +1414,10 @@ validate_node_log() {
     if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
       assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_timing local=${node_id} step=[0-9]+ node=${idx} owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} candidate_publish_ms=[0-9]+ candidate_wait_ms=[0-9]+ policy_select_ms=[0-9]+ decision_publish_ms=[0-9]+ selected_wait_ms=[0-9]+ selected_writeback_ms=[0-9]+ history_state_wait_ms=[0-9]+ qwen3_range_publish_ms=[0-9]+ qwen3_range_input_wait_ms=[0-9]+ status=ok" "$node_id qwen3 engram timing" || return 1
     fi
-    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* block_bytes=[1-9][0-9]* blocks=[1-9][0-9]* reserved_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service status=ok" "$node_id qwen3 range kv state publish" || return 1
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* block_bytes=[1-9][0-9]* blocks=[1-9][0-9]* reserved_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service status=ok" "$node_id qwen3 range kv state publish" || return 1
     if (( SIM_QWEN3_GUEST_DECODE_STEPS > 1 )); then
       if ! rg -q "\\[w4_guest\\] stage qwen3_w5_memory_prefix_cache_kv_loaded node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ .* status=ok" "$log_file"; then
-        assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_resolve local=node${idx} kv_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok" "$node_id qwen3 range kv state resolve" || return 1
+        assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_resolve local=node${idx} kv_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok" "$node_id qwen3 range kv state resolve" || return 1
       fi
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         if (( idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE )); then
@@ -1229,7 +1444,7 @@ validate_node_log() {
         assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_engram_selected_token_wait step=[0-9]+ object_key=qwen3/session/[^/]+/step/[0-9]+/tokens/selected owner=node${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE} version=1 bytes=64 token=[0-9]+ checksum=0x[0-9a-f]+ source=obmm_object_service status=ok" "$node_id qwen3 engram selected token wait" || return 1
         assert_log_has "$log_file" "\\[w4_guest\\] stage qwen3_engram_selected_writeback local=node8 step=[0-9]+ selected_token=[0-9]+ source=engram_selected_object target=terminal_token_result status=ok" "$node_id qwen3 engram selected writeback" || return 1
       fi
-      assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${engram_candidates_owner_node} target=node[0-9]+ step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3[-.0-9a-z]*/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=(obmm_spsc|local_pending) status=ok" "$node_id qwen3 terminal token result publish" || return 1
+      assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${engram_candidates_owner_node} target=node[0-9]+ step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=(obmm_spsc|local_pending) status=ok" "$node_id qwen3 terminal token result publish" || return 1
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
     if (( idx == 8 )); then
@@ -1260,10 +1475,26 @@ validate_node_log() {
   return 0
 }
 
+validate_serving_request_node_log() {
+  local node_id="$1"
+  local log_file="$2"
+  local expected_requests="${SIM_W5_SERVING_REQUEST_COUNT:-0}"
+  local expected_passes="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
+
+  assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry request_start .* role=${node_id} " "$expected_requests" "$node_id W5 serving request starts" || return 1
+  assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry request_done .* role=${node_id}" "$expected_requests" "$node_id W5 serving request completions" || return 1
+  assert_log_count "$log_file" "\\[w4_guest\\] pass" "$expected_passes" "$node_id W5 serving decode passes" || return 1
+  assert_log_has "$log_file" "\\[w4guest8:initramfs\\] serving_entry completed requests=${expected_requests} role=${node_id}" "$node_id W5 serving entry completion" || return 1
+  assert_log_absent "$log_file" "\\[w4_guest\\] fail|\\[w4guest8:initramfs\\] FAIL:" "$node_id W5 serving failures absent" || return 1
+  return 0
+}
+
 run_w4_app() {
   local decode_step="$1"
-  local node_id guest_log rc
+  local node_id guest_log rc expected_passes
   typeset -A START_LINES
+
+  expected_passes="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
@@ -1273,8 +1504,8 @@ run_w4_app() {
 
   rc=0
   wait_for_all_logs_pass_or_fail_since "^\\[w4_guest\\] pass\\r?$" "$FATAL_GUEST_PATTERN" \
-    "$((APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS))" \
-    "$SIM_QWEN3_GUEST_DECODE_STEPS" || rc=$?
+    "$((APP_WAIT_SECS * expected_passes))" \
+    "$expected_passes" || rc=$?
   if [[ "$rc" != "0" ]]; then
     trace "FAIL: w4 guest did not pass on all nodes rc=$rc"
     return 1
@@ -1282,7 +1513,11 @@ run_w4_app() {
 
   for node_id in "${NODE_IDS[@]}"; do
     guest_log="$RUN_DIR/${node_id}_guest.log"
-    validate_node_log "$node_id" "$guest_log" || return 1
+    if [[ -n "$SIM_W5_SERVING_REQUESTS_FILE" ]]; then
+      validate_serving_request_node_log "$node_id" "$guest_log" || return 1
+    else
+      validate_node_log "$node_id" "$guest_log" || return 1
+    fi
   done
   assert_no_fatal_runtime_logs || return 1
   return 0
@@ -1292,6 +1527,7 @@ emit_w4_run_summary() {
   local summary_tmp="$RUN_SUMMARY_FILE.tmp"
   local line
   local summary_parser="$SCRIPT_DIR/w4_guest_run_summary.py"
+  local expected_steps="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
 
   if [[ -n "$SIM_UAPI_W5_PROFILE" && -f "$SCRIPT_DIR/w5_inference_cluster_summary.py" ]]; then
     summary_parser="$SCRIPT_DIR/w5_inference_cluster_summary.py"
@@ -1303,7 +1539,7 @@ emit_w4_run_summary() {
   fi
 
   if ! python3 "$summary_parser" \
-    "$RUN_DIR" "$SIM_QWEN3_GUEST_DECODE_STEPS" "${NODE_IDS[@]}" > "$summary_tmp"; then
+    "$RUN_DIR" "$expected_steps" "${NODE_IDS[@]}" > "$summary_tmp"; then
     rm -f "$summary_tmp"
     trace "summary: unavailable reason=summary_parser_failed"
     return 1
@@ -1329,13 +1565,14 @@ prepare_environment() {
   qwen3_dense_apply_config_env
   validate_qwen3_runtime_object_view_source || return 1
   validate_w5_profile_runtime || return 1
+  resolve_w5_serving_requests_config || return 1
   validate_qwen3_engram_context_refs || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
       SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((APP_WAIT_SECS * 1000))"
     fi
     if [[ -z "$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS" ]]; then
-      SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$((APP_WAIT_SECS * SIM_QWEN3_GUEST_DECODE_STEPS * 1000))"
+      SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$((APP_WAIT_SECS * ${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS} * 1000))"
     fi
     trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
     trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
@@ -1384,6 +1621,10 @@ prepare_environment() {
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST" \
     SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE" \
     SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID" \
+    SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE" \
+    SIM_W5_SERVING_REQUESTS_FILE_GUEST="$SIM_W5_SERVING_REQUESTS_FILE_GUEST" \
+    SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT" \
+    SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL" \
     SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE" \
     SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE" \
     SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND" \
