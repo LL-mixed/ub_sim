@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--serve-requests FILE] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] [config.env]
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -28,6 +28,7 @@ STEPS_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
 REQUESTS_OVERRIDE=""
 SERVE_REQUESTS_OVERRIDE=""
+NODEA_INGRESS_OVERRIDE=0
 GSVA_KV_OVERRIDE=0
 REQUIRE_PREFIX_CACHE_OVERRIDE=0
 DISABLE_MEMORY_REUSE_OVERRIDE=0
@@ -60,6 +61,11 @@ while (( $# > 0 )); do
     --serve-requests=*)
       SERVE_QUEUE=1
       SERVE_REQUESTS_OVERRIDE="${1#--serve-requests=}"
+      shift
+      ;;
+    --nodea-ingress)
+      SERVE_QUEUE=1
+      NODEA_INGRESS_OVERRIDE=1
       shift
       ;;
     --gsva-kv)
@@ -200,6 +206,14 @@ fi
 if [[ -n "$SERVE_REQUESTS_OVERRIDE" ]]; then
   export SIM_W5_SERVING_SUBMIT_REQUESTS_FILE="$SERVE_REQUESTS_OVERRIDE"
 fi
+if (( NODEA_INGRESS_OVERRIDE )); then
+  export SIM_W5_SERVING_INGRESS=nodeA
+fi
+if [[ "${SIM_W5_SERVING_INGRESS:-cluster}" == "nodeA" &&
+      -n "${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}" &&
+      -f "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" ]]; then
+  export SIM_W5_SERVING_WORKER_REQUEST_ID="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-first-request-id)"
+fi
 
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
@@ -247,6 +261,7 @@ validate_w5_cluster_config() {
   local memory_online_lookup=0
   local memory_prefix_cache_lookup=1
   local memory_require_prefix_cache=0
+  local serving_ingress="${SIM_W5_SERVING_INGRESS:-cluster}"
   local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
   local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
@@ -300,6 +315,44 @@ validate_w5_cluster_config() {
     fi
     if ! "$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --validate-only >/dev/null; then
       echo "W5 serving submit request file is invalid: $SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" >&2
+      return 2
+    fi
+  fi
+  case "$serving_ingress" in
+    cluster|nodeA)
+      ;;
+    *)
+      echo "SIM_W5_SERVING_INGRESS must be cluster or nodeA: $serving_ingress" >&2
+      return 2
+      ;;
+  esac
+  if [[ "$serving_ingress" == "nodeA" ]]; then
+    if ! bool_enabled "${SIM_W5_SERVING_QUEUE:-0}"; then
+      echo "SIM_W5_SERVING_INGRESS=nodeA requires SIM_W5_SERVING_QUEUE=1" >&2
+      return 2
+    fi
+    if [[ -z "${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}" ]]; then
+      echo "SIM_W5_SERVING_INGRESS=nodeA requires SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" >&2
+      return 2
+    fi
+    local nodea_request_count
+    local nodea_prompt_token_ids
+    local nodea_decode_steps
+    local expected_prompt_token_ids="${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
+    local expected_decode_steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-4}"
+    nodea_request_count="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-request-count)"
+    if [[ "$nodea_request_count" != "1" ]]; then
+      echo "SIM_W5_SERVING_INGRESS=nodeA currently requires exactly one request; got $nodea_request_count" >&2
+      return 2
+    fi
+    nodea_prompt_token_ids="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-first-prompt-token-ids)"
+    nodea_decode_steps="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-first-decode-steps)"
+    if [[ "$nodea_prompt_token_ids" != "$expected_prompt_token_ids" ]]; then
+      echo "SIM_W5_SERVING_INGRESS=nodeA currently requires request prompt_token_ids to match SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS" >&2
+      return 2
+    fi
+    if [[ "$nodea_decode_steps" != "$expected_decode_steps" ]]; then
+      echo "SIM_W5_SERVING_INGRESS=nodeA currently requires request decode_steps to match SIM_QWEN3_GUEST_DECODE_STEPS" >&2
       return 2
     fi
   fi
@@ -451,6 +504,8 @@ if (( PRINT_ENV )); then
   printf 'SIM_QWEN3_GUEST_DECODE_STEPS=%s\n' "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   printf 'SIM_W5_SERVING_REQUESTS_FILE=%s\n' "${SIM_W5_SERVING_REQUESTS_FILE:-}"
   printf 'SIM_W5_SERVING_QUEUE=%s\n' "${SIM_W5_SERVING_QUEUE:-0}"
+  printf 'SIM_W5_SERVING_INGRESS=%s\n' "${SIM_W5_SERVING_INGRESS:-cluster}"
+  printf 'SIM_W5_SERVING_WORKER_REQUEST_ID=%s\n' "${SIM_W5_SERVING_WORKER_REQUEST_ID:-}"
   printf 'SIM_W5_SERVING_SUBMIT_REQUESTS_FILE=%s\n' "${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}"
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"

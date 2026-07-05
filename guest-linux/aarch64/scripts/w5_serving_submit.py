@@ -129,7 +129,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--fanout",
         choices=("cluster", "nodeA"),
         default="cluster",
-        help="serial target fanout; cluster is required for current multi-node infer",
+        help="serial target fanout; nodeA sends the request only to the cluster entry node",
+    )
+    parser.add_argument(
+        "--wait-targets",
+        choices=("fanout", "cluster"),
+        default="fanout",
+        help="request_done wait scope; cluster waits for all eight nodes",
     )
     parser.add_argument(
         "--timeout",
@@ -163,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
         env = load_env_file(args.env_file)
         lines = request_lines_from_args(args)
         paths = socket_paths(env, args.fanout)
+        wait_node_count = (
+            len(NODE_SOCKET_KEYS) if args.wait_targets == "cluster" else len(paths)
+        )
         for line in lines:
             if not args.dry_run:
                 for path in paths:
@@ -171,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
                 "w5_serving_submit: "
                 f"{'would_submit' if args.dry_run else 'submitted'} "
                 f"request_id={parse_request_line(line, 1).request_id} "
-                f"fanout={args.fanout} targets={len(paths)}"
+                f"fanout={args.fanout} targets={len(paths)} "
+                f"wait_targets={args.wait_targets} wait_nodes={wait_node_count}"
             )
             if args.wait_done and not args.dry_run:
                 run_dir = Path(env.get("RUN_DIR", ""))
@@ -180,13 +190,13 @@ def main(argv: list[str] | None = None) -> int:
                 wait_for_request_done(
                     run_dir,
                     parse_request_line(line, 1).request_id,
-                    len(paths),
+                    wait_node_count,
                     args.wait_timeout,
                 )
                 print(
                     "w5_serving_submit: "
                     f"request_done request_id={parse_request_line(line, 1).request_id} "
-                    f"targets={len(paths)}"
+                    f"targets={len(paths)} wait_nodes={wait_node_count}"
                 )
     except (RequestFileError, SubmitError, OSError) as exc:
         print(f"w5_serving_submit: status=failed reason={exc}", file=sys.stderr)

@@ -96,6 +96,8 @@ SIM_W5_SERVING_REQUESTS_FILE_GUEST="$SIM_W5_SERVING_REQUESTS_FILE"
 SIM_W5_SERVING_REQUEST_COUNT="${SIM_W5_SERVING_REQUEST_COUNT:-}"
 SIM_W5_SERVING_DECODE_STEPS_TOTAL="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-}"
 SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
+SIM_W5_SERVING_INGRESS="${SIM_W5_SERVING_INGRESS:-cluster}"
+SIM_W5_SERVING_WORKER_REQUEST_ID="${SIM_W5_SERVING_WORKER_REQUEST_ID:-}"
 if [[ -n "$SIM_UAPI_W5_PROFILE" &&
       "$SIM_W5_SERVING_QUEUE" == "1" &&
       -z "$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" &&
@@ -743,6 +745,8 @@ export SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE_GUEST"
 export SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT"
 export SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL"
 export SIM_W5_SERVING_QUEUE="$SIM_W5_SERVING_QUEUE"
+export SIM_W5_SERVING_INGRESS="$SIM_W5_SERVING_INGRESS"
+export SIM_W5_SERVING_WORKER_REQUEST_ID="$SIM_W5_SERVING_WORKER_REQUEST_ID"
 export SIM_W5_REQUIRE_PREFIX_CACHE="$SIM_W5_REQUIRE_PREFIX_CACHE"
 export SIM_W5_MEMORY_STORE="$SIM_W5_MEMORY_STORE"
 export SIM_W5_MEMORY_OBJECT_STORE="$SIM_W5_MEMORY_OBJECT_STORE"
@@ -1001,8 +1005,34 @@ run_serving_stdin_queue() {
   return 0
 }
 
+run_serving_nodea_worker_queue() {
+  local rc
+
+  if [ -z "\$SIM_W5_SERVING_WORKER_REQUEST_ID" ]; then
+    log "FAIL: nodeA ingress worker missing SIM_W5_SERVING_WORKER_REQUEST_ID role=\$LINQU_UB_ROLE"
+    return 1
+  fi
+  reset_serving_request_env
+  SIM_W5_SERVING_REQUEST_ID="\$SIM_W5_SERVING_WORKER_REQUEST_ID"
+  export SIM_W5_SERVING_REQUEST_ID
+  log "serving_entry ready mode=nodeA-worker role=\$LINQU_UB_ROLE entry=nodeA"
+  log "serving_entry worker_wait index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA"
+  run_llm_infer_once
+  rc=\$?
+  if [ "\$rc" != "0" ]; then
+    log "FAIL: serving_entry request_failed index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
+    return "\$rc"
+  fi
+  log "serving_entry request_done index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+  return 0
+}
+
 if [ "\$SIM_W5_SERVING_QUEUE" = "1" ]; then
-  run_serving_stdin_queue
+  if [ "\$SIM_W5_SERVING_INGRESS" = "nodeA" ] && [ "\$LINQU_UB_ROLE" != "nodeA" ]; then
+    run_serving_nodea_worker_queue
+  else
+    run_serving_stdin_queue
+  fi
 elif [ -n "\$SIM_W5_SERVING_REQUESTS_FILE" ]; then
   run_serving_requests_file "\$SIM_W5_SERVING_REQUESTS_FILE"
 else
@@ -1675,6 +1705,8 @@ prepare_environment() {
     SIM_W5_SERVING_REQUEST_COUNT="$SIM_W5_SERVING_REQUEST_COUNT" \
     SIM_W5_SERVING_DECODE_STEPS_TOTAL="$SIM_W5_SERVING_DECODE_STEPS_TOTAL" \
     SIM_W5_SERVING_QUEUE="$SIM_W5_SERVING_QUEUE" \
+    SIM_W5_SERVING_INGRESS="$SIM_W5_SERVING_INGRESS" \
+    SIM_W5_SERVING_WORKER_REQUEST_ID="$SIM_W5_SERVING_WORKER_REQUEST_ID" \
     SIM_W5_MEMORY_DECISION_STORE="$SIM_W5_MEMORY_DECISION_STORE" \
     SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE="$SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE" \
     SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND="$SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND" \
@@ -1740,7 +1772,11 @@ prepare_environment() {
     guest_log="$RUN_DIR/${node_id}_guest.log"
     if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
       trace "wait W5 serving entry ready: $node_id"
-      if ! wait_for_log_pattern "$guest_log" "\\[w4guest8:initramfs\\] serving_entry ready mode=serial-line role=$node_id entry=nodeA" "$BOOT_WAIT_SECS"; then
+      local serving_ready_mode="serial-line"
+      if [[ "$SIM_W5_SERVING_INGRESS" == "nodeA" && "$node_id" != "nodeA" ]]; then
+        serving_ready_mode="nodeA-worker"
+      fi
+      if ! wait_for_log_pattern "$guest_log" "\\[w4guest8:initramfs\\] serving_entry ready mode=$serving_ready_mode role=$node_id entry=nodeA" "$BOOT_WAIT_SECS"; then
         trace "FAIL: W5 serving entry ready timeout for $node_id"
         return 1
       fi
@@ -1779,11 +1815,17 @@ main() {
     trace "PASS: W5 serving queue ready env_file=$RUN_ENV_FILE"
     if [[ -n "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" ]]; then
       trace "submit W5 serving requests file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE env_file=$RUN_ENV_FILE"
+      local submit_args=(
+        --env-file "$RUN_ENV_FILE"
+        --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
+        --wait-done
+        --wait-timeout "$SIM_W5_SERVING_SUBMIT_WAIT_SECS"
+      )
+      if [[ "$SIM_W5_SERVING_INGRESS" == "nodeA" ]]; then
+        submit_args+=(--fanout nodeA --wait-targets cluster)
+      fi
       if ! "$SCRIPT_DIR/run_w5_serving_submit.sh" \
-          --env-file "$RUN_ENV_FILE" \
-          --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" \
-          --wait-done \
-          --wait-timeout "$SIM_W5_SERVING_SUBMIT_WAIT_SECS"; then
+          "${submit_args[@]}"; then
         trace "FAIL: W5 serving submit failed file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
         [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
         exit 1

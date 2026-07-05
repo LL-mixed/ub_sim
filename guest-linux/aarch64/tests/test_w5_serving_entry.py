@@ -158,6 +158,28 @@ class W5ServingEntryTest(unittest.TestCase):
         self.assertEqual(count.stdout.strip(), "2")
         self.assertEqual(steps.stdout.strip(), "5")
 
+    def test_prints_first_request_fields_for_nodea_ingress_validation(self):
+        temp_dir, request_path = self.write_requests(
+            "request_id=req-a prompt_token_ids=81378,37585,374 decode_steps=2\n"
+        )
+        with temp_dir:
+            request_id = self.run_entry(
+                "--requests", str(request_path), "--print-first-request-id"
+            )
+            prompt = self.run_entry(
+                "--requests", str(request_path), "--print-first-prompt-token-ids"
+            )
+            steps = self.run_entry(
+                "--requests", str(request_path), "--print-first-decode-steps"
+            )
+
+        self.assertEqual(request_id.returncode, 0, request_id.stderr)
+        self.assertEqual(prompt.returncode, 0, prompt.stderr)
+        self.assertEqual(steps.returncode, 0, steps.stderr)
+        self.assertEqual(request_id.stdout.strip(), "req-a")
+        self.assertEqual(prompt.stdout.strip(), "81378,37585,374")
+        self.assertEqual(steps.stdout.strip(), "2")
+
     def test_submit_dry_run_validates_request_and_cluster_fanout(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
             tmp_path = Path(tmp)
@@ -189,7 +211,48 @@ class W5ServingEntryTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "would_submit request_id=req-a fanout=cluster targets=8",
+            "would_submit request_id=req-a fanout=cluster targets=8 "
+            "wait_targets=fanout wait_nodes=8",
+            result.stdout,
+        )
+
+    def test_submit_dry_run_supports_nodea_fanout_with_cluster_wait(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            tmp_path = Path(tmp)
+            env_path = tmp_path / "headless.env"
+            env_lines = [
+                f"export RUN_DIR='{tmp_path}'",
+                "export SIM_W5_SERVING_QUEUE='1'",
+            ]
+            for node in "ABCDEFGH":
+                sock_path = tmp_path / f"node{node}.sock"
+                env_lines.append(f"export NODE{node}_SERIAL_SOCKET='{sock_path}'")
+            env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.submit_py),
+                    "--env-file",
+                    str(env_path),
+                    "--request-line",
+                    "request_id=req-a prompt_token_ids=81378,37585 decode_steps=2",
+                    "--fanout",
+                    "nodeA",
+                    "--wait-targets",
+                    "cluster",
+                    "--dry-run",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "would_submit request_id=req-a fanout=nodeA targets=1 "
+            "wait_targets=cluster wait_nodes=8",
             result.stdout,
         )
 

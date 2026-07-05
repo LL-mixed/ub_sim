@@ -213,6 +213,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print only the sum of decode_steps across requests",
     )
+    parser.add_argument(
+        "--print-first-request-id",
+        action="store_true",
+        help="print only the first request_id",
+    )
+    parser.add_argument(
+        "--print-first-prompt-token-ids",
+        action="store_true",
+        help="print only the first request prompt_token_ids",
+    )
+    parser.add_argument(
+        "--print-first-decode-steps",
+        action="store_true",
+        help="print only the first request decode_steps",
+    )
     return parser
 
 
@@ -231,6 +246,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.print_total_decode_steps:
         print(total_decode_steps(requests))
+        return 0
+    if args.print_first_request_id:
+        print(requests[0].request_id)
+        return 0
+    if args.print_first_prompt_token_ids:
+        print(requests[0].prompt_token_ids)
+        return 0
+    if args.print_first_decode_steps:
+        print(requests[0].decode_steps)
         return 0
     if args.validate_only:
         print_summary(requests, args.entry_node)
