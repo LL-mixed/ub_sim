@@ -18,6 +18,8 @@ static void mem_service_qwen3_format_runtime_range_key(
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+    uint64_t object_decode_step =
+        mem_service_serving_decode_step_from_env(decode_step);
 
     if (!key || key_len == 0) {
         return;
@@ -31,7 +33,7 @@ static void mem_service_qwen3_format_runtime_range_key(
                  mem_service_qwen3_model_key(),
                  run_scope_hash,
                  target_node + 1U,
-                 decode_step);
+                 object_decode_step);
         return;
     }
     snprintf(key,
@@ -41,7 +43,7 @@ static void mem_service_qwen3_format_runtime_range_key(
                  "hidden/%s/node%u/range-runtime-input/decode-step%" PRIu64,
              mem_service_qwen3_model_key(),
              target_node + 1U,
-             decode_step);
+             object_decode_step);
 }
 
 static void mem_service_qwen3_format_runtime_kv_key(
@@ -52,6 +54,8 @@ static void mem_service_qwen3_format_runtime_kv_key(
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+    uint64_t object_decode_step =
+        mem_service_serving_decode_step_from_env(decode_step);
 
     if (!key || key_len == 0 || !placement) {
         return;
@@ -65,7 +69,7 @@ static void mem_service_qwen3_format_runtime_kv_key(
                  local_node + 1U,
                  placement->layer_start,
                  placement->layer_end,
-                 decode_step);
+                 object_decode_step);
         return;
     }
     snprintf(key,
@@ -75,7 +79,7 @@ static void mem_service_qwen3_format_runtime_kv_key(
              local_node + 1U,
              placement->layer_start,
              placement->layer_end,
-             decode_step);
+             object_decode_step);
 }
 
 int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service *svc,

@@ -598,6 +598,19 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("qwen3_find_logits_table_by_scan_for_step", guest_source)
         self.assertIn("qwen3_logits_table_candidate_matches_step", guest_source)
         self.assertIn("base + i * entry_bytes + 72ULL", guest_source)
+        self.assertIn("qwen3_serving_effective_decode_step", guest_source)
+        self.assertIn("uint64_t logits_expected_decode_step =", guest_source)
+        self.assertIn("qwen3_serving_effective_decode_step(decode_step);", guest_source)
+        self.assertIn(
+            "qwen3_find_logits_table_by_scan_for_step(ep_mmio,\n"
+            "                                                          true,\n"
+            "                                                          logits_expected_decode_step,",
+            guest_source,
+        )
+        self.assertIn(
+            "range_only_flow ? logits_expected_decode_step : entry",
+            guest_source,
+        )
         self.assertIn("mem_service_obmm_service_v0_ensure_cluster_runtime", guest_source)
         self.assertIn("obmm_cluster_runtime_bootstrap", db_service_source)
         self.assertIn("mem_service_cluster_runtime_require", db_service_source)
@@ -623,9 +636,21 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("object_checksum =\n            qwen3_lingqu_object_payload_checksum", guest_source)
         self.assertIn("runtime_checksum =\n            w4_qwen3_hidden_payload_checksum", guest_source)
         self.assertIn("object_checksum != ref->payload_checksum &&", guest_source)
-        self.assertIn("expected_entry_step =\n                    range_only_flow ? decode_step : entry", guest_source)
-        self.assertIn("expected_step =\n                    range_only_flow ? decode_step : entry", guest_source)
-        self.assertIn("expected_boundary_first =\n                range_only_flow && decode_step != 0 ? 0ULL : 1ULL", guest_source)
+        self.assertIn(
+            "expected_entry_step =\n                    range_only_flow ? "
+            "logits_expected_decode_step : entry",
+            guest_source,
+        )
+        self.assertIn(
+            "expected_step =\n                    range_only_flow ? "
+            "logits_expected_decode_step : entry",
+            guest_source,
+        )
+        self.assertIn(
+            "expected_boundary_first =\n                range_only_flow && "
+            "logits_expected_decode_step != 0 ? 0ULL : 1ULL",
+            guest_source,
+        )
         self.assertIn("qwen3_w5_memory_terminal_logits_selected", guest_source)
         self.assertNotIn("record->sampled_token == record->runner_up_token", guest_source)
         self.assertNotIn("engram_policy_requires_materialized_owner", guest_source)
@@ -927,6 +952,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("serving_entry worker_received", legacy_runner_text)
         self.assertIn("/bin/linqu_w5_serving_control publish", legacy_runner_text)
         self.assertIn("/bin/linqu_w5_serving_control wait", legacy_runner_text)
+        self.assertIn("--request-index", legacy_runner_text)
+        self.assertIn("SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB=4096", legacy_runner_text)
+        self.assertIn("while :; do", legacy_runner_text)
+        self.assertIn('request_index=\\$((request_index + 1))', legacy_runner_text)
         self.assertIn("done < /dev/ttyAMA0", legacy_runner_text)
         self.assertIn("W5 serving queue ready", legacy_runner_text)
         self.assertIn("run_w5_serving_submit.sh", legacy_runner_text)
@@ -1197,7 +1226,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_SERVING_INGRESS=nodeA", result.stdout)
         self.assertIn(f"SIM_W5_SERVING_SUBMIT_REQUESTS_FILE={requests_path}", result.stdout)
 
-    def test_w5_cluster_config_runner_rejects_nodea_ingress_multi_request_until_rearm(self):
+    def test_w5_cluster_config_runner_accepts_nodea_ingress_multi_request(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"
 
@@ -1229,7 +1258,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(config_runner),
-                    "--validate-only",
+                    "--print-env",
                     "--nodea-ingress",
                     "--serve-requests",
                     str(requests_path),
@@ -1240,10 +1269,22 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("SIM_W5_SERVING_QUEUE=1", result.stdout)
+        self.assertIn("SIM_W5_SERVING_INGRESS=nodeA", result.stdout)
+        self.assertIn(f"SIM_W5_SERVING_SUBMIT_REQUESTS_FILE={requests_path}", result.stdout)
+
+    def test_w5_nodea_ingress_scopes_each_request_decode_step_base(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        legacy_runner = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('SIM_W5_SERVING_DECODE_STEP_BASE="\\$request_step_base"', legacy_runner)
+        self.assertIn("export SIM_W5_SERVING_DECODE_STEP_BASE", legacy_runner)
         self.assertIn(
-            "SIM_W5_SERVING_INGRESS=nodeA currently requires exactly one request",
-            result.stderr,
+            "request_step_base=\\$((request_step_base + SIM_QWEN3_GUEST_DECODE_STEPS))",
+            legacy_runner,
         )
 
     def test_w5_prefix_cache_realistic_matrix_runner_dry_run(self):

@@ -95,7 +95,10 @@ def wait_for_request_done(
                 text = log_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if pattern in text and request_pattern in text:
+            if any(
+                pattern in line and request_pattern in line
+                for line in text.splitlines()
+            ):
                 done += 1
         if done >= node_count:
             return

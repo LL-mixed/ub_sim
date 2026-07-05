@@ -8,5 +8,6 @@ int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt);
 int mem_service_cluster_runtime_require(struct mem_service_cluster_runtime *rt);
 void mem_service_cluster_runtime_destroy(struct mem_service_cluster_runtime *rt);
 int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx);
+int mem_service_refresh_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx);
 
 #endif

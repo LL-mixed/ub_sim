@@ -55,6 +55,7 @@ struct mem_service_cluster_runtime {
     uint32_t publish_seq;
     uint16_t observe_epoch;
     uint64_t region_size;
+    uint64_t bootstrap_generation;
     uint64_t payload_offset;
     uint64_t payload_arena_base;
     uint64_t payload_arena_next;

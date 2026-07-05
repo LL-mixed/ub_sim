@@ -54,6 +54,24 @@ static inline uint64_t mem_service_run_scope_hash_from_env(void)
     return hash;
 }
 
+static inline uint64_t mem_service_serving_decode_step_from_env(uint64_t decode_step)
+{
+    const char *value = getenv("SIM_W5_SERVING_DECODE_STEP_BASE");
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!value || value[0] == '\0') {
+        return decode_step;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' ||
+        parsed > UINT64_MAX - decode_step) {
+        return decode_step;
+    }
+    return (uint64_t)parsed + decode_step;
+}
+
 static inline long mem_service_qwen3_runtime_range_wait_ms(void)
 {
     long barrier_wait_ms;

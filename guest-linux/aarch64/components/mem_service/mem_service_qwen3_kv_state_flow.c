@@ -17,6 +17,8 @@ static void mem_service_qwen3_format_kv_state_key(
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+    uint64_t object_decode_step =
+        mem_service_serving_decode_step_from_env(decode_step);
 
     if (!key || key_len == 0 || !placement) {
         return;
@@ -30,7 +32,7 @@ static void mem_service_qwen3_format_kv_state_key(
                  local_node + 1U,
                  placement->layer_start,
                  placement->layer_end,
-                 decode_step);
+                 object_decode_step);
         return;
     }
     snprintf(key,
@@ -40,7 +42,7 @@ static void mem_service_qwen3_format_kv_state_key(
              local_node + 1U,
              placement->layer_start,
              placement->layer_end,
-             decode_step);
+             object_decode_step);
 }
 
 int mem_service_obmm_service_v0_publish_runtime_range_kv_state(

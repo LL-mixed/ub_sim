@@ -330,12 +330,6 @@ validate_w5_cluster_config() {
       echo "SIM_W5_SERVING_INGRESS=nodeA requires SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" >&2
       return 2
     fi
-    local nodea_request_count
-    nodea_request_count="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-request-count)"
-    if [[ "$nodea_request_count" != "1" ]]; then
-      echo "SIM_W5_SERVING_INGRESS=nodeA currently requires exactly one request; got $nodea_request_count" >&2
-      return 2
-    fi
   fi
   if [[ -n "${SIM_W5_SERVING_REQUESTS_FILE:-}" ]]; then
     if bool_enabled "${SIM_W5_SERVING_QUEUE:-0}"; then

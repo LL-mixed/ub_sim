@@ -18,6 +18,47 @@ static int mem_service_read_primary_cna(uint32_t *local_cna_out)
     return 0;
 }
 
+static uint64_t mem_service_import_pa_bias(void)
+{
+    const char *raw = getenv("SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB");
+    char *end = NULL;
+    unsigned long long mb;
+
+    if (!raw || raw[0] == '\0') {
+        return 0;
+    }
+    errno = 0;
+    mb = strtoull(raw, &end, 10);
+    if (errno != 0 || end == raw || *end != '\0') {
+        fprintf(stderr,
+                "[mem_service] warn invalid SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB=%s ignored\n",
+                raw);
+        return 0;
+    }
+    return obmm_align_up_u64((uint64_t)mb * 1024ULL * 1024ULL,
+                             OBMM_POOL_HELPERS_IMPORT_ALIGN);
+}
+
+static uint64_t mem_service_bootstrap_generation(void)
+{
+    const char *raw = getenv("SIM_MEM_SERVICE_BOOTSTRAP_GENERATION");
+    char *end = NULL;
+    unsigned long long generation;
+
+    if (!raw || raw[0] == '\0') {
+        return 1;
+    }
+    errno = 0;
+    generation = strtoull(raw, &end, 10);
+    if (errno != 0 || end == raw || *end != '\0' || generation == 0) {
+        fprintf(stderr,
+                "[mem_service] warn invalid SIM_MEM_SERVICE_BOOTSTRAP_GENERATION=%s using default=1\n",
+                raw);
+        return 1;
+    }
+    return (uint64_t)generation;
+}
+
 static int mem_service_exchange_cluster_meta(struct mem_service_cluster_runtime *rt,
                                        const struct mem_service_cluster_meta *local_meta)
 {
@@ -36,13 +77,13 @@ static int mem_service_exchange_cluster_meta(struct mem_service_cluster_runtime 
     memset(got, 0, sizeof(got));
 
     if (obmm_bootstrap_publish(rt->obmm_fd, rt->local_idx, rt->node_count,
-                               1, &publish_meta) != 0) {
+                               rt->bootstrap_generation, &publish_meta) != 0) {
         fprintf(stderr, "[mem_service] FM bootstrap publish failed: %s\n", strerror(errno));
         return -1;
     }
 
     if (obmm_bootstrap_lookup(rt->obmm_fd, rt->local_cna, rt->node_count,
-                              1, peer_metas, got) != 0) {
+                              rt->bootstrap_generation, peer_metas, got) != 0) {
         fprintf(stderr, "[mem_service] FM bootstrap lookup failed: %s\n", strerror(errno));
         return -1;
     }
@@ -261,6 +302,55 @@ int mem_service_activate_remote_slot(struct mem_service_cluster_runtime *rt, int
     return 0;
 }
 
+static void mem_service_release_remote_slot(struct mem_service_cluster_runtime *rt,
+                                            int owner_idx)
+{
+    struct mem_service_cluster_slot *slot;
+
+    if (!rt || owner_idx < 0 || owner_idx >= rt->node_count ||
+        owner_idx == rt->local_idx) {
+        return;
+    }
+    slot = &rt->slots[owner_idx];
+    rt->egress_queues[owner_idx] = NULL;
+    if (slot->region.addr && rt->payload_offset > 0) {
+        slot->region.addr = (uint8_t *)slot->region.addr - rt->payload_offset;
+        slot->region.len = rt->region_size;
+    }
+    if (slot->region.addr || slot->region.fd >= 0) {
+        obmm_unmap_region((struct obmm_helpers_region *)&slot->region);
+    }
+    if (slot->mem_id != 0) {
+        (void)obmm_do_unimport(rt->obmm_fd, slot->mem_id);
+        slot->mem_id = 0;
+    }
+}
+
+int mem_service_refresh_remote_slot(struct mem_service_cluster_runtime *rt, int owner_idx)
+{
+    struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
+    bool got[OBMM_POOL_HELPERS_MAX_NODES];
+
+    if (!rt || owner_idx < 0 || owner_idx >= rt->node_count ||
+        owner_idx == rt->local_idx) {
+        return -1;
+    }
+    memset(peer_metas, 0, sizeof(peer_metas));
+    memset(got, 0, sizeof(got));
+    if (obmm_bootstrap_lookup(rt->obmm_fd, rt->local_cna, rt->node_count,
+                              rt->bootstrap_generation, peer_metas, got) != 0 ||
+        !got[owner_idx]) {
+        return -1;
+    }
+    rt->metas[owner_idx].export_mem_id = peer_metas[owner_idx].export_mem_id;
+    rt->metas[owner_idx].remote_uba = peer_metas[owner_idx].remote_uba;
+    rt->metas[owner_idx].size = peer_metas[owner_idx].size;
+    rt->metas[owner_idx].token_id = peer_metas[owner_idx].token_id;
+    rt->metas[owner_idx].export_cna = peer_metas[owner_idx].export_cna;
+    mem_service_release_remote_slot(rt, owner_idx);
+    return mem_service_activate_remote_slot(rt, owner_idx);
+}
+
 static void mem_service_cluster_runtime_reset(struct mem_service_cluster_runtime *rt)
 {
     if (!rt) {
@@ -275,6 +365,7 @@ static void mem_service_cluster_runtime_reset(struct mem_service_cluster_runtime
     rt->payload_arena_base = 0;
     rt->payload_arena_next = 0;
     rt->payload_arena_high_water = 0;
+    rt->bootstrap_generation = 1;
     rt->pool_layout_reported = false;
 }
 
@@ -304,6 +395,7 @@ int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
     bool import_osync[MEM_SERVICE_CLUSTER_MAX_NODES];
     int import_count;
     int import_idx;
+    uint64_t import_pa_bias;
     char region_size_str[32];
     uint64_t region_size_mb;
     uint64_t payload_offset;
@@ -337,9 +429,13 @@ int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
     }
     rt->region_size = obmm_align_up_u64(region_size_mb * 1024ULL * 1024ULL,
                                          OBMM_POOL_HELPERS_IMPORT_ALIGN);
+    rt->bootstrap_generation = mem_service_bootstrap_generation();
     fprintf(stderr, "[mem_service] region_size=%luMB (aligned=%luMB)\n",
             (unsigned long)region_size_mb,
             (unsigned long)(rt->region_size / (1024ULL * 1024ULL)));
+    fprintf(stderr,
+            "[mem_service] bootstrap_generation=%" PRIu64 "\n",
+            rt->bootstrap_generation);
 
     rt->obmm_fd = obmm_open_device();
     if (rt->obmm_fd < 0) {
@@ -435,6 +531,16 @@ int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
         printf("[mem_service] gap db_service_cluster_stage=import_alloc_failed count=%d\n",
                import_count);
         goto fail;
+    }
+    import_pa_bias = mem_service_import_pa_bias();
+    if (import_pa_bias != 0) {
+        for (i = 0; i < import_count; ++i) {
+            import_pas[i] += import_pa_bias;
+        }
+        fprintf(stderr,
+                "[mem_service] import_pa_bias_mb=%lu slots=%d\n",
+                (unsigned long)(import_pa_bias / (1024ULL * 1024ULL)),
+                import_count);
     }
 
     import_idx = 0;

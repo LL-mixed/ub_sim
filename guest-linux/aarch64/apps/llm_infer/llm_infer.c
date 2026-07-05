@@ -251,6 +251,8 @@ struct w4_qwen3_range_runtime_forward {
     uint64_t kv_payload_capacity;
 };
 
+static uint64_t qwen3_serving_effective_decode_step(uint64_t decode_step);
+
 static void qwen3_range_runtime_forward_release(
     struct w4_qwen3_range_runtime_forward *runtime)
 {
@@ -1770,23 +1772,6 @@ static bool qwen3_logits_table_candidate_is_valid(volatile uint8_t *ep_mmio,
     return true;
 }
 
-static bool qwen3_find_logits_table_by_scan(volatile uint8_t *ep_mmio,
-                                            bool allow_compact,
-                                            uint64_t *table_header)
-{
-    uint64_t cursor;
-    uint64_t scan_limit = qwen3_output_scan_limit(ep_mmio);
-
-    for (cursor = 0; cursor + 64ULL <= scan_limit; cursor += 8ULL) {
-        if (qwen3_logits_table_candidate_is_valid(ep_mmio, cursor, allow_compact)) {
-            *table_header = cursor;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static bool qwen3_logits_table_candidate_matches_step(volatile uint8_t *ep_mmio,
                                                       uint64_t header,
                                                       bool allow_compact,
@@ -2043,8 +2028,10 @@ static bool qwen3_terminal_token_candidate_index(
     uint64_t token,
     uint64_t *index_out);
 
-static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
-                                            struct w4_qwen3_terminal_token_record *record)
+static int qwen3_read_terminal_token_record_for_step(
+    volatile uint8_t *ep_mmio,
+    uint64_t expected_decode_step,
+    struct w4_qwen3_terminal_token_record *record)
 {
     uint64_t logits_table_header = W4_QWEN3_LOGITS_TABLE_HEADER;
     uint64_t logits_table_base;
@@ -2055,8 +2042,11 @@ static int qwen3_read_terminal_token_record(volatile uint8_t *ep_mmio,
     if (!record) {
         return -1;
     }
-    if (!qwen3_find_logits_table_by_scan(ep_mmio, true, &logits_table_header)) {
-        logits_table_header = W4_QWEN3_LOGITS_TABLE_HEADER;
+    if (!qwen3_find_logits_table_by_scan_for_step(ep_mmio,
+                                                  true,
+                                                  expected_decode_step,
+                                                  &logits_table_header)) {
+        return -1;
     }
     if (read_segment_u64(ep_mmio, logits_table_header) != W4_QWEN3_MARKER_LOGITS_TABLE) {
         return -1;
@@ -4877,6 +4867,8 @@ qwen3_logits_tables:
         uint64_t logits_table_base = W4_QWEN3_LOGITS_TABLE_BASE;
         uint64_t token_text_table_header = W4_QWEN3_TOKEN_TEXT_TABLE_HEADER;
         uint64_t token_text_table_base = W4_QWEN3_TOKEN_TEXT_TABLE_BASE;
+        uint64_t logits_expected_decode_step =
+            qwen3_serving_effective_decode_step(decode_step);
 
         if (!terminal_logits_owner) {
             printf("[w4_guest] stage uapi_qwen3_logits_sampling_table"
@@ -4890,11 +4882,13 @@ qwen3_logits_tables:
             if (range_only_flow &&
                 !qwen3_find_logits_table_by_scan_for_step(ep_mmio,
                                                           true,
-                                                          decode_step,
+                                                          logits_expected_decode_step,
                                                           &logits_table_header)) {
                 fprintf(stderr,
-                        "[w4_guest] qwen3 logits table missing range_only=1 step=%" PRIu64 "\n",
-                        decode_step);
+                        "[w4_guest] qwen3 logits table missing range_only=1"
+                        " step=%" PRIu64 " logits_step=%" PRIu64 "\n",
+                        decode_step,
+                        logits_expected_decode_step);
                 return -1;
             }
             logits_table_base = logits_table_header + 64ULL;
@@ -4946,7 +4940,7 @@ qwen3_logits_tables:
                 uint64_t entry_text_checksum = read_segment_u64(ep_mmio, base + 64);
                 uint64_t entry_step = read_segment_u64(ep_mmio, base + 72);
                 uint64_t expected_entry_step =
-                    range_only_flow ? decode_step : entry;
+                    range_only_flow ? logits_expected_decode_step : entry;
                 uint64_t kvcache_read_digest = read_segment_u64(ep_mmio, base + 80);
                 uint64_t qkv_reference_digest = read_segment_u64(ep_mmio, base + 88);
                 uint64_t real_path_digest = read_segment_u64(ep_mmio, base + 96);
@@ -5179,9 +5173,9 @@ qwen3_logits_tables:
                 uint64_t expected_word0 = 0;
                 uint64_t expected_word1 = 0;
                 uint64_t expected_step =
-                    range_only_flow ? decode_step : entry;
+                    range_only_flow ? logits_expected_decode_step : entry;
                 uint64_t expected_flags =
-                    (range_only_flow ? (decode_step == 0 ? 1ULL : 0ULL) :
+                    (range_only_flow ? (logits_expected_decode_step == 0 ? 1ULL : 0ULL) :
                      (entry == 0 ? 1ULL : 0ULL)) |
                     (entry + 1 == token_text_count ? 2ULL : 0ULL);
                 uint64_t entry_step = read_segment_u64(ep_mmio, base);
@@ -5241,7 +5235,7 @@ qwen3_logits_tables:
                 byte_offset_expected += entry_bytes;
             }
             uint64_t expected_boundary_first =
-                range_only_flow && decode_step != 0 ? 0ULL : 1ULL;
+                range_only_flow && logits_expected_decode_step != 0 ? 0ULL : 1ULL;
             if (byte_offset_expected != token_text_total_bytes ||
                 packed_matches != token_text_count ||
                 checksum_matches != token_text_count ||
@@ -5556,6 +5550,11 @@ static uint64_t env_u64_or_default(const char *key, uint64_t default_value)
         return default_value;
     }
     return (uint64_t)parsed;
+}
+
+static uint64_t qwen3_serving_effective_decode_step(uint64_t decode_step)
+{
+    return env_u64_or_default("SIM_W5_SERVING_DECODE_STEP_BASE", 0) + decode_step;
 }
 
 static uint64_t env_milli_decimal_or_default(const char *key, uint64_t default_value)
@@ -12643,6 +12642,8 @@ qwen3_shortpath_publish_runtime_range:
         }
         if (dispatch_node + 1U == cluster_node_count) {
             uint64_t decode_step = guest_decode_step;
+            uint64_t terminal_logits_decode_step =
+                qwen3_serving_effective_decode_step(decode_step);
             struct w4_qwen3_terminal_token_record terminal_token;
             uint64_t raw_sampled_token;
             uint64_t engram_selected_token;
@@ -12651,10 +12652,15 @@ qwen3_shortpath_publish_runtime_range:
             if (terminal_publish_start_ms == 0) {
                 terminal_publish_start_ms = monotonic_ms();
             }
-            if (qwen3_read_terminal_token_record(ep_mmio, &terminal_token) != 0) {
+            if (qwen3_read_terminal_token_record_for_step(ep_mmio,
+                                                          terminal_logits_decode_step,
+                                                          &terminal_token) != 0) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 terminal token record read failed role=%s\n",
-                        role);
+                        "[w4_guest] fail qwen3 terminal token record read failed"
+                        " role=%s step=%" PRIu64 " logits_step=%" PRIu64 "\n",
+                        role,
+                        decode_step,
+                        terminal_logits_decode_step);
                 goto out;
             }
             if (qwen3_apply_top_k_sampler(&qwen3_sampler_config,

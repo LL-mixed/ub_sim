@@ -669,6 +669,32 @@ static enum pool_import_cache_mode parse_import_cache_mode(void)
     return POOL_IMPORT_CACHE_AUTO;
 }
 
+static uint64_t parse_import_pa_bias(void)
+{
+    const char *env = getenv("OBMM_POOL_IMPORT_PA_BIAS_MB");
+    char *end = NULL;
+    unsigned long long mb;
+
+    if (!env || env[0] == '\0') {
+        return 0;
+    }
+
+    errno = 0;
+    mb = strtoull(env, &end, 0);
+    if (errno != 0 || end == env || *end != '\0') {
+        fprintf(stderr,
+                "[ub_obmm_pool] warn: invalid OBMM_POOL_IMPORT_PA_BIAS_MB=%s, using 0\n",
+                env);
+        return 0;
+    }
+
+    uint64_t bias = align_up_u64((uint64_t)mb << 20, IMPORT_ALIGN);
+    fprintf(stderr,
+            "[ub_obmm_pool] import_pa_bias=%" PRIu64 "MB bytes=%#" PRIx64 "\n",
+            bias >> 20, bias);
+    return bias;
+}
+
 static bool allocate_import_pas(int import_count, uint64_t size_per_import,
                                 uint64_t pas[MAX_NODES], bool map_osync[MAX_NODES],
                                 enum pool_import_cache_mode cache_mode)
@@ -676,6 +702,7 @@ static bool allocate_import_pas(int import_count, uint64_t size_per_import,
     struct mem_window windows[MAX_WINDOWS];
     int window_count = 0;
     int import_idx = 0;
+    uint64_t import_pa_bias = parse_import_pa_bias();
     int wi;
 
     if (import_count <= 0) {
@@ -686,8 +713,13 @@ static bool allocate_import_pas(int import_count, uint64_t size_per_import,
     }
 
     for (wi = 0; wi < window_count && import_idx < import_count; wi++) {
-        uint64_t cur = align_up_u64(windows[wi].base_pa, IMPORT_ALIGN);
+        uint64_t cur;
         uint64_t end = windows[wi].base_pa + windows[wi].size_bytes;
+        if (import_pa_bias >= windows[wi].size_bytes ||
+            windows[wi].base_pa + import_pa_bias < windows[wi].base_pa) {
+            continue;
+        }
+        cur = align_up_u64(windows[wi].base_pa + import_pa_bias, IMPORT_ALIGN);
         while (import_idx < import_count && cur + size_per_import <= end) {
             pas[import_idx++] = cur;
             map_osync[import_idx - 1] = !windows[wi].is_cacheable;

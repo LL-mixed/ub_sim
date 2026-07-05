@@ -16,6 +16,8 @@ static void mem_service_qwen3_format_token_result_key(
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+    uint64_t object_decode_step =
+        mem_service_serving_decode_step_from_env(decode_step);
 
     if (!key || key_len == 0) {
         return;
@@ -26,14 +28,14 @@ static void mem_service_qwen3_format_token_result_key(
                  "tokens/%s/scope/%016" PRIx64 "/decode-step%" PRIu64,
                  mem_service_qwen3_model_key(),
                  run_scope_hash,
-                 decode_step);
+                 object_decode_step);
         return;
     }
     snprintf(key,
              key_len,
              "tokens/%s/decode-step%" PRIu64,
              mem_service_qwen3_model_key(),
-             decode_step);
+             object_decode_step);
 }
 
 static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(

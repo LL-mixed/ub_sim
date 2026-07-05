@@ -923,9 +923,21 @@ apply_serving_request_line() {
 }
 
 run_llm_infer_once() {
+  local request_index="\${1:-0}"
+  local request_step_base="\${2:-\$request_index}"
+  local import_pa_bias_mb
   local rc
 
-  log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} run_id=\${SIM_W5_RUN_ID:-none}"
+  import_pa_bias_mb=\$(((request_index + 2) * 4096))
+  SIM_W5_SERVING_REQUEST_INDEX="\$request_index"
+  SIM_W5_SERVING_DECODE_STEP_BASE="\$request_step_base"
+  OBMM_POOL_IMPORT_PA_BIAS_MB="\$import_pa_bias_mb"
+  SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB="\$import_pa_bias_mb"
+  export SIM_W5_SERVING_REQUEST_INDEX
+  export SIM_W5_SERVING_DECODE_STEP_BASE
+  export OBMM_POOL_IMPORT_PA_BIAS_MB
+  export SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB
+  log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} run_id=\${SIM_W5_RUN_ID:-none} request_index=\$request_index decode_step_base=\$request_step_base import_pa_bias_mb=\$import_pa_bias_mb"
   set +e
   /bin/linqu_llm_infer
   rc=\$?
@@ -940,12 +952,13 @@ run_llm_infer_once() {
 
 publish_serving_request_line_to_workers() {
   local line="\$1"
+  local request_index="\$2"
 
   if [ "\$SIM_W5_SERVING_INGRESS" != "nodeA" ] || [ "\$LINQU_UB_ROLE" != "nodeA" ]; then
     return 0
   fi
   log "serving_entry request_publish source=nodeA request_id=\$SIM_W5_SERVING_REQUEST_ID transport=obmm_spsc"
-  if ! /bin/linqu_w5_serving_control publish --request-line "\$line"; then
+  if ! SIM_MEM_SERVICE_BOOTSTRAP_GENERATION=17 SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB=4096 /bin/linqu_w5_serving_control publish --request-line "\$line" --request-index "\$request_index"; then
     log "FAIL: serving_entry request_publish_failed request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
     return 1
   fi
@@ -955,9 +968,10 @@ publish_serving_request_line_to_workers() {
 
 run_serving_requests_file() {
   local request_file="\$1"
-  local line request_index rc
+  local line request_index request_step_base rc
 
   request_index=0
+  request_step_base=0
   if [ ! -f "\$request_file" ]; then
     log "FAIL: serving request file missing path=\$request_file"
     return 1
@@ -971,17 +985,18 @@ run_serving_requests_file() {
     if ! apply_serving_request_line "\$line"; then
       return 1
     fi
-    if ! publish_serving_request_line_to_workers "\$line"; then
+    if ! publish_serving_request_line_to_workers "\$line" "\$request_index"; then
       return 1
     fi
     log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
-    run_llm_infer_once
+    run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
       log "FAIL: serving_entry request_failed index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
       return "\$rc"
     fi
     log "serving_entry request_done index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+    request_step_base=\$((request_step_base + SIM_QWEN3_GUEST_DECODE_STEPS))
     request_index=\$((request_index + 1))
   done < "\$request_file"
   if [ "\$request_index" = "0" ]; then
@@ -993,9 +1008,10 @@ run_serving_requests_file() {
 }
 
 run_serving_stdin_queue() {
-  local line request_index rc
+  local line request_index request_step_base rc
 
   request_index=0
+  request_step_base=0
   log "serving_entry ready mode=serial-line role=\$LINQU_UB_ROLE entry=nodeA"
   while IFS= read -r line; do
     case "\$line" in
@@ -1010,17 +1026,18 @@ run_serving_stdin_queue() {
     if ! apply_serving_request_line "\$line"; then
       return 1
     fi
-    if ! publish_serving_request_line_to_workers "\$line"; then
+    if ! publish_serving_request_line_to_workers "\$line" "\$request_index"; then
       return 1
     fi
     log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
-    run_llm_infer_once
+    run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
       log "FAIL: serving_entry request_failed index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
       return "\$rc"
     fi
     log "serving_entry request_done index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+    request_step_base=\$((request_step_base + SIM_QWEN3_GUEST_DECODE_STEPS))
     request_index=\$((request_index + 1))
   done < /dev/ttyAMA0
   log "serving_entry queue_closed requests=\$request_index role=\$LINQU_UB_ROLE"
@@ -1028,33 +1045,41 @@ run_serving_stdin_queue() {
 }
 
 run_serving_nodea_worker_queue() {
-  local request_file="/tmp/w5_serving_request.\$LINQU_UB_ROLE"
+  local request_file
   local line
   local rc
+  local request_index
+  local request_step_base
 
-  rm -f "\$request_file"
+  request_index=0
+  request_step_base=0
   log "serving_entry ready mode=nodeA-worker role=\$LINQU_UB_ROLE entry=nodeA"
-  log "serving_entry worker_wait index=0 role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc"
-  if ! /bin/linqu_w5_serving_control wait --source-node nodeA --out "\$request_file"; then
-    log "FAIL: serving_entry worker_wait_failed role=\$LINQU_UB_ROLE source=nodeA"
-    return 1
-  fi
-  if ! IFS= read -r line < "\$request_file"; then
-    log "FAIL: serving_entry worker_request_missing role=\$LINQU_UB_ROLE source=nodeA path=\$request_file"
-    return 1
-  fi
-  if ! apply_serving_request_line "\$line"; then
-    return 1
-  fi
-  log "serving_entry worker_received index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
-  run_llm_infer_once
-  rc=\$?
-  if [ "\$rc" != "0" ]; then
-    log "FAIL: serving_entry request_failed index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
-    return "\$rc"
-  fi
-  log "serving_entry request_done index=0 request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
-  return 0
+  while :; do
+    request_file="/tmp/w5_serving_request.\$LINQU_UB_ROLE.\$request_index"
+    rm -f "\$request_file"
+    log "serving_entry worker_wait index=\$request_index role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc"
+    if ! SIM_MEM_SERVICE_BOOTSTRAP_GENERATION=17 SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB=4096 /bin/linqu_w5_serving_control wait --source-node nodeA --request-index "\$request_index" --out "\$request_file"; then
+      log "FAIL: serving_entry worker_wait_failed index=\$request_index role=\$LINQU_UB_ROLE source=nodeA"
+      return 1
+    fi
+    if ! IFS= read -r line < "\$request_file"; then
+      log "FAIL: serving_entry worker_request_missing index=\$request_index role=\$LINQU_UB_ROLE source=nodeA path=\$request_file"
+      return 1
+    fi
+    if ! apply_serving_request_line "\$line"; then
+      return 1
+    fi
+    log "serving_entry worker_received index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+    run_llm_infer_once "\$request_index" "\$request_step_base"
+    rc=\$?
+    if [ "\$rc" != "0" ]; then
+      log "FAIL: serving_entry request_failed index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE rc=\$rc"
+      return "\$rc"
+    fi
+    log "serving_entry request_done index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE"
+    request_step_base=\$((request_step_base + SIM_QWEN3_GUEST_DECODE_STEPS))
+    request_index=\$((request_index + 1))
+  done
 }
 
 if [ "\$SIM_W5_SERVING_QUEUE" = "1" ]; then
@@ -1589,11 +1614,20 @@ validate_serving_request_node_log() {
   local expected_requests="${SIM_W5_SERVING_REQUEST_COUNT:-0}"
   local expected_passes="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
 
-  assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry request_start .* role=${node_id} " "$expected_requests" "$node_id W5 serving request starts" || return 1
+  if [[ "$SIM_W5_SERVING_INGRESS" == "nodeA" && "$node_id" != "nodeA" ]]; then
+    assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry worker_received .* role=${node_id} " "$expected_requests" "$node_id W5 serving worker requests" || return 1
+  else
+    assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry request_start .* role=${node_id} " "$expected_requests" "$node_id W5 serving request starts" || return 1
+    if [[ "$SIM_W5_SERVING_QUEUE" != "1" ]]; then
+      assert_log_has "$log_file" "\\[w4guest8:initramfs\\] serving_entry completed requests=${expected_requests} role=${node_id}" "$node_id W5 serving entry completion" || return 1
+    fi
+  fi
   assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry request_done .* role=${node_id}" "$expected_requests" "$node_id W5 serving request completions" || return 1
   assert_log_count "$log_file" "\\[w4_guest\\] pass" "$expected_passes" "$node_id W5 serving decode passes" || return 1
-  assert_log_has "$log_file" "\\[w4guest8:initramfs\\] serving_entry completed requests=${expected_requests} role=${node_id}" "$node_id W5 serving entry completion" || return 1
-  assert_log_absent "$log_file" "\\[w4_guest\\] fail|\\[w4guest8:initramfs\\] FAIL:" "$node_id W5 serving failures absent" || return 1
+  if (( expected_requests > 1 )); then
+    assert_log_has "$log_file" "\\[ub_obmm_pool\\] import_pa_bias=[1-9][0-9]*MB bytes=0x[0-9a-f]+" "$node_id W5 serving second-request import PA bias" || return 1
+  fi
+  assert_log_absent "$log_file" "\\[w4_guest\\] fail|\\[w4guest8:initramfs\\] FAIL:|\\[ub_obmm_pool\\] import failed|ret=-EEXIST|File exists" "$node_id W5 serving failures absent" || return 1
   return 0
 }
 
@@ -1844,6 +1878,12 @@ main() {
     trace "PASS: W5 serving queue ready env_file=$RUN_ENV_FILE"
     if [[ -n "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" ]]; then
       trace "submit W5 serving requests file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE env_file=$RUN_ENV_FILE"
+      if [[ -z "$SIM_W5_SERVING_REQUEST_COUNT" ]]; then
+        SIM_W5_SERVING_REQUEST_COUNT="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-request-count)"
+      fi
+      if [[ -z "$SIM_W5_SERVING_DECODE_STEPS_TOTAL" ]]; then
+        SIM_W5_SERVING_DECODE_STEPS_TOTAL="$("$SCRIPT_DIR/w5_serving_entry.py" --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE" --print-total-decode-steps)"
+      fi
       local submit_args=(
         --env-file "$RUN_ENV_FILE"
         --requests "$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
@@ -1859,6 +1899,13 @@ main() {
         [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
         exit 1
       fi
+      for node_id in "${NODE_IDS[@]}"; do
+        if ! validate_serving_request_node_log "$node_id" "$RUN_DIR/${node_id}_guest.log"; then
+          trace "FAIL: W5 serving request validation failed node=$node_id file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
+          [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
+          exit 1
+        fi
+      done
       trace "PASS: W5 serving requests completed file=$SIM_W5_SERVING_SUBMIT_REQUESTS_FILE"
       [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
       echo "W5 serving requests completed"

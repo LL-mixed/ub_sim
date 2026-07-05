@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,14 @@ class W5ServingEntryTest(unittest.TestCase):
         path = Path(temp_dir.name) / "requests.txt"
         path.write_text(text, encoding="utf-8")
         return temp_dir, path
+
+    def load_submit_module(self):
+        spec = importlib.util.spec_from_file_location("w5_serving_submit", self.submit_py)
+        module = importlib.util.module_from_spec(spec)
+        self.assertIsNotNone(spec.loader)
+        sys.path.insert(0, str(self.script_dir))
+        spec.loader.exec_module(module)
+        return module
 
     def test_validate_accepts_sequential_multi_request_file(self):
         temp_dir, request_path = self.write_requests(
@@ -255,6 +264,25 @@ class W5ServingEntryTest(unittest.TestCase):
             "wait_targets=cluster wait_nodes=8",
             result.stdout,
         )
+
+    def test_submit_wait_done_matches_request_done_line(self):
+        submit = self.load_submit_module()
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "\n".join(
+                    [
+                        "[w4guest8:initramfs] serving_entry request_done index=0 request_id=req-a role=nodeA",
+                        "[w4guest8:initramfs] serving_entry request_start index=1 request_id=req-b role=nodeA",
+                        "[w4guest8:initramfs] FAIL: linqu_llm_infer failed nodeA request_id=req-b rc=1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(submit.SubmitError):
+                submit.wait_for_request_done(run_dir, "req-b", 1, 0.01)
 
 
 if __name__ == "__main__":
