@@ -12,6 +12,7 @@
 #include "components/mem_service/mem_service_core.h"
 #include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_daemon.h"
+#include "components/mem_service/mem_service_object_contract.h"
 #include "components/mem_service/mem_service_ub_ssd_gsva_backend.h"
 #include "components/mem_service/mem_service_wire_client.h"
 #include "components/mem_service/mem_service_wire_payload.h"
@@ -5581,6 +5582,49 @@ static int run_ub_ssd_gsva_descriptor_fixture_check(void)
                                                              &desc) == 0) {
         fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: range bounds check failed\n");
         return 1;
+    }
+    {
+        struct mem_service_ub_ssd_gsva_block_ref block_ref;
+
+        memset(&block_ref, 0, sizeof(block_ref));
+        block_ref.block_hi = 0x11U;
+        block_ref.block_lo = 0x22U;
+        block_ref.version = 3U;
+        block_ref.offset = 0x40U;
+        block_ref.bytes = 4096U;
+        block_ref.checksum64 = 0xbeefU;
+        record.object_payload_kind = MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT;
+        record.object_backing_offset = 0x18000ULL;
+        record.object_backing_len = 0x2000ULL;
+        record.object_payload_checksum = 0x987654321ULL;
+        if (mem_service_record_attach_ub_ssd_gsva_backend_ref(&record,
+                                                              1U,
+                                                              0x44U,
+                                                              0x55U,
+                                                              &block_ref,
+                                                              false) != 0 ||
+            record.object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA ||
+            record.object_backend_block_lo != 0x22U ||
+            record.object_payload_kind !=
+                MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
+            record.object_backing_offset != 0x18000ULL ||
+            record.object_payload_checksum != 0x987654321ULL) {
+            fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: sidecar attach failed\n");
+            return 1;
+        }
+        if (mem_service_record_attach_ub_ssd_gsva_backend_ref(&record,
+                                                              1U,
+                                                              0x44U,
+                                                              0x55U,
+                                                              &block_ref,
+                                                              true) != 0 ||
+            record.object_payload_kind != MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK ||
+            record.object_backing_offset != block_ref.offset ||
+            record.object_backing_len != block_ref.bytes ||
+            record.object_payload_checksum != block_ref.checksum64) {
+            fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: primary attach failed\n");
+            return 1;
+        }
     }
 
     printf("mem_service ub-ssd-gsva-descriptor-fixtures: status=ok "

@@ -20,15 +20,6 @@ enum mem_service_ub_ssd_gsva_io_status {
     MEM_SERVICE_UB_SSD_GSVA_IO_INTERNAL = 7,
 };
 
-struct mem_service_ub_ssd_gsva_block_ref {
-    uint64_t block_hi;
-    uint64_t block_lo;
-    uint64_t version;
-    uint64_t offset;
-    uint64_t bytes;
-    uint64_t checksum64;
-};
-
 struct mem_service_ub_ssd_gsva_io_request {
     const char *device_path;
     uint32_t opcode;

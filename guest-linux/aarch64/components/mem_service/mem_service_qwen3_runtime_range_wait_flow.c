@@ -10,6 +10,7 @@
 #include "mem_service_qwen3.h"
 #include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
+#include "mem_service_ub_ssd_gsva_io.h"
 
 static void mem_service_qwen3_format_runtime_wait_token_key(
     char *key,
@@ -37,6 +38,163 @@ static void mem_service_qwen3_format_runtime_wait_token_key(
              "tokens/%s/decode-step%" PRIu64,
              mem_service_qwen3_model_key(),
              object_decode_step);
+}
+
+static const char *mem_service_qwen3_ub_ssd_read_status_name(
+    enum mem_service_ub_ssd_gsva_io_status status)
+{
+    switch (status) {
+    case MEM_SERVICE_UB_SSD_GSVA_IO_OK:
+        return "ok";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_UNSUPPORTED:
+        return "unsupported";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_INVALID:
+        return "invalid";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_STALE_REF:
+        return "stale_ref";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_TIMEOUT:
+        return "timeout";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_CHECKSUM_MISMATCH:
+        return "checksum_mismatch";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_VERSION_CONFLICT:
+        return "version_conflict";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_INTERNAL:
+    default:
+        return "internal";
+    }
+}
+
+static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
+    struct mem_service_cluster_runtime *rt,
+    const struct mem_service_record *remote_record,
+    uint32_t local_node,
+    uint64_t decode_step,
+    uint64_t payload_len,
+    const uint8_t **payload_view_out,
+    uint64_t *local_backing_offset_out,
+    long *checksum_ms_out)
+{
+    struct mem_service_cluster_slot *local_slot;
+    struct mem_service_record local_read_buffer;
+    struct mem_service_ub_ssd_gsva_buffer_desc desc;
+    struct mem_service_ub_ssd_gsva_io_request request;
+    struct mem_service_ub_ssd_gsva_io_completion completion;
+    enum mem_service_ub_ssd_gsva_io_status status;
+    uint64_t local_offset = 0;
+    uint64_t checksum;
+    long checksum_start_ms;
+
+    if (!rt || !remote_record || !payload_view_out ||
+        !local_backing_offset_out || !checksum_ms_out ||
+        remote_record->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA ||
+        remote_record->object_backend_block_bytes != payload_len ||
+        remote_record->object_backend_block_checksum == 0 ||
+        rt->local_idx < 0 || (uint32_t)rt->local_idx != local_node ||
+        rt->local_idx >= rt->node_count) {
+        return -1;
+    }
+    local_slot = &rt->slots[rt->local_idx];
+    if (!local_slot->region.addr ||
+        mem_service_payload_arena_alloc(rt, payload_len, 64, &local_offset) != 0) {
+        return -1;
+    }
+    memset(&local_read_buffer, 0, sizeof(local_read_buffer));
+    local_read_buffer.in_use = true;
+    local_read_buffer.kind = remote_record->kind;
+    snprintf(local_read_buffer.key,
+             sizeof(local_read_buffer.key),
+             "%s",
+             remote_record->key);
+    local_read_buffer.version = remote_record->version;
+    local_read_buffer.object_owner_node = local_node;
+    local_read_buffer.object_payload_kind = remote_record->object_payload_kind;
+    local_read_buffer.object_backing_offset = local_offset;
+    local_read_buffer.object_backing_len = payload_len;
+    local_read_buffer.object_payload_checksum =
+        remote_record->object_payload_checksum;
+    if (mem_service_cluster_runtime_make_ub_ssd_gsva_buffer_desc(rt,
+                                                                  &local_read_buffer,
+                                                                  &desc) != 0) {
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    memset(&completion, 0, sizeof(completion));
+    request.opcode = MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_READ;
+    request.request_id =
+        remote_record->version ^ (decode_step << 32) ^
+        remote_record->object_backend_block_lo;
+    request.source_cna = desc.source_cna;
+    request.target_ssd_cna = remote_record->object_backend_device_cna;
+    request.flags = remote_record->object_backend_flags;
+    request.block_ref.block_hi = remote_record->object_backend_block_hi;
+    request.block_ref.block_lo = remote_record->object_backend_block_lo;
+    request.block_ref.version = remote_record->object_backend_block_version;
+    request.block_ref.offset = remote_record->object_backend_block_offset;
+    request.block_ref.bytes = remote_record->object_backend_block_bytes;
+    request.block_ref.checksum64 = remote_record->object_backend_block_checksum;
+    request.buffer = desc;
+    status = mem_service_ub_ssd_gsva_submit(&request, &completion);
+    if (status != MEM_SERVICE_UB_SSD_GSVA_IO_OK) {
+        printf("[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=%s"
+               " local=node%u source=node%u key=%s step=%" PRIu64
+               " block_hi=%" PRIu64 " block_lo=%" PRIu64
+               " version=%" PRIu64 " bytes=%" PRIu64 "\n",
+               mem_service_qwen3_ub_ssd_read_status_name(status),
+               local_node + 1U,
+               remote_record->object_owner_node + 1U,
+               remote_record->key,
+               decode_step,
+               remote_record->object_backend_block_hi,
+               remote_record->object_backend_block_lo,
+               remote_record->object_backend_block_version,
+               remote_record->object_backend_block_bytes);
+        return -1;
+    }
+    if (completion.committed_ref.bytes != payload_len ||
+        completion.committed_ref.checksum64 !=
+            remote_record->object_backend_block_checksum ||
+        mem_service_update_region_range_at(local_slot,
+                                           local_offset,
+                                           payload_len,
+                                           false) != 0) {
+        return -1;
+    }
+    checksum_start_ms = obmm_now_ms();
+    checksum = mem_service_qwen3_hidden_payload_checksum(
+        (const uint8_t *)local_slot->region.addr + local_offset,
+        payload_len);
+    *checksum_ms_out = obmm_now_ms() - checksum_start_ms;
+    if (checksum != remote_record->object_payload_checksum ||
+        checksum != remote_record->object_backend_block_checksum) {
+        printf("[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=checksum_mismatch"
+               " local=node%u source=node%u key=%s step=%" PRIu64
+               " checksum=0x%016" PRIx64 " expected=0x%016" PRIx64
+               " backend_expected=0x%016" PRIx64 "\n",
+               local_node + 1U,
+               remote_record->object_owner_node + 1U,
+               remote_record->key,
+               decode_step,
+               checksum,
+               remote_record->object_payload_checksum,
+               remote_record->object_backend_block_checksum);
+        return -1;
+    }
+    *payload_view_out = (const uint8_t *)local_slot->region.addr + local_offset;
+    *local_backing_offset_out = local_offset;
+    printf("[mem_service] stage qwen3_range_forward_runtime_input_ub_ssd_gsva_read"
+           " local=node%u source=node%u key=%s step=%" PRIu64
+           " gsva_base=0x%016" PRIx64 " bytes=%" PRIu64
+           " checksum=0x%016" PRIx64 " local_offset=0x%016" PRIx64
+           " status=ok\n",
+           local_node + 1U,
+           remote_record->object_owner_node + 1U,
+           remote_record->key,
+           decode_step,
+           desc.gsva_base,
+           desc.bytes,
+           checksum,
+           local_offset);
+    return 0;
 }
 
 static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
@@ -75,6 +233,9 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     uint64_t hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
     const uint8_t *payload_view;
     uint64_t checksum;
+    uint64_t resolved_backing_offset = 0;
+    const char *resolved_backing = "obmm_shmem";
+    const char *resolved_target = "mapped_view";
     bool terminal_desc_found = false;
 
     if (!view_out ||
@@ -743,11 +904,30 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                ingress_key);
         return -1;
     }
-    payload_view =
-        (const uint8_t *)source_slot->region.addr +
-        remote_hidden_output.object_backing_offset;
-    checksum = remote_hidden_output.object_payload_checksum;
-    checksum_ms = 0;
+    if (remote_hidden_output.object_backend_kind ==
+        MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA) {
+        if (mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
+                rt,
+                &remote_hidden_output,
+                local_node,
+                decode_step,
+                hidden_range_bytes,
+                &payload_view,
+                &resolved_backing_offset,
+                &checksum_ms) != 0) {
+            return -1;
+        }
+        checksum = remote_hidden_output.object_payload_checksum;
+        resolved_backing = "ub_ssd_gsva";
+        resolved_target = "local_backend_read_buffer";
+    } else {
+        payload_view =
+            (const uint8_t *)source_slot->region.addr +
+            remote_hidden_output.object_backing_offset;
+        checksum = remote_hidden_output.object_payload_checksum;
+        checksum_ms = 0;
+        resolved_backing_offset = remote_hidden_output.object_backing_offset;
+    }
     producer_publish_ms = (long)remote_hidden_output.last_result_segment;
     producer_publish_monotonic_ms =
         (long)remote_hidden_output.object_publish_monotonic_ms;
@@ -766,7 +946,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     view_out->checksum = checksum;
     view_out->owner_node = source_node;
     view_out->payload_kind = remote_hidden_output.object_payload_kind;
-    view_out->backing_offset = remote_hidden_output.object_backing_offset;
+    view_out->backing_offset = resolved_backing_offset;
     if (mem_service_record_to_lingqu_obmm_ref(&remote_hidden_output,
                                         &view_out->object_ref) != 0) {
         return -1;
@@ -789,7 +969,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     view_out->wait_attempts = attempts;
     view_out->activate_ms = activate_ms;
     view_out->metadata_ms = metadata_ms;
-    printf("[mem_service] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_desc_backing queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=obmm_shmem target=mapped_view status=ok\n",
+    printf("[mem_service] stage qwen3_range_forward_runtime_input_resolve local=node%u source=node%u key=%s key_hash=0x%016" PRIx64 " version=%" PRIu64 " layers=[%u,%u) input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " wait_enter_to_found_ms=%ld producer_publish_ms=%ld producer_publish_mono_ms=%ld producer_clock_offset_ms=%ld producer_to_found_ms=%ld producer_to_found_mono_ms=%ld attempts=%u activate_ms=%" PRIu64 " metadata_ms=%" PRIu64 " copy_ms=0 checksum_ms=%ld validation=object_desc_backing queue=obmm_spsc receive=descriptor metadata=lingqu_object_service backing=%s target=%s status=ok\n",
            local_node + 1U,
            source_node + 1U,
            ingress_key,
@@ -808,7 +988,9 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
            attempts,
            activate_ms,
            metadata_ms,
-           checksum_ms);
+           checksum_ms,
+           resolved_backing,
+           resolved_target);
     return 0;
 }
 

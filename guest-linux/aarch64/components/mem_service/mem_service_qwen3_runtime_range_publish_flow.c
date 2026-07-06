@@ -9,6 +9,7 @@
 #include "mem_service_qwen3.h"
 #include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
+#include "mem_service_ub_ssd_gsva_io.h"
 
 static void mem_service_qwen3_format_runtime_range_key(
     char *key,
@@ -80,6 +81,134 @@ static void mem_service_qwen3_format_runtime_kv_key(
              placement->layer_start,
              placement->layer_end,
              object_decode_step);
+}
+
+static uint64_t mem_service_qwen3_backend_key_hash(const char *key)
+{
+    uint64_t hash = 1469598103934665603ULL;
+
+    if (!key) {
+        return hash;
+    }
+    while (*key) {
+        hash ^= (unsigned char)*key++;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static const char *mem_service_qwen3_ub_ssd_status_name(
+    enum mem_service_ub_ssd_gsva_io_status status)
+{
+    switch (status) {
+    case MEM_SERVICE_UB_SSD_GSVA_IO_OK:
+        return "ok";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_UNSUPPORTED:
+        return "unsupported";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_INVALID:
+        return "invalid";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_STALE_REF:
+        return "stale_ref";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_TIMEOUT:
+        return "timeout";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_CHECKSUM_MISMATCH:
+        return "checksum_mismatch";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_VERSION_CONFLICT:
+        return "version_conflict";
+    case MEM_SERVICE_UB_SSD_GSVA_IO_INTERNAL:
+    default:
+        return "internal";
+    }
+}
+
+static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
+    struct mem_service_cluster_runtime *rt,
+    struct mem_service_record *record,
+    uint64_t decode_step,
+    const char *stage_name)
+{
+    struct mem_service_ub_ssd_gsva_buffer_desc desc;
+    struct mem_service_ub_ssd_gsva_io_request request;
+    struct mem_service_ub_ssd_gsva_io_completion completion;
+    enum mem_service_ub_ssd_gsva_io_status status;
+    uint64_t key_hash;
+
+    if (!rt || !record || !record->in_use || !stage_name) {
+        return -1;
+    }
+    if (mem_service_cluster_runtime_make_ub_ssd_gsva_buffer_desc(rt,
+                                                                  record,
+                                                                  &desc) != 0) {
+        printf("[mem_service] stage %s_ub_ssd_gsva_backend_attach"
+               " key=%s step=%" PRIu64
+               " status=not_attached reason=descriptor_unavailable\n",
+               stage_name,
+               record->key,
+               decode_step);
+        return 0;
+    }
+    key_hash = mem_service_qwen3_backend_key_hash(record->key);
+    memset(&request, 0, sizeof(request));
+    memset(&completion, 0, sizeof(completion));
+    request.opcode = MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_WRITE;
+    request.request_id = key_hash ^ (decode_step << 32) ^ record->version;
+    request.source_cna = desc.source_cna;
+    request.target_ssd_cna = record->object_backend_device_cna;
+    request.block_ref.block_hi =
+        ((uint64_t)record->kind << 32) | (uint64_t)record->object_owner_node;
+    request.block_ref.block_lo = key_hash;
+    request.block_ref.version = 0;
+    request.block_ref.offset = 0;
+    request.block_ref.bytes = record->object_backing_len;
+    request.block_ref.checksum64 = record->object_payload_checksum;
+    request.buffer = desc;
+    status = mem_service_ub_ssd_gsva_submit(&request, &completion);
+    if (status == MEM_SERVICE_UB_SSD_GSVA_IO_UNSUPPORTED) {
+        printf("[mem_service] stage %s_ub_ssd_gsva_backend_attach"
+               " key=%s key_hash=0x%016" PRIx64 " step=%" PRIu64
+               " status=not_attached reason=ub_ssd_device_unavailable\n",
+               stage_name,
+               record->key,
+               key_hash,
+               decode_step);
+        return 0;
+    }
+    if (status != MEM_SERVICE_UB_SSD_GSVA_IO_OK) {
+        printf("[mem_service] gap %s_ub_ssd_gsva_backend_attach=%s"
+               " key=%s key_hash=0x%016" PRIx64 " step=%" PRIu64 "\n",
+               stage_name,
+               mem_service_qwen3_ub_ssd_status_name(status),
+               record->key,
+               key_hash,
+               decode_step);
+        return -1;
+    }
+    if (mem_service_record_attach_ub_ssd_gsva_backend_ref(record,
+                                                          record->object_owner_node,
+                                                          request.target_ssd_cna,
+                                                          request.flags,
+                                                          &completion.committed_ref,
+                                                          false) != 0) {
+        return -1;
+    }
+    printf("[mem_service] stage %s_ub_ssd_gsva_backend_attach"
+           " key=%s key_hash=0x%016" PRIx64 " step=%" PRIu64
+           " gsva_base=0x%016" PRIx64 " bytes=%" PRIu64
+           " backend_block_hi=%" PRIu64 " backend_block_lo=%" PRIu64
+           " backend_block_version=%" PRIu64
+           " backend_block_checksum=0x%016" PRIx64
+           " primary_backing=obmm_shmem backend=ub_ssd_gsva status=ok\n",
+           stage_name,
+           record->key,
+           key_hash,
+           decode_step,
+           desc.gsva_base,
+           desc.bytes,
+           completion.committed_ref.block_hi,
+           completion.committed_ref.block_lo,
+           completion.committed_ref.version,
+           completion.committed_ref.checksum64);
+    return 0;
 }
 
 int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service *svc,
@@ -243,13 +372,14 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
             producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
         published_record->object_publish_supernode_offset_ms =
             producer_clock_offset_ms;
-        local_hidden_output.last_result_segment = (uint64_t)producer_publish_ms;
-        local_hidden_output.object_publish_monotonic_ms =
-            published_record->object_publish_monotonic_ms;
-        local_hidden_output.object_publish_supernode_ms =
-            published_record->object_publish_supernode_ms;
-        local_hidden_output.object_publish_supernode_offset_ms =
-            published_record->object_publish_supernode_offset_ms;
+        if (mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
+                rt,
+                published_record,
+                decode_step,
+                "qwen3_range_runtime_output") != 0) {
+            return -1;
+        }
+        local_hidden_output = *published_record;
     }
     {
         struct mem_service_record *published_record =
@@ -267,13 +397,14 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
             producer_publish_ms > 0 ? (uint64_t)producer_publish_ms : 0;
         published_record->object_publish_supernode_offset_ms =
             producer_clock_offset_ms;
-        local_kv_state.last_result_segment = (uint64_t)producer_publish_ms;
-        local_kv_state.object_publish_monotonic_ms =
-            published_record->object_publish_monotonic_ms;
-        local_kv_state.object_publish_supernode_ms =
-            published_record->object_publish_supernode_ms;
-        local_kv_state.object_publish_supernode_offset_ms =
-            published_record->object_publish_supernode_offset_ms;
+        if (mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
+                rt,
+                published_record,
+                decode_step,
+                "qwen3_range_kv_state") != 0) {
+            return -1;
+        }
+        local_kv_state = *published_record;
     }
     if (mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         return -1;

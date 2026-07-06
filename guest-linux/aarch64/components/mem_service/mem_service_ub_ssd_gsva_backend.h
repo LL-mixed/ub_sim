@@ -44,9 +44,26 @@ struct mem_service_ub_ssd_gsva_buffer_desc {
     uint32_t source_cna;
 };
 
+struct mem_service_ub_ssd_gsva_block_ref {
+    uint64_t block_hi;
+    uint64_t block_lo;
+    uint64_t version;
+    uint64_t offset;
+    uint64_t bytes;
+    uint64_t checksum64;
+};
+
 int mem_service_make_ub_ssd_gsva_buffer_desc_from_source(
     const struct mem_service_ub_ssd_gsva_desc_source *source,
     const struct mem_service_record *record,
     struct mem_service_ub_ssd_gsva_buffer_desc *out);
+
+int mem_service_record_attach_ub_ssd_gsva_backend_ref(
+    struct mem_service_record *record,
+    uint32_t backend_node,
+    uint32_t backend_device_cna,
+    uint32_t backend_flags,
+    const struct mem_service_ub_ssd_gsva_block_ref *block_ref,
+    bool make_primary_payload);
 
 #endif

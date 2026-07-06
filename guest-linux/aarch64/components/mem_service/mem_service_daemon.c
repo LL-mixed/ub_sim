@@ -7957,16 +7957,15 @@ static enum mem_service_wire_status mem_service_write_ub_ssd_backend_block(
     if (status != MEM_SERVICE_WIRE_STATUS_OK) {
         return status;
     }
-    record->object_backend_block_hi = cpl.committed_ref.block_hi;
-    record->object_backend_block_lo = cpl.committed_ref.block_lo;
-    record->object_backend_block_version = cpl.committed_ref.version;
-    record->object_backend_block_offset = cpl.committed_ref.offset;
-    record->object_backend_block_bytes = cpl.committed_ref.bytes;
-    record->object_backend_block_checksum = cpl.committed_ref.checksum64;
-    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK;
-    record->object_backing_offset = cpl.committed_ref.offset;
-    record->object_backing_len = cpl.committed_ref.bytes;
-    record->object_payload_checksum = cpl.committed_ref.checksum64;
+    if (mem_service_record_attach_ub_ssd_gsva_backend_ref(
+            record,
+            record->object_backend_node,
+            record->object_backend_device_cna,
+            record->object_backend_flags,
+            &cpl.committed_ref,
+            true) != 0) {
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 
@@ -8033,24 +8032,30 @@ static enum mem_service_wire_status mem_service_apply_ub_ssd_backend_ref(
                                                      "backend_block_checksum",
                                                      0U);
     }
-    record->object_backend_kind = MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA;
-    record->object_backend_node =
-        mem_service_payload_get_u32(payload, "backend_node", record->object_owner_node);
-    record->object_backend_device_cna =
-        mem_service_payload_get_u32(payload, "backend_device_cna", 0);
-    record->object_backend_flags = mem_service_payload_get_u32(payload, "backend_flags", 0);
-    record->object_backend_block_hi = block_hi;
-    record->object_backend_block_lo = block_lo;
-    record->object_backend_block_version =
-        mem_service_payload_get_u64(payload, "backend_block_version", record->version);
-    record->object_backend_block_offset =
-        mem_service_payload_get_u64(payload, "backend_block_offset", 0);
-    record->object_backend_block_bytes = block_bytes;
-    record->object_backend_block_checksum = block_checksum;
-    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK;
-    record->object_backing_offset = record->object_backend_block_offset;
-    record->object_backing_len = block_bytes;
-    record->object_payload_checksum = block_checksum;
+    {
+        struct mem_service_ub_ssd_gsva_block_ref block_ref;
+
+        memset(&block_ref, 0, sizeof(block_ref));
+        block_ref.block_hi = block_hi;
+        block_ref.block_lo = block_lo;
+        block_ref.version =
+            mem_service_payload_get_u64(payload, "backend_block_version", record->version);
+        block_ref.offset =
+            mem_service_payload_get_u64(payload, "backend_block_offset", 0);
+        block_ref.bytes = block_bytes;
+        block_ref.checksum64 = block_checksum;
+        if (mem_service_record_attach_ub_ssd_gsva_backend_ref(
+                record,
+                mem_service_payload_get_u32(payload,
+                                            "backend_node",
+                                            record->object_owner_node),
+                mem_service_payload_get_u32(payload, "backend_device_cna", 0),
+                mem_service_payload_get_u32(payload, "backend_flags", 0),
+                &block_ref,
+                true) != 0) {
+            return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+        }
+    }
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 

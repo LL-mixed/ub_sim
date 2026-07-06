@@ -2915,6 +2915,30 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             range_wait_flow,
         )
         self.assertIn("mem_service_cluster_runtime_current", range_wait_flow)
+        self.assertIn('#include "mem_service_ub_ssd_gsva_io.h"', range_wait_flow)
+        self.assertIn(
+            "mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend",
+            range_wait_flow,
+        )
+        self.assertIn("MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_READ", range_wait_flow)
+        self.assertIn("mem_service_ub_ssd_gsva_submit", range_wait_flow)
+        self.assertIn(
+            "MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA",
+            range_wait_flow,
+        )
+        self.assertIn(
+            "qwen3_range_forward_runtime_input_ub_ssd_gsva_read",
+            range_wait_flow,
+        )
+        self.assertIn('resolved_backing = "ub_ssd_gsva"', range_wait_flow)
+        self.assertIn(
+            'resolved_target = "local_backend_read_buffer"',
+            range_wait_flow,
+        )
+        self.assertIn(
+            "return -1;\n    }\n    if (completion.committed_ref.bytes",
+            range_wait_flow,
+        )
         self.assertIn("Qwen3 runtime range", readme)
         self.assertIn("scheduler work-item resolution", readme)
         self.assertIn("standalone model data-flow", readme)
@@ -2946,6 +2970,32 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_qwen3_kv_state_alloc", range_publish_flow)
         self.assertIn("mem_service_push_obmm_object_desc_to", range_publish_flow)
         self.assertIn("mem_service_cluster_runtime_current", range_publish_flow)
+        self.assertIn('#include "mem_service_ub_ssd_gsva_io.h"', range_publish_flow)
+        self.assertIn(
+            "mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend",
+            range_publish_flow,
+        )
+        self.assertIn("mem_service_ub_ssd_gsva_submit", range_publish_flow)
+        self.assertIn(
+            "mem_service_record_attach_ub_ssd_gsva_backend_ref",
+            range_publish_flow,
+        )
+        self.assertIn(
+            '"qwen3_range_runtime_output"',
+            range_publish_flow,
+        )
+        self.assertIn(
+            '"qwen3_range_kv_state"',
+            range_publish_flow,
+        )
+        self.assertIn(
+            "primary_backing=obmm_shmem backend=ub_ssd_gsva status=ok",
+            range_publish_flow,
+        )
+        self.assertIn("&completion.committed_ref,\n                                                          false",
+                      range_publish_flow)
+        self.assertNotIn("MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK",
+                         range_publish_flow)
         self.assertIn("Qwen3 runtime", readme)
         self.assertIn("range output", readme)
         self.assertIn("KV-state object publication", readme)
@@ -3151,6 +3201,39 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("block_count =", source)
         self.assertIn("reserved_bytes = block_count * block_bytes", source)
         self.assertNotIn("kv_payload_len > MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES", source)
+
+    def test_qwen3_kv_state_flow_uses_ub_ssd_gsva_backend_when_attached(self):
+        source = SERVICE_QWEN3_KV_STATE_FLOW_C.read_text()
+
+        self.assertIn('#include "mem_service_ub_ssd_gsva_io.h"', source)
+        self.assertIn(
+            "mem_service_qwen3_kv_publish_record_to_ub_ssd_gsva_backend",
+            source,
+        )
+        self.assertIn(
+            "mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend",
+            source,
+        )
+        self.assertIn("MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_WRITE", source)
+        self.assertIn("MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_READ", source)
+        self.assertIn("mem_service_ub_ssd_gsva_submit", source)
+        self.assertIn(
+            "MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA",
+            source,
+        )
+        self.assertIn(
+            "mem_service_record_attach_ub_ssd_gsva_backend_ref",
+            source,
+        )
+        self.assertIn("qwen3_range_kv_state_ub_ssd_gsva_backend_attach", source)
+        self.assertIn("qwen3_range_kv_state_ub_ssd_gsva_read", source)
+        self.assertIn('resolved_backing = "ub_ssd_gsva"', source)
+        self.assertIn(
+            'resolved_target = "local_backend_read_buffer"',
+            source,
+        )
+        self.assertIn("&completion.committed_ref,\n                                                          false",
+                      source)
 
     def test_obmm_service_object_bytes_are_not_demo_named(self):
         source = SERVICE_OBJECT_CONTRACT_H.read_text()
