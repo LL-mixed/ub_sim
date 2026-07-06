@@ -1667,7 +1667,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(MEM_SERVICE_DAEMON)" in core_sources.group("body")
     assert "$(MEM_SERVICE_CLIENT)" in core_sources.group("body")
     assert "$(MEM_SERVICE_WIRE_CLIENT)" in core_sources.group("body")
+    assert "$(MEM_SERVICE_UB_SSD_GSVA_BACKEND)" in core_sources.group("body")
+    assert "$(MEM_SERVICE_UB_SSD_GSVA_IO)" in core_sources.group("body")
     assert '#include "components/mem_service/mem_service_daemon.h"' in app_source
+    assert '#include "components/mem_service/mem_service_ub_ssd_gsva_backend.h"' in app_source
     assert '#include "components/mem_service/mem_service_wire_client.h"' in app_source
     assert 'strcmp(argv[1], "wire-fixtures")' in app_source
     assert 'strcmp(argv[1], "wire-schema")' in app_source
@@ -1745,10 +1748,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'strcmp(argv[1], "typed-payload-fixtures")' in app_source
     assert "mem_service_run_typed_payload_fixture_check" in app_source
     assert 'strcmp(argv[1], "remote-block-backend-policy-fixtures")' in app_source
+    assert 'strcmp(argv[1], "ub-ssd-gsva-descriptor-fixtures")' in app_source
     assert 'strcmp(argv[1], "transport-block-fixtures")' in app_source
     assert 'strcmp(argv[1], "network-transport-block-fixtures")' in app_source
     assert 'strcmp(argv[1], "remote-transport-serve-fixture")' in app_source
     assert "run_remote_block_backend_policy_fixture_check" in app_source
+    assert "run_ub_ssd_gsva_descriptor_fixture_check" in app_source
     assert "mem_service_run_transport_block_fixture_check" in app_source
     assert "mem_service_run_network_transport_block_fixture_check" in app_source
     assert "mem_service_run_tcp_payload_fixture_source" in app_source

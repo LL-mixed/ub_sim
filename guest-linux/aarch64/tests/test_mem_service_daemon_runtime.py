@@ -134,6 +134,8 @@ class MemServiceDaemonRuntimeTests(unittest.TestCase):
             str(SERVICE_DIR / "mem_service_metadata.c"),
             str(SERVICE_DIR / "mem_service_keys.c"),
             str(SERVICE_DIR / "mem_service_object_refs.c"),
+            str(SERVICE_DIR / "mem_service_ub_ssd_gsva_backend.c"),
+            str(SERVICE_DIR / "mem_service_ub_ssd_gsva_io.c"),
             str(SERVICE_DIR / "mem_service_records.c"),
             "-lm",
             "-o",
@@ -3198,6 +3200,13 @@ int main(int argc, char **argv)
             self.assertIn("status=unsupported", read.stdout)
         finally:
             self._stop_server(proc)
+
+    def test_ub_ssd_gsva_descriptor_fixture_derives_runtime_record_descriptor(self):
+        fixtures = self._run_client("ub-ssd-gsva-descriptor-fixtures")
+        self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
+        self.assertIn("status=ok", fixtures.stdout)
+        self.assertIn("descriptor_source=cluster_runtime+record", fixtures.stdout)
+        self.assertIn("gsva_base=0x000070000001c000", fixtures.stdout)
 
     def test_storage_root_payload_inline_block_validates_and_fail_closes(self):
         storage_root = self.root / "payload-root"

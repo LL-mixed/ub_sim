@@ -3,6 +3,36 @@
 #include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
 #include "mem_service_qwen3_runtime.h"
+#include "mem_service_ub_ssd_gsva_backend.h"
+
+int mem_service_cluster_runtime_make_ub_ssd_gsva_buffer_desc(
+    const struct mem_service_cluster_runtime *rt,
+    const struct mem_service_record *record,
+    struct mem_service_ub_ssd_gsva_buffer_desc *out)
+{
+    struct mem_service_ub_ssd_gsva_desc_source source;
+    int i;
+
+    if (!rt) {
+        return -1;
+    }
+    memset(&source, 0, sizeof(source));
+    source.active = rt->active;
+    source.node_count = rt->node_count;
+    source.local_idx = rt->local_idx;
+    source.local_cna = rt->local_cna;
+    source.payload_offset = rt->payload_offset;
+    for (i = 0; i < rt->node_count && i < (int)MEM_SERVICE_UB_SSD_GSVA_MAX_NODES; ++i) {
+        source.metas[i].export_mem_id = rt->metas[i].export_mem_id;
+        source.metas[i].remote_uba = rt->metas[i].remote_uba;
+        source.metas[i].size = rt->metas[i].size;
+        source.metas[i].token_id = rt->metas[i].token_id;
+        source.metas[i].export_cna = rt->metas[i].export_cna;
+    }
+    return mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
+                                                                record,
+                                                                out);
+}
 
 static int mem_service_read_primary_cna(uint32_t *local_cna_out)
 {
@@ -457,6 +487,7 @@ int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
     local_meta.size = export_meta.size;
     local_meta.token_id = export_meta.token_id;
     local_meta.export_cna = export_meta.export_cna;
+    rt->metas[rt->local_idx] = local_meta;
 
     rt->slots[rt->local_idx].owner_idx = rt->local_idx;
     rt->slots[rt->local_idx].reader_idx = rt->local_idx;

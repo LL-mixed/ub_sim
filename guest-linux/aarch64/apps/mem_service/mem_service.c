@@ -12,6 +12,7 @@
 #include "components/mem_service/mem_service_core.h"
 #include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_daemon.h"
+#include "components/mem_service/mem_service_ub_ssd_gsva_backend.h"
 #include "components/mem_service/mem_service_wire_client.h"
 #include "components/mem_service/mem_service_wire_payload.h"
 #include "components/mem_service/mem_service_wire_schema.h"
@@ -93,6 +94,7 @@ static void usage(const char *argv0)
     printf(" [chunked-block-fixtures]");
     printf(" [transport-block-fixtures]");
     printf(" [network-transport-block-fixtures]");
+    printf(" [ub-ssd-gsva-descriptor-fixtures]");
     printf(" [remote-block-backend-policy-fixtures]");
     printf(" [remote-transport-evidence-fixtures]");
     printf(" [remote-transport-serve-fixture --listen tcp:<ipv4>:<port> --payload-len <bytes>]");
@@ -5514,6 +5516,85 @@ static int run_release_fixture_check(void)
     return 0;
 }
 
+static int run_ub_ssd_gsva_descriptor_fixture_check(void)
+{
+    struct mem_service_ub_ssd_gsva_desc_source source;
+    struct mem_service_record record;
+    struct mem_service_ub_ssd_gsva_buffer_desc desc;
+    uint64_t expected_gsva;
+
+    memset(&source, 0, sizeof(source));
+    memset(&record, 0, sizeof(record));
+    source.active = true;
+    source.node_count = 2;
+    source.local_idx = 0;
+    source.local_cna = 0x1200U;
+    source.payload_offset = 0x4000U;
+    source.metas[0].export_mem_id = 0xabcddcbaULL;
+    source.metas[0].remote_uba = 0x700000000000ULL;
+    source.metas[0].size = 0x200000ULL;
+    source.metas[0].token_id = 0x55U;
+    source.metas[0].export_cna = 0x00c4c220U;
+
+    record.in_use = true;
+    record.kind = MEM_SERVICE_RECORD_KVCACHE_OBJECT;
+    record.object_owner_node = 0;
+    record.object_backing_offset = 0x18000ULL;
+    record.object_backing_len = 0x2000ULL;
+    record.object_payload_checksum = 0x987654321ULL;
+
+    if (mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
+                                                             &record,
+                                                             &desc) != 0) {
+        fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: positive case failed\n");
+        return 1;
+    }
+    expected_gsva = source.metas[0].remote_uba + source.payload_offset +
+                    record.object_backing_offset;
+    if (desc.gsva_base != expected_gsva ||
+        desc.bytes != record.object_backing_len ||
+        desc.key_segment_id != source.metas[0].export_mem_id ||
+        desc.key_home_va != source.metas[0].remote_uba ||
+        desc.key_size != source.metas[0].size ||
+        desc.key_p_tag != (source.metas[0].export_cna & 0x00ffffffu) ||
+        desc.key_cache_policy != 4U ||
+        desc.token_id != source.metas[0].token_id ||
+        desc.token_value != source.metas[0].token_id ||
+        desc.source_cna != source.local_cna ||
+        desc.owner_node != record.object_owner_node) {
+        fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: descriptor fields mismatch\n");
+        return 1;
+    }
+
+    record.object_owner_node = 2;
+    if (mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
+                                                             &record,
+                                                             &desc) == 0) {
+        fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: owner bounds check failed\n");
+        return 1;
+    }
+    record.object_owner_node = 0;
+    record.object_backing_offset = source.metas[0].size - source.payload_offset - 8U;
+    record.object_backing_len = 16U;
+    if (mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
+                                                             &record,
+                                                             &desc) == 0) {
+        fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: range bounds check failed\n");
+        return 1;
+    }
+
+    printf("mem_service ub-ssd-gsva-descriptor-fixtures: status=ok "
+           "descriptor_source=cluster_runtime+record "
+           "gsva_base=0x%016" PRIx64 " bytes=%" PRIu64 " owner=node%u "
+           "token_id=%u source_cna=0x%08x\n",
+           expected_gsva,
+           (uint64_t)0x2000U,
+           1U,
+           source.metas[0].token_id,
+           source.local_cna);
+    return 0;
+}
+
 static int run_remote_block_backend_policy_fixture_check(void)
 {
     printf("mem_service remote-block-backend-policy-fixtures: status=ok "
@@ -9476,6 +9557,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "network-transport-block-fixtures") == 0) {
         return mem_service_run_network_transport_block_fixture_check();
+    }
+    if (strcmp(argv[1], "ub-ssd-gsva-descriptor-fixtures") == 0) {
+        return run_ub_ssd_gsva_descriptor_fixture_check();
     }
     if (strcmp(argv[1], "remote-block-backend-policy-fixtures") == 0) {
         return run_remote_block_backend_policy_fixture_check();

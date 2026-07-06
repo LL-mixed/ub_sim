@@ -22,6 +22,8 @@ MEM_SERVICE_WIRE_CLIENT := $(ROOT)/components/mem_service/mem_service_wire_clien
 MEM_SERVICE_KEYS := $(ROOT)/components/mem_service/mem_service_keys.c
 MEM_SERVICE_OBJECT_REFS := $(ROOT)/components/mem_service/mem_service_object_refs.c
 MEM_SERVICE_OBMM_OBJECTS := $(ROOT)/components/mem_service/mem_service_obmm_objects.c
+MEM_SERVICE_UB_SSD_GSVA_BACKEND := $(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_backend.c
+MEM_SERVICE_UB_SSD_GSVA_IO := $(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_io.c
 MEM_SERVICE_RECORDS := $(ROOT)/components/mem_service/mem_service_records.c
 MEM_SERVICE_QWEN3_RECORDS := $(ROOT)/components/mem_service/mem_service_qwen3_records.c
 MEM_SERVICE_QWEN3_RUNTIME := $(ROOT)/components/mem_service/mem_service_qwen3_runtime.c
@@ -153,6 +155,8 @@ MEM_SERVICE_CORE_SRCS := \
 	$(MEM_SERVICE_METADATA) \
 	$(MEM_SERVICE_KEYS) \
 	$(MEM_SERVICE_OBJECT_REFS) \
+	$(MEM_SERVICE_UB_SSD_GSVA_BACKEND) \
+	$(MEM_SERVICE_UB_SSD_GSVA_IO) \
 	$(MEM_SERVICE_RECORDS)
 
 MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
@@ -172,6 +176,8 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_KEYS) \
 	$(MEM_SERVICE_OBJECT_REFS) \
 	$(MEM_SERVICE_OBMM_OBJECTS) \
+	$(MEM_SERVICE_UB_SSD_GSVA_BACKEND) \
+	$(MEM_SERVICE_UB_SSD_GSVA_IO) \
 	$(MEM_SERVICE_RECORDS) \
 	$(MEM_SERVICE_QWEN3_RECORDS) \
 	$(MEM_SERVICE_QWEN3_RUNTIME) \
@@ -228,6 +234,7 @@ host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host pretraining-fail-closed-fixtures
 	./linqu_mem_service_host typed-payload-fixtures
 	./linqu_mem_service_host transport-block-fixtures
+	./linqu_mem_service_host ub-ssd-gsva-descriptor-fixtures
 	./linqu_mem_service_host remote-block-backend-policy-fixtures
 	./linqu_mem_service_host remote-transport-evidence-fixtures
 	./linqu_mem_service_host collector-fixtures
