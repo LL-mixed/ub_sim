@@ -264,7 +264,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -489,32 +489,32 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_deployment_fixture_check", cli_source)
         self.assertIn("MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1978U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x61d07124U",
+            "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x4a0293beU",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1251U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x1e017705U",
+            "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xc333c92cU",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1733U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x627bf6a1U",
+            "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x0bfbdfddU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9416U", cli_source)
+        self.assertIn("MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9962U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xf4cf34c6U",
+            "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x3967891aU",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6624U", cli_source)
+        self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6719U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7021f4cfU",
+            "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2019U", cli_source)
+        self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2127U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xf7943816U",
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x07c4b500U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U", cli_source)
@@ -528,9 +528,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9126U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9354U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x28945f1fU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x26ad5518U",
             cli_source,
         )
         self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
@@ -552,7 +552,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 856U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5d95ae02U",
+            "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0xd0cc1392U",
             cli_source,
         )
         self.assertIn("run_release_manifest", cli_source)
@@ -803,14 +803,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
         self.assertIn("^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$", cli_makefile)
-        self.assertIn("^admin_output_schema_checksum=0x7021f4cf$$", cli_makefile)
+        self.assertIn("^admin_output_schema_checksum=0x7a09d525$$", cli_makefile)
         self.assertIn("^admin_output_format=text-kv$$", cli_makefile)
         self.assertIn("^admin_metric_prefix=lingqu_mem_service_$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0x28945f1f$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x26ad5518$$", cli_makefile)
         self.assertIn("./linqu_mem_service_host checkpoint-retention-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host payload-gc-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host record-retention-fixtures", cli_makefile)
@@ -892,7 +892,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile.count("| grep -q 'release-readiness --ops-evidence-file'"),
             8,
         )
-        self.assertIn("^upgrade_rollback_policy_checksum=0xf7943816$$", cli_makefile)
+        self.assertIn("^upgrade_rollback_policy_checksum=0x07c4b500$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
             cli_makefile,
@@ -912,16 +912,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("^old_server_runtime_binary=certified$$", cli_makefile)
         self.assertIn("^client_retry_policy=explicit-max-attempts-backoff$$", cli_makefile)
         self.assertIn("^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$", cli_makefile)
-        self.assertIn("^api_abi_policy_checksum=0x5d95ae02$$", cli_makefile)
+        self.assertIn("^api_abi_policy_checksum=0xd0cc1392$$", cli_makefile)
         self.assertIn("^client_api_version=1$$", cli_makefile)
         self.assertIn("^client_abi_version=1$$", cli_makefile)
-        self.assertIn("^client_record_abi_size=744$$", cli_makefile)
+        self.assertIn("^client_record_abi_size=808$$", cli_makefile)
         self.assertIn("^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$", cli_makefile)
-        self.assertIn("^compat_matrix_checksum=0x61d07124$$", cli_makefile)
+        self.assertIn("^compat_matrix_checksum=0x4a0293be$$", cli_makefile)
         self.assertIn("^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$", cli_makefile)
-        self.assertIn("^compat_baseline_checksum=0x1e017705$$", cli_makefile)
+        self.assertIn("^compat_baseline_checksum=0xc333c92c$$", cli_makefile)
         self.assertIn("^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$", cli_makefile)
-        self.assertIn("^compat_old_new_matrix_checksum=0x627bf6a1$$", cli_makefile)
+        self.assertIn("^compat_old_new_matrix_checksum=0x0bfbdfdd$$", cli_makefile)
         self.assertIn("^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$", cli_makefile)
         self.assertIn("^host_daemon_artifact_smoke=host-artifact-smoke$$", cli_makefile)
         self.assertIn("^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$", cli_makefile)
@@ -1057,7 +1057,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("print-compat-matrix", cli_makefile)
         self.assertIn("print-compat-baseline-v1", cli_makefile)
         self.assertIn("print-compat-old-new-matrix", cli_makefile)
-        self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", release_manifest)
+        self.assertIn("wire_schema_manifest_checksum=0x3967891a", release_manifest)
         self.assertIn("release_script_root=share/lingqu/mem_service/scripts", release_manifest)
         self.assertIn(
             "release_script=share/lingqu/mem_service/scripts/"
@@ -1089,7 +1089,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             release_manifest,
         )
         self.assertIn("admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt", release_manifest)
-        self.assertIn("admin_output_schema_checksum=0x7021f4cf", release_manifest)
+        self.assertIn("admin_output_schema_checksum=0x7a09d525", release_manifest)
         self.assertIn("admin_output_format=text-kv", release_manifest)
         self.assertIn("admin_metric_prefix=lingqu_mem_service_", release_manifest)
         self.assertIn(
@@ -1099,7 +1099,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0x28945f1f", release_manifest)
+        self.assertIn("package_manifest_checksum=0x26ad5518", release_manifest)
         self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             release_manifest,
@@ -1211,7 +1211,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke",
             release_manifest,
         )
-        self.assertIn("upgrade_rollback_policy_checksum=0xf7943816", release_manifest)
+        self.assertIn("upgrade_rollback_policy_checksum=0x07c4b500", release_manifest)
         self.assertIn(
             "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures",
             release_manifest,
@@ -1249,16 +1249,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("rollback_policy=current-version-only", release_manifest)
         self.assertIn("old_server_runtime_binary=certified", release_manifest)
         self.assertIn("api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt", release_manifest)
-        self.assertIn("api_abi_policy_checksum=0x5d95ae02", release_manifest)
+        self.assertIn("api_abi_policy_checksum=0xd0cc1392", release_manifest)
         self.assertIn("client_api_version=1", release_manifest)
         self.assertIn("client_abi_version=1", release_manifest)
-        self.assertIn("client_record_abi_size=744", release_manifest)
+        self.assertIn("client_record_abi_size=808", release_manifest)
         self.assertIn("compat_matrix=share/lingqu/mem_service/compat-matrix.txt", release_manifest)
-        self.assertIn("compat_matrix_checksum=0x61d07124", release_manifest)
+        self.assertIn("compat_matrix_checksum=0x4a0293be", release_manifest)
         self.assertIn("compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt", release_manifest)
-        self.assertIn("compat_baseline_checksum=0x1e017705", release_manifest)
+        self.assertIn("compat_baseline_checksum=0xc333c92c", release_manifest)
         self.assertIn("compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt", release_manifest)
-        self.assertIn("compat_old_new_matrix_checksum=0x627bf6a1", release_manifest)
+        self.assertIn("compat_old_new_matrix_checksum=0x0bfbdfdd", release_manifest)
         self.assertIn(
             "host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host",
             release_manifest,
@@ -1364,7 +1364,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("client_retry_policies=1", cli_source)
         self.assertIn("client_api_profiles=2", cli_source)
         self.assertIn("operation_count=23", (CLI_DIR / "wire-schema.txt").read_text())
-        self.assertIn("field_count=113", (CLI_DIR / "wire-schema.txt").read_text())
+        self.assertIn("field_count=123", (CLI_DIR / "wire-schema.txt").read_text())
         self.assertIn(
             "field=resolve_runtime_handoff.expected_owner type=u32 required=0",
             (CLI_DIR / "wire-schema.txt").read_text(),
@@ -1661,7 +1661,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_api_abi_policy_version=1", api_abi_policy)
         self.assertIn("client_api_version=1", api_abi_policy)
         self.assertIn("client_abi_version=1", api_abi_policy)
-        self.assertIn("client_record_abi_size=744", api_abi_policy)
+        self.assertIn("client_record_abi_size=808", api_abi_policy)
         self.assertIn("old_client_new_server_policy=compatible-within-v1", api_abi_policy)
         self.assertIn(
             "new_client_old_server_policy=certified",
@@ -1670,9 +1670,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         compat_matrix = (CLI_DIR / "compat-matrix.txt").read_text()
         self.assertIn("mem_service_compat_matrix_version=1", compat_matrix)
         self.assertIn("wire_version_current=1", compat_matrix)
-        self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", compat_matrix)
-        self.assertIn("compat_matrix_checksum=0x61d07124", (CLI_DIR / "compat-baseline-v1.txt").read_text())
-        self.assertIn("compat_baseline_checksum=0x1e017705", (CLI_DIR / "compat-old-new-matrix.txt").read_text())
+        self.assertIn("wire_schema_manifest_checksum=0x3967891a", compat_matrix)
+        self.assertIn("compat_matrix_checksum=0x4a0293be", (CLI_DIR / "compat-baseline-v1.txt").read_text())
+        self.assertIn("compat_baseline_checksum=0xc333c92c", (CLI_DIR / "compat-old-new-matrix.txt").read_text())
         self.assertIn("idempotency_conflict_status=version_conflict", compat_matrix)
         self.assertIn("idempotency_persistence=store-journal-and-full-snapshot", compat_matrix)
         self.assertIn("audit_log_persistence=store-journal-and-full-snapshot", compat_matrix)
@@ -1799,7 +1799,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("MEM_SERVICE_CLIENT_TRAINING_STEP_COMMIT_KIND", client_header)
         self.assertIn("#define MEM_SERVICE_CLIENT_API_VERSION 1U", client_header)
         self.assertIn("#define MEM_SERVICE_CLIENT_ABI_VERSION 1U", client_header)
-        self.assertIn("#define MEM_SERVICE_CLIENT_RECORD_ABI_SIZE 744U", client_header)
+        self.assertIn("#define MEM_SERVICE_CLIENT_RECORD_ABI_SIZE 808U", client_header)
         self.assertIn("mem_service_client_record_size_must_match_abi", client_header)
         self.assertIn('"training-step-commit"', client_header)
         self.assertIn("mem_service_client_commit_training_step", client_header)
@@ -2187,10 +2187,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "0x3f4609a1U",
             "0x3ae50a76U",
             "0x3fc9bd20U",
-            "0x4c66d23cU",
+            "0xe54d9bffU",
             "0xabb21009U",
             "0x1b337d88U",
-            "0xa5654285U",
             "0xdaa065aeU",
             "0xfe23a8a2U",
             "0xe54d9bffU",

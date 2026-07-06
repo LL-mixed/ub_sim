@@ -1783,8 +1783,8 @@ int main(int argc, char **argv)
         self.assertIn("examples=2", fixtures.stdout)
         self.assertIn("compat_artifacts=3", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
-        self.assertIn("schema_manifest_len=9416", fixtures.stdout)
-        self.assertIn("schema_manifest_checksum=0xf4cf34c6", fixtures.stdout)
+        self.assertIn("schema_manifest_len=9962", fixtures.stdout)
+        self.assertIn("schema_manifest_checksum=0x3967891a", fixtures.stdout)
         self.assertIn("durable_backends=1", fixtures.stdout)
         self.assertIn("durable_catalogs=1", fixtures.stdout)
         self.assertIn("payload_block_backends=4", fixtures.stdout)
@@ -1804,7 +1804,7 @@ int main(int argc, char **argv)
         self.assertIn("upgrade_rollback_policies=1", fixtures.stdout)
         self.assertIn("upgrade_rollback_runtime_smokes=1", fixtures.stdout)
         self.assertIn("api_abi_policy_len=856", fixtures.stdout)
-        self.assertIn("api_abi_policy_checksum=0x5d95ae02", fixtures.stdout)
+        self.assertIn("api_abi_policy_checksum=0xd0cc1392", fixtures.stdout)
         self.assertIn("admin_output_schema_len=6624", fixtures.stdout)
         self.assertIn("admin_output_schema_checksum=0x7021f4cf", fixtures.stdout)
         self.assertIn("upgrade_rollback_policy_len=2019", fixtures.stdout)
@@ -1828,11 +1828,11 @@ int main(int argc, char **argv)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
         self.assertIn("compat_matrix_len=1978", fixtures.stdout)
-        self.assertIn("compat_matrix_checksum=0x61d07124", fixtures.stdout)
+        self.assertIn("compat_matrix_checksum=0x4a0293be", fixtures.stdout)
         self.assertIn("compat_baseline_len=1251", fixtures.stdout)
-        self.assertIn("compat_baseline_checksum=0x1e017705", fixtures.stdout)
+        self.assertIn("compat_baseline_checksum=0xc333c92c", fixtures.stdout)
         self.assertIn("compat_old_new_matrix_len=1733", fixtures.stdout)
-        self.assertIn("compat_old_new_matrix_checksum=0x627bf6a1", fixtures.stdout)
+        self.assertIn("compat_old_new_matrix_checksum=0x0bfbdfdd", fixtures.stdout)
 
         manifest = self._run_client("release-manifest")
         expected = (ROOT / "apps" / "mem_service" / "release-manifest.txt").read_text()
@@ -1846,8 +1846,8 @@ int main(int argc, char **argv)
         self.assertIn("service_version=0.1.0", version.stdout)
         self.assertIn("version_contract=text-kv", version.stdout)
         self.assertIn("wire_version=1", version.stdout)
-        self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", version.stdout)
-        self.assertIn("api_abi_policy_checksum=0x5d95ae02", version.stdout)
+        self.assertIn("wire_schema_manifest_checksum=0x3967891a", version.stdout)
+        self.assertIn("api_abi_policy_checksum=0xd0cc1392", version.stdout)
         self.assertIn("package_manifest_len=9126", version.stdout)
         self.assertIn("package_manifest_checksum=0x28945f1f", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
@@ -2566,8 +2566,8 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("policy_len=856", fixtures.stdout)
-        self.assertIn("policy_checksum=0x5d95ae02", fixtures.stdout)
-        self.assertIn("client_record_abi_size=744", fixtures.stdout)
+        self.assertIn("policy_checksum=0xd0cc1392", fixtures.stdout)
+        self.assertIn("client_record_abi_size=808", fixtures.stdout)
 
         policy = self._run_client("api-abi-policy")
         self.assertEqual(policy.returncode, 0, policy.stderr + policy.stdout)
@@ -2977,6 +2977,122 @@ int main(int argc, char **argv)
         finally:
             self._stop_server(proc)
 
+    def test_ub_ssd_gsva_backend_ref_round_trips_through_service_store(self):
+        storage_root = self.root / "ub-ssd-payload-root"
+        config_path = self.root / "mem_service.ub_ssd.conf"
+        store_path = self.root / "ub_ssd.store"
+        block_hi = 0xAA55
+        block_lo = 0xBB660001
+        block_version = 3
+        block_bytes = 4096
+        block_checksum = 0x1234ABCD
+        device_cna = 0xC4C22000
+
+        config_path.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"store={store_path}\n"
+            f"storage_root={storage_root}\n"
+            "backend=snapshot+journal\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+            "adapter_enablement=core\n"
+        )
+        proc = self._start_server(config_path=config_path)
+        try:
+            put = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-gsva-object",
+                "--owner",
+                "2",
+                "--version",
+                str(block_version),
+                "--backend",
+                "ub-ssd-gsva-v1",
+                "--backend-node",
+                "2",
+                "--backend-device-cna",
+                hex(device_cna),
+                "--backend-block-hi",
+                hex(block_hi),
+                "--backend-block-lo",
+                hex(block_lo),
+                "--backend-block-version",
+                str(block_version),
+                "--backend-block-offset",
+                "0",
+                "--backend-block-bytes",
+                str(block_bytes),
+                "--backend-block-checksum",
+                str(block_checksum),
+            )
+            self.assertEqual(put.returncode, 0, put.stderr + put.stdout)
+            self.assertIn("status=ok", put.stdout)
+
+            got = self._run_client(
+                "get-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-gsva-object",
+            )
+            self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+            self.assertIn("object_payload_kind=68", got.stdout)
+            self.assertIn("object_backend=ub-ssd-gsva-v1", got.stdout)
+            self.assertIn("object_backend_kind=1", got.stdout)
+            self.assertIn("object_backend_node=2", got.stdout)
+            self.assertIn(f"object_backend_device_cna={device_cna}", got.stdout)
+            self.assertIn(f"object_backend_block_hi={block_hi}", got.stdout)
+            self.assertIn(f"object_backend_block_lo={block_lo}", got.stdout)
+            self.assertIn(f"object_backend_block_version={block_version}", got.stdout)
+            self.assertIn(f"object_backend_block_bytes={block_bytes}", got.stdout)
+            self.assertIn(f"object_backend_block_checksum={block_checksum}", got.stdout)
+            self.assertIn(f"object_backing_len={block_bytes}", got.stdout)
+            self.assertIn(f"object_payload_checksum={block_checksum}", got.stdout)
+
+            missing_ref = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-missing-ref",
+                "--backend",
+                "ub-ssd-gsva-v1",
+                "--backend-block-hi",
+                "1",
+            )
+            self.assertNotEqual(missing_ref.returncode, 0,
+                                missing_ref.stderr + missing_ref.stdout)
+            self.assertIn("status=invalid_session", missing_ref.stdout)
+        finally:
+            self._stop_server(proc)
+
+        store_text = store_path.read_text()
+        self.assertIn("key=ub-ssd-gsva-object", store_text)
+        self.assertIn("object_payload_kind=68", store_text)
+        self.assertIn("object_backend_kind=1", store_text)
+        self.assertIn(f"object_backend_block_lo={block_lo}", store_text)
+
+        proc = self._start_server(config_path=config_path)
+        try:
+            recovered = self._run_client(
+                "get-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-gsva-object",
+            )
+            self.assertEqual(recovered.returncode,
+                             0,
+                             recovered.stderr + recovered.stdout)
+            self.assertIn("object_backend=ub-ssd-gsva-v1", recovered.stdout)
+            self.assertIn(f"object_backend_block_checksum={block_checksum}",
+                          recovered.stdout)
+        finally:
+            self._stop_server(proc)
+
     def test_storage_root_payload_inline_block_validates_and_fail_closes(self):
         storage_root = self.root / "payload-root"
         config_path = self.root / "mem_service.payload.conf"
@@ -3275,7 +3391,7 @@ int main(int argc, char **argv)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("matrix_version=1", fixtures.stdout)
         self.assertIn("matrix_len=1978", fixtures.stdout)
-        self.assertIn("matrix_checksum=0x61d07124", fixtures.stdout)
+        self.assertIn("matrix_checksum=0x4a0293be", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
         self.assertIn("fields=113", fixtures.stdout)
         self.assertIn("statuses=11", fixtures.stdout)
@@ -3290,7 +3406,7 @@ int main(int argc, char **argv)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("baseline_version=1", fixtures.stdout)
         self.assertIn("baseline_len=1251", fixtures.stdout)
-        self.assertIn("baseline_checksum=0x1e017705", fixtures.stdout)
+        self.assertIn("baseline_checksum=0xc333c92c", fixtures.stdout)
         self.assertIn("old_client_new_server=v1", fixtures.stdout)
         self.assertIn("new_client_old_server=certified", fixtures.stdout)
 
@@ -3303,7 +3419,7 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("matrix_len=1733", fixtures.stdout)
-        self.assertIn("matrix_checksum=0x627bf6a1", fixtures.stdout)
+        self.assertIn("matrix_checksum=0x0bfbdfdd", fixtures.stdout)
         self.assertIn("old_payloads=23", fixtures.stdout)
         self.assertIn("current_payloads=23", fixtures.stdout)
         self.assertIn("old_server_runtime_binary=in-tree", fixtures.stdout)
@@ -3438,8 +3554,8 @@ int main(int argc, char **argv)
         fixtures = self._run_client("wire-schema-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("manifest_len=9416", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xf4cf34c6", fixtures.stdout)
+        self.assertIn("manifest_len=9962", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x3967891a", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
         self.assertIn("fields=113", fixtures.stdout)
 
@@ -4556,7 +4672,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 package_manifest.read_text(),
             )
             self.assertIn("cross_version_upgrade=certified", package_manifest.read_text())
-            self.assertIn("wire_schema_manifest_checksum=0xf4cf34c6", manifest.read_text())
+            self.assertIn("wire_schema_manifest_checksum=0x3967891a", manifest.read_text())
             self.assertIn("admin_output_schema_checksum=0x7021f4cf", manifest.read_text())
             self.assertIn("admin_output_format=text-kv", manifest.read_text())
             self.assertIn("admin_metric_prefix=lingqu_mem_service_", manifest.read_text())
@@ -4596,10 +4712,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn("production_collector_alert_environment=not-certified",
                           manifest.read_text())
             self.assertIn("rpm_package=not-certified", manifest.read_text())
-            self.assertIn("api_abi_policy_checksum=0x5d95ae02", manifest.read_text())
+            self.assertIn("api_abi_policy_checksum=0xd0cc1392", manifest.read_text())
             self.assertIn("client_api_version=1", manifest.read_text())
             self.assertIn("client_abi_version=1", manifest.read_text())
-            self.assertIn("client_record_abi_size=744", manifest.read_text())
+            self.assertIn("client_record_abi_size=808", manifest.read_text())
             self.assertIn("compat_runtime_gate=compat-runtime-fixtures",
                           manifest.read_text())
             self.assertIn("serving_fail_closed_matrix=certified",
@@ -4618,9 +4734,9 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             self.assertIn(
                 "wire_payload_typed_binary_gate=typed-payload-fixtures",
                 manifest.read_text())
-            self.assertIn("compat_matrix_checksum=0x61d07124", manifest.read_text())
-            self.assertIn("compat_baseline_checksum=0x1e017705", manifest.read_text())
-            self.assertIn("compat_old_new_matrix_checksum=0x627bf6a1",
+            self.assertIn("compat_matrix_checksum=0x4a0293be", manifest.read_text())
+            self.assertIn("compat_baseline_checksum=0xc333c92c", manifest.read_text())
+            self.assertIn("compat_old_new_matrix_checksum=0x0bfbdfdd",
                           manifest.read_text())
             self.assertIn(
                 "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service",

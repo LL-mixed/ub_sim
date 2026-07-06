@@ -13,7 +13,7 @@
 #define MEM_SERVICE_CLIENT_API_COMPATIBILITY "source-compatible-within-v1"
 #define MEM_SERVICE_CLIENT_ABI_COMPATIBILITY \
     "wire-header-and-client-record-layout-stable-within-v1"
-#define MEM_SERVICE_CLIENT_RECORD_ABI_SIZE 744U
+#define MEM_SERVICE_CLIENT_RECORD_ABI_SIZE 808U
 #define MEM_SERVICE_CLIENT_KEY_LEN 96U
 #define MEM_SERVICE_CLIENT_ID_LEN 64U
 #define MEM_SERVICE_CLIENT_STATE_LEN 32U
@@ -22,6 +22,9 @@
 #define MEM_SERVICE_CLIENT_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK 65U
 #define MEM_SERVICE_CLIENT_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK 66U
 #define MEM_SERVICE_CLIENT_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK 67U
+#define MEM_SERVICE_CLIENT_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK 68U
+#define MEM_SERVICE_CLIENT_OBJECT_BACKEND_LEGACY_PAYLOAD 0U
+#define MEM_SERVICE_CLIENT_OBJECT_BACKEND_UB_SSD_GSVA 1U
 
 struct mem_service_client {
     const char *connect_spec;
@@ -50,6 +53,16 @@ struct mem_service_client_record {
     uint64_t object_backing_offset;
     uint64_t object_backing_len;
     uint64_t object_payload_checksum;
+    uint32_t object_backend_kind;
+    uint32_t object_backend_node;
+    uint32_t object_backend_device_cna;
+    uint32_t object_backend_flags;
+    uint64_t object_backend_block_hi;
+    uint64_t object_backend_block_lo;
+    uint64_t object_backend_block_version;
+    uint64_t object_backend_block_offset;
+    uint64_t object_backend_block_bytes;
+    uint64_t object_backend_block_checksum;
 };
 
 typedef char mem_service_client_record_size_must_match_abi[
@@ -73,6 +86,24 @@ struct mem_service_client_object {
     uint64_t checksum;
     bool has_version;
     uint64_t version;
+    bool has_backend_kind;
+    uint32_t backend_kind;
+    bool has_backend_node;
+    uint32_t backend_node;
+    bool has_backend_device_cna;
+    uint32_t backend_device_cna;
+    bool has_backend_block_hi;
+    uint64_t backend_block_hi;
+    bool has_backend_block_lo;
+    uint64_t backend_block_lo;
+    bool has_backend_block_version;
+    uint64_t backend_block_version;
+    bool has_backend_block_offset;
+    uint64_t backend_block_offset;
+    bool has_backend_block_bytes;
+    uint64_t backend_block_bytes;
+    bool has_backend_block_checksum;
+    uint64_t backend_block_checksum;
     const char *payload_inline;
     const char *payload_path;
 };

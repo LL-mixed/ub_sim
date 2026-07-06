@@ -542,7 +542,17 @@ Keep the implementation layers separated:
   through that backend on read, and fail-closed quarantines corrupt payloads.
   `transport-tcp-block-v1` fetches payloads from `tcp:<ipv4>:<port>` into
   `remote-blocks/<checksum>.tcp/`, then validates and quarantines through the
-  same sealed transport contract. The release contract records
+  same sealed transport contract. `ub-ssd-gsva-v1` is now a first-class object
+  backend reference for payloads already committed into the simulated UB SSD
+  through its GSVA data path. `put-object --backend ub-ssd-gsva-v1` records the
+  SSD device CNA, owner node, block hi/lo, block version, byte range, and
+  checksum in the mem_service object record; `get-object`, `inspect-object`,
+  snapshot export, and store restart preserve that reference. The daemon
+  rejects incomplete ub-ssd references and rejects mixing ub-ssd references
+  with inline or file payload ingestion. Actual BLOCK_READ/BLOCK_WRITE through
+  `/dev/ub_ssd0` remains the next integration step; the current mem_service
+  increment establishes the durable backend contract and fail-closed metadata
+  admission for the existing ub-ssd GSVA path. The release contract records
   `remote_payload_network_transport=tcp-loopback-certified` and
   `remote_payload_network_transport_gate=network-transport-block-fixtures`;
   `make network-transport-block-smoke` is the explicit Make entrypoint for that

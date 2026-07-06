@@ -21,10 +21,10 @@
 #endif
 
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_VERSION 1U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9416U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xf4cf34c6U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9962U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x3967891aU
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 23U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 113U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 123U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
@@ -34,7 +34,7 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2127U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x6ebd34acU
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x07c4b500U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 2096U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0x05a9245cU
@@ -55,15 +55,15 @@
 #define MEM_SERVICE_NATIVE_RPM_NAME "linqu-mem-service-0.1.0-1.aarch64.rpm"
 #define MEM_SERVICE_API_ABI_POLICY_VERSION 1U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 856U
-#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5d95ae02U
+#define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0xd0cc1392U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
 #define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1978U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x61d07124U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x4a0293beU
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
 #define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1251U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x1e017705U
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xc333c92cU
 #define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1733U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x627bf6a1U
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x0bfbdfddU
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -121,6 +121,7 @@ static void usage(const char *argv0)
     printf(" [commit-training-step|resolve-training-step]");
     printf(" [mutating commands accept --idempotency-key <key>]");
     printf(" [object/artifact mutating commands accept --payload-file <path>]");
+    printf(" [put-object accepts --backend ub-ssd-gsva-v1 --backend-block-hi <u64> --backend-block-lo <u64> --backend-block-bytes <u64> --backend-block-checksum <u64>]");
 #ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT
     printf(" [--inspect-qwen3]");
 #endif
@@ -2348,8 +2349,8 @@ static int run_version_fixture_check(void)
         strstr(manifest, "service_version=" MEM_SERVICE_RELEASE_VERSION "\n") == NULL ||
         strstr(manifest, "version_contract=text-kv\n") == NULL ||
         strstr(manifest, "wire_version=1\n") == NULL ||
-        strstr(manifest, "wire_schema_manifest_checksum=0xf4cf34c6\n") == NULL ||
-        strstr(manifest, "api_abi_policy_checksum=0x5d95ae02\n") == NULL ||
+        strstr(manifest, "wire_schema_manifest_checksum=0x3967891a\n") == NULL ||
+        strstr(manifest, "api_abi_policy_checksum=0xd0cc1392\n") == NULL ||
         strstr(manifest, "package_manifest_checksum=0x") == NULL ||
         strstr(manifest, "release_manifest_command=release-manifest\n") == NULL ||
         strstr(manifest, "package_manifest_command=package-manifest\n") == NULL ||
@@ -8410,6 +8411,17 @@ static int run_put_object(int argc, char **argv)
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backing-len", "backing_len") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--checksum", "checksum") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--version", "version") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend", "backend") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-kind", "backend_kind") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-node", "backend_node") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-device-cna", "backend_device_cna") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-flags", "backend_flags") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-hi", "backend_block_hi") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-lo", "backend_block_lo") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-version", "backend_block_version") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-offset", "backend_block_offset") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-bytes", "backend_block_bytes") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-checksum", "backend_block_checksum") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-inline", "payload_inline") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-file", "payload_path") != 0 ||
         append_idempotency_payload_field(payload, sizeof(payload), argc, argv) != 0) {

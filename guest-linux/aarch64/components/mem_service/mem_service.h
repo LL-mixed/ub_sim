@@ -44,6 +44,9 @@ enum mem_service_kvcache_state {
 #define MEM_SERVICE_PAYLOAD_KIND_SEALED_CHUNKED_BLOCK 65U
 #define MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK 66U
 #define MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK 67U
+#define MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK 68U
+#define MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD 0U
+#define MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA 1U
 
 struct mem_service_record {
     bool in_use;
@@ -68,6 +71,16 @@ struct mem_service_record {
     uint64_t object_backing_offset;
     uint64_t object_backing_len;
     uint64_t object_payload_checksum;
+    uint32_t object_backend_kind;
+    uint32_t object_backend_node;
+    uint32_t object_backend_device_cna;
+    uint32_t object_backend_flags;
+    uint64_t object_backend_block_hi;
+    uint64_t object_backend_block_lo;
+    uint64_t object_backend_block_version;
+    uint64_t object_backend_block_offset;
+    uint64_t object_backend_block_bytes;
+    uint64_t object_backend_block_checksum;
     uint64_t object_publish_monotonic_ms;
     uint64_t object_publish_supernode_ms;
     int64_t object_publish_supernode_offset_ms;

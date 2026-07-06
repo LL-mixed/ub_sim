@@ -821,7 +821,7 @@ install-smoke: install
 	grep -q '^release_readiness_gate=release-readiness-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^host_daemon_artifact_smoke=host-artifact-smoke$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^wire_schema_manifest_checksum=0xf4cf34c6$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^wire_schema_manifest_checksum=0x3967891a$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_schema_len=6719$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_schema_checksum=0x7a09d525$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -829,7 +829,7 @@ install-smoke: install
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy_len=2127$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0x6ebd34ac$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0x07c4b500$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -868,10 +868,10 @@ install-smoke: install
 	grep -q '^wire_payload_typed_binary_gate=typed-payload-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^api_abi_policy_len=856$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^api_abi_policy_checksum=0x5d95ae02$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^api_abi_policy_checksum=0xd0cc1392$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^client_record_abi_size=744$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_record_abi_size=808$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^client_api_compatibility=source-compatible-within-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^client_abi_compatibility=wire-header-and-client-record-layout-stable-within-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^pkgconfig=lib/pkgconfig/lingqu-mem-service.pc$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -880,13 +880,13 @@ install-smoke: install
 	grep -q '^pkgconfig_sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix_len=1978$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^compat_matrix_checksum=0x61d07124$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_matrix_checksum=0x4a0293be$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_baseline_len=1251$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^compat_baseline_checksum=0x1e017705$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_baseline_checksum=0xc333c92c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_old_new_matrix_len=1733$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^compat_old_new_matrix_checksum=0x627bf6a1$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^compat_old_new_matrix_checksum=0x0bfbdfdd$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^config_schema=share/lingqu/mem_service/config/mem_service.conf.schema$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^config_example=share/lingqu/mem_service/config/mem_service.example.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^runtime_config=etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -987,7 +987,7 @@ install-smoke: install
 	grep -q '^example_source=share/lingqu/mem_service/examples/mem_service_pretraining_example.c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^mem_service_wire_schema_manifest_version=1$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^operation_count=23$$' $(INSTALL_DATADIR)/wire-schema.txt
-	grep -q '^field_count=113$$' $(INSTALL_DATADIR)/wire-schema.txt
+	grep -q '^field_count=123$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^oneof_field=resolve_kv_segment.0.block_hash$$' $(INSTALL_DATADIR)/wire-schema.txt
 	grep -q '^mem_service_admin_output_schema_version=1$$' $(INSTALL_DATADIR)/admin-output-schema.txt
 	grep -q '^admin_command=metrics-export operation=metrics response=prometheus-text$$' $(INSTALL_DATADIR)/admin-output-schema.txt
@@ -1085,7 +1085,7 @@ install-smoke: install
 	grep -q '^encryption_policy_command=encryption-policy$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_policy_gate=encryption-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate_count=34$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x6ebd34ac$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x07c4b500$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1130,12 +1130,12 @@ install-smoke: install
 	grep -q '^mem_service_api_abi_policy_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_api_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^client_abi_version=1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
-	grep -q '^client_record_abi_size=744$$' $(INSTALL_DATADIR)/api-abi-policy.txt
+	grep -q '^client_record_abi_size=808$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^old_client_new_server_policy=compatible-within-v1$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^new_client_old_server_policy=certified$$' $(INSTALL_DATADIR)/api-abi-policy.txt
 	grep -q '^mem_service_compat_matrix_version=1$$' $(INSTALL_DATADIR)/compat-matrix.txt
 	grep -q '^wire_version_current=1$$' $(INSTALL_DATADIR)/compat-matrix.txt
-	grep -q '^wire_schema_manifest_checksum=0xf4cf34c6$$' $(INSTALL_DATADIR)/compat-matrix.txt
+	grep -q '^wire_schema_manifest_checksum=0x3967891a$$' $(INSTALL_DATADIR)/compat-matrix.txt
 	grep -q '^idempotency_conflict_status=version_conflict$$' $(INSTALL_DATADIR)/compat-matrix.txt
 	grep -q '^idempotency_persistence=store-journal-and-full-snapshot$$' $(INSTALL_DATADIR)/compat-matrix.txt
 	grep -q '^audit_log_persistence=store-journal-and-full-snapshot$$' $(INSTALL_DATADIR)/compat-matrix.txt
@@ -1147,11 +1147,11 @@ install-smoke: install
 	grep -q '^mem_service_compat_baseline_version=1$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	grep -q '^old_client_new_server=compatible-within-v1$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	grep -q '^new_client_old_server=certified$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
-	grep -q '^compat_matrix_checksum=0x61d07124$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
+	grep -q '^compat_matrix_checksum=0x4a0293be$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	grep -q '^audit_log_persistence=store-journal-and-full-snapshot$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	grep -q '^baseline_payload=register_training_artifact:v1-training-step-compatible$$' $(INSTALL_DATADIR)/compat-baseline-v1.txt
 	grep -q '^mem_service_old_new_compat_matrix_version=1$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
-	grep -q '^compat_baseline_checksum=0x1e017705$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
+	grep -q '^compat_baseline_checksum=0xc333c92c$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	grep -q '^case=old-client-current-server:runtime-compatible$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	grep -q '^case=current-client-current-server:compat-runtime-fixtures$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt
 	grep -q '^evidence=compat-runtime-fixtures$$' $(INSTALL_DATADIR)/compat-old-new-matrix.txt

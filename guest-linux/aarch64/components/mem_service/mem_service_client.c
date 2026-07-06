@@ -174,6 +174,26 @@ static int mem_service_client_parse_record(const char *payload,
         record_out->object_payload_checksum =
             mem_service_wire_payload_get_u64(&view, "checksum", 0);
     }
+    record_out->object_backend_kind =
+        mem_service_wire_payload_get_u32(&view, "object_backend_kind", 0);
+    record_out->object_backend_node =
+        mem_service_wire_payload_get_u32(&view, "object_backend_node", 0);
+    record_out->object_backend_device_cna =
+        mem_service_wire_payload_get_u32(&view, "object_backend_device_cna", 0);
+    record_out->object_backend_flags =
+        mem_service_wire_payload_get_u32(&view, "object_backend_flags", 0);
+    record_out->object_backend_block_hi =
+        mem_service_wire_payload_get_u64(&view, "object_backend_block_hi", 0);
+    record_out->object_backend_block_lo =
+        mem_service_wire_payload_get_u64(&view, "object_backend_block_lo", 0);
+    record_out->object_backend_block_version =
+        mem_service_wire_payload_get_u64(&view, "object_backend_block_version", 0);
+    record_out->object_backend_block_offset =
+        mem_service_wire_payload_get_u64(&view, "object_backend_block_offset", 0);
+    record_out->object_backend_block_bytes =
+        mem_service_wire_payload_get_u64(&view, "object_backend_block_bytes", 0);
+    record_out->object_backend_block_checksum =
+        mem_service_wire_payload_get_u64(&view, "object_backend_block_checksum", 0);
     return record_out->key[0] == '\0' ? -1 : 0;
 }
 
@@ -276,6 +296,51 @@ static int mem_service_client_append_object_payload(
                                                "version",
                                                object->has_version,
                                                object->version) != 0 ||
+        mem_service_client_append_optional_u32(payload,
+                                               payload_len,
+                                               "backend_kind",
+                                               object->has_backend_kind,
+                                               object->backend_kind) != 0 ||
+        mem_service_client_append_optional_u32(payload,
+                                               payload_len,
+                                               "backend_node",
+                                               object->has_backend_node,
+                                               object->backend_node) != 0 ||
+        mem_service_client_append_optional_u32(payload,
+                                               payload_len,
+                                               "backend_device_cna",
+                                               object->has_backend_device_cna,
+                                               object->backend_device_cna) != 0 ||
+        mem_service_client_append_optional_u64(payload,
+                                               payload_len,
+                                               "backend_block_hi",
+                                               object->has_backend_block_hi,
+                                               object->backend_block_hi) != 0 ||
+        mem_service_client_append_optional_u64(payload,
+                                               payload_len,
+                                               "backend_block_lo",
+                                               object->has_backend_block_lo,
+                                               object->backend_block_lo) != 0 ||
+        mem_service_client_append_optional_u64(payload,
+                                               payload_len,
+                                               "backend_block_version",
+                                               object->has_backend_block_version,
+                                               object->backend_block_version) != 0 ||
+        mem_service_client_append_optional_u64(payload,
+                                               payload_len,
+                                               "backend_block_offset",
+                                               object->has_backend_block_offset,
+                                               object->backend_block_offset) != 0 ||
+        mem_service_client_append_optional_u64(payload,
+                                               payload_len,
+                                               "backend_block_bytes",
+                                               object->has_backend_block_bytes,
+                                               object->backend_block_bytes) != 0 ||
+        mem_service_client_append_optional_u64(payload,
+                                               payload_len,
+                                               "backend_block_checksum",
+                                               object->has_backend_block_checksum,
+                                               object->backend_block_checksum) != 0 ||
         mem_service_client_append_optional_string(payload,
                                                   payload_len,
                                                   "payload_inline",

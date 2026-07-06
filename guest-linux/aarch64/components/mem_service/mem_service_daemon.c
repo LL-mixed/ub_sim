@@ -478,14 +478,14 @@ int mem_service_run_wire_fixture_check(void)
          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT,
          fixtures[17].payload,
          MEM_SERVICE_WIRE_STATUS_OK,
-         78,
-         0x4c66d23cU},
+         101,
+         0xd8ec3bdaU},
         {"export_snapshot_page_response",
          MEM_SERVICE_WIRE_OP_EXPORT_SNAPSHOT_PAGE,
          fixtures[18].payload,
          MEM_SERVICE_WIRE_STATUS_OK,
-         123,
-         0xa5654285U},
+         146,
+         0xb6c05123U},
         {"restore_snapshot_response",
          MEM_SERVICE_WIRE_OP_RESTORE_SNAPSHOT,
          fixtures[20].payload,
@@ -1239,6 +1239,26 @@ static int mem_service_parse_store_record_field(struct mem_service_record *recor
         record->object_backing_len = mem_service_parse_u64_value(value, 0);
     } else if (strcmp(name, "object_payload_checksum") == 0) {
         record->object_payload_checksum = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "object_backend_kind") == 0) {
+        record->object_backend_kind = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "object_backend_node") == 0) {
+        record->object_backend_node = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "object_backend_device_cna") == 0) {
+        record->object_backend_device_cna = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "object_backend_flags") == 0) {
+        record->object_backend_flags = mem_service_parse_u32_value(value, 0);
+    } else if (strcmp(name, "object_backend_block_hi") == 0) {
+        record->object_backend_block_hi = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "object_backend_block_lo") == 0) {
+        record->object_backend_block_lo = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "object_backend_block_version") == 0) {
+        record->object_backend_block_version = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "object_backend_block_offset") == 0) {
+        record->object_backend_block_offset = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "object_backend_block_bytes") == 0) {
+        record->object_backend_block_bytes = mem_service_parse_u64_value(value, 0);
+    } else if (strcmp(name, "object_backend_block_checksum") == 0) {
+        record->object_backend_block_checksum = mem_service_parse_u64_value(value, 0);
     } else if (strcmp(name, "object_publish_monotonic_ms") == 0) {
         record->object_publish_monotonic_ms = mem_service_parse_u64_value(value, 0);
     } else if (strcmp(name, "object_publish_supernode_ms") == 0) {
@@ -3706,6 +3726,30 @@ static int mem_service_save_record(FILE *file, const struct mem_service_record *
                 record->object_publish_supernode_ms,
                 record->object_publish_supernode_offset_ms,
                 record->member_count) < 0) {
+        return -1;
+    }
+    if (record->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD &&
+        fprintf(file,
+                "object_backend_kind=%u\n"
+                "object_backend_node=%u\n"
+                "object_backend_device_cna=%u\n"
+                "object_backend_flags=%u\n"
+                "object_backend_block_hi=%" PRIu64 "\n"
+                "object_backend_block_lo=%" PRIu64 "\n"
+                "object_backend_block_version=%" PRIu64 "\n"
+                "object_backend_block_offset=%" PRIu64 "\n"
+                "object_backend_block_bytes=%" PRIu64 "\n"
+                "object_backend_block_checksum=%" PRIu64 "\n",
+                record->object_backend_kind,
+                record->object_backend_node,
+                record->object_backend_device_cna,
+                record->object_backend_flags,
+                record->object_backend_block_hi,
+                record->object_backend_block_lo,
+                record->object_backend_block_version,
+                record->object_backend_block_offset,
+                record->object_backend_block_bytes,
+                record->object_backend_block_checksum) < 0) {
         return -1;
     }
     for (i = 0; i < record->member_count && i < MEM_SERVICE_MAX_GROUP_MEMBERS; ++i) {
@@ -7694,10 +7738,115 @@ static const char *mem_service_record_artifact_id(const struct mem_service_recor
     return record->artifact_id[0] != '\0' ? record->artifact_id : record->block_hash;
 }
 
+static const char *mem_service_object_backend_name(uint32_t backend_kind)
+{
+    if (backend_kind == MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA) {
+        return "ub-ssd-gsva-v1";
+    }
+    return "legacy-payload";
+}
+
+static bool mem_service_payload_selects_ub_ssd_backend(const char *payload)
+{
+    char backend[64];
+
+    if (mem_service_payload_get_u32(payload, "backend_kind", 0) ==
+        MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA) {
+        return true;
+    }
+    if (!mem_service_payload_get_string(payload, "backend", backend, sizeof(backend))) {
+        return false;
+    }
+    return strcmp(backend, "ub-ssd-gsva-v1") == 0 ||
+           strcmp(backend, "ub_ssd_gsva_v1") == 0;
+}
+
+static enum mem_service_wire_status mem_service_apply_ub_ssd_backend_ref(
+    const char *payload,
+    const char *payload_inline,
+    const char *payload_path,
+    struct mem_service_record *record)
+{
+    uint64_t block_hi = 0;
+    uint64_t block_lo = 0;
+    uint64_t block_bytes = 0;
+    uint64_t block_checksum = 0;
+
+    if (!mem_service_payload_selects_ub_ssd_backend(payload)) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if ((payload_inline != NULL && payload_inline[0] != '\0') ||
+        (payload_path != NULL && payload_path[0] != '\0')) {
+        return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+    }
+    if (record == NULL ||
+        !mem_service_payload_get_u64_checked(payload, "backend_block_hi", &block_hi) ||
+        !mem_service_payload_get_u64_checked(payload, "backend_block_lo", &block_lo) ||
+        !mem_service_payload_get_u64_checked(payload, "backend_block_bytes", &block_bytes) ||
+        !mem_service_payload_get_u64_checked(payload,
+                                             "backend_block_checksum",
+                                             &block_checksum) ||
+        block_bytes == 0 || block_checksum == 0) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    record->object_backend_kind = MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA;
+    record->object_backend_node =
+        mem_service_payload_get_u32(payload, "backend_node", record->object_owner_node);
+    record->object_backend_device_cna =
+        mem_service_payload_get_u32(payload, "backend_device_cna", 0);
+    record->object_backend_flags = mem_service_payload_get_u32(payload, "backend_flags", 0);
+    record->object_backend_block_hi = block_hi;
+    record->object_backend_block_lo = block_lo;
+    record->object_backend_block_version =
+        mem_service_payload_get_u64(payload, "backend_block_version", record->version);
+    record->object_backend_block_offset =
+        mem_service_payload_get_u64(payload, "backend_block_offset", 0);
+    record->object_backend_block_bytes = block_bytes;
+    record->object_backend_block_checksum = block_checksum;
+    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK;
+    record->object_backing_offset = record->object_backend_block_offset;
+    record->object_backing_len = block_bytes;
+    record->object_payload_checksum = block_checksum;
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
 static void mem_service_format_record_payload(const struct mem_service_record *record,
                                               char *out,
                                               size_t out_len)
 {
+    if (record->object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD) {
+        snprintf(out,
+                 out_len,
+                 "key=%s\nkind=%u\nrequest_id=%s\nprefix_group=%s\ngroup_id=%s\n"
+                 "session_id=%s\nmodel_key=%s\nartifact_kind=%s\nartifact_id=%s\n"
+                 "block_hash=%s\nplacement_node=%u\nplacement_level=%u\n"
+                 "hot_segment_id=%" PRIu64 "\nstate=%s\nversion=%" PRIu64 "\n"
+                 "last_result_segment=%" PRIu64 "\nobject_owner_node=%u\n"
+                 "object_payload_kind=%u\nobject_backing_offset=%" PRIu64 "\n"
+                 "object_backing_len=%" PRIu64 "\nobject_payload_checksum=%" PRIu64 "\n",
+                 record->key,
+                 (uint32_t)record->kind,
+                 record->request_id,
+                 record->prefix_group,
+                 record->group_id,
+                 mem_service_record_session_id(record),
+                 mem_service_record_model_key(record),
+                 mem_service_record_artifact_kind(record),
+                 mem_service_record_artifact_id(record),
+                 record->block_hash,
+                 record->placement_node,
+                 record->placement_level,
+                 record->hot_segment_id,
+                 mem_service_kvcache_state_name(record->state),
+                 record->version,
+                 record->last_result_segment,
+                 record->object_owner_node,
+                 record->object_payload_kind,
+                 record->object_backing_offset,
+                 record->object_backing_len,
+                 record->object_payload_checksum);
+        return;
+    }
     snprintf(out,
              out_len,
              "key=%s\nkind=%u\nrequest_id=%s\nprefix_group=%s\ngroup_id=%s\n"
@@ -7706,7 +7855,16 @@ static void mem_service_format_record_payload(const struct mem_service_record *r
              "hot_segment_id=%" PRIu64 "\nstate=%s\nversion=%" PRIu64 "\n"
              "last_result_segment=%" PRIu64 "\nobject_owner_node=%u\n"
              "object_payload_kind=%u\nobject_backing_offset=%" PRIu64 "\n"
-             "object_backing_len=%" PRIu64 "\nobject_payload_checksum=%" PRIu64 "\n",
+             "object_backing_len=%" PRIu64 "\nobject_payload_checksum=%" PRIu64 "\n"
+             "object_backend=%s\nobject_backend_kind=%u\n"
+             "object_backend_node=%u\nobject_backend_device_cna=%u\n"
+             "object_backend_flags=%u\n"
+             "object_backend_block_hi=%" PRIu64 "\n"
+             "object_backend_block_lo=%" PRIu64 "\n"
+             "object_backend_block_version=%" PRIu64 "\n"
+             "object_backend_block_offset=%" PRIu64 "\n"
+             "object_backend_block_bytes=%" PRIu64 "\n"
+             "object_backend_block_checksum=%" PRIu64 "\n",
              record->key,
              (uint32_t)record->kind,
              record->request_id,
@@ -7727,7 +7885,18 @@ static void mem_service_format_record_payload(const struct mem_service_record *r
              record->object_payload_kind,
              record->object_backing_offset,
              record->object_backing_len,
-             record->object_payload_checksum);
+             record->object_payload_checksum,
+             mem_service_object_backend_name(record->object_backend_kind),
+             record->object_backend_kind,
+             record->object_backend_node,
+             record->object_backend_device_cna,
+             record->object_backend_flags,
+             record->object_backend_block_hi,
+             record->object_backend_block_lo,
+             record->object_backend_block_version,
+             record->object_backend_block_offset,
+             record->object_backend_block_bytes,
+             record->object_backend_block_checksum);
 }
 
 static void mem_service_format_inspect_record_payload(
@@ -7735,6 +7904,43 @@ static void mem_service_format_inspect_record_payload(
     char *out,
     size_t out_len)
 {
+    if (record->object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD) {
+        snprintf(out,
+                 out_len,
+                 "key=%s\nkind=%u\nkind_name=%s\nrequest_id=%s\nprefix_group=%s\n"
+                 "group_id=%s\nsession_id=%s\nmodel_key=%s\nartifact_kind=%s\n"
+                 "artifact_id=%s\nblock_hash=%s\nplacement_node=%u\n"
+                 "placement_level=%u\nhot_segment_id=%" PRIu64 "\nstate=%s\n"
+                 "version=%" PRIu64 "\nlast_result_segment=%" PRIu64 "\n"
+                 "object_owner_node=%u\nobject_payload_kind=%u\n"
+                 "object_backing_offset=%" PRIu64 "\nobject_backing_len=%" PRIu64 "\n"
+                 "object_payload_checksum=%" PRIu64 "\n"
+                 "member_count=%u\n",
+                 record->key,
+                 (uint32_t)record->kind,
+                 mem_service_record_kind_name(record->kind),
+                 record->request_id,
+                 record->prefix_group,
+                 record->group_id,
+                 mem_service_record_session_id(record),
+                 mem_service_record_model_key(record),
+                 mem_service_record_artifact_kind(record),
+                 mem_service_record_artifact_id(record),
+                 record->block_hash,
+                 record->placement_node,
+                 record->placement_level,
+                 record->hot_segment_id,
+                 mem_service_kvcache_state_name(record->state),
+                 record->version,
+                 record->last_result_segment,
+                 record->object_owner_node,
+                 record->object_payload_kind,
+                 record->object_backing_offset,
+                 record->object_backing_len,
+                 record->object_payload_checksum,
+                 record->member_count);
+        return;
+    }
     snprintf(out,
              out_len,
              "key=%s\nkind=%u\nkind_name=%s\nrequest_id=%s\nprefix_group=%s\n"
@@ -7745,6 +7951,15 @@ static void mem_service_format_inspect_record_payload(
              "object_owner_node=%u\nobject_payload_kind=%u\n"
              "object_backing_offset=%" PRIu64 "\nobject_backing_len=%" PRIu64 "\n"
              "object_payload_checksum=%" PRIu64 "\n"
+             "object_backend=%s\nobject_backend_kind=%u\n"
+             "object_backend_node=%u\nobject_backend_device_cna=%u\n"
+             "object_backend_flags=%u\n"
+             "object_backend_block_hi=%" PRIu64 "\n"
+             "object_backend_block_lo=%" PRIu64 "\n"
+             "object_backend_block_version=%" PRIu64 "\n"
+             "object_backend_block_offset=%" PRIu64 "\n"
+             "object_backend_block_bytes=%" PRIu64 "\n"
+             "object_backend_block_checksum=%" PRIu64 "\n"
              "member_count=%u\n",
              record->key,
              (uint32_t)record->kind,
@@ -7768,6 +7983,17 @@ static void mem_service_format_inspect_record_payload(
              record->object_backing_offset,
              record->object_backing_len,
              record->object_payload_checksum,
+             mem_service_object_backend_name(record->object_backend_kind),
+             record->object_backend_kind,
+             record->object_backend_node,
+             record->object_backend_device_cna,
+             record->object_backend_flags,
+             record->object_backend_block_hi,
+             record->object_backend_block_lo,
+             record->object_backend_block_version,
+             record->object_backend_block_offset,
+             record->object_backend_block_bytes,
+             record->object_backend_block_checksum,
              record->member_count);
 }
 
@@ -7808,7 +8034,15 @@ static enum mem_service_wire_status mem_service_put_object(struct mem_service *s
                                          "payload_path",
                                          payload_path,
                                          sizeof(payload_path));
-    if (payload_inline[0] != '\0' || payload_path[0] != '\0') {
+    block_status = mem_service_apply_ub_ssd_backend_ref(payload,
+                                                        payload_inline,
+                                                        payload_path,
+                                                        &next);
+    if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
+        return block_status;
+    }
+    if (next.object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA &&
+        (payload_inline[0] != '\0' || payload_path[0] != '\0')) {
         block_status = mem_service_write_payload_block(storage_root,
                                                        payload,
                                                        payload_inline,
@@ -8004,7 +8238,15 @@ static enum mem_service_wire_status mem_service_store_artifact(
                                          "payload_path",
                                          payload_path,
                                          sizeof(payload_path));
-    if (payload_inline[0] != '\0' || payload_path[0] != '\0') {
+    block_status = mem_service_apply_ub_ssd_backend_ref(payload,
+                                                        payload_inline,
+                                                        payload_path,
+                                                        &next);
+    if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
+        return block_status;
+    }
+    if (next.object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA &&
+        (payload_inline[0] != '\0' || payload_path[0] != '\0')) {
         block_status = mem_service_write_payload_block(storage_root,
                                                        payload,
                                                        payload_inline,
