@@ -94,11 +94,11 @@ def split_env_values(value):
 
 def output_guard_from_env():
     return {
-        "tokenizer_dir": os.environ.get("SIM_W5_OUTPUT_TOKENIZER_DIR")
+        "tokenizer_dir": os.environ.get("SIM_W5_TEST_OUTPUT_TOKENIZER_DIR")
         or os.environ.get("SIM_QWEN3_DENSE_WEIGHTS_PATH")
         or "",
-        "expect_regexes": split_env_regexes(os.environ.get("SIM_W5_EXPECT_OUTPUT_REGEX")),
-        "reject_regexes": split_env_regexes(os.environ.get("SIM_W5_REJECT_OUTPUT_REGEX")),
+        "expect_regexes": split_env_regexes(os.environ.get("SIM_W5_TEST_EXPECT_OUTPUT_REGEX")),
+        "reject_regexes": split_env_regexes(os.environ.get("SIM_W5_TEST_REJECT_OUTPUT_REGEX")),
     }
 
 
@@ -113,7 +113,7 @@ def output_guard_from_args(args):
 
 def context_guard_from_env():
     return {
-        "require_contexts": split_env_values(os.environ.get("SIM_W5_REQUIRE_CONTEXT")),
+        "require_contexts": split_env_values(os.environ.get("SIM_W5_TEST_REQUIRE_CONTEXT")),
     }
 
 
@@ -125,7 +125,7 @@ def context_guard_from_args(args):
 
 def prefix_cache_guard_from_args(args):
     return bool(
-        os.environ.get("SIM_W5_REQUIRE_PREFIX_CACHE") in ("1", "true", "TRUE", "yes", "YES")
+        os.environ.get("SIM_W5_TEST_REQUIRE_PREFIX_CACHE") in ("1", "true", "TRUE", "yes", "YES")
         or args.require_prefix_cache
     )
 

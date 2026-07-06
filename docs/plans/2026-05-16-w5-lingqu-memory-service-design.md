@@ -1318,7 +1318,7 @@ shortpath env contract to the guest. This removes the manual
 break in the execution path while still keeping the standalone CLI command for
 inspection and reproducible debugging. By default this validates and exposes
 the shortpath artifact without changing decode output. Passing
-`--memory-shortpath-execute` forwards `SIM_W5_MEMORY_SHORTPATH_EXECUTE=1`; when
+`--memory-shortpath-execute` forwards `SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE=1`; when
 the decision is `jump-to-terminal`, only the matching artifact producer
 boundary may consume the logits artifact. The producer first compares the artifact
 `boundary_hidden_fingerprint` with the live range-exit hidden bytes/checksum.
@@ -1338,7 +1338,7 @@ durable store for that run id, sorts them by step/node/layer/position, and
 generates the same stream without requiring callers to manually enumerate every
 boundary id. It loads each audited decision, validates each verified artifact
 against the selected runtime, publishes every artifact payload into the Lingqu
-Object Service checkpoint, and forwards `SIM_W5_MEMORY_SHORTPATH_STREAM`
+Object Service checkpoint, and forwards `SIM_W5_TEST_MEMORY_SHORTPATH_STREAM`
 entries keyed by decode step, producer boundary, and artifact boundary hidden
 bytes/checksum. The guest selects only the stream entry matching the current
 step and live boundary; if a step has no entry or the fingerprint does not
@@ -1504,7 +1504,7 @@ store; missing Memory Service evidence is a hard failure.
   `steps=1 && artifact_step=0` host restriction. The entrypoint can load a CSV
   of audited decision ids via `--memory-shortpath-decision-ids`, publish all
   referenced logits artifacts into the Object Service snapshot, and pass a
-  step-indexed `SIM_W5_MEMORY_SHORTPATH_STREAM` to the guest. The stream
+  step-indexed `SIM_W5_TEST_MEMORY_SHORTPATH_STREAM` to the guest. The stream
   contract now includes the artifact boundary hidden bytes/checksum, and the
   guest only executes a jump after the producer boundary's live hidden
   fingerprint matches. Stale artifacts are rejected as an optimization miss and
@@ -1827,8 +1827,8 @@ Current implementation status:
   `list-prefix-cache-reuse` expose the remaining durable Memory Service audit
   logs and W5 planner shortpath decision audit without reading legacy manifests
   or synthesizing missing state. The W5 runner and eight-node headless launcher
-  now also forward `SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID` alongside
-  `SIM_W5_MEMORY_SHORTPATH_DECISION_ID`, so guest-side validation logs can
+  now also forward `SIM_W5_TEST_MEMORY_SHORTPATH_SUPPORT_ID` alongside
+  `SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID`, so guest-side validation logs can
   trace a planner action back to the Memory Service support record that
   justified it.
   `lookup-prefix-cache` persists prefix cache reuse/miss plans into a durable

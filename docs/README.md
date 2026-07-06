@@ -21,6 +21,8 @@ Current validation entry points:
   - includes bootstrap dependency on existing OBMM bootstrap and manager queue bootstrap flow
 - [2026-06-24-w5-gva-gsva-dataplane-benefit-report.md](2026-06-24-w5-gva-gsva-dataplane-benefit-report.md)
   - host-core dataplane microbenchmark benefit report for W5 GVA/GSVA, including expanded legacy PA-to-UBA resolver baselines (`linear`, `direct`, `indexed`, `cached`)
+- [w5_test_env_inventory.md](w5_test_env_inventory.md)
+  - inventory and naming rule for W5 validation, test, report, and check environment variables; these variables use the `SIM_W5_TEST_*` namespace
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)

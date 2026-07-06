@@ -32,7 +32,7 @@ NODEA_INGRESS_OVERRIDE=0
 GSVA_KV_OVERRIDE=0
 REQUIRE_PREFIX_CACHE_OVERRIDE=0
 DISABLE_MEMORY_REUSE_OVERRIDE=0
-SIM_W5_REQUIRE_PREFIX_CACHE="${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
+SIM_W5_TEST_REQUIRE_PREFIX_CACHE="${SIM_W5_TEST_REQUIRE_PREFIX_CACHE:-0}"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -81,12 +81,12 @@ while (( $# > 0 )); do
       shift
       ;;
     --post-run-prune)
-      export SIM_W5_POST_RUN_PRUNE=1
-      export SIM_W5_POST_RUN_HEALTH="${SIM_W5_POST_RUN_HEALTH:-1}"
+      export SIM_W5_TEST_POST_RUN_PRUNE=1
+      export SIM_W5_TEST_POST_RUN_HEALTH="${SIM_W5_TEST_POST_RUN_HEALTH:-1}"
       shift
       ;;
     --post-run-health)
-      export SIM_W5_POST_RUN_HEALTH=1
+      export SIM_W5_TEST_POST_RUN_HEALTH=1
       shift
       ;;
     --keep-latest)
@@ -170,8 +170,8 @@ set -a
 source "$CONFIG_PATH"
 set +a
 
-if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID:-}" ]]; then
-  echo "SIM_W5_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG; normal W5 runs auto-discover reusable Memory Service stores without this variable" >&2
+if [[ -n "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID:-}" ]]; then
+  echo "SIM_W5_TEST_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG; normal W5 runs auto-discover reusable Memory Service stores without this variable" >&2
   exit 2
 fi
 if [[ -n "$STEPS_OVERRIDE" ]]; then
@@ -186,16 +186,16 @@ if [[ -n "$KEEP_LATEST_OVERRIDE" ]]; then
     echo "--keep-latest must be a non-negative integer: $KEEP_LATEST_OVERRIDE" >&2
     exit 2
   fi
-  export SIM_W5_ARTIFACT_KEEP_LATEST="$KEEP_LATEST_OVERRIDE"
+  export SIM_W5_TEST_ARTIFACT_KEEP_LATEST="$KEEP_LATEST_OVERRIDE"
 fi
 if (( GSVA_KV_OVERRIDE )); then
-  export SIM_W5_MEMORY_GSVA_KV=1
+  export SIM_W5_TEST_MEMORY_GSVA_KV=1
 fi
 if (( REQUIRE_PREFIX_CACHE_OVERRIDE )); then
-  export SIM_W5_REQUIRE_PREFIX_CACHE=1
+  export SIM_W5_TEST_REQUIRE_PREFIX_CACHE=1
 fi
 if (( DISABLE_MEMORY_REUSE_OVERRIDE )); then
-  export SIM_W5_MEMORY_REUSE_DISABLE=1
+  export SIM_W5_TEST_MEMORY_REUSE_DISABLE=1
 fi
 if [[ -n "$REQUESTS_OVERRIDE" ]]; then
   export SIM_W5_SERVING_REQUESTS_FILE="$REQUESTS_OVERRIDE"
@@ -234,7 +234,7 @@ bool_enabled() {
 
 context_guard_requires() {
   local required="$1"
-  local raw="${SIM_W5_REQUIRE_CONTEXT:-}"
+  local raw="${SIM_W5_TEST_REQUIRE_CONTEXT:-}"
   local normalized=""
   [[ -n "$raw" ]] || return 1
   normalized="${raw//$'\n'/,}"
@@ -257,9 +257,9 @@ validate_w5_cluster_config() {
   local memory_prefix_cache_lookup=1
   local memory_require_prefix_cache=0
   local serving_ingress="${SIM_W5_SERVING_INGRESS:-cluster}"
-  local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
-  local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
-  local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
+  local keep_latest="${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
+  local max_prune_candidates="${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
+  local max_prune_bytes="${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
 
   case "$profile" in
     qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
@@ -274,15 +274,15 @@ validate_w5_cluster_config() {
     return 2
   fi
   if [[ ! "$keep_latest" =~ '^[0-9]+$' ]]; then
-    echo "SIM_W5_ARTIFACT_KEEP_LATEST must be a non-negative integer: $keep_latest" >&2
+    echo "SIM_W5_TEST_ARTIFACT_KEEP_LATEST must be a non-negative integer: $keep_latest" >&2
     return 2
   fi
   if [[ ! "$max_prune_candidates" =~ '^[0-9]+$' ]]; then
-    echo "SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES must be a non-negative integer: $max_prune_candidates" >&2
+    echo "SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES must be a non-negative integer: $max_prune_candidates" >&2
     return 2
   fi
   if [[ ! "$max_prune_bytes" =~ '^[0-9]+$' ]]; then
-    echo "SIM_W5_HEALTH_MAX_PRUNE_BYTES must be a non-negative integer: $max_prune_bytes" >&2
+    echo "SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES must be a non-negative integer: $max_prune_bytes" >&2
     return 2
   fi
   if [[ -n "${RUN_ID:-}" && "${SIM_W5_ALLOW_FIXED_RUN_ID:-0}" != "1" ]]; then
@@ -295,7 +295,7 @@ validate_w5_cluster_config() {
     return 2
   fi
   if bool_enabled "${SIM_W5_SERVING_QUEUE:-0}" &&
-     { bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; }; then
+     { bool_enabled "${SIM_W5_TEST_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_TEST_POST_RUN_HEALTH:-0}"; }; then
     echo "SIM_W5_SERVING_QUEUE cannot be combined with post-run maintenance" >&2
     return 2
   fi
@@ -349,67 +349,67 @@ validate_w5_cluster_config() {
     echo "W5 cluster config weights path is missing: $SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     return 2
   fi
-  if bool_enabled "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"; then
+  if bool_enabled "${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"; then
     memory_runtime_lookup=1
   fi
-  if bool_enabled "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"; then
+  if bool_enabled "${SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"; then
     memory_online_lookup=1
   fi
-  case "${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}" in
+  case "${SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-1}" in
     0|false|FALSE|no|NO)
       memory_prefix_cache_lookup=0
       ;;
   esac
-  case "${SIM_W5_REQUIRE_PREFIX_CACHE:-0}" in
+  case "${SIM_W5_TEST_REQUIRE_PREFIX_CACHE:-0}" in
     1|true|TRUE|yes|YES)
       memory_require_prefix_cache=1
       ;;
   esac
-  if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" && -z "${SIM_W5_MEMORY_DECISION_STORE:-}" ]]; then
-    echo "SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE" >&2
+  if [[ -n "${SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE:-}" && -z "${SIM_W5_TEST_MEMORY_DECISION_STORE:-}" ]]; then
+    echo "SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_TEST_MEMORY_DECISION_STORE" >&2
     return 2
   fi
-  if [[ -n "${SIM_W5_MEMORY_DECISION_STORE:-}" ]]; then
-    if [[ -z "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID:-}" &&
-          -z "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS:-}" &&
-          -z "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}" &&
-          -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}" &&
-          -z "${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" &&
+  if [[ -n "${SIM_W5_TEST_MEMORY_DECISION_STORE:-}" ]]; then
+    if [[ -z "${SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_ID:-}" &&
+          -z "${SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_IDS:-}" &&
+          -z "${SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}" &&
+          -z "${SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID:-}" &&
+          -z "${SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_IDS:-}" &&
           "$memory_online_lookup" == "0" &&
           "$memory_prefix_cache_lookup" == "0" &&
-           -z "${SIM_W5_MEMORY_PREFETCH_PLAN_ID:-}" &&
-           -z "${SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}" &&
+           -z "${SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID:-}" &&
+           -z "${SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}" &&
            -z "${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" &&
-           -z "${SIM_W5_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
-      echo "SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector or enabled prefix-cache lookup for live Memory Service reuse" >&2
+           -z "${SIM_W5_TEST_MEMORY_SHORTPATH_STREAM_PATH:-}" ]]; then
+      echo "SIM_W5_TEST_MEMORY_DECISION_STORE requires a boundary observation/decision selector or enabled prefix-cache lookup for live Memory Service reuse" >&2
       return 2
     fi
-    if [[ ! -f "$SIM_W5_MEMORY_DECISION_STORE" ]]; then
-      echo "Memory Service decision store is missing: $SIM_W5_MEMORY_DECISION_STORE" >&2
+    if [[ ! -f "$SIM_W5_TEST_MEMORY_DECISION_STORE" ]]; then
+      echo "Memory Service decision store is missing: $SIM_W5_TEST_MEMORY_DECISION_STORE" >&2
       return 2
     fi
   fi
-  if [[ -n "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}" ]]; then
-    if [[ ! -f "$SIM_W5_MEMORY_DECISION_OBJECT_STORE" ]]; then
-      echo "Memory Service decision object store is missing: $SIM_W5_MEMORY_DECISION_OBJECT_STORE" >&2
+  if [[ -n "${SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE:-}" ]]; then
+    if [[ ! -f "$SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE" ]]; then
+      echo "Memory Service decision object store is missing: $SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE" >&2
       return 2
     fi
   fi
   if (( memory_require_prefix_cache )) && (( memory_prefix_cache_lookup == 0 )); then
-    echo "SIM_W5_REQUIRE_PREFIX_CACHE requires SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1" >&2
+    echo "SIM_W5_TEST_REQUIRE_PREFIX_CACHE requires SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1" >&2
     return 2
   fi
-  if (( memory_runtime_lookup )) && [[ -n "${SIM_W5_MEMORY_SHORTPATH_DECISION_ID:-}${SIM_W5_MEMORY_SHORTPATH_DECISION_IDS:-}" ]]; then
-    echo "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP cannot be combined with explicit shortpath decision ids" >&2
+  if (( memory_runtime_lookup )) && [[ -n "${SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID:-}${SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_IDS:-}" ]]; then
+    echo "SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP cannot be combined with explicit shortpath decision ids" >&2
     return 2
   fi
   if context_guard_requires "fused_simt_vendor_context"; then
     if ! bool_enabled "${SIM_QWEN3_GUEST_ENGRAM:-0}"; then
-      echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM=1" >&2
+      echo "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM=1" >&2
       return 2
     fi
     if [[ "${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-}" != "fused-simt" ]]; then
-      echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt" >&2
+      echo "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt" >&2
       return 2
     fi
     if [[ -n "${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}" ]]; then
@@ -427,7 +427,7 @@ validate_w5_cluster_config() {
             -z "${SIM_ENGRAM_SIMT_SELECTED_CASE:-}" ||
             -z "${SIM_ENGRAM_SIMT_BINARY_PATH:-}" ||
             -z "${SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH:-}" ]]; then
-      echo "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_ENGRAM_SIMT_ARTIFACT_DIR or complete SIM_ENGRAM_SIMT_SELECTED_* vendor env" >&2
+      echo "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context requires SIM_ENGRAM_SIMT_ARTIFACT_DIR or complete SIM_ENGRAM_SIMT_SELECTED_* vendor env" >&2
       return 2
     elif [[ ! -f "$SIM_ENGRAM_SIMT_BINARY_PATH" ]]; then
       echo "SIM_ENGRAM_SIMT_BINARY_PATH is missing: $SIM_ENGRAM_SIMT_BINARY_PATH" >&2
@@ -442,11 +442,11 @@ validate_w5_cluster_config() {
 
 run_post_run_maintenance() {
   local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
-  local keep_latest="${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
-  local max_prune_candidates="${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
-  local max_prune_bytes="${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
+  local keep_latest="${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
+  local max_prune_candidates="${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
+  local max_prune_bytes="${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
 
-  if bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}"; then
+  if bool_enabled "${SIM_W5_TEST_POST_RUN_PRUNE:-0}"; then
     echo "[w5_cluster_config] post_run_prune=1 profile=$profile keep_latest=$keep_latest" >&2
     "$SCRIPT_DIR/w5_artifact_prune.py" \
       --profile "$profile" \
@@ -454,7 +454,7 @@ run_post_run_maintenance() {
       --summary-only \
       --delete
   fi
-  if bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; then
+  if bool_enabled "${SIM_W5_TEST_POST_RUN_HEALTH:-0}"; then
     echo "[w5_cluster_config] post_run_health=1 profile=$profile keep_latest=$keep_latest" >&2
     "$SCRIPT_DIR/w5_cluster_health_check.py" \
       --profile "$profile" \
@@ -482,27 +482,27 @@ if (( PRINT_ENV )); then
   printf 'SIM_W5_SERVING_INGRESS=%s\n' "${SIM_W5_SERVING_INGRESS:-cluster}"
   printf 'SIM_W5_SERVING_SUBMIT_REQUESTS_FILE=%s\n' "${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}"
   printf 'SIM_QWEN3_DENSE_WEIGHTS_PATH=%s\n' "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
-  printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_MEMORY_SHORTPATH_EXECUTE:-}"
-  printf 'SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
-  printf 'SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=%s\n' "${SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
-  printf 'SIM_W5_MEMORY_GSVA_KV=%s\n' "${SIM_W5_MEMORY_GSVA_KV:-}"
-  printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=%s\n' "${SIM_W5_MEMORY_POST_RUN_PROMOTE:-}"
-  printf 'SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP:-}"
-  printf 'SIM_W5_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_MEMORY_OBSERVATION_STORE:-}"
-  printf 'SIM_W5_VALIDATE_ONLY=%s\n' "${SIM_W5_VALIDATE_ONLY:-}"
-  printf 'SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=%s\n' "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}"
-  printf 'SIM_W5_MEMORY_REUSE_DISABLE=%s\n' "${SIM_W5_MEMORY_REUSE_DISABLE:-0}"
-  printf 'SIM_W5_MEMORY_REUSE_OUT_DIR=%s\n' "${SIM_W5_MEMORY_REUSE_OUT_DIR:-}"
-  printf 'SIM_W5_MEMORY_DECISION_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_STORE:-}"
-  printf 'SIM_W5_MEMORY_DECISION_OBJECT_STORE=%s\n' "${SIM_W5_MEMORY_DECISION_OBJECT_STORE:-}"
-  printf 'SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=%s\n' "${SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}"
-  printf 'SIM_W5_POST_RUN_PRUNE=%s\n' "${SIM_W5_POST_RUN_PRUNE:-}"
-  printf 'SIM_W5_POST_RUN_HEALTH=%s\n' "${SIM_W5_POST_RUN_HEALTH:-}"
-  printf 'SIM_W5_ARTIFACT_KEEP_LATEST=%s\n' "${SIM_W5_ARTIFACT_KEEP_LATEST:-3}"
-  printf 'SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=%s\n' "${SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
-  printf 'SIM_W5_HEALTH_MAX_PRUNE_BYTES=%s\n' "${SIM_W5_HEALTH_MAX_PRUNE_BYTES:-0}"
-  printf 'SIM_W5_REQUIRE_CONTEXT=%s\n' "${SIM_W5_REQUIRE_CONTEXT:-}"
-  printf 'SIM_W5_REQUIRE_PREFIX_CACHE=%s\n' "${SIM_W5_REQUIRE_PREFIX_CACHE:-0}"
+  printf 'SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE=%s\n' "${SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE:-}"
+  printf 'SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
+  printf 'SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=%s\n' "${SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
+  printf 'SIM_W5_TEST_MEMORY_GSVA_KV=%s\n' "${SIM_W5_TEST_MEMORY_GSVA_KV:-}"
+  printf 'SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=%s\n' "${SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE:-}"
+  printf 'SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP=%s\n' "${SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP:-}"
+  printf 'SIM_W5_TEST_MEMORY_OBSERVATION_STORE=%s\n' "${SIM_W5_TEST_MEMORY_OBSERVATION_STORE:-}"
+  printf 'SIM_W5_TEST_VALIDATE_ONLY=%s\n' "${SIM_W5_TEST_VALIDATE_ONLY:-}"
+  printf 'SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=%s\n' "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}"
+  printf 'SIM_W5_TEST_MEMORY_REUSE_DISABLE=%s\n' "${SIM_W5_TEST_MEMORY_REUSE_DISABLE:-0}"
+  printf 'SIM_W5_TEST_MEMORY_REUSE_OUT_DIR=%s\n' "${SIM_W5_TEST_MEMORY_REUSE_OUT_DIR:-}"
+  printf 'SIM_W5_TEST_MEMORY_DECISION_STORE=%s\n' "${SIM_W5_TEST_MEMORY_DECISION_STORE:-}"
+  printf 'SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE=%s\n' "${SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE:-}"
+  printf 'SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=%s\n' "${SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID:-}"
+  printf 'SIM_W5_TEST_POST_RUN_PRUNE=%s\n' "${SIM_W5_TEST_POST_RUN_PRUNE:-}"
+  printf 'SIM_W5_TEST_POST_RUN_HEALTH=%s\n' "${SIM_W5_TEST_POST_RUN_HEALTH:-}"
+  printf 'SIM_W5_TEST_ARTIFACT_KEEP_LATEST=%s\n' "${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
+  printf 'SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES=%s\n' "${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
+  printf 'SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES=%s\n' "${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
+  printf 'SIM_W5_TEST_REQUIRE_CONTEXT=%s\n' "${SIM_W5_TEST_REQUIRE_CONTEXT:-}"
+  printf 'SIM_W5_TEST_REQUIRE_PREFIX_CACHE=%s\n' "${SIM_W5_TEST_REQUIRE_PREFIX_CACHE:-0}"
   printf 'SIM_ENGRAM_SIMT_ARTIFACT_DIR=%s\n' "${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}"
   printf 'SIM_ENGRAM_SIMT_SELECTED_SYMBOL=%s\n' "${SIM_ENGRAM_SIMT_SELECTED_SYMBOL:-}"
   printf 'SIM_ENGRAM_SIMT_SELECTED_CASE=%s\n' "${SIM_ENGRAM_SIMT_SELECTED_CASE:-}"
@@ -519,18 +519,18 @@ fi
 
 if (( VALIDATE_ONLY )); then
   echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode} validate_only=1" >&2
-  export SIM_W5_VALIDATE_ONLY=1
-  if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
-    unset SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG
+  export SIM_W5_TEST_VALIDATE_ONLY=1
+  if [[ -n "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
+    unset SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG
   fi
   exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
 fi
 
 echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" >&2
-if [[ -n "${SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
-  unset SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG
+if [[ -n "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
+  unset SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG
 fi
-if bool_enabled "${SIM_W5_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_POST_RUN_HEALTH:-0}"; then
+if bool_enabled "${SIM_W5_TEST_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_TEST_POST_RUN_HEALTH:-0}"; then
   "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
   run_post_run_maintenance
 else

@@ -134,7 +134,7 @@ manual env injection.
 
 Required runtime evidence:
 
-- `SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR` is non-empty.
+- `SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR` is non-empty.
 - `w5_prefix_cache_service_ready.<run_id>.txt` exists.
 - W5 summary reports non-empty `prefix_cache_ids`.
 - W5 summary distinguishes prefix-cache hit, miss, and stale rejection.
@@ -199,7 +199,7 @@ Progress as of 2026-06-15:
 
 - Implemented a narrow `ExecutionArtifactObject.gsva_segment_ref` metadata path
   for KV artifacts.
-- `SIM_W5_MEMORY_GSVA_KV=1` makes runtime KV artifacts publish
+- `SIM_W5_TEST_MEMORY_GSVA_KV=1` makes runtime KV artifacts publish
   `backend=gsva` segment metadata while leaving default runs unchanged.
 - Prefix-cache KV stream now carries GSVA segment metadata as an extended
   18-field line while preserving the old 9-field OBMM format.
@@ -256,7 +256,7 @@ Progress as of 2026-06-15:
   `prefix_cache_reject_policy=cache_reject_then_recompute`,
   `prefix_cache_recompute_range_forwards>0`, and
   `prefix_cache_reject_then_recompute=1`.
-- `SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH` provides an explicit negative-test gate
+- `SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH` provides an explicit negative-test gate
   for epoch mismatch without changing default runs.
 - Full Qwen3-14B stale-GSVA negative control:
   - run: `2026-06-15_w5_p1_gsva_stale_epoch`

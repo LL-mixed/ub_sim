@@ -20,7 +20,7 @@ OPTIONAL_ENV_FIELDS = {
     "sampler_top_p_milli": "SIM_QWEN3_SAMPLER_TOP_P_MILLI",
     "sampler_temperature_milli": "SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI",
     "sampler_seed": "SIM_QWEN3_SAMPLER_SEED",
-    "prefix_cache_required": "SIM_W5_REQUIRE_PREFIX_CACHE",
+    "prefix_cache_required": "SIM_W5_TEST_REQUIRE_PREFIX_CACHE",
 }
 ALLOWED_FIELDS = set(REQUIRED_FIELDS) | set(OPTIONAL_ENV_FIELDS)
 

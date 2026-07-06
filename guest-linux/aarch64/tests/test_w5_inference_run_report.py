@@ -445,7 +445,7 @@ class W5InferenceRunReportTest(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
-                env={**os.environ, "SIM_W5_REQUIRE_PREFIX_CACHE": "1"},
+                env={**os.environ, "SIM_W5_TEST_REQUIRE_PREFIX_CACHE": "1"},
             )
             mismatch = subprocess.run(
                 [
@@ -461,7 +461,7 @@ class W5InferenceRunReportTest(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
-                env={**os.environ, "SIM_W5_REQUIRE_PREFIX_CACHE": "1"},
+                env={**os.environ, "SIM_W5_TEST_REQUIRE_PREFIX_CACHE": "1"},
             )
 
         self.assertIn("prefix_cache_guard: status=pass required=true", result.stdout)

@@ -6409,10 +6409,10 @@ static int parse_qwen3_memory_decision_config(
                  "%s",
                  "llm-infer-serving-request");
     }
-    env_copy_or_empty("SIM_W5_MEMORY_DECISION_STORE",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_DECISION_STORE",
                       config->decision_store,
                       sizeof(config->decision_store));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_LOOKUP_MODE",
                       config->shortpath_lookup_mode,
                       sizeof(config->shortpath_lookup_mode));
     shortpath_lookup_mode_explicit = str_nonempty(config->shortpath_lookup_mode);
@@ -6422,7 +6422,7 @@ static int parse_qwen3_memory_decision_config(
                  "%s",
                  "staged_registry");
     }
-    env_copy_or_empty("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_BOUNDARY_LOOKUP_BACKEND",
                       config->boundary_lookup_backend,
                       sizeof(config->boundary_lookup_backend));
     if (!str_nonempty(config->boundary_lookup_backend)) {
@@ -6431,78 +6431,78 @@ static int parse_qwen3_memory_decision_config(
                  "%s",
                  "staged_registry");
     }
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_DECISION_ID",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID",
                       config->shortpath_decision_id,
                       sizeof(config->shortpath_decision_id));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_SUPPORT_ID",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_SUPPORT_ID",
                       config->shortpath_support_id,
                       sizeof(config->shortpath_support_id));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ACTION",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_ACTION",
                       config->shortpath_action,
                       sizeof(config->shortpath_action));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_ID",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_ID",
                       config->shortpath_artifact_id,
                       sizeof(config->shortpath_artifact_id));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_START",
                       config->shortpath_target_layer_start,
                       sizeof(config->shortpath_target_layer_start));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_END",
                       config->shortpath_target_layer_end,
                       sizeof(config->shortpath_target_layer_end));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_KIND",
                       config->shortpath_artifact_kind,
                       sizeof(config->shortpath_artifact_kind));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM",
                       config->shortpath_artifact_checksum,
                       sizeof(config->shortpath_artifact_checksum));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF",
                       config->shortpath_artifact_ref,
                       sizeof(config->shortpath_artifact_ref));
-    env_copy_or_empty("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF",
                       config->boundary_registry_ref,
                       sizeof(config->boundary_registry_ref));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_START",
                       config->shortpath_producer_layer_start,
                       sizeof(config->shortpath_producer_layer_start));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_END",
                       config->shortpath_producer_layer_end,
                       sizeof(config->shortpath_producer_layer_end));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_POSITION",
                       config->shortpath_producer_position,
                       sizeof(config->shortpath_producer_position));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_BYTES",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_BYTES",
                       shortpath_boundary_hidden_bytes_text,
                       sizeof(shortpath_boundary_hidden_bytes_text));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM",
                       shortpath_boundary_hidden_checksum_text,
                       sizeof(shortpath_boundary_hidden_checksum_text));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_PROOF_CHECKSUM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_PROOF_CHECKSUM",
                       config->shortpath_proof_checksum,
                       sizeof(config->shortpath_proof_checksum));
     config->shortpath_execute =
-        env_bool_is_one("SIM_W5_MEMORY_SHORTPATH_EXECUTE");
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM_COUNT",
+        env_bool_is_one("SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE");
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_STREAM_COUNT",
                       shortpath_stream_count_text,
                       sizeof(shortpath_stream_count_text));
-    env_copy_or_empty("SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_COUNT",
                       boundary_registry_count_text,
                       sizeof(boundary_registry_count_text));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM_PATH",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_STREAM_PATH",
                       shortpath_stream_path,
                       sizeof(shortpath_stream_path));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_KV_STREAM_COUNT",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_KV_STREAM_COUNT",
                       shortpath_kv_stream_count_text,
                       sizeof(shortpath_kv_stream_count_text));
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_KV_STREAM_PATH",
                       shortpath_kv_stream_path,
                       sizeof(shortpath_kv_stream_path));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT",
                       prefix_cache_kv_stream_count_text,
                       sizeof(prefix_cache_kv_stream_count_text));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH",
                       prefix_cache_kv_stream_path,
                       sizeof(prefix_cache_kv_stream_path));
-    env_copy_or_empty("SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH",
                       gsva_expected_epoch_text,
                       sizeof(gsva_expected_epoch_text));
     if (str_nonempty(shortpath_stream_count_text) &&
@@ -6556,7 +6556,7 @@ static int parse_qwen3_memory_decision_config(
     }
     {
         const char *shortpath_stream_env =
-            getenv("SIM_W5_MEMORY_SHORTPATH_STREAM");
+            getenv("SIM_W5_TEST_MEMORY_SHORTPATH_STREAM");
 
         if (shortpath_stream_env && shortpath_stream_env[0] != '\0') {
             size_t stream_len = strlen(shortpath_stream_env);
@@ -6571,7 +6571,7 @@ static int parse_qwen3_memory_decision_config(
             }
         }
     }
-    env_copy_or_empty("SIM_W5_MEMORY_SHORTPATH_STREAM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_SHORTPATH_STREAM",
                       config->shortpath_stream,
                       sizeof(config->shortpath_stream));
     if (qwen3_read_memory_boundary_registry_object(config) != 0) {
@@ -6621,46 +6621,46 @@ static int parse_qwen3_memory_decision_config(
                config->prefix_cache_kv_stream_raw_count,
                config->prefix_cache_gsva_rejected_count);
     }
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_PLAN_ID",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID",
                       config->prefetch_plan_id,
                       sizeof(config->prefetch_plan_id));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_SCOPE",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_SCOPE",
                       config->prefetch_scope,
                       sizeof(config->prefetch_scope));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_TARGET_STEP_INDEX",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_TARGET_STEP_INDEX",
                       config->prefetch_target_step_index,
                       sizeof(config->prefetch_target_step_index));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_CHECKSUM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_CHECKSUM",
                       config->prefetch_checksum,
                       sizeof(config->prefetch_checksum));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_ARTIFACT_IDS",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_IDS",
                       config->prefetch_artifact_ids,
                       sizeof(config->prefetch_artifact_ids));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS",
                       config->prefetch_artifact_checksums,
                       sizeof(config->prefetch_artifact_checksums));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_REFS",
                       config->prefetch_artifact_refs,
                       sizeof(config->prefetch_artifact_refs));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID",
                       config->prefix_cache_reuse_plan_id,
                       sizeof(config->prefix_cache_reuse_plan_id));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ACTION",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ACTION",
                       config->prefix_cache_action,
                       sizeof(config->prefix_cache_action));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_ID",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_ID",
                       config->prefix_cache_artifact_id,
                       sizeof(config->prefix_cache_artifact_id));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM",
                       config->prefix_cache_artifact_checksum,
                       sizeof(config->prefix_cache_artifact_checksum));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_REF",
                       config->prefix_cache_artifact_ref,
                       sizeof(config->prefix_cache_artifact_ref));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_MATCHED_TOKENS",
                       config->prefix_cache_matched_tokens,
                       sizeof(config->prefix_cache_matched_tokens));
-    env_copy_or_empty("SIM_W5_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM",
+    env_copy_or_empty("SIM_W5_TEST_MEMORY_PREFIX_CACHE_PROOF_CHECKSUM",
                       config->prefix_cache_proof_checksum,
                       sizeof(config->prefix_cache_proof_checksum));
     if (str_nonempty(config->prefix_cache_matched_tokens) &&
@@ -6707,7 +6707,7 @@ static int parse_qwen3_memory_decision_config(
     if (!str_nonempty(config->decision_store)) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 memory decision store missing "
-                "hint=set SIM_W5_MEMORY_DECISION_STORE\n");
+                "hint=set SIM_W5_TEST_MEMORY_DECISION_STORE\n");
         return -1;
     }
     if (has_shortpath &&
@@ -7031,7 +7031,7 @@ static int qwen3_memory_shortpath_hidden_input_ref(
                 target_end);
         return -1;
     }
-    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
+    if (parse_lingqu_object_ref_hex("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF",
                                     config->shortpath_artifact_ref,
                                     W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
                                     ref_out) != 0) {
@@ -7081,7 +7081,7 @@ static int qwen3_memory_prefix_cache_kv_ref(
     if (!entry) {
         return 0;
     }
-    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM",
+    if (parse_lingqu_object_ref_hex("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM",
                                     entry->artifact_ref,
                                     W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
                                     ref_out) != 0) {
@@ -7595,7 +7595,7 @@ static int qwen3_read_memory_boundary_registry_object(
     if (!config || !str_nonempty(config->boundary_registry_ref)) {
         return 0;
     }
-    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF",
+    if (parse_lingqu_object_ref_hex("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF",
                                     config->boundary_registry_ref,
                                     W4_QWEN3_OBMM_KIND_MEMORY_BOUNDARY_REGISTRY,
                                     &registry_ref) != 0) {
@@ -7662,7 +7662,7 @@ static int qwen3_read_memory_boundary_registry_object(
             qwen3_ref_read_u32_le(payload, (size_t)base + 40U);
         parsed.target_layer_end =
             qwen3_ref_read_u32_le(payload, (size_t)base + 44U);
-        if (parse_lingqu_object_ref_bytes("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF.entry",
+        if (parse_lingqu_object_ref_bytes("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF.entry",
                                           ref_bytes,
                                           W4_QWEN3_OBMM_KIND_TERMINAL_LOGITS,
                                           &logits_ref) != 0 ||
@@ -7846,7 +7846,7 @@ static int qwen3_memory_shortpath_terminal_logits_record(
         strcmp(config->shortpath_artifact_kind, "logits") != 0) {
         return 0;
     }
-    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF",
+    if (parse_lingqu_object_ref_hex("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF",
                                     config->shortpath_artifact_ref,
                                     W4_QWEN3_OBMM_KIND_TERMINAL_LOGITS,
                                     ref_out) != 0) {
@@ -8093,7 +8093,7 @@ static int qwen3_memory_shortpath_validate_live_boundary_match(
         bool valid = false;
 
         memset(&hidden_ref, 0, sizeof(hidden_ref));
-        if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_STREAM.hidden_ref",
+        if (parse_lingqu_object_ref_hex("SIM_W5_TEST_MEMORY_SHORTPATH_STREAM.hidden_ref",
                                         entry->boundary_hidden_ref,
                                         W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
                                         &hidden_ref) != 0) {
@@ -8286,8 +8286,8 @@ static int qwen3_memory_service_lookup_boundary(
         }
         load_state = qwen3_memory_shortpath_terminal_logits_record_from_ref(
             config->boundary_registry_loaded ?
-                "SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF" :
-                "SIM_W5_MEMORY_SHORTPATH_STREAM",
+                "SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF" :
+                "SIM_W5_TEST_MEMORY_SHORTPATH_STREAM",
             entry->artifact_ref,
             config->boundary_registry_loaded ? registry_source : "stream",
             "",
@@ -8660,7 +8660,7 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
         return 0;
     }
     memset(&kv_ref, 0, sizeof(kv_ref));
-    if (parse_lingqu_object_ref_hex("SIM_W5_MEMORY_SHORTPATH_KV_STREAM",
+    if (parse_lingqu_object_ref_hex("SIM_W5_TEST_MEMORY_SHORTPATH_KV_STREAM",
                                     entry->artifact_ref,
                                     W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE,
                                     &kv_ref) != 0) {
@@ -9788,7 +9788,7 @@ int main(int argc, char **argv)
         return 1;
     }
     parse_env_u64_csv_bounded(
-        "SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS",
+        "SIM_W5_TEST_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS",
         qwen3_prefix_cache_replay_suffix_tokens,
         sizeof(qwen3_prefix_cache_replay_suffix_tokens) /
             sizeof(qwen3_prefix_cache_replay_suffix_tokens[0]),

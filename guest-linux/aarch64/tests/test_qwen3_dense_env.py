@@ -327,12 +327,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('TEE_BIN="${TEE_BIN:-/usr/bin/tee}"', runner_text)
         self.assertIn("zstat -H file_stat +size", runner_text)
         self.assertIn('$shortpath_kv_stream" == /tmp/*', runner_text)
-        self.assertIn("SIM_W5_MAX_MEMORY_STORE_JSON_BYTES:-16777216", runner_text)
-        self.assertIn("SIM_W5_MAX_OBJECT_STORE_JSON_BYTES:-8388608", runner_text)
-        self.assertIn("SIM_W5_MAX_OBJECT_STORE_BIN_BYTES:-268435456", runner_text)
-        self.assertIn("SIM_W5_MAX_SHORTPATH_STREAM_BYTES:-1048576", runner_text)
-        self.assertIn("SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576", runner_text)
-        self.assertIn("SIM_W5_MAX_PREFIX_CACHE_KV_STREAM_BYTES:-1048576", runner_text)
+        self.assertIn("SIM_W5_TEST_MAX_MEMORY_STORE_JSON_BYTES:-16777216", runner_text)
+        self.assertIn("SIM_W5_TEST_MAX_OBJECT_STORE_JSON_BYTES:-8388608", runner_text)
+        self.assertIn("SIM_W5_TEST_MAX_OBJECT_STORE_BIN_BYTES:-268435456", runner_text)
+        self.assertIn("SIM_W5_TEST_MAX_SHORTPATH_STREAM_BYTES:-1048576", runner_text)
+        self.assertIn("SIM_W5_TEST_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576", runner_text)
+        self.assertIn("SIM_W5_TEST_MAX_PREFIX_CACHE_KV_STREAM_BYTES:-1048576", runner_text)
         self.assertIn("W5 artifact size too large", runner_text)
         self.assertIn("W5 artifact size ok", runner_text)
         self.assertIn("W5 shortpath scheduler no-dispatch per step", runner_text)
@@ -351,53 +351,53 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT", launcher_text)
         self.assertIn("SIM_W5_RUN_ID", runner_text)
         self.assertIn("SIM_W5_RUN_ID", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_ID", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_EXECUTE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_PLAN_ID", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_IDS", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", runner_text)
-        self.assertIn("SIM_W5_MEMORY_DECISION_STORE", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_ID", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_START", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_TARGET_LAYER_END", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_KIND", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_ARTIFACT_REF", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_START", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_LAYER_END", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_PRODUCER_POSITION", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_EXECUTE", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_PLAN_ID", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_IDS", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFETCH_ARTIFACT_REFS", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT", launcher_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_STORE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_LOOKUP_MODE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_LOOKUP_BACKEND", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_START", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_END", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_KIND", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_START", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_END", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_POSITION", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_IDS", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_REFS", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_REF", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_STORE", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_LOOKUP_BACKEND", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_START", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_END", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_KIND", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_CHECKSUM", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_START", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_END", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_POSITION", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_IDS", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_CHECKSUMS", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_REFS", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_CHECKSUM", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_REF", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_COUNT", launcher_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", launcher_text)
 
     def test_w5_artifact_size_validation_cli_uses_host_registry_for_guest_tmp_streams(self):
         runner = Path(__file__).resolve().parents[1] / "scripts" / "run_ub_eight_node_w4_guest.sh"
@@ -430,9 +430,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                     "SIM_W5_MEMORY_STORE": str(memory_store),
                     "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
                     "SIM_W5_MEMORY_REGISTRY_DIR": str(registry_dir),
-                    "SIM_W5_MEMORY_SHORTPATH_STREAM_PATH": "/tmp/w5_memory_shortpath_stream.txt",
-                    "SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH": "/tmp/w5_memory_shortpath_kv_stream.txt",
-                    "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH": "/tmp/w5_memory_prefix_cache_kv_stream.txt",
+                    "SIM_W5_TEST_MEMORY_SHORTPATH_STREAM_PATH": "/tmp/w5_memory_shortpath_stream.txt",
+                    "SIM_W5_TEST_MEMORY_SHORTPATH_KV_STREAM_PATH": "/tmp/w5_memory_shortpath_kv_stream.txt",
+                    "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH": "/tmp/w5_memory_prefix_cache_kv_stream.txt",
                     "TRACE_FILE": str(tmp_path / "trace.txt"),
                 }
             )
@@ -476,7 +476,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                     "SIM_W5_MEMORY_STORE": str(memory_store),
                     "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
                     "SIM_W5_MEMORY_REGISTRY_DIR": str(registry_dir),
-                    "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH": "/tmp/w5_memory_prefix_cache_kv_stream.txt",
+                    "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH": "/tmp/w5_memory_prefix_cache_kv_stream.txt",
                     "TRACE_FILE": str(tmp_path / "trace.txt"),
                 }
             )
@@ -518,8 +518,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                     "SIM_W5_MEMORY_STORE": str(memory_store),
                     "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
                     "SIM_W5_MEMORY_REGISTRY_DIR": str(registry_dir),
-                    "SIM_W5_MEMORY_SHORTPATH_KV_STREAM_PATH": "/tmp/w5_memory_shortpath_kv_stream.txt",
-                    "SIM_W5_MAX_SHORTPATH_KV_STREAM_BYTES": "1",
+                    "SIM_W5_TEST_MEMORY_SHORTPATH_KV_STREAM_PATH": "/tmp/w5_memory_shortpath_kv_stream.txt",
+                    "SIM_W5_TEST_MAX_SHORTPATH_KV_STREAM_BYTES": "1",
                     "TRACE_FILE": str(tmp_path / "trace.txt"),
                 }
             )
@@ -581,9 +581,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('SIM_W5_SERVING_REQUEST_ID="${SIM_W5_SERVING_REQUEST_ID:-}"', eight_node_runner)
         self.assertIn('export SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"', eight_node_runner)
         self.assertIn('SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"', eight_node_runner)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", guest_source)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", guest_source)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_REF", guest_source)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_MATCHED_TOKENS", guest_source)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS", guest_source)
         self.assertIn("qwen3_w5_memory_prefix_cache_suffix_replay_token", guest_source)
         self.assertNotIn("partial prefix-cache suffix unsupported", guest_source)
         self.assertIn("W4_QWEN3_OBMM_KIND_QWEN3_KV_STATE", guest_source)
@@ -697,7 +697,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("MEM_SERVICE_SCHEDULER_WORK_ITEM_NO_DISPATCH", db_service_header)
         self.assertIn("qwen3_memory_service_boundary_lookup_request", guest_source)
         self.assertIn("qwen3_memory_service_boundary_lookup_response", guest_source)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", guest_source)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF", guest_source)
         self.assertIn("qwen3_read_memory_boundary_registry_object", guest_source)
         self.assertIn("qwen3_w5_memory_boundary_registry_loaded", guest_source)
         self.assertIn("artifact_ref=%s", guest_source)
@@ -711,8 +711,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("source=range_worker target=boundary_controller", guest_source)
         self.assertIn("source=boundary_controller target=lingqu_memory_service", guest_source)
         self.assertIn("source=boundary_controller target=work_queue", guest_source)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_LOOKUP_MODE", guest_source)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_LOOKUP_BACKEND", guest_source)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_LOOKUP_MODE", guest_source)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_LOOKUP_BACKEND", guest_source)
         self.assertIn("boundary_lookup_backend", guest_source)
         self.assertIn("shortpath_lookup_mode", guest_source)
         self.assertIn("staged_registry", guest_source)
@@ -824,25 +824,25 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         build_initramfs_text = build_initramfs.read_text(encoding="utf-8")
 
         self.assertIn("SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode", runner_text)
-        self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
-        self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", runner_text)
         self.assertNotIn("DEMO_WAIT_SECS", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", runner_text)
-        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", runner_text)
-        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE:-0", runner_text)
-        self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", runner_text)
-        self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG", runner_text)
-        self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", runner_text)
-        self.assertIn("SIM_W5_VALIDATE_ONLY", runner_text)
-        self.assertIn("SIM_W5_MEMORY_DECISION_STORE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", runner_text)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_REF", legacy_runner_text)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_REGISTRY_COUNT", legacy_runner_text)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID", runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_DECISION_IDS", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-1", runner_text)
+        self.assertIn("SIM_W5_TEST_REQUIRE_PREFIX_CACHE", runner_text)
+        self.assertIn("SIM_W5_TEST_REQUIRE_PREFIX_CACHE:-0", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_OBSERVATION_STORE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_OUT_DIR", runner_text)
+        self.assertIn("SIM_W5_TEST_VALIDATE_ONLY", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_STORE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF", legacy_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_COUNT", legacy_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID", runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_IDS", runner_text)
         self.assertIn("SIM_W5_MEMORY_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_OBJECT_STORE", runner_text)
         self.assertIn("SIM_W5_MEMORY_ENGRAM_STATE", runner_text)
@@ -903,16 +903,16 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertNotIn("DEMO_WAIT_SECS", config_runner_text)
         self.assertIn("W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH", config_runner_text)
         self.assertIn("W5 cluster config weights path is missing", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_MEMORY_DECISION_STORE", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_TEST_MEMORY_DECISION_STORE", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
         self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP:-1", config_runner_text)
-        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-1", config_runner_text)
+        self.assertIn("SIM_W5_TEST_REQUIRE_PREFIX_CACHE", config_runner_text)
         self.assertIn("SIM_W5_SERVING_REQUESTS_FILE", config_runner_text)
         self.assertIn("SIM_W5_SERVING_QUEUE", config_runner_text)
         self.assertIn("SIM_W5_SERVING_INGRESS", config_runner_text)
@@ -920,8 +920,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("w5_serving_entry.py", config_runner_text)
         self.assertIn("W5_SERVING_CONTROL_APP_SRC", build_initramfs_text)
         self.assertIn("linqu_w5_serving_control", build_initramfs_text)
-        self.assertIn("SIM_W5_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
-        self.assertIn("SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"', stable_w5_runner_text)
         self.assertIn("--reuse-runs N", realistic_matrix_runner_text)
         self.assertIn("--no-memory-reuse", realistic_matrix_runner_text)
@@ -937,8 +937,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("multi-token suffixes", serving_matrix_runner_text)
         self.assertIn("expect_fail_closed=true", serving_matrix_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
-        self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", serving_matrix_runner_text)
-        self.assertIn("SIM_W5_MEMORY_SHORTPATH_EXECUTE", serving_matrix_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_OUT_DIR", serving_matrix_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE", serving_matrix_runner_text)
         self.assertIn('write_case_config shared-prefix-seed "$SHARED_PREFIX_TOKEN_IDS"', serving_matrix_runner_text)
         self.assertIn('write_case_config request-b "$prompt_b" "$OUT_DIR" "$seed_run_id" 0 0', serving_matrix_runner_text)
         self.assertIn('include_boundary_selector="${6:-1}"', serving_matrix_runner_text)
@@ -963,24 +963,24 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("W5 serving requests completed", legacy_runner_text)
         self.assertIn("w5_serving_object_service_store.${RUN_ID_BASE}.json", legacy_runner_text)
         self.assertIn('-z "$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"', legacy_runner_text)
-        self.assertIn('export SIM_W5_REQUIRE_PREFIX_CACHE="$SIM_W5_REQUIRE_PREFIX_CACHE"', legacy_runner_text)
+        self.assertIn('export SIM_W5_TEST_REQUIRE_PREFIX_CACHE="$SIM_W5_TEST_REQUIRE_PREFIX_CACHE"', legacy_runner_text)
         self.assertIn("serving_entry request_start", legacy_runner_text)
         self.assertIn("SIM_W5_SERVING_DECODE_STEPS_TOTAL", legacy_runner_text)
         self.assertIn("kvcache/qwen3[-.0-9a-z]*(/scope/", legacy_runner_text)
-        self.assertIn("SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_OBSERVATION_STORE", config_runner_text)
-        self.assertIn("SIM_W5_VALIDATE_ONLY", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_REUSE_OUT_DIR", config_runner_text)
-        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_OBSERVATION_STORE", config_runner_text)
+        self.assertIn("SIM_W5_TEST_VALIDATE_ONLY", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_OUT_DIR", config_runner_text)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE", config_runner_text)
         self.assertIn("--post-run-prune", config_runner_text)
         self.assertIn("--post-run-health", config_runner_text)
-        self.assertIn("SIM_W5_POST_RUN_PRUNE", config_runner_text)
-        self.assertIn("SIM_W5_POST_RUN_HEALTH", config_runner_text)
-        self.assertIn("SIM_W5_ARTIFACT_KEEP_LATEST", config_runner_text)
+        self.assertIn("SIM_W5_TEST_POST_RUN_PRUNE", config_runner_text)
+        self.assertIn("SIM_W5_TEST_POST_RUN_HEALTH", config_runner_text)
+        self.assertIn("SIM_W5_TEST_ARTIFACT_KEEP_LATEST", config_runner_text)
         self.assertIn("w5_artifact_prune.py", config_runner_text)
         self.assertIn("w5_cluster_health_check.py", config_runner_text)
-        self.assertIn("unset SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG", config_runner_text)
+        self.assertIn("unset SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG", config_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
         self.assertIn('SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0', legacy_runner_text)
@@ -1003,14 +1003,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
-                        "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
-                        "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
-                        "SIM_W5_MEMORY_POST_RUN_PROMOTE=1",
-                        "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
-                        "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
-                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
-                        "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE=0",
+                        "SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1",
+                        "SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_TEST_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
+                        "SIM_W5_TEST_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                        "SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",
                         "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
@@ -1043,27 +1043,27 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_SERVING_INGRESS=cluster",
                 "SIM_W5_SERVING_SUBMIT_REQUESTS_FILE=",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
-                "SIM_W5_MEMORY_SHORTPATH_EXECUTE=0",
-                "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
-                "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1",
-                "SIM_W5_MEMORY_GSVA_KV=1",
-                "SIM_W5_MEMORY_POST_RUN_PROMOTE=1",
-                "SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
-                "SIM_W5_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
-                "SIM_W5_VALIDATE_ONLY=",
-                "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=",
-                "SIM_W5_MEMORY_REUSE_DISABLE=0",
-                "SIM_W5_MEMORY_REUSE_OUT_DIR=",
-                "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
-                "SIM_W5_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
-                "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=",
-                "SIM_W5_POST_RUN_PRUNE=",
-                "SIM_W5_POST_RUN_HEALTH=",
-                "SIM_W5_ARTIFACT_KEEP_LATEST=3",
-                "SIM_W5_HEALTH_MAX_PRUNE_CANDIDATES=0",
-                "SIM_W5_HEALTH_MAX_PRUNE_BYTES=0",
-                "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
-                "SIM_W5_REQUIRE_PREFIX_CACHE=0",
+                "SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE=0",
+                "SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                "SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1",
+                "SIM_W5_TEST_MEMORY_GSVA_KV=1",
+                "SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1",
+                "SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP=1",
+                "SIM_W5_TEST_MEMORY_OBSERVATION_STORE=/tmp/w5-memory-store.json",
+                "SIM_W5_TEST_VALIDATE_ONLY=",
+                "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=",
+                "SIM_W5_TEST_MEMORY_REUSE_DISABLE=0",
+                "SIM_W5_TEST_MEMORY_REUSE_OUT_DIR=",
+                "SIM_W5_TEST_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                "SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE=/tmp/w5-object-store.json",
+                "SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=",
+                "SIM_W5_TEST_POST_RUN_PRUNE=",
+                "SIM_W5_TEST_POST_RUN_HEALTH=",
+                "SIM_W5_TEST_ARTIFACT_KEEP_LATEST=3",
+                "SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES=0",
+                "SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES=0",
+                "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                "SIM_W5_TEST_REQUIRE_PREFIX_CACHE=0",
                 "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",
                 "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
                 "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
@@ -1299,8 +1299,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=4",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-0.6b",
-                        "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
-                        "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1",
+                        "SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1",
                     ]
                 )
                 + "\n",
@@ -1356,8 +1356,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=4",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-0.6b",
-                        "SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
-                        "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1",
+                        "SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=1",
+                        "SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1",
                     ]
                 )
                 + "\n",
@@ -1454,9 +1454,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("SIM_W5_POST_RUN_PRUNE=1", result.stdout)
-        self.assertIn("SIM_W5_POST_RUN_HEALTH=1", result.stdout)
-        self.assertIn("SIM_W5_ARTIFACT_KEEP_LATEST=4", result.stdout)
+        self.assertIn("SIM_W5_TEST_POST_RUN_PRUNE=1", result.stdout)
+        self.assertIn("SIM_W5_TEST_POST_RUN_HEALTH=1", result.stdout)
+        self.assertIn("SIM_W5_TEST_ARTIFACT_KEEP_LATEST=4", result.stdout)
 
     def test_w5_cluster_config_runner_rejects_vendor_context_guard_without_fused_simt(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1473,7 +1473,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                     ]
                 )
                 + "\n",
@@ -1488,7 +1488,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn(
-            "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires "
+            "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context requires "
             "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
             result.stderr,
         )
@@ -1512,7 +1512,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         f"SIM_ENGRAM_SIMT_ARTIFACT_DIR={artifact_dir}",
                     ]
@@ -1529,7 +1529,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn(
-            "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context requires "
+            "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context requires "
             "SIM_QWEN3_GUEST_ENGRAM=1",
             result.stderr,
         )
@@ -1549,7 +1549,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                     ]
                 )
@@ -1587,7 +1587,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         f"SIM_ENGRAM_SIMT_ARTIFACT_DIR={artifact_dir}",
                     ]
@@ -1627,7 +1627,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         f"SIM_ENGRAM_SIMT_ARTIFACT_DIR={artifact_dir}",
                     ]
@@ -1662,7 +1662,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
                         "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
@@ -1705,7 +1705,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_CONTEXT=fused_simt_vendor_context",
+                        "SIM_W5_TEST_REQUIRE_CONTEXT=fused_simt_vendor_context",
                         "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                         "SIM_ENGRAM_SIMT_SELECTED_SYMBOL=engram_context_dim8_b1",
                         "SIM_ENGRAM_SIMT_SELECTED_CASE=dim8_batch1",
@@ -1782,8 +1782,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -1796,9 +1796,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{new_run}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{new_run}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={new_run}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{new_run}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{new_run}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={new_run}", result.stdout)
 
     def test_w5_cluster_config_runner_prefers_runtime_boundary_store_for_latest_reuse(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1822,8 +1822,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -1836,9 +1836,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 
     def test_w5_cluster_config_runner_skips_latest_reuse_run_with_incomplete_boundary_coverage(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1867,8 +1867,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -1881,8 +1881,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{complete_run}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={complete_run}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{complete_run}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={complete_run}", result.stdout)
 
     def test_w5_cluster_config_runner_skips_latest_boundary_only_reuse_run(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1911,8 +1911,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -1925,8 +1925,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_object_store.{executable_run}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={executable_run}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_object_store.{executable_run}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={executable_run}", result.stdout)
 
     def test_w5_cluster_config_runner_skips_latest_shortpath_only_reuse_run(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1957,8 +1957,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -1971,8 +1971,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{complete_run}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={complete_run}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{complete_run}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={complete_run}", result.stdout)
 
     def test_w5_cluster_config_runner_auto_reuse_miss_leaves_reuse_unset(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1991,7 +1991,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2004,9 +2004,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=", result.stdout)
-        self.assertIn("SIM_W5_MEMORY_DECISION_STORE=", result.stdout)
-        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE=", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_STORE=", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE=", result.stdout)
         self.assertEqual(result.stderr, "")
 
     def test_w5_cluster_config_runner_require_prefix_cache_rejects_auto_reuse_miss(self):
@@ -2026,8 +2026,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
-                        "SIM_W5_REQUIRE_PREFIX_CACHE=1",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_REQUIRE_PREFIX_CACHE=1",
                     ]
                 )
                 + "\n",
@@ -2041,7 +2041,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn(
-            "SIM_W5_REQUIRE_PREFIX_CACHE requires a reusable Memory Service decision store",
+            "SIM_W5_TEST_REQUIRE_PREFIX_CACHE requires a reusable Memory Service decision store",
             result.stderr,
         )
 
@@ -2066,8 +2066,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
-                        "SIM_W5_REQUIRE_PREFIX_CACHE=1",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        "SIM_W5_TEST_REQUIRE_PREFIX_CACHE=1",
                     ]
                 )
                 + "\n",
@@ -2081,14 +2081,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertIn(
-            f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json",
+            f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json",
             result.stdout,
         )
         self.assertIn(
-            f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json",
+            f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json",
             result.stdout,
         )
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 
     def test_w5_cluster_config_runner_auto_reuse_resolves_latest_memory_store(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -2112,7 +2112,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2125,9 +2125,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={out_dir}/w5_object_service_store.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 
     def test_w5_cluster_config_runner_resolves_named_memory_reuse_run(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -2150,8 +2150,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG={run_id}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG={run_id}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2164,8 +2164,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn(f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
-        self.assertIn(f"SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json", result.stdout)
+        self.assertIn(f"SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID={run_id}", result.stdout)
 
     def test_w5_cluster_config_runner_rejects_named_reuse_run_without_completed_summary(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -2187,8 +2187,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG={run_id}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG={run_id}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2224,8 +2224,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG={run_id}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG={run_id}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2252,8 +2252,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
-                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG=latest",
+                        "SIM_W5_TEST_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
                     ]
                 )
                 + "\n",
@@ -2266,7 +2266,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG cannot be combined", result.stderr)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG cannot be combined", result.stderr)
 
     def test_w5_cluster_config_runner_rejects_legacy_memory_reuse_run_id_name(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -2280,7 +2280,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3-14b",
-                        "SIM_W5_MEMORY_REUSE_RUN_ID=latest",
+                        "SIM_W5_TEST_MEMORY_REUSE_RUN_ID=latest",
                     ]
                 )
                 + "\n",
@@ -2294,7 +2294,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn(
-            "SIM_W5_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_MEMORY_REUSE_RUN_ID_FOR_DEBUG",
+            "SIM_W5_TEST_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG",
             result.stderr,
         )
 
@@ -2410,9 +2410,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_DECISION_STORE={decision_store}",
-                        f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={object_store}",
-                        "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=bad-run",
+                        f"SIM_W5_TEST_MEMORY_DECISION_STORE={decision_store}",
+                        f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={object_store}",
+                        "SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=bad-run",
                     ]
                 )
                 + "\n",
@@ -2445,9 +2445,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_DECISION_STORE={decision_store}",
-                        f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={object_store}",
-                        "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=missing-run",
+                        f"SIM_W5_TEST_MEMORY_DECISION_STORE={decision_store}",
+                        f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={object_store}",
+                        "SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=missing-run",
                     ]
                 )
                 + "\n",
@@ -2480,9 +2480,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_DECISION_STORE={decision_store}",
-                        f"SIM_W5_MEMORY_DECISION_OBJECT_STORE={object_store}",
-                        "SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=missing-run",
+                        f"SIM_W5_TEST_MEMORY_DECISION_STORE={decision_store}",
+                        f"SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE={object_store}",
+                        "SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=missing-run",
                     ]
                 )
                 + "\n",
@@ -2537,8 +2537,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_REQUIRE_PREFIX_CACHE=1",
-                        "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=0",
+                        "SIM_W5_TEST_REQUIRE_PREFIX_CACHE=1",
+                        "SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=0",
                     ]
                 )
                 + "\n",
@@ -2551,7 +2551,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE requires SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=1", result.stderr)
+        self.assertIn("SIM_W5_TEST_REQUIRE_PREFIX_CACHE requires SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1", result.stderr)
 
     def test_w5_cluster_config_runner_require_prefix_cache_cli_sets_env(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -2574,7 +2574,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2587,9 +2587,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("SIM_W5_REQUIRE_PREFIX_CACHE=1", result.stdout)
+        self.assertIn("SIM_W5_TEST_REQUIRE_PREFIX_CACHE=1", result.stdout)
         self.assertIn(
-            f"SIM_W5_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json",
+            f"SIM_W5_TEST_MEMORY_DECISION_STORE={out_dir}/w5_memory_runtime_boundary_lookup.{run_id}.json",
             result.stdout,
         )
 
@@ -2614,7 +2614,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        f"SIM_W5_MEMORY_REUSE_OUT_DIR={out_dir}",
+                        f"SIM_W5_TEST_MEMORY_REUSE_OUT_DIR={out_dir}",
                     ]
                 )
                 + "\n",
@@ -2627,10 +2627,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 text=True,
             )
 
-        self.assertIn("SIM_W5_MEMORY_REUSE_DISABLE=1", result.stdout)
-        self.assertIn("SIM_W5_MEMORY_DECISION_STORE=", result.stdout)
-        self.assertIn("SIM_W5_MEMORY_DECISION_OBJECT_STORE=", result.stdout)
-        self.assertIn("SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_REUSE_DISABLE=1", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_STORE=", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE=", result.stdout)
+        self.assertIn("SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=", result.stdout)
 
     def test_w5_cluster_config_runner_validate_only_rejects_decision_store_without_selector(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -2647,8 +2647,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                         "SIM_UAPI_W5_PROFILE=qwen3_14b_engram_decode",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=2",
                         f"SIM_QWEN3_DENSE_WEIGHTS_PATH={weights_path}",
-                        "SIM_W5_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
-                        "SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP=0",
+                        "SIM_W5_TEST_MEMORY_DECISION_STORE=/tmp/w5-decision-store.json",
+                        "SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=0",
                     ]
                 )
                 + "\n",
@@ -2661,7 +2661,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("SIM_W5_MEMORY_DECISION_STORE requires a boundary observation/decision selector", result.stderr)
+        self.assertIn("SIM_W5_TEST_MEMORY_DECISION_STORE requires a boundary observation/decision selector", result.stderr)
 
     def test_w5_cluster_config_runner_validate_only_rejects_invalid_steps_override(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"

@@ -216,19 +216,19 @@ write_case_config() {
     printf '\n'
     printf 'SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=%s\n' "$prompt_tokens"
     printf 'SIM_W5_SERVING_REQUEST_ID=%s\n' "$serving_request_id"
-    printf 'SIM_W5_MEMORY_REUSE_OUT_DIR=%s\n' "$reuse_out_dir"
+    printf 'SIM_W5_TEST_MEMORY_REUSE_OUT_DIR=%s\n' "$reuse_out_dir"
     if [[ -n "$shortpath_execute" ]]; then
-      printf 'SIM_W5_MEMORY_SHORTPATH_EXECUTE=%s\n' "$shortpath_execute"
+      printf 'SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE=%s\n' "$shortpath_execute"
     fi
     if [[ -n "$decision_run_id" ]]; then
-      printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=0\n'
-      printf 'SIM_W5_MEMORY_DECISION_STORE=%s\n' "$OUT_DIR/w5_memory_runtime_boundary_lookup.$decision_run_id.json"
-      printf 'SIM_W5_MEMORY_DECISION_OBJECT_STORE=%s\n' "$OUT_DIR/w5_object_service_store.$decision_run_id.json"
+      printf 'SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=0\n'
+      printf 'SIM_W5_TEST_MEMORY_DECISION_STORE=%s\n' "$OUT_DIR/w5_memory_runtime_boundary_lookup.$decision_run_id.json"
+      printf 'SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE=%s\n' "$OUT_DIR/w5_object_service_store.$decision_run_id.json"
       if [[ "$include_boundary_selector" != "0" ]]; then
-        printf 'SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=%s\n' "$decision_run_id"
+        printf 'SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID=%s\n' "$decision_run_id"
       fi
     elif [[ "$label" != "shared-prefix-seed" ]]; then
-      printf 'SIM_W5_MEMORY_POST_RUN_PROMOTE=0\n'
+      printf 'SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=0\n'
     fi
   } >> "$case_config"
   echo "$case_config"
@@ -283,7 +283,7 @@ run_expected_fail_closed() {
     echo "[w5_prefix_cache_serving_matrix] FAIL: $label unexpectedly succeeded" >&2
     return 1
   fi
-  if ! grep -q "SIM_W5_REQUIRE_PREFIX_CACHE requires" "$log_path"; then
+  if ! grep -q "SIM_W5_TEST_REQUIRE_PREFIX_CACHE requires" "$log_path"; then
     echo "[w5_prefix_cache_serving_matrix] FAIL: $label did not fail closed with prefix-cache guard" >&2
     tail -n 40 "$log_path" >&2
     return 1

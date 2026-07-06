@@ -1857,8 +1857,8 @@ pub const QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN: u16 = 26;
 pub const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR";
 pub const SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT: &str = "SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT";
 const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
-const SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM: &str = "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM";
-const SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH: &str = "SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH";
+const SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM: &str = "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM";
+const SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH: &str = "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH";
 pub const SIM_QWEN3_GUEST_ENGRAM_STATE_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_STATE_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF: &str =
@@ -3200,7 +3200,7 @@ fn qwen3_engram_context_payload_get(
 
 fn qwen3_w5_prefix_cache_kv_stream_refs() -> Vec<String> {
     let mut refs = Vec::new();
-    if let Ok(inline) = std::env::var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM) {
+    if let Ok(inline) = std::env::var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM) {
         refs.extend(
             inline
                 .lines()
@@ -3209,7 +3209,7 @@ fn qwen3_w5_prefix_cache_kv_stream_refs() -> Vec<String> {
                 .map(str::to_string),
         );
     }
-    if let Ok(path) = std::env::var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH) {
+    if let Ok(path) = std::env::var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH) {
         let path = path.trim();
         if !path.is_empty() {
             if let Ok(contents) = fs::read_to_string(path) {
@@ -3241,6 +3241,8 @@ fn qwen3_runtime_object_payload_view(
     object_ref: LingquObmmObjectRefWire,
     surface: &LocalGuestUapiSurface,
 ) -> Result<Qwen3ObjectBackedOperandView, String> {
+    let mut snapshot_index_error: Option<String> = None;
+
     if let Some(view) = surface.qwen3_runtime_object_payload_view(object_ref)? {
         return Ok(view);
     }
@@ -3259,6 +3261,9 @@ fn qwen3_runtime_object_payload_view(
                 if qwen3_w5_prefix_cache_kv_stream_contains_ref(&object_ref) {
                     return Err(err);
                 }
+                if snapshot_index_missing {
+                    snapshot_index_error = Some(err.clone());
+                }
                 if snapshot_ref_missing {
                     if let Ok(view) =
                         qwen3_object_service_payload_index_view_from_path_with_version_policy(
@@ -3275,6 +3280,9 @@ fn qwen3_runtime_object_payload_view(
     }
     if let Some(registry_dir) = qwen3_object_registry_explicit_dir() {
         return qwen3_object_registry_view_from_dir(&registry_dir, object_ref);
+    }
+    if let Some(err) = snapshot_index_error {
+        return Err(err);
     }
     Err(format!(
         "qwen3_runtime_object_payload_view_unresolved:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:hint=register_live_obmm_payload_or_set_explicit_object_service_snapshot_or_registry",
@@ -4498,7 +4506,7 @@ fn qwen3_hot_ref_from_obmm_metadata(
 }
 
 fn qwen3_w5_gsva_kv_enabled() -> bool {
-    std::env::var("SIM_W5_MEMORY_GSVA_KV").as_deref() == Ok("1")
+    std::env::var("SIM_W5_TEST_MEMORY_GSVA_KV").as_deref() == Ok("1")
 }
 
 fn qwen3_w5_gsva_kv_segment_ref(
@@ -23965,7 +23973,7 @@ mod tests {
         SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
         SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
         SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-        SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM, SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH,
+        SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM, SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH,
         W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
         W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
@@ -31707,8 +31715,8 @@ mod tests {
                     std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
-                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM);
-                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
+                std::env::remove_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM);
+                std::env::remove_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
 
                 let empty_snapshot = LingquObjectServiceSnapshot {
                     profile: LingquObjectServiceProfile::default(),
@@ -31765,8 +31773,8 @@ mod tests {
                 let _ = std::fs::remove_file(&stream_path);
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, &registry_dir);
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
-                std::env::set_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH, &stream_path);
-                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM);
+                std::env::set_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH, &stream_path);
+                std::env::remove_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM);
 
                 let empty_snapshot = LingquObjectServiceSnapshot {
                     profile: LingquObjectServiceProfile::default(),
@@ -31810,7 +31818,7 @@ mod tests {
                 let _ = std::fs::remove_file(&stream_path);
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
-                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
+                std::env::remove_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
             },
         );
     }
@@ -31828,8 +31836,8 @@ mod tests {
                     std::fs::remove_file(qwen3_object_service_payload_index_path(&snapshot_path));
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
-                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM);
-                std::env::remove_var(SIM_W5_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
+                std::env::remove_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM);
+                std::env::remove_var(SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH);
 
                 let key = "hidden/qwen3-0-6b/node2/range-runtime-input/decode-step0";
                 let payload = vec![0x7bu8; 256];
