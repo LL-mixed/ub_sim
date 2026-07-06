@@ -3093,6 +3093,112 @@ int main(int argc, char **argv)
         finally:
             self._stop_server(proc)
 
+    def test_ub_ssd_gsva_backend_data_plane_fails_closed_without_device(self):
+        storage_root = self.root / "ub-ssd-dataplane-root"
+        config_path = self.root / "mem_service.ub_ssd_dataplane.conf"
+        store_path = self.root / "ub_ssd_dataplane.store"
+        missing_device = self.root / "missing_ub_ssd0"
+        descriptor_args = [
+            "--backend-device-path",
+            str(missing_device),
+            "--backend-request-id",
+            "9001",
+            "--backend-source-cna",
+            "11",
+            "--backend-device-cna",
+            "12",
+            "--backend-buffer-gsva-base",
+            "0x700000001000",
+            "--backend-buffer-bytes",
+            "4096",
+            "--backend-buffer-token-id",
+            "44",
+            "--backend-buffer-token-value",
+            "44",
+            "--backend-buffer-key-version",
+            "1",
+            "--backend-buffer-key-segment-id",
+            "0xabc",
+            "--backend-buffer-key-home-va",
+            "0x700000000000",
+            "--backend-buffer-key-size",
+            "0x200000",
+            "--backend-buffer-key-p-tag",
+            "0x22",
+            "--backend-buffer-key-cache-policy",
+            "4",
+            "--backend-buffer-key-epoch",
+            "1",
+        ]
+
+        config_path.write_text(
+            f"listen=unix:{self.socket}\n"
+            f"store={store_path}\n"
+            f"storage_root={storage_root}\n"
+            "backend=snapshot+journal\n"
+            "auth_mode=none\n"
+            "metrics_mode=text-kv\n"
+            "adapter_enablement=core\n"
+        )
+        proc = self._start_server(config_path=config_path)
+        try:
+            write = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-dataplane-write",
+                "--owner",
+                "2",
+                "--backend",
+                "ub-ssd-gsva-v1",
+                "--backend-write",
+                "1",
+                "--backend-block-hi",
+                "0xaa55",
+                "--backend-block-lo",
+                "0xbb66",
+                *descriptor_args,
+            )
+            self.assertNotEqual(write.returncode, 0, write.stderr + write.stdout)
+            self.assertIn("status=unsupported", write.stdout)
+
+            put_ref = self._run_client(
+                "put-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-dataplane-read",
+                "--backend",
+                "ub-ssd-gsva-v1",
+                "--backend-block-hi",
+                "0xaa55",
+                "--backend-block-lo",
+                "0xbb67",
+                "--backend-block-version",
+                "1",
+                "--backend-block-bytes",
+                "4096",
+                "--backend-block-checksum",
+                "123456",
+            )
+            self.assertEqual(put_ref.returncode, 0, put_ref.stderr + put_ref.stdout)
+
+            read = self._run_client(
+                "get-object",
+                "--connect",
+                f"unix:{self.socket}",
+                "--key",
+                "ub-ssd-dataplane-read",
+                "--backend-read",
+                "1",
+                *descriptor_args,
+            )
+            self.assertNotEqual(read.returncode, 0, read.stderr + read.stdout)
+            self.assertIn("status=unsupported", read.stdout)
+        finally:
+            self._stop_server(proc)
+
     def test_storage_root_payload_inline_block_validates_and_fail_closes(self):
         storage_root = self.root / "payload-root"
         config_path = self.root / "mem_service.payload.conf"

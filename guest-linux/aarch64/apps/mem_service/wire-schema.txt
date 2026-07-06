@@ -2,7 +2,7 @@ mem_service_wire_schema_manifest_version=1
 wire_schema_version=1
 wire_payload_format=text-kv
 operation_count=23
-field_count=123
+field_count=164
 oneof_count=1
 oneof_field_count=2
 operation=health:1 schema_version=1 payload_format=text-kv fields=0 oneofs=0
@@ -23,7 +23,7 @@ field=restore_snapshot_page.complete type=u32 required=0
 operation=audit_log:10 schema_version=1 payload_format=text-kv fields=2 oneofs=0
 field=audit_log.start_sequence type=u64 required=0
 field=audit_log.max_events type=u64 required=0
-operation=put_object:16 schema_version=1 payload_format=text-kv fields=20 oneofs=0
+operation=put_object:16 schema_version=1 payload_format=text-kv fields=40 oneofs=0
 field=put_object.key type=string required=1
 field=put_object.owner type=u32 required=0
 field=put_object.payload_kind type=u32 required=0
@@ -32,20 +32,61 @@ field=put_object.backing_len type=u64 required=0
 field=put_object.checksum type=u64 required=0
 field=put_object.version type=u64 required=0
 field=put_object.backend type=string required=0
+field=put_object.backend_write type=u32 required=0
+field=put_object.backend_device_path type=string required=0
+field=put_object.backend_request_id type=u64 required=0
+field=put_object.backend_source_cna type=u32 required=0
 field=put_object.backend_kind type=u32 required=0
 field=put_object.backend_node type=u32 required=0
 field=put_object.backend_device_cna type=u32 required=0
+field=put_object.backend_flags type=u32 required=0
 field=put_object.backend_block_hi type=u64 required=0
 field=put_object.backend_block_lo type=u64 required=0
 field=put_object.backend_block_version type=u64 required=0
 field=put_object.backend_block_offset type=u64 required=0
 field=put_object.backend_block_bytes type=u64 required=0
 field=put_object.backend_block_checksum type=u64 required=0
+field=put_object.backend_buffer_gsva_base type=u64 required=0
+field=put_object.backend_buffer_bytes type=u64 required=0
+field=put_object.backend_buffer_token_id type=u32 required=0
+field=put_object.backend_buffer_token_value type=u32 required=0
+field=put_object.backend_buffer_key_version type=u32 required=0
+field=put_object.backend_buffer_key_flags type=u32 required=0
+field=put_object.backend_buffer_key_segment_id type=u64 required=0
+field=put_object.backend_buffer_key_home_va type=u64 required=0
+field=put_object.backend_buffer_key_size type=u64 required=0
+field=put_object.backend_buffer_key_vmid type=u64 required=0
+field=put_object.backend_buffer_key_asid type=u64 required=0
+field=put_object.backend_buffer_key_pte_offset type=u64 required=0
+field=put_object.backend_buffer_key_p_tag type=u32 required=0
+field=put_object.backend_buffer_key_cache_policy type=u32 required=0
+field=put_object.backend_buffer_key_epoch type=u64 required=0
 field=put_object.idempotency_key type=string required=0
 field=put_object.payload_inline type=string required=0
 field=put_object.payload_path type=string required=0
-operation=get_object:17 schema_version=1 payload_format=text-kv fields=1 oneofs=0
+operation=get_object:17 schema_version=1 payload_format=text-kv fields=22 oneofs=0
 field=get_object.key type=string required=1
+field=get_object.backend_read type=u32 required=0
+field=get_object.backend_device_path type=string required=0
+field=get_object.backend_request_id type=u64 required=0
+field=get_object.backend_source_cna type=u32 required=0
+field=get_object.backend_device_cna type=u32 required=0
+field=get_object.backend_flags type=u32 required=0
+field=get_object.backend_buffer_gsva_base type=u64 required=0
+field=get_object.backend_buffer_bytes type=u64 required=0
+field=get_object.backend_buffer_token_id type=u32 required=0
+field=get_object.backend_buffer_token_value type=u32 required=0
+field=get_object.backend_buffer_key_version type=u32 required=0
+field=get_object.backend_buffer_key_flags type=u32 required=0
+field=get_object.backend_buffer_key_segment_id type=u64 required=0
+field=get_object.backend_buffer_key_home_va type=u64 required=0
+field=get_object.backend_buffer_key_size type=u64 required=0
+field=get_object.backend_buffer_key_vmid type=u64 required=0
+field=get_object.backend_buffer_key_asid type=u64 required=0
+field=get_object.backend_buffer_key_pte_offset type=u64 required=0
+field=get_object.backend_buffer_key_p_tag type=u32 required=0
+field=get_object.backend_buffer_key_cache_policy type=u32 required=0
+field=get_object.backend_buffer_key_epoch type=u64 required=0
 operation=inspect_object:18 schema_version=1 payload_format=text-kv fields=1 oneofs=0
 field=inspect_object.key type=string required=1
 operation=register_prefix_entry:32 schema_version=1 payload_format=text-kv fields=10 oneofs=0

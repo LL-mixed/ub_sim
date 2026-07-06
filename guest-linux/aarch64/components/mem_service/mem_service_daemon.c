@@ -1,6 +1,7 @@
 #include "mem_service_daemon.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -13,6 +14,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -46,6 +48,16 @@
 #define MEM_SERVICE_TRANSPORT_BLOCK_PAYLOAD "payload.block"
 #define MEM_SERVICE_TRANSPORT_BLOCK_MANIFEST "manifest.txt"
 #define MEM_SERVICE_SNAPSHOT_PAGE_HEADER_RESERVE 512U
+#define MEM_SERVICE_UB_SSD_DEFAULT_DEVICE "/dev/ub_ssd0"
+#define MEM_SERVICE_UB_SSD_IOC_MAGIC 'S'
+#define MEM_SERVICE_UB_SSD_OP_BLOCK_WRITE 1U
+#define MEM_SERVICE_UB_SSD_OP_BLOCK_READ 2U
+#define MEM_SERVICE_UB_SSD_OK 0
+#define MEM_SERVICE_UB_SSD_ERR_STALE_EPOCH (-6)
+#define MEM_SERVICE_UB_SSD_ERR_SEGMENT_RETIRED (-7)
+#define MEM_SERVICE_UB_SSD_ERR_COH_TIMEOUT (-8)
+#define MEM_SERVICE_UB_SSD_ERR_CHECKSUM (-10)
+#define MEM_SERVICE_UB_SSD_ERR_VERSION_CONFLICT (-11)
 
 static const uint64_t mem_service_latency_bucket_limits_ms
     [MEM_SERVICE_METRIC_LATENCY_BUCKET_COUNT] = {1U, 5U, 10U, 50U, 100U, UINT64_MAX};
@@ -149,6 +161,66 @@ struct mem_service_store_import_state {
     bool in_idempotency;
     bool in_audit;
 };
+
+struct mem_service_ub_ssd_key_v1 {
+    uint32_t version;
+    uint32_t flags;
+    uint64_t segment_id;
+    uint64_t home_va;
+    uint64_t size;
+    uint64_t vmid;
+    uint64_t asid;
+    uint64_t pte_offset;
+    uint32_t p_tag;
+    uint32_t cache_policy;
+    uint64_t epoch;
+} __attribute__((packed));
+
+struct mem_service_ub_ssd_block_ref_v1 {
+    uint64_t block_hi;
+    uint64_t block_lo;
+    uint64_t version;
+    uint64_t offset;
+    uint64_t bytes;
+    uint64_t checksum64;
+} __attribute__((packed));
+
+struct mem_service_ub_ssd_buffer_desc_v1 {
+    uint64_t gsva_base;
+    uint64_t bytes;
+    struct mem_service_ub_ssd_key_v1 key;
+    uint32_t token_id;
+    uint32_t token_value;
+} __attribute__((packed));
+
+struct mem_service_ub_ssd_cmd_v1 {
+    uint32_t version;
+    uint32_t opcode;
+    uint64_t req_id;
+    uint32_t source_cna;
+    uint32_t target_ssd_cna;
+    uint32_t flags;
+    struct mem_service_ub_ssd_block_ref_v1 block_ref;
+    struct mem_service_ub_ssd_buffer_desc_v1 buffer;
+} __attribute__((packed));
+
+struct mem_service_ub_ssd_cpl_v1 {
+    uint32_t version;
+    uint32_t status;
+    uint64_t req_id;
+    struct mem_service_ub_ssd_block_ref_v1 committed_ref;
+    uint64_t bytes_read;
+    uint64_t bytes_written;
+    uint64_t checksum64;
+    uint64_t error_detail;
+} __attribute__((packed));
+
+#ifdef __linux__
+#define MEM_SERVICE_UB_SSD_SUBMIT \
+    _IOW(MEM_SERVICE_UB_SSD_IOC_MAGIC, 1, struct mem_service_ub_ssd_cmd_v1)
+#define MEM_SERVICE_UB_SSD_WAIT \
+    _IOR(MEM_SERVICE_UB_SSD_IOC_MAGIC, 2, struct mem_service_ub_ssd_cpl_v1)
+#endif
 
 static int mem_service_expect_u64(const char *name, uint64_t actual, uint64_t expected)
 {
@@ -7761,6 +7833,254 @@ static bool mem_service_payload_selects_ub_ssd_backend(const char *payload)
            strcmp(backend, "ub_ssd_gsva_v1") == 0;
 }
 
+static bool mem_service_payload_ub_ssd_write_requested(const char *payload)
+{
+    return mem_service_payload_get_u32(payload, "backend_write", 0) != 0U;
+}
+
+static bool mem_service_payload_ub_ssd_read_requested(const char *payload)
+{
+    return mem_service_payload_get_u32(payload, "backend_read", 0) != 0U;
+}
+
+#ifdef __linux__
+static enum mem_service_wire_status mem_service_ub_ssd_status_to_wire(
+    int32_t status)
+{
+    if (status == MEM_SERVICE_UB_SSD_OK) {
+        return MEM_SERVICE_WIRE_STATUS_OK;
+    }
+    if (status == MEM_SERVICE_UB_SSD_ERR_STALE_EPOCH ||
+        status == MEM_SERVICE_UB_SSD_ERR_SEGMENT_RETIRED) {
+        return MEM_SERVICE_WIRE_STATUS_STALE_REF;
+    }
+    if (status == MEM_SERVICE_UB_SSD_ERR_COH_TIMEOUT) {
+        return MEM_SERVICE_WIRE_STATUS_TIMEOUT;
+    }
+    if (status == MEM_SERVICE_UB_SSD_ERR_CHECKSUM) {
+        return MEM_SERVICE_WIRE_STATUS_CHECKSUM_MISMATCH;
+    }
+    if (status == MEM_SERVICE_UB_SSD_ERR_VERSION_CONFLICT) {
+        return MEM_SERVICE_WIRE_STATUS_VERSION_CONFLICT;
+    }
+    return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+}
+
+static bool mem_service_payload_get_ub_ssd_buffer_desc(
+    const char *payload,
+    struct mem_service_ub_ssd_buffer_desc_v1 *desc)
+{
+    uint64_t gsva_base = 0;
+    uint64_t bytes = 0;
+    uint64_t segment_id = 0;
+    uint64_t home_va = 0;
+    uint64_t size = 0;
+    uint64_t epoch = 0;
+    uint64_t parsed = 0;
+    uint32_t token_id = 0;
+    uint32_t token_value = 0;
+
+    if (payload == NULL || desc == NULL) {
+        return false;
+    }
+    memset(desc, 0, sizeof(*desc));
+    if (!mem_service_payload_get_u64_checked(payload,
+                                             "backend_buffer_gsva_base",
+                                             &gsva_base) ||
+        !mem_service_payload_get_u64_checked(payload,
+                                             "backend_buffer_bytes",
+                                             &bytes) ||
+        !mem_service_payload_get_u64_checked(payload,
+                                             "backend_buffer_key_segment_id",
+                                             &segment_id) ||
+        !mem_service_payload_get_u64_checked(payload,
+                                             "backend_buffer_key_home_va",
+                                             &home_va) ||
+        !mem_service_payload_get_u64_checked(payload,
+                                             "backend_buffer_key_size",
+                                             &size) ||
+        !mem_service_payload_get_u64_checked(payload,
+                                             "backend_buffer_key_epoch",
+                                             &epoch) ||
+        !mem_service_payload_get_u32_checked(payload,
+                                             "backend_buffer_token_id",
+                                             &token_id) ||
+        !mem_service_payload_get_u32_checked(payload,
+                                             "backend_buffer_token_value",
+                                             &token_value) ||
+        gsva_base == 0U || bytes == 0U || segment_id == 0U ||
+        home_va == 0U || size == 0U || epoch == 0U ||
+        token_id == 0U || token_value == 0U) {
+        return false;
+    }
+    desc->gsva_base = gsva_base;
+    desc->bytes = bytes;
+    desc->key.segment_id = segment_id;
+    desc->key.home_va = home_va;
+    desc->key.size = size;
+    desc->key.epoch = epoch;
+    desc->token_id = token_id;
+    desc->token_value = token_value;
+    desc->key.version = mem_service_payload_get_u32(payload,
+                                                    "backend_buffer_key_version",
+                                                    1U);
+    desc->key.flags = mem_service_payload_get_u32(payload,
+                                                  "backend_buffer_key_flags",
+                                                  0U);
+    desc->key.p_tag = mem_service_payload_get_u32(payload,
+                                                  "backend_buffer_key_p_tag",
+                                                  0U);
+    desc->key.cache_policy =
+        mem_service_payload_get_u32(payload,
+                                    "backend_buffer_key_cache_policy",
+                                    0U);
+    desc->key.vmid = mem_service_payload_get_u64(payload,
+                                                 "backend_buffer_key_vmid",
+                                                 0U);
+    desc->key.asid = mem_service_payload_get_u64(payload,
+                                                 "backend_buffer_key_asid",
+                                                 0U);
+    desc->key.pte_offset =
+        mem_service_payload_get_u64(payload,
+                                    "backend_buffer_key_pte_offset",
+                                    0U);
+    if (mem_service_payload_get_u64_checked(payload,
+                                            "backend_buffer_key_p_tag",
+                                            &parsed) &&
+        parsed > UINT32_MAX) {
+        return false;
+    }
+    if (mem_service_payload_get_u64_checked(payload,
+                                            "backend_buffer_key_cache_policy",
+                                            &parsed) &&
+        parsed > UINT32_MAX) {
+        return false;
+    }
+    return desc->key.version == 1U;
+}
+#endif
+
+static enum mem_service_wire_status mem_service_ub_ssd_submit(
+    const char *payload,
+    uint32_t opcode,
+    const struct mem_service_record *record,
+    struct mem_service_ub_ssd_cpl_v1 *cpl)
+{
+#ifndef __linux__
+    (void)payload;
+    (void)opcode;
+    (void)record;
+    (void)cpl;
+    return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+#else
+    struct mem_service_ub_ssd_cmd_v1 cmd;
+    char device_path[128];
+    int fd;
+    int rc;
+
+    if (payload == NULL || record == NULL || cpl == NULL) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    memset(cpl, 0, sizeof(*cpl));
+    cmd.version = 1U;
+    cmd.opcode = opcode;
+    cmd.req_id = mem_service_payload_get_u64(payload,
+                                             "backend_request_id",
+                                             record->version);
+    cmd.source_cna = mem_service_payload_get_u32(payload,
+                                                 "backend_source_cna",
+                                                 0U);
+    cmd.target_ssd_cna = mem_service_payload_get_u32(
+        payload,
+        "backend_device_cna",
+        record->object_backend_device_cna);
+    cmd.flags = mem_service_payload_get_u32(payload, "backend_flags", 0U);
+    cmd.block_ref.block_hi = record->object_backend_block_hi;
+    cmd.block_ref.block_lo = record->object_backend_block_lo;
+    cmd.block_ref.version = record->object_backend_block_version;
+    cmd.block_ref.offset = record->object_backend_block_offset;
+    cmd.block_ref.bytes = record->object_backend_block_bytes;
+    cmd.block_ref.checksum64 = record->object_backend_block_checksum;
+    if (!mem_service_payload_get_ub_ssd_buffer_desc(payload, &cmd.buffer)) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    device_path[0] = '\0';
+    (void)mem_service_payload_get_string(payload,
+                                         "backend_device_path",
+                                         device_path,
+                                         sizeof(device_path));
+    if (device_path[0] == '\0') {
+        snprintf(device_path, sizeof(device_path), "%s",
+                 MEM_SERVICE_UB_SSD_DEFAULT_DEVICE);
+    }
+    fd = open(device_path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT || errno == ENODEV || errno == ENOTTY) {
+            return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+        }
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    rc = ioctl(fd, MEM_SERVICE_UB_SSD_SUBMIT, &cmd);
+    if (rc == 0) {
+        rc = ioctl(fd, MEM_SERVICE_UB_SSD_WAIT, cpl);
+    }
+    close(fd);
+    if (rc != 0) {
+        if (errno == ENOTTY || errno == ENODEV) {
+            return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
+        }
+        return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    }
+    return mem_service_ub_ssd_status_to_wire((int32_t)cpl->status);
+#endif
+}
+
+static enum mem_service_wire_status mem_service_write_ub_ssd_backend_block(
+    const char *payload,
+    struct mem_service_record *record)
+{
+    struct mem_service_ub_ssd_cpl_v1 cpl;
+    enum mem_service_wire_status status;
+
+    if (record == NULL) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    status = mem_service_ub_ssd_submit(payload,
+                                       MEM_SERVICE_UB_SSD_OP_BLOCK_WRITE,
+                                       record,
+                                       &cpl);
+    if (status != MEM_SERVICE_WIRE_STATUS_OK) {
+        return status;
+    }
+    record->object_backend_block_hi = cpl.committed_ref.block_hi;
+    record->object_backend_block_lo = cpl.committed_ref.block_lo;
+    record->object_backend_block_version = cpl.committed_ref.version;
+    record->object_backend_block_offset = cpl.committed_ref.offset;
+    record->object_backend_block_bytes = cpl.committed_ref.bytes;
+    record->object_backend_block_checksum = cpl.committed_ref.checksum64;
+    record->object_payload_kind = MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK;
+    record->object_backing_offset = cpl.committed_ref.offset;
+    record->object_backing_len = cpl.committed_ref.bytes;
+    record->object_payload_checksum = cpl.committed_ref.checksum64;
+    return MEM_SERVICE_WIRE_STATUS_OK;
+}
+
+static enum mem_service_wire_status mem_service_read_ub_ssd_backend_block(
+    const char *payload,
+    const struct mem_service_record *record,
+    struct mem_service_ub_ssd_cpl_v1 *cpl)
+{
+    if (record == NULL ||
+        record->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    return mem_service_ub_ssd_submit(payload,
+                                     MEM_SERVICE_UB_SSD_OP_BLOCK_READ,
+                                     record,
+                                     cpl);
+}
+
 static enum mem_service_wire_status mem_service_apply_ub_ssd_backend_ref(
     const char *payload,
     const char *payload_inline,
@@ -7771,23 +8091,43 @@ static enum mem_service_wire_status mem_service_apply_ub_ssd_backend_ref(
     uint64_t block_lo = 0;
     uint64_t block_bytes = 0;
     uint64_t block_checksum = 0;
+    bool write_requested = false;
 
     if (!mem_service_payload_selects_ub_ssd_backend(payload)) {
         return MEM_SERVICE_WIRE_STATUS_OK;
     }
+    write_requested = mem_service_payload_ub_ssd_write_requested(payload);
     if ((payload_inline != NULL && payload_inline[0] != '\0') ||
         (payload_path != NULL && payload_path[0] != '\0')) {
         return MEM_SERVICE_WIRE_STATUS_UNSUPPORTED;
     }
     if (record == NULL ||
         !mem_service_payload_get_u64_checked(payload, "backend_block_hi", &block_hi) ||
-        !mem_service_payload_get_u64_checked(payload, "backend_block_lo", &block_lo) ||
-        !mem_service_payload_get_u64_checked(payload, "backend_block_bytes", &block_bytes) ||
-        !mem_service_payload_get_u64_checked(payload,
-                                             "backend_block_checksum",
-                                             &block_checksum) ||
-        block_bytes == 0 || block_checksum == 0) {
+        !mem_service_payload_get_u64_checked(payload, "backend_block_lo", &block_lo)) {
         return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    if (!write_requested &&
+        (!mem_service_payload_get_u64_checked(payload,
+                                              "backend_block_bytes",
+                                              &block_bytes) ||
+         !mem_service_payload_get_u64_checked(payload,
+                                              "backend_block_checksum",
+                                              &block_checksum))) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    if (!write_requested && (block_bytes == 0 || block_checksum == 0)) {
+        return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
+    }
+    if (write_requested) {
+        block_bytes = mem_service_payload_get_u64(payload,
+                                                  "backend_block_bytes",
+                                                  mem_service_payload_get_u64(
+                                                      payload,
+                                                      "backend_buffer_bytes",
+                                                      0U));
+        block_checksum = mem_service_payload_get_u64(payload,
+                                                     "backend_block_checksum",
+                                                     0U);
     }
     record->object_backend_kind = MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA;
     record->object_backend_node =
@@ -8041,6 +8381,13 @@ static enum mem_service_wire_status mem_service_put_object(struct mem_service *s
     if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
         return block_status;
     }
+    if (next.object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA &&
+        mem_service_payload_ub_ssd_write_requested(payload)) {
+        block_status = mem_service_write_ub_ssd_backend_block(payload, &next);
+        if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
+            return block_status;
+        }
+    }
     if (next.object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA &&
         (payload_inline[0] != '\0' || payload_path[0] != '\0')) {
         block_status = mem_service_write_payload_block(storage_root,
@@ -8077,6 +8424,8 @@ static enum mem_service_wire_status mem_service_get_object(struct mem_service *s
     struct mem_service_record record;
     char key[sizeof(record.key)];
     enum mem_service_wire_status block_status;
+    struct mem_service_ub_ssd_cpl_v1 read_cpl;
+    bool read_performed = false;
 
     if (!mem_service_payload_get_string(payload, "key", key, sizeof(key))) {
         return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
@@ -8089,7 +8438,36 @@ static enum mem_service_wire_status mem_service_get_object(struct mem_service *s
     if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
         return block_status;
     }
+    if (record.object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA &&
+        mem_service_payload_ub_ssd_read_requested(payload)) {
+        block_status = mem_service_read_ub_ssd_backend_block(payload,
+                                                             &record,
+                                                             &read_cpl);
+        if (block_status != MEM_SERVICE_WIRE_STATUS_OK) {
+            return block_status;
+        }
+        read_performed = true;
+    }
     mem_service_format_record_payload(&record, response, response_len);
+    if (read_performed) {
+        size_t used = strlen(response);
+        int written;
+
+        if (used >= response_len) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+        written = snprintf(response + used,
+                           response_len - used,
+                           "object_backend_read_bytes=%" PRIu64 "\n"
+                           "object_backend_read_checksum=%" PRIu64 "\n"
+                           "object_backend_read_version=%" PRIu64 "\n",
+                           read_cpl.bytes_read,
+                           read_cpl.checksum64,
+                           read_cpl.committed_ref.version);
+        if (written < 0 || (size_t)written >= response_len - used) {
+            return MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        }
+    }
     return MEM_SERVICE_WIRE_STATUS_OK;
 }
 

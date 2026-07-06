@@ -543,16 +543,22 @@ Keep the implementation layers separated:
   `transport-tcp-block-v1` fetches payloads from `tcp:<ipv4>:<port>` into
   `remote-blocks/<checksum>.tcp/`, then validates and quarantines through the
   same sealed transport contract. `ub-ssd-gsva-v1` is now a first-class object
-  backend reference for payloads already committed into the simulated UB SSD
-  through its GSVA data path. `put-object --backend ub-ssd-gsva-v1` records the
-  SSD device CNA, owner node, block hi/lo, block version, byte range, and
-  checksum in the mem_service object record; `get-object`, `inspect-object`,
-  snapshot export, and store restart preserve that reference. The daemon
-  rejects incomplete ub-ssd references and rejects mixing ub-ssd references
-  with inline or file payload ingestion. Actual BLOCK_READ/BLOCK_WRITE through
-  `/dev/ub_ssd0` remains the next integration step; the current mem_service
-  increment establishes the durable backend contract and fail-closed metadata
-  admission for the existing ub-ssd GSVA path. The release contract records
+  backend reference for payloads committed into the simulated UB SSD through
+  its GSVA data path. Metadata-only `put-object --backend ub-ssd-gsva-v1`
+  records the SSD device CNA, owner node, block hi/lo, block version, byte
+  range, and checksum in the mem_service object record; `get-object`,
+  `inspect-object`, snapshot export, and store restart preserve that
+  reference. Data-plane `put-object --backend ub-ssd-gsva-v1 --backend-write 1`
+  accepts an explicit `--backend-buffer-*` GSVA descriptor and submits
+  `SSD_OP_BLOCK_WRITE` to `/dev/ub_ssd0` or `--backend-device-path`; successful
+  SSD completion owns the stored block version, bytes, and checksum.
+  Data-plane `get-object --backend-read 1` uses the same explicit GSVA buffer
+  descriptor shape and submits `SSD_OP_BLOCK_READ` into the caller-provided
+  destination buffer. Missing devices or unsupported ioctl paths fail closed as
+  `status=unsupported`, and incomplete descriptors fail as
+  `status=invalid_session`. The remaining integration gap is automatic
+  descriptor sourcing from llm_infer/runtime buffer metadata so serving code
+  does not have to pass raw GSVA fields manually. The release contract records
   `remote_payload_network_transport=tcp-loopback-certified` and
   `remote_payload_network_transport_gate=network-transport-block-fixtures`;
   `make network-transport-block-smoke` is the explicit Make entrypoint for that

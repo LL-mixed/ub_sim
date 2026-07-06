@@ -21,10 +21,10 @@
 #endif
 
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_VERSION 1U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 9962U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x3967891aU
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 12456U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x14a081c9U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_OPERATION_COUNT 23U
-#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 123U
+#define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_FIELD_COUNT 164U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_COUNT 1U
 #define MEM_SERVICE_WIRE_SCHEMA_MANIFEST_ONEOF_FIELD_COUNT 2U
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
@@ -33,8 +33,8 @@
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6719U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2127U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x07c4b500U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2143U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x4315e596U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 2096U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0x05a9245cU
@@ -46,8 +46,8 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9354U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x26ad5518U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9369U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4d2a97fU
 #define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
@@ -57,13 +57,13 @@
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 856U
 #define MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0xd0cc1392U
 #define MEM_SERVICE_COMPAT_MATRIX_VERSION 1U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1978U
-#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x4a0293beU
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1979U
+#define MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xe6d3e50cU
 #define MEM_SERVICE_COMPAT_MATRIX_STATUS_COUNT 11U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1251U
-#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xc333c92cU
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1733U
-#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x0bfbdfddU
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1252U
+#define MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xb93a31bcU
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1734U
+#define MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xbc0e044dU
 #define MEM_SERVICE_CLI_STORE_MAGIC "mem_service_store_v1"
 
 static void usage(const char *argv0)
@@ -121,7 +121,8 @@ static void usage(const char *argv0)
     printf(" [commit-training-step|resolve-training-step]");
     printf(" [mutating commands accept --idempotency-key <key>]");
     printf(" [object/artifact mutating commands accept --payload-file <path>]");
-    printf(" [put-object accepts --backend ub-ssd-gsva-v1 --backend-block-hi <u64> --backend-block-lo <u64> --backend-block-bytes <u64> --backend-block-checksum <u64>]");
+    printf(" [put-object accepts --backend ub-ssd-gsva-v1 --backend-write 1 --backend-buffer-gsva-base <u64> --backend-buffer-key-segment-id <u64>]");
+    printf(" [get-object accepts --backend-read 1 with the same --backend-buffer-* GSVA descriptor fields]");
 #ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT
     printf(" [--inspect-qwen3]");
 #endif
@@ -759,7 +760,7 @@ static int render_upgrade_rollback_policy(char *policy,
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
-                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n") != 0 ||
+                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1,ub-ssd-gsva-v1\n") != 0 ||
         append_wire_schema_line(policy,
                                 policy_len,
                                 &used,
@@ -2349,7 +2350,7 @@ static int run_version_fixture_check(void)
         strstr(manifest, "service_version=" MEM_SERVICE_RELEASE_VERSION "\n") == NULL ||
         strstr(manifest, "version_contract=text-kv\n") == NULL ||
         strstr(manifest, "wire_version=1\n") == NULL ||
-        strstr(manifest, "wire_schema_manifest_checksum=0x3967891a\n") == NULL ||
+        strstr(manifest, "wire_schema_manifest_checksum=0x14a081c9\n") == NULL ||
         strstr(manifest, "api_abi_policy_checksum=0xd0cc1392\n") == NULL ||
         strstr(manifest, "package_manifest_checksum=0x") == NULL ||
         strstr(manifest, "release_manifest_command=release-manifest\n") == NULL ||
@@ -3411,7 +3412,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n") != 0 ||
+                                "payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1,ub-ssd-gsva-v1\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -5240,7 +5241,7 @@ static int run_release_manifest(void)
     printf("durable_store_migration_policy=legacy-to-v1-reject-future\n");
     printf("durable_catalog=storage-root-v1\n");
     printf("durable_catalog_manifest=catalog/manifest.txt\n");
-    printf("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n");
+    printf("payload_block_backend=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1,ub-ssd-gsva-v1\n");
     printf("remote_payload_block_backend=transport-loopback-block-v1,transport-tcp-block-v1\n");
     printf("remote_payload_block_backend_gate=remote-block-backend-policy-fixtures\n");
     printf("remote_payload_block_data_gate=transport-block-fixtures\n");
@@ -5469,7 +5470,7 @@ static int run_release_fixture_check(void)
            "record_retention_smokes=1 "
            "encryption_policy_smokes=1 "
            "compat_runtime_smokes=1 "
-           "durable_backends=1 durable_catalogs=1 payload_block_backends=4 "
+           "durable_backends=1 durable_catalogs=1 payload_block_backends=5 "
            "metrics_export_formats=1 metrics_http_listeners=1 "
            "metrics_scrape_paths=1 "
            "client_retry_policies=1 "
@@ -5521,7 +5522,7 @@ static int run_remote_block_backend_policy_fixture_check(void)
            "remote_payload_block_data_gate=transport-block-fixtures "
            "remote_payload_network_transport=tcp-loopback-certified "
            "remote_payload_network_transport_gate=network-transport-block-fixtures "
-           "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1\n");
+           "current_payload_block_backends=sealed-local-block-v1,sealed-chunked-block-v1,transport-loopback-block-v1,transport-tcp-block-v1,ub-ssd-gsva-v1\n");
     return 0;
 }
 
@@ -8402,7 +8403,7 @@ static const char *snapshot_path_arg(int argc, char **argv, const char *option_n
 
 static int run_put_object(int argc, char **argv)
 {
-    char payload[1024] = "";
+    char payload[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN] = "";
 
     if (append_required_payload_field(payload, sizeof(payload), argc, argv, "--key", "key") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--owner", "owner") != 0 ||
@@ -8412,6 +8413,10 @@ static int run_put_object(int argc, char **argv)
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--checksum", "checksum") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--version", "version") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend", "backend") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-write", "backend_write") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-device-path", "backend_device_path") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-request-id", "backend_request_id") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-source-cna", "backend_source_cna") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-kind", "backend_kind") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-node", "backend_node") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-device-cna", "backend_device_cna") != 0 ||
@@ -8422,6 +8427,21 @@ static int run_put_object(int argc, char **argv)
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-offset", "backend_block_offset") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-bytes", "backend_block_bytes") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-block-checksum", "backend_block_checksum") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-gsva-base", "backend_buffer_gsva_base") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-bytes", "backend_buffer_bytes") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-token-id", "backend_buffer_token_id") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-token-value", "backend_buffer_token_value") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-version", "backend_buffer_key_version") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-flags", "backend_buffer_key_flags") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-segment-id", "backend_buffer_key_segment_id") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-home-va", "backend_buffer_key_home_va") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-size", "backend_buffer_key_size") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-vmid", "backend_buffer_key_vmid") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-asid", "backend_buffer_key_asid") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-pte-offset", "backend_buffer_key_pte_offset") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-p-tag", "backend_buffer_key_p_tag") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-cache-policy", "backend_buffer_key_cache_policy") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-epoch", "backend_buffer_key_epoch") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-inline", "payload_inline") != 0 ||
         append_optional_payload_field(payload, sizeof(payload), argc, argv, "--payload-file", "payload_path") != 0 ||
         append_idempotency_payload_field(payload, sizeof(payload), argc, argv) != 0) {
@@ -8432,9 +8452,30 @@ static int run_put_object(int argc, char **argv)
 
 static int run_get_object(int argc, char **argv)
 {
-    char payload[160] = "";
+    char payload[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN] = "";
 
-    if (append_required_payload_field(payload, sizeof(payload), argc, argv, "--key", "key") != 0) {
+    if (append_required_payload_field(payload, sizeof(payload), argc, argv, "--key", "key") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-read", "backend_read") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-device-path", "backend_device_path") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-request-id", "backend_request_id") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-source-cna", "backend_source_cna") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-device-cna", "backend_device_cna") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-flags", "backend_flags") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-gsva-base", "backend_buffer_gsva_base") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-bytes", "backend_buffer_bytes") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-token-id", "backend_buffer_token_id") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-token-value", "backend_buffer_token_value") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-version", "backend_buffer_key_version") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-flags", "backend_buffer_key_flags") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-segment-id", "backend_buffer_key_segment_id") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-home-va", "backend_buffer_key_home_va") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-size", "backend_buffer_key_size") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-vmid", "backend_buffer_key_vmid") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-asid", "backend_buffer_key_asid") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-pte-offset", "backend_buffer_key_pte_offset") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-p-tag", "backend_buffer_key_p_tag") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-cache-policy", "backend_buffer_key_cache_policy") != 0 ||
+        append_optional_payload_field(payload, sizeof(payload), argc, argv, "--backend-buffer-key-epoch", "backend_buffer_key_epoch") != 0) {
         return 2;
     }
     return run_client_payload_command(argc, argv, MEM_SERVICE_WIRE_OP_GET_OBJECT, "get-object", payload);
