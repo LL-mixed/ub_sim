@@ -137,10 +137,16 @@ validate_ssd_gsva_logs() {
     "$NODEA_QEMU_LOG" "$NODEA_GUEST_LOG" || rc=1
   validate_ub_gsva_peer_matrix "[ssd_gsva_test]" nodeA \
     "$NODEA_GUEST_LOG" 0 2 || rc=1
+  ub_gsva_trace_require "[ssd_gsva_test]" "$NODEA_GUEST_LOG" \
+    "LINGQU_MEM_SERVICE_UB_SSD_GSVA .* status=ok" \
+    "nodeA mem_service ub-ssd GSVA backend round-trip" || rc=1
   validate_ub_gsva_trace_logs "[ssd_gsva_test]" ssd nodeB \
     "$NODEB_QEMU_LOG" "$NODEB_GUEST_LOG" || rc=1
   validate_ub_gsva_peer_matrix "[ssd_gsva_test]" nodeB \
     "$NODEB_GUEST_LOG" 1 2 || rc=1
+  ub_gsva_trace_require "[ssd_gsva_test]" "$NODEB_GUEST_LOG" \
+    "LINGQU_MEM_SERVICE_UB_SSD_GSVA .* status=ok" \
+    "nodeB mem_service ub-ssd GSVA backend round-trip" || rc=1
   return $rc
 }
 

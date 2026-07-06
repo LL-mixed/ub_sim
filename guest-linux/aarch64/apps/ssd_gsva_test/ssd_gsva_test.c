@@ -9,10 +9,12 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "../../../kernel_ub/include/uapi/ub/ub_ssd.h"
@@ -30,6 +32,11 @@
 #define SNAPSHOT_SIZE    0x10000ULL
 #define TIMEOUT_OFFSET   0x15000ULL
 #define TIMEOUT_OUTPUT_OFFSET 0x18000ULL
+#define MEM_SERVICE_SRC_OFFSET 0x1A000ULL
+#define MEM_SERVICE_DST_OFFSET 0x1B000ULL
+#define MEM_SERVICE_BIN "/bin/linqu_mem_service"
+#define MEM_SERVICE_SOCKET_PATH "/tmp/linqu_mem_service_ub_ssd_gsva.sock"
+#define MEM_SERVICE_STORE_PATH "/tmp/linqu_mem_service_ub_ssd_gsva.store"
 
 static int obmm_fd = -1;
 static int ssd_fd = -1;
@@ -54,6 +61,7 @@ static int current_peer_node_idx = 0;
 static struct gsva_key_v1 peer_key;
 static uint32_t g_token_id = 0;
 static uint32_t g_token_value = 0;
+static pid_t mem_service_pid = -1;
 
 static uint64_t peer_offset(uint64_t offset)
 {
@@ -172,6 +180,290 @@ static int send_gsva_event(uint32_t sub_op, const struct gsva_key_v1 *key,
     if (error_out)
         *error_out = ev.error;
     return 0;
+}
+
+static int run_mem_service_argv_impl(char *const argv[], bool quiet)
+{
+    pid_t pid;
+    int status;
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, TAG "fork mem_service command: %s\n", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        if (quiet) {
+            int devnull = open("/dev/null", O_RDWR);
+
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
+        }
+        execv(MEM_SERVICE_BIN, argv);
+        fprintf(stderr, TAG "exec %s: %s\n", MEM_SERVICE_BIN, strerror(errno));
+        _exit(127);
+    }
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, TAG "wait mem_service command: %s\n", strerror(errno));
+        return -1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (quiet)
+            return -1;
+        fprintf(stderr, TAG "mem_service command failed status=%d\n", status);
+        return -1;
+    }
+    return 0;
+}
+
+static int run_mem_service_argv(char *const argv[])
+{
+    return run_mem_service_argv_impl(argv, false);
+}
+
+static int run_mem_service_argv_quiet(char *const argv[])
+{
+    return run_mem_service_argv_impl(argv, true);
+}
+
+static int start_mem_service_daemon(const char *socket_spec)
+{
+    unlink(MEM_SERVICE_SOCKET_PATH);
+    unlink(MEM_SERVICE_STORE_PATH);
+
+    mem_service_pid = fork();
+    if (mem_service_pid < 0) {
+        fprintf(stderr, TAG "fork mem_service daemon: %s\n", strerror(errno));
+        return -1;
+    }
+    if (mem_service_pid == 0) {
+        char *const argv[] = {
+            (char *)"linqu_mem_service",
+            (char *)"serve",
+            (char *)"--listen",
+            (char *)socket_spec,
+            (char *)"--store",
+            (char *)MEM_SERVICE_STORE_PATH,
+            NULL,
+        };
+
+        execv(MEM_SERVICE_BIN, argv);
+        fprintf(stderr, TAG "exec %s serve: %s\n", MEM_SERVICE_BIN, strerror(errno));
+        _exit(127);
+    }
+    return 0;
+}
+
+static void stop_mem_service_daemon(void)
+{
+    int status;
+
+    if (mem_service_pid <= 0)
+        return;
+    kill(mem_service_pid, SIGTERM);
+    for (int i = 0; i < 20; i++) {
+        pid_t rc = waitpid(mem_service_pid, &status, WNOHANG);
+        if (rc == mem_service_pid) {
+            mem_service_pid = -1;
+            return;
+        }
+        usleep(50000);
+    }
+    kill(mem_service_pid, SIGKILL);
+    waitpid(mem_service_pid, &status, 0);
+    mem_service_pid = -1;
+}
+
+static int wait_mem_service_ready(const char *socket_spec)
+{
+    for (int i = 0; i < 80; i++) {
+        char *const argv[] = {
+            (char *)"linqu_mem_service",
+            (char *)"ready",
+            (char *)"--connect",
+            (char *)socket_spec,
+            (char *)"--timeout-ms",
+            (char *)"50",
+            NULL,
+        };
+
+        if (run_mem_service_argv_quiet(argv) == 0)
+            return 0;
+        usleep(50000);
+    }
+    fprintf(stderr, TAG "mem_service daemon did not become ready\n");
+    return -1;
+}
+
+static void format_u64(char *buf, size_t len, uint64_t value)
+{
+    snprintf(buf, len, "%llu", (unsigned long long)value);
+}
+
+static void format_u32(char *buf, size_t len, uint32_t value)
+{
+    snprintf(buf, len, "%u", value);
+}
+
+static int test_mem_service_ub_ssd_gsva_backend(void)
+{
+    char socket_spec[96];
+    char object_key[96];
+    char block_hi[32];
+    char block_lo[32];
+    char source_cna[32];
+    char src_gsva[32];
+    char dst_gsva[32];
+    char bytes[32];
+    char token_id[32];
+    char token_value[32];
+    char key_version[32];
+    char key_flags[32];
+    char key_segment_id[32];
+    char key_home_va[32];
+    char key_size[32];
+    char key_vmid[32];
+    char key_asid[32];
+    char key_pte_offset[32];
+    char key_p_tag[32];
+    char key_cache_policy[32];
+    char key_epoch[32];
+    uint64_t *src = (uint64_t *)peer_ptr(MEM_SERVICE_SRC_OFFSET);
+    uint64_t *dst = (uint64_t *)peer_ptr(MEM_SERVICE_DST_OFFSET);
+    uint64_t hi = 0x5155DULL;
+    uint64_t lo = peer_block_lo(0x42);
+    int rc = -1;
+
+    printf(TAG "TEST: mem_service ub-ssd GSVA backend BLOCK_WRITE + BLOCK_READ\n");
+
+    for (int i = 0; i < (int)(TEST_DATA_SIZE / 8); i++)
+        src[i] = 0x4D53474400000000ULL | ((uint64_t)node_idx << 32) |
+                 ((uint64_t)current_peer_node_idx << 16) | (uint64_t)i;
+    memset(dst, 0, TEST_DATA_SIZE);
+
+    snprintf(socket_spec, sizeof(socket_spec), "unix:%s", MEM_SERVICE_SOCKET_PATH);
+    snprintf(object_key, sizeof(object_key),
+             "ssd-gsva-mem-service-node%d-peer%d", node_idx,
+             current_peer_node_idx);
+    format_u64(block_hi, sizeof(block_hi), hi);
+    format_u64(block_lo, sizeof(block_lo), lo);
+    format_u32(source_cna, sizeof(source_cna), local_cna);
+    format_u64(src_gsva, sizeof(src_gsva),
+               peer_gsva_base + peer_offset(MEM_SERVICE_SRC_OFFSET));
+    format_u64(dst_gsva, sizeof(dst_gsva),
+               peer_gsva_base + peer_offset(MEM_SERVICE_DST_OFFSET));
+    format_u64(bytes, sizeof(bytes), TEST_DATA_SIZE);
+    format_u32(token_id, sizeof(token_id), g_token_id);
+    format_u32(token_value, sizeof(token_value), g_token_value);
+    format_u32(key_version, sizeof(key_version), peer_key.version);
+    format_u32(key_flags, sizeof(key_flags), peer_key.flags);
+    format_u64(key_segment_id, sizeof(key_segment_id), peer_key.segment_id);
+    format_u64(key_home_va, sizeof(key_home_va), peer_key.home_va);
+    format_u64(key_size, sizeof(key_size), peer_key.size);
+    format_u64(key_vmid, sizeof(key_vmid), peer_key.vmid);
+    format_u64(key_asid, sizeof(key_asid), peer_key.asid);
+    format_u64(key_pte_offset, sizeof(key_pte_offset), peer_key.pte_offset);
+    format_u32(key_p_tag, sizeof(key_p_tag), peer_key.p_tag);
+    format_u32(key_cache_policy, sizeof(key_cache_policy), peer_key.cache_policy);
+    format_u64(key_epoch, sizeof(key_epoch), peer_key.epoch);
+
+    if (start_mem_service_daemon(socket_spec) != 0)
+        return -1;
+    if (wait_mem_service_ready(socket_spec) != 0)
+        goto out;
+
+    {
+        char *const put_argv[] = {
+            (char *)"linqu_mem_service",
+            (char *)"put-object",
+            (char *)"--connect", socket_spec,
+            (char *)"--key", object_key,
+            (char *)"--owner", source_cna,
+            (char *)"--backend", (char *)"ub-ssd-gsva-v1",
+            (char *)"--backend-write", (char *)"1",
+            (char *)"--backend-device-path", (char *)SSD_DEV,
+            (char *)"--backend-request-id", (char *)"24577",
+            (char *)"--backend-source-cna", source_cna,
+            (char *)"--backend-block-hi", block_hi,
+            (char *)"--backend-block-lo", block_lo,
+            (char *)"--backend-block-version", (char *)"0",
+            (char *)"--backend-buffer-gsva-base", src_gsva,
+            (char *)"--backend-buffer-bytes", bytes,
+            (char *)"--backend-buffer-token-id", token_id,
+            (char *)"--backend-buffer-token-value", token_value,
+            (char *)"--backend-buffer-key-version", key_version,
+            (char *)"--backend-buffer-key-flags", key_flags,
+            (char *)"--backend-buffer-key-segment-id", key_segment_id,
+            (char *)"--backend-buffer-key-home-va", key_home_va,
+            (char *)"--backend-buffer-key-size", key_size,
+            (char *)"--backend-buffer-key-vmid", key_vmid,
+            (char *)"--backend-buffer-key-asid", key_asid,
+            (char *)"--backend-buffer-key-pte-offset", key_pte_offset,
+            (char *)"--backend-buffer-key-p-tag", key_p_tag,
+            (char *)"--backend-buffer-key-cache-policy", key_cache_policy,
+            (char *)"--backend-buffer-key-epoch", key_epoch,
+            NULL,
+        };
+
+        if (run_mem_service_argv(put_argv) != 0)
+            goto out;
+    }
+
+    memset(dst, 0, TEST_DATA_SIZE);
+    {
+        char *const get_argv[] = {
+            (char *)"linqu_mem_service",
+            (char *)"get-object",
+            (char *)"--connect", socket_spec,
+            (char *)"--key", object_key,
+            (char *)"--backend-read", (char *)"1",
+            (char *)"--backend-device-path", (char *)SSD_DEV,
+            (char *)"--backend-request-id", (char *)"24578",
+            (char *)"--backend-source-cna", source_cna,
+            (char *)"--backend-buffer-gsva-base", dst_gsva,
+            (char *)"--backend-buffer-bytes", bytes,
+            (char *)"--backend-buffer-token-id", token_id,
+            (char *)"--backend-buffer-token-value", token_value,
+            (char *)"--backend-buffer-key-version", key_version,
+            (char *)"--backend-buffer-key-flags", key_flags,
+            (char *)"--backend-buffer-key-segment-id", key_segment_id,
+            (char *)"--backend-buffer-key-home-va", key_home_va,
+            (char *)"--backend-buffer-key-size", key_size,
+            (char *)"--backend-buffer-key-vmid", key_vmid,
+            (char *)"--backend-buffer-key-asid", key_asid,
+            (char *)"--backend-buffer-key-pte-offset", key_pte_offset,
+            (char *)"--backend-buffer-key-p-tag", key_p_tag,
+            (char *)"--backend-buffer-key-cache-policy", key_cache_policy,
+            (char *)"--backend-buffer-key-epoch", key_epoch,
+            NULL,
+        };
+
+        if (run_mem_service_argv(get_argv) != 0)
+            goto out;
+    }
+
+    if (memcmp(src, dst, TEST_DATA_SIZE) != 0) {
+        fprintf(stderr, TAG "  FAIL: mem_service ub-ssd GSVA read-back mismatch\n");
+        goto out;
+    }
+
+    printf(TAG " LINGQU_MEM_SERVICE_UB_SSD_GSVA block_hi=%#llx block_lo=%#llx bytes=%u source_gsva=%#llx dest_gsva=%#llx status=ok\n",
+           (unsigned long long)hi,
+           (unsigned long long)lo,
+           TEST_DATA_SIZE,
+           (unsigned long long)(peer_gsva_base + peer_offset(MEM_SERVICE_SRC_OFFSET)),
+           (unsigned long long)(peer_gsva_base + peer_offset(MEM_SERVICE_DST_OFFSET)));
+    printf(TAG "  PASS: mem_service ub-ssd GSVA backend round-trip verified\n");
+    rc = 0;
+
+out:
+    stop_mem_service_daemon();
+    unlink(MEM_SERVICE_SOCKET_PATH);
+    unlink(MEM_SERVICE_STORE_PATH);
+    return rc;
 }
 
 static int test_block_write_read_gsva(void)
@@ -1491,6 +1783,9 @@ int main(int argc, char *argv[])
             if (test_snapshot_export_import() == 0) pass++; else fail++;
         }
         if (test_dfs_manifest_refs_block_payload() == 0) pass++; else fail++;
+        if (run_once_tests) {
+            if (test_mem_service_ub_ssd_gsva_backend() == 0) pass++; else fail++;
+        }
         if (test_stale_epoch_denied() == 0) pass++; else fail++;
         if (test_token_rotate_pending() == 0) pass++; else fail++;
         if (test_coh_timeout_injection() == 0) pass++; else fail++;

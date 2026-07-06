@@ -1209,6 +1209,8 @@ def test_ssd_gsva_test_has_independent_app_build():
     assert "linqu_ssd_gsva_peer_node_idx" in app_source
     assert "LINQU_SSD_GSVA_SUITE" in app_source
     assert "linqu_ssd_gsva_suite" in app_source
+    assert 'MEM_SERVICE_BIN "/bin/linqu_mem_service"' in app_source
+    assert "LINGQU_MEM_SERVICE_UB_SSD_GSVA" in app_source
 
 
 def test_mem_service_has_component_and_cli_entrypoints():
@@ -2904,6 +2906,7 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
     assert "\\\\[ssd_test\\\\] verdict=PASS" in eight_node_ssd_runner
     assert "rdinit=/bin/run_demo ssd_test " not in eight_node_ssd_runner
     assert "rdinit=/bin/run_app linqu_ssd_gsva_test=1" in two_node_ssd_gsva_runner
+    assert "LINGQU_MEM_SERVICE_UB_SSD_GSVA .* status=ok" in two_node_ssd_gsva_runner
     assert "rdinit=/bin/run_demo ssd_gsva_test " not in two_node_ssd_gsva_runner
     assert "rdinit=/bin/run_app linqu_npu_gsva_test=1" in four_node_npu_gsva_runner
     assert "rdinit=/bin/run_demo npu_gsva_test " not in four_node_npu_gsva_runner
@@ -2920,6 +2923,7 @@ def test_npu_ssd_gsva_runner_uses_app_flag_entrypoint():
     assert "suite=matrix" in eight_node_ssd_gsva_runner
     assert "validate_ub_gsva_peer_matrix" not in eight_node_ssd_gsva_runner
     assert "Testing peer 1/1 node_idx=${peer_node_idx}" in eight_node_ssd_gsva_runner
+    assert "LINGQU_MEM_SERVICE_UB_SSD_GSVA .* status=ok" in eight_node_ssd_gsva_runner
     assert "rdinit=/bin/run_demo ssd_gsva_test " not in eight_node_ssd_gsva_runner
 
 

@@ -152,6 +152,9 @@ validate_ssd_gsva_logs() {
     ub_gsva_trace_require "[ssd_gsva_test_8]" "${GUEST_LOGS[$node_suffix]}" \
       "Testing peer 1/1 node_idx=${peer_node_idx}[[:space:]]" \
       "single SSD GSVA peer execution on node${node_suffix}" || rc=1
+    ub_gsva_trace_require "[ssd_gsva_test_8]" "${GUEST_LOGS[$node_suffix]}" \
+      "LINGQU_MEM_SERVICE_UB_SSD_GSVA .* status=ok" \
+      "mem_service ub-ssd GSVA backend round-trip on node${node_suffix}" || rc=1
     node_idx=$((node_idx + 1))
   done
   return $rc
