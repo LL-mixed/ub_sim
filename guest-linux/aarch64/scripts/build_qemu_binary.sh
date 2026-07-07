@@ -50,7 +50,15 @@ qemu_source_signature() {
 
   find "$SRC_DIR/hw/ub" "$SRC_DIR/include/hw/ub" -type f \
     \( -name '*.c' -o -name '*.h' -o -name 'meson.build' \) -print 2>/dev/null |
+    {
+      cat
+      printf '%s\n' \
+        "$SRC_DIR/hw/arm/virt.c" \
+        "$SRC_DIR/include/hw/arm/virt.h" \
+        "$SRC_DIR/target/arm/tcg/tlb_helper.c"
+    } |
     while IFS= read -r file; do
+      [[ -f "$file" ]] || continue
       file_signature "$file"
     done |
     sort

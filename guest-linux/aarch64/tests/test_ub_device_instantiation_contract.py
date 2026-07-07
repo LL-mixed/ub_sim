@@ -63,6 +63,15 @@ class UbDeviceInstantiationContractTest(unittest.TestCase):
         self.assertIn('strstr(skip_devices, "npu")', virt)
         self.assertIn('strstr(skip_devices, "ssd")', virt)
 
+    def test_qemu_build_stamp_tracks_ub_device_instantiation_sources(self):
+        builder = (
+            REPO_ROOT / "guest-linux/aarch64/scripts/build_qemu_binary.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('$SRC_DIR/hw/arm/virt.c', builder)
+        self.assertIn('$SRC_DIR/include/hw/arm/virt.h', builder)
+        self.assertIn('$SRC_DIR/target/arm/tcg/tlb_helper.c', builder)
+
     def test_wait_ioctl_uses_completion_abi(self):
         npu_doc = (REPO_ROOT / "docs/sim_ub_attached_npu_design.md").read_text(
             encoding="utf-8"
