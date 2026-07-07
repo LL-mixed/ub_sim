@@ -127,7 +127,7 @@ static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
     uint64_t decode_step,
     const char *stage_name)
 {
-    struct mem_service_ub_ssd_gsva_buffer_desc desc;
+    struct mem_service_gsva_buffer_desc desc;
     struct mem_service_ub_ssd_gsva_io_request request;
     struct mem_service_ub_ssd_gsva_io_completion completion;
     enum mem_service_ub_ssd_gsva_io_status status;
@@ -136,9 +136,7 @@ static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
     if (!rt || !record || !record->in_use || !stage_name) {
         return -1;
     }
-    if (mem_service_cluster_runtime_make_ub_ssd_gsva_buffer_desc(rt,
-                                                                  record,
-                                                                  &desc) != 0) {
+    if (mem_service_cluster_runtime_make_gsva_buffer_desc(rt, record, &desc) != 0) {
         printf("[mem_service] stage %s_ub_ssd_gsva_backend_attach"
                " key=%s step=%" PRIu64
                " status=not_attached reason=descriptor_unavailable\n",
@@ -245,8 +243,8 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     long producer_clock_offset_ms;
     uint8_t *base;
     uint64_t hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
-    struct lingqu_obmm_object_ref_wire hidden_ref;
-    struct lingqu_obmm_object_ref_wire kv_ref;
+    struct lingqu_object_ref_wire hidden_ref;
+    struct lingqu_object_ref_wire kv_ref;
 
     if (!svc || !payload || payload_len != hidden_range_bytes ||
         !kv_payload || kv_payload_len == 0 ||
@@ -409,8 +407,8 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     if (mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         return -1;
     }
-    if (mem_service_record_to_lingqu_obmm_ref(&local_hidden_output, &hidden_ref) != 0 ||
-        mem_service_record_to_lingqu_obmm_ref(&local_kv_state, &kv_ref) != 0) {
+    if (mem_service_record_to_lingqu_object_ref(&local_hidden_output, &hidden_ref) != 0 ||
+        mem_service_record_to_lingqu_object_ref(&local_kv_state, &kv_ref) != 0) {
         return -1;
     }
     local_publish_seq = (uint16_t)(rt->publish_seq & 0xffffu);

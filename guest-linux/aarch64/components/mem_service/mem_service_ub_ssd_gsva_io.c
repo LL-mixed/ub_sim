@@ -112,7 +112,7 @@ static void mem_service_fill_ioctl_block_ref(
 
 static void mem_service_fill_ioctl_buffer_desc(
     struct mem_service_ub_ssd_buffer_desc_v1 *dst,
-    const struct mem_service_ub_ssd_gsva_buffer_desc *src)
+    const struct mem_service_gsva_buffer_desc *src)
 {
     dst->gsva_base = src->gsva_base;
     dst->bytes = src->bytes;

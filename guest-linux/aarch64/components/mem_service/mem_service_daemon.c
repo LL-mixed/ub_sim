@@ -3731,7 +3731,7 @@ static int mem_service_save_record(FILE *file, const struct mem_service_record *
                 record->member_count) < 0) {
         return -1;
     }
-    if (record->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD &&
+    if (record->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_OBMM_POOL &&
         fprintf(file,
                 "object_backend_kind=%u\n"
                 "object_backend_node=%u\n"
@@ -7746,7 +7746,10 @@ static const char *mem_service_object_backend_name(uint32_t backend_kind)
     if (backend_kind == MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA) {
         return "ub-ssd-gsva-v1";
     }
-    return "legacy-payload";
+    if (backend_kind == MEM_SERVICE_OBJECT_BACKEND_OBMM_POOL) {
+        return "obmm-pool-v1";
+    }
+    return "unknown";
 }
 
 static bool mem_service_payload_selects_ub_ssd_backend(const char *payload)
@@ -7803,7 +7806,7 @@ static enum mem_service_wire_status mem_service_ub_ssd_status_to_wire(
 
 static bool mem_service_payload_get_ub_ssd_buffer_desc(
     const char *payload,
-    struct mem_service_ub_ssd_gsva_buffer_desc *desc)
+    struct mem_service_gsva_buffer_desc *desc)
 {
     uint64_t gsva_base = 0;
     uint64_t bytes = 0;
@@ -8063,7 +8066,7 @@ static void mem_service_format_record_payload(const struct mem_service_record *r
                                               char *out,
                                               size_t out_len)
 {
-    if (record->object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD) {
+    if (record->object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_OBMM_POOL) {
         snprintf(out,
                  out_len,
                  "key=%s\nkind=%u\nrequest_id=%s\nprefix_group=%s\ngroup_id=%s\n"
@@ -8153,7 +8156,7 @@ static void mem_service_format_inspect_record_payload(
     char *out,
     size_t out_len)
 {
-    if (record->object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD) {
+    if (record->object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_OBMM_POOL) {
         snprintf(out,
                  out_len,
                  "key=%s\nkind=%u\nkind_name=%s\nrequest_id=%s\nprefix_group=%s\n"
@@ -11023,8 +11026,8 @@ int mem_service_run_runtime_quota_fixture_check(void)
 
 int mem_service_run_retention_fixture_check(void)
 {
-    struct mem_service svc;
-    struct mem_service recovered;
+    static struct mem_service svc;
+    static struct mem_service recovered;
     struct mem_service_daemon_limits limits;
     char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
     char store_path[160];
@@ -11134,8 +11137,8 @@ int mem_service_run_retention_fixture_check(void)
 
 int mem_service_run_checkpoint_retention_fixture_check(void)
 {
-    struct mem_service svc;
-    struct mem_service recovered;
+    static struct mem_service svc;
+    static struct mem_service recovered;
     struct mem_service_daemon_limits limits;
     char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
     char store_path[176];
@@ -11500,8 +11503,8 @@ int mem_service_run_record_retention_fixture_check(void)
         "retained-record-payload-a",
         "retained-record-payload-b",
     };
-    struct mem_service svc;
-    struct mem_service recovered;
+    static struct mem_service svc;
+    static struct mem_service recovered;
     struct mem_service_daemon_limits limits;
     char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
     char storage_root[176];
@@ -11693,8 +11696,8 @@ int mem_service_run_record_retention_fixture_check(void)
 
 static int mem_service_run_record_retention_kind_fixture_check(void)
 {
-    struct mem_service svc;
-    struct mem_service recovered;
+    static struct mem_service svc;
+    static struct mem_service recovered;
     struct mem_service_daemon_limits limits;
     char response[MEM_SERVICE_WIRE_MAX_PAYLOAD_LEN];
     char store_path[176];

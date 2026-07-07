@@ -5519,9 +5519,9 @@ static int run_release_fixture_check(void)
 
 static int run_ub_ssd_gsva_descriptor_fixture_check(void)
 {
-    struct mem_service_ub_ssd_gsva_desc_source source;
+    struct mem_service_gsva_desc_source source;
     struct mem_service_record record;
-    struct mem_service_ub_ssd_gsva_buffer_desc desc;
+    struct mem_service_gsva_buffer_desc desc;
     uint64_t expected_gsva;
 
     memset(&source, 0, sizeof(source));
@@ -5531,11 +5531,11 @@ static int run_ub_ssd_gsva_descriptor_fixture_check(void)
     source.local_idx = 0;
     source.local_cna = 0x1200U;
     source.payload_offset = 0x4000U;
-    source.metas[0].export_mem_id = 0xabcddcbaULL;
-    source.metas[0].remote_uba = 0x700000000000ULL;
-    source.metas[0].size = 0x200000ULL;
+    source.metas[0].segment_id = 0xabcddcbaULL;
+    source.metas[0].home_va = 0x700000000000ULL;
+    source.metas[0].region_bytes = 0x200000ULL;
     source.metas[0].token_id = 0x55U;
-    source.metas[0].export_cna = 0x00c4c220U;
+    source.metas[0].home_cna = 0x00c4c220U;
 
     record.in_use = true;
     record.kind = MEM_SERVICE_RECORD_KVCACHE_OBJECT;
@@ -5544,20 +5544,20 @@ static int run_ub_ssd_gsva_descriptor_fixture_check(void)
     record.object_backing_len = 0x2000ULL;
     record.object_payload_checksum = 0x987654321ULL;
 
-    if (mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
-                                                             &record,
-                                                             &desc) != 0) {
+    if (mem_service_make_gsva_buffer_desc_from_source(&source,
+                                                      &record,
+                                                      &desc) != 0) {
         fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: positive case failed\n");
         return 1;
     }
-    expected_gsva = source.metas[0].remote_uba + source.payload_offset +
+    expected_gsva = source.metas[0].home_va + source.payload_offset +
                     record.object_backing_offset;
     if (desc.gsva_base != expected_gsva ||
         desc.bytes != record.object_backing_len ||
-        desc.key_segment_id != source.metas[0].export_mem_id ||
-        desc.key_home_va != source.metas[0].remote_uba ||
-        desc.key_size != source.metas[0].size ||
-        desc.key_p_tag != (source.metas[0].export_cna & 0x00ffffffu) ||
+        desc.key_segment_id != source.metas[0].segment_id ||
+        desc.key_home_va != source.metas[0].home_va ||
+        desc.key_size != source.metas[0].region_bytes ||
+        desc.key_p_tag != (source.metas[0].home_cna & 0x00ffffffu) ||
         desc.key_cache_policy != 4U ||
         desc.token_id != source.metas[0].token_id ||
         desc.token_value != source.metas[0].token_id ||
@@ -5568,18 +5568,19 @@ static int run_ub_ssd_gsva_descriptor_fixture_check(void)
     }
 
     record.object_owner_node = 2;
-    if (mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
-                                                             &record,
-                                                             &desc) == 0) {
+    if (mem_service_make_gsva_buffer_desc_from_source(&source,
+                                                      &record,
+                                                      &desc) == 0) {
         fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: owner bounds check failed\n");
         return 1;
     }
     record.object_owner_node = 0;
-    record.object_backing_offset = source.metas[0].size - source.payload_offset - 8U;
+    record.object_backing_offset =
+        source.metas[0].region_bytes - source.payload_offset - 8U;
     record.object_backing_len = 16U;
-    if (mem_service_make_ub_ssd_gsva_buffer_desc_from_source(&source,
-                                                             &record,
-                                                             &desc) == 0) {
+    if (mem_service_make_gsva_buffer_desc_from_source(&source,
+                                                      &record,
+                                                      &desc) == 0) {
         fprintf(stderr, "ub-ssd-gsva-descriptor-fixtures: range bounds check failed\n");
         return 1;
     }

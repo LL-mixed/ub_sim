@@ -28,7 +28,7 @@ struct mem_service_ub_ssd_gsva_io_request {
     uint32_t target_ssd_cna;
     uint32_t flags;
     struct mem_service_ub_ssd_gsva_block_ref block_ref;
-    struct mem_service_ub_ssd_gsva_buffer_desc buffer;
+    struct mem_service_gsva_buffer_desc buffer;
 };
 
 struct mem_service_ub_ssd_gsva_io_completion {

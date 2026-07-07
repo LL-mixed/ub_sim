@@ -179,6 +179,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_backend.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_UB_SSD_GSVA_IO_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_io.c"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"',
             build_script,
         )
@@ -237,6 +245,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             '"$MEM_SERVICE_WIRE_CLIENT_SRC" '
             '"$MEM_SERVICE_METADATA_SRC" '
             '"$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" '
+            '"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" '
+            '"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" '
             '"$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"',
             build_script,
         )
@@ -253,6 +263,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             '"$MEM_SERVICE_WIRE_CLIENT_SRC" '
             '"$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" '
             '"$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" '
+            '"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" '
+            '"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" '
             '"$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" '
             '"$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" '
             '"$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" '
@@ -264,7 +276,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -2586,6 +2598,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("#include <string.h>", object_refs)
         self.assertIn("mem_service_checksum_bytes", object_refs)
         self.assertIn("mem_service_checksum_bytes", object_refs_contract)
+        self.assertIn("mem_service_record_to_lingqu_object_ref", object_refs)
+        self.assertIn("mem_service_record_to_lingqu_object_ref", object_refs_contract)
         self.assertIn("mem_service_record_to_lingqu_obmm_ref", object_refs)
         self.assertIn("object-reference projection", readme)
         self.assertIn("private checksum/object-reference", readme)
@@ -2600,6 +2614,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             r"int mem_service_record_to_lingqu_obmm_ref"
             r"\(const struct mem_service_record \*record,",
         )
+        self.assertNotIn("mem_service_record_to_lingqu_obmm_ref(", source)
 
     def test_obmm_object_helpers_are_split_from_runtime_main(self):
         source = SERVICE_C.read_text()

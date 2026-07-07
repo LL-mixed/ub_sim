@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="title">GVA/GSVA, mem_service, OBMM mem pool, and ub_ssd relationship</title>
+  <desc id="desc">Relationship diagram showing GVA and GSVA as the left-side data access model exposed by mem_service, with OBMM mem pool and ub_ssd as parallel storage/backing choices rather than hierarchical layers.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="13" markerHeight="13" refX="11" refY="6.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1 L11,6.5 L1,12 Z" fill="#26352f"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="13" markerHeight="13" refX="11" refY="6.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1 L11,6.5 L1,12 Z" fill="#245a78"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="13" markerHeight="13" refX="11" refY="6.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1 L11,6.5 L1,12 Z" fill="#407043"/>
+    </marker>
+    <filter id="shadow" x="-0.05" y="-0.08" width="1.1" height="1.18">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#18241f" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .page { fill: #f6f7f2; }
+      .title { font: 700 30px Arial, Helvetica, sans-serif; fill: #17241f; }
+      .subtitle { font: 500 15px Arial, Helvetica, sans-serif; fill: #53605b; }
+      .section { fill: #ffffff; stroke: #c7d0ca; stroke-width: 1.4; }
+      .section-title { font: 700 15px Arial, Helvetica, sans-serif; fill: #33443e; letter-spacing: 0; }
+      .box { filter: url(#shadow); stroke-width: 1.6; }
+      .box-title { font: 700 18px Arial, Helvetica, sans-serif; fill: #17241f; }
+      .box-text { font: 500 13px Arial, Helvetica, sans-serif; fill: #42504a; }
+      .small { font: 500 12px Arial, Helvetica, sans-serif; fill: #5b6762; }
+      .left { fill: #e2eef5; stroke: #789cb2; }
+      .service { fill: #f2ede3; stroke: #a59579; }
+      .obmm { fill: #e9f2df; stroke: #86a36d; }
+      .ssd { fill: #f6eadb; stroke: #b38a58; }
+      .note { fill: #fffdf7; stroke: #c6beb0; }
+      .flow { fill: none; stroke: #26352f; stroke-width: 2.6; marker-end: url(#arrow); }
+      .flow-blue { fill: none; stroke: #245a78; stroke-width: 2.8; marker-end: url(#arrow-blue); }
+      .flow-green { fill: none; stroke: #407043; stroke-width: 2.8; marker-end: url(#arrow-green); }
+      .dash { fill: none; stroke: #68766f; stroke-width: 2; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+      .label { font: 700 12px Arial, Helvetica, sans-serif; fill: #2e3c37; }
+      .blue-label { font: 700 12px Arial, Helvetica, sans-serif; fill: #245a78; }
+      .green-label { font: 700 12px Arial, Helvetica, sans-serif; fill: #407043; }
+    </style>
+  </defs>
+
+  <rect class="page" width="1280" height="760"/>
+  <text x="52" y="58" class="title">GVA/GSVA in mem_service, with OBMM and ub_ssd as parallel backends</text>
+  <text x="52" y="86" class="subtitle">GVA/GSVA describes how mem_service exposes and moves data. OBMM mem pool and ub_ssd are sibling backing choices, not a stack.</text>
+
+  <rect x="48" y="120" width="1184" height="500" rx="18" class="section"/>
+  <text x="76" y="150" class="section-title">Correct relationship after ub_ssd is wired to GSVA</text>
+
+  <rect x="82" y="205" width="245" height="275" rx="10" class="box left"/>
+  <text x="110" y="240" class="box-title">GVA / GSVA</text>
+  <text x="110" y="273" class="box-text">Data access contract</text>
+  <text x="110" y="296" class="box-text">for mem_service clients</text>
+  <line x1="110" y1="325" x2="299" y2="325" stroke="#a8bdca" stroke-width="1"/>
+  <text x="110" y="352" class="small">GVA: guest virtual view</text>
+  <text x="110" y="375" class="small">GSVA: shared virtual address</text>
+  <text x="110" y="398" class="small">route + key + token</text>
+  <text x="110" y="421" class="small">coherence acquire / fence</text>
+  <text x="110" y="452" class="small">This is the left-side interface,</text>
+  <text x="110" y="473" class="small">not a storage backend.</text>
+
+  <rect x="395" y="205" width="260" height="275" rx="10" class="box service"/>
+  <text x="423" y="240" class="box-title">mem_service</text>
+  <text x="423" y="273" class="box-text">Publishes and resolves objects</text>
+  <text x="423" y="296" class="box-text">Chooses backing per object / flow</text>
+  <text x="423" y="319" class="box-text">Builds GSVA descriptors</text>
+  <line x1="423" y1="348" x2="627" y2="348" stroke="#c7ba9f" stroke-width="1"/>
+  <text x="423" y="375" class="small">Clients see GVA/GSVA-mediated</text>
+  <text x="423" y="398" class="small">data access, not raw backend</text>
+  <text x="423" y="421" class="small">implementation details.</text>
+
+  <rect x="760" y="178" width="360" height="175" rx="10" class="box obmm"/>
+  <text x="792" y="214" class="box-title">OBMM mem pool backend</text>
+  <text x="792" y="247" class="box-text">Volatile runtime memory pool</text>
+  <text x="792" y="270" class="box-text">hidden state, KV, logits, temporary buffers</text>
+  <text x="792" y="293" class="box-text">allocation and lifetime owner</text>
+  <line x1="792" y1="320" x2="1088" y2="320" stroke="#b1c79d" stroke-width="1"/>
+  <text x="792" y="338" class="small">Can publish ranges through GVA/GSVA.</text>
+
+  <rect x="760" y="395" width="360" height="175" rx="10" class="box ssd"/>
+  <text x="792" y="431" class="box-title">ub_ssd block backend</text>
+  <text x="792" y="464" class="box-text">Block/cache-style object backing</text>
+  <text x="792" y="487" class="box-text">internal block/version records</text>
+  <text x="792" y="510" class="box-text">accesses caller buffers via GSVA</text>
+  <line x1="792" y1="537" x2="1088" y2="537" stroke="#d4b98e" stroke-width="1"/>
+  <text x="792" y="555" class="small">Sibling of OBMM pool, not its parent/child.</text>
+
+  <path d="M327,342 H382" class="flow"/>
+  <text x="334" y="328" class="label">access model</text>
+
+  <path d="M655,292 C690,292 712,266 747,266" class="flow-green"/>
+  <text x="666" y="258" class="green-label">object backed by OBMM</text>
+
+  <path d="M655,395 C690,395 712,482 747,482" class="flow-blue"/>
+  <text x="666" y="438" class="blue-label">object backed by ub_ssd</text>
+
+  <path d="M760,327 C708,342 691,350 655,350" class="dash"/>
+  <text x="670" y="337" class="label">GSVA descriptor</text>
+
+  <path d="M760,520 C706,507 690,462 655,430" class="dash"/>
+  <text x="666" y="506" class="label">GSVA source / dest buffer</text>
+
+  <rect x="88" y="640" width="325" height="74" rx="10" class="note"/>
+  <text x="113" y="668" class="box-title">Left-side meaning</text>
+  <text x="113" y="694" class="box-text">GVA/GSVA is how data is exposed and accessed.</text>
+
+  <rect x="477" y="640" width="325" height="74" rx="10" class="note"/>
+  <text x="502" y="668" class="box-title">Parallel backend meaning</text>
+  <text x="502" y="694" class="box-text">OBMM and ub_ssd are selectable sibling backends.</text>
+
+  <rect x="866" y="640" width="325" height="74" rx="10" class="note"/>
+  <text x="891" y="668" class="box-title">Current ub_ssd detail</text>
+  <text x="891" y="694" class="box-text">ub_ssd uses GSVA to access caller buffers.</text>
+</svg>

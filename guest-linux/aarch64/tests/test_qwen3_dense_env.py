@@ -918,7 +918,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_SERVING_INGRESS", config_runner_text)
         self.assertIn("SIM_W5_SERVING_SUBMIT_REQUESTS_FILE", config_runner_text)
         self.assertIn("w5_serving_entry.py", config_runner_text)
-        self.assertIn("W5_SERVING_CONTROL_APP_SRC", build_initramfs_text)
+        self.assertIn("SERVING_CONTROL_APP_SRC", build_initramfs_text)
         self.assertIn("linqu_w5_serving_control", build_initramfs_text)
         self.assertIn("SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)

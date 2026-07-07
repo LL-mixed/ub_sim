@@ -45,7 +45,8 @@ enum mem_service_kvcache_state {
 #define MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_LOOPBACK_BLOCK 66U
 #define MEM_SERVICE_PAYLOAD_KIND_TRANSPORT_TCP_BLOCK 67U
 #define MEM_SERVICE_PAYLOAD_KIND_UB_SSD_GSVA_BLOCK 68U
-#define MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD 0U
+#define MEM_SERVICE_OBJECT_BACKEND_OBMM_POOL 0U
+#define MEM_SERVICE_OBJECT_BACKEND_LEGACY_PAYLOAD MEM_SERVICE_OBJECT_BACKEND_OBMM_POOL
 #define MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA 1U
 
 struct mem_service_record {
@@ -192,7 +193,7 @@ struct mem_service_object_payload_view {
     uint32_t owner_node;
     uint32_t payload_kind;
     uint64_t backing_offset;
-    struct lingqu_obmm_object_ref_wire object_ref;
+    struct lingqu_object_ref_wire object_ref;
     uint64_t wait_enter_monotonic_ms;
     uint64_t found_monotonic_ms;
     uint64_t ready_monotonic_ms;
@@ -323,7 +324,9 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
 int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
                                                  uint32_t cluster_node_count);
 int mem_service_get_record(struct mem_service *svc, const char *key, struct mem_service_record *out);
+int mem_service_record_to_lingqu_object_ref(const struct mem_service_record *record,
+                                            struct lingqu_object_ref_wire *ref_out);
 int mem_service_record_to_lingqu_obmm_ref(const struct mem_service_record *record,
-                                    struct lingqu_obmm_object_ref_wire *ref_out);
+                                          struct lingqu_object_ref_wire *ref_out);
 
 #endif

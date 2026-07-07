@@ -92,6 +92,9 @@ APP_VALIDATION_COMMANDS = {
         "scripts/run_ub_dual_node_w4_guest.sh",
         "scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh",
     ],
+    "serving_control": [
+        "scripts/run_w5_cluster_config.sh",
+    ],
     "pretraining_client": [
         "scripts/run_ub_dual_node_apps.sh --app pretraining_client_mem_service",
     ],
@@ -165,12 +168,40 @@ def test_app_build_matrix_runner_matches_app_inventory():
 def test_initramfs_mem_service_build_includes_ub_ssd_gsva_backend_sources():
     builder = (ROOT / "scripts" / "build_initramfs.sh").read_text()
 
+    assert 'MEM_SERVICE_GSVA_ACCESS_HDR="$ROOT_DIR/components/mem_service/mem_service_gsva_access.h"' in builder
     assert 'MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_backend.c"' in builder
     assert 'MEM_SERVICE_UB_SSD_GSVA_IO_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_io.c"' in builder
+    assert 'write_signature_line "mem_service_gsva_access_hdr" "$MEM_SERVICE_GSVA_ACCESS_HDR"' in builder
     assert 'write_signature_line "mem_service_ub_ssd_gsva_backend_src" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC"' in builder
     assert 'write_signature_line "mem_service_ub_ssd_gsva_io_src" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC"' in builder
     assert builder.count('"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC"') >= 5
     assert builder.count('"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC"') >= 5
+
+
+def test_mem_service_gsva_access_is_not_owned_by_ub_ssd_backend():
+    gsva_access = (ROOT / "components/mem_service/mem_service_gsva_access.h").read_text()
+    ub_ssd_backend = (
+        ROOT / "components/mem_service/mem_service_ub_ssd_gsva_backend.h"
+    ).read_text()
+    cluster_runtime = (
+        ROOT / "components/mem_service/mem_service_cluster_runtime.h"
+    ).read_text()
+
+    assert "struct mem_service_gsva_desc_source" in gsva_access
+    assert "struct mem_service_gsva_buffer_desc" in gsva_access
+    assert "mem_service_make_gsva_buffer_desc_from_source" in gsva_access
+    assert "uint64_t segment_id;" in gsva_access
+    assert "uint64_t home_va;" in gsva_access
+    assert "uint64_t region_bytes;" in gsva_access
+    assert "uint32_t home_cna;" in gsva_access
+    assert "export_mem_id" not in gsva_access
+    assert "remote_uba" not in gsva_access
+    assert "export_cna" not in gsva_access
+    assert "struct mem_service_ub_ssd_gsva_block_ref" in ub_ssd_backend
+    assert "struct mem_service_ub_ssd_gsva_desc_source" not in ub_ssd_backend
+    assert "struct mem_service_ub_ssd_gsva_buffer_desc" not in ub_ssd_backend
+    assert "mem_service_cluster_runtime_make_gsva_buffer_desc" in cluster_runtime
+    assert "mem_service_cluster_runtime_make_ub_ssd_gsva_buffer_desc" not in cluster_runtime
 
 
 def test_mem_service_linux_ops_ci_runner_is_reusable_and_dry_runnable():
@@ -1276,6 +1307,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_KEYS_SRC="$ROOT_DIR/components/mem_service/mem_service_keys.c"' in build_script
     assert 'MEM_SERVICE_OBJECT_REFS_SRC="$ROOT_DIR/components/mem_service/mem_service_object_refs.c"' in build_script
     assert 'MEM_SERVICE_OBMM_OBJECTS_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_objects.c"' in build_script
+    assert 'MEM_SERVICE_GSVA_ACCESS_HDR="$ROOT_DIR/components/mem_service/mem_service_gsva_access.h"' in build_script
     assert 'MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_backend.c"' in build_script
     assert 'MEM_SERVICE_UB_SSD_GSVA_IO_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_io.c"' in build_script
     assert 'MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"' in build_script

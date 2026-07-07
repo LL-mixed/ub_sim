@@ -7,8 +7,8 @@ Service process.
 It now has a core-only app build, a minimal Unix-socket daemon/client path, and
 a Qwen3 adapter inspect build:
 
-- `mem_service.c` implements the DB/object service and OBMM-backed runtime
-  metadata paths.
+- `mem_service.c` implements the DB/object service, GSVA-mediated access
+  metadata, and runtime object metadata paths.
 - `mem_service_internal.h` contains the private include aggregate and service
   private compatibility shims shared by the split implementation units.
 - `mem_service_compiler.h` contains local compiler annotations used by split
@@ -183,7 +183,9 @@ a Qwen3 adapter inspect build:
   accessor and activation contract used by split transport/model units.
 - `mem_service_cluster_runtime.c` contains guest OBMM cluster bootstrap,
   export/import slot activation, and pool layout helpers compiled as a
-  standalone transport runtime translation unit.
+  standalone transport runtime translation unit. It can derive backend-neutral
+  GSVA descriptors from the current OBMM-backed cluster mappings, but GSVA is
+  not owned by the OBMM pool backend.
 - `mem_service_cluster_utils.c` contains cluster environment parsing, wait
   throttling, and OBMM region range update/sync helpers compiled as a
   standalone guest runtime utility translation unit.
@@ -238,11 +240,14 @@ a Qwen3 adapter inspect build:
   deployments.
 - `mem_service_keys.h` contains the private key construction helper contract
   used by the prefix/KV metadata core.
+- `mem_service_gsva_access.h` contains the backend-neutral GSVA region and
+  buffer descriptor contract used by mem_service runtime flows and by backend
+  adapters such as `ub-ssd-gsva-v1`.
 - `mem_service_object_refs.c` contains device-independent checksum and Lingqu
-  OBMM object-reference projection helpers compiled as a standalone core
+  object-reference projection helpers compiled as a standalone core
   translation unit for guest and host service deployments.
 - `mem_service_object_refs.h` contains the private checksum/object-reference
-  helper contract used by OBMM and Qwen3 data-flow code.
+  helper contract used by runtime backends and Qwen3 data-flow code.
 - `mem_service_obmm_objects.c` contains OBMM object payload generation, kind
   naming, payload arena allocation, and object record publication helpers
   compiled as a standalone runtime-adjacent translation unit.
@@ -542,9 +547,12 @@ Keep the implementation layers separated:
   through that backend on read, and fail-closed quarantines corrupt payloads.
   `transport-tcp-block-v1` fetches payloads from `tcp:<ipv4>:<port>` into
   `remote-blocks/<checksum>.tcp/`, then validates and quarantines through the
-  same sealed transport contract. `ub-ssd-gsva-v1` is now a first-class object
-  backend reference for payloads committed into the simulated UB SSD through
-  its GSVA data path. Metadata-only `put-object --backend ub-ssd-gsva-v1`
+  same sealed transport contract. Object records now treat the default
+  OBMM-backed runtime pool and `ub-ssd-gsva-v1` as peer backend choices.
+  GVA/GSVA describes how mem_service exposes and moves caller buffers; it is
+  not owned by either backend. `ub-ssd-gsva-v1` is a first-class object backend
+  reference for payloads committed into the simulated UB SSD through the GSVA
+  data path. Metadata-only `put-object --backend ub-ssd-gsva-v1`
   records the SSD device CNA, owner node, block hi/lo, block version, byte
   range, and checksum in the mem_service object record; `get-object`,
   `inspect-object`, snapshot export, and store restart preserve that

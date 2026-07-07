@@ -76,7 +76,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
 {
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_read_buffer;
-    struct mem_service_ub_ssd_gsva_buffer_desc desc;
+    struct mem_service_gsva_buffer_desc desc;
     struct mem_service_ub_ssd_gsva_io_request request;
     struct mem_service_ub_ssd_gsva_io_completion completion;
     enum mem_service_ub_ssd_gsva_io_status status;
@@ -112,9 +112,9 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
     local_read_buffer.object_backing_len = payload_len;
     local_read_buffer.object_payload_checksum =
         remote_record->object_payload_checksum;
-    if (mem_service_cluster_runtime_make_ub_ssd_gsva_buffer_desc(rt,
-                                                                  &local_read_buffer,
-                                                                  &desc) != 0) {
+    if (mem_service_cluster_runtime_make_gsva_buffer_desc(rt,
+                                                          &local_read_buffer,
+                                                          &desc) != 0) {
         return -1;
     }
     memset(&request, 0, sizeof(request));
@@ -434,8 +434,8 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         memcpy(view_out->token_result_words,
                payload_words,
                MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
-        if (mem_service_record_to_lingqu_obmm_ref(&token_record,
-                                            &view_out->object_ref) != 0) {
+        if (mem_service_record_to_lingqu_object_ref(&token_record,
+                                                    &view_out->object_ref) != 0) {
             return -1;
         }
         view_out->wait_enter_monotonic_ms =
@@ -658,8 +658,8 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                 memcpy(view_out->token_result_words,
                        payload_words,
                        MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
-                if (mem_service_record_to_lingqu_obmm_ref(&token_record,
-                                                    &view_out->object_ref) != 0) {
+                if (mem_service_record_to_lingqu_object_ref(&token_record,
+                                                            &view_out->object_ref) != 0) {
                     return -1;
                 }
                 view_out->wait_enter_monotonic_ms =
@@ -766,8 +766,8 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                 memcpy(view_out->token_result_words,
                        payload_words,
                        MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
-                if (mem_service_record_to_lingqu_obmm_ref(&token_record,
-                                                    &view_out->object_ref) != 0) {
+                if (mem_service_record_to_lingqu_object_ref(&token_record,
+                                                            &view_out->object_ref) != 0) {
                     return -1;
                 }
                 view_out->wait_enter_monotonic_ms =
@@ -947,8 +947,8 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     view_out->owner_node = source_node;
     view_out->payload_kind = remote_hidden_output.object_payload_kind;
     view_out->backing_offset = resolved_backing_offset;
-    if (mem_service_record_to_lingqu_obmm_ref(&remote_hidden_output,
-                                        &view_out->object_ref) != 0) {
+    if (mem_service_record_to_lingqu_object_ref(&remote_hidden_output,
+                                                &view_out->object_ref) != 0) {
         return -1;
     }
     view_out->wait_enter_monotonic_ms =

@@ -55,6 +55,7 @@ validation ledger.
 | `ssd_gsva_test` | `scripts/run_ub_two_node_ssd_gsva_test.sh` | `scripts/run_ub_eight_node_ssd_gsva_test.sh` |
 | `mem_service` | `scripts/run_ub_dual_node_mem_service.sh` | `scripts/run_ub_eight_node_mem_service.sh` |
 | `llm_infer` | `scripts/run_ub_dual_node_w4_guest.sh` | `scripts/run_ub_eight_node_w4_guest_qwen3_0_6b_2step.sh` |
+| `serving_control` | `scripts/run_w5_cluster_config.sh` | n/a |
 | `pretraining_client` | `scripts/run_ub_dual_node_apps.sh --app pretraining_client_mem_service` | n/a |
 
 `mem_service` is primarily a link-time component under `components/mem_service`.
