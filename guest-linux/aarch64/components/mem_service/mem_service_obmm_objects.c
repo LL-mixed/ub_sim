@@ -54,8 +54,8 @@ const char *mem_service_object_kind_name(uint32_t payload_kind)
         return "qwen3_engram_selected";
     case MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_STATE:
         return "qwen3_engram_state";
-    case MEM_SERVICE_OBMM_KIND_W5_SERVING_REQUEST:
-        return "w5_serving_request";
+    case MEM_SERVICE_OBMM_KIND_SERVING_REQUEST:
+        return "serving_request";
     default:
         return "unknown";
     }

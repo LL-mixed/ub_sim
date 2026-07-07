@@ -178,6 +178,40 @@ def test_initramfs_mem_service_build_includes_ub_ssd_gsva_backend_sources():
     assert builder.count('"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC"') >= 5
 
 
+def test_serving_control_app_links_ub_ssd_gsva_backend_sources():
+    makefile = (ROOT / "apps" / "serving_control" / "Makefile").read_text()
+
+    assert (
+        "MEM_SERVICE_UB_SSD_GSVA_BACKEND := "
+        "$(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_backend.c"
+    ) in makefile
+    assert (
+        "MEM_SERVICE_UB_SSD_GSVA_IO := "
+        "$(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_io.c"
+    ) in makefile
+    assert "$(MEM_SERVICE_UB_SSD_GSVA_BACKEND)" in makefile
+    assert "$(MEM_SERVICE_UB_SSD_GSVA_IO)" in makefile
+
+
+def test_serving_control_internal_symbols_are_not_w5_named():
+    source = (ROOT / "apps" / "serving_control" / "serving_control.c").read_text()
+    object_contract = (
+        ROOT / "components" / "mem_service" / "mem_service_object_contract.h"
+    ).read_text()
+    obmm_objects = (
+        ROOT / "components" / "mem_service" / "mem_service_obmm_objects.c"
+    ).read_text()
+
+    assert "W5_SERVING_CONTROL" not in source
+    assert "w5_serving_control_slot" not in source
+    assert "w5_serving_checksum" not in source
+    assert "MEM_SERVICE_OBMM_KIND_W5_SERVING_REQUEST" not in object_contract
+    assert "MEM_SERVICE_OBMM_KIND_W5_SERVING_REQUEST" not in obmm_objects
+    assert "MEM_SERVICE_OBMM_KIND_SERVING_REQUEST" in object_contract
+    assert "MEM_SERVICE_OBMM_KIND_SERVING_REQUEST" in source
+    assert "MEM_SERVICE_OBMM_KIND_SERVING_REQUEST" in obmm_objects
+
+
 def test_mem_service_gsva_access_is_not_owned_by_ub_ssd_backend():
     gsva_access = (ROOT / "components/mem_service/mem_service_gsva_access.h").read_text()
     ub_ssd_backend = (

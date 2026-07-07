@@ -15,24 +15,24 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define W5_SERVING_CONTROL_MAX_LINE 1024U
-#define W5_SERVING_CONTROL_SLOT_BYTES 2048ULL
-#define W5_SERVING_CONTROL_MAX_REQUESTS 4096U
-#define W5_SERVING_CONTROL_REFRESH_MS 250L
-#define W5_SERVING_CONTROL_TIMEOUT_MS 90000L
-#define W5_SERVING_CONTROL_REQUEST_MAGIC 0x57355251U
-#define W5_SERVING_CONTROL_ACK_MAGIC 0x57354143U
+#define SERVING_CONTROL_MAX_LINE 1024U
+#define SERVING_CONTROL_SLOT_BYTES 2048ULL
+#define SERVING_CONTROL_MAX_REQUESTS 4096U
+#define SERVING_CONTROL_REFRESH_MS 250L
+#define SERVING_CONTROL_TIMEOUT_MS 90000L
+#define SERVING_CONTROL_REQUEST_MAGIC 0x57355251U
+#define SERVING_CONTROL_ACK_MAGIC 0x57354143U
 
-struct w5_serving_control_slot {
+struct serving_control_slot {
     uint32_t magic;
     uint32_t request_index;
     uint32_t payload_len;
     uint32_t reserved;
     uint64_t checksum;
-    char payload[W5_SERVING_CONTROL_MAX_LINE];
+    char payload[SERVING_CONTROL_MAX_LINE];
 };
 
-static uint64_t w5_serving_checksum(const uint8_t *bytes, size_t len)
+static uint64_t serving_control_checksum(const uint8_t *bytes, size_t len)
 {
     uint64_t h = 1469598103934665603ULL;
     size_t i;
@@ -72,7 +72,7 @@ static int parse_request_index(int argc, char **argv, uint32_t *index_out)
     errno = 0;
     value = strtoul(raw, &end, 10);
     if (errno != 0 || end == raw || *end != '\0' ||
-        value >= W5_SERVING_CONTROL_MAX_REQUESTS) {
+        value >= SERVING_CONTROL_MAX_REQUESTS) {
         fprintf(stderr,
                 "linqu_w5_serving_control: invalid --request-index %s\n",
                 raw);
@@ -118,15 +118,15 @@ static int activate_all_peers(struct mem_service_cluster_runtime *rt)
 static uint64_t request_slot_offset(uint32_t request_index)
 {
     return MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET +
-           (uint64_t)request_index * W5_SERVING_CONTROL_SLOT_BYTES;
+           (uint64_t)request_index * SERVING_CONTROL_SLOT_BYTES;
 }
 
 static uint64_t ack_slot_offset(uint32_t request_index)
 {
     return MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET +
-           (uint64_t)W5_SERVING_CONTROL_MAX_REQUESTS *
-               W5_SERVING_CONTROL_SLOT_BYTES +
-           (uint64_t)request_index * W5_SERVING_CONTROL_SLOT_BYTES;
+           (uint64_t)SERVING_CONTROL_MAX_REQUESTS *
+               SERVING_CONTROL_SLOT_BYTES +
+           (uint64_t)request_index * SERVING_CONTROL_SLOT_BYTES;
 }
 
 static uint64_t checksum_from_desc(const struct obmm_desc *desc)
@@ -151,10 +151,10 @@ static int write_local_control_slot(struct mem_service_cluster_runtime *rt,
                                     uint64_t checksum)
 {
     struct mem_service_cluster_slot *local_slot;
-    struct w5_serving_control_slot *slot;
+    struct serving_control_slot *slot;
 
     if (!rt || rt->local_idx < 0 || !payload ||
-        payload_len > W5_SERVING_CONTROL_MAX_LINE) {
+        payload_len > SERVING_CONTROL_MAX_LINE) {
         return -1;
     }
     local_slot = &rt->slots[rt->local_idx];
@@ -163,8 +163,8 @@ static int write_local_control_slot(struct mem_service_cluster_runtime *rt,
         offset + sizeof(*slot) > local_slot->region.len) {
         return -1;
     }
-    slot = (struct w5_serving_control_slot *)((uint8_t *)local_slot->region.addr +
-                                              offset);
+    slot = (struct serving_control_slot *)((uint8_t *)local_slot->region.addr +
+                                           offset);
     memset(slot, 0, sizeof(*slot));
     if (mem_service_update_region_range_at(local_slot, offset, sizeof(*slot), true) != 0) {
         return -1;
@@ -187,10 +187,10 @@ static bool read_remote_control_slot(struct mem_service_cluster_runtime *rt,
                                      uint64_t offset,
                                      uint32_t magic,
                                      uint32_t request_index,
-                                     struct w5_serving_control_slot *slot_out)
+                                     struct serving_control_slot *slot_out)
 {
     struct mem_service_cluster_slot *owner_slot;
-    struct w5_serving_control_slot slot;
+    struct serving_control_slot slot;
 
     if (!rt || !slot_out || owner_idx < 0 || owner_idx >= rt->node_count) {
         return false;
@@ -207,7 +207,7 @@ static bool read_remote_control_slot(struct mem_service_cluster_runtime *rt,
     memcpy(&slot, (const uint8_t *)owner_slot->region.addr + offset, sizeof(slot));
     if (slot.magic != magic || slot.request_index != request_index ||
         slot.payload_len == 0 ||
-        slot.payload_len > W5_SERVING_CONTROL_MAX_LINE) {
+        slot.payload_len > SERVING_CONTROL_MAX_LINE) {
         return false;
     }
     *slot_out = slot;
@@ -217,10 +217,10 @@ static bool read_remote_control_slot(struct mem_service_cluster_runtime *rt,
 static bool request_desc_matches(const struct obmm_desc *desc, uint32_t request_index)
 {
     return desc && desc->type == OBMM_DESC_MEM_SERVICE_OBJECT_PUT &&
-           desc->flags == MEM_SERVICE_OBMM_KIND_W5_SERVING_REQUEST &&
+           desc->flags == MEM_SERVICE_OBMM_KIND_SERVING_REQUEST &&
            (uint16_t)(desc->seq >> 48) == (uint16_t)(request_index + 1U) &&
            desc->payload_len > 0 &&
-           desc->payload_len <= W5_SERVING_CONTROL_MAX_LINE;
+           desc->payload_len <= SERVING_CONTROL_MAX_LINE;
 }
 
 static int publish_request_line(int argc, char **argv)
@@ -240,11 +240,11 @@ static int publish_request_line(int argc, char **argv)
         return 2;
     }
     len = strlen(line) + 1U;
-    if (len > W5_SERVING_CONTROL_MAX_LINE) {
+    if (len > SERVING_CONTROL_MAX_LINE) {
         fprintf(stderr,
                 "linqu_w5_serving_control: request line too long bytes=%zu max=%u\n",
                 len,
-                W5_SERVING_CONTROL_MAX_LINE);
+                SERVING_CONTROL_MAX_LINE);
         return 2;
     }
     if (mem_service_cluster_runtime_init(rt) != 0 ||
@@ -264,11 +264,11 @@ static int publish_request_line(int argc, char **argv)
         mem_service_cluster_runtime_destroy(rt);
         return 1;
     }
-    checksum = w5_serving_checksum((const uint8_t *)line, len);
+    checksum = serving_control_checksum((const uint8_t *)line, len);
     offset = request_slot_offset(request_index);
     if (write_local_control_slot(rt,
                                  offset,
-                                 W5_SERVING_CONTROL_REQUEST_MAGIC,
+                                 SERVING_CONTROL_REQUEST_MAGIC,
                                  request_index,
                                  line,
                                  len,
@@ -300,7 +300,7 @@ static int send_ack(struct mem_service_cluster_runtime *rt,
     snprintf(ack_payload, sizeof(ack_payload), "ack:%u", request_index);
     return write_local_control_slot(rt,
                                     ack_slot_offset(request_index),
-                                    W5_SERVING_CONTROL_ACK_MAGIC,
+                                    SERVING_CONTROL_ACK_MAGIC,
                                     request_index,
                                     ack_payload,
                                     strlen(ack_payload) + 1U,
@@ -313,11 +313,11 @@ static int wait_request_line(int argc, char **argv)
     const char *source_text = arg_value(argc, argv, "--source-node");
     const char *out_path = arg_value(argc, argv, "--out");
     int source_node = parse_source_node(source_text);
-    long deadline = mem_service_wallclock_ms() + W5_SERVING_CONTROL_TIMEOUT_MS;
+    long deadline = mem_service_wallclock_ms() + SERVING_CONTROL_TIMEOUT_MS;
     struct obmm_desc desc;
     long next_refresh;
     uint32_t request_index;
-    struct w5_serving_control_slot accepted_slot;
+    struct serving_control_slot accepted_slot;
 
     if (parse_request_index(argc, argv, &request_index) != 0) {
         return 2;
@@ -341,28 +341,28 @@ static int wait_request_line(int argc, char **argv)
         mem_service_cluster_runtime_destroy(rt);
         return 1;
     }
-    next_refresh = mem_service_wallclock_ms() + W5_SERVING_CONTROL_REFRESH_MS;
+    next_refresh = mem_service_wallclock_ms() + SERVING_CONTROL_REFRESH_MS;
     memset(&desc, 0, sizeof(desc));
     memset(&accepted_slot, 0, sizeof(accepted_slot));
     while (mem_service_wallclock_ms() < deadline) {
-        struct w5_serving_control_slot request_slot;
+        struct serving_control_slot request_slot;
         long now = mem_service_wallclock_ms();
 
         if (now >= next_refresh) {
             (void)mem_service_refresh_remote_slot(rt, source_node);
-            next_refresh = now + W5_SERVING_CONTROL_REFRESH_MS;
+            next_refresh = now + SERVING_CONTROL_REFRESH_MS;
         }
         if (read_remote_control_slot(rt,
                                      source_node,
                                      request_slot_offset(request_index),
-                                     W5_SERVING_CONTROL_REQUEST_MAGIC,
+                                     SERVING_CONTROL_REQUEST_MAGIC,
                                      request_index,
                                      &request_slot) &&
-            w5_serving_checksum((const uint8_t *)request_slot.payload,
-                                request_slot.payload_len) ==
+            serving_control_checksum((const uint8_t *)request_slot.payload,
+                                     request_slot.payload_len) ==
                 request_slot.checksum) {
             desc.type = OBMM_DESC_MEM_SERVICE_OBJECT_PUT;
-            desc.flags = MEM_SERVICE_OBMM_KIND_W5_SERVING_REQUEST;
+            desc.flags = MEM_SERVICE_OBMM_KIND_SERVING_REQUEST;
             desc.seq = ((uint64_t)(request_index + 1U) << 48) |
                        ((uint64_t)(source_node + 1) << 32) |
                        (request_slot_offset(request_index) & 0xffffffffULL);
@@ -385,12 +385,12 @@ static int wait_request_line(int argc, char **argv)
         return 1;
     }
     {
-        uint8_t bytes[W5_SERVING_CONTROL_MAX_LINE];
+        uint8_t bytes[SERVING_CONTROL_MAX_LINE];
         uint64_t checksum;
 
         memcpy(bytes, accepted_slot.payload, desc.payload_len);
         bytes[desc.payload_len - 1U] = '\0';
-        checksum = w5_serving_checksum(bytes, desc.payload_len);
+        checksum = serving_control_checksum(bytes, desc.payload_len);
         if ((uint32_t)(checksum ^ (checksum >> 32)) != desc.cookie) {
             fprintf(stderr,
                     "linqu_w5_serving_control: request checksum mismatch\n");

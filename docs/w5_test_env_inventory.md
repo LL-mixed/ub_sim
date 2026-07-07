@@ -21,6 +21,16 @@
 
 外部使用者不应把 `SIM_W5_TEST_*` 当成 W5 serving 的稳定控制面。它们只服务于矩阵、回归、证据收集、health gate、prefix/shortpath/GSVA 功能验证。
 
+`guest-linux/aarch64/scripts/run_w5_cluster_config.sh --print-env` 是当前
+W5 入口的环境面审计命令。输出按以下分组：
+
+- `runtime`: 主线运行和模型选择变量
+- `serving`: serving request/queue/ingress 变量
+- `test-memory-reuse`: Memory Service reuse、prefix/cache、GSVA、shortpath
+  验证变量
+- `test-maintenance`: post-run prune/health gate 变量
+- `vendor-context-test`: fused-SIMT/vendor context 校验变量
+
 ## Runner / Health
 
 | 新变量 | 作用 |
