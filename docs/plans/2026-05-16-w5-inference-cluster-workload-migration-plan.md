@@ -85,8 +85,8 @@ behavior is actually implemented.
 Introduce new entrypoints:
 
 ```text
-guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh
-guest-linux/aarch64/scripts/run_ub_w5_inference_cluster.sh
+guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh
+guest-linux/aarch64/scripts/run_w5_cluster_config.sh
 ```
 
 The eight-node script can be the first implementation. A generic node-count
@@ -99,7 +99,7 @@ RUN_ID=w5_qwen3_0_6b_decode_8step_YYYYMMDD
 SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode
 SIM_QWEN3_DENSE_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
 SIM_QWEN3_GUEST_DECODE_STEPS=8
-./guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh
+./guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh
 ```
 
 Engram example:
@@ -111,7 +111,7 @@ SIM_QWEN3_DENSE_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
 SIM_QWEN3_GUEST_DECODE_STEPS=4
 SIM_QWEN3_GUEST_ENGRAM=1
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host
-./guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh
+./guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh
 ```
 
 Compatibility:
@@ -229,7 +229,7 @@ Migration is complete when:
 
 | Item | Status |
 | --- | --- |
-| A new W5 runner exists and can execute the same 8-node decode path. | Implemented: `run_ub_eight_node_w5_inference_cluster.sh`. |
+| A new W5 runner exists and can execute the same 8-node decode path. | Implemented: `run_w5_inference_cluster_runtime.sh`; the user-facing entry is `run_w5_cluster_config.sh`. |
 | Summary output has a W5 filename alias. | Implemented: `eight_node_w5_inference_cluster_summary.<RUN_ID>.txt`. |
 | Docs describe the mainline workload as W5 inference cluster. | Implemented for forward-looking W5 plans. |
 | Legacy W4 commands still work. | Preserved by keeping the legacy runner and compatibility env mapping. |

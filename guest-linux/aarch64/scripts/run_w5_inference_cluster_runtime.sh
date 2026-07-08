@@ -275,7 +275,7 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
 
   cli_args=(
     w5-inference-cluster
-    --script "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"
+    --script "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"
     --w5-profile "$SIM_UAPI_W5_PROFILE"
     --steps "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
     --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
@@ -416,7 +416,7 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
   fi
   if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
     echo "[w5_inference_cluster] serving_queue=1 launch_mode=ready_only" >&2
-    exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"
+    exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"
   fi
   echo "[w5_inference_cluster] runtime_boundary_lookup=$memory_runtime_lookup online_boundary_lookup=$memory_online_lookup observation_store=$SIM_W5_TEST_MEMORY_OBSERVATION_STORE decision_reuse=$memory_decision_reuse decision_store=$SIM_W5_TEST_MEMORY_DECISION_STORE" >&2
   "${SIM_CLI_BIN}" "${cli_args[@]}"
@@ -432,4 +432,4 @@ case "$SIM_W5_TEST_VALIDATE_ONLY" in
     ;;
 esac
 
-exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"
+exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"

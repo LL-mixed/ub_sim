@@ -372,7 +372,7 @@ SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE=8
 SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE=3
 SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW=64
 SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=simpler-host
-./guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh
+./guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh
 ```
 
 The legacy-compatible eight-node guest decode runner can still execute the

@@ -3,12 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEFAULT_CONFIG="$ROOT_DIR/out/w5_cluster_run.env"
 source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] [config.env]
+usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -162,7 +161,12 @@ if (( $# > 0 )); then
   exit 2
 fi
 
-CONFIG_PATH="${CONFIG_PATH:-$DEFAULT_CONFIG}"
+if [[ -z "$CONFIG_PATH" ]]; then
+  echo "W5 cluster config file is required" >&2
+  echo "hint: pass a config.env path, or use run_w5_cluster_qwen3_0_6b_2step.sh to generate one" >&2
+  usage
+  exit 2
+fi
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "W5 cluster config file is missing: $CONFIG_PATH" >&2
   echo "hint: write KEY=VALUE lines to the config file, then rerun this stable entrypoint" >&2
@@ -172,6 +176,45 @@ fi
 set -a
 source "$CONFIG_PATH"
 set +a
+
+reject_deprecated_w5_env_var() {
+  local old_name="$1"
+  local new_name="$2"
+  if [[ -n "${(P)old_name:-}" ]]; then
+    echo "$old_name was renamed to $new_name; update $CONFIG_PATH before running W5" >&2
+    return 1
+  fi
+  return 0
+}
+
+reject_deprecated_w5_env() {
+  local deprecated_status=0
+
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_RUNTIME_BOUNDARY_LOOKUP SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_ONLINE_BOUNDARY_LOOKUP SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_DECISION_STORE SIM_W5_TEST_MEMORY_DECISION_STORE || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_DECISION_OBJECT_STORE SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_OBSERVATION_STORE SIM_W5_TEST_MEMORY_OBSERVATION_STORE || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_BOUNDARY_OBSERVATION_ID SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_ID || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_BOUNDARY_OBSERVATION_IDS SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_IDS || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_BOUNDARY_OBSERVATION_RUN_ID SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_SHORTPATH_DECISION_ID SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_SHORTPATH_DECISION_IDS SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_IDS || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_SHORTPATH_EXECUTE SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_PREFIX_CACHE_LOOKUP SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_PREFIX_CACHE_SERVICE_ADDR SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_POST_RUN_PROMOTE SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_PREFETCH_PLAN_ID SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_GSVA_KV SIM_W5_TEST_MEMORY_GSVA_KV || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH || deprecated_status=2
+
+  return "$deprecated_status"
+}
+
+if ! reject_deprecated_w5_env; then
+  exit 2
+fi
 
 if [[ -n "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID:-}" ]]; then
   echo "SIM_W5_TEST_MEMORY_REUSE_RUN_ID was renamed to SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG; normal W5 runs auto-discover reusable Memory Service stores without this variable" >&2
@@ -271,6 +314,7 @@ print_w5_effective_env() {
   print_env_value SIM_QWEN3_GUEST_ENGRAM "${SIM_QWEN3_GUEST_ENGRAM:-}"
   print_env_value SIM_QWEN3_GUEST_ENGRAM_POOL "${SIM_QWEN3_GUEST_ENGRAM_POOL:-}"
   print_env_value SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP "${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-}"
+  print_env_value SIM_W5_PROGRESS_INTERVAL_SECS "${SIM_W5_PROGRESS_INTERVAL_SECS:-}"
 
   print_env_section "serving"
   print_env_value SIM_W5_SERVING_REQUESTS_FILE "${SIM_W5_SERVING_REQUESTS_FILE:-}"
@@ -319,6 +363,7 @@ validate_w5_cluster_config() {
   local memory_prefix_cache_lookup=1
   local memory_require_prefix_cache=0
   local serving_ingress="${SIM_W5_SERVING_INGRESS:-cluster}"
+  local progress_interval="${SIM_W5_PROGRESS_INTERVAL_SECS:-}"
   local keep_latest="${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
   local max_prune_candidates="${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
@@ -333,6 +378,10 @@ validate_w5_cluster_config() {
   esac
   if [[ ! "$steps" =~ '^[0-9]+$' || "$steps" == "0" ]]; then
     echo "SIM_QWEN3_GUEST_DECODE_STEPS must be a positive integer: $steps" >&2
+    return 2
+  fi
+  if [[ -n "$progress_interval" && ! "$progress_interval" =~ '^[0-9]+$' ]]; then
+    echo "SIM_W5_PROGRESS_INTERVAL_SECS must be a non-negative integer: $progress_interval" >&2
     return 2
   fi
   if [[ ! "$keep_latest" =~ '^[0-9]+$' ]]; then
@@ -549,7 +598,7 @@ if (( VALIDATE_ONLY )); then
   if [[ -n "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
     unset SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG
   fi
-  exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
+  exec "$SCRIPT_DIR/run_w5_inference_cluster_runtime.sh"
 fi
 
 echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" >&2
@@ -557,8 +606,8 @@ if [[ -n "${SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG:-}" ]]; then
   unset SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG
 fi
 if bool_enabled "${SIM_W5_TEST_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_TEST_POST_RUN_HEALTH:-0}"; then
-  "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
+  "$SCRIPT_DIR/run_w5_inference_cluster_runtime.sh"
   run_post_run_maintenance
 else
-  exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"
+  exec "$SCRIPT_DIR/run_w5_inference_cluster_runtime.sh"
 fi

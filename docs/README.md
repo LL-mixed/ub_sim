@@ -23,6 +23,10 @@ Current validation entry points:
   - host-core dataplane microbenchmark benefit report for W5 GVA/GSVA, including expanded legacy PA-to-UBA resolver baselines (`linear`, `direct`, `indexed`, `cached`)
 - [w5_test_env_inventory.md](w5_test_env_inventory.md)
   - inventory and naming rule for W5 validation, test, report, and check environment variables; these variables use the `SIM_W5_TEST_*` namespace
+- [w5_manual_serving_run.md](w5_manual_serving_run.md)
+  - current manual entry for 8-node W5 stream inference and sequential serving request submission
+- [w5_script_inventory.md](w5_script_inventory.md)
+  - W5 script surface inventory separating manual entry, internal runtime, validation, maintenance, and compatibility wrappers
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)

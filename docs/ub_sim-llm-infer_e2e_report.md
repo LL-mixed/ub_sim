@@ -442,7 +442,7 @@ seed run：
 ```text
 cargo test -p sim-memory -p sim-uapi -p sim-cli
 /opt/homebrew/bin/pytest guest-linux/aarch64/tests/test_qwen3_dense_env.py guest-linux/aarch64/tests/test_w5_artifact_prune.py guest-linux/aarch64/tests/test_w5_inference_run_report.py
-zsh -n guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh guest-linux/aarch64/scripts/run_w5_cluster_config.sh guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh guest-linux/aarch64/scripts/launch_ub_eight_node_headless.sh
+zsh -n guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh guest-linux/aarch64/scripts/run_w5_cluster_config.sh guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh guest-linux/aarch64/scripts/launch_ub_eight_node_headless.sh
 git diff --check
 ./guest-linux/aarch64/scripts/build_guest_artifacts.sh
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh guest-linux/aarch64/out/w5_cluster_runtime_async_seed.env

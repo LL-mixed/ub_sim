@@ -24,7 +24,7 @@ mkdir -p "$OUT_DIR"
   printf 'SIM_W5_MEMORY_SERVICE=lingqu_memory_service\n'
   printf 'QEMU_MEM=%s\n' "${QEMU_MEM:-8G}"
   printf 'QEMU_SMP=%s\n' "${QEMU_SMP:-2}"
-  printf 'W4_GUEST_PROGRESS_INTERVAL_SECS=%s\n' "${W4_GUEST_PROGRESS_INTERVAL_SECS:-60}"
+  printf 'SIM_W5_PROGRESS_INTERVAL_SECS=%s\n' "${SIM_W5_PROGRESS_INTERVAL_SECS:-60}"
 } > "$CONFIG_PATH"
 
 exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"

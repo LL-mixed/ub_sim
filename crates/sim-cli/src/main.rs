@@ -1453,7 +1453,7 @@ fn default_qwen3_guest_decode_script_path() -> PathBuf {
     Path::new("guest-linux")
         .join("aarch64")
         .join("scripts")
-        .join("run_ub_eight_node_w5_inference_cluster.sh")
+        .join("run_w5_inference_cluster_runtime.sh")
 }
 
 const W5_INFERENCE_PROFILE_SPECS: &[W5InferenceProfileSpec] = &[
@@ -17175,7 +17175,7 @@ mod tests {
             "Capital of China is",
             "--prompt-token-ids=9707,1207,16948,18,358",
             "--script",
-            "guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh",
+            "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
             "--matmul-batch=16",
             "--model",
             "Qwen/Qwen3-14B",
@@ -17195,7 +17195,7 @@ mod tests {
         );
         assert_eq!(
             args.script_path,
-            PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh")
+            PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh")
         );
         assert_eq!(args.matmul_batch, Some(16));
         assert_eq!(args.model.as_deref(), Some("Qwen/Qwen3-14B"));
@@ -17268,7 +17268,7 @@ mod tests {
 
         assert_eq!(
             args.script_path,
-            PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w5_inference_cluster.sh")
+            PathBuf::from("guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh")
         );
         assert_eq!(args.w5_profile, None);
     }
@@ -18212,7 +18212,7 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
@@ -18273,7 +18273,7 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
@@ -18333,7 +18333,7 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
@@ -19186,7 +19186,7 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
             matmul_batch: None,
             model: None,
             weights_path: Some(weights_dir),
@@ -20375,7 +20375,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     fn qwen3_guest_log_dir_from_script_output_uses_run_id() {
         let log_dir = qwen3_guest_log_dir_from_script_output(
             "[w4guest8] prepare: launch headless env run_id=2026-05-08_09-34-14_w4guest8_9435\n",
-            &PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            &PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
         )
         .expect("log dir");
         assert_eq!(
@@ -27708,7 +27708,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
             matmul_batch: None,
             model: None,
             weights_path: Some(weights_dir),
@@ -28077,7 +28077,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             step_count: 2,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_ub_eight_node_w4_guest.sh"),
+            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
             matmul_batch: None,
             model: None,
             weights_path: Some(weights_dir.clone()),

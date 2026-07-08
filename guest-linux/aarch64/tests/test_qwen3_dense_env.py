@@ -221,7 +221,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
     def test_eight_node_runner_passes_decode_round_barrier_timeout(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
-        runner = script_dir / "run_ub_eight_node_w4_guest.sh"
+        runner = script_dir / "run_llm_infer_eight_node_guest.sh"
         launcher = script_dir / "launch_ub_eight_node_headless.sh"
 
         runner_text = runner.read_text(encoding="utf-8")
@@ -400,7 +400,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH", launcher_text)
 
     def test_w5_artifact_size_validation_cli_uses_host_registry_for_guest_tmp_streams(self):
-        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_ub_eight_node_w4_guest.sh"
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_llm_infer_eight_node_guest.sh"
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -455,7 +455,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             self.assertNotIn("/tmp/w5_memory_prefix_cache_kv_stream.txt", result.stderr)
 
     def test_w5_artifact_size_validation_cli_allows_prefix_cache_without_shortpath_streams(self):
-        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_ub_eight_node_w4_guest.sh"
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_llm_infer_eight_node_guest.sh"
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -495,7 +495,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             self.assertNotIn("FAIL: W5 artifact size check missing label=shortpath_kv_stream", result.stderr)
 
     def test_w5_artifact_size_validation_cli_fails_on_oversized_artifact(self):
-        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_ub_eight_node_w4_guest.sh"
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_llm_infer_eight_node_guest.sh"
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -570,7 +570,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         eight_node_runner = (
             Path(__file__).resolve().parents[1]
             / "scripts"
-            / "run_ub_eight_node_w4_guest.sh"
+            / "run_llm_infer_eight_node_guest.sh"
         ).read_text(encoding="utf-8")
 
         self.assertIn("qwen3_memory_prefix_cache_kv_ref", guest_source)
@@ -789,8 +789,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
     def test_w5_inference_cluster_runner_delegates_to_legacy_compatible_runner(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
-        runner = script_dir / "run_ub_eight_node_w5_inference_cluster.sh"
-        generic = script_dir / "run_ub_w5_inference_cluster.sh"
+        runner = script_dir / "run_w5_inference_cluster_runtime.sh"
         config_runner = script_dir / "run_w5_cluster_config.sh"
         realistic_matrix_runner = script_dir / "run_w5_prefix_cache_realistic_matrix.sh"
         serving_matrix_runner = script_dir / "run_w5_prefix_cache_serving_matrix.sh"
@@ -801,8 +800,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertTrue(runner.exists())
         self.assertTrue(runner.stat().st_mode & 0o111)
-        self.assertTrue(generic.exists())
-        self.assertTrue(generic.stat().st_mode & 0o111)
+        self.assertFalse((script_dir / "run_ub_w5_inference_cluster.sh").exists())
         self.assertTrue(config_runner.exists())
         self.assertTrue(config_runner.stat().st_mode & 0o111)
         self.assertTrue(realistic_matrix_runner.exists())
@@ -813,12 +811,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertTrue(summary.stat().st_mode & 0o111)
 
         runner_text = runner.read_text(encoding="utf-8")
-        generic_text = generic.read_text(encoding="utf-8")
         config_runner_text = config_runner.read_text(encoding="utf-8")
         realistic_matrix_runner_text = realistic_matrix_runner.read_text(encoding="utf-8")
         serving_matrix_runner_text = serving_matrix_runner.read_text(encoding="utf-8")
         stable_w5_runner_text = stable_w5_runner.read_text(encoding="utf-8")
-        legacy_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
+        legacy_runner_text = (script_dir / "run_llm_infer_eight_node_guest.sh").read_text(encoding="utf-8")
+        w4_compat_runner_text = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(encoding="utf-8")
         launcher_text = launcher.read_text(encoding="utf-8")
         summary_text = summary.read_text(encoding="utf-8")
         build_initramfs_text = build_initramfs.read_text(encoding="utf-8")
@@ -884,14 +882,17 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('"${SIM_CLI_BIN}" "${cli_args[@]}"', runner_text)
         self.assertIn("stop_prefix_cache_service", runner_text)
         self.assertIn("eight_node_w5_inference_cluster_summary", runner_text)
-        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w4_guest.sh"', runner_text)
-        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', generic_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"', runner_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh" "$@"', w4_compat_runner_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
         self.assertIn("--steps N", config_runner_text)
         self.assertIn("--requests FILE", config_runner_text)
         self.assertIn("--serve-queue", config_runner_text)
         self.assertIn("--serve-requests FILE", config_runner_text)
         self.assertIn("--validate-only", config_runner_text)
+        self.assertIn("W5 cluster config file is required", config_runner_text)
+        self.assertIn("run_w5_cluster_qwen3_0_6b_2step.sh", config_runner_text)
+        self.assertNotIn("DEFAULT_CONFIG=", config_runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
         self.assertIn("--no-memory-reuse", config_runner_text)
@@ -906,8 +907,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_TEST_MEMORY_DECISION_OBJECT_STORE requires SIM_W5_TEST_MEMORY_DECISION_STORE", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM", config_runner_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", config_runner_text)
+        self.assertIn("SIM_W5_PROGRESS_INTERVAL_SECS", config_runner_text)
         self.assertIn("fixed RUN_ID is disabled", config_runner_text)
         self.assertIn("SIM_W5_ALLOW_FIXED_RUN_ID", config_runner_text)
+        self.assertIn("reject_deprecated_w5_env", config_runner_text)
+        self.assertIn("reject_deprecated_w5_env_var SIM_W5_MEMORY_DECISION_STORE SIM_W5_TEST_MEMORY_DECISION_STORE", config_runner_text)
+        self.assertIn("reject_deprecated_w5_env_var SIM_W5_MEMORY_GSVA_KV SIM_W5_TEST_MEMORY_GSVA_KV", config_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP", config_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1", config_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP", config_runner_text)
@@ -922,6 +927,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("linqu_w5_serving_control", build_initramfs_text)
         self.assertIn("SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
+        self.assertIn("SIM_W5_PROGRESS_INTERVAL_SECS", stable_w5_runner_text)
+        self.assertNotIn("printf 'W4_GUEST_PROGRESS_INTERVAL_SECS=", stable_w5_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"', stable_w5_runner_text)
         self.assertIn("--reuse-runs N", realistic_matrix_runner_text)
         self.assertIn("--no-memory-reuse", realistic_matrix_runner_text)
@@ -981,7 +988,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("w5_artifact_prune.py", config_runner_text)
         self.assertIn("w5_cluster_health_check.py", config_runner_text)
         self.assertIn("unset SIM_W5_TEST_MEMORY_REUSE_RUN_ID_FOR_DEBUG", config_runner_text)
-        self.assertIn('exec "$SCRIPT_DIR/run_ub_eight_node_w5_inference_cluster.sh"', config_runner_text)
+        self.assertIn('exec "$SCRIPT_DIR/run_w5_inference_cluster_runtime.sh"', config_runner_text)
         self.assertIn("explicit obmm cluster runtime bootstrap", legacy_runner_text)
         self.assertIn('SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0', legacy_runner_text)
         self.assertNotIn('SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-1', legacy_runner_text)
@@ -1040,6 +1047,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_QWEN3_GUEST_ENGRAM=0",
                 "SIM_QWEN3_GUEST_ENGRAM_POOL=",
                 "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
+                "SIM_W5_PROGRESS_INTERVAL_SECS=",
                 "# serving",
                 "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_W5_SERVING_QUEUE=0",
@@ -1076,6 +1084,21 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH=/tmp/engram-simt/libkernel.so",
             ],
         )
+
+    def test_w5_cluster_config_runner_requires_explicit_config(self):
+        script_dir = Path(__file__).resolve().parents[1] / "scripts"
+        config_runner = script_dir / "run_w5_cluster_config.sh"
+
+        result = subprocess.run(
+            [str(config_runner), "--print-env"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("W5 cluster config file is required", result.stderr)
+        self.assertIn("run_w5_cluster_qwen3_0_6b_2step.sh", result.stderr)
 
     def test_w5_cluster_config_runner_accepts_serving_requests_file(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
@@ -1281,7 +1304,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
     def test_w5_nodea_ingress_scopes_each_request_decode_step_base(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
-        legacy_runner = (script_dir / "run_ub_eight_node_w4_guest.sh").read_text(
+        legacy_runner = (script_dir / "run_llm_infer_eight_node_guest.sh").read_text(
             encoding="utf-8"
         )
 
@@ -2333,7 +2356,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
     def test_w5_inference_cluster_runner_does_not_reference_legacy_demo_wait_secs_name(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
-        runner = script_dir / "run_ub_eight_node_w5_inference_cluster.sh"
+        runner = script_dir / "run_w5_inference_cluster_runtime.sh"
         runner_text = runner.read_text(encoding="utf-8")
 
         self.assertNotIn("DEMO_WAIT_SECS", runner_text)

@@ -77,7 +77,7 @@ RUN_APP = ROOT / "initramfs" / "run_app"
 COMPONENTS_README = ROOT / "components" / "README.md"
 CLI_DIR = ROOT / "apps" / "mem_service"
 FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
-EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh"
+EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
 SIM_UAPI_RS = REPO_ROOT / "crates" / "sim-uapi" / "src" / "lib.rs"
 
 

@@ -3201,7 +3201,7 @@ def test_dual_node_apps_uses_canonical_cli_entrypoint():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     w4_runner = (ROOT / "scripts" / "run_ub_dual_node_w4_guest.sh").read_text()
     w4_four_runner = (ROOT / "scripts" / "run_ub_four_node_w4_guest.sh").read_text()
-    w4_eight_runner = (ROOT / "scripts" / "run_ub_eight_node_w4_guest.sh").read_text()
+    w4_eight_runner = (ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh").read_text()
     app_matrix = (ROOT / "scripts" / "run_ub_app_validation_matrix.sh").read_text()
     four_node_smoke = (ROOT / "scripts" / "run_ub_four_node_smoke.sh").read_text()
     launcher_scripts = "\n".join(
