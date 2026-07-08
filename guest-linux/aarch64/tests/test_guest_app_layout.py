@@ -154,13 +154,19 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     build_qemu = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
     manual_doc = (ROOT.parents[1] / "docs" / "w5_manual_serving_run.md").read_text()
     script_inventory = (ROOT.parents[1] / "docs" / "w5_script_inventory.md").read_text()
+    macos_env = ROOT.parents[1] / "w5.macos.env"
 
     assert helper.exists()
     assert helper.stat().st_mode & 0o111
     assert container_entry.exists()
     assert container_entry.stat().st_mode & 0o111
     assert "prepare_w5_container_deps.sh" in build_qemu
-    assert "prepare_w5_container_deps.sh" in container_entry.read_text()
+    container_entry_text = container_entry.read_text()
+    assert "prepare_w5_container_deps.sh" in container_entry_text
+    assert 'export UB_SYNC_ARTIFACTS="${UB_SYNC_ARTIFACTS:-0}"' in container_entry_text
+    assert "/Volumes/repos/qwen3_mlx_run:/Volumes/repos/qwen3_mlx_run:ro" in container_entry_text
+    assert macos_env.exists()
+    assert "SIM_QWEN3_DENSE_WEIGHTS_PATH=/Volumes/repos/qwen3_mlx_run/Qwen3-0.6B" in macos_env.read_text()
     assert "run_w5_in_container.sh" in manual_doc
     assert "run_w5_in_container.sh" in script_inventory
 
@@ -172,6 +178,8 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     )
 
     assert "python3 -m pip install distlib" in result.stdout
+    assert "cpio" in result.stdout
+    assert "liburing" in result.stdout
     assert (
         "dnf install -y" in result.stdout
         or "yum install -y" in result.stdout

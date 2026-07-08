@@ -89,6 +89,9 @@ if [[ -d /home/ll/models ]]; then
   docker_args+=(-v /home/ll/models:/home/ll/models:ro)
   docker_args+=(-v /home/ll/models:/models:ro)
 fi
+if [[ -d /Volumes/repos/qwen3_mlx_run ]]; then
+  docker_args+=(-v /Volumes/repos/qwen3_mlx_run:/Volumes/repos/qwen3_mlx_run:ro)
+fi
 
 container_script='
 set -euo pipefail
@@ -110,6 +113,10 @@ if ! command -v zsh >/dev/null 2>&1; then
 fi
 
 ./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
+
+if [[ -f guest-linux/aarch64/out/Image && -f guest-linux/aarch64/out/initramfs.cpio.gz ]]; then
+  export UB_SYNC_ARTIFACTS="${UB_SYNC_ARTIFACTS:-0}"
+fi
 
 if [[ "$reconfigure_qemu" == "1" ]]; then
   rm -rf vendor/qemu_8.2.0_ub/build/pyvenv

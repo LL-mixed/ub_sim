@@ -25,13 +25,13 @@ print_qemu_build_deps_help() {
 [build_qemu_binary] container helper:
 [build_qemu_binary]   ./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
 [build_qemu_binary] openEuler/Fedora/RHEL container, current python:
-[build_qemu_binary]   dnf install -y glib2-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
+[build_qemu_binary]   dnf install -y glib2-devel liburing-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
 [build_qemu_binary]   python3 -m pip install distlib
 [build_qemu_binary] openEuler/Fedora/RHEL container, system python:
-[build_qemu_binary]   dnf install -y python3-distlib glib2-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
+[build_qemu_binary]   dnf install -y python3-distlib glib2-devel liburing-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
 [build_qemu_binary]   export QEMU_CONFIGURE_ARGS="--disable-werror --python=/usr/bin/python3"
 [build_qemu_binary] Debian/Ubuntu container:
-[build_qemu_binary]   apt-get update && apt-get install -y python3-distlib libglib2.0-dev libpixman-1-dev zlib1g-dev pkg-config ninja-build gcc g++ make python3-pip
+[build_qemu_binary]   apt-get update && apt-get install -y python3-distlib libglib2.0-dev liburing-dev libpixman-1-dev zlib1g-dev pkg-config ninja-build gcc g++ make python3-pip
 EOF
 }
 
@@ -84,7 +84,7 @@ check_qemu_build_host_deps() {
     missing+=("$python_bin distlib")
   fi
   if command -v pkg-config >/dev/null 2>&1; then
-    for pkg in glib-2.0 pixman-1 zlib; do
+    for pkg in glib-2.0 liburing pixman-1 zlib; do
       if ! pkg-config --exists "$pkg"; then
         missing+=("pkg-config:$pkg")
       fi

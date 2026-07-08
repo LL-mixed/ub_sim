@@ -57,7 +57,9 @@ PY
 install_rpm_deps() {
   local installer="$1"
   run_cmd "$installer" install -y \
+    cpio \
     glib2-devel \
+    liburing-devel \
     pixman-devel \
     zlib-devel \
     pkgconf-pkg-config \
@@ -72,7 +74,9 @@ install_rpm_deps() {
 install_deb_deps() {
   run_cmd apt-get update
   run_cmd apt-get install -y \
+    cpio \
     libglib2.0-dev \
+    liburing-dev \
     libpixman-1-dev \
     zlib1g-dev \
     pkg-config \
@@ -111,7 +115,7 @@ verify_deps() {
     missing+=("python3 distlib")
   fi
   if command -v pkg-config >/dev/null 2>&1; then
-    for pkg in glib-2.0 pixman-1 zlib; do
+    for pkg in glib-2.0 liburing pixman-1 zlib; do
       if ! pkg-config --exists "$pkg"; then
         missing+=("pkg-config:$pkg")
       fi
