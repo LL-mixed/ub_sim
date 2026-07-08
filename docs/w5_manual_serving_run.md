@@ -6,6 +6,25 @@ scripts remain implementation details.
 
 ## Minimal Config
 
+When running inside an openEuler container, install the native build
+dependencies before the first run because the W5 entry may need to build the
+workspace QEMU:
+
+```sh
+./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
+```
+
+The helper supports openEuler/Fedora/RHEL-like containers via `dnf`/`yum` and
+Debian/Ubuntu containers via `apt-get`. It installs QEMU native build
+dependencies and ensures the container's current `python3` can import
+`distlib`.
+
+For audit-only output:
+
+```sh
+./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh --dry-run
+```
+
 Create a config file with runtime values only:
 
 ```sh

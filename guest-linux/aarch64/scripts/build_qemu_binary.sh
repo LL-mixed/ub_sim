@@ -19,6 +19,85 @@ SIM_QEMU_STATICLIB="${SIM_QEMU_STATICLIB:-}"
 BUILD_HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
 STAT_BIN="${STAT_BIN:-$(command -v stat 2>/dev/null || echo stat)}"
 
+print_qemu_build_deps_help() {
+  cat >&2 <<'EOF'
+[build_qemu_binary] missing native QEMU build dependencies.
+[build_qemu_binary] container helper:
+[build_qemu_binary]   ./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
+[build_qemu_binary] openEuler/Fedora/RHEL container, current python:
+[build_qemu_binary]   dnf install -y glib2-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
+[build_qemu_binary]   python3 -m pip install distlib
+[build_qemu_binary] openEuler/Fedora/RHEL container, system python:
+[build_qemu_binary]   dnf install -y python3-distlib glib2-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
+[build_qemu_binary]   export QEMU_CONFIGURE_ARGS="--disable-werror --python=/usr/bin/python3"
+[build_qemu_binary] Debian/Ubuntu container:
+[build_qemu_binary]   apt-get update && apt-get install -y python3-distlib libglib2.0-dev libpixman-1-dev zlib1g-dev pkg-config ninja-build gcc g++ make python3-pip
+EOF
+}
+
+check_python_distlib() {
+  local python_bin="$1"
+  "$python_bin" - <<'PY' >/dev/null 2>&1
+try:
+    import distlib.scripts
+    import distlib.version
+except ImportError:
+    from pip._vendor import distlib
+    import pip._vendor.distlib.scripts
+    import pip._vendor.distlib.version
+PY
+}
+
+qemu_configure_python_bin() {
+  local arg
+
+  if [[ -n "${PYTHON:-}" ]]; then
+    echo "$PYTHON"
+    return
+  fi
+  for arg in ${(z)CONFIGURE_ARGS}; do
+    case "$arg" in
+      --python=*)
+        echo "${arg#--python=}"
+        return
+        ;;
+    esac
+  done
+  echo python3
+}
+
+check_qemu_build_host_deps() {
+  local missing=()
+  local python_bin
+  local pkg
+
+  python_bin="$(qemu_configure_python_bin)"
+  if ! command -v "$python_bin" >/dev/null 2>&1; then
+    missing+=("$python_bin")
+  fi
+  for tool in pkg-config ninja gcc make; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing+=("$tool")
+    fi
+  done
+  if command -v "$python_bin" >/dev/null 2>&1 && ! check_python_distlib "$python_bin"; then
+    missing+=("$python_bin distlib")
+  fi
+  if command -v pkg-config >/dev/null 2>&1; then
+    for pkg in glib-2.0 pixman-1 zlib; do
+      if ! pkg-config --exists "$pkg"; then
+        missing+=("pkg-config:$pkg")
+      fi
+    done
+  fi
+
+  if (( ${#missing[@]} > 0 )); then
+    printf '[build_qemu_binary] missing: %s\n' "${(j:, :)missing}" >&2
+    print_qemu_build_deps_help
+    exit 1
+  fi
+}
+
 file_signature() {
   local path="$1"
 
@@ -152,6 +231,7 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
+check_qemu_build_host_deps
 apply_host_qemu_configure_args
 ensure_sim_qemu_link_args
 mkdir -p "$BUILD_DIR"

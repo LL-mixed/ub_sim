@@ -148,6 +148,32 @@ def test_app_validation_matrix_runner_matches_readme_commands():
             assert f"\"{app}|{commands[0]}|{commands[1]}\"" in runner
 
 
+def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
+    helper = ROOT / "scripts" / "prepare_w5_container_deps.sh"
+    build_qemu = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
+    manual_doc = (ROOT.parents[1] / "docs" / "w5_manual_serving_run.md").read_text()
+
+    assert helper.exists()
+    assert helper.stat().st_mode & 0o111
+    assert "prepare_w5_container_deps.sh" in build_qemu
+    assert "prepare_w5_container_deps.sh" in manual_doc
+
+    result = subprocess.run(
+        [str(helper), "--dry-run"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "python3 -m pip install distlib" in result.stdout
+    assert (
+        "dnf install -y" in result.stdout
+        or "yum install -y" in result.stdout
+        or "apt-get install -y" in result.stdout
+    )
+    assert "[prepare_w5_container_deps] ready" in result.stdout
+
+
 def test_app_build_matrix_runner_matches_app_inventory():
     runner_path = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
     runner = runner_path.read_text()
