@@ -65,6 +65,7 @@ install_rpm_deps() {
     gcc \
     gcc-c++ \
     make \
+    zsh \
     python3-pip
 }
 
@@ -79,6 +80,7 @@ install_deb_deps() {
     gcc \
     g++ \
     make \
+    zsh \
     python3-pip \
     python3-distlib
 }

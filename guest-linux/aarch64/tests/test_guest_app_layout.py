@@ -150,13 +150,19 @@ def test_app_validation_matrix_runner_matches_readme_commands():
 
 def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     helper = ROOT / "scripts" / "prepare_w5_container_deps.sh"
+    container_entry = ROOT / "scripts" / "run_w5_in_container.sh"
     build_qemu = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
     manual_doc = (ROOT.parents[1] / "docs" / "w5_manual_serving_run.md").read_text()
+    script_inventory = (ROOT.parents[1] / "docs" / "w5_script_inventory.md").read_text()
 
     assert helper.exists()
     assert helper.stat().st_mode & 0o111
+    assert container_entry.exists()
+    assert container_entry.stat().st_mode & 0o111
     assert "prepare_w5_container_deps.sh" in build_qemu
-    assert "prepare_w5_container_deps.sh" in manual_doc
+    assert "prepare_w5_container_deps.sh" in container_entry.read_text()
+    assert "run_w5_in_container.sh" in manual_doc
+    assert "run_w5_in_container.sh" in script_inventory
 
     result = subprocess.run(
         [str(helper), "--dry-run"],
@@ -172,6 +178,22 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
         or "apt-get install -y" in result.stdout
     )
     assert "[prepare_w5_container_deps] ready" in result.stdout
+
+    entry_result = subprocess.run(
+        [str(container_entry), "--dry-run", "w5.env"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "docker run" in entry_result.stdout
+    assert "--privileged" in entry_result.stdout
+    assert "--network host" in entry_result.stdout
+    assert "openeuler-2403:v0.0.4" in entry_result.stdout
+    assert "prepare_w5_container_deps.sh" in entry_result.stdout
+    assert "build_qemu_binary.sh" in entry_result.stdout
+    assert "run_w5_cluster_config.sh" in entry_result.stdout
+    assert "w5.env" in entry_result.stdout
 
 
 def test_app_build_matrix_runner_matches_app_inventory():

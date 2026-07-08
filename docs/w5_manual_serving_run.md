@@ -6,23 +6,30 @@ scripts remain implementation details.
 
 ## Minimal Config
 
-When running inside an openEuler container, install the native build
-dependencies before the first run because the W5 entry may need to build the
-workspace QEMU:
+On a Docker test bed such as `hw-910c`, use the host-side container entry. It
+starts Docker, prepares container dependencies, builds QEMU when needed, and
+then delegates to `run_w5_cluster_config.sh`:
 
 ```sh
-./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
+./guest-linux/aarch64/scripts/run_w5_in_container.sh w5.env
 ```
 
-The helper supports openEuler/Fedora/RHEL-like containers via `dnf`/`yum` and
-Debian/Ubuntu containers via `apt-get`. It installs QEMU native build
-dependencies and ensures the container's current `python3` can import
-`distlib`.
-
-For audit-only output:
+For serving requests:
 
 ```sh
-./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh --dry-run
+./guest-linux/aarch64/scripts/run_w5_in_container.sh \
+  -- --serve-requests requests.txt --nodea-ingress w5.env
+```
+
+The internal container dependency helper supports openEuler/Fedora/RHEL-like
+containers via `dnf`/`yum` and Debian/Ubuntu containers via `apt-get`. It
+installs QEMU native build dependencies and ensures the container's current
+`python3` can import `distlib`.
+
+For audit-only output of the host-side Docker command:
+
+```sh
+./guest-linux/aarch64/scripts/run_w5_in_container.sh --dry-run w5.env
 ```
 
 Create a config file with runtime values only:
@@ -52,6 +59,9 @@ Run one-shot W5 stream inference:
 ```sh
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh /path/to/w5.env
 ```
+
+Use `run_w5_cluster_config.sh` directly only when already inside a prepared
+container or on a host with QEMU build dependencies installed.
 
 ## Serving Queue
 

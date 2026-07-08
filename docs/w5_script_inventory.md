@@ -27,6 +27,7 @@ These scripts are implementation details behind the manual entry:
 
 | Script | Role |
 | --- | --- |
+| `guest-linux/aarch64/scripts/run_w5_in_container.sh` | Host-side Docker entry for manual W5 runs on container test beds such as `hw-910c` |
 | `guest-linux/aarch64/scripts/run_w5_inference_cluster_runtime.sh` | W5-specific runtime orchestration and Memory Service bootstrap/reuse wiring |
 | `guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh` | Generic 8-node llm_infer guest cluster runner used by W5 and legacy W4 wrappers |
 | `guest-linux/aarch64/scripts/launch_ub_eight_node_headless.sh` | QEMU launch layer |
