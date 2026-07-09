@@ -80,7 +80,13 @@ use sim_services::{
 };
 use sim_topology::SimTopology;
 use sim_uapi::{
-    deepseek_v4_flash_geometry_smoke_report, model_decode_loop_report,
+    deepseek_v4_flash_geometry_smoke_report, deepseek_v4_flash_moe_decode_report,
+    deepseek_v4_flash_moe_decode_report_from_trace_file,
+    deepseek_v4_flash_moe_decode_report_from_trace_file_with_provider_file,
+    deepseek_v4_flash_moe_decode_report_from_trace_manifest_file,
+    deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file,
+    deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_provider_file,
+    deepseek_v4_flash_moe_decode_report_with_provider, model_decode_loop_report,
     qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
@@ -139,6 +145,15 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(args) = qwen3_decode_loop_args()? {
         return run_qwen3_decode_loop_cli(&args);
+    }
+    if let Some(args) = deepseek_v4_flash_route_trace_manifest_args()? {
+        return run_deepseek_v4_flash_route_trace_manifest_cli(&args);
+    }
+    if let Some(args) = deepseek_v4_flash_weight_catalog_args()? {
+        return run_deepseek_v4_flash_weight_catalog_cli(&args);
+    }
+    if let Some(args) = deepseek_v4_flash_moe_report_args()? {
+        return run_deepseek_v4_flash_moe_report_cli(&args);
     }
     if let Some(args) = qwen3_guest_decode_loop_args()? {
         return run_qwen3_guest_decode_loop_cli(&args);
@@ -282,6 +297,37 @@ struct Qwen3DecodeLoopCliArgs {
     /// Model profile selector. Defaults to "qwen3" (dense); "deepseek-v4-flash"
     /// selects the Flash geometry profile (stage 1: geometry smoke only).
     profile: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeepseekV4FlashMoeReportCliArgs {
+    step_count: usize,
+    tokens_per_step: u64,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+    route_trace_path: Option<PathBuf>,
+    route_trace_manifest_path: Option<PathBuf>,
+    weight_provider_path: Option<PathBuf>,
+    weight_catalog_path: Option<PathBuf>,
+    required_route_source_kind: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeepseekV4FlashRouteTraceManifestCliArgs {
+    route_trace_path: PathBuf,
+    output_path: PathBuf,
+    source_kind: String,
+    manifest_trace_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeepseekV4FlashWeightCatalogCliArgs {
+    output_path: PathBuf,
+    source_kind: String,
+    provider_path: Option<PathBuf>,
+    payload_dir: Option<PathBuf>,
+    payload_template: String,
+    quant: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -517,6 +563,20 @@ fn qwen3_tokenizer_projection_args() -> anyhow::Result<Option<Qwen3TokenizerProj
     qwen3_tokenizer_projection_args_from(env::args_os().skip(1))
 }
 
+fn deepseek_v4_flash_moe_report_args() -> anyhow::Result<Option<DeepseekV4FlashMoeReportCliArgs>> {
+    deepseek_v4_flash_moe_report_args_from(env::args_os().skip(1))
+}
+
+fn deepseek_v4_flash_route_trace_manifest_args(
+) -> anyhow::Result<Option<DeepseekV4FlashRouteTraceManifestCliArgs>> {
+    deepseek_v4_flash_route_trace_manifest_args_from(env::args_os().skip(1))
+}
+
+fn deepseek_v4_flash_weight_catalog_args(
+) -> anyhow::Result<Option<DeepseekV4FlashWeightCatalogCliArgs>> {
+    deepseek_v4_flash_weight_catalog_args_from(env::args_os().skip(1))
+}
+
 fn qwen3_range_forward_args() -> anyhow::Result<Option<Qwen3RangeForwardCliArgs>> {
     qwen3_range_forward_args_from(env::args_os().skip(1))
 }
@@ -621,6 +681,329 @@ where
                 prompt,
                 matmul_batch,
                 profile: profile.unwrap_or_else(|| "qwen3".to_string()),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn deepseek_v4_flash_moe_report_args_from<I, S>(
+    args: I,
+) -> anyhow::Result<Option<DeepseekV4FlashMoeReportCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "deepseek-v4-flash-moe-report" => {
+            let mut step_count = None;
+            let mut tokens_per_step = None;
+            let mut cache_capacity_slots = None;
+            let mut expert_bytes = None;
+            let mut route_trace_path = None;
+            let mut route_trace_manifest_path = None;
+            let mut weight_provider_path = None;
+            let mut weight_catalog_path = None;
+            let mut required_route_source_kind = None;
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--steps" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--steps requires a value"))?;
+                    step_count = Some(parse_positive_usize("--steps", &next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--steps=") {
+                    step_count = Some(parse_positive_usize("--steps", value)?);
+                } else if text == "--tokens-per-step" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--tokens-per-step requires a value"))?;
+                    tokens_per_step = Some(parse_nonnegative_u64(
+                        "--tokens-per-step",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--tokens-per-step=") {
+                    tokens_per_step = Some(parse_nonnegative_u64("--tokens-per-step", value)?);
+                } else if text == "--cache-slots" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--cache-slots requires a value"))?;
+                    cache_capacity_slots =
+                        Some(parse_cli_u32("--cache-slots", &next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--cache-slots=") {
+                    cache_capacity_slots = Some(parse_cli_u32("--cache-slots", value)?);
+                } else if text == "--expert-bytes" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--expert-bytes requires a value"))?;
+                    expert_bytes = Some(parse_nonnegative_u64(
+                        "--expert-bytes",
+                        &next.to_string_lossy(),
+                    )?);
+                } else if let Some(value) = text.strip_prefix("--expert-bytes=") {
+                    expert_bytes = Some(parse_nonnegative_u64("--expert-bytes", value)?);
+                } else if text == "--route-trace" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--route-trace requires a value"))?;
+                    route_trace_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--route-trace=") {
+                    route_trace_path = Some(PathBuf::from(value));
+                } else if text == "--route-trace-manifest" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--route-trace-manifest requires a value")
+                    })?;
+                    route_trace_manifest_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--route-trace-manifest=") {
+                    route_trace_manifest_path = Some(PathBuf::from(value));
+                } else if text == "--weight-provider" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--weight-provider requires a value"))?;
+                    weight_provider_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--weight-provider=") {
+                    weight_provider_path = Some(PathBuf::from(value));
+                } else if text == "--weight-catalog" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--weight-catalog requires a value"))?;
+                    weight_catalog_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--weight-catalog=") {
+                    weight_catalog_path = Some(PathBuf::from(value));
+                } else if text == "--require-route-source-kind" {
+                    let next = pending.next().ok_or_else(|| {
+                        anyhow::anyhow!("--require-route-source-kind requires a value")
+                    })?;
+                    required_route_source_kind = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--require-route-source-kind=") {
+                    required_route_source_kind = Some(value.to_string());
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown deepseek-v4-flash-moe-report option: {text}");
+                } else {
+                    anyhow::bail!("unexpected deepseek-v4-flash-moe-report argument: {text}");
+                }
+            }
+
+            let tokens_per_step = tokens_per_step.unwrap_or(1);
+            if tokens_per_step == 0 {
+                anyhow::bail!("--tokens-per-step must be > 0");
+            }
+            let cache_capacity_slots = cache_capacity_slots.unwrap_or(64);
+            if cache_capacity_slots == 0 {
+                anyhow::bail!("--cache-slots must be > 0");
+            }
+            let expert_bytes = expert_bytes.unwrap_or(2048 * 1024);
+            if expert_bytes == 0 {
+                anyhow::bail!("--expert-bytes must be > 0");
+            }
+            if route_trace_path.is_some() && route_trace_manifest_path.is_some() {
+                anyhow::bail!("--route-trace and --route-trace-manifest are mutually exclusive");
+            }
+            if weight_provider_path.is_some() && weight_catalog_path.is_some() {
+                anyhow::bail!("--weight-provider and --weight-catalog are mutually exclusive");
+            }
+            if required_route_source_kind
+                .as_deref()
+                .is_some_and(|kind| kind.trim().is_empty())
+            {
+                anyhow::bail!("--require-route-source-kind must be non-empty");
+            }
+            Ok(Some(DeepseekV4FlashMoeReportCliArgs {
+                step_count: step_count.unwrap_or(8),
+                tokens_per_step,
+                cache_capacity_slots,
+                expert_bytes,
+                route_trace_path,
+                route_trace_manifest_path,
+                weight_provider_path,
+                weight_catalog_path,
+                required_route_source_kind,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn deepseek_v4_flash_route_trace_manifest_args_from<I, S>(
+    args: I,
+) -> anyhow::Result<Option<DeepseekV4FlashRouteTraceManifestCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "deepseek-v4-flash-route-trace-manifest" => {
+            let mut route_trace_path = None;
+            let mut output_path = None;
+            let mut source_kind = None;
+            let mut manifest_trace_path = None;
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--route-trace" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--route-trace requires a value"))?;
+                    route_trace_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--route-trace=") {
+                    route_trace_path = Some(PathBuf::from(value));
+                } else if text == "--output" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--output requires a value"))?;
+                    output_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--output=") {
+                    output_path = Some(PathBuf::from(value));
+                } else if text == "--source-kind" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--source-kind requires a value"))?;
+                    source_kind = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--source-kind=") {
+                    source_kind = Some(value.to_string());
+                } else if text == "--manifest-trace-path" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--manifest-trace-path requires a value"))?;
+                    manifest_trace_path = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--manifest-trace-path=") {
+                    manifest_trace_path = Some(value.to_string());
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown deepseek-v4-flash-route-trace-manifest option: {text}");
+                } else {
+                    anyhow::bail!(
+                        "unexpected deepseek-v4-flash-route-trace-manifest argument: {text}"
+                    );
+                }
+            }
+
+            let source_kind = source_kind.unwrap_or_else(|| {
+                sim_models::deepseek_v4_flash_moe::EXPERT_ROUTE_TRACE_SOURCE_DS4_MEASURED
+                    .to_string()
+            });
+            if source_kind.trim().is_empty() {
+                anyhow::bail!("--source-kind must be non-empty");
+            }
+            if manifest_trace_path
+                .as_deref()
+                .is_some_and(|path| path.trim().is_empty())
+            {
+                anyhow::bail!("--manifest-trace-path must be non-empty");
+            }
+            Ok(Some(DeepseekV4FlashRouteTraceManifestCliArgs {
+                route_trace_path: route_trace_path
+                    .ok_or_else(|| anyhow::anyhow!("--route-trace is required"))?,
+                output_path: output_path.ok_or_else(|| anyhow::anyhow!("--output is required"))?,
+                source_kind,
+                manifest_trace_path,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn deepseek_v4_flash_weight_catalog_args_from<I, S>(
+    args: I,
+) -> anyhow::Result<Option<DeepseekV4FlashWeightCatalogCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    match args.next() {
+        Some(mode) if mode == "deepseek-v4-flash-weight-catalog" => {
+            let mut output_path = None;
+            let mut source_kind = None;
+            let mut provider_path = None;
+            let mut payload_dir = None;
+            let mut payload_template = None;
+            let mut quant = None;
+            let mut pending = args.peekable();
+
+            while let Some(value) = pending.next() {
+                let text = value.to_string_lossy();
+                if text == "--output" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--output requires a value"))?;
+                    output_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--output=") {
+                    output_path = Some(PathBuf::from(value));
+                } else if text == "--source-kind" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--source-kind requires a value"))?;
+                    source_kind = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--source-kind=") {
+                    source_kind = Some(value.to_string());
+                } else if text == "--from-provider" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--from-provider requires a value"))?;
+                    provider_path = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--from-provider=") {
+                    provider_path = Some(PathBuf::from(value));
+                } else if text == "--payload-dir" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--payload-dir requires a value"))?;
+                    payload_dir = Some(PathBuf::from(next));
+                } else if let Some(value) = text.strip_prefix("--payload-dir=") {
+                    payload_dir = Some(PathBuf::from(value));
+                } else if text == "--payload-template" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--payload-template requires a value"))?;
+                    payload_template = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--payload-template=") {
+                    payload_template = Some(value.to_string());
+                } else if text == "--quant" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--quant requires a value"))?;
+                    quant = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--quant=") {
+                    quant = Some(value.to_string());
+                } else if text.starts_with("--") {
+                    anyhow::bail!("unknown deepseek-v4-flash-weight-catalog option: {text}");
+                } else {
+                    anyhow::bail!("unexpected deepseek-v4-flash-weight-catalog argument: {text}");
+                }
+            }
+
+            if provider_path.is_some() == payload_dir.is_some() {
+                anyhow::bail!("exactly one of --from-provider or --payload-dir is required");
+            }
+            let source_kind = source_kind.unwrap_or_else(|| {
+                sim_models::deepseek_v4_flash_moe::EXPERT_ROUTE_TRACE_SOURCE_DS4_MEASURED
+                    .to_string()
+            });
+            if source_kind.trim().is_empty() {
+                anyhow::bail!("--source-kind must be non-empty");
+            }
+            let payload_template = payload_template.unwrap_or_else(|| {
+                sim_models::deepseek_v4_flash_moe::EXPERT_WEIGHT_CATALOG_DEFAULT_PATH_TEMPLATE
+                    .to_string()
+            });
+            if payload_template.trim().is_empty() {
+                anyhow::bail!("--payload-template must be non-empty");
+            }
+            let quant = quant.unwrap_or_else(|| "iq2_xxs".to_string());
+            if quant.trim().is_empty() {
+                anyhow::bail!("--quant must be non-empty");
+            }
+            Ok(Some(DeepseekV4FlashWeightCatalogCliArgs {
+                output_path: output_path.ok_or_else(|| anyhow::anyhow!("--output is required"))?,
+                source_kind,
+                provider_path,
+                payload_dir,
+                payload_template,
+                quant,
             }))
         }
         _ => Ok(None),
@@ -16574,7 +16957,9 @@ fn resolve_lingqu_object_cli_sample(
 mod tests {
     use super::{
         build_paper_engram_eval_report_from_w5_summary_args, build_w5_terminal_logits_payload,
-        cli_bytes_checksum, cli_f32_vec_to_le_bytes, ensure_w5_memory_engram_state,
+        cli_bytes_checksum, cli_f32_vec_to_le_bytes, deepseek_v4_flash_moe_report_args_from,
+        deepseek_v4_flash_route_trace_manifest_args_from,
+        deepseek_v4_flash_weight_catalog_args_from, ensure_w5_memory_engram_state,
         ensure_w5_paper_engram_eval_context_step_coverage, lingqu_durable_args_from,
         lingqu_memory_args_from, lingqu_object_payload_checksum, lingqu_object_service_args_from,
         load_lingqu_memory_durable_store, load_lingqu_object_service_snapshot,
@@ -16610,10 +16995,11 @@ mod tests {
         rebuild_lingqu_memory_all_paper_engram_registries,
         record_w5_runtime_boundary_observations_from_summary,
         register_w5_runtime_prefix_cache_artifact, resolve_w5_inference_profile,
-        run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
-        run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
-        run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli,
+        run_deepseek_v4_flash_moe_report_cli, run_deepseek_v4_flash_route_trace_manifest_cli,
+        run_deepseek_v4_flash_weight_catalog_cli, run_lingqu_durable_append_log_cli,
+        run_lingqu_durable_batch_cli, run_lingqu_durable_init_cli, run_lingqu_durable_list_cli,
+        run_lingqu_durable_read_log_cli, run_lingqu_durable_stat_cli,
+        run_lingqu_durable_validate_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
@@ -16676,23 +17062,25 @@ mod tests {
         w5_object_service_payload_index_path, w5_paper_engram_eval_evidence_from_summary,
         w5_prefix_cache_guest_prompt_and_replay_suffix, w5_prefix_cache_key_for_prompt,
         w5_prefix_cache_lookup_request_for_prompt, w5_runtime_tensor_payload_checksum,
-        w5_try_approximate_boundary_lookup, CompletionStatus, EngramSimtArtifactConfig,
-        LingquDurableSim, LingquDurableSimSnapshot, LingquMemoryDurableStore,
-        LingquMemoryDurableStoreSnapshot, LingquObjectKind, LingquObjectLocality,
-        LingquObjectMetadata, LingquObjectPublishReq, LingquObjectServiceProfile,
-        LingquObjectServiceSnapshot, LingquObjectServiceStub, LingquObjectState,
-        LingquObjectVersionSelector, LingquPayloadBackend, LingquPayloadPlacement,
-        MemoryCatalogSnapshot, PaperEngramGateManifest, PaperEngramModuleListFilters,
-        PaperEngramTableShardManifest, PaperEngramTrainingMode, QueryResult, Qwen3CandidateRecord,
-        Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime, Qwen3DenseProfile, Qwen3EngramConfig,
-        Qwen3EngramContextOp, Qwen3EngramMode, Qwen3EngramPool, Qwen3EngramReport,
-        Qwen3GuestDecodeLoopCliArgs, Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig,
-        Qwen3TokenizerProjectionCliArgs, W5JumpToTerminalExpectedWorkerCounts,
-        W5MemoryDecisionArtifactPublication, W5MemoryDecisionBundle, W5MemoryDecisionConfig,
-        W5MemoryPublishedArtifactRef, W5MemoryPublishedKvArtifactRef, W5MemoryRuntimePaths,
-        W5MemoryShortpathKvArtifact, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
-        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
-        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        w5_try_approximate_boundary_lookup, CompletionStatus, DeepseekV4FlashMoeReportCliArgs,
+        DeepseekV4FlashRouteTraceManifestCliArgs, DeepseekV4FlashWeightCatalogCliArgs,
+        EngramSimtArtifactConfig, LingquDurableSim, LingquDurableSimSnapshot,
+        LingquMemoryDurableStore, LingquMemoryDurableStoreSnapshot, LingquObjectKind,
+        LingquObjectLocality, LingquObjectMetadata, LingquObjectPublishReq,
+        LingquObjectServiceProfile, LingquObjectServiceSnapshot, LingquObjectServiceStub,
+        LingquObjectState, LingquObjectVersionSelector, LingquPayloadBackend,
+        LingquPayloadPlacement, MemoryCatalogSnapshot, PaperEngramGateManifest,
+        PaperEngramModuleListFilters, PaperEngramTableShardManifest, PaperEngramTrainingMode,
+        QueryResult, Qwen3CandidateRecord, Qwen3DecodeReportVerbosity, Qwen3DenseGuestRuntime,
+        Qwen3DenseProfile, Qwen3EngramConfig, Qwen3EngramContextOp, Qwen3EngramMode,
+        Qwen3EngramPool, Qwen3EngramReport, Qwen3GuestDecodeLoopCliArgs,
+        Qwen3GuestExpectedWorkerCounts, Qwen3SamplerConfig, Qwen3TokenizerProjectionCliArgs,
+        W5JumpToTerminalExpectedWorkerCounts, W5MemoryDecisionArtifactPublication,
+        W5MemoryDecisionBundle, W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef,
+        W5MemoryPublishedKvArtifactRef, W5MemoryRuntimePaths, W5MemoryShortpathKvArtifact,
+        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
+        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
@@ -17060,6 +17448,303 @@ mod tests {
         );
         assert_eq!(args.step_count, 4);
         assert_eq!(args.profile, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_default_to_synthetic() {
+        let args = deepseek_v4_flash_moe_report_args_from(["deepseek-v4-flash-moe-report"])
+            .expect("parse moe report args")
+            .expect("moe report args");
+        assert_eq!(args.step_count, 8);
+        assert_eq!(args.tokens_per_step, 1);
+        assert_eq!(args.cache_capacity_slots, 64);
+        assert_eq!(args.expert_bytes, 2048 * 1024);
+        assert_eq!(args.route_trace_path, None);
+        assert_eq!(args.route_trace_manifest_path, None);
+        assert_eq!(args.weight_provider_path, None);
+        assert_eq!(args.weight_catalog_path, None);
+        assert_eq!(args.required_route_source_kind, None);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_accept_route_trace() {
+        let args = deepseek_v4_flash_moe_report_args_from([
+            "deepseek-v4-flash-moe-report",
+            "--steps=16",
+            "--tokens-per-step=2",
+            "--cache-slots=128",
+            "--expert-bytes=4096",
+            "--route-trace=/tmp/flash.route",
+            "--weight-provider=/tmp/flash.provider",
+        ])
+        .expect("parse moe report args")
+        .expect("moe report args");
+        assert_eq!(args.step_count, 16);
+        assert_eq!(args.tokens_per_step, 2);
+        assert_eq!(args.cache_capacity_slots, 128);
+        assert_eq!(args.expert_bytes, 4096);
+        assert_eq!(
+            args.route_trace_path,
+            Some(PathBuf::from("/tmp/flash.route"))
+        );
+        assert_eq!(args.route_trace_manifest_path, None);
+        assert_eq!(
+            args.weight_provider_path,
+            Some(PathBuf::from("/tmp/flash.provider"))
+        );
+        assert_eq!(args.weight_catalog_path, None);
+        assert_eq!(args.required_route_source_kind, None);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_accept_route_trace_manifest() {
+        let args = deepseek_v4_flash_moe_report_args_from([
+            "deepseek-v4-flash-moe-report",
+            "--route-trace-manifest=/tmp/flash.route.manifest",
+            "--weight-provider=/tmp/flash.provider",
+            "--require-route-source-kind=ds4-measured",
+        ])
+        .expect("parse moe report args")
+        .expect("moe report args");
+        assert_eq!(args.route_trace_path, None);
+        assert_eq!(
+            args.route_trace_manifest_path,
+            Some(PathBuf::from("/tmp/flash.route.manifest"))
+        );
+        assert_eq!(
+            args.weight_provider_path,
+            Some(PathBuf::from("/tmp/flash.provider"))
+        );
+        assert_eq!(args.weight_catalog_path, None);
+        assert_eq!(
+            args.required_route_source_kind,
+            Some("ds4-measured".to_string())
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_accept_weight_catalog() {
+        let args = deepseek_v4_flash_moe_report_args_from([
+            "deepseek-v4-flash-moe-report",
+            "--route-trace-manifest=/tmp/flash.route.manifest",
+            "--weight-catalog=/tmp/flash.weight.catalog",
+        ])
+        .expect("parse moe report args")
+        .expect("moe report args");
+        assert_eq!(args.weight_provider_path, None);
+        assert_eq!(
+            args.weight_catalog_path,
+            Some(PathBuf::from("/tmp/flash.weight.catalog"))
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_reject_weight_provider_catalog_conflict() {
+        let err = deepseek_v4_flash_moe_report_args_from([
+            "deepseek-v4-flash-moe-report",
+            "--weight-provider=/tmp/provider",
+            "--weight-catalog=/tmp/catalog",
+        ])
+        .expect_err("provider and catalog must be mutually exclusive");
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_reject_empty_route_source_kind() {
+        let err = deepseek_v4_flash_moe_report_args_from([
+            "deepseek-v4-flash-moe-report",
+            "--require-route-source-kind=",
+        ])
+        .expect_err("empty route source kind must fail");
+        assert!(err.to_string().contains("must be non-empty"));
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_args_reject_route_trace_conflict() {
+        let err = deepseek_v4_flash_moe_report_args_from([
+            "deepseek-v4-flash-moe-report",
+            "--route-trace=/tmp/flash.route",
+            "--route-trace-manifest=/tmp/flash.route.manifest",
+        ])
+        .expect_err("reject conflicting route trace sources");
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn deepseek_v4_flash_moe_report_rejects_route_source_kind_mismatch() {
+        let args = DeepseekV4FlashMoeReportCliArgs {
+            step_count: 1,
+            tokens_per_step: 1,
+            cache_capacity_slots: 64,
+            expert_bytes: 142,
+            route_trace_path: None,
+            route_trace_manifest_path: Some(PathBuf::from(
+                "../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt",
+            )),
+            weight_provider_path: Some(PathBuf::from(
+                "../../crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.file.fixture.txt",
+            )),
+            weight_catalog_path: None,
+            required_route_source_kind: Some("ds4-measured".to_string()),
+        };
+        let err = run_deepseek_v4_flash_moe_report_cli(&args)
+            .expect_err("fixture route source must not satisfy ds4-measured gate");
+        assert!(
+            err.to_string().contains("route source kind mismatch"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_route_trace_manifest_args_default_to_measured_source() {
+        let args = deepseek_v4_flash_route_trace_manifest_args_from([
+            "deepseek-v4-flash-route-trace-manifest",
+            "--route-trace=/tmp/route.ds4.txt",
+            "--output=/tmp/route.manifest",
+        ])
+        .expect("parse route trace manifest args")
+        .expect("route trace manifest args");
+        assert_eq!(args.route_trace_path, PathBuf::from("/tmp/route.ds4.txt"));
+        assert_eq!(args.output_path, PathBuf::from("/tmp/route.manifest"));
+        assert_eq!(args.source_kind, "ds4-measured");
+        assert_eq!(args.manifest_trace_path, None);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_route_trace_manifest_cli_writes_manifest() {
+        let dir = env::temp_dir().join(format!(
+            "deepseek_v4_flash_route_manifest_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let trace_path = dir.join("route.ds4.txt");
+        let output_path = dir.join("route.manifest");
+        fs::write(
+            &trace_path,
+            include_str!("../../sim-models/fixtures/deepseek_v4_flash_route_trace.ds4.txt"),
+        )
+        .expect("write trace");
+        let args = DeepseekV4FlashRouteTraceManifestCliArgs {
+            route_trace_path: trace_path,
+            output_path: output_path.clone(),
+            source_kind: "ds4-measured".to_string(),
+            manifest_trace_path: Some("route.ds4.txt".to_string()),
+        };
+        run_deepseek_v4_flash_route_trace_manifest_cli(&args).expect("write route trace manifest");
+        let manifest = fs::read_to_string(&output_path).expect("read manifest");
+        assert!(manifest.contains("source_kind=ds4-measured"));
+        assert!(manifest.contains("trace_path=route.ds4.txt"));
+        assert!(manifest.contains("step_count=2"));
+        assert!(manifest.contains("total_layers=43"));
+        assert!(manifest.contains("tokens_per_step=1"));
+        assert!(manifest.contains("top_k=6"));
+        fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_weight_catalog_args_accept_provider_source() {
+        let args = deepseek_v4_flash_weight_catalog_args_from([
+            "deepseek-v4-flash-weight-catalog",
+            "--from-provider=/tmp/flash.provider",
+            "--output=/tmp/flash.weight.catalog",
+            "--source-kind=fixture",
+        ])
+        .expect("parse weight catalog args")
+        .expect("weight catalog args");
+        assert_eq!(
+            args.provider_path,
+            Some(PathBuf::from("/tmp/flash.provider"))
+        );
+        assert_eq!(args.payload_dir, None);
+        assert_eq!(args.output_path, PathBuf::from("/tmp/flash.weight.catalog"));
+        assert_eq!(args.source_kind, "fixture");
+        assert_eq!(
+            args.payload_template,
+            sim_models::deepseek_v4_flash_moe::EXPERT_WEIGHT_CATALOG_DEFAULT_PATH_TEMPLATE
+        );
+        assert_eq!(args.quant, "iq2_xxs");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_weight_catalog_args_accept_payload_dir_source() {
+        let args = deepseek_v4_flash_weight_catalog_args_from([
+            "deepseek-v4-flash-weight-catalog",
+            "--payload-dir=/tmp/flash-weights",
+            "--payload-template=layers/{layer}/experts/{expert}.{quant}",
+            "--quant=q2_k",
+            "--output=/tmp/flash.weight.catalog",
+        ])
+        .expect("parse weight catalog args")
+        .expect("weight catalog args");
+        assert_eq!(args.provider_path, None);
+        assert_eq!(args.payload_dir, Some(PathBuf::from("/tmp/flash-weights")));
+        assert_eq!(
+            args.payload_template,
+            "layers/{layer}/experts/{expert}.{quant}"
+        );
+        assert_eq!(args.quant, "q2_k");
+        assert_eq!(args.source_kind, "ds4-measured");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_weight_catalog_args_reject_ambiguous_source() {
+        let err = deepseek_v4_flash_weight_catalog_args_from([
+            "deepseek-v4-flash-weight-catalog",
+            "--from-provider=/tmp/provider",
+            "--payload-dir=/tmp/payloads",
+            "--output=/tmp/catalog",
+        ])
+        .expect_err("ambiguous catalog source must fail");
+        assert!(err.to_string().contains("exactly one"), "{err}");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_weight_catalog_cli_writes_report_consumable_catalog() {
+        let dir = env::temp_dir().join(format!(
+            "deepseek_v4_flash_weight_catalog_cli_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let provider_path = dir.join("provider.txt");
+        let catalog_path = dir.join("weight.catalog");
+        fs::write(
+            &provider_path,
+            "model_key=deepseek-v4-flash quant=iq2_xxs payload_bytes=4096 checksum_algorithm=deterministic-v1\n",
+        )
+        .expect("write provider");
+
+        let args = DeepseekV4FlashWeightCatalogCliArgs {
+            output_path: catalog_path.clone(),
+            source_kind: "fixture".to_string(),
+            provider_path: Some(provider_path),
+            payload_dir: None,
+            payload_template:
+                sim_models::deepseek_v4_flash_moe::EXPERT_WEIGHT_CATALOG_DEFAULT_PATH_TEMPLATE
+                    .to_string(),
+            quant: "iq2_xxs".to_string(),
+        };
+        run_deepseek_v4_flash_weight_catalog_cli(&args).expect("write catalog");
+        let catalog =
+            sim_models::deepseek_v4_flash_moe::parse_expert_weight_catalog_from_file(&catalog_path)
+                .expect("parse written catalog");
+        assert_eq!(catalog.entries.len(), 43 * 256);
+
+        let report =
+            sim_uapi::deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file(
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt",
+                ),
+                &catalog_path,
+                64,
+            )
+            .expect("catalog-backed report");
+        assert_eq!(report.route_source_kind, "fixture");
+        assert_eq!(report.weight_provider_quant, "catalog");
+        assert_eq!(report.expert_bytes, 4096);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        fs::remove_dir_all(&dir).expect("remove temp dir");
     }
 
     #[test]
@@ -30477,6 +31162,336 @@ fn run_qwen3_tokenizer_projection_cli(
         projection.merged_token_count,
         projection.merge_special_tokens
     );
+    Ok(())
+}
+
+fn run_deepseek_v4_flash_moe_report_cli(
+    args: &DeepseekV4FlashMoeReportCliArgs,
+) -> anyhow::Result<()> {
+    let report = if let Some(catalog_path) = &args.weight_catalog_path {
+        let Some(manifest_path) = &args.route_trace_manifest_path else {
+            anyhow::bail!("--weight-catalog requires --route-trace-manifest");
+        };
+        deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file(
+            manifest_path,
+            catalog_path,
+            args.cache_capacity_slots,
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "failed to run Flash MoE report from route trace manifest {} with weight catalog {}",
+                manifest_path.display(),
+                catalog_path.display()
+            )
+        })?
+    } else if let Some(provider_path) = &args.weight_provider_path {
+        if let Some(manifest_path) = &args.route_trace_manifest_path {
+            deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_provider_file(
+                manifest_path,
+                provider_path,
+                args.cache_capacity_slots,
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
+                    "failed to run Flash MoE report from route trace manifest {} with weight provider {}",
+                    manifest_path.display(),
+                    provider_path.display()
+                )
+            })?
+        } else if let Some(trace_path) = &args.route_trace_path {
+            deepseek_v4_flash_moe_decode_report_from_trace_file_with_provider_file(
+                trace_path,
+                provider_path,
+                args.cache_capacity_slots,
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
+                    "failed to run Flash MoE report from route trace {} with weight provider {}",
+                    trace_path.display(),
+                    provider_path.display()
+                )
+            })?
+        } else {
+            let provider =
+                sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec_from_file(
+                    provider_path,
+                )
+                .map_err(anyhow::Error::msg)
+                .with_context(|| {
+                    format!(
+                        "failed to parse Flash weight provider {}",
+                        provider_path.display()
+                    )
+                })?;
+            deepseek_v4_flash_moe_decode_report_with_provider(
+                args.step_count,
+                args.tokens_per_step,
+                args.cache_capacity_slots,
+                &provider_path.display().to_string(),
+                &provider,
+            )
+            .map_err(anyhow::Error::msg)
+            .context("failed to run provider-backed Flash MoE report")?
+        }
+    } else if let Some(manifest_path) = &args.route_trace_manifest_path {
+        deepseek_v4_flash_moe_decode_report_from_trace_manifest_file(
+            manifest_path,
+            args.cache_capacity_slots,
+            args.expert_bytes,
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "failed to run Flash MoE report from route trace manifest {}",
+                manifest_path.display()
+            )
+        })?
+    } else if let Some(trace_path) = &args.route_trace_path {
+        deepseek_v4_flash_moe_decode_report_from_trace_file(
+            trace_path,
+            args.cache_capacity_slots,
+            args.expert_bytes,
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "failed to run Flash MoE report from route trace {}",
+                trace_path.display()
+            )
+        })?
+    } else {
+        deepseek_v4_flash_moe_decode_report(
+            args.step_count,
+            args.tokens_per_step,
+            args.cache_capacity_slots,
+            args.expert_bytes,
+        )
+        .map_err(anyhow::Error::msg)
+        .context("failed to run synthetic Flash MoE report")?
+    };
+    if let Some(expected) = &args.required_route_source_kind {
+        if report.route_source_kind != *expected {
+            anyhow::bail!(
+                "Flash MoE route source kind mismatch: got={} expected={}",
+                report.route_source_kind,
+                expected
+            );
+        }
+    }
+    println!("deepseek_v4_flash_moe_report");
+    println!(
+        "  route_source: {} kind={}",
+        report.route_source, report.route_source_kind
+    );
+    println!("  steps: {}", report.step_count);
+    println!("  total_layers: {}", report.total_layers);
+    println!("  tokens_per_step: {}", report.tokens_per_step);
+    println!("  top_k: {}", report.top_k);
+    println!(
+        "  weight_provider: source={} model={} quant={}",
+        report.weight_provider_source,
+        report.weight_provider_model_key,
+        report.weight_provider_quant
+    );
+    println!("  route_decisions: {}", report.route_decision_count);
+    println!(
+        "  weight_tiles: resolves={} unique={} payload_bytes={} checksum={:#x}",
+        report.weight_tile_resolve_count,
+        report.unique_weight_tile_count,
+        report.weight_tile_payload_bytes,
+        report.weight_tile_payload_checksum
+    );
+    println!(
+        "  expert_cache: slots={} expert_bytes={} hits={} misses={} evictions={} pread_bytes={} hit_rate_milli={}",
+        report.cache_capacity_slots,
+        report.expert_bytes,
+        report.hits,
+        report.misses,
+        report.evictions,
+        report.pread_bytes,
+        report.hit_rate_milli
+    );
+    println!(
+        "  expert_latency: model=max(compute,miss_load) compute_time_us={} miss_load_time_us={} estimated_latency_us={} compute_us_per_touch={} load_bytes_per_us={}",
+        report.compute_time_us,
+        report.miss_load_time_us,
+        report.estimated_latency_us,
+        report.latency_compute_us_per_touch,
+        report.latency_load_bytes_per_us
+    );
+    Ok(())
+}
+
+fn run_deepseek_v4_flash_route_trace_manifest_cli(
+    args: &DeepseekV4FlashRouteTraceManifestCliArgs,
+) -> anyhow::Result<()> {
+    let trace_bytes = fs::read(&args.route_trace_path).with_context(|| {
+        format!(
+            "failed to read Flash route trace {}",
+            args.route_trace_path.display()
+        )
+    })?;
+    let trace_text = std::str::from_utf8(&trace_bytes).with_context(|| {
+        format!(
+            "Flash route trace is not valid UTF-8: {}",
+            args.route_trace_path.display()
+        )
+    })?;
+    let trace = sim_models::deepseek_v4_flash_moe::parse_expert_route_trace(trace_text)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "failed to parse Flash route trace {}",
+                args.route_trace_path.display()
+            )
+        })?;
+    let manifest_trace_path = args
+        .manifest_trace_path
+        .clone()
+        .unwrap_or_else(|| args.route_trace_path.display().to_string());
+    let trace_checksum =
+        sim_models::deepseek_v4_flash_moe::expert_route_trace_checksum(&trace_bytes);
+    let manifest = sim_models::deepseek_v4_flash_moe::infer_expert_route_trace_manifest(
+        &trace,
+        &args.source_kind,
+        &manifest_trace_path,
+        trace_checksum,
+    )
+    .map_err(anyhow::Error::msg)
+    .context("failed to infer Flash route trace manifest")?;
+    let manifest_text =
+        sim_models::deepseek_v4_flash_moe::format_expert_route_trace_manifest(&manifest);
+    if let Some(parent) = args.output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create manifest directory {}", parent.display())
+            })?;
+        }
+    }
+    fs::write(&args.output_path, manifest_text).with_context(|| {
+        format!(
+            "failed to write Flash route trace manifest {}",
+            args.output_path.display()
+        )
+    })?;
+    println!("deepseek_v4_flash_route_trace_manifest");
+    println!("  output: {}", args.output_path.display());
+    println!("  route_trace: {}", args.route_trace_path.display());
+    println!("  source_kind: {}", manifest.source_kind);
+    println!("  trace_checksum: 0x{:016x}", manifest.trace_checksum);
+    println!("  steps: {}", manifest.step_count);
+    println!("  total_layers: {}", manifest.total_layers);
+    println!("  tokens_per_step: {}", manifest.tokens_per_step);
+    println!("  top_k: {}", manifest.top_k);
+    Ok(())
+}
+
+fn run_deepseek_v4_flash_weight_catalog_cli(
+    args: &DeepseekV4FlashWeightCatalogCliArgs,
+) -> anyhow::Result<()> {
+    let catalog = if let Some(provider_path) = &args.provider_path {
+        let provider =
+            sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec_from_file(
+                provider_path,
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
+                    "failed to parse Flash weight provider {}",
+                    provider_path.display()
+                )
+            })?;
+        sim_models::deepseek_v4_flash_moe::expert_weight_catalog_from_provider_spec(
+            &args.source_kind,
+            &provider,
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "failed to build Flash weight catalog from provider {}",
+                provider_path.display()
+            )
+        })?
+    } else if let Some(payload_dir) = &args.payload_dir {
+        sim_models::deepseek_v4_flash_moe::expert_weight_catalog_from_payload_dir(
+            &args.source_kind,
+            payload_dir,
+            &args.payload_template,
+            &args.quant,
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "failed to build Flash weight catalog from payload dir {}",
+                payload_dir.display()
+            )
+        })?
+    } else {
+        anyhow::bail!("exactly one of --from-provider or --payload-dir is required");
+    };
+
+    let catalog_text = sim_models::deepseek_v4_flash_moe::format_expert_weight_catalog(&catalog)
+        .map_err(anyhow::Error::msg)
+        .context("failed to format Flash weight catalog")?;
+    if let Some(parent) = args.output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create catalog directory {}", parent.display())
+            })?;
+        }
+    }
+    fs::write(&args.output_path, catalog_text).with_context(|| {
+        format!(
+            "failed to write Flash weight catalog {}",
+            args.output_path.display()
+        )
+    })?;
+    let written_catalog_text = fs::read_to_string(&args.output_path).with_context(|| {
+        format!(
+            "failed to read written Flash weight catalog {}",
+            args.output_path.display()
+        )
+    })?;
+    let reparsed =
+        sim_models::deepseek_v4_flash_moe::parse_expert_weight_catalog(&written_catalog_text)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
+                    "written Flash weight catalog failed validation: {}",
+                    args.output_path.display()
+                )
+            })?;
+    let payload_base = args
+        .payload_dir
+        .as_deref()
+        .or_else(|| args.output_path.parent());
+    sim_models::deepseek_v4_flash_moe::validate_expert_weight_catalog_payload_files(
+        &reparsed,
+        payload_base,
+    )
+    .map_err(anyhow::Error::msg)
+    .with_context(|| {
+        format!(
+            "written Flash weight catalog payload validation failed: {}",
+            args.output_path.display()
+        )
+    })?;
+    let expert_bytes =
+        sim_models::deepseek_v4_flash_moe::expert_weight_catalog_common_payload_bytes(&reparsed)
+            .map_err(anyhow::Error::msg)
+            .context("written Flash weight catalog uses unsupported mixed payload sizes")?;
+
+    println!("deepseek_v4_flash_weight_catalog");
+    println!("  output: {}", args.output_path.display());
+    println!("  source_kind: {}", reparsed.source_kind);
+    println!("  model: {}", reparsed.model_key);
+    println!("  total_layers: {}", reparsed.total_layers);
+    println!("  experts_per_layer: {}", reparsed.experts_per_layer);
+    println!("  tiles: {}", reparsed.entries.len());
+    println!("  expert_bytes: {}", expert_bytes);
     Ok(())
 }
 

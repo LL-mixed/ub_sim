@@ -10,6 +10,7 @@ SERVICE_C = SERVICE_DIR / "mem_service_module.c"
 SERVICE_H = SERVICE_DIR / "mem_service.h"
 SERVICE_CORE_H = SERVICE_DIR / "mem_service_core.h"
 SERVICE_QWEN3_H = SERVICE_DIR / "mem_service_qwen3.h"
+SERVICE_QWEN3_C = SERVICE_DIR / "mem_service_qwen3.c"
 SERVICE_INTERNAL_H = SERVICE_DIR / "mem_service_internal.h"
 SERVICE_CLUSTER_PAYLOAD_CONTRACT_H = (
     SERVICE_DIR / "mem_service_cluster_payload_contract.h"
@@ -193,6 +194,48 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_PROFILE_SRC="$ROOT_DIR/components/mem_service/mem_service_profile.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC="$ROOT_DIR/components/mem_service/mem_service_deepseek_v4_flash.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_expert_route_flow.c"',
+            build_script,
+        )
+        self.assertIn(
+            'MEM_SERVICE_EXPERT_CACHE_SRC="$ROOT_DIR/components/mem_service/mem_service_expert_cache.c"',
+            build_script,
+        )
+        self.assertIn(
+            'write_signature_line "mem_service_profile_src" "$MEM_SERVICE_PROFILE_SRC"',
+            build_script,
+        )
+        self.assertIn(
+            'write_signature_line "mem_service_deepseek_v4_flash_src" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC"',
+            build_script,
+        )
+        self.assertIn(
+            'write_signature_line "mem_service_expert_route_flow_src" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC"',
+            build_script,
+        )
+        self.assertIn(
+            'write_signature_line "mem_service_expert_cache_src" "$MEM_SERVICE_EXPERT_CACHE_SRC"',
+            build_script,
+        )
+        self.assertIn("--w5-guest-link-only", build_script)
+        self.assertIn("build_w5_guest_link_check", build_script)
+        self.assertIn('local link_dir="$OUT_DIR/w5_guest_link_check"', build_script)
+        self.assertIn("linqu_mem_service_qwen3.linkcheck", build_script)
+        self.assertIn("linqu_llm_infer.linkcheck", build_script)
+        self.assertIn("linqu_w5_serving_control.linkcheck", build_script)
+        self.assertLess(
+            build_script.index("if (( W5_GUEST_LINK_ONLY )); then"),
+            build_script.index('rm -rf "$INITRAMFS_DIR"'),
+        )
+        self.assertIn(
             'MEM_SERVICE_QWEN3_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_records.c"',
             build_script,
         )
@@ -267,7 +310,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             '"$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" '
             '"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" '
             '"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" '
-            '"$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" '
+            '"$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" '
+            '"$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" '
+            '"$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" '
+            '"$MEM_SERVICE_QWEN3_RECORDS_SRC" '
             '"$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" '
             '"$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" '
             '"$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" '
@@ -278,7 +324,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -2513,6 +2559,75 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         # mem_service does not keep a global active model profile.
         self.assertIn("rec = recycle_runtime_record(svc, key);", source)
         self.assertIn("recycle_runtime_record", SERVICE_PROFILE_H.read_text())
+
+    def test_model_profile_qwen3_invariant(self):
+        qwen3 = SERVICE_QWEN3_C.read_text()
+        profile_h = SERVICE_PROFILE_H.read_text()
+        object_contract = SERVICE_OBJECT_CONTRACT_H.read_text()
+        sim_uapi = (REPO_ROOT / "crates" / "sim-uapi" / "src" / "lib.rs").read_text()
+
+        # Qwen3 remains a client-side adapter. Geometry and sizing still
+        # delegate to llm_infer, so env-driven Qwen3-0.6B/14B dimensions keep
+        # their pre-refactor behavior.
+        self.assertIn("return value > UINT32_MAX ? 28U : (uint32_t)value;", qwen3)
+        self.assertIn("return value == 0 || value > UINT32_MAX ? 8U", qwen3)
+        self.assertIn("return llm_infer_qwen3_hidden_range_bytes();", qwen3)
+        self.assertIn("return llm_infer_qwen3_handoff_hidden_bytes(decode_step);", qwen3)
+        self.assertIn("return llm_infer_qwen3_model_key();", qwen3)
+        self.assertIn("return llm_infer_qwen3_range_kv_state_bytes(layer_start, layer_end);", qwen3)
+        self.assertIn("return llm_infer_qwen3_layer_range_for_node(local_node,", qwen3)
+
+        # The neutral range-flow request must carry the same Qwen3 values and
+        # record recycler that the old Qwen3-specific path used.
+        self.assertIn("mem_service_init_obmm_range_flow_request(", qwen3)
+        self.assertIn("mem_service_qwen3_model_key()", qwen3)
+        self.assertIn("mem_service_qwen3_layer_count()", qwen3)
+        self.assertIn("mem_service_qwen3_range_nodes()", qwen3)
+        self.assertIn("mem_service_qwen3_hidden_range_bytes()", qwen3)
+        self.assertIn("mem_service_qwen3_range_kv_state_bytes(layer_start, layer_end)", qwen3)
+        self.assertIn("mem_service_qwen3_layer_range_for_node", qwen3)
+        self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3)
+
+        # Core-facing names are aliases, not new layout values. This preserves
+        # object kind, KV slot, token-result, and dynamic arena semantics.
+        self.assertIn(
+            "#define MEM_SERVICE_OBMM_DYNAMIC_ARENA_OFFSET \\\n"
+            "    MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET",
+            object_contract,
+        )
+        self.assertIn(
+            "#define MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT \\\n"
+            "    MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT",
+            object_contract,
+        )
+        self.assertIn(
+            "#define MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES \\\n"
+            "    MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES",
+            object_contract,
+        )
+        self.assertIn(
+            "#define MEM_SERVICE_OBMM_KIND_MODEL_KV_STATE \\\n"
+            "    MEM_SERVICE_OBMM_KIND_QWEN3_KV_STATE",
+            object_contract,
+        )
+
+        # mem_service_profile is still only a request contract: no active
+        # model registry and no global profile selector.
+        self.assertIn("struct mem_service_obmm_range_flow_request", profile_h)
+        self.assertIn("mem_service_record_recycler_fn recycle_runtime_record", profile_h)
+        self.assertNotIn("active_model", profile_h)
+        self.assertNotIn("lookup_model_profile", profile_h)
+
+        # Rust object-service sizing keeps the Qwen3 baseline pool and queue
+        # headroom; Flash dispatch only enlarges the pool for the Flash profile.
+        self.assertIn(
+            "fn qwen3_dense_reference_object_service_profile() -> "
+            "LingquObjectServiceProfile {\n    object_service_profile_for(\"qwen3\")",
+            sim_uapi,
+        )
+        self.assertIn("p.queue_depth = 512;", sim_uapi)
+        self.assertIn("p.obmm_pool.queue_depth = 4096;", sim_uapi)
+        self.assertIn("1400 * 1024 * 1024", sim_uapi)
 
     def test_record_table_helpers_are_split_from_main_service_translation_unit(self):
         source = SERVICE_C.read_text()

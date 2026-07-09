@@ -1,0 +1,13 @@
+# DeepSeek V4 Flash route trace manifest.
+#
+# source_kind=fixture is explicit so readiness reports never confuse this with
+# a ds4 measured trace. A real ds4 trace should use source_kind=ds4-measured
+# and bind the generated trace file with its checksum.
+source_kind=fixture
+model_key=deepseek-v4-flash
+trace_path=deepseek_v4_flash_route_trace.ds4.txt
+trace_checksum=0x0583495307a385ce
+step_count=2
+total_layers=43
+tokens_per_step=1
+top_k=6

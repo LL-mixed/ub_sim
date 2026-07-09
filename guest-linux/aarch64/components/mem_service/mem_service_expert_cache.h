@@ -26,12 +26,19 @@
  * SIM_MODEL_EXPERT_CACHE_BYTES / SIM_MODEL_EXPERT_PRELOAD is stage-2 polish.
  */
 #define MEM_SERVICE_EXPERT_CACHE_DEFAULT_SLOTS 64U
+#define MEM_SERVICE_EXPERT_CACHE_COMPUTE_US_PER_TOUCH 2ULL
+#define MEM_SERVICE_EXPERT_CACHE_LOAD_BYTES_PER_US 4096ULL
 
 struct mem_service_expert_cache_stats {
     uint64_t hits;
     uint64_t misses;
     uint64_t evictions;
     uint64_t pread_bytes;
+    uint64_t compute_time_us;
+    uint64_t miss_load_time_us;
+    uint64_t estimated_latency_us;
+    uint64_t compute_us_per_touch;
+    uint64_t load_bytes_per_us;
 };
 
 struct mem_service_expert_cache {

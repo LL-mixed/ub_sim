@@ -7157,18 +7157,33 @@ pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<
 /// the simulator's modeling input (plan section 7.2 synthetic fallback).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeepseekV4FlashMoeDecodeReport {
+    pub route_source: String,
+    pub route_source_kind: String,
+    pub weight_provider_source: String,
+    pub weight_provider_model_key: String,
+    pub weight_provider_quant: String,
     pub step_count: usize,
     pub total_layers: u64,
     pub tokens_per_step: u64,
     pub top_k: u64,
     pub expert_bytes: u64,
     pub cache_capacity_slots: u32,
+    pub route_decision_count: u64,
+    pub weight_tile_resolve_count: u64,
+    pub unique_weight_tile_count: u64,
+    pub weight_tile_payload_bytes: u64,
+    pub weight_tile_payload_checksum: u64,
     /// Cumulative stats across all steps.
     pub hits: u64,
     pub misses: u64,
     pub evictions: u64,
     pub pread_bytes: u64,
     pub hit_rate_milli: u64,
+    pub compute_time_us: u64,
+    pub miss_load_time_us: u64,
+    pub estimated_latency_us: u64,
+    pub latency_compute_us_per_touch: u64,
+    pub latency_load_bytes_per_us: u64,
 }
 
 /// Run the Flash MoE decode forward model for `step_count` decode steps.
@@ -7184,36 +7199,459 @@ pub fn deepseek_v4_flash_moe_decode_report(
     expert_bytes: u64,
 ) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
     use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
-    use sim_models::deepseek_v4_flash_moe::{synthetic_route_trace, ExpertCacheSimulator};
+    use sim_models::deepseek_v4_flash_moe::{
+        synthetic_route_trace_for_step, ExpertWeightProviderSpec,
+    };
 
     if step_count == 0 {
         return Err("flash moe decode report requires step_count > 0".to_string());
     }
     let total_layers = DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers;
+    let mut trace = Vec::new();
+    for step in 0..step_count {
+        trace.extend(synthetic_route_trace_for_step(
+            tokens_per_step,
+            total_layers,
+            step as u64,
+            step as u64,
+        ));
+    }
+    let provider = ExpertWeightProviderSpec::deterministic(
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+        "iq2_xxs",
+        expert_bytes,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        "synthetic",
+        "synthetic",
+        &trace,
+        "deterministic://deepseek-v4-flash",
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_with_provider(
+    step_count: usize,
+    tokens_per_step: u64,
+    cache_capacity_slots: u32,
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::synthetic_route_trace_for_step;
+
+    if step_count == 0 {
+        return Err("flash moe decode report requires step_count > 0".to_string());
+    }
+    let total_layers = DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers;
+    let mut trace = Vec::new();
+    for step in 0..step_count {
+        trace.extend(synthetic_route_trace_for_step(
+            tokens_per_step,
+            total_layers,
+            step as u64,
+            step as u64,
+        ));
+    }
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        "synthetic",
+        "synthetic",
+        &trace,
+        weight_provider_source,
+        provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_text(
+    route_source: &str,
+    trace_text: &str,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace = sim_models::deepseek_v4_flash_moe::parse_expert_route_trace(trace_text)?;
+    deepseek_v4_flash_moe_decode_report_from_trace(
+        route_source,
+        &trace,
+        cache_capacity_slots,
+        expert_bytes,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_text_with_provider(
+    route_source: &str,
+    trace_text: &str,
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace = sim_models::deepseek_v4_flash_moe::parse_expert_route_trace(trace_text)?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider(
+        route_source,
+        &trace,
+        weight_provider_source,
+        provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_file(
+    trace_path: &Path,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace_text = fs::read_to_string(trace_path).map_err(|err| {
+        format!(
+            "failed to read flash route trace {}: {err}",
+            trace_path.display()
+        )
+    })?;
+    deepseek_v4_flash_moe_decode_report_from_trace_text(
+        &trace_path.display().to_string(),
+        &trace_text,
+        cache_capacity_slots,
+        expert_bytes,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_file_with_provider_file(
+    trace_path: &Path,
+    provider_path: &Path,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace_text = fs::read_to_string(trace_path).map_err(|err| {
+        format!(
+            "failed to read flash route trace {}: {err}",
+            trace_path.display()
+        )
+    })?;
+    let provider = sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec_from_file(
+        provider_path,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_text_with_provider(
+        &trace_path.display().to_string(),
+        &trace_text,
+        &provider_path.display().to_string(),
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_manifest_file(
+    manifest_path: &Path,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let (manifest, trace) =
+        sim_models::deepseek_v4_flash_moe::parse_expert_route_trace_from_manifest_file(
+            manifest_path,
+        )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        &manifest_path.display().to_string(),
+        &manifest.source_kind,
+        &trace,
+        "deterministic://deepseek-v4-flash",
+        &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec::deterministic(
+            deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+            "iq2_xxs",
+            expert_bytes,
+        )?,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_provider_file(
+    manifest_path: &Path,
+    provider_path: &Path,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let (manifest, trace) =
+        sim_models::deepseek_v4_flash_moe::parse_expert_route_trace_from_manifest_file(
+            manifest_path,
+        )?;
+    let provider = sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec_from_file(
+        provider_path,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        &manifest_path.display().to_string(),
+        &manifest.source_kind,
+        &trace,
+        &provider_path.display().to_string(),
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file(
+    manifest_path: &Path,
+    catalog_path: &Path,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let (manifest, trace) =
+        sim_models::deepseek_v4_flash_moe::parse_expert_route_trace_from_manifest_file(
+            manifest_path,
+        )?;
+    let catalog =
+        sim_models::deepseek_v4_flash_moe::parse_expert_weight_catalog_from_file(catalog_path)?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_catalog_kind(
+        &manifest_path.display().to_string(),
+        &manifest.source_kind,
+        &trace,
+        &catalog_path.display().to_string(),
+        &catalog,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace(
+    route_source: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec;
+
+    let provider = ExpertWeightProviderSpec::deterministic(
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+        "iq2_xxs",
+        expert_bytes,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        route_source,
+        "direct-trace",
+        trace,
+        "deterministic://deepseek-v4-flash",
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_with_provider(
+    route_source: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        route_source,
+        "direct-trace",
+        trace,
+        weight_provider_source,
+        provider,
+        cache_capacity_slots,
+    )
+}
+
+fn deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+    route_source: &str,
+    route_source_kind: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::{
+        expert_weight_tile_ref_from_provider, validate_expert_route_decision,
+        validate_expert_weight_provider_spec, ExpertCacheSimulator,
+    };
+
+    if trace.is_empty() {
+        return Err("flash moe decode report requires a non-empty route trace".to_string());
+    }
+    if cache_capacity_slots == 0 {
+        return Err("flash moe decode report requires cache_capacity_slots > 0".to_string());
+    }
+    validate_expert_weight_provider_spec(provider)?;
+    let expert_bytes = provider.payload_bytes;
+    let step_count = trace
+        .iter()
+        .map(|decision| decision.step_index)
+        .max()
+        .and_then(|max_step| usize::try_from(max_step + 1).ok())
+        .ok_or_else(|| "flash moe decode report step_count overflow".to_string())?;
+    let tokens_per_step = trace
+        .iter()
+        .map(|decision| decision.token_index)
+        .max()
+        .unwrap_or(0)
+        + 1;
     let top_k = DEEPSEEK_V4_FLASH_PROFILE.num_experts_used;
     let mut cache = ExpertCacheSimulator::new(cache_capacity_slots as usize, expert_bytes);
-    for step in 0..step_count {
-        let trace = synthetic_route_trace(tokens_per_step, total_layers, step as u64);
-        cache.replay(&trace);
+    let mut unique_tiles = BTreeSet::new();
+    let mut checksum_input = vec![
+        step_count as u64,
+        tokens_per_step,
+        DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        top_k,
+        expert_bytes,
+        u64::from(cache_capacity_slots),
+    ];
+    for decision in trace {
+        validate_expert_route_decision(decision)?;
+        for &expert_id in &decision.active_experts {
+            let tile =
+                expert_weight_tile_ref_from_provider(provider, decision.layer_id, expert_id)?;
+            checksum_input.push(tile.payload_checksum);
+            unique_tiles.insert(tile.object_key);
+        }
     }
+    cache.replay(trace);
     let hits = cache.hits;
     let misses = cache.misses;
     let evictions = cache.evictions;
     let pread_bytes = cache.pread_bytes;
     let total = hits + misses;
     let hit_rate_milli = if total == 0 { 0 } else { (hits * 1000) / total };
+    let latency = cache.latency_estimate();
+    let unique_weight_tile_count = unique_tiles.len() as u64;
+    let weight_tile_resolve_count = trace
+        .iter()
+        .map(|decision| decision.active_experts.len() as u64)
+        .sum::<u64>();
+    let weight_tile_payload_bytes = unique_weight_tile_count * expert_bytes;
+    checksum_input.push(weight_tile_resolve_count);
+    checksum_input.push(unique_weight_tile_count);
+    checksum_input.push(weight_tile_payload_bytes);
+    checksum_input.push(latency.compute_time_us);
+    checksum_input.push(latency.miss_load_time_us);
+    checksum_input.push(latency.estimated_latency_us);
+    checksum_input.push(latency.compute_us_per_touch);
+    checksum_input.push(latency.load_bytes_per_us);
     Ok(DeepseekV4FlashMoeDecodeReport {
+        route_source: route_source.to_string(),
+        route_source_kind: route_source_kind.to_string(),
+        weight_provider_source: weight_provider_source.to_string(),
+        weight_provider_model_key: provider.model_key.clone(),
+        weight_provider_quant: provider.quant.clone(),
         step_count,
-        total_layers,
+        total_layers: DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
         tokens_per_step,
         top_k,
         expert_bytes,
         cache_capacity_slots,
+        route_decision_count: trace.len() as u64,
+        weight_tile_resolve_count,
+        unique_weight_tile_count,
+        weight_tile_payload_bytes,
+        weight_tile_payload_checksum: checksum_words(&checksum_input),
         hits,
         misses,
         evictions,
         pread_bytes,
         hit_rate_milli,
+        compute_time_us: latency.compute_time_us,
+        miss_load_time_us: latency.miss_load_time_us,
+        estimated_latency_us: latency.estimated_latency_us,
+        latency_compute_us_per_touch: latency.compute_us_per_touch,
+        latency_load_bytes_per_us: latency.load_bytes_per_us,
+    })
+}
+
+fn deepseek_v4_flash_moe_decode_report_from_trace_with_catalog_kind(
+    route_source: &str,
+    route_source_kind: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    weight_provider_source: &str,
+    catalog: &sim_models::deepseek_v4_flash_moe::ExpertWeightCatalog,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::{
+        expert_weight_catalog_common_payload_bytes, expert_weight_tile_ref_from_catalog,
+        validate_expert_route_decision, validate_expert_weight_catalog, ExpertCacheSimulator,
+    };
+
+    if trace.is_empty() {
+        return Err("flash moe decode report requires a non-empty route trace".to_string());
+    }
+    if cache_capacity_slots == 0 {
+        return Err("flash moe decode report requires cache_capacity_slots > 0".to_string());
+    }
+    validate_expert_weight_catalog(catalog)?;
+    let expert_bytes = expert_weight_catalog_common_payload_bytes(catalog)?;
+    let step_count = trace
+        .iter()
+        .map(|decision| decision.step_index)
+        .max()
+        .and_then(|max_step| usize::try_from(max_step + 1).ok())
+        .ok_or_else(|| "flash moe decode report step_count overflow".to_string())?;
+    let tokens_per_step = trace
+        .iter()
+        .map(|decision| decision.token_index)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let top_k = DEEPSEEK_V4_FLASH_PROFILE.num_experts_used;
+    let mut cache = ExpertCacheSimulator::new(cache_capacity_slots as usize, expert_bytes);
+    let mut unique_tiles = BTreeSet::new();
+    let mut checksum_input = vec![
+        step_count as u64,
+        tokens_per_step,
+        DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        top_k,
+        expert_bytes,
+        u64::from(cache_capacity_slots),
+    ];
+    for decision in trace {
+        validate_expert_route_decision(decision)?;
+        for &expert_id in &decision.active_experts {
+            let tile = expert_weight_tile_ref_from_catalog(catalog, decision.layer_id, expert_id)?;
+            checksum_input.push(tile.payload_checksum);
+            unique_tiles.insert(tile.object_key);
+        }
+    }
+    cache.replay(trace);
+    let hits = cache.hits;
+    let misses = cache.misses;
+    let evictions = cache.evictions;
+    let pread_bytes = cache.pread_bytes;
+    let total = hits + misses;
+    let hit_rate_milli = if total == 0 { 0 } else { (hits * 1000) / total };
+    let latency = cache.latency_estimate();
+    let unique_weight_tile_count = unique_tiles.len() as u64;
+    let weight_tile_resolve_count = trace
+        .iter()
+        .map(|decision| decision.active_experts.len() as u64)
+        .sum::<u64>();
+    let weight_tile_payload_bytes = unique_weight_tile_count * expert_bytes;
+    checksum_input.push(weight_tile_resolve_count);
+    checksum_input.push(unique_weight_tile_count);
+    checksum_input.push(weight_tile_payload_bytes);
+    checksum_input.push(latency.compute_time_us);
+    checksum_input.push(latency.miss_load_time_us);
+    checksum_input.push(latency.estimated_latency_us);
+    checksum_input.push(latency.compute_us_per_touch);
+    checksum_input.push(latency.load_bytes_per_us);
+    Ok(DeepseekV4FlashMoeDecodeReport {
+        route_source: route_source.to_string(),
+        route_source_kind: route_source_kind.to_string(),
+        weight_provider_source: weight_provider_source.to_string(),
+        weight_provider_model_key: catalog.model_key.clone(),
+        weight_provider_quant: "catalog".to_string(),
+        step_count,
+        total_layers: DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        tokens_per_step,
+        top_k,
+        expert_bytes,
+        cache_capacity_slots,
+        route_decision_count: trace.len() as u64,
+        weight_tile_resolve_count,
+        unique_weight_tile_count,
+        weight_tile_payload_bytes,
+        weight_tile_payload_checksum: checksum_words(&checksum_input),
+        hits,
+        misses,
+        evictions,
+        pread_bytes,
+        hit_rate_milli,
+        compute_time_us: latency.compute_time_us,
+        miss_load_time_us: latency.miss_load_time_us,
+        estimated_latency_us: latency.estimated_latency_us,
+        latency_compute_us_per_touch: latency.compute_us_per_touch,
+        latency_load_bytes_per_us: latency.load_bytes_per_us,
     })
 }
 
@@ -24684,6 +25122,29 @@ mod tests {
         SimTopology::from_config(&config).expect("8-host topology")
     }
 
+    fn complete_flash_weight_catalog_fixture(payload_bytes: u64) -> String {
+        let mut text = String::from(
+            "source_kind=fixture model_key=deepseek-v4-flash total_layers=43 experts_per_layer=256 checksum_algorithm=deterministic-v1\n",
+        );
+        for layer_id in 0..43u64 {
+            for expert_id in 0..256u32 {
+                let tile = sim_models::deepseek_v4_flash_moe::deterministic_expert_weight_tile_ref(
+                    "deepseek-v4-flash",
+                    layer_id,
+                    expert_id,
+                    "iq2_xxs",
+                    payload_bytes,
+                )
+                .expect("catalog tile");
+                text.push_str(&format!(
+                    "tile layer={} expert={} quant={} payload_bytes={} payload_checksum=0x{:016x}\n",
+                    layer_id, expert_id, tile.quant, tile.payload_bytes, tile.payload_checksum
+                ));
+            }
+        }
+        text
+    }
+
     #[test]
     fn flash_geometry_smoke_check_passes_on_eight_host_topology() {
         let topology = eight_host_topology();
@@ -24756,13 +25217,31 @@ mod tests {
         let report = super::deepseek_v4_flash_moe_decode_report(8, 1, 16, 2048 * 1024)
             .expect("moe decode report");
         assert_eq!(report.step_count, 8);
+        assert_eq!(report.route_source, "synthetic");
+        assert_eq!(report.route_source_kind, "synthetic");
         assert_eq!(report.total_layers, 43);
         assert_eq!(report.tokens_per_step, 1);
         assert_eq!(report.top_k, 6);
         // Each step = 43 layers * 1 token * 6 experts = 258 touches.
         assert_eq!(report.hits + report.misses, 8 * 43 * 6);
+        assert_eq!(report.route_decision_count, 8 * 43);
+        assert_eq!(report.weight_tile_resolve_count, 8 * 43 * 6);
+        assert!(report.unique_weight_tile_count > 0);
+        assert_eq!(
+            report.weight_tile_payload_bytes,
+            report.unique_weight_tile_count * 2048 * 1024
+        );
+        assert_ne!(report.weight_tile_payload_checksum, 0);
         assert_eq!(report.pread_bytes, report.misses * 2048 * 1024);
         assert!(report.hit_rate_milli <= 1000);
+        assert_eq!(report.latency_compute_us_per_touch, 2);
+        assert_eq!(report.latency_load_bytes_per_us, 4096);
+        assert_eq!(report.compute_time_us, (report.hits + report.misses) * 2);
+        assert_eq!(report.miss_load_time_us, (report.pread_bytes + 4095) / 4096);
+        assert_eq!(
+            report.estimated_latency_us,
+            report.compute_time_us.max(report.miss_load_time_us)
+        );
     }
 
     #[test]
@@ -24770,6 +25249,175 @@ mod tests {
         let err = super::deepseek_v4_flash_moe_decode_report(0, 1, 16, 1024)
             .expect_err("zero steps must be rejected");
         assert!(err.contains("step_count > 0"), "{err}");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_route_trace_text() {
+        let trace = "\
+            step=0 token=0 layer=0 experts=1,2,3,4,5,6\n\
+            step=0 token=0 layer=1 experts=1,2,3,4,5,6\n\
+            step=1 token=0 layer=0 experts=7,8,9,10,11,12\n";
+        let report = super::deepseek_v4_flash_moe_decode_report_from_trace_text(
+            "fixture://flash-route",
+            trace,
+            16,
+            1024,
+        )
+        .expect("trace report");
+        assert_eq!(report.route_source, "fixture://flash-route");
+        assert_eq!(report.route_source_kind, "direct-trace");
+        assert_eq!(
+            report.weight_provider_source,
+            "deterministic://deepseek-v4-flash"
+        );
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.step_count, 2);
+        assert_eq!(report.tokens_per_step, 1);
+        assert_eq!(report.route_decision_count, 3);
+        assert_eq!(report.weight_tile_resolve_count, 18);
+        assert_eq!(report.unique_weight_tile_count, 18);
+        assert_eq!(report.weight_tile_payload_bytes, 18 * 1024);
+        assert_eq!(report.hits + report.misses, 18);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_checked_in_ds4_trace_fixture() {
+        let trace = include_str!("../../sim-models/fixtures/deepseek_v4_flash_route_trace.ds4.txt");
+        let provider_text =
+            include_str!("../../sim-models/fixtures/deepseek_v4_flash_weight_provider.fixture.txt");
+        let provider =
+            sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec(provider_text)
+                .expect("provider fixture");
+        let report = super::deepseek_v4_flash_moe_decode_report_from_trace_text_with_provider(
+            "fixture://deepseek-v4-flash-route-trace",
+            trace,
+            "fixture://deepseek-v4-flash-weight-provider",
+            &provider,
+            64,
+        )
+        .expect("fixture trace report");
+        assert_eq!(
+            report.route_source,
+            "fixture://deepseek-v4-flash-route-trace"
+        );
+        assert_eq!(report.route_source_kind, "direct-trace");
+        assert_eq!(
+            report.weight_provider_source,
+            "fixture://deepseek-v4-flash-weight-provider"
+        );
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.step_count, 2);
+        assert_eq!(report.total_layers, 43);
+        assert_eq!(report.tokens_per_step, 1);
+        assert_eq!(report.route_decision_count, 2 * 43);
+        assert_eq!(report.weight_tile_resolve_count, 2 * 43 * 6);
+        assert_eq!(report.unique_weight_tile_count, 2 * 43 * 6);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 2048 * 1024);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_file_backed_provider_fixture() {
+        let report = super::deepseek_v4_flash_moe_decode_report_from_trace_file_with_provider_file(
+            Path::new("../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.ds4.txt"),
+            Path::new(
+                "../../crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.file.fixture.txt",
+            ),
+            64,
+        )
+        .expect("file-backed provider fixture report");
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.expert_bytes, 142);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 142);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_route_manifest_file_backed_provider_fixture() {
+        let report =
+            super::deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_provider_file(
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt",
+                ),
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.file.fixture.txt",
+                ),
+                64,
+            )
+            .expect("manifest file-backed provider fixture report");
+        assert_eq!(report.route_source_kind, "fixture");
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.expert_bytes, 142);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 142);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_complete_weight_catalog() {
+        let dir = std::env::temp_dir().join(format!(
+            "ub_sim_flash_weight_catalog_report_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let catalog_path = dir.join("weight.catalog");
+        std::fs::write(&catalog_path, complete_flash_weight_catalog_fixture(4096))
+            .expect("write catalog");
+        let report =
+            super::deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file(
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt",
+                ),
+                &catalog_path,
+                64,
+            )
+            .expect("catalog-backed report");
+        assert_eq!(report.route_source_kind, "fixture");
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "catalog");
+        assert_eq!(report.expert_bytes, 4096);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 4096);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+        std::fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_rejects_bad_route_trace_text() {
+        let err = super::deepseek_v4_flash_moe_decode_report_from_trace_text(
+            "fixture://bad-route",
+            "step=0 token=0 layer=0 experts=1,2,3",
+            16,
+            1024,
+        )
+        .expect_err("bad trace must fail");
+        assert!(err.contains("expert count mismatch"), "{err}");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_rejects_bad_typed_route_trace() {
+        let trace = vec![sim_models::deepseek_v4_flash_moe::ExpertRouteDecision {
+            step_index: 0,
+            token_index: 0,
+            layer_id: 0,
+            active_experts: vec![1, 2, 3],
+        }];
+        let err = super::deepseek_v4_flash_moe_decode_report_from_trace(
+            "fixture://bad-typed-route",
+            &trace,
+            16,
+            1024,
+        )
+        .expect_err("bad typed trace must fail");
+        assert!(err.contains("expert count mismatch"), "{err}");
     }
 
     #[test]

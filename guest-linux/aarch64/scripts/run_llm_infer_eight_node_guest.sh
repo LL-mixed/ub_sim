@@ -14,6 +14,9 @@ w5_profile_default_w4_backend() {
     ""|qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
       echo qwen3_dense
       ;;
+    deepseek_v4_flash_decode)
+      echo deepseek-v4-flash
+      ;;
     *)
       echo ""
       ;;
@@ -97,6 +100,8 @@ SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT
 SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}"
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}"
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
+SIM_W5_FLASH_WEIGHT_CATALOG="${SIM_W5_FLASH_WEIGHT_CATALOG:-${SIM_W5_TEST_FLASH_WEIGHT_CATALOG:-}}"
+SIM_W5_FLASH_WEIGHT_CATALOG_GUEST="$SIM_W5_FLASH_WEIGHT_CATALOG"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}"
 SIM_W5_SERVING_REQUEST_ID="${SIM_W5_SERVING_REQUEST_ID:-}"
 SIM_W5_SERVING_REQUESTS_FILE="${SIM_W5_SERVING_REQUESTS_FILE:-}"
@@ -203,6 +208,24 @@ stage_qwen3_object_service_snapshot() {
   cp "$payload_index_src" "$payload_index_guest_bin"
   SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$payload_index_guest_json"
   trace "prepare: staged qwen3 Object Service payload index source=$payload_index_src guest=$payload_index_guest_bin"
+}
+
+stage_flash_weight_catalog() {
+  local catalog_path="$SIM_W5_FLASH_WEIGHT_CATALOG"
+  local catalog_guest_path="/tmp/deepseek_v4_flash_weight.catalog"
+  local catalog_guest_file="$RUN_INITRAMFS_DIR$catalog_guest_path"
+
+  if [[ -z "$catalog_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$catalog_path" ]]; then
+    trace "FAIL: DeepSeek V4 Flash weight catalog is missing path=$catalog_path"
+    return 1
+  fi
+  mkdir -p "$(dirname "$catalog_guest_file")"
+  cp "$catalog_path" "$catalog_guest_file"
+  SIM_W5_FLASH_WEIGHT_CATALOG_GUEST="$catalog_guest_path"
+  trace "prepare: staged DeepSeek V4 Flash weight catalog source=$catalog_path guest=$catalog_guest_path"
 }
 
 stage_w5_memory_shortpath_stream() {
@@ -339,6 +362,13 @@ validate_w5_profile_runtime() {
         return 1
       fi
       ;;
+    deepseek_v4_flash_decode)
+      if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "deepseek-v4-flash" &&
+            "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "deepseek_v4_flash" ]]; then
+        trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires DeepSeek V4 Flash backend, got SIM_UAPI_W4_CHIPBACKEND_PROFILE=$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
+        return 1
+      fi
+      ;;
     *)
       trace "FAIL: unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE"
       return 1
@@ -352,7 +382,7 @@ validate_w5_profile_runtime() {
         return 1
       fi
       ;;
-    qwen3_0_6b_decode|qwen3_14b_decode)
+    qwen3_0_6b_decode|qwen3_14b_decode|deepseek_v4_flash_decode)
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires SIM_QWEN3_GUEST_ENGRAM=0"
         return 1
@@ -746,6 +776,7 @@ export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="$SIM_QWEN3_GUEST_ENGRAM_STATE_REF"
 export SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF="$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF"
 export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"
+export SIM_W5_FLASH_WEIGHT_CATALOG="$SIM_W5_FLASH_WEIGHT_CATALOG_GUEST"
 export SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE"
 export SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"
 export SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE_GUEST"
@@ -1120,6 +1151,7 @@ build_w4_initramfs() {
     gzip -dc "$base_initramfs" | cpio -id --quiet
   )
   stage_qwen3_object_service_snapshot
+  stage_flash_weight_catalog
   stage_w5_memory_shortpath_stream
   stage_w5_memory_shortpath_kv_stream
   stage_w5_memory_prefix_cache_kv_stream
@@ -1790,6 +1822,8 @@ prepare_environment() {
     SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" \
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" \
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST" \
+    SIM_W5_FLASH_WEIGHT_CATALOG="$SIM_W5_FLASH_WEIGHT_CATALOG" \
+    SIM_W5_FLASH_WEIGHT_CATALOG_GUEST="$SIM_W5_FLASH_WEIGHT_CATALOG_GUEST" \
     SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE" \
     SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID" \
     SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE" \

@@ -62,7 +62,7 @@ SIM_W5_MEMORY_PRODUCER_ENTITY="${SIM_W5_MEMORY_PRODUCER_ENTITY:-0}"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-lingqu_memory_service}"
 
 case "$SIM_UAPI_W5_PROFILE" in
-  qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+  qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode|deepseek_v4_flash_decode)
     ;;
   *)
     echo "unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE" >&2

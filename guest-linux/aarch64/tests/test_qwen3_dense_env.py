@@ -930,6 +930,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"', runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh" "$@"', w4_compat_runner_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
+        self.assertIn("--readiness-only", config_runner_text)
+        self.assertIn("deepseek_v4_flash_decode", config_runner_text)
+        self.assertIn("is_deepseek_v4_flash_w5_profile", config_runner_text)
+        self.assertIn("--profile=deepseek-v4-flash", config_runner_text)
+        self.assertIn("deepseek-v4-flash-moe-report", config_runner_text)
         self.assertIn("--steps N", config_runner_text)
         self.assertIn("--requests FILE", config_runner_text)
         self.assertIn("--serve-queue", config_runner_text)
@@ -938,6 +943,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("W5 cluster config file is required", config_runner_text)
         self.assertIn("run_w5_cluster_qwen3_0_6b_2step.sh", config_runner_text)
         self.assertNotIn("DEFAULT_CONFIG=", config_runner_text)
+        self.assertIn("deepseek_v4_flash_decode)", runner_text)
+        self.assertIn("deepseek-v4-flash", runner_text)
+        self.assertIn("deepseek_v4_flash_decode)", legacy_runner_text)
+        self.assertIn("echo deepseek-v4-flash", legacy_runner_text)
+        self.assertIn('SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "deepseek-v4-flash"', legacy_runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
         self.assertIn("--no-memory-reuse", config_runner_text)
@@ -1095,6 +1105,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_PROGRESS_INTERVAL_SECS=",
                 "SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE=",
                 "SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=0",
+                "# model",
+                "SIM_UAPI_W4_CHIPBACKEND_PROFILE=",
+                "SIM_W5_FLASH_WEIGHT_CATALOG=",
                 "# serving",
                 "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_W5_SERVING_QUEUE=0",

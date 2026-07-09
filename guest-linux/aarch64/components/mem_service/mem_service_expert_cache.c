@@ -77,6 +77,34 @@ static void expert_cache_remove_at(struct mem_service_expert_cache *cache, uint3
     }
 }
 
+static uint64_t expert_cache_ceil_div_u64(uint64_t value, uint64_t divisor)
+{
+    if (value == 0 || divisor == 0) {
+        return 0;
+    }
+    return (value + divisor - 1ULL) / divisor;
+}
+
+static void expert_cache_fill_latency(struct mem_service_expert_cache_stats *stats)
+{
+    uint64_t touch_count;
+
+    if (!stats) {
+        return;
+    }
+    touch_count = stats->hits + stats->misses;
+    stats->compute_us_per_touch = MEM_SERVICE_EXPERT_CACHE_COMPUTE_US_PER_TOUCH;
+    stats->load_bytes_per_us = MEM_SERVICE_EXPERT_CACHE_LOAD_BYTES_PER_US;
+    stats->compute_time_us =
+        touch_count * MEM_SERVICE_EXPERT_CACHE_COMPUTE_US_PER_TOUCH;
+    stats->miss_load_time_us =
+        expert_cache_ceil_div_u64(stats->pread_bytes,
+                                  MEM_SERVICE_EXPERT_CACHE_LOAD_BYTES_PER_US);
+    stats->estimated_latency_us = stats->compute_time_us > stats->miss_load_time_us
+        ? stats->compute_time_us
+        : stats->miss_load_time_us;
+}
+
 bool mem_service_expert_cache_touch(struct mem_service_expert_cache *cache,
                                     uint32_t layer_id,
                                     uint32_t expert_id)
@@ -120,4 +148,5 @@ void mem_service_expert_cache_stats(const struct mem_service_expert_cache *cache
         return;
     }
     *out = cache->stats;
+    expert_cache_fill_latency(out);
 }

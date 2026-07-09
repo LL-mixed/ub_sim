@@ -1,0 +1,10 @@
+# DeepSeek V4 Flash file-backed weight provider fixture.
+#
+# This validates the provider source path by reading a real payload file. It is
+# intentionally tiny and is not the production 2 MiB expert tile.
+model_key=deepseek-v4-flash
+quant=iq2_xxs
+payload_bytes=142
+checksum_algorithm=deterministic-v1
+payload_path=deepseek_v4_flash_weight_tile_payload.fixture.txt
+payload_checksum=0x5fc28acab010912b
