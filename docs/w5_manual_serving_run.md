@@ -66,10 +66,11 @@ Prepare only the W5 Memory Service runtime surface:
 memory path is enabled. The lower-level
 `run_w5_inference_cluster_runtime.sh` does not bootstrap infrastructure; it
 expects `SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=1` and fails fast otherwise. The
-bootstrap entry is deliberately separate from infer execution: it prepares the
-durable store, object store, registry directory, and engram state refs when
-needed, then emits sourceable env. W5 infer and serving queue consume that env
-as clients.
+bootstrap entry is deliberately separate from infer execution and is owned by
+the `mem_service` host binary. It prepares the service runtime surface and emits
+sourceable env. W5 infer and serving queue consume that env as clients; request
+data, prefix/KV records, and shortpath decisions must be written through
+Memory Service APIs or clients rather than by the infer bootstrap path.
 
 Run one-shot W5 stream inference:
 

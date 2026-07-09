@@ -3,8 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
+MEM_SERVICE_APP_DIR="$ROOT_DIR/apps/mem_service"
+MEM_SERVICE_HOST_BIN="$MEM_SERVICE_APP_DIR/linqu_mem_service_host"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -69,20 +70,12 @@ case "$SIM_UAPI_W5_PROFILE" in
     ;;
 esac
 
-if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
-  echo "W5 Memory Service bootstrap requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
-  exit 2
+if [[ ! -x "$MEM_SERVICE_HOST_BIN" ]]; then
+  echo "[w5_memory_service_bootstrap] build mem_service host binary: $MEM_SERVICE_HOST_BIN" >&2
+  make -C "$MEM_SERVICE_APP_DIR" linqu_mem_service_host >&2
 fi
-
-if [[ -z "${SIM_CLI_BIN:-}" ]]; then
-  SIM_CLI_BIN="$REPO_DIR/target/debug/sim-cli"
-  echo "[w5_memory_service_bootstrap] build sim-cli for current workspace: $SIM_CLI_BIN" >&2
-  pushd "$REPO_DIR" >/dev/null
-  cargo build -p sim-cli
-  popd >/dev/null
-fi
-if [[ ! -x "$SIM_CLI_BIN" ]]; then
-  echo "W5 Memory Service bootstrap requires sim-cli: $SIM_CLI_BIN" >&2
+if [[ ! -x "$MEM_SERVICE_HOST_BIN" ]]; then
+  echo "W5 Memory Service bootstrap requires mem_service host binary: $MEM_SERVICE_HOST_BIN" >&2
   exit 2
 fi
 
@@ -92,9 +85,7 @@ fi
 mkdir -p "${ENV_FILE:h}"
 
 tmp_file="$ENV_FILE.tmp.$$"
-"$SIM_CLI_BIN" lingqu-memory bootstrap-w5-service \
-  --w5-profile "$SIM_UAPI_W5_PROFILE" \
-  --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH" \
+"$MEM_SERVICE_HOST_BIN" bootstrap-w5-service \
   --memory-store "$SIM_W5_MEMORY_STORE" \
   --memory-object-store "$SIM_W5_MEMORY_OBJECT_STORE" \
   --memory-engram-state "$SIM_W5_MEMORY_ENGRAM_STATE" \

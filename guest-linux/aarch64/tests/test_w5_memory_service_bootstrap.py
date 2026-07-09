@@ -12,6 +12,9 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
         self.runtime = self.scripts / "run_w5_inference_cluster_runtime.sh"
         self.config_runner = self.scripts / "run_w5_cluster_config.sh"
         self.bootstrap = self.scripts / "run_w5_memory_service_bootstrap.sh"
+        self.mem_service_app = (
+            self.repo / "guest-linux" / "aarch64" / "apps" / "mem_service"
+        )
 
     def test_runtime_refuses_memory_path_without_infra_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -44,34 +47,22 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
         )
         self.assertNotIn("serving_queue=1 launch_mode=ready_only", result.stderr)
 
-    def test_bootstrap_wrapper_uses_lingqu_memory_cli(self) -> None:
+    def test_bootstrap_wrapper_uses_mem_service_host_binary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            weights = tmp / "weights"
-            weights.mkdir()
             env_file = tmp / "w5-memory.env"
             fake_sim_cli = tmp / "sim-cli"
-            fake_sim_cli.write_text(
-                "\n".join(
-                    [
-                        "#!/bin/sh",
-                        "test \"$1\" = lingqu-memory || exit 21",
-                        "test \"$2\" = bootstrap-w5-service || exit 22",
-                        "printf \"%s\\n\" \"export SIM_W5_MEMORY_SERVICE='lingqu_memory_service'\"",
-                        "printf \"%s\\n\" \"export SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED='1'\"",
-                        "printf \"%s\\n\" \"export SIM_W5_MEMORY_STORE='/tmp/w5-memory.json'\"",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            fake_sim_cli.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
             fake_sim_cli.chmod(0o755)
             env = {
                 **os.environ,
                 "SIM_CLI_BIN": str(fake_sim_cli),
-                "SIM_QWEN3_DENSE_WEIGHTS_PATH": str(weights),
                 "RUN_ID": "w5_bootstrap_test",
                 "SIM_UAPI_W5_PROFILE": "qwen3_0_6b_decode",
+                "SIM_W5_MEMORY_STORE": str(tmp / "memory-store.json"),
+                "SIM_W5_MEMORY_OBJECT_STORE": str(tmp / "object-store.json"),
+                "SIM_W5_MEMORY_ENGRAM_STATE": str(tmp / "engram-state.json"),
+                "SIM_W5_MEMORY_REGISTRY_DIR": str(tmp / "registry"),
             }
 
             result = subprocess.run(
@@ -83,9 +74,12 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             )
 
             self.assertEqual(env_file.read_text(encoding="utf-8"), result.stdout)
+            self.assertTrue((tmp / "object-store.json").is_file())
+            self.assertTrue((tmp / "registry").is_dir())
 
         self.assertIn("SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED='1'", result.stdout)
-        self.assertIn("SIM_W5_MEMORY_STORE='/tmp/w5-memory.json'", result.stdout)
+        self.assertIn("SIM_W5_MEMORY_STORE='", result.stdout)
+        self.assertNotIn("sim-cli", result.stderr)
 
     def test_cluster_config_bootstraps_before_runtime_validate_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,15 +93,6 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
                 "\n".join(
                     [
                         "#!/bin/sh",
-                        "if test \"$1\" = lingqu-memory && test \"$2\" = bootstrap-w5-service; then",
-                        "  printf \"%s\\n\" \"export SIM_W5_MEMORY_SERVICE='lingqu_memory_service'\"",
-                        "  printf \"%s\\n\" \"export SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED='1'\"",
-                        "  printf \"%s\\n\" \"export SIM_W5_MEMORY_STORE='$SIM_W5_MEMORY_STORE'\"",
-                        "  printf \"%s\\n\" \"export SIM_W5_MEMORY_OBJECT_STORE='$SIM_W5_MEMORY_OBJECT_STORE'\"",
-                        "  printf \"%s\\n\" \"export SIM_W5_MEMORY_ENGRAM_STATE='$SIM_W5_MEMORY_ENGRAM_STATE'\"",
-                        "  printf \"%s\\n\" \"export SIM_W5_MEMORY_REGISTRY_DIR='$SIM_W5_MEMORY_REGISTRY_DIR'\"",
-                        "  exit 0",
-                        "fi",
                         "exit 23",
                     ]
                 )
@@ -148,6 +133,13 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
     def test_bootstrap_boundary_stays_out_of_runtime_script(self) -> None:
         runtime_text = self.runtime.read_text(encoding="utf-8")
         config_text = self.config_runner.read_text(encoding="utf-8")
+        bootstrap_text = self.bootstrap.read_text(encoding="utf-8")
+        sim_cli_text = (self.repo / "crates" / "sim-cli" / "src" / "main.rs").read_text(
+            encoding="utf-8"
+        )
+        mem_service_text = (
+            self.mem_service_app / "mem_service.c"
+        ).read_text(encoding="utf-8")
 
         self.assertIn(
             "W5 Memory Service runtime path requires infrastructure bootstrap before infer launch",
@@ -162,6 +154,15 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             '"$SCRIPT_DIR/run_w5_memory_service_bootstrap.sh"',
             config_text,
         )
+        self.assertIn("linqu_mem_service_host", bootstrap_text)
+        self.assertIn('"$MEM_SERVICE_HOST_BIN" bootstrap-w5-service', bootstrap_text)
+        self.assertIn('make -C "$MEM_SERVICE_APP_DIR" linqu_mem_service_host >&2', bootstrap_text)
+        self.assertNotIn("SIM_CLI_BIN", bootstrap_text)
+        self.assertNotIn("cargo build -p sim-cli", bootstrap_text)
+        self.assertNotIn("lingqu-memory bootstrap-w5-service", bootstrap_text)
+        self.assertNotIn('"bootstrap-w5-service" =>', sim_cli_text)
+        self.assertNotIn("run_lingqu_memory_bootstrap_w5_service_cli", sim_cli_text)
+        self.assertIn("run_bootstrap_w5_service", mem_service_text)
 
 
 if __name__ == "__main__":

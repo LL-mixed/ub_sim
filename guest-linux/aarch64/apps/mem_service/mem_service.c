@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -6,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -126,6 +128,7 @@ static void usage(const char *argv0)
     printf(" [object/artifact mutating commands accept --payload-file <path>]");
     printf(" [put-object accepts --backend ub-ssd-gsva-v1 --backend-write 1 --backend-buffer-gsva-base <u64> --backend-buffer-key-segment-id <u64>]");
     printf(" [get-object accepts --backend-read 1 with the same --backend-buffer-* GSVA descriptor fields]");
+    printf(" [bootstrap-w5-service --memory-store <path> --memory-object-store <path> --memory-engram-state <path> --memory-registry-dir <path> [--service-name <name>] [--print-env]]");
 #ifdef MEM_SERVICE_ENABLE_QWEN3_INSPECT
     printf(" [--inspect-qwen3]");
 #endif
@@ -3887,6 +3890,82 @@ static int write_text_file_limited(const char *path,
     }
     fclose(file);
     return 0;
+}
+
+static int path_exists(const char *path)
+{
+    struct stat st;
+
+    return path != NULL && path[0] != '\0' && stat(path, &st) == 0;
+}
+
+static int ensure_directory_path(const char *path)
+{
+    char buffer[4096];
+    char *cursor;
+    size_t len;
+
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+    len = strlen(path);
+    if (len >= sizeof(buffer)) {
+        return -1;
+    }
+    memcpy(buffer, path, len + 1U);
+    while (len > 1U && buffer[len - 1U] == '/') {
+        buffer[len - 1U] = '\0';
+        len -= 1U;
+    }
+    for (cursor = buffer + 1; *cursor != '\0'; ++cursor) {
+        if (*cursor == '/') {
+            *cursor = '\0';
+            if (mkdir(buffer, 0777) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *cursor = '/';
+        }
+    }
+    if (mkdir(buffer, 0777) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+}
+
+static int ensure_parent_directory_path(const char *path)
+{
+    char buffer[4096];
+    char *slash;
+    size_t len;
+
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+    len = strlen(path);
+    if (len >= sizeof(buffer)) {
+        return -1;
+    }
+    memcpy(buffer, path, len + 1U);
+    slash = strrchr(buffer, '/');
+    if (slash == NULL) {
+        return 0;
+    }
+    if (slash == buffer) {
+        return 0;
+    }
+    *slash = '\0';
+    return ensure_directory_path(buffer);
+}
+
+static int write_text_file_if_missing(const char *path, const char *payload)
+{
+    if (path_exists(path)) {
+        return 0;
+    }
+    if (ensure_parent_directory_path(path) != 0) {
+        return -1;
+    }
+    return write_text_file_limited(path, payload, strlen(payload));
 }
 
 static bool ops_certification_command_ok(const char *command)
@@ -9473,6 +9552,88 @@ static int run_resolve_training_step(int argc, char **argv)
                                       payload);
 }
 
+static const char *w5_memory_object_store_empty_snapshot(void)
+{
+    return "{\n"
+           "  \"profile\": {\n"
+           "    \"metadata_latency_us\": 8,\n"
+           "    \"shmem_latency_us\": 3,\n"
+           "    \"block_latency_us\": 30,\n"
+           "    \"inline_value_limit\": 64,\n"
+           "    \"queue_depth\": 4096,\n"
+           "    \"obmm_pool\": {\n"
+           "      \"enabled\": true,\n"
+           "      \"node_count\": 8,\n"
+           "      \"queue_depth\": 4096,\n"
+           "      \"pool_bytes\": 268435456,\n"
+           "      \"payload_base_offset\": 2097152,\n"
+           "      \"payload_alignment\": 64,\n"
+           "      \"payload_block_tiers\": [262144, 524288, 1048576, 2097152],\n"
+           "      \"queue_auto_drain\": true\n"
+           "    }\n"
+           "  },\n"
+           "  \"records\": []\n"
+           "}\n";
+}
+
+static void print_export_line(const char *name, const char *value)
+{
+    printf("export %s='%s'\n", name, value != NULL ? value : "");
+}
+
+static int run_bootstrap_w5_service(int argc, char **argv)
+{
+    const char *memory_store = option_value(argc, argv, "--memory-store");
+    const char *object_store = option_value(argc, argv, "--memory-object-store");
+    const char *engram_state = option_value(argc, argv, "--memory-engram-state");
+    const char *registry_dir = option_value(argc, argv, "--memory-registry-dir");
+    const char *service_name = option_value(argc, argv, "--service-name");
+    bool print_env = option_present(argc, argv, "--print-env");
+
+    if (service_name == NULL || service_name[0] == '\0') {
+        service_name = "lingqu_memory_service";
+    }
+    if (memory_store == NULL || object_store == NULL ||
+        engram_state == NULL || registry_dir == NULL) {
+        fprintf(stderr,
+                "mem_service: bootstrap-w5-service requires --memory-store, "
+                "--memory-object-store, --memory-engram-state, and "
+                "--memory-registry-dir\n");
+        return 2;
+    }
+    if (ensure_parent_directory_path(memory_store) != 0 ||
+        ensure_parent_directory_path(engram_state) != 0 ||
+        ensure_directory_path(registry_dir) != 0) {
+        fprintf(stderr, "mem_service: failed to prepare W5 memory directories\n");
+        return 1;
+    }
+    if (write_text_file_if_missing(object_store,
+                                   w5_memory_object_store_empty_snapshot()) != 0) {
+        fprintf(stderr, "mem_service: failed to initialize W5 object store %s\n", object_store);
+        return 1;
+    }
+
+    if (print_env) {
+        print_export_line("SIM_W5_MEMORY_SERVICE", service_name);
+        print_export_line("SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED", "1");
+        print_export_line("SIM_W5_MEMORY_STORE", memory_store);
+        print_export_line("SIM_W5_MEMORY_OBJECT_STORE", object_store);
+        print_export_line("SIM_W5_MEMORY_ENGRAM_STATE", engram_state);
+        print_export_line("SIM_W5_MEMORY_REGISTRY_DIR", registry_dir);
+        return 0;
+    }
+
+    printf("linqu_mem_service\n");
+    printf("  mode: bootstrap-w5-service\n");
+    printf("  service: %s\n", service_name);
+    printf("  bootstrapped: true\n");
+    printf("  memory_store: %s\n", memory_store);
+    printf("  object_store: %s\n", object_store);
+    printf("  engram_state: %s\n", engram_state);
+    printf("  registry_dir: %s\n", registry_dir);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 ||
@@ -9674,6 +9835,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "release-fixtures") == 0) {
         return run_release_fixture_check();
+    }
+    if (strcmp(argv[1], "bootstrap-w5-service") == 0) {
+        return run_bootstrap_w5_service(argc, argv);
     }
     if (strcmp(argv[1], "serve") == 0) {
         return run_serve(argc, argv);
