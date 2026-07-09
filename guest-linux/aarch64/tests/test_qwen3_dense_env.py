@@ -1048,6 +1048,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_QWEN3_GUEST_ENGRAM_POOL=",
                 "SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP=fused-simt",
                 "SIM_W5_PROGRESS_INTERVAL_SECS=",
+                "SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE=",
+                "SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=0",
                 "# serving",
                 "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_W5_SERVING_QUEUE=0",

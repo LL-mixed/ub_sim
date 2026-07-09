@@ -60,6 +60,8 @@ SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-$OUT_DIR/w5_memory_object_store.${RU
 SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-$OUT_DIR/w5_object_service_store.${RUN_ID}.json}"
 SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-$OUT_DIR/w5_memory_engram_state.${RUN_ID}.json}"
 SIM_W5_MEMORY_REGISTRY_DIR="${SIM_W5_MEMORY_REGISTRY_DIR:-$OUT_DIR/w5_memory_registry.${RUN_ID}}"
+SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE="${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-$OUT_DIR/w5_memory_service_env.${RUN_ID}.sh}"
+SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED="${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"
 SIM_W5_MEMORY_OWNER_ENTITY="${SIM_W5_MEMORY_OWNER_ENTITY:-0}"
 SIM_W5_MEMORY_PRODUCER_ENTITY="${SIM_W5_MEMORY_PRODUCER_ENTITY:-0}"
 SIM_W5_TEST_SHORTPATH_MATCH_MODE="${SIM_W5_TEST_SHORTPATH_MATCH_MODE:-}"
@@ -108,6 +110,8 @@ export SIM_W5_MEMORY_STORE
 export SIM_W5_MEMORY_OBJECT_STORE
 export SIM_W5_MEMORY_ENGRAM_STATE
 export SIM_W5_MEMORY_REGISTRY_DIR
+export SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE
+export SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED
 export SIM_W5_MEMORY_OWNER_ENTITY
 export SIM_W5_MEMORY_PRODUCER_ENTITY
 export SIM_W5_TEST_SHORTPATH_MATCH_MODE
@@ -173,7 +177,8 @@ if [[ -n "$SIM_W5_TEST_MEMORY_DECISION_STORE" ]]; then
 fi
 
 explicit_engram_state_ref=0
-if [[ -n "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF" ]]; then
+if [[ -n "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF" &&
+      "$SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED" != "1" ]]; then
   explicit_engram_state_ref=1
 fi
 if [[ -n "$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF" && -z "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF" ]]; then
@@ -189,6 +194,7 @@ fi
 if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_ref )); then
   if [[ -z "${SIM_CLI_BIN:-}" ]]; then
     SIM_CLI_BIN="$REPO_DIR/target/debug/sim-cli"
+    export SIM_CLI_BIN
     echo "[w5_inference_cluster] build sim-cli for current workspace: $SIM_CLI_BIN" >&2
     pushd "$REPO_DIR" >/dev/null
     cargo build -p sim-cli
@@ -206,6 +212,13 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
   if (( memory_runtime_lookup )) && [[ -z "$SIM_W5_TEST_MEMORY_OBSERVATION_STORE" ]]; then
     SIM_W5_TEST_MEMORY_OBSERVATION_STORE="$OUT_DIR/w5_memory_runtime_boundary_lookup.${RUN_ID}.json"
     export SIM_W5_TEST_MEMORY_OBSERVATION_STORE
+  fi
+
+  if (( memory_runtime_lookup || memory_decision_reuse )) &&
+      [[ "$SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED" != "1" ]]; then
+    echo "W5 Memory Service runtime path requires infrastructure bootstrap before infer launch" >&2
+    echo "hint: run $SCRIPT_DIR/run_w5_memory_service_bootstrap.sh --env-file <env>, source it, then run this runtime script; or use run_w5_cluster_config.sh" >&2
+    exit 2
   fi
 
   launch_prefix_cache_service() {
@@ -377,7 +390,8 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
       cli_args+=(--engram-token-projection "$SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION")
     fi
   fi
-  if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
+  if (( ! memory_runtime_lookup && ! memory_decision_reuse )) &&
+      [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
     cli_args+=(--engram-state-ref "$SIM_QWEN3_GUEST_ENGRAM_STATE_REF")
     if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF:-}" ]]; then
       cli_args+=(--engram-row-prefetch-ref "$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF")
@@ -414,8 +428,17 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
   if (( memory_decision_reuse )) && [[ -n "$SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR" ]]; then
     cli_args+=(--memory-prefix-cache-service-addr "$SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR")
   fi
+  if (( memory_validate_only )) && [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
+    echo "[w5_inference_cluster] config validation passed: Memory Service bootstrap ready env_file=$SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE runtime_boundary_lookup=$memory_runtime_lookup decision_reuse=$memory_decision_reuse" >&2
+    exit 0
+  fi
+  if [[ "$SIM_W5_SERVING_QUEUE" == "1" && "$memory_decision_reuse" == "1" ]]; then
+    echo "SIM_W5_SERVING_QUEUE cannot use precomputed Memory Service decisions through the infer wrapper" >&2
+    echo "hint: move request-level Memory Service decision lookup into the serving control plane before enabling decision reuse in queue mode" >&2
+    exit 2
+  fi
   if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
-    echo "[w5_inference_cluster] serving_queue=1 launch_mode=ready_only" >&2
+    echo "[w5_inference_cluster] serving_queue=1 launch_mode=ready_only memory_service_bootstrapped=$SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED" >&2
     exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"
   fi
   echo "[w5_inference_cluster] runtime_boundary_lookup=$memory_runtime_lookup online_boundary_lookup=$memory_online_lookup observation_store=$SIM_W5_TEST_MEMORY_OBSERVATION_STORE decision_reuse=$memory_decision_reuse decision_store=$SIM_W5_TEST_MEMORY_DECISION_STORE" >&2

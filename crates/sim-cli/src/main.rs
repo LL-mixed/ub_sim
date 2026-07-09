@@ -2329,6 +2329,7 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
         "materialize-engram-state" => run_lingqu_memory_materialize_engram_state_cli(&args),
         "materialize-hot-state" => run_lingqu_memory_materialize_hot_state_cli(&args),
         "plan-prefetch" => run_lingqu_memory_plan_prefetch_cli(&args),
+        "bootstrap-w5-service" => run_lingqu_memory_bootstrap_w5_service_cli(&args),
         "publish-w5-engram-state-ref" => run_lingqu_memory_publish_w5_engram_state_ref_cli(&args),
         "query" => run_lingqu_memory_query_cli(&args),
         "record-artifact-access" => run_lingqu_memory_record_artifact_access_cli(&args),
@@ -2428,7 +2429,8 @@ fn run_lingqu_memory_cli() -> anyhow::Result<()> {
             record-boundary-observations-from-w5-summary, plan-prefetch, register-prefix-cache, \
             restore-prefix-cache-ssd, \
             lookup-prefix-cache, materialize-hot-state, materialize-engram-state, \
-            publish-w5-engram-state-ref, validate-service-path, validate-durable-store, \
+            bootstrap-w5-service, publish-w5-engram-state-ref, \
+            validate-service-path, validate-durable-store, \
             validate-flat-query, validate-flat-materialize, or validate-w5-engram-object-ref"
         ),
     }
@@ -13308,6 +13310,168 @@ fn run_lingqu_memory_publish_w5_engram_state_ref_cli(args: &[String]) -> anyhow:
     Ok(())
 }
 
+fn run_lingqu_memory_bootstrap_w5_service_cli(args: &[String]) -> anyhow::Result<()> {
+    let w5_profile_name =
+        optional_cli_arg(args, "--w5-profile")?.unwrap_or_else(|| "qwen3_0_6b_decode".to_string());
+    let weights_path = PathBuf::from(required_cli_arg(args, "--weights-path")?);
+    let config = W5MemoryBootstrapConfig {
+        store_path: PathBuf::from(required_cli_arg(args, "--memory-store")?),
+        object_store_path: PathBuf::from(required_cli_arg(args, "--memory-object-store")?),
+        engram_state_path: PathBuf::from(required_cli_arg(args, "--memory-engram-state")?),
+        registry_dir: PathBuf::from(required_cli_arg(args, "--memory-registry-dir")?),
+        owner_entity: u32::try_from(optional_cli_u64(args, "--owner-entity")?.unwrap_or(0))
+            .map_err(|_| anyhow::anyhow!("--owner-entity exceeds u32"))?,
+        producer_entity: u32::try_from(optional_cli_u64(args, "--producer-entity")?.unwrap_or(0))
+            .map_err(|_| anyhow::anyhow!("--producer-entity exceeds u32"))?,
+    };
+    let publish_engram = cli_flag(args, "--publish-engram-state-ref");
+    let print_env = cli_flag(args, "--print-env");
+    let service_name = optional_cli_arg(args, "--service-name")?
+        .unwrap_or_else(|| "lingqu_memory_service".to_string());
+    let spec = w5_inference_profile_spec(&w5_profile_name)?;
+    let engram = Qwen3EngramConfig {
+        enabled: spec.engram_required || publish_engram,
+        pool: Qwen3EngramPool::Obmm,
+        ..Qwen3EngramConfig::default()
+    };
+    let runtime_args = Qwen3GuestDecodeLoopCliArgs {
+        validate_only: false,
+        step_count: 1,
+        prompt: None,
+        prompt_token_ids: None,
+        script_path: default_qwen3_guest_decode_script_path(),
+        matmul_batch: None,
+        model: None,
+        weights_path: Some(weights_path),
+        w5_profile: Some(spec.name.to_string()),
+        sampler: Qwen3SamplerConfig::default(),
+        engram: engram.clone(),
+        memory_bootstrap: None,
+        memory_decisions: None,
+        memory_observation_store_path: None,
+        memory_runtime_boundary_lookup: false,
+        memory_post_run_promote: false,
+        memory_online_boundary_lookup: false,
+        shortpath_match_mode: "exact".to_string(),
+        min_match_score_milli: 850,
+        min_terminal_margin_milli: 500,
+        approximate_requires_verify: true,
+        min_source_confidence_milli: 900,
+    };
+    let runtime = qwen3_guest_dense_runtime(&runtime_args)?;
+    let resolved_profile = resolve_w5_inference_profile(Some(spec.name), &runtime, &engram)?;
+    let mut durable_store = load_lingqu_memory_durable_store(&config.store_path)?;
+    if let Some(parent) = config.object_store_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create object store dir {}", parent.display()))?;
+    }
+    if !config.object_store_path.exists() {
+        let object_service =
+            LingquObjectServiceStub::new(w5_memory_decision_publication_object_service_profile());
+        save_lingqu_object_service_snapshot(
+            &config.object_store_path,
+            &mut durable_store,
+            &object_service,
+        )?;
+    }
+    save_lingqu_memory_durable_store(&config.store_path, &durable_store)?;
+    fs::create_dir_all(&config.registry_dir).with_context(|| {
+        format!(
+            "create memory registry dir {}",
+            config.registry_dir.display()
+        )
+    })?;
+
+    let publication = if spec.engram_required || publish_engram {
+        ensure_w5_memory_engram_state(&config, &runtime.profile)
+            .context("bootstrap W5 Memory Service engram state")?;
+        Some(
+            publish_w5_engram_state_ref_from_memory_objects(&config)
+                .context("publish W5 Memory Service engram state ref")?,
+        )
+    } else {
+        None
+    };
+
+    if print_env {
+        println!("export SIM_W5_MEMORY_SERVICE='{}'", service_name);
+        println!("export SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED='1'");
+        println!(
+            "export SIM_W5_MEMORY_STORE='{}'",
+            config.store_path.display()
+        );
+        println!(
+            "export SIM_W5_MEMORY_OBJECT_STORE='{}'",
+            config.object_store_path.display()
+        );
+        println!(
+            "export SIM_W5_MEMORY_ENGRAM_STATE='{}'",
+            config.engram_state_path.display()
+        );
+        println!(
+            "export SIM_W5_MEMORY_REGISTRY_DIR='{}'",
+            config.registry_dir.display()
+        );
+        if let Some(publication) = &publication {
+            println!(
+                "export {}='{}'",
+                SIM_QWEN3_GUEST_ENGRAM_STATE_REF, publication.state_ref_hex
+            );
+            println!(
+                "export {}='{}'",
+                SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+                config.registry_dir.display()
+            );
+            if let Some(snapshot_path) = &publication.object_service_snapshot_path {
+                println!(
+                    "export {}='{}'",
+                    SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+                    snapshot_path.display()
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    println!("lingqu_memory_service");
+    println!("  mode: bootstrap-w5-service");
+    println!("  service: {}", service_name);
+    println!("  bootstrapped: true");
+    println!("  w5_profile: {}", resolved_profile.name);
+    println!("  model_id: {}", runtime.profile.model_id);
+    println!("  model_key: {}", runtime.model_key);
+    println!("  memory_store: {}", config.store_path.display());
+    println!("  object_store: {}", config.object_store_path.display());
+    println!("  engram_state: {}", config.engram_state_path.display());
+    println!("  registry_dir: {}", config.registry_dir.display());
+    if let Some(publication) = publication {
+        println!(
+            "  {}={}",
+            SIM_QWEN3_GUEST_ENGRAM_STATE_REF, publication.state_ref_hex
+        );
+        println!(
+            "  {}={}",
+            SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+            config.registry_dir.display()
+        );
+        if let Some(snapshot_path) = publication.object_service_snapshot_path {
+            println!(
+                "  {}={}",
+                SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
+                snapshot_path.display()
+            );
+        }
+        println!("  registry_table_bytes: {}", publication.table_bytes);
+        println!("  registry_indices_bytes: {}", publication.indices_bytes);
+        println!("  registry_gate_bytes: {}", publication.gate_bytes);
+        println!(
+            "  registry_state_manifest_bytes: {}",
+            publication.state_manifest_bytes
+        );
+    }
+    Ok(())
+}
+
 fn run_lingqu_memory_build_index_cli(args: &[String]) -> anyhow::Result<()> {
     let catalog_path = optional_cli_path(args, "--catalog")?;
     let store_path = PathBuf::from(required_cli_arg(args, "--store")?);
@@ -16601,7 +16765,7 @@ mod tests {
         run_lingqu_durable_append_log_cli, run_lingqu_durable_batch_cli,
         run_lingqu_durable_init_cli, run_lingqu_durable_list_cli, run_lingqu_durable_read_log_cli,
         run_lingqu_durable_stat_cli, run_lingqu_durable_validate_cli,
-        run_lingqu_memory_boundary_lookup_cli,
+        run_lingqu_memory_bootstrap_w5_service_cli, run_lingqu_memory_boundary_lookup_cli,
         run_lingqu_memory_boundary_lookup_from_observation_cli,
         run_lingqu_memory_boundary_request_from_w5_summary_cli,
         run_lingqu_memory_build_engram_hash_config_cli, run_lingqu_memory_build_index_cli,
@@ -18212,7 +18376,9 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
@@ -18273,7 +18439,9 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
@@ -18333,7 +18501,9 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
             matmul_batch: None,
             model: None,
             weights_path: Some(dir.clone()),
@@ -18368,6 +18538,62 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lingqu_memory_bootstrap_w5_service_prepares_memory_paths_without_infer() {
+        let root = env::temp_dir().join(format!(
+            "sim_cli_w5_memory_service_bootstrap_{}",
+            std::process::id()
+        ));
+        let weights_dir = root.join("weights");
+        let store_path = root.join("memory-store.json");
+        let object_store_path = root.join("object-store.json");
+        let engram_state_path = root.join("engram-state.json");
+        let registry_dir = root.join("registry");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&weights_dir).expect("temp qwen3 runtime dir");
+        fs::write(
+            weights_dir.join("config.json"),
+            r#"{
+                "_name_or_path": "Qwen/Qwen3-0.6B",
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "max_position_embeddings": 40960,
+                "rope_theta": 1000000
+            }"#,
+        )
+        .expect("write config");
+        fs::write(weights_dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+        fs::write(weights_dir.join("model.safetensors"), b"stub").expect("write weights");
+
+        run_lingqu_memory_bootstrap_w5_service_cli(&[
+            "--w5-profile".to_string(),
+            "qwen3_0_6b_decode".to_string(),
+            "--weights-path".to_string(),
+            weights_dir.display().to_string(),
+            "--memory-store".to_string(),
+            store_path.display().to_string(),
+            "--memory-object-store".to_string(),
+            object_store_path.display().to_string(),
+            "--memory-engram-state".to_string(),
+            engram_state_path.display().to_string(),
+            "--memory-registry-dir".to_string(),
+            registry_dir.display().to_string(),
+        ])
+        .expect("bootstrap w5 memory service");
+
+        assert!(store_path.is_file());
+        assert!(object_store_path.is_file());
+        assert!(registry_dir.is_dir());
+        assert!(!engram_state_path.exists());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -19186,7 +19412,9 @@ mod tests {
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
             matmul_batch: None,
             model: None,
             weights_path: Some(weights_dir),
@@ -25540,9 +25768,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             key == "SIM_W5_TEST_MEMORY_SHORTPATH_SUPPORT_ID"
                 && value == "shortpath-support/boundary/step3/node4"
         }));
-        assert!(env_vars.iter().any(
-            |(key, value)| key == "SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_KIND" && value == "logits"
-        ));
+        assert!(env_vars.iter().any(|(key, value)| key
+            == "SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_KIND"
+            && value == "logits"));
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_TEST_MEMORY_SHORTPATH_PRODUCER_LAYER_START" && value == "4"
         }));
@@ -25556,9 +25784,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             key == "SIM_W5_TEST_MEMORY_SHORTPATH_BOUNDARY_HIDDEN_CHECKSUM"
                 && value == &0x4444_4444_u64.to_string()
         }));
-        assert!(env_vars.iter().any(
-            |(key, value)| key == "SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF" && value.len() == 128
-        ));
+        assert!(env_vars.iter().any(|(key, value)| key
+            == "SIM_W5_TEST_MEMORY_SHORTPATH_ARTIFACT_REF"
+            && value.len() == 128));
         let shortpath_registry_ref = publication
             .shortpath_registry_ref
             .as_ref()
@@ -25570,7 +25798,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
                 + crate::W5_MEMORY_BOUNDARY_REGISTRY_ENTRY_BYTES
         );
         assert!(env_vars.iter().any(|(key, value)| {
-            key == "SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF" && value == &shortpath_registry_ref.ref_hex
+            key == "SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_REF"
+                && value == &shortpath_registry_ref.ref_hex
         }));
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_TEST_MEMORY_BOUNDARY_REGISTRY_COUNT" && value == "1"
@@ -25600,9 +25829,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert!(env_vars.iter().any(|(key, value)| {
             key == "SIM_W5_TEST_MEMORY_SHORTPATH_TARGET_LAYER_END" && value == "8"
         }));
-        assert!(env_vars.iter().any(
-            |(key, value)| key == "SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_REFS" && value.len() == 128
-        ));
+        assert!(env_vars.iter().any(|(key, value)| key
+            == "SIM_W5_TEST_MEMORY_PREFETCH_ARTIFACT_REFS"
+            && value.len() == 128));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -27622,7 +27851,8 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             key == "SIM_W5_TEST_MEMORY_PREFIX_CACHE_ARTIFACT_REF" && value.len() == 128
         }));
         assert!(env_vars.iter().any(|(key, value)| {
-            key == "SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR" && value == "http://127.0.0.1:6789"
+            key == "SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR"
+                && value == "http://127.0.0.1:6789"
         }));
 
         let lookup_decision_config = W5MemoryDecisionConfig {
@@ -27708,7 +27938,9 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             step_count: 1,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
             matmul_batch: None,
             model: None,
             weights_path: Some(weights_dir),
@@ -28077,7 +28309,9 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             step_count: 2,
             prompt: None,
             prompt_token_ids: None,
-            script_path: PathBuf::from("guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh"),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
             matmul_batch: None,
             model: None,
             weights_path: Some(weights_dir.clone()),

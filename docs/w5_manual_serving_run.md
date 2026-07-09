@@ -54,6 +54,23 @@ Validate it before launching:
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh --validate-only /path/to/w5.env
 ```
 
+Prepare only the W5 Memory Service runtime surface:
+
+```sh
+./guest-linux/aarch64/scripts/run_w5_memory_service_bootstrap.sh \
+  --print-env \
+  --env-file /tmp/w5-memory-service.env
+```
+
+`run_w5_cluster_config.sh` calls this bootstrap entry automatically when the W5
+memory path is enabled. The lower-level
+`run_w5_inference_cluster_runtime.sh` does not bootstrap infrastructure; it
+expects `SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=1` and fails fast otherwise. The
+bootstrap entry is deliberately separate from infer execution: it prepares the
+durable store, object store, registry directory, and engram state refs when
+needed, then emits sourceable env. W5 infer and serving queue consume that env
+as clients.
+
 Run one-shot W5 stream inference:
 
 ```sh
@@ -99,6 +116,8 @@ as `SIM_W5_MEMORY_DECISION_STORE` and points to the replacement name.
 The runtime store variables are still mainline variables and remain valid:
 
 - `SIM_W5_MEMORY_SERVICE`
+- `SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED`
+- `SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE`
 - `SIM_W5_MEMORY_STORE`
 - `SIM_W5_MEMORY_OBJECT_STORE`
 - `SIM_W5_MEMORY_ENGRAM_STATE`

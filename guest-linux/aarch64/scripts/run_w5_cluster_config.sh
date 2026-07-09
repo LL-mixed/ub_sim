@@ -315,6 +315,8 @@ print_w5_effective_env() {
   print_env_value SIM_QWEN3_GUEST_ENGRAM_POOL "${SIM_QWEN3_GUEST_ENGRAM_POOL:-}"
   print_env_value SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP "${SIM_QWEN3_GUEST_ENGRAM_CONTEXT_OP:-}"
   print_env_value SIM_W5_PROGRESS_INTERVAL_SECS "${SIM_W5_PROGRESS_INTERVAL_SECS:-}"
+  print_env_value SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE "${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-}"
+  print_env_value SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"
 
   print_env_section "serving"
   print_env_value SIM_W5_SERVING_REQUESTS_FILE "${SIM_W5_SERVING_REQUESTS_FILE:-}"
@@ -575,6 +577,49 @@ run_post_run_maintenance() {
   fi
 }
 
+w5_memory_runtime_needs_bootstrap() {
+  if bool_enabled "${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"; then
+    return 0
+  fi
+  if [[ -n "${SIM_W5_TEST_MEMORY_DECISION_STORE:-}" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+w5_ensure_run_id() {
+  if [[ -n "${RUN_ID:-}" ]]; then
+    return 0
+  fi
+  RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)_w5_${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}_${RANDOM}"
+  export RUN_ID
+}
+
+bootstrap_w5_memory_service_infra() {
+  if ! w5_memory_runtime_needs_bootstrap; then
+    return 0
+  fi
+  if bool_enabled "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"; then
+    return 0
+  fi
+
+  w5_ensure_run_id
+  export SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-$ROOT_DIR/out/w5_memory_object_store.${RUN_ID}.json}"
+  export SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-$ROOT_DIR/out/w5_object_service_store.${RUN_ID}.json}"
+  export SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-$ROOT_DIR/out/w5_memory_engram_state.${RUN_ID}.json}"
+  export SIM_W5_MEMORY_REGISTRY_DIR="${SIM_W5_MEMORY_REGISTRY_DIR:-$ROOT_DIR/out/w5_memory_registry.${RUN_ID}}"
+  export SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE="${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-$ROOT_DIR/out/w5_memory_service_env.${RUN_ID}.sh}"
+
+  "$SCRIPT_DIR/run_w5_memory_service_bootstrap.sh" \
+    --env-file "$SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE"
+  source "$SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE"
+
+  if ! bool_enabled "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"; then
+    echo "W5 Memory Service bootstrap did not report SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=1" >&2
+    return 2
+  fi
+}
+
 resolve_w5_memory_reuse_config_status=0
 w5_resolve_memory_reuse_config "$ROOT_DIR/out" "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}" || resolve_w5_memory_reuse_config_status=$?
 if (( resolve_w5_memory_reuse_config_status != 0 )); then
@@ -590,6 +635,12 @@ validate_w5_cluster_config_status=0
 validate_w5_cluster_config || validate_w5_cluster_config_status=$?
 if (( validate_w5_cluster_config_status != 0 )); then
   exit "$validate_w5_cluster_config_status"
+fi
+
+bootstrap_w5_memory_service_infra_status=0
+bootstrap_w5_memory_service_infra || bootstrap_w5_memory_service_infra_status=$?
+if (( bootstrap_w5_memory_service_infra_status != 0 )); then
+  exit "$bootstrap_w5_memory_service_infra_status"
 fi
 
 if (( VALIDATE_ONLY )); then
