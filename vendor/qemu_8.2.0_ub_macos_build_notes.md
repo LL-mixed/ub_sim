@@ -119,6 +119,38 @@ cd /tmp/ub-qemu-build-verify
 ninja -j8 qemu-system-aarch64
 ```
 
+Current repository build script:
+
+```sh
+./guest-linux/aarch64/scripts/build_qemu_binary.sh
+```
+
+The script follows the configure profile recorded by the last successful macOS
+build in `vendor/qemu_8.2.0_ub/build/config.status`:
+
+```sh
+vendor/qemu_8.2.0_ub/configure \
+  --target-list=aarch64-softmmu \
+  --disable-werror \
+  --disable-docs \
+  --disable-zstd \
+  --extra-ldflags=/Volumes/repos/ub_sim/target/release/libsim_qemu.a
+```
+
+The wrapper must not add its own macOS `pkg-config`/`pkgconf`, `libfdt`, or
+`liburing` preflight gate. QEMU's own configure step is the source of truth for
+optional host dependency probing; the wrapper only chooses the narrow UB target,
+links `sim-qemu`, and reuses or rebuilds the binary based on the recorded build
+stamp.
+
+On macOS, when no `pkg-config`/`pkgconf` executable is visible, the wrapper
+creates a local `pkg-config` shim under the QEMU build directory. The shim reads
+the Homebrew `.pc` files already present under paths such as
+`/opt/homebrew/lib/pkgconfig` and
+`/opt/homebrew/Library/Homebrew/os/mac/pkgconfig/<major>`. This preserves the
+previous successful build shape without turning a missing host command into a
+manual prerequisite.
+
 ---
 
 ## libfdt / FDT handling

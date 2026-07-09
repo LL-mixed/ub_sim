@@ -373,7 +373,10 @@ if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAP
   log "qwen3_dense_profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
 fi
 
-QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
+if ! QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"; then
+  log "qemu preflight failed"
+  exit 1
+fi
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
 
 if [[ ! -f "$TOPOLOGY_FILE" ]]; then

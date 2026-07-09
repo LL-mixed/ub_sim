@@ -1558,7 +1558,7 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* block_bytes=[1-9][0-9]* blocks=[1-9][0-9]* reserved_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service status=ok" "$node_id qwen3 range kv state publish" || return 1
     if (( SIM_QWEN3_GUEST_DECODE_STEPS > 1 )); then
       if ! rg -q "\\[w4_guest\\] stage qwen3_w5_memory_prefix_cache_kv_loaded node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ .* status=ok" "$log_file"; then
-        assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_resolve local=node${idx} kv_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=obmm_shmem metadata=lingqu_object_service target=mapped_view status=ok" "$node_id qwen3 range kv state resolve" || return 1
+        assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_resolve local=node${idx} kv_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=(obmm_shmem|ub_ssd_gsva) metadata=lingqu_object_service target=(mapped_view|local_backend_read_buffer) status=ok" "$node_id qwen3 range kv state resolve" || return 1
       fi
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         if (( idx == SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE )); then
@@ -1704,7 +1704,7 @@ emit_w4_run_summary() {
 }
 
 prepare_environment() {
-  local guest_log node_id control_log env_file
+  local guest_log node_id control_log env_file launch_rc
 
   rm -rf "$RUN_DIR" "$RUN_SUMMARY_FILE"
   mkdir -p "$RUN_DIR" "$OUT_DIR"
@@ -1731,6 +1731,7 @@ prepare_environment() {
   fi
   build_w4_initramfs
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
+  set +e
   ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" QEMU_MEM="$QEMU_MEM" UB_SIM_PORT_NUM="$PORT_NUM" \
     INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_app" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
@@ -1827,6 +1828,16 @@ prepare_environment() {
     SIM_ENGRAM_SIMT_BINARY_PATH="${SIM_ENGRAM_SIMT_BINARY_PATH:-}" \
     SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH="${SIM_ENGRAM_SIMT_KERNEL_LIBRARY_PATH:-}" \
     "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null
+  launch_rc=$?
+  set -e
+  if (( launch_rc != 0 )); then
+    trace "FAIL: headless launch/preflight failed rc=$launch_rc"
+    if [[ -f "$control_log" ]]; then
+      trace "headless control log tail follows path=$control_log"
+      tail -n 80 "$control_log" | sed 's/^/[w4guest8] control: /' | tee -a "$TRACE_FILE" >&2
+    fi
+    return 1
+  fi
   if [[ ! -f "$env_file" ]]; then
     trace "FAIL: headless env file was not created path=$env_file"
     if [[ -f "$control_log" ]]; then

@@ -7,14 +7,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 IMAGE="openeuler-2403:v0.0.4"
 DRY_RUN=0
 RECONFIGURE_QEMU=0
+HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
 
 usage() {
   cat >&2 <<'USAGE'
 usage: run_w5_in_container.sh [--image IMAGE] [--reconfigure-qemu] [--dry-run] -- W5_ARGS...
        run_w5_in_container.sh [--image IMAGE] [--reconfigure-qemu] [--dry-run] W5_ARGS...
 
-Runs W5 from the host by entering a Docker container, preparing native build
-dependencies, building the workspace QEMU when needed, and delegating to:
+Runs W5 from the host. On macOS it delegates directly to the local W5 runner;
+on Linux it enters a Docker container, prepares native build dependencies,
+builds the workspace QEMU when needed, and delegates to:
   ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh W5_ARGS...
 
 Example:
@@ -67,6 +69,24 @@ if (( $# == 0 )); then
   echo "missing W5 arguments" >&2
   usage
   exit 2
+fi
+
+if [[ "$HOST_OS" == "Darwin" ]]; then
+  if (( DRY_RUN )); then
+    if (( RECONFIGURE_QEMU )); then
+      printf 'RECONFIGURE=1 %q && ' "$SCRIPT_DIR/build_qemu_binary.sh"
+    fi
+    printf '%q ' "$SCRIPT_DIR/run_w5_cluster_config.sh" "$@"
+    printf '\n'
+    exit 0
+  fi
+  if (( RECONFIGURE_QEMU )); then
+    (
+      cd "$REPO_ROOT"
+      RECONFIGURE=1 "$SCRIPT_DIR/build_qemu_binary.sh" >/dev/null
+    )
+  fi
+  exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$@"
 fi
 
 docker_args=(

@@ -9,6 +9,15 @@
 #define MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_WRITE 1U
 #define MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_READ 2U
 
+static inline uint32_t mem_service_ub_ssd_gsva_device_cna_from_primary(
+    uint32_t primary_cna)
+{
+    if (primary_cna == 0) {
+        return 0;
+    }
+    return 0x10000000U | ((primary_cna & 0x0000fff0U) << 12) | 0x2000U;
+}
+
 enum mem_service_ub_ssd_gsva_io_status {
     MEM_SERVICE_UB_SSD_GSVA_IO_OK = 0,
     MEM_SERVICE_UB_SSD_GSVA_IO_UNSUPPORTED = 1,

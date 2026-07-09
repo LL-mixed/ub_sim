@@ -19,85 +19,6 @@ SIM_QEMU_STATICLIB="${SIM_QEMU_STATICLIB:-}"
 BUILD_HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
 STAT_BIN="${STAT_BIN:-$(command -v stat 2>/dev/null || echo stat)}"
 
-print_qemu_build_deps_help() {
-  cat >&2 <<'EOF'
-[build_qemu_binary] missing native QEMU build dependencies.
-[build_qemu_binary] container helper:
-[build_qemu_binary]   ./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
-[build_qemu_binary] openEuler/Fedora/RHEL container, current python:
-[build_qemu_binary]   dnf install -y glib2-devel liburing-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
-[build_qemu_binary]   python3 -m pip install distlib
-[build_qemu_binary] openEuler/Fedora/RHEL container, system python:
-[build_qemu_binary]   dnf install -y python3-distlib glib2-devel liburing-devel pixman-devel zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make python3-pip
-[build_qemu_binary]   export QEMU_CONFIGURE_ARGS="--disable-werror --python=/usr/bin/python3"
-[build_qemu_binary] Debian/Ubuntu container:
-[build_qemu_binary]   apt-get update && apt-get install -y python3-distlib libglib2.0-dev liburing-dev libpixman-1-dev zlib1g-dev pkg-config ninja-build gcc g++ make python3-pip
-EOF
-}
-
-check_python_distlib() {
-  local python_bin="$1"
-  "$python_bin" - <<'PY' >/dev/null 2>&1
-try:
-    import distlib.scripts
-    import distlib.version
-except ImportError:
-    from pip._vendor import distlib
-    import pip._vendor.distlib.scripts
-    import pip._vendor.distlib.version
-PY
-}
-
-qemu_configure_python_bin() {
-  local arg
-
-  if [[ -n "${PYTHON:-}" ]]; then
-    echo "$PYTHON"
-    return
-  fi
-  for arg in ${(z)CONFIGURE_ARGS}; do
-    case "$arg" in
-      --python=*)
-        echo "${arg#--python=}"
-        return
-        ;;
-    esac
-  done
-  echo python3
-}
-
-check_qemu_build_host_deps() {
-  local missing=()
-  local python_bin
-  local pkg
-
-  python_bin="$(qemu_configure_python_bin)"
-  if ! command -v "$python_bin" >/dev/null 2>&1; then
-    missing+=("$python_bin")
-  fi
-  for tool in pkg-config ninja gcc make; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      missing+=("$tool")
-    fi
-  done
-  if command -v "$python_bin" >/dev/null 2>&1 && ! check_python_distlib "$python_bin"; then
-    missing+=("$python_bin distlib")
-  fi
-  if command -v pkg-config >/dev/null 2>&1; then
-    for pkg in glib-2.0 liburing pixman-1 zlib; do
-      if ! pkg-config --exists "$pkg"; then
-        missing+=("pkg-config:$pkg")
-      fi
-    done
-  fi
-
-  if (( ${#missing[@]} > 0 )); then
-    printf '[build_qemu_binary] missing: %s\n' "${(j:, :)missing}" >&2
-    print_qemu_build_deps_help
-    exit 1
-  fi
-}
-
 file_signature() {
   local path="$1"
 
@@ -143,16 +64,285 @@ qemu_source_signature() {
     sort
 }
 
-apply_host_qemu_configure_args() {
-  if [[ "$CONFIGURE_ARGS" != *"--disable-docs"* && "$CONFIGURE_ARGS" != *"--enable-docs"* ]]; then
-    CONFIGURE_ARGS="${CONFIGURE_ARGS} --disable-docs"
+append_configure_arg_once() {
+  local arg="$1"
+  local positive="${2:-}"
+  local negative="${3:-}"
+
+  if [[ -n "$positive" && "$CONFIGURE_ARGS" == *"$positive"* ]]; then
+    return
   fi
+  if [[ -n "$negative" && "$CONFIGURE_ARGS" == *"$negative"* ]]; then
+    return
+  fi
+  if [[ "$CONFIGURE_ARGS" != *"$arg"* ]]; then
+    CONFIGURE_ARGS="${CONFIGURE_ARGS} $arg"
+  fi
+}
+
+prepend_pkg_config_path() {
+  local dir="$1"
+
+  [[ -d "$dir" ]] || return 0
+  if [[ -z "${PKG_CONFIG_PATH:-}" ]]; then
+    export PKG_CONFIG_PATH="$dir"
+  elif [[ ":$PKG_CONFIG_PATH:" != *":$dir:"* ]]; then
+    export PKG_CONFIG_PATH="$dir:$PKG_CONFIG_PATH"
+  fi
+}
+
+write_macos_pkg_config_shim() {
+  local shim="$1"
+
+  cat > "$shim" <<'PY'
+#!/usr/bin/env python3
+import os
+import re
+import sys
+
+
+VERSION = "0.29.2"
+OPERATORS = {"=", "==", "!=", "<", ">", "<=", ">="}
+
+
+def fail(message):
+    if "--silence-errors" not in sys.argv:
+        print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def pc_paths():
+    return [path for path in os.environ.get("PKG_CONFIG_PATH", "").split(":") if path]
+
+
+def find_pc(name):
+    for directory in pc_paths():
+        candidate = os.path.join(directory, f"{name}.pc")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def joined_lines(path):
+    result = []
+    pending = ""
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.rstrip("\n")
+            if line.endswith("\\"):
+                pending += line[:-1]
+                continue
+            result.append(pending + line)
+            pending = ""
+    if pending:
+        result.append(pending)
+    return result
+
+
+VAR_REF = re.compile(r"\$\{([^}]+)\}")
+
+
+def expand(value, variables, depth=0):
+    if depth > 20:
+        return value
+
+    def replace(match):
+        name = match.group(1)
+        replacement = variables.get(name, os.environ.get(name, ""))
+        return expand(replacement, variables, depth + 1)
+
+    return VAR_REF.sub(replace, value)
+
+
+cache = {}
+
+
+def parse_pc(name):
+    if name in cache:
+        return cache[name]
+    path = find_pc(name)
+    if not path:
+        fail(f"Package {name} was not found in PKG_CONFIG_PATH")
+    variables = {}
+    fields = {}
+    for line in joined_lines(path):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        eq_at = line.find("=")
+        colon_at = line.find(":")
+        if eq_at > 0 and (colon_at < 0 or eq_at < colon_at):
+            key, value = line.split("=", 1)
+            variables[key.strip()] = expand(value.strip(), variables)
+            continue
+        if colon_at > 0:
+            key, value = line.split(":", 1)
+            fields[key.strip()] = expand(value.strip(), variables)
+    parsed = {"variables": variables, "fields": fields}
+    cache[name] = parsed
+    return parsed
+
+
+def package_names(args):
+    names = []
+    skip_next = False
+    for token in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if token.startswith("-"):
+            if token in {"--define-variable", "--variable"}:
+                skip_next = True
+            continue
+        if token in OPERATORS or re.match(r"^[0-9][0-9A-Za-z_.+-]*$", token):
+            continue
+        names.extend(part for part in token.split(",") if part)
+    return names
+
+
+def requires(value):
+    result = []
+    for token in value.replace(",", " ").split():
+        if token in OPERATORS or re.match(r"^[0-9][0-9A-Za-z_.+-]*$", token):
+            continue
+        result.append(token)
+    return result
+
+
+def collect(name, field, include_private, seen=None):
+    if seen is None:
+        seen = set()
+    if name in seen:
+        return []
+    seen.add(name)
+    parsed = parse_pc(name)
+    fields = parsed["fields"]
+    values = []
+    for dep in requires(fields.get("Requires", "")):
+        values.extend(collect(dep, field, include_private, seen))
+    if include_private:
+        for dep in requires(fields.get("Requires.private", "")):
+            values.extend(collect(dep, field, include_private, seen))
+    values.extend(fields.get(field, "").split())
+    if include_private:
+        values.extend(fields.get(f"{field}.private", "").split())
+    return values
+
+
+def unique(tokens):
+    result = []
+    seen = set()
+    for token in tokens:
+        if token not in seen:
+            result.append(token)
+            seen.add(token)
+    return result
+
+
+def version_tuple(value):
+    parts = re.split(r"[^0-9]+", value)
+    return tuple(int(part) for part in parts if part != "")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        return 0
+    if "--version" in args:
+        print(VERSION)
+        return 0
+
+    names = package_names(args)
+    if "--exists" in args:
+        for name in names:
+            parse_pc(name)
+        return 0
+
+    atleast = next((arg for arg in args if arg.startswith("--atleast-version=")), None)
+    if atleast:
+        expected = atleast.split("=", 1)[1]
+        for name in names:
+            found = parse_pc(name)["fields"].get("Version", "0")
+            if version_tuple(found) < version_tuple(expected):
+                return 1
+        return 0
+
+    variable = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--variable=")), None)
+    if variable:
+        outputs = []
+        for name in names:
+            parsed = parse_pc(name)
+            outputs.append(parsed["variables"].get(variable, parsed["fields"].get(variable, "")))
+        print(" ".join(item for item in outputs if item))
+        return 0
+
+    if "--modversion" in args:
+        print("\n".join(parse_pc(name)["fields"].get("Version", "") for name in names))
+        return 0
+
+    include_private = "--static" in args
+    outputs = []
+    if "--cflags" in args:
+        for name in names:
+            outputs.extend(collect(name, "Cflags", include_private))
+    if "--libs" in args:
+        for name in names:
+            outputs.extend(collect(name, "Libs", include_private))
+    if outputs:
+        print(" ".join(unique(outputs)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY
+  chmod +x "$shim"
+}
+
+setup_macos_pkg_config_discovery() {
+  local brew_prefix=""
+  local macos_major=""
+  local shim_dir=""
+  local shim=""
+
+  [[ "$BUILD_HOST_OS" == "Darwin" ]] || return 0
+  if command -v brew >/dev/null 2>&1; then
+    brew_prefix="$(brew --prefix 2>/dev/null || true)"
+  fi
+  if [[ -z "$brew_prefix" && -d /opt/homebrew ]]; then
+    brew_prefix="/opt/homebrew"
+  elif [[ -z "$brew_prefix" && -d /usr/local/Homebrew ]]; then
+    brew_prefix="/usr/local"
+  fi
+  if [[ -n "$brew_prefix" ]]; then
+    prepend_pkg_config_path "$brew_prefix/lib/pkgconfig"
+    prepend_pkg_config_path "$brew_prefix/share/pkgconfig"
+    macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1 || true)"
+    if [[ -n "$macos_major" ]]; then
+      prepend_pkg_config_path "$brew_prefix/Library/Homebrew/os/mac/pkgconfig/$macos_major"
+    fi
+    prepend_pkg_config_path "$brew_prefix/Library/Homebrew/os/mac/pkgconfig"
+  fi
+  if [[ -n "${PKG_CONFIG:-}" ]]; then
+    return 0
+  fi
+  if command -v pkg-config >/dev/null 2>&1 || command -v pkgconf >/dev/null 2>&1; then
+    return 0
+  fi
+  shim_dir="$BUILD_DIR/pkg-config-shim"
+  mkdir -p "$shim_dir"
+  shim="$shim_dir/pkg-config"
+  write_macos_pkg_config_shim "$shim"
+  export PKG_CONFIG="$shim"
+  echo "[build_qemu_binary] macOS build host detected; using in-tree pkg-config shim for Homebrew .pc files" >&2
+}
+
+apply_host_qemu_configure_args() {
+  append_configure_arg_once "--disable-docs" "--enable-docs" "--disable-docs"
   case "$BUILD_HOST_OS" in
     Darwin)
-      if [[ "$CONFIGURE_ARGS" != *"--disable-zstd"* && "$CONFIGURE_ARGS" != *"--enable-zstd"* ]]; then
-        CONFIGURE_ARGS="${CONFIGURE_ARGS} --disable-zstd"
-        echo "[build_qemu_binary] macOS build host detected; adding --disable-zstd" >&2
-      fi
+      append_configure_arg_once "--disable-zstd" "--enable-zstd" "--disable-zstd"
+      echo "[build_qemu_binary] macOS build host detected; using recorded UB QEMU configure profile" >&2
       ;;
   esac
 }
@@ -231,10 +421,10 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
-check_qemu_build_host_deps
 apply_host_qemu_configure_args
 ensure_sim_qemu_link_args
 mkdir -p "$BUILD_DIR"
+setup_macos_pkg_config_discovery
 
 if [[ "$RECONFIGURE" != "1" && -x "$BIN" ]] &&
    qemu_build_stamp_matches &&

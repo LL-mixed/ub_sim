@@ -151,7 +151,6 @@ def test_app_validation_matrix_runner_matches_readme_commands():
 def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     helper = ROOT / "scripts" / "prepare_w5_container_deps.sh"
     container_entry = ROOT / "scripts" / "run_w5_in_container.sh"
-    build_qemu = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
     manual_doc = (ROOT.parents[1] / "docs" / "w5_manual_serving_run.md").read_text()
     script_inventory = (ROOT.parents[1] / "docs" / "w5_script_inventory.md").read_text()
     macos_env = ROOT.parents[1] / "w5.macos.env"
@@ -160,7 +159,6 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     assert helper.stat().st_mode & 0o111
     assert container_entry.exists()
     assert container_entry.stat().st_mode & 0o111
-    assert "prepare_w5_container_deps.sh" in build_qemu
     container_entry_text = container_entry.read_text()
     assert "prepare_w5_container_deps.sh" in container_entry_text
     assert 'export UB_SYNC_ARTIFACTS="${UB_SYNC_ARTIFACTS:-0}"' in container_entry_text
@@ -194,14 +192,84 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
         text=True,
     )
 
-    assert "docker run" in entry_result.stdout
-    assert "--privileged" in entry_result.stdout
-    assert "--network host" in entry_result.stdout
-    assert "openeuler-2403:v0.0.4" in entry_result.stdout
-    assert "prepare_w5_container_deps.sh" in entry_result.stdout
-    assert "build_qemu_binary.sh" in entry_result.stdout
+    if subprocess.check_output(["uname", "-s"], text=True).strip() == "Darwin":
+        assert "docker run" not in entry_result.stdout
+        assert "run_w5_cluster_config.sh" in entry_result.stdout
+    else:
+        assert "docker run" in entry_result.stdout
+        assert "--privileged" in entry_result.stdout
+        assert "--network host" in entry_result.stdout
+        assert "openeuler-2403:v0.0.4" in entry_result.stdout
+        assert "prepare_w5_container_deps.sh" in entry_result.stdout
+        assert "build_qemu_binary.sh" in entry_result.stdout
     assert "run_w5_cluster_config.sh" in entry_result.stdout
     assert "w5.env" in entry_result.stdout
+
+
+def test_qemu_common_delegates_qemu_freshness_to_build_helper():
+    common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
+    launcher = (ROOT / "scripts" / "launch_ub_eight_node_headless.sh").read_text()
+    w5_runner = (ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh").read_text()
+
+    build = 'QEMU_BUILD_JOBS="$jobs" ./scripts/build_qemu_binary.sh >/dev/null'
+    assert build in common
+    assert 'if [[ -x "$bin" ]] && qemu_ub_supports_required_opts "$bin"; then' not in common
+    assert 'if ! QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"; then' in launcher
+    assert 'log "qemu preflight failed"' in launcher
+    assert "launch_rc=$?" in w5_runner
+    assert 'trace "FAIL: headless launch/preflight failed rc=$launch_rc"' in w5_runner
+
+
+def test_qemu_build_helper_uses_recorded_macos_qemu_configure_profile():
+    builder = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
+    macos_notes = (ROOT.parents[1] / "vendor" / "qemu_8.2.0_ub_macos_build_notes.md").read_text()
+    config_status = (
+        ROOT.parents[1] / "vendor" / "qemu_8.2.0_ub" / "build" / "config.status"
+    )
+
+    reuse_guard = "qemu_build_stamp_matches &&"
+    configure = '"$SRC_DIR/configure" --target-list="$TARGET_LIST" ${=CONFIGURE_ARGS}'
+
+    assert reuse_guard in builder
+    assert "check_qemu_build_host_deps" not in builder
+    assert "missing native QEMU build dependencies" not in builder
+    assert 'missing+=("pkg-config")' not in builder
+    assert "brew install pkgconf" not in builder
+    assert "write_macos_pkg_config_shim" in builder
+    assert "using in-tree pkg-config shim for Homebrew .pc files" in builder
+    assert "liburing" not in builder
+    assert "--enable-fdt=system" not in builder
+    assert "--disable-linux-io-uring" not in builder
+    assert "setup_macos_build_env" not in builder
+    assert "--disable-docs" in builder
+    assert "--disable-zstd" in builder
+    assert "--extra-ldflags=$SIM_QEMU_STATICLIB" in builder
+    assert builder.index(reuse_guard) < builder.index(configure)
+    if config_status.exists():
+        config_status_text = config_status.read_text()
+        for flag in [
+            "--target-list=aarch64-softmmu",
+            "--disable-werror",
+            "--disable-docs",
+            "--disable-zstd",
+            "--extra-ldflags=/Volumes/repos/ub_sim/target/release/libsim_qemu.a",
+        ]:
+            assert flag in config_status_text
+    for flag in [
+        "--disable-vmnet",
+        "--disable-coreaudio",
+        "--disable-cocoa",
+        "--disable-sdl",
+        "--disable-gtk",
+        "--disable-opengl",
+        "--disable-vnc",
+        "--disable-tools",
+        "--disable-slirp",
+        "--disable-linux-user",
+        "--disable-bsd-user",
+        "--disable-docs",
+    ]:
+        assert flag in macos_notes
 
 
 def test_app_build_matrix_runner_matches_app_inventory():

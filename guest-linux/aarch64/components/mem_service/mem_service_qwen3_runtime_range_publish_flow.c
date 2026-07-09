@@ -151,7 +151,8 @@ static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
     request.opcode = MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_WRITE;
     request.request_id = key_hash ^ (decode_step << 32) ^ record->version;
     request.source_cna = desc.source_cna;
-    request.target_ssd_cna = record->object_backend_device_cna;
+    request.target_ssd_cna =
+        mem_service_ub_ssd_gsva_device_cna_from_primary(desc.source_cna);
     request.block_ref.block_hi =
         ((uint64_t)record->kind << 32) | (uint64_t)record->object_owner_node;
     request.block_ref.block_lo = key_hash;
@@ -192,6 +193,7 @@ static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
     printf("[mem_service] stage %s_ub_ssd_gsva_backend_attach"
            " key=%s key_hash=0x%016" PRIx64 " step=%" PRIu64
            " gsva_base=0x%016" PRIx64 " bytes=%" PRIu64
+           " backend_device_cna=0x%08" PRIx32
            " backend_block_hi=%" PRIu64 " backend_block_lo=%" PRIu64
            " backend_block_version=%" PRIu64
            " backend_block_checksum=0x%016" PRIx64
@@ -202,6 +204,7 @@ static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
            decode_step,
            desc.gsva_base,
            desc.bytes,
+           request.target_ssd_cna,
            completion.committed_ref.block_hi,
            completion.committed_ref.block_lo,
            completion.committed_ref.version,

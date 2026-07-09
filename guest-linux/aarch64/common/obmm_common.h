@@ -376,7 +376,7 @@ static void OBMM_MAYBE_UNUSED obmm_install_arp(const char *ifname,
 /* OBMM device operations                                              */
 /* ------------------------------------------------------------------ */
 
-static int obmm_open_device(void)
+static int OBMM_MAYBE_UNUSED obmm_open_device(void)
 {
     return open("/dev/obmm", O_RDWR);
 }
@@ -449,13 +449,13 @@ static int OBMM_MAYBE_UNUSED obmm_map_gsva_region_at(
                                            MAP_GSVA, region);
 }
 
-static int obmm_map_region(uint64_t mem_id, size_t len, bool map_osync,
+static int OBMM_MAYBE_UNUSED obmm_map_region(uint64_t mem_id, size_t len, bool map_osync,
                           struct obmm_helpers_region *region)
 {
     return obmm_map_region_at(mem_id, NULL, len, map_osync, region);
 }
 
-static void obmm_unmap_region(struct obmm_helpers_region *region)
+static void OBMM_MAYBE_UNUSED obmm_unmap_region(struct obmm_helpers_region *region)
 {
     if (region->addr && region->addr != MAP_FAILED) {
         munmap(region->addr, region->len);
@@ -467,7 +467,7 @@ static void obmm_unmap_region(struct obmm_helpers_region *region)
     }
 }
 
-static int obmm_do_export(int obmm_fd, struct obmm_helpers_meta *meta,
+static int OBMM_MAYBE_UNUSED obmm_do_export(int obmm_fd, struct obmm_helpers_meta *meta,
                           uint64_t export_size)
 {
     struct obmm_cmd_export cmd;
@@ -510,7 +510,7 @@ static int OBMM_MAYBE_UNUSED obmm_do_export_fixed_uba(
     return 0;
 }
 
-static int obmm_do_unexport(int obmm_fd, uint64_t mem_id)
+static int OBMM_MAYBE_UNUSED obmm_do_unexport(int obmm_fd, uint64_t mem_id)
 {
     struct obmm_cmd_unexport cmd;
     memset(&cmd, 0, sizeof(cmd));
@@ -529,7 +529,7 @@ struct obmm_sim_dec_import_priv {
     uint32_t flags;
 };
 
-static int obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
+static int OBMM_MAYBE_UNUSED obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
                           uint32_t local_cna, uint64_t local_pa,
                           uint32_t token_value, uint64_t *import_mem_id)
 {
@@ -607,7 +607,7 @@ static int obmm_do_import_v2_epoch(int obmm_fd,
     return 0;
 }
 
-static int obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
+static int OBMM_MAYBE_UNUSED obmm_do_import_v2(int obmm_fd, const struct obmm_helpers_meta *meta,
                             uint32_t local_cna, uint64_t local_pa,
                             uint32_t token_value, uint32_t map_source,
                             uint32_t address_profile, uint32_t cache_policy,
@@ -657,7 +657,7 @@ static int OBMM_MAYBE_UNUSED obmm_do_import_gsva_desc_v1(
                                    import_mem_id);
 }
 
-static int obmm_bootstrap_publish(int obmm_fd, int local_idx, int node_count,
+static int OBMM_MAYBE_UNUSED obmm_bootstrap_publish(int obmm_fd, int local_idx, int node_count,
                                   uint64_t generation,
                                   const struct obmm_helpers_meta *meta)
 {
@@ -677,7 +677,7 @@ static int obmm_bootstrap_publish(int obmm_fd, int local_idx, int node_count,
     return 0;
 }
 
-static int obmm_bootstrap_lookup(int obmm_fd, uint32_t local_cna,
+static int OBMM_MAYBE_UNUSED obmm_bootstrap_lookup(int obmm_fd, uint32_t local_cna,
                                  int node_count, uint64_t generation,
                                  struct obmm_helpers_meta metas[
                                      OBMM_POOL_HELPERS_MAX_NODES],
@@ -723,7 +723,7 @@ static int obmm_bootstrap_lookup(int obmm_fd, uint32_t local_cna,
     return -1;
 }
 
-static int obmm_do_unimport(int obmm_fd, uint64_t mem_id)
+static int OBMM_MAYBE_UNUSED obmm_do_unimport(int obmm_fd, uint64_t mem_id)
 {
     struct obmm_cmd_unimport cmd;
     memset(&cmd, 0, sizeof(cmd));
@@ -810,7 +810,7 @@ static bool obmm_parse_windows(struct obmm_helpers_window windows[
     return count > 0;
 }
 
-static enum obmm_import_cache_mode obmm_parse_import_cache_mode(void)
+static enum obmm_import_cache_mode OBMM_MAYBE_UNUSED obmm_parse_import_cache_mode(void)
 {
     const char *env = getenv("OBMM_IMPORT_CACHE_MODE");
     if (!env || env[0] == '\0' || strcmp(env, "auto") == 0)
@@ -823,7 +823,7 @@ static enum obmm_import_cache_mode obmm_parse_import_cache_mode(void)
     return OBMM_IMPORT_CACHE_AUTO;
 }
 
-static bool obmm_alloc_import_pas(int import_count, uint64_t size_per_import,
+static bool OBMM_MAYBE_UNUSED obmm_alloc_import_pas(int import_count, uint64_t size_per_import,
                                   uint64_t pas[OBMM_POOL_HELPERS_MAX_NODES],
                                   bool osync[OBMM_POOL_HELPERS_MAX_NODES],
                                   enum obmm_import_cache_mode cache_mode)

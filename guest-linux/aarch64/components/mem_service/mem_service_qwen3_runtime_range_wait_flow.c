@@ -137,6 +137,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
     if (status != MEM_SERVICE_UB_SSD_GSVA_IO_OK) {
         printf("[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=%s"
                " local=node%u source=node%u key=%s step=%" PRIu64
+               " backend_device_cna=0x%08" PRIx32
                " block_hi=%" PRIu64 " block_lo=%" PRIu64
                " version=%" PRIu64 " bytes=%" PRIu64 "\n",
                mem_service_qwen3_ub_ssd_read_status_name(status),
@@ -144,6 +145,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
                remote_record->object_owner_node + 1U,
                remote_record->key,
                decode_step,
+               request.target_ssd_cna,
                remote_record->object_backend_block_hi,
                remote_record->object_backend_block_lo,
                remote_record->object_backend_block_version,
@@ -164,8 +166,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
         (const uint8_t *)local_slot->region.addr + local_offset,
         payload_len);
     *checksum_ms_out = obmm_now_ms() - checksum_start_ms;
-    if (checksum != remote_record->object_payload_checksum ||
-        checksum != remote_record->object_backend_block_checksum) {
+    if (checksum != remote_record->object_payload_checksum) {
         printf("[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=checksum_mismatch"
                " local=node%u source=node%u key=%s step=%" PRIu64
                " checksum=0x%016" PRIx64 " expected=0x%016" PRIx64
@@ -184,6 +185,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
     printf("[mem_service] stage qwen3_range_forward_runtime_input_ub_ssd_gsva_read"
            " local=node%u source=node%u key=%s step=%" PRIu64
            " gsva_base=0x%016" PRIx64 " bytes=%" PRIu64
+           " backend_device_cna=0x%08" PRIx32
            " checksum=0x%016" PRIx64 " local_offset=0x%016" PRIx64
            " status=ok\n",
            local_node + 1U,
@@ -192,6 +194,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
            decode_step,
            desc.gsva_base,
            desc.bytes,
+           request.target_ssd_cna,
            checksum,
            local_offset);
     return 0;

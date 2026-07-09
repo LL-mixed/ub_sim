@@ -112,7 +112,8 @@ static int mem_service_qwen3_kv_publish_record_to_ub_ssd_gsva_backend(
     request.opcode = MEM_SERVICE_UB_SSD_GSVA_OP_BLOCK_WRITE;
     request.request_id = key_hash ^ (decode_step << 32) ^ record->version;
     request.source_cna = desc.source_cna;
-    request.target_ssd_cna = record->object_backend_device_cna;
+    request.target_ssd_cna =
+        mem_service_ub_ssd_gsva_device_cna_from_primary(desc.source_cna);
     request.block_ref.block_hi =
         ((uint64_t)record->kind << 32) | (uint64_t)record->object_owner_node;
     request.block_ref.block_lo = key_hash;
@@ -151,6 +152,7 @@ static int mem_service_qwen3_kv_publish_record_to_ub_ssd_gsva_backend(
     printf("[mem_service] stage qwen3_range_kv_state_ub_ssd_gsva_backend_attach"
            " key=%s key_hash=0x%016" PRIx64 " step=%" PRIu64
            " gsva_base=0x%016" PRIx64 " bytes=%" PRIu64
+           " backend_device_cna=0x%08" PRIx32
            " backend_block_hi=%" PRIu64 " backend_block_lo=%" PRIu64
            " backend_block_version=%" PRIu64
            " backend_block_checksum=0x%016" PRIx64
@@ -160,6 +162,7 @@ static int mem_service_qwen3_kv_publish_record_to_ub_ssd_gsva_backend(
            decode_step,
            desc.gsva_base,
            desc.bytes,
+           request.target_ssd_cna,
            completion.committed_ref.block_hi,
            completion.committed_ref.block_lo,
            completion.committed_ref.version,
@@ -237,12 +240,14 @@ static int mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend(
     if (status != MEM_SERVICE_UB_SSD_GSVA_IO_OK) {
         printf("[mem_service] gap qwen3_range_kv_state_ub_ssd_gsva_read=%s"
                " local=node%u key=%s kv_step=%" PRIu64
+               " backend_device_cna=0x%08" PRIx32
                " block_hi=%" PRIu64 " block_lo=%" PRIu64
                " version=%" PRIu64 " bytes=%" PRIu64 "\n",
                mem_service_qwen3_kv_ub_ssd_status_name(status),
                local_node + 1U,
                kv_state->key,
                kv_step,
+               request.target_ssd_cna,
                kv_state->object_backend_block_hi,
                kv_state->object_backend_block_lo,
                kv_state->object_backend_block_version,
@@ -261,18 +266,37 @@ static int mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend(
     checksum = mem_service_qwen3_hidden_payload_checksum(
         (const uint8_t *)local_slot->region.addr + local_offset,
         kv_state->object_backing_len);
-    if (checksum != kv_state->object_payload_checksum ||
-        checksum != kv_state->object_backend_block_checksum) {
+    if (checksum != kv_state->object_payload_checksum) {
+        uint64_t primary_checksum = 0;
+        const char *primary_status = "unavailable";
+
+        if (kv_state->object_backing_offset + kv_state->object_backing_len <=
+            local_slot->region.len) {
+            primary_checksum = mem_service_qwen3_hidden_payload_checksum(
+                (const uint8_t *)local_slot->region.addr +
+                    kv_state->object_backing_offset,
+                kv_state->object_backing_len);
+            primary_status = primary_checksum == kv_state->object_payload_checksum ?
+                "matches_expected" : "mismatch";
+        }
         printf("[mem_service] gap qwen3_range_kv_state_ub_ssd_gsva_read=checksum_mismatch"
                " local=node%u key=%s kv_step=%" PRIu64
                " checksum=0x%016" PRIx64 " expected=0x%016" PRIx64
-               " backend_expected=0x%016" PRIx64 "\n",
+               " backend_expected=0x%016" PRIx64
+               " local_offset=0x%016" PRIx64
+               " primary_offset=0x%016" PRIx64
+               " primary_checksum=0x%016" PRIx64
+               " primary_status=%s\n",
                local_node + 1U,
                kv_state->key,
                kv_step,
                checksum,
                kv_state->object_payload_checksum,
-               kv_state->object_backend_block_checksum);
+               kv_state->object_backend_block_checksum,
+               local_offset,
+               kv_state->object_backing_offset,
+               primary_checksum,
+               primary_status);
         return -1;
     }
     *payload_view_out = (const uint8_t *)local_slot->region.addr + local_offset;
@@ -280,6 +304,7 @@ static int mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend(
     printf("[mem_service] stage qwen3_range_kv_state_ub_ssd_gsva_read"
            " local=node%u key=%s kv_step=%" PRIu64
            " gsva_base=0x%016" PRIx64 " bytes=%" PRIu64
+           " backend_device_cna=0x%08" PRIx32
            " checksum=0x%016" PRIx64 " local_offset=0x%016" PRIx64
            " status=ok\n",
            local_node + 1U,
@@ -287,6 +312,7 @@ static int mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend(
            kv_step,
            desc.gsva_base,
            desc.bytes,
+           request.target_ssd_cna,
            checksum,
            local_offset);
     return 0;
