@@ -60,7 +60,7 @@ bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc *desc,
                                                   uint16_t epoch)
 {
     uint64_t decode_step = epoch > 0 ? (uint64_t)epoch - 1ULL : 0ULL;
-    uint64_t expected_len = mem_service_qwen3_handoff_hidden_bytes(decode_step);
+    uint64_t expected_len = mem_service_model_handoff_hidden_bytes(decode_step);
 
     if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
@@ -73,9 +73,10 @@ bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc *desc,
 bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
                                                  uint16_t epoch)
 {
-    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
-        desc->flags != MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT ||
-        desc->payload_len != MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES) {
+    const struct mem_service_model_profile *p = mem_service_active_model_profile();
+    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT || !p ||
+        desc->flags != p->obmm_kind_token_result ||
+        desc->payload_len != p->obmm_token_result_bytes) {
         return false;
     }
     return (uint16_t)(desc->seq >> 48) == epoch;

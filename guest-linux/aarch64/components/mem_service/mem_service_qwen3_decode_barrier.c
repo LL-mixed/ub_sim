@@ -3,6 +3,7 @@
 #include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
 #include "mem_service_object_refs.h"
+#include "mem_service_qwen3.h"
 #include "mem_service_qwen3_runtime.h"
 
 int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *svc,

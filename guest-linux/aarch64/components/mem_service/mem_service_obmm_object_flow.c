@@ -8,8 +8,6 @@
 #include "mem_service_cluster_utils.h"
 #include "mem_service_obmm_objects.h"
 #include "mem_service_object_refs.h"
-#include "mem_service_qwen3.h"
-#include "mem_service_qwen3_runtime.h"
 
 int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                                 uint32_t local_node,
@@ -70,25 +68,25 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
     uint64_t hidden_range_bytes;
     uint64_t local_hidden_input_offset;
     uint64_t local_hidden_output_offset;
-    struct mem_service_qwen3_layer_range_placement local_placement;
-    struct mem_service_qwen3_layer_range_placement remote_placement;
-    struct mem_service_qwen3_layer_range_placement predecessor_placement;
-    const char *qwen3_model_key;
+    struct mem_service_layer_range_placement local_placement;
+    struct mem_service_layer_range_placement remote_placement;
+    struct mem_service_layer_range_placement predecessor_placement;
+    const char *model_key;
 
     memset(&local_placement, 0, sizeof(local_placement));
     memset(&remote_placement, 0, sizeof(remote_placement));
     memset(&predecessor_placement, 0, sizeof(predecessor_placement));
-    total_layers = mem_service_qwen3_layer_count();
+    total_layers = mem_service_model_layer_count();
     min_layers = 0;
     max_layers = 0;
     if (cluster_node_count != 0) {
         min_layers = total_layers / cluster_node_count;
         max_layers = min_layers + (total_layers % cluster_node_count ? 1U : 0U);
     }
-    hidden_range_bytes = mem_service_qwen3_hidden_range_bytes();
+    hidden_range_bytes = mem_service_model_hidden_range_bytes();
     local_hidden_input_offset = 0;
     local_hidden_output_offset = 0;
-    qwen3_model_key = mem_service_qwen3_model_key();
+    model_key = mem_service_model_key();
 
     if (!svc || cluster_node_count == 0 || local_node >= cluster_node_count) {
         return -1;
@@ -110,15 +108,15 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                local_slot->region.len);
         return -1;
     }
-    if (cluster_node_count != mem_service_qwen3_range_nodes()) {
+    if (cluster_node_count != mem_service_model_range_nodes()) {
         printf("[mem_service] gap qwen3_range_forward=node_count_mismatch nodes=%u expected=%u\n",
                cluster_node_count,
-               mem_service_qwen3_range_nodes());
+               mem_service_model_range_nodes());
         return -1;
     }
-    if (mem_service_publish_qwen3_layer_range_placements(svc,
+    if (mem_service_model_publish_layer_range_placements(svc,
                                                    cluster_node_count) != 0 ||
-        !mem_service_read_qwen3_layer_range_placement(svc,
+        !mem_service_model_read_layer_range_placement(svc,
                                                 local_node,
                                                 &local_placement)) {
         printf("[mem_service] gap qwen3_range_forward=placement_metadata_missing local=node%u nodes=%u\n",
@@ -128,7 +126,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
     }
     remote_node = local_placement.next_owner_node;
     if (remote_node >= cluster_node_count || remote_node == local_node ||
-        !mem_service_read_qwen3_layer_range_placement(svc,
+        !mem_service_model_read_layer_range_placement(svc,
                                                 remote_node,
                                                 &remote_placement)) {
         printf("[mem_service] gap qwen3_range_forward=next_placement_metadata_missing local=node%u next=node%u nodes=%u\n",
@@ -141,7 +139,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
         prev_node = local_node;
         hidden_input_seed_owner = local_node;
         hidden_input_seed_kind = MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_INPUT;
-    } else if (mem_service_find_qwen3_layer_range_predecessor(svc,
+    } else if (mem_service_model_find_layer_range_predecessor(svc,
                                                         local_node,
                                                         &predecessor_placement) &&
                predecessor_placement.layer_end == local_placement.layer_start) {
@@ -163,7 +161,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
     snprintf(local_weight_key,
              sizeof(local_weight_key),
              "weights/%s/node%u/tile0",
-             qwen3_model_key,
+             model_key,
              local_node + 1U);
     snprintf(local_kvcache_key,
              sizeof(local_kvcache_key),
@@ -172,17 +170,17 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
     snprintf(local_hidden_input_key,
              sizeof(local_hidden_input_key),
              "hidden/%s/node%u/range-input",
-             qwen3_model_key,
+             model_key,
              local_node + 1U);
     snprintf(local_hidden_output_key,
              sizeof(local_hidden_output_key),
              "hidden/%s/node%u/range-output",
-             qwen3_model_key,
+             model_key,
              local_node + 1U);
     snprintf(remote_weight_key,
              sizeof(remote_weight_key),
              "weights/%s/node%u/tile0",
-             qwen3_model_key,
+             model_key,
              remote_node + 1U);
     snprintf(remote_kvcache_key,
              sizeof(remote_kvcache_key),
@@ -191,12 +189,12 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
     snprintf(remote_hidden_input_key,
              sizeof(remote_hidden_input_key),
              "hidden/%s/node%u/range-input",
-             qwen3_model_key,
+             model_key,
              remote_node + 1U);
     snprintf(remote_hidden_output_key,
              sizeof(remote_hidden_output_key),
              "hidden/%s/node%u/range-output",
-             qwen3_model_key,
+             model_key,
              remote_node + 1U);
 
     base = (uint8_t *)local_slot->region.addr;
@@ -320,7 +318,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            local_kvcache.object_payload_checksum);
     printf("[mem_service] stage qwen3_range_forward_placement local=node%u key=placement/%s/layer-range/node%u layers=[%u,%u) count=%u next=node%u predecessor=node%u terminal=%s source=db_metadata strategy=%s status=ok\n",
            local_node + 1U,
-           qwen3_model_key,
+           model_key,
            local_node + 1U,
            local_placement.layer_start,
            local_placement.layer_end,
@@ -359,7 +357,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
            max_layers,
            local_hidden_input.key,
            local_hidden_output.key,
-           mem_service_qwen3_range_kv_state_bytes(local_range_start, local_range_end, 1));
+           mem_service_model_range_kv_state_bytes(local_range_start, local_range_end, 1));
 
     if (mem_service_write_cluster_payload(rt, svc, local_slot) != 0) {
         printf("[mem_service] gap obmm_service_v0=metadata_publish_failed\n");

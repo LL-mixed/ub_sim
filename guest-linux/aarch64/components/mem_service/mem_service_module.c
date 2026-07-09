@@ -8,8 +8,6 @@
 #include "mem_service_obmm_object_flow.h"
 #include "mem_service_obmm_objects.h"
 #include "mem_service_object_refs.h"
-#include "mem_service_qwen3_records.h"
-#include "mem_service_qwen3_runtime.h"
 #include "mem_service_record_table.h"
 
 static struct mem_service_cluster_runtime g_mem_service_cluster_runtime;

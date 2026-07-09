@@ -57,4 +57,23 @@
 #define MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_STATE 11U
 #define MEM_SERVICE_OBMM_KIND_SERVING_REQUEST 12U
 
+/*
+ * Model-neutral layout aliases for core use. Values mirror the QWEN3 layout
+ * exactly (Qwen3 is the only registered profile in stage 0). Core .c/.h
+ * files use these names instead of the MEM_SERVICE_OBMM_QWEN3_* compat
+ * macros so the core stays free of model names. The QWEN3_* macros are
+ * retained for adapter/test compatibility; real layout parameterization is
+ * deferred to stage 1.
+ */
+#define MEM_SERVICE_OBMM_DYNAMIC_ARENA_OFFSET \
+    MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET
+#define MEM_SERVICE_OBMM_KV_STATE_OFFSET \
+    MEM_SERVICE_OBMM_QWEN3_KV_STATE_OFFSET
+#define MEM_SERVICE_OBMM_KV_STATE_SLOT_BYTES \
+    MEM_SERVICE_OBMM_QWEN3_KV_STATE_SLOT_BYTES
+#define MEM_SERVICE_OBMM_ROUND_DONE_OFFSET \
+    MEM_SERVICE_OBMM_QWEN3_ROUND_DONE_OFFSET
+#define MEM_SERVICE_OBMM_ROUND_DONE_SLOTS \
+    MEM_SERVICE_OBMM_QWEN3_ROUND_DONE_SLOTS
+
 #endif

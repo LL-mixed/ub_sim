@@ -17,6 +17,8 @@ SERVICE_CLUSTER_PAYLOAD_CONTRACT_H = (
 SERVICE_COMPILER_H = SERVICE_DIR / "mem_service_compiler.h"
 SERVICE_GUEST_RUNTIME_H = SERVICE_DIR / "mem_service_guest_runtime.h"
 SERVICE_OBJECT_CONTRACT_H = SERVICE_DIR / "mem_service_object_contract.h"
+SERVICE_PROFILE_H = SERVICE_DIR / "mem_service_profile.h"
+SERVICE_PROFILE_C = SERVICE_DIR / "mem_service_profile.c"
 SERVICE_QWEN3_PLACEMENT_H = SERVICE_DIR / "mem_service_qwen3_placement.h"
 SERVICE_QWEN3_RECORD_POLICY_H = SERVICE_DIR / "mem_service_qwen3_record_policy.h"
 SERVICE_RUNTIME_CONFIG_H = SERVICE_DIR / "mem_service_runtime_config.h"
@@ -2306,8 +2308,12 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('#include "mem_service_compiler.h"', internal_header)
         self.assertIn('#include "mem_service_guest_runtime.h"', internal_header)
         self.assertIn('#include "mem_service_object_contract.h"', internal_header)
-        self.assertIn('#include "mem_service_qwen3_placement.h"', internal_header)
-        self.assertIn('#include "mem_service_qwen3_record_policy.h"', internal_header)
+        # Core routes model geometry/kinds/placement through the neutral
+        # profile header, not qwen3 adapter headers directly.
+        self.assertIn('#include "mem_service_profile.h"', internal_header)
+        self.assertNotIn('#include "mem_service_qwen3_placement.h"', internal_header)
+        self.assertNotIn('#include "mem_service_qwen3_record_policy.h"', internal_header)
+        self.assertNotIn('#include "mem_service_qwen3.h"', internal_header)
         self.assertIn('#include "mem_service_runtime_config.h"', internal_header)
         self.assertIn("private include aggregate", readme)
         self.assertIn("private compatibility shims", readme)
@@ -2361,12 +2367,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_qwen3_record_policy_is_split_from_internal_contract(self):
         internal_header = SERVICE_INTERNAL_H.read_text()
+        profile_header = SERVICE_PROFILE_H.read_text()
         qwen3_policy = SERVICE_QWEN3_RECORD_POLICY_H.read_text()
         qwen3_records = SERVICE_QWEN3_RECORDS_C.read_text()
         qwen3_record_contract = SERVICE_QWEN3_RECORDS_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_qwen3_record_policy.h"', internal_header)
+        # The core routes through the model-neutral profile header, not the
+        # qwen3 record-policy header. The policy header is adapter-private.
+        self.assertIn('#include "mem_service_profile.h"', internal_header)
+        self.assertNotIn('#include "mem_service_qwen3_record_policy.h"', internal_header)
         self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", qwen3_policy)
         self.assertIn('#include "mem_service_qwen3_records.h"', qwen3_records)
         self.assertIn('#include "mem_service_qwen3_record_policy.h"', qwen3_record_contract)
@@ -2397,10 +2407,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
     def test_qwen3_placement_contract_is_split_from_internal_contract(self):
         internal_header = SERVICE_INTERNAL_H.read_text()
+        profile_header = SERVICE_PROFILE_H.read_text()
         qwen3_placement = SERVICE_QWEN3_PLACEMENT_H.read_text()
         readme = (SERVICE_DIR / "README.md").read_text()
 
-        self.assertIn('#include "mem_service_qwen3_placement.h"', internal_header)
+        # The core gets the placement struct through the model-neutral
+        # profile header, not the qwen3 placement header directly.
+        self.assertIn('#include "mem_service_profile.h"', internal_header)
+        self.assertNotIn('#include "mem_service_qwen3_placement.h"', internal_header)
+        self.assertIn("struct mem_service_layer_range_placement", profile_header)
         self.assertIn("struct mem_service_qwen3_layer_range_placement", qwen3_placement)
         self.assertIn("uint32_t owner_node", qwen3_placement)
         self.assertIn("bool terminal", qwen3_placement)
@@ -2485,6 +2500,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             + SERVICE_QWEN3_RECORDS_C.read_text()
             + "\n"
             + SERVICE_OBMM_OBJECTS_C.read_text()
+            + "\n"
+            + SERVICE_PROFILE_C.read_text()
         )
 
         self.assertIn("MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS", source)
@@ -2492,7 +2509,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strstr(key, "decode-step")', source)
         self.assertIn('strstr(key, "/step/")', source)
         self.assertIn("rec = mem_service_alloc_record(svc);", source)
-        self.assertIn("rec = mem_service_recycle_qwen3_runtime_record(svc, key);", source)
+        # Core now routes recycling through the model-neutral profile
+        # accessor; the qwen3-specific recycler is bound by the adapter.
+        self.assertIn("mem_service_model_recycle_runtime_record(svc, key);", source)
+        self.assertIn("recycle_runtime_record", SERVICE_PROFILE_H.read_text())
 
     def test_record_table_helpers_are_split_from_main_service_translation_unit(self):
         source = SERVICE_C.read_text()
@@ -2508,7 +2528,10 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('#include "mem_service_record_table.h"', source)
         self.assertNotIn('#include "mem_service_records.inc"', source)
         self.assertNotIn('#include "mem_service_qwen3_records.inc"', source)
-        self.assertIn('#include "mem_service_qwen3_records.h"', source)
+        # The core module no longer includes qwen3 adapter headers directly;
+        # it routes through the model-neutral profile instead.
+        self.assertNotIn('#include "mem_service_qwen3_records.h"', source)
+        self.assertNotIn('#include "mem_service_qwen3_runtime.h"', source)
         self.assertIn('#include "mem_service.h"', record_table)
         self.assertIn("mem_service_alloc_record", records)
         self.assertIn("mem_service_find_record", records)
@@ -2521,7 +2544,6 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('#include "mem_service_record_table.h"', metadata)
         self.assertIn('#include "mem_service_record_table.h"', obmm_objects)
         self.assertIn('#include "mem_service_record_table.h"', qwen3_runtime)
-        self.assertIn('#include "mem_service_qwen3_records.h"', source)
         self.assertIn('#include "mem_service_qwen3_records.h"', qwen3_records)
         self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_record_contract)
         self.assertIn("mem_service_recycle_qwen3_runtime_record", qwen3_records)
@@ -2891,8 +2913,11 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
 
         self.assertNotIn('#include "mem_service_qwen3_decode_barrier.inc"', source)
         self.assertIn('#include "mem_service_cluster_runtime.h"', source)
-        self.assertIn('#include "mem_service_qwen3_runtime.h"', source)
+        # The core module no longer pulls in qwen3 adapter headers; the
+        # decode barrier translation unit includes its own adapter headers.
+        self.assertNotIn('#include "mem_service_qwen3_runtime.h"', source)
         self.assertIn('#include "mem_service_cluster_runtime.h"', decode_barrier)
+        self.assertIn('#include "mem_service_qwen3.h"', decode_barrier)
         self.assertIn('#include "mem_service_qwen3_runtime.h"', decode_barrier)
         self.assertIn("mem_service_obmm_service_v0_publish_decode_round_done", decode_barrier)
         self.assertIn("mem_service_obmm_service_v0_wait_all_decode_round_done", decode_barrier)

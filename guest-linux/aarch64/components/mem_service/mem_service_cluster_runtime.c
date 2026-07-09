@@ -2,7 +2,6 @@
 
 #include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
-#include "mem_service_qwen3_runtime.h"
 
 int mem_service_cluster_runtime_make_gsva_buffer_desc(
     const struct mem_service_cluster_runtime *rt,
@@ -541,7 +540,7 @@ int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)
         (uint8_t *)rt->slots[rt->local_idx].region.addr + payload_offset;
     rt->slots[rt->local_idx].region.len = rt->region_size - payload_offset;
     rt->payload_arena_base =
-        obmm_align_up_u64(MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET, 64);
+        obmm_align_up_u64(MEM_SERVICE_OBMM_DYNAMIC_ARENA_OFFSET, 64);
     rt->payload_arena_next = rt->payload_arena_base;
     rt->payload_arena_high_water = rt->payload_arena_base;
     mem_service_report_obmm_pool_layout_once(rt);

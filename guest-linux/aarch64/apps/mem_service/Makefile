@@ -25,6 +25,7 @@ MEM_SERVICE_OBMM_OBJECTS := $(ROOT)/components/mem_service/mem_service_obmm_obje
 MEM_SERVICE_UB_SSD_GSVA_BACKEND := $(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_backend.c
 MEM_SERVICE_UB_SSD_GSVA_IO := $(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_io.c
 MEM_SERVICE_RECORDS := $(ROOT)/components/mem_service/mem_service_records.c
+MEM_SERVICE_PROFILE := $(ROOT)/components/mem_service/mem_service_profile.c
 MEM_SERVICE_QWEN3_RECORDS := $(ROOT)/components/mem_service/mem_service_qwen3_records.c
 MEM_SERVICE_QWEN3_RUNTIME := $(ROOT)/components/mem_service/mem_service_qwen3_runtime.c
 MEM_SERVICE_QWEN3_DECODE_BARRIER := $(ROOT)/components/mem_service/mem_service_qwen3_decode_barrier.c
@@ -179,6 +180,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_UB_SSD_GSVA_BACKEND) \
 	$(MEM_SERVICE_UB_SSD_GSVA_IO) \
 	$(MEM_SERVICE_RECORDS) \
+	$(MEM_SERVICE_PROFILE) \
 	$(MEM_SERVICE_QWEN3_RECORDS) \
 	$(MEM_SERVICE_QWEN3_RUNTIME) \
 	$(MEM_SERVICE_QWEN3_DECODE_BARRIER) \

@@ -32,9 +32,7 @@
 #include "mem_service_compiler.h"
 #include "mem_service_guest_runtime.h"
 #include "mem_service_object_contract.h"
-#include "mem_service_qwen3_placement.h"
-#include "mem_service_qwen3_record_policy.h"
-#include "mem_service_qwen3.h"
+#include "mem_service_profile.h"
 #include "mem_service_runtime_config.h"
 
 #ifndef major

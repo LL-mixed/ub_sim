@@ -2,7 +2,7 @@
 
 #include "mem_service_guest_runtime.h"
 #include "mem_service_object_contract.h"
-#include "mem_service_qwen3_records.h"
+#include "mem_service_profile.h"
 #include "mem_service_record_table.h"
 
 #include <inttypes.h>
@@ -31,6 +31,8 @@ void mem_service_fill_obmm_object_payload(uint8_t *dst,
 
 const char *mem_service_object_kind_name(uint32_t payload_kind)
 {
+    const struct mem_service_model_profile *p = mem_service_active_model_profile();
+
     switch (payload_kind) {
     case MEM_SERVICE_OBMM_KIND_WEIGHT_TILE:
         return "weight_tile";
@@ -42,23 +44,32 @@ const char *mem_service_object_kind_name(uint32_t payload_kind)
         return "hidden_range_output";
     case MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT:
         return "hidden_range_runtime_output";
-    case MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT:
-        return "qwen3_token_result";
-    case MEM_SERVICE_OBMM_KIND_QWEN3_KV_STATE:
-        return "qwen3_kv_state";
-    case MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_HISTORY:
-        return "qwen3_engram_history";
-    case MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES:
-        return "qwen3_engram_candidates";
-    case MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_SELECTED:
-        return "qwen3_engram_selected";
-    case MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_STATE:
-        return "qwen3_engram_state";
     case MEM_SERVICE_OBMM_KIND_SERVING_REQUEST:
         return "serving_request";
     default:
-        return "unknown";
+        break;
     }
+    if (p) {
+        if (payload_kind == p->obmm_kind_token_result) {
+            return "token_result";
+        }
+        if (payload_kind == p->obmm_kind_kv_state) {
+            return "kv_state";
+        }
+        if (payload_kind == p->obmm_kind_engram_history) {
+            return "engram_history";
+        }
+        if (payload_kind == p->obmm_kind_engram_candidates) {
+            return "engram_candidates";
+        }
+        if (payload_kind == p->obmm_kind_engram_selected) {
+            return "engram_selected";
+        }
+        if (payload_kind == p->obmm_kind_engram_state) {
+            return "engram_state";
+        }
+    }
+    return "unknown";
 }
 
 int mem_service_payload_arena_alloc(struct mem_service_cluster_runtime *rt,
@@ -78,7 +89,7 @@ int mem_service_payload_arena_alloc(struct mem_service_cluster_runtime *rt,
     }
     if (rt->payload_arena_base == 0) {
         rt->payload_arena_base =
-            obmm_align_up_u64(MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET, align);
+            obmm_align_up_u64(MEM_SERVICE_OBMM_DYNAMIC_ARENA_OFFSET, align);
         rt->payload_arena_next = rt->payload_arena_base;
         rt->payload_arena_high_water = rt->payload_arena_base;
     }
@@ -128,7 +139,7 @@ int mem_service_put_obmm_object_record(struct mem_service *svc,
         rec = mem_service_alloc_record(svc);
     }
     if (!rec) {
-        rec = mem_service_recycle_qwen3_runtime_record(svc, key);
+        rec = mem_service_model_recycle_runtime_record(svc, key);
     }
     if (!rec) {
         return -1;
