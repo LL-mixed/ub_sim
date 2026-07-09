@@ -120,6 +120,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
     if (mem_service_put_obmm_object_record(svc,
+                                     mem_service_recycle_qwen3_runtime_record,
                                      MEM_SERVICE_RECORD_QWEN3_TOKEN_RESULT,
                                      token_result_key,
                                      local_node,

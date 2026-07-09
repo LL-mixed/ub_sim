@@ -57,36 +57,35 @@ static bool mem_service_pending_object_desc_matches(const struct obmm_desc *desc
 }
 
 bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc *desc,
+                                                  uint64_t expected_payload_len,
                                                   uint16_t epoch)
 {
-    uint64_t decode_step = epoch > 0 ? (uint64_t)epoch - 1ULL : 0ULL;
-    uint64_t expected_len = mem_service_model_handoff_hidden_bytes(decode_step);
-
     if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
-        desc->payload_len != expected_len) {
+        desc->payload_len != expected_payload_len) {
         return false;
     }
     return (uint16_t)(desc->seq >> 48) == epoch;
 }
 
-bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
-                                                 uint16_t epoch)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT || !p ||
-        desc->flags != p->obmm_kind_token_result ||
-        desc->payload_len != p->obmm_token_result_bytes) {
-        return false;
-    }
-    return (uint16_t)(desc->seq >> 48) == epoch;
-}
-
-bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
+bool mem_service_token_result_desc_matches(const struct obmm_desc *desc,
                                            uint16_t epoch,
                                            uint32_t payload_kind,
-                                           uint64_t min_payload_len,
-                                           uint64_t max_payload_len)
+                                           uint64_t payload_len)
+{
+    if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
+        desc->flags != payload_kind ||
+        desc->payload_len != payload_len) {
+        return false;
+    }
+    return (uint16_t)(desc->seq >> 48) == epoch;
+}
+
+bool mem_service_object_desc_matches(const struct obmm_desc *desc,
+                                     uint16_t epoch,
+                                     uint32_t payload_kind,
+                                     uint64_t min_payload_len,
+                                     uint64_t max_payload_len)
 {
     if (!desc || desc->type != OBMM_DESC_MEM_SERVICE_OBJECT_PUT ||
         desc->flags != payload_kind ||
@@ -97,7 +96,7 @@ bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
     return (uint16_t)(desc->seq >> 48) == epoch;
 }
 
-bool mem_service_qwen3_object_desc_kind_len_matches(
+bool mem_service_object_desc_kind_len_matches(
     const struct obmm_desc *desc,
     uint32_t payload_kind,
     uint64_t min_payload_len,
@@ -112,6 +111,7 @@ bool mem_service_qwen3_object_desc_kind_len_matches(
 bool mem_service_take_pending_runtime_range_input_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
+    uint64_t expected_payload_len,
     uint16_t epoch,
     struct obmm_desc *desc_out)
 {
@@ -124,7 +124,8 @@ bool mem_service_take_pending_runtime_range_input_desc(
     count = rt->pending_desc_count[owner_idx];
     for (i = 0; i < count; ++i) {
         if (mem_service_runtime_range_input_desc_matches(&rt->pending_descs[owner_idx][i],
-                                                   epoch)) {
+                                                         expected_payload_len,
+                                                         epoch)) {
             if (desc_out) {
                 *desc_out = rt->pending_descs[owner_idx][i];
             }
@@ -140,10 +141,12 @@ bool mem_service_take_pending_runtime_range_input_desc(
     return false;
 }
 
-bool mem_service_take_pending_qwen3_token_result_desc(
+bool mem_service_take_pending_token_result_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
+    uint32_t payload_kind,
+    uint64_t payload_len,
     struct obmm_desc *desc_out)
 {
     uint8_t count;
@@ -154,8 +157,10 @@ bool mem_service_take_pending_qwen3_token_result_desc(
     }
     count = rt->pending_desc_count[owner_idx];
     for (i = 0; i < count; ++i) {
-        if (mem_service_qwen3_token_result_desc_matches(&rt->pending_descs[owner_idx][i],
-                                                  epoch)) {
+        if (mem_service_token_result_desc_matches(&rt->pending_descs[owner_idx][i],
+                                                  epoch,
+                                                  payload_kind,
+                                                  payload_len)) {
             if (desc_out) {
                 *desc_out = rt->pending_descs[owner_idx][i];
             }
@@ -171,7 +176,7 @@ bool mem_service_take_pending_qwen3_token_result_desc(
     return false;
 }
 
-bool mem_service_take_pending_qwen3_object_desc(
+bool mem_service_take_pending_object_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
@@ -188,7 +193,7 @@ bool mem_service_take_pending_qwen3_object_desc(
     }
     count = rt->pending_desc_count[owner_idx];
     for (i = 0; i < count; ++i) {
-        if (mem_service_qwen3_object_desc_matches(&rt->pending_descs[owner_idx][i],
+        if (mem_service_object_desc_matches(&rt->pending_descs[owner_idx][i],
                                             epoch,
                                             payload_kind,
                                             min_payload_len,
@@ -208,7 +213,7 @@ bool mem_service_take_pending_qwen3_object_desc(
     return false;
 }
 
-bool mem_service_take_pending_qwen3_object_kind_len_desc(
+bool mem_service_take_pending_object_kind_len_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint32_t payload_kind,
@@ -224,7 +229,7 @@ bool mem_service_take_pending_qwen3_object_kind_len_desc(
     }
     count = rt->pending_desc_count[owner_idx];
     for (i = 0; i < count; ++i) {
-        if (mem_service_qwen3_object_desc_kind_len_matches(
+        if (mem_service_object_desc_kind_len_matches(
                 &rt->pending_descs[owner_idx][i],
                 payload_kind,
                 min_payload_len,
@@ -244,11 +249,11 @@ bool mem_service_take_pending_qwen3_object_kind_len_desc(
     return false;
 }
 
-static bool mem_service_take_pending_object_desc(struct mem_service_cluster_runtime *rt,
-                                           int owner_idx,
-                                           uint16_t epoch,
-                                           const struct mem_service_record *record,
-                                           uint32_t kind)
+static bool mem_service_take_pending_object_record_desc(struct mem_service_cluster_runtime *rt,
+                                                        int owner_idx,
+                                                        uint16_t epoch,
+                                                        const struct mem_service_record *record,
+                                                        uint32_t kind)
 {
     uint8_t count;
     uint8_t i;
@@ -479,35 +484,35 @@ int mem_service_wait_remote_obmm_object_descs(struct mem_service_cluster_runtime
         bool drained = false;
 
         if (!saw_weight &&
-            mem_service_take_pending_object_desc(rt,
-                                           (int)owner_node,
-                                           epoch,
-                                           weight,
-                                           MEM_SERVICE_OBMM_KIND_WEIGHT_TILE)) {
+            mem_service_take_pending_object_record_desc(rt,
+                                                        (int)owner_node,
+                                                        epoch,
+                                                        weight,
+                                                        MEM_SERVICE_OBMM_KIND_WEIGHT_TILE)) {
             saw_weight = true;
         }
         if (!saw_kvcache &&
-            mem_service_take_pending_object_desc(rt,
-                                           (int)owner_node,
-                                           epoch,
-                                           kvcache,
-                                           MEM_SERVICE_OBMM_KIND_KVCACHE_BLOCK)) {
+            mem_service_take_pending_object_record_desc(rt,
+                                                        (int)owner_node,
+                                                        epoch,
+                                                        kvcache,
+                                                        MEM_SERVICE_OBMM_KIND_KVCACHE_BLOCK)) {
             saw_kvcache = true;
         }
         if (!saw_hidden_input &&
-            mem_service_take_pending_object_desc(rt,
-                                           (int)owner_node,
-                                           epoch,
-                                           hidden_input,
-                                           MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_INPUT)) {
+            mem_service_take_pending_object_record_desc(rt,
+                                                        (int)owner_node,
+                                                        epoch,
+                                                        hidden_input,
+                                                        MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_INPUT)) {
             saw_hidden_input = true;
         }
         if (!saw_hidden_output &&
-            mem_service_take_pending_object_desc(rt,
-                                           (int)owner_node,
-                                           epoch,
-                                           hidden_output,
-                                           MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_OUTPUT)) {
+            mem_service_take_pending_object_record_desc(rt,
+                                                        (int)owner_node,
+                                                        epoch,
+                                                        hidden_output,
+                                                        MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_OUTPUT)) {
             saw_hidden_output = true;
         }
         while (obmm_spsc_pop(q, &desc) == 0) {

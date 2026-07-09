@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #include "mem_service.h"
+#include "mem_service_profile.h"
+#include "mem_service_qwen3_records.h"
 
 #define MEM_SERVICE_RECORD_QWEN3_TOKEN_RESULT MEM_SERVICE_RECORD_MODEL_TOKEN_RESULT
 #define MEM_SERVICE_RECORD_QWEN3_ENGRAM_HISTORY MEM_SERVICE_RECORD_MODEL_ENGRAM_HISTORY
@@ -20,8 +22,7 @@ uint64_t mem_service_qwen3_hidden_range_bytes(void);
 uint64_t mem_service_qwen3_handoff_hidden_bytes(uint64_t decode_step);
 const char *mem_service_qwen3_model_key(void);
 uint64_t mem_service_qwen3_range_kv_state_bytes(uint32_t layer_start,
-                                                uint32_t layer_end,
-                                                uint64_t token_count);
+                                                uint32_t layer_end);
 int mem_service_qwen3_layer_range_for_node(uint32_t local_node,
                                            uint32_t cluster_node_count,
                                            uint32_t *layer_start_out,
@@ -31,6 +32,10 @@ void mem_service_qwen3_node_range(uint32_t node,
                                   uint32_t node_count,
                                   uint32_t *start_out,
                                   uint32_t *end_out);
+int mem_service_qwen3_init_obmm_range_flow_request(
+    struct mem_service_obmm_range_flow_request *req,
+    uint32_t local_node,
+    uint32_t cluster_node_count);
 
 int mem_service_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,
                                                          uint32_t cluster_node_count,

@@ -80,7 +80,8 @@ use sim_services::{
 };
 use sim_topology::SimTopology;
 use sim_uapi::{
-    model_decode_loop_report, qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
+    deepseek_v4_flash_geometry_smoke_report, model_decode_loop_report,
+    qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
     qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
@@ -17044,6 +17045,24 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_decode_loop_args_accept_flash_geometry_profile() {
+        let args = qwen3_decode_loop_args_from([
+            "qwen3-decode-loop",
+            "--scenario=8host",
+            "--steps=4",
+            "--profile=deepseek-v4-flash",
+        ])
+        .expect("parse decode loop args")
+        .expect("decode loop args");
+        assert_eq!(
+            args.scenario_path,
+            PathBuf::from("scenarios/mvp_8host_single_domain.yaml")
+        );
+        assert_eq!(args.step_count, 4);
+        assert_eq!(args.profile, "deepseek-v4-flash");
+    }
+
+    #[test]
     fn qwen3_tokenizer_projection_args_with_positional_input() {
         let tokenizer_path = PathBuf::from("/tmp/qwen3-tokenizer");
         let args = qwen3_tokenizer_projection_args_from([
@@ -30507,6 +30526,50 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
         "  generated_bytes: len={} checksum={:#x}",
         report.generated_byte_len, report.generated_byte_checksum
     );
+    if matches!(
+        args.profile.as_str(),
+        "deepseek-v4-flash" | "deepseek_v4_flash"
+    ) {
+        let smoke = deepseek_v4_flash_geometry_smoke_report(&topology)
+            .map_err(anyhow::Error::msg)
+            .context("failed to run flash geometry smoke")?;
+        println!("flash_geometry_smoke");
+        println!(
+            "  ready={} nodes={} layers={} hidden_range_bytes={} decode_hidden_bytes={} kv_state_bytes={} handoffs={} barriers={} weight_objects={} kv_objects={} hidden_objects={} desc_put={} desc_get={} checksum={:#x}",
+            smoke.ready,
+            smoke.node_count,
+            smoke.layer_count,
+            smoke.hidden_range_bytes,
+            smoke.decode_hidden_bytes,
+            smoke.total_kv_state_bytes,
+            smoke.handoff_count,
+            smoke.barrier_count,
+            smoke.weight_object_count,
+            smoke.kv_object_count,
+            smoke.hidden_object_count,
+            smoke.object_desc_put_count,
+            smoke.object_desc_get_count,
+            smoke.aggregate_checksum
+        );
+        for node in &smoke.nodes {
+            println!(
+                "  flash_node={} layers=[{},{}] count={} next={} terminal={} kv_state_bytes={} objects={} desc_put={} desc_get={} barrier={} handoff_ready={} checksum={:#x}",
+                node.node_id,
+                node.layer_start,
+                node.layer_end,
+                node.layer_count,
+                node.next_node,
+                node.terminal,
+                node.kv_state_bytes,
+                node.object_count,
+                node.object_desc_put_count,
+                node.object_desc_get_count,
+                node.barrier_count,
+                node.handoff_ready,
+                node.node_checksum
+            );
+        }
+    }
     match qwen3_decode_report_verbosity() {
         Qwen3DecodeReportVerbosity::Summary => {}
         Qwen3DecodeReportVerbosity::Steps => {

@@ -68,7 +68,7 @@ int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
                     struct mem_service_cluster_payload_compact_summary compact;
                     struct mem_service_cluster_payload_header seen;
 
-                    if (mem_service_take_pending_qwen3_object_kind_len_desc(
+                    if (mem_service_take_pending_object_kind_len_desc(
                             rt,
                             node_idx,
                             MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES,
@@ -77,7 +77,7 @@ int mem_service_obmm_service_v0_wait_engram_candidates(struct mem_service *svc,
                             &candidates_desc)) {
                     } else if (rt->ingress_queues[node_idx]) {
                         while (obmm_spsc_pop(rt->ingress_queues[node_idx], &rx) == 0) {
-                            if (mem_service_qwen3_object_desc_kind_len_matches(
+                            if (mem_service_object_desc_kind_len_matches(
                                     &rx,
                                     MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_CANDIDATES,
                                     MEM_SERVICE_OBMM_QWEN3_ENGRAM_CANDIDATES_BYTES,
@@ -249,7 +249,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
                 struct mem_service_cluster_payload_compact_summary compact;
                 struct mem_service_cluster_payload_header seen;
 
-                if (mem_service_take_pending_qwen3_object_desc(
+                if (mem_service_take_pending_object_desc(
                         rt,
                         owner_idx,
                         expected_epoch,
@@ -259,7 +259,7 @@ int mem_service_obmm_service_v0_wait_engram_selected_token(struct mem_service *s
                         &selected_desc)) {
                 } else if (rt->ingress_queues[owner_idx]) {
                     while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
-                        if (mem_service_qwen3_object_desc_matches(
+                        if (mem_service_object_desc_matches(
                                 &rx,
                                 expected_epoch,
                                 MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_SELECTED,
@@ -395,7 +395,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
                 struct mem_service_cluster_payload_compact_summary compact;
                 struct mem_service_cluster_payload_header seen;
 
-                if (mem_service_take_pending_qwen3_object_desc(
+                if (mem_service_take_pending_object_desc(
                         rt,
                         owner_idx,
                         expected_epoch,
@@ -405,7 +405,7 @@ int mem_service_obmm_service_v0_wait_engram_history(struct mem_service *svc,
                         &history_desc)) {
                 } else if (rt->ingress_queues[owner_idx]) {
                     while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
-                        if (mem_service_qwen3_object_desc_matches(
+                        if (mem_service_object_desc_matches(
                                 &rx,
                                 expected_epoch,
                                 MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_HISTORY,
@@ -551,7 +551,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
                 if (expected_epoch == 0) {
                     expected_epoch = 1;
                 }
-                if (mem_service_take_pending_qwen3_object_desc(
+                if (mem_service_take_pending_object_desc(
                         rt,
                         owner_idx,
                         expected_epoch,
@@ -561,7 +561,7 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
                         &state_desc)) {
                 } else if (rt->ingress_queues[owner_idx]) {
                     while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
-                        if (mem_service_qwen3_object_desc_matches(
+                        if (mem_service_object_desc_matches(
                                 &rx,
                                 expected_epoch,
                                 MEM_SERVICE_OBMM_KIND_QWEN3_ENGRAM_STATE,

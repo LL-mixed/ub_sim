@@ -2509,9 +2509,9 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('strstr(key, "decode-step")', source)
         self.assertIn('strstr(key, "/step/")', source)
         self.assertIn("rec = mem_service_alloc_record(svc);", source)
-        # Core now routes recycling through the model-neutral profile
-        # accessor; the qwen3-specific recycler is bound by the adapter.
-        self.assertIn("mem_service_model_recycle_runtime_record(svc, key);", source)
+        # Core receives an explicit recycler callback from the caller/adaptor;
+        # mem_service does not keep a global active model profile.
+        self.assertIn("rec = recycle_runtime_record(svc, key);", source)
         self.assertIn("recycle_runtime_record", SERVICE_PROFILE_H.read_text())
 
     def test_record_table_helpers_are_split_from_main_service_translation_unit(self):
@@ -2869,7 +2869,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_obmm_service_v0_publish_resolve", object_flow)
         self.assertIn("obmm_service_v0_object_desc_put", object_flow)
         self.assertIn("obmm_service_v0_object_desc_get", object_flow)
-        self.assertIn("qwen3_range_forward_handoff", object_flow)
+        self.assertIn("range_forward_handoff", object_flow)
         self.assertIn("mem_service_cluster_runtime_current", object_flow)
         self.assertIn("mem_service_obmm_service_v0_publish_resolve", object_flow_contract)
         self.assertIn("guest OBMM object publish", readme)
@@ -3141,7 +3141,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("mem_service_obmm_service_v0_wait_engram_history", engram_wait_flow)
         self.assertIn("mem_service_obmm_service_v0_wait_engram_state", engram_wait_flow)
         self.assertIn("mem_service_cluster_runtime_current", engram_wait_flow)
-        self.assertIn("mem_service_take_pending_qwen3_object_desc", engram_wait_flow)
+        self.assertIn("mem_service_take_pending_object_desc", engram_wait_flow)
         self.assertIn("Qwen3 engram candidate", readme)
         self.assertIn("selected-token", readme)
         self.assertIn("standalone", readme)

@@ -26,7 +26,7 @@
 1. **解耦**：把 Qwen3 从 `mem_service` core 中解耦为第一个"模型适配器"（adapter），mem_service core 不再依赖任何 Qwen3 符号。
 2. **接入 Flash**：以 DeepSeek V4 Flash 为第二个适配器，验证适配层设计能容纳与 Qwen3 差异很大的模型（MoE、压缩注意力、专家权重按需取用）。
 3. **保留既有能力**：8 节点层流水线 streaming infer（多步 decode 循环）、decode-round barrier、range handoff、KV state 对象流、对象回收等机制**行为不变**，Flash 复用同一套跨层接口。
-4. **为后续打地基**：适配层建成后，后续模型接入应是"加一个 adapter 文件 + 注册"，而非改动 core。
+4. **为后续打地基**：适配层建成后，后续模型接入应是"调用方新增模型几何 helper / model adapter，然后把 range-flow request 交给 mem_service"，而非让 mem_service 选择模型。
 
 ### 1.2 设计原则（与仓库现有架构法令对齐）
 
@@ -115,9 +115,9 @@
 
 ### 3.1 解耦层 / adapter（方向：对）
 
-适配层的落地形状是：新增 `struct mem_service_model_profile` + 一个选择器，Qwen3 成为它的第一个实现，Flash 成为第二个。
+适配层的落地形状不是在 `mem_service` 内新增 active model selector。正确边界是：`mem_service` 暴露模型无关的 range-flow request contract；`llm_infer` / 模型 runtime 作为 client 选择 Qwen3 或 Flash 几何 helper，构造 request 后传给 `mem_service`。
 
-适配层不是全新发明——它把**已存在但隐式**的 seam 显式化：
+适配层不是全新发明——它把**已存在但隐式**的边界显式化：
 - `mem_service_qwen3.h:17-33` 的 8 个几何查询函数本就是一组接口，只是现在叫 `qwen3`。
 - 13+ 处 `!= range_nodes()` 守卫本就是"节点数契约检查"，只是现在用魔数。
 - key 前缀本就是"命名空间隔离"，只是现在硬编码。
@@ -192,79 +192,63 @@ return (layer_end - layer_start) * bytes_per_token_per_layer;
 
 ### 4.2 适配层接口形状
 
-#### 4.2.1 C 侧（guest）— `struct mem_service_model_profile`
+#### 4.2.1 C 侧（guest）— `struct mem_service_obmm_range_flow_request`
 
-新头文件 `components/mem_service/mem_service_profile.h`。对标 `mem_service_qwen3_placement.h:7-14` 的 placement 结构体，但阶段 0 **只收编几何、命名空间、record policy 与对象 kind 映射**。OBMM layout 不进入阶段 0 profile，避免第一刀把行为不变重构扩大成 layout 设计。
+`components/mem_service/mem_service_profile.h` 当前不是模型 profile registry，而是 range-flow request contract。它只描述一次 OBMM range-flow 所需的模型几何结果；模型选择由调用方完成。
 
 ```c
-/* mem_service_profile.h — 模型适配器接口（草案） */
+/* mem_service_profile.h — 模型无关的 range-flow request contract */
 
-#ifndef MEM_SERVICE_PROFILE_H
-#define MEM_SERVICE_PROFILE_H
-
-#include <stdbool.h>
-#include <stdint.h>
-
-/* 几何描述符：替代当前散落的 llm_infer_qwen3_* 8 个查询函数 */
-struct mem_service_model_geometry {
-    const char *model_key;            /* mem_service_qwen3_model_key()  */
-    const char *model_id;             /* mem_service_qwen3_model_id()   */
-    uint32_t    total_layers;         /* mem_service_qwen3_layer_count()*/
-    uint32_t    range_nodes;          /* mem_service_qwen3_range_nodes()—原"8" */
-    uint64_t    hidden_range_bytes;   /* step0 handoff 字节数            */
-    uint64_t    record_retain_steps;  /* MEM_SERVICE_QWEN3_RECORD_RETAIN_STEPS=16 */
-
-    /* 按 step 算 handoff 字节数：step0 全量、step>0 decode 形状 */
-    uint64_t (*handoff_hidden_bytes)(uint64_t decode_step);
-
-    /* 按层范围算 KV 槽位字节数；阶段 0/1 保持按层预算，不传 token_count */
-    uint64_t (*kv_state_bytes)(uint32_t layer_start, uint32_t layer_end);
-
-    /* 层→节点切片（默认整除均分，可被 profile 覆盖做加权分配） */
-    int (*layer_range_for_node)(uint32_t node, uint32_t node_count,
-                                uint32_t *layer_start, uint32_t *layer_end,
-                                uint32_t *next_node);
+struct mem_service_layer_range_placement {
+    uint32_t owner_node;
+    uint32_t layer_start;
+    uint32_t layer_end;
+    uint32_t next_owner_node;
+    uint32_t layer_count;
+    bool terminal;
 };
 
-struct mem_service_model_profile {
-    const char *name;                       /* "qwen3" / "deepseek-v4-flash" */
-    const char *key_namespace;              /* 替代硬编码 "qwen3/session/" */
-    const struct mem_service_model_geometry *geometry;
-    uint32_t     obmm_kind_token_result;    /* 替代 MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT */
-    uint32_t     obmm_kind_kv_state;
-    uint32_t     obmm_kind_engram_history;
-    uint32_t     obmm_kind_engram_candidates;
-    uint32_t     obmm_kind_engram_selected;
-    uint32_t     obmm_kind_engram_state;
+typedef int (*mem_service_layer_range_for_node_fn)(uint32_t local_node,
+                                                   uint32_t cluster_node_count,
+                                                   uint32_t *layer_start_out,
+                                                   uint32_t *layer_end_out,
+                                                   uint32_t *next_node_out);
 
-    /* MoE 扩展（阶段 2 引入，阶段 0/1 保持 0/false） */
-    bool is_moe;
-    uint32_t num_experts;                   /* Flash=256, Qwen3 dense=0 */
-    uint32_t num_experts_used;              /* Flash=6  */
-    uint32_t num_experts_shared;            /* Flash=1  */
+typedef struct mem_service_record *(*mem_service_record_recycler_fn)(
+    struct mem_service *svc,
+    const char *incoming_key);
+
+struct mem_service_obmm_range_flow_request {
+    const char *model_key;
+    uint32_t total_layers;
+    uint32_t range_nodes;
+    uint64_t hidden_range_bytes;
+    uint64_t kv_state_bytes;
+    struct mem_service_layer_range_placement local_placement;
+    struct mem_service_layer_range_placement next_placement;
+    bool has_predecessor;
+    struct mem_service_layer_range_placement predecessor_placement;
+    mem_service_record_recycler_fn recycle_runtime_record;
 };
 
-/* 选择器：由启动入口解析现有 profile 后显式设置；阶段 0 不新增用户可见 env */
-void mem_service_set_active_model_profile_name(const char *name);
-
-const struct mem_service_model_profile *
-mem_service_active_model_profile(void);
-
-/* 注册表（编译期静态表，阶段 0 只有 qwen3 条目） */
-const struct mem_service_model_profile *
-mem_service_lookup_model_profile(const char *name);
-
-#endif
+int mem_service_init_obmm_range_flow_request(
+    struct mem_service_obmm_range_flow_request *req,
+    const char *model_key,
+    uint32_t total_layers,
+    uint32_t range_nodes,
+    uint64_t hidden_range_bytes,
+    uint64_t kv_state_bytes,
+    uint32_t local_node,
+    mem_service_layer_range_for_node_fn layer_range_for_node,
+    mem_service_record_recycler_fn recycle_runtime_record);
 ```
 
 **改动后的调用约定**：
-- 13+ 处 `!= mem_service_qwen3_range_nodes()` → `!= profile->geometry->range_nodes`（profile = `mem_service_active_model_profile()`）。
-- `"qwen3/session/"` → `snprintf(buf, n, "%s/session/", profile->key_namespace)`。
-- `mem_service_obmm_objects.c:45` 的名字串 → `profile->name`。
-- `mem_service_internal.h:35-37` 不再直接 include qwen3 头，改 include `mem_service_profile.h`；qwen3 头只在 qwen3 adapter 内部使用。
-- 阶段 0 不引入 `SIM_MODEL_PROFILE`；入口继续接受现有 `SIM_UAPI_W5_PROFILE` / `SIM_UAPI_W4_CHIPBACKEND_PROFILE`，内部映射到 active model profile。
-
-**阶段 0 必收项**：`mem_service_cluster_queue.c:63` 调的 `mem_service_qwen3_handoff_hidden_bytes()` 和 `:73-84` 的 token-result 描述符匹配是 core 侧文件泄漏 qwen3 符号，需通过 `profile->geometry->handoff_hidden_bytes` 和 `profile->obmm_kind_token_result` 改写。
+- `mem_service_obmm_service_v0_publish_resolve()` 接收调用方构造好的 `request`；不再读取 active model。
+- `llm_infer` 侧根据 `SIM_UAPI_W4_CHIPBACKEND_PROFILE` 选择 Qwen3 / Flash helper，构造 request。
+- `mem_service_cluster_queue` 的 descriptor matcher 接收 payload kind / payload len；Qwen3 flow 自己传 Qwen3 常量，core 不再有 `mem_service_take_pending_qwen3_*` helper。
+- `mem_service_obmm_objects` 的 record recycling 接收显式 `recycle_runtime_record` callback；core 不再通过 active profile 找回收策略。
+- `mem_service_object_contract.h` 保留 QWEN3 兼容宏，同时提供 `MEM_SERVICE_OBMM_KIND_MODEL_*` 中性别名供 core 使用。
 
 `kv_state_bytes(layer_start, layer_end)` 刻意不带 `token_count`：阶段 0/1 要与现有 `mem_service_qwen3_range_kv_state_bytes()` / `llm_infer_qwen3_range_kv_state_bytes()` 签名保持一致，并遵守第 3.4 节的"按层预算槽位"模型。只有未来明确把 KV contract 改成按 token 行数计费时，才允许扩展签名。
 
@@ -292,7 +276,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 - `qwen3_dense.rs` 的 `qwen3_dense_reference_profile()` 包装成 `Qwen3DenseProfile` 实现 trait。
 - 新增 `deepseek_v4_flash.rs` 的 `DeepseekV4FlashProfile`（阶段 1 几何，阶段 2 MoE）。
 - `sim-uapi/src/lib.rs:7455` `qwen3_dense_reference_object_service_profile()` 泛化成 `object_service_profile_for(profile)`。
-- `sim-cli/src/main.rs:1867` 的 scenario 别名解析加 `--profile deepseek-v4-flash`，但不新增第三套环境变量；CLI/profile registry 负责映射到 host/guest 的 model profile。
+- `sim-cli/src/main.rs` 的 `qwen3-decode-loop` 加 `--profile deepseek-v4-flash`，但不新增第三套环境变量；CLI/Rust decode entry 负责选择 Flash geometry smoke。
 - decode loop `lib.rs:7275` 按 profile 分派前向（dense-MLP vs MoE-aggregate）。
 - Rust 侧 `kv_state_bytes(layer_start, layer_end)` 同样不带 token count，保持与 C 侧和现有按层预算模型一致。
 
@@ -302,18 +286,17 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 | 文件 | 改动 |
 |---|---|
-| **新** `components/mem_service/mem_service_profile.{h,c}` | 定义阶段 0 profile：geometry / namespace / record policy / object kind mapping + `mem_service_active_model_profile()` + 静态注册表（qwen3 一个条目） |
-| `components/llm_infer/llm_infer.c` | 现有 8 个 `llm_infer_qwen3_*` 查询保持，供 qwen3 adapter 构造 profile 用 |
-| `components/mem_service/mem_service_qwen3.c` | 新增 `mem_service_qwen3_profile()` 返回 `const struct mem_service_model_profile*`，内部调 `llm_infer_qwen3_*` 填充；8 个几何查询函数改为从 active profile 取值（行为不变） |
+| **新/改** `components/mem_service/mem_service_profile.{h,c}` | 定义模型无关 `mem_service_obmm_range_flow_request` 与初始化 helper；不保存 active model，不做 profile registry |
+| `apps/llm_infer/llm_infer.c` | 在 client 侧新增 runtime helper：按 profile 选择 Qwen3/Flash geometry，构造 range-flow request 后调用 mem_service |
+| `components/mem_service/mem_service_qwen3.c` | 保留 Qwen3 geometry helper，新增 `mem_service_qwen3_init_obmm_range_flow_request()`；Qwen3 adapter 作为 client request builder |
 | `mem_service_internal.h:35-37` | 去掉直接 include qwen3 头，改 include `mem_service_profile.h` |
 | `mem_service_module.c:11-12` | qwen3 头移到 qwen3 adapter 私有 |
 | `mem_service_object_contract.h` | 保留 QWEN3 layout 兼容宏；新增模型中性 layout 别名（值不变），供 core 使用 |
 | `mem_service_cluster_runtime.c:5,544` | 去掉 qwen3 runtime 头依赖；`MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET` → `MEM_SERVICE_OBMM_DYNAMIC_ARENA_OFFSET` |
-| `mem_service_cluster_queue.c:63,73-84` | `mem_service_qwen3_handoff_hidden_bytes()` → `profile->geometry->handoff_hidden_bytes()`；token-result 描述符匹配用 `profile->obmm_kind_token_result` |
-| `mem_service_cluster_queue.h:10-33` | qwen3 描述符 helper 改用 profile |
-| `mem_service_cluster_observe.c:69` 等 13+ 处 | `!= range_nodes()` → `!= profile->geometry->range_nodes` |
-| `mem_service_qwen3_runtime.c:217-265` | `"qwen3/session/"` → `profile->key_namespace` |
-| `mem_service_obmm_objects.c:45-48` | 名字串 → `profile->name` |
+| `mem_service_cluster_queue.c/.h` | `mem_service_take_pending_qwen3_*` → 模型无关 matcher，payload kind/len 由调用方传入 |
+| `mem_service_cluster_observe.c` | 去掉 active model node-count guard，只保留 cluster runtime 基础合法性检查 |
+| `mem_service_obmm_object_flow.c/.h` | `publish_resolve()` 接收 `mem_service_obmm_range_flow_request`，使用 request 中的 local/next/predecessor placement |
+| `mem_service_obmm_objects.c/.h` | `mem_service_put_obmm_object_record()` 接收显式 recycler callback |
 | `crates/sim-workloads` | 不改；当前不包含 decode/profile 分派逻辑 |
 
 **阶段 0 范围**：仅解耦 guest C 侧 mem_service；Rust 侧 `sim-uapi`/`sim-models` 的 profile 抽象与 decode loop 解耦随阶段 1 一并进行，阶段 0 不动 Rust decode loop。
@@ -329,13 +312,13 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 | 文件 | 改动 |
 |---|---|
-| **新** `components/mem_service/mem_service_deepseek_v4_flash.{c,h}` | Flash adapter，提供 `mem_service_deepseek_v4_flash_profile()`：43 层 / hidden4096 / range_nodes=8 / 压缩 KV 系数 / `is_moe=true, num_experts=256` |
-| `components/mem_service/mem_service_profile.c` | 注册表加 flash 条目 |
-| `components/llm_infer/` | 新增 Flash 几何常量（对标 ds4 `DS4_SHAPE_FLASH`） |
-| **新** `crates/sim-models/src/deepseek_v4_flash.rs` | `DeepseekV4FlashProfile` 实现 trait（几何部分） |
+| **新** `components/mem_service/mem_service_deepseek_v4_flash.{c,h}` | Flash client-side geometry helper：43 层 / hidden4096 / range_nodes=8 / 压缩 KV 系数；提供 `mem_service_deepseek_v4_flash_init_obmm_range_flow_request()` |
+| `components/mem_service/mem_service_profile.c` | 不注册 flash；仅保留 neutral request 初始化 |
+| `apps/llm_infer/llm_infer.c` | 识别 `deepseek-v4-flash` / `deepseek_v4_flash`，由入口选择 Flash geometry helper |
+| **新** `crates/sim-models/src/deepseek_v4_flash.rs` | Flash geometry：43 层 base/rem 切分、KV bytes helper、MoE 元数据 |
 | `crates/sim-models/src/lib.rs` | 导出 flash profile |
-| `crates/sim-uapi/src/lib.rs` | object_service_profile / decode loop 按 profile 分派几何 |
-| `crates/sim-cli/src/main.rs` | `--profile deepseek-v4-flash` |
+| `crates/sim-uapi/src/lib.rs` | `deepseek_v4_flash_geometry_smoke_report()` 输出 layer/handoff/barrier/KV/object 证据 |
+| `crates/sim-cli/src/main.rs` | `qwen3-decode-loop --profile=deepseek-v4-flash` 打印 `flash_geometry_smoke` |
 
 #### 阶段 2（MoE + 专家权重按需取用）
 
@@ -366,7 +349,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 ### 阶段 1：Flash geometry smoke（几何适配，不建模 MoE/缓存）
 
-**目标**：Flash 作为第二个 adapter 接入，跑通 8 节点层流水线的几何 smoke。这个阶段只证明 profile registry、43 层切片、hidden/KV sizing、handoff/barrier/object profile 正确；不宣称真实 Flash infer 能力。
+**目标**：Flash 作为第二个 client-side geometry helper 接入，跑通 8 节点层流水线的几何 smoke。这个阶段只证明 request 构造、43 层切片、hidden/KV sizing、handoff/barrier/object flow contract 正确；不宣称真实 Flash infer 能力。
 
 **不包含**：MoE 路由、专家聚合、专家缓存（阶段 2）。每层前向先用占位（如单一等价 FFN 或仅数据搬运），重点验证几何 + 层切片 + KV 系数 + 多步循环。验收名必须叫 `flash-geometry-smoke`，不能叫 `flash-stream-infer-pass`。
 
@@ -416,7 +399,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 当前 OBMM 布局（`object_contract.h:10-44`）是 Qwen3 固定的，含 tier0-3 KV block 字节数等。阶段 0 的决策是：
 
-- 不把 layout 放进 `struct mem_service_model_profile`。
+- 不把 layout 放进 `struct mem_service_obmm_range_flow_request`；request 只承载本次 range-flow 所需的几何结果。
 - `mem_service_object_contract.h` 暂时保留 `MEM_SERVICE_OBMM_QWEN3_*` 兼容宏，因此它不纳入阶段 0 的 qwen3-free core grep 集合。
 - 在 `mem_service_object_contract.h` 内新增模型中性的 `MEM_SERVICE_OBMM_*` alias，值保持不变。
 - 所有 core `.c/.h` 文件迁移到中性 alias；例如 `mem_service_cluster_runtime.c:544` 使用 `MEM_SERVICE_OBMM_DYNAMIC_ARENA_OFFSET`，不再直接引用 `MEM_SERVICE_OBMM_QWEN3_DYNAMIC_ARENA_OFFSET`。

@@ -2,29 +2,32 @@
 #define MEM_SERVICE_DEEPSEEK_V4_FLASH_H
 
 /*
- * DeepSeek V4 Flash model adapter for mem_service.
- *
- * Stage 1 scope: geometry only (layer count, hidden size, range nodes, MoE
- * expert counts). Real MoE routing / expert aggregation / expert cache is
- * stage 2. Values mirror DwarfStar (ds4) DS4_SHAPE_FLASH
- * (/Volumes/repos/ds4/ds4.c:177-212), the algorithmic reference.
- *
- * Flash is a Mixture-of-Experts transformer: 43 layers, hidden 4096, 256
- * routed experts (top-6 active) + 1 shared expert, compressed sparse
- * attention (128-token raw sliding window, ratio-4 / ratio-128 compressed
- * layers). For the pipeline-parallel sharding modeled here only the layer
- * count and range node count matter; per-layer KV coefficients differ by
- * layer type but stay constants (see the plan section 3.4).
+ * DeepSeek V4 Flash geometry helper for clients that want to build a
+ * mem_service OBMM range-flow request. This is not a mem_service global model
+ * selector; callers compute the request and pass it to the infrastructure.
  */
+
+#include <stdint.h>
 
 #include "mem_service_profile.h"
 
-/*
- * Flash profile accessor. Bundles geometry queries, object-kind map, and
- * placement callbacks into a const struct registered in the profile table.
- * Stage 1 reuses the same OBMM object kinds as qwen3 (the layout is shared
- * until stage 1's layout-split predecessor); only the geometry differs.
- */
-const struct mem_service_model_profile *mem_service_deepseek_v4_flash_profile(void);
+uint32_t mem_service_deepseek_v4_flash_layer_count(void);
+uint32_t mem_service_deepseek_v4_flash_range_nodes(void);
+uint64_t mem_service_deepseek_v4_flash_hidden_range_bytes(void);
+uint64_t mem_service_deepseek_v4_flash_decode_hidden_bytes(void);
+uint64_t mem_service_deepseek_v4_flash_handoff_hidden_bytes(uint64_t decode_step);
+const char *mem_service_deepseek_v4_flash_model_key(void);
+uint64_t mem_service_deepseek_v4_flash_range_kv_state_bytes(uint32_t layer_start,
+                                                            uint32_t layer_end);
+int mem_service_deepseek_v4_flash_layer_range_for_node(
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint32_t *layer_start_out,
+    uint32_t *layer_end_out,
+    uint32_t *next_node_out);
+int mem_service_deepseek_v4_flash_init_obmm_range_flow_request(
+    struct mem_service_obmm_range_flow_request *req,
+    uint32_t local_node,
+    uint32_t cluster_node_count);
 
 #endif

@@ -7,30 +7,36 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-bool mem_service_qwen3_token_result_desc_matches(const struct obmm_desc *desc,
-                                                 uint16_t epoch);
-bool mem_service_qwen3_object_desc_matches(const struct obmm_desc *desc,
+bool mem_service_token_result_desc_matches(const struct obmm_desc *desc,
                                            uint16_t epoch,
                                            uint32_t payload_kind,
-                                           uint64_t min_payload_len,
-                                           uint64_t max_payload_len);
-bool mem_service_qwen3_object_desc_kind_len_matches(const struct obmm_desc *desc,
-                                                    uint32_t payload_kind,
-                                                    uint64_t min_payload_len,
-                                                    uint64_t max_payload_len);
+                                           uint64_t payload_len);
+bool mem_service_object_desc_matches(const struct obmm_desc *desc,
+                                     uint16_t epoch,
+                                     uint32_t payload_kind,
+                                     uint64_t min_payload_len,
+                                     uint64_t max_payload_len);
+bool mem_service_object_desc_kind_len_matches(const struct obmm_desc *desc,
+                                              uint32_t payload_kind,
+                                              uint64_t min_payload_len,
+                                              uint64_t max_payload_len);
 bool mem_service_runtime_range_input_desc_matches(const struct obmm_desc *desc,
+                                                  uint64_t expected_payload_len,
                                                   uint16_t epoch);
 bool mem_service_take_pending_runtime_range_input_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
+    uint64_t expected_payload_len,
     uint16_t epoch,
     struct obmm_desc *desc_out);
-bool mem_service_take_pending_qwen3_token_result_desc(
+bool mem_service_take_pending_token_result_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
+    uint32_t payload_kind,
+    uint64_t payload_len,
     struct obmm_desc *desc_out);
-bool mem_service_take_pending_qwen3_object_desc(
+bool mem_service_take_pending_object_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint16_t epoch,
@@ -38,7 +44,7 @@ bool mem_service_take_pending_qwen3_object_desc(
     uint64_t min_payload_len,
     uint64_t max_payload_len,
     struct obmm_desc *desc_out);
-bool mem_service_take_pending_qwen3_object_kind_len_desc(
+bool mem_service_take_pending_object_kind_len_desc(
     struct mem_service_cluster_runtime *rt,
     int owner_idx,
     uint32_t payload_kind,

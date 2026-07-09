@@ -668,8 +668,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         )
         self.assertNotIn("local_decode_node == 0U ||", guest_source)
         self.assertNotIn("local_decode_node + 1U == cluster_node_count ||", guest_source)
-        self.assertIn("mem_service_take_pending_qwen3_object_desc", db_service_source)
-        self.assertIn("mem_service_take_pending_qwen3_object_kind_len_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_object_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_object_kind_len_desc", db_service_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
         self.assertIn(
             "mem_service_obmm_service_v0_publish_shortpath_terminal_token_result",
@@ -777,7 +777,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             db_service_source,
         )
         self.assertIn("broadcast_targets=%u", db_service_source)
-        self.assertIn("mem_service_take_pending_qwen3_token_result_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_token_result_desc", db_service_source)
         self.assertIn("receive=descriptor", db_service_source)
         self.assertIn("target=decode_round_scheduler receive=descriptor", db_service_source)
         self.assertIn(

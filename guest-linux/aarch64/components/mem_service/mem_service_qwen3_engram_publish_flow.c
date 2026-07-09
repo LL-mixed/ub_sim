@@ -118,6 +118,7 @@ int mem_service_obmm_service_v0_publish_engram_candidates(struct mem_service *sv
                                       candidates_key,
                                       sizeof(candidates_key));
     if (mem_service_put_obmm_object_record(svc,
+                                     mem_service_recycle_qwen3_runtime_record,
                                      MEM_SERVICE_RECORD_QWEN3_ENGRAM_CANDIDATES,
                                      candidates_key,
                                      local_node,
@@ -290,6 +291,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
     mem_service_qwen3_engram_state_key(decode_step, state_key, sizeof(state_key));
 
     if (mem_service_put_obmm_object_record(svc,
+                                     mem_service_recycle_qwen3_runtime_record,
                                      MEM_SERVICE_RECORD_QWEN3_ENGRAM_HISTORY,
                                      history_key,
                                      local_node,
@@ -299,6 +301,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
                                      history_checksum,
                                      &records[0]) != 0 ||
         mem_service_put_obmm_object_record(svc,
+                                     mem_service_recycle_qwen3_runtime_record,
                                      MEM_SERVICE_RECORD_QWEN3_ENGRAM_SELECTED,
                                      selected_key,
                                      local_node,
@@ -308,6 +311,7 @@ int mem_service_obmm_service_v0_publish_engram_step(struct mem_service *svc,
                                      selected_checksum,
                                      &records[1]) != 0 ||
         mem_service_put_obmm_object_record(svc,
+                                     mem_service_recycle_qwen3_runtime_record,
                                      MEM_SERVICE_RECORD_QWEN3_ENGRAM_STATE,
                                      state_key,
                                      local_node,

@@ -295,10 +295,13 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                  ++owner_idx) {
                 struct obmm_desc rx;
 
-                if (mem_service_take_pending_qwen3_token_result_desc(rt,
-                                                               owner_idx,
-                                                               expected_epoch,
-                                                               &token_desc)) {
+                if (mem_service_take_pending_token_result_desc(
+                        rt,
+                        owner_idx,
+                        expected_epoch,
+                        MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+                        MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES,
+                        &token_desc)) {
                     source_node = (uint32_t)owner_idx;
                     token_desc_found = true;
                     break;
@@ -308,8 +311,11 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                     continue;
                 }
                 while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
-                    if (mem_service_qwen3_token_result_desc_matches(&rx,
-                                                              expected_epoch)) {
+                    if (mem_service_token_result_desc_matches(
+                            &rx,
+                            expected_epoch,
+                            MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+                            MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES)) {
                         token_desc = rx;
                         source_node = (uint32_t)owner_idx;
                         token_desc_found = true;
@@ -528,10 +534,12 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                      ++owner_idx) {
                     struct obmm_desc rx;
 
-                    if (mem_service_take_pending_qwen3_token_result_desc(
+                    if (mem_service_take_pending_token_result_desc(
                             rt,
                             owner_idx,
                             expected_epoch,
+                            MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+                            MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES,
                             &terminal_desc)) {
                         terminal_source_node = (uint32_t)owner_idx;
                         terminal_desc_found = true;
@@ -542,9 +550,11 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                         continue;
                     }
                     while (obmm_spsc_pop(rt->ingress_queues[owner_idx], &rx) == 0) {
-                        if (mem_service_qwen3_token_result_desc_matches(
+                        if (mem_service_token_result_desc_matches(
                                 &rx,
-                                expected_epoch)) {
+                                expected_epoch,
+                                MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+                                MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES)) {
                             terminal_desc = rx;
                             terminal_source_node = (uint32_t)owner_idx;
                             terminal_desc_found = true;
@@ -809,12 +819,14 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         }
         if (mem_service_take_pending_runtime_range_input_desc(rt,
                                                         (int)source_node,
+                                                        hidden_range_bytes,
                                                         expected_epoch,
                                                         &handoff_desc)) {
             break;
         }
         while (obmm_spsc_pop(rt->ingress_queues[source_node], &rx) == 0) {
             if (mem_service_runtime_range_input_desc_matches(&rx,
+                                                       hidden_range_bytes,
                                                        expected_epoch)) {
                 handoff_desc = rx;
                 break;
@@ -827,6 +839,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         mem_service_cpu_relax_wait(&relax_attempt);
     }
     if (!mem_service_runtime_range_input_desc_matches(&handoff_desc,
+                                                hidden_range_bytes,
                                                 expected_epoch)) {
         printf("[mem_service] gap qwen3_range_forward=runtime_ingress_desc_wait_failed local=node%u source=node%u step=%" PRIu64 " attempts=%u\n",
                local_node + 1U,

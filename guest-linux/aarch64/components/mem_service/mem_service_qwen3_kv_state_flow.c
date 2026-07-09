@@ -394,6 +394,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_kv_state(
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
     if (mem_service_put_obmm_object_record(svc,
+                                     mem_service_recycle_qwen3_runtime_record,
                                      MEM_SERVICE_RECORD_KVCACHE_OBJECT,
                                      local_kv_state_key,
                                      local_node,

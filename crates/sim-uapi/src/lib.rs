@@ -581,6 +581,44 @@ pub struct Qwen3DenseReferenceRangeForwardWorkerReport {
     pub aggregate_checksum: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeepseekV4FlashGeometrySmokeReport {
+    pub ready: bool,
+    pub node_count: u64,
+    pub layer_count: u64,
+    pub hidden_range_bytes: u64,
+    pub decode_hidden_bytes: u64,
+    pub total_kv_state_bytes: u64,
+    pub weight_object_count: u64,
+    pub kv_object_count: u64,
+    pub hidden_object_count: u64,
+    pub object_desc_put_count: u64,
+    pub object_desc_get_count: u64,
+    pub barrier_count: u64,
+    pub handoff_count: u64,
+    pub aggregate_checksum: u64,
+    pub nodes: Vec<DeepseekV4FlashGeometrySmokeNodeReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeepseekV4FlashGeometrySmokeNodeReport {
+    pub node_id: u64,
+    pub layer_start: u64,
+    pub layer_end: u64,
+    pub layer_count: u64,
+    pub next_node: u64,
+    pub terminal: bool,
+    pub hidden_input_bytes: u64,
+    pub hidden_output_bytes: u64,
+    pub kv_state_bytes: u64,
+    pub object_count: u64,
+    pub object_desc_put_count: u64,
+    pub object_desc_get_count: u64,
+    pub barrier_count: u64,
+    pub handoff_ready: bool,
+    pub node_checksum: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Qwen3DenseReferenceObjectServiceReport {
     pub ready: bool,
@@ -6916,13 +6954,17 @@ pub fn qwen3_dense_reference_decode_loop_report_with_prompt(
 /// existing dense Qwen3 decode loop unchanged. "deepseek-v4-flash" runs the
 /// Flash geometry smoke (43-layer / 8-node sharding, hidden/KV sizing, object
 /// service profile) — NOT real Flash inference (that needs stage 2 MoE).
+fn is_deepseek_v4_flash_profile_name(profile: &str) -> bool {
+    matches!(profile, "deepseek-v4-flash" | "deepseek_v4_flash")
+}
+
 pub fn model_decode_loop_report(
     topology: &SimTopology,
     step_count: usize,
     profile: &str,
     prompt: Option<&str>,
 ) -> Result<Qwen3DenseReferenceDecodeLoopReport, String> {
-    if profile == "deepseek-v4-flash" {
+    if is_deepseek_v4_flash_profile_name(profile) {
         // Validate Flash geometry before running the structural decode path.
         deepseek_v4_flash_geometry_smoke_check(topology)?;
     }
@@ -6940,8 +6982,13 @@ pub fn model_decode_loop_report(
 /// 43 layers sharded across 8 nodes with a balanced spread (max diff 1), and
 /// that the topology has enough hosts. This is the verified stage-1 output;
 /// real per-layer MoE forward is stage 2.
-pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<(), String> {
-    use deepseek_v4_flash::{deepseek_v4_flash_layers_per_node, DEEPSEEK_V4_FLASH_PROFILE};
+pub fn deepseek_v4_flash_geometry_smoke_report(
+    topology: &SimTopology,
+) -> Result<DeepseekV4FlashGeometrySmokeReport, String> {
+    use deepseek_v4_flash::{
+        deepseek_v4_flash_layer_range_for_node, deepseek_v4_flash_layers_per_node,
+        deepseek_v4_flash_range_kv_state_bytes, DEEPSEEK_V4_FLASH_PROFILE,
+    };
 
     let tp_nodes = DEEPSEEK_V4_FLASH_PROFILE.tp_nodes as usize;
     if topology.hosts.len() < tp_nodes {
@@ -6966,6 +7013,135 @@ pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<
             "flash geometry smoke: layer spread unbalanced (min={} max={})",
             min_layers, max_layers
         ));
+    }
+    let hidden_range_bytes =
+        DEEPSEEK_V4_FLASH_PROFILE.hidden_size * DEEPSEEK_V4_FLASH_PROFILE.prefill_tokens * 2;
+    let decode_hidden_bytes =
+        DEEPSEEK_V4_FLASH_PROFILE.hidden_size * DEEPSEEK_V4_FLASH_PROFILE.decode_tokens * 2;
+    let mut nodes = Vec::with_capacity(tp_nodes);
+    let mut expected_start = 0u64;
+    for node_id in 0..DEEPSEEK_V4_FLASH_PROFILE.tp_nodes {
+        let (layer_start, layer_end) = deepseek_v4_flash_layer_range_for_node(node_id)
+            .ok_or_else(|| format!("flash geometry smoke: node range missing node={node_id}"))?;
+        if layer_start != expected_start {
+            return Err(format!(
+                "flash geometry smoke: non-contiguous range node={node_id} start={layer_start} expected={expected_start}"
+            ));
+        }
+        expected_start = layer_end;
+        let layer_count = layer_end - layer_start;
+        let next_node = (node_id + 1) % DEEPSEEK_V4_FLASH_PROFILE.tp_nodes;
+        let terminal = next_node == 0;
+        let kv_state_bytes = deepseek_v4_flash_range_kv_state_bytes(layer_start, layer_end)
+            .ok_or_else(|| {
+                format!(
+                    "flash geometry smoke: kv range invalid node={node_id} layers=[{layer_start},{layer_end})"
+                )
+            })?;
+        let object_count = 4;
+        let object_desc_put_count = 4;
+        let object_desc_get_count = 4;
+        let barrier_count = 1;
+        let handoff_ready = !terminal;
+        let node_checksum = checksum_words(&[
+            node_id,
+            layer_start,
+            layer_end,
+            layer_count,
+            next_node,
+            u64::from(terminal),
+            hidden_range_bytes,
+            kv_state_bytes,
+            object_count,
+            object_desc_put_count,
+            object_desc_get_count,
+            barrier_count,
+            u64::from(handoff_ready),
+        ]);
+        nodes.push(DeepseekV4FlashGeometrySmokeNodeReport {
+            node_id,
+            layer_start,
+            layer_end,
+            layer_count,
+            next_node,
+            terminal,
+            hidden_input_bytes: hidden_range_bytes,
+            hidden_output_bytes: hidden_range_bytes,
+            kv_state_bytes,
+            object_count,
+            object_desc_put_count,
+            object_desc_get_count,
+            barrier_count,
+            handoff_ready,
+            node_checksum,
+        });
+    }
+    if expected_start != DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "flash geometry smoke: last range ends at {expected_start}, expected {}",
+            DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+        ));
+    }
+    let total_kv_state_bytes = nodes.iter().map(|node| node.kv_state_bytes).sum();
+    let weight_object_count = nodes.len() as u64;
+    let kv_object_count = nodes.len() as u64;
+    let hidden_object_count = nodes.len() as u64 * 2;
+    let object_desc_put_count = nodes
+        .iter()
+        .map(|node| node.object_desc_put_count)
+        .sum::<u64>();
+    let object_desc_get_count = nodes
+        .iter()
+        .map(|node| node.object_desc_get_count)
+        .sum::<u64>();
+    let barrier_count = nodes.iter().map(|node| node.barrier_count).sum::<u64>();
+    let handoff_count = nodes.iter().filter(|node| node.handoff_ready).count() as u64;
+    let mut checksum_words_buf = vec![
+        DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        DEEPSEEK_V4_FLASH_PROFILE.tp_nodes,
+        hidden_range_bytes,
+        decode_hidden_bytes,
+        total_kv_state_bytes,
+        weight_object_count,
+        kv_object_count,
+        hidden_object_count,
+        object_desc_put_count,
+        object_desc_get_count,
+        barrier_count,
+        handoff_count,
+    ];
+    checksum_words_buf.extend(nodes.iter().map(|node| node.node_checksum));
+    let aggregate_checksum = checksum_words(&checksum_words_buf);
+    let ready = nodes.len() == tp_nodes
+        && expected_start == DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+        && handoff_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes.saturating_sub(1)
+        && barrier_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes
+        && weight_object_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes
+        && kv_object_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes
+        && hidden_object_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes * 2;
+    Ok(DeepseekV4FlashGeometrySmokeReport {
+        ready,
+        node_count: nodes.len() as u64,
+        layer_count: DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        hidden_range_bytes,
+        decode_hidden_bytes,
+        total_kv_state_bytes,
+        weight_object_count,
+        kv_object_count,
+        hidden_object_count,
+        object_desc_put_count,
+        object_desc_get_count,
+        barrier_count,
+        handoff_count,
+        aggregate_checksum,
+        nodes,
+    })
+}
+
+pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<(), String> {
+    let report = deepseek_v4_flash_geometry_smoke_report(topology)?;
+    if !report.ready {
+        return Err("flash geometry smoke: report not ready".to_string());
     }
     Ok(())
 }
@@ -7600,14 +7776,13 @@ fn object_service_profile_for(profile: &str) -> LingquObjectServiceProfile {
     let mut p = LingquObjectServiceProfile::default();
     p.queue_depth = 512;
     p.obmm_pool.queue_depth = 4096;
-    p.obmm_pool.pool_bytes = match profile {
-        "deepseek-v4-flash" => {
-            // Flash has 256 routed experts per layer fetched on demand; give
-            // the pool headroom for a working set of expert weight tiles in
-            // addition to the hidden/KV handoff objects.
-            4096 * 1024 * 1024
-        }
-        _ => 1400 * 1024 * 1024,
+    p.obmm_pool.pool_bytes = if is_deepseek_v4_flash_profile_name(profile) {
+        // Flash has 256 routed experts per layer fetched on demand; give
+        // the pool headroom for a working set of expert weight tiles in
+        // addition to the hidden/KV handoff objects.
+        4096 * 1024 * 1024
+    } else {
+        1400 * 1024 * 1024
     };
     p
 }
@@ -24514,6 +24689,46 @@ mod tests {
         let topology = eight_host_topology();
         super::deepseek_v4_flash_geometry_smoke_check(&topology)
             .expect("flash geometry smoke must pass with >=8 hosts");
+    }
+
+    #[test]
+    fn flash_geometry_smoke_report_covers_w5_range_flow_contract() {
+        let topology = eight_host_topology();
+        let report = super::deepseek_v4_flash_geometry_smoke_report(&topology)
+            .expect("flash geometry smoke report");
+        let ranges: Vec<(u64, u64, u64)> = report
+            .nodes
+            .iter()
+            .map(|node| (node.layer_start, node.layer_end, node.layer_count))
+            .collect();
+
+        assert!(report.ready);
+        assert_eq!(report.node_count, 8);
+        assert_eq!(report.layer_count, 43);
+        assert_eq!(
+            ranges,
+            vec![
+                (0, 6, 6),
+                (6, 12, 6),
+                (12, 18, 6),
+                (18, 23, 5),
+                (23, 28, 5),
+                (28, 33, 5),
+                (33, 38, 5),
+                (38, 43, 5),
+            ]
+        );
+        assert_eq!(report.handoff_count, 7);
+        assert_eq!(report.barrier_count, 8);
+        assert_eq!(report.weight_object_count, 8);
+        assert_eq!(report.kv_object_count, 8);
+        assert_eq!(report.hidden_object_count, 16);
+        assert_eq!(report.object_desc_put_count, 32);
+        assert_eq!(report.object_desc_get_count, 32);
+        assert!(report.total_kv_state_bytes > 0);
+        assert!(report.aggregate_checksum != 0);
+        assert!(report.nodes[7].terminal);
+        assert!(!report.nodes[7].handoff_ready);
     }
 
     #[test]

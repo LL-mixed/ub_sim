@@ -66,8 +66,7 @@ int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     uint32_t i;
 
-    if (cluster_node_count != mem_service_model_range_nodes() ||
-        local_node >= cluster_node_count) {
+    if (cluster_node_count == 0 || local_node >= cluster_node_count) {
         return -1;
     }
     if (mem_service_cluster_runtime_init(rt) != 0) {

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-DeepSeek V4 Flash model adapter geometry contract tests (stage 1).
+DeepSeek V4 Flash geometry contract tests (stage 1).
 
-These tests validate that the Flash adapter registered in the mem_service
-profile registry exposes the geometry expected by the plan: 43 layers over 8
-pipeline nodes, MoE expert counts, compressed-attention dimensions. They read
-the adapter source/header directly (the same pattern as
-test_mem_service_record_recycling); no QEMU/guest run is required.
+These tests validate that the Flash client-side helper exposes the geometry
+expected by the plan: 43 layers over 8 pipeline nodes, compressed-attention
+dimensions, and an OBMM range-flow request builder. mem_service is
+infrastructure and must not keep a global active model selector.
 
 Stage 1 scope is geometry only. Real MoE routing / expert aggregation /
 expert cache is stage 2 and is intentionally not asserted here.
@@ -34,20 +33,21 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertTrue(FLASH_H.exists())
         self.assertTrue(FLASH_C.exists())
 
-    def test_flash_profile_accessor_is_declared_and_defined(self):
+    def test_flash_range_flow_request_helper_is_declared_and_defined(self):
         self.assertIn(
-            "mem_service_deepseek_v4_flash_profile", self.header
+            "mem_service_deepseek_v4_flash_init_obmm_range_flow_request", self.header
         )
         self.assertIn(
-            "mem_service_deepseek_v4_flash_profile(void)", self.source
+            "mem_service_deepseek_v4_flash_init_obmm_range_flow_request", self.source
         )
 
-    def test_flash_profile_is_registered_in_profile_table(self):
-        # profile.c must pull in the Flash header and register the accessor.
-        self.assertIn('#include "mem_service_deepseek_v4_flash.h"', self.profile_source)
-        self.assertIn(
-            "mem_service_deepseek_v4_flash_profile()", self.profile_source
-        )
+    def test_mem_service_profile_has_no_flash_registry(self):
+        # mem_service_profile.c is the neutral request initializer; it must not
+        # include or register model-specific helpers.
+        self.assertNotIn('#include "mem_service_deepseek_v4_flash.h"', self.profile_source)
+        self.assertNotIn("mem_service_deepseek_v4_flash_profile", self.profile_source)
+        self.assertNotIn("mem_service_lookup_model_profile", self.profile_header)
+        self.assertNotIn("mem_service_active_model_profile", self.profile_header)
 
     def test_flash_geometry_constants_match_ds4_reference(self):
         # Mirror ds4 DS4_SHAPE_FLASH (ds4.c:177-212).
@@ -58,9 +58,10 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("#define DEEPSEEK_V4_FLASH_HEAD_DIM 512ULL", self.source)
         self.assertIn('#define DEEPSEEK_V4_FLASH_MODEL_KEY "deepseek-v4-flash"', self.source)
 
-    def test_flash_profile_name_and_namespace(self):
-        self.assertIn('.name = "deepseek-v4-flash"', self.source)
-        self.assertIn('.key_namespace = "deepseek-v4-flash"', self.source)
+    def test_flash_model_key_is_client_supplied(self):
+        self.assertIn("mem_service_deepseek_v4_flash_model_key", self.header)
+        self.assertIn("mem_service_deepseek_v4_flash_model_key()", self.source)
+        self.assertIn("mem_service_init_obmm_range_flow_request", self.source)
 
     def test_flash_layer_range_balances_43_over_8_nodes(self):
         # The C adapter uses base = 43/8 = 5, rem = 3, so nodes 0-2 get 6
@@ -76,22 +77,17 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         # step>0 = decode range (hidden_size * decode_tokens * 2).
         self.assertIn("DEEPSEEK_V4_FLASH_PREFILL_TOKENS 128ULL", self.source)
         self.assertIn("DEEPSEEK_V4_FLASH_DECODE_TOKENS 1ULL", self.source)
-        self.assertIn("flash_decode_hidden_bytes()", self.source)
+        self.assertIn("mem_service_deepseek_v4_flash_decode_hidden_bytes()", self.source)
 
-    def test_flash_reuses_shared_obmm_kinds_in_stage1(self):
-        # Stage 1 shares the qwen3 OBMM layout/kinds; stage 2 will split.
-        self.assertIn("MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT", self.source)
-        self.assertIn("MEM_SERVICE_OBMM_KIND_QWEN3_KV_STATE", self.source)
+    def test_flash_request_uses_neutral_mem_service_contract(self):
+        self.assertIn("struct mem_service_obmm_range_flow_request", self.header)
+        self.assertIn("mem_service_init_obmm_range_flow_request", self.source)
+        self.assertIn("NULL);", self.source)
 
-    def test_flash_reuses_placement_service(self):
-        # Flash reuses the shared placement record mechanism (model-neutral
-        # struct) via wrappers that cast the neutral struct name.
-        self.assertIn("flash_publish_layer_range_placements", self.source)
-        self.assertIn("flash_read_layer_range_placement", self.source)
-        self.assertIn("flash_find_layer_range_predecessor", self.source)
-        self.assertIn(
-            "mem_service_publish_qwen3_layer_range_placements", self.source
-        )
+    def test_flash_does_not_reuse_qwen3_placement_service(self):
+        self.assertNotIn("mem_service_publish_qwen3_layer_range_placements", self.source)
+        self.assertNotIn("flash_publish_layer_range_placements", self.source)
+        self.assertIn("mem_service_deepseek_v4_flash_layer_range_for_node", self.source)
 
 
 if __name__ == "__main__":

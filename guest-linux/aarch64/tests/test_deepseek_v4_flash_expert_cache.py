@@ -83,6 +83,7 @@ class LlmInferMoeDispatchTest(unittest.TestCase):
     def test_profile_detection_helpers_exist(self):
         self.assertIn("is_deepseek_v4_flash_profile", self.source)
         self.assertIn("is_moe_profile", self.source)
+        self.assertIn('strcmp(profile, "deepseek-v4-flash")', self.source)
         self.assertIn('strcmp(profile, "deepseek_v4_flash")', self.source)
 
     def test_moe_dispatch_records_route_and_fetches_experts(self):
@@ -99,9 +100,21 @@ class LlmInferMoeDispatchTest(unittest.TestCase):
         self.assertIn("moe_expert_cache_summary", self.source)
 
     def test_layer_range_resolution_is_profile_aware(self):
-        # 8-node dispatch uses the model-neutral layer-range resolver so Flash
-        # (43 layers) is supported, not the qwen3-specific one.
-        self.assertIn("mem_service_model_layer_range_for_node", self.source)
+        # 8-node dispatch resolves model geometry in llm_infer, then uses
+        # mem_service only as the object transport/cache infrastructure.
+        self.assertIn("w4_runtime_layer_range_for_node", self.source)
+        self.assertIn("mem_service_deepseek_v4_flash_layer_range_for_node", self.source)
+        self.assertNotIn("mem_service_model_layer_range_for_node", self.source)
+
+    def test_guest_obmm_range_flow_request_is_client_built(self):
+        self.assertIn("w4_runtime_init_obmm_range_flow_request", self.source)
+        self.assertIn("mem_service_deepseek_v4_flash_init_obmm_range_flow_request", self.source)
+        self.assertIn("struct mem_service_obmm_range_flow_request range_request", self.source)
+        self.assertIn(
+            "mem_service_obmm_service_v0_publish_resolve(&svc,\n"
+            "                                                    &range_request,",
+            self.source,
+        )
 
     def test_dispatch_guards_on_moe_profile(self):
         # The dense path must not run MoE expert routing.

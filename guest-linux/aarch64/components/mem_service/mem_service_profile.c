@@ -1,183 +1,112 @@
 #include "mem_service_profile.h"
 
-#include <stddef.h>
 #include <string.h>
 
-#include "mem_service.h"
-#include "mem_service_deepseek_v4_flash.h"
-#include "mem_service_qwen3.h"
-#include "mem_service_record_table.h"
-
-/*
- * Adapters expose their profile through a typed accessor. qwen3 (stage 0)
- * and deepseek-v4-flash (stage 1) are registered here. Lookup is a linear
- * scan over a small static table.
- */
-const struct mem_service_model_profile *mem_service_qwen3_profile(void);
-
-static const struct mem_service_model_profile *const *profile_table(size_t *count_out)
+static int mem_service_copy_layer_range(struct mem_service_layer_range_placement *out,
+                                        uint32_t owner_node,
+                                        uint32_t layer_start,
+                                        uint32_t layer_end,
+                                        uint32_t next_owner_node,
+                                        uint32_t range_nodes)
 {
-    static const struct mem_service_model_profile *table[2];
-    static bool built;
-    if (!built) {
-        table[0] = mem_service_qwen3_profile();
-        table[1] = mem_service_deepseek_v4_flash_profile();
-        built = true;
+    if (!out || layer_end <= layer_start || owner_node >= range_nodes ||
+        next_owner_node >= range_nodes) {
+        return -1;
     }
-    *count_out = (table[0] ? 1U : 0U) + (table[1] ? 1U : 0U);
-    return table;
+    memset(out, 0, sizeof(*out));
+    out->owner_node = owner_node;
+    out->layer_start = layer_start;
+    out->layer_end = layer_end;
+    out->next_owner_node = next_owner_node;
+    out->layer_count = layer_end - layer_start;
+    out->terminal = next_owner_node == owner_node || next_owner_node == 0;
+    return 0;
 }
-
-static const struct mem_service_model_profile *g_active_profile;
-
-const struct mem_service_model_profile *
-mem_service_lookup_model_profile(const char *name)
+int mem_service_init_obmm_range_flow_request(
+    struct mem_service_obmm_range_flow_request *req,
+    const char *model_key,
+    uint32_t total_layers,
+    uint32_t range_nodes,
+    uint64_t hidden_range_bytes,
+    uint64_t kv_state_bytes,
+    uint32_t local_node,
+    mem_service_layer_range_for_node_fn layer_range_for_node,
+    mem_service_record_recycler_fn recycle_runtime_record)
 {
-    size_t count;
-    size_t i;
-    const struct mem_service_model_profile *const *table = profile_table(&count);
+    uint32_t local_start = 0;
+    uint32_t local_end = 0;
+    uint32_t next_node = 0;
+    uint32_t remote_start = 0;
+    uint32_t remote_end = 0;
+    uint32_t after_remote = 0;
+    bool has_predecessor = false;
+    struct mem_service_layer_range_placement predecessor;
 
-    if (!name) {
-        return NULL;
+    if (!req || !model_key || model_key[0] == '\0' || total_layers == 0 ||
+        range_nodes == 0 || local_node >= range_nodes || hidden_range_bytes == 0 ||
+        !layer_range_for_node) {
+        return -1;
     }
-    for (i = 0; i < count; ++i) {
-        if (table[i] && strcmp(table[i]->name, name) == 0) {
-            return table[i];
+    if (layer_range_for_node(local_node,
+                             range_nodes,
+                             &local_start,
+                             &local_end,
+                             &next_node) != 0 ||
+        layer_range_for_node(next_node,
+                             range_nodes,
+                             &remote_start,
+                             &remote_end,
+                             &after_remote) != 0) {
+        return -1;
+    }
+    if (local_end > total_layers || remote_end > total_layers ||
+        mem_service_copy_layer_range(&req->local_placement,
+                                     local_node,
+                                     local_start,
+                                     local_end,
+                                     next_node,
+                                     range_nodes) != 0 ||
+        mem_service_copy_layer_range(&req->next_placement,
+                                     next_node,
+                                     remote_start,
+                                     remote_end,
+                                     after_remote,
+                                     range_nodes) != 0) {
+        return -1;
+    }
+
+    memset(&predecessor, 0, sizeof(predecessor));
+    for (uint32_t node = 0; node < range_nodes; ++node) {
+        uint32_t start = 0;
+        uint32_t end = 0;
+        uint32_t next = 0;
+
+        if (node == local_node ||
+            layer_range_for_node(node, range_nodes, &start, &end, &next) != 0) {
+            continue;
+        }
+        if (next == local_node && end == local_start &&
+            mem_service_copy_layer_range(&predecessor,
+                                         node,
+                                         start,
+                                         end,
+                                         next,
+                                         range_nodes) == 0) {
+            has_predecessor = true;
+            break;
         }
     }
-    return NULL;
-}
-
-void mem_service_set_active_model_profile_name(const char *name)
-{
-    const struct mem_service_model_profile *found;
-    size_t count;
-    const struct mem_service_model_profile *const *table = profile_table(&count);
-
-    if (!name || name[0] == '\0' || !count) {
-        g_active_profile = count ? table[0] : NULL;
-        return;
+    if (local_start != 0 && !has_predecessor) {
+        return -1;
     }
-    found = mem_service_lookup_model_profile(name);
-    g_active_profile = found ? found : (count ? table[0] : NULL);
-}
 
-const struct mem_service_model_profile *
-mem_service_active_model_profile(void)
-{
-    size_t count;
-    const struct mem_service_model_profile *const *table = profile_table(&count);
-
-    if (!g_active_profile) {
-        g_active_profile = count ? table[0] : NULL;
-    }
-    return g_active_profile;
-}
-
-uint32_t mem_service_model_layer_count(void)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->layer_count ? p->layer_count() : 0U;
-}
-
-uint32_t mem_service_model_range_nodes(void)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->range_nodes ? p->range_nodes() : 0U;
-}
-
-uint64_t mem_service_model_hidden_range_bytes(void)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->hidden_range_bytes ? p->hidden_range_bytes() : 0ULL;
-}
-
-uint64_t mem_service_model_handoff_hidden_bytes(uint64_t decode_step)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->handoff_hidden_bytes ? p->handoff_hidden_bytes(decode_step) : 0ULL;
-}
-
-uint64_t mem_service_model_range_kv_state_bytes(uint32_t layer_start,
-                                                uint32_t layer_end,
-                                                uint64_t token_count)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->range_kv_state_bytes
-        ? p->range_kv_state_bytes(layer_start, layer_end, token_count)
-        : 0ULL;
-}
-
-const char *mem_service_model_key(void)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->model_key ? p->model_key() : "unknown";
-}
-
-int mem_service_model_layer_range_for_node(uint32_t local_node,
-                                           uint32_t cluster_node_count,
-                                           uint32_t *layer_start_out,
-                                           uint32_t *layer_end_out,
-                                           uint32_t *next_node_out)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->layer_range_for_node
-        ? p->layer_range_for_node(local_node,
-                                  cluster_node_count,
-                                  layer_start_out,
-                                  layer_end_out,
-                                  next_node_out)
-        : -1;
-}
-
-struct mem_service_record *
-mem_service_model_recycle_runtime_record(struct mem_service *svc,
-                                         const char *incoming_key)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->recycle_runtime_record
-        ? p->recycle_runtime_record(svc, incoming_key)
-        : NULL;
-}
-
-int mem_service_model_publish_layer_range_placements(struct mem_service *svc,
-                                                     uint32_t node_count)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->publish_layer_range_placements
-        ? p->publish_layer_range_placements(svc, node_count)
-        : -1;
-}
-
-bool mem_service_model_read_layer_range_placement(
-    struct mem_service *svc,
-    uint32_t owner_node,
-    struct mem_service_layer_range_placement *out)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->read_layer_range_placement
-        ? p->read_layer_range_placement(svc, owner_node, out)
-        : false;
-}
-
-bool mem_service_model_find_layer_range_predecessor(
-    struct mem_service *svc,
-    uint32_t owner_node,
-    struct mem_service_layer_range_placement *out)
-{
-    const struct mem_service_model_profile *p = mem_service_active_model_profile();
-
-    return p && p->find_layer_range_predecessor
-        ? p->find_layer_range_predecessor(svc, owner_node, out)
-        : false;
+    req->model_key = model_key;
+    req->total_layers = total_layers;
+    req->range_nodes = range_nodes;
+    req->hidden_range_bytes = hidden_range_bytes;
+    req->kv_state_bytes = kv_state_bytes;
+    req->has_predecessor = has_predecessor;
+    req->predecessor_placement = predecessor;
+    req->recycle_runtime_record = recycle_runtime_record;
+    return 0;
 }

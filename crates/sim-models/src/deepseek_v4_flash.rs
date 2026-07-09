@@ -31,6 +31,10 @@ pub struct DeepseekV4FlashProfile {
     pub num_key_value_heads: u64,
     /// Dimension per head (Flash = 512).
     pub head_dim: u64,
+    /// KV streams per layer (K + V).
+    pub kv_streams: u64,
+    /// Bytes per KV element in the current mem_service object contract.
+    pub kv_elem_bytes: u64,
     /// Raw sliding-window attention width (Flash = 128 tokens).
     pub sliding_window: u64,
     /// Pipeline-parallel node count for 8-node full-mesh (8).
@@ -56,6 +60,8 @@ pub const DEEPSEEK_V4_FLASH_PROFILE: DeepseekV4FlashProfile = DeepseekV4FlashPro
     num_attention_heads: 64,
     num_key_value_heads: 1,
     head_dim: 512,
+    kv_streams: 2,
+    kv_elem_bytes: 4,
     sliding_window: 128,
     tp_nodes: 8,
     prefill_tokens: 128,
@@ -69,13 +75,46 @@ pub const DEEPSEEK_V4_FLASH_PROFILE: DeepseekV4FlashProfile = DeepseekV4FlashPro
 /// DeepSeek V4 Flash model key (namespace for object-store keys).
 pub const DEEPSEEK_V4_FLASH_MODEL_KEY: &str = "deepseek-v4-flash";
 
-/// Layer-id -> owning pipeline node, using the same balanced formula as the
-/// Qwen3 reference decode loop (`layer_id * tp_nodes / num_hidden_layers`).
-/// For 43 layers / 8 nodes this yields nodes 0-2 owning 6 layers and nodes
-/// 3-7 owning 5 layers.
+/// Layer range for one pipeline node, using the same base/rem contiguous split
+/// as the guest C helper. For 43 layers / 8 nodes this yields nodes 0-2 owning
+/// 6 layers and nodes 3-7 owning 5 layers.
+pub fn deepseek_v4_flash_layer_range_for_node(node_id: u64) -> Option<(u64, u64)> {
+    let profile = DEEPSEEK_V4_FLASH_PROFILE;
+    if node_id >= profile.tp_nodes {
+        return None;
+    }
+    let base = profile.num_hidden_layers / profile.tp_nodes;
+    let rem = profile.num_hidden_layers % profile.tp_nodes;
+    let start = node_id * base + node_id.min(rem);
+    let count = base + u64::from(node_id < rem);
+    Some((start, start + count))
+}
+
+/// Layer-id -> owning pipeline node.
 pub fn deepseek_v4_flash_hidden_layer_owner_node(layer_id: u64) -> u64 {
-    layer_id.saturating_mul(DEEPSEEK_V4_FLASH_PROFILE.tp_nodes)
-        / DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+    for node_id in 0..DEEPSEEK_V4_FLASH_PROFILE.tp_nodes {
+        if let Some((start, end)) = deepseek_v4_flash_layer_range_for_node(node_id) {
+            if layer_id >= start && layer_id < end {
+                return node_id;
+            }
+        }
+    }
+    DEEPSEEK_V4_FLASH_PROFILE.tp_nodes.saturating_sub(1)
+}
+
+/// KV object bytes for one contiguous layer range.
+pub fn deepseek_v4_flash_range_kv_state_bytes(layer_start: u64, layer_end: u64) -> Option<u64> {
+    let profile = DEEPSEEK_V4_FLASH_PROFILE;
+    if layer_end <= layer_start || layer_end > profile.num_hidden_layers {
+        return None;
+    }
+    Some(
+        (layer_end - layer_start)
+            * profile.num_key_value_heads
+            * profile.head_dim
+            * profile.kv_streams
+            * profile.kv_elem_bytes,
+    )
 }
 
 /// Compute the per-node layer counts for the full 8-node pipeline.
@@ -96,24 +135,27 @@ pub fn deepseek_v4_flash_layers_per_node() -> Vec<u64> {
 mod tests {
     use super::*;
 
-    /// Stage 1 geometry smoke: 43 layers over 8 nodes balance so every node
-    /// owns either 5 or 6 layers (max difference 1). The exact split depends
-    /// on the floor formula; we assert the balance invariant rather than a
-    /// fixed vector so a future weighted split stays compatible.
+    /// Stage 1 geometry smoke: 43 layers over 8 nodes, using the same
+    /// base/rem split as the guest C helper.
     #[test]
     fn flash_43_layer_8_node_sharding_balanced() {
         let counts = deepseek_v4_flash_layers_per_node();
-        assert_eq!(counts.len(), 8, "expected 8 pipeline nodes");
-        assert_eq!(
-            counts.iter().sum::<u64>(),
-            43,
-            "all 43 layers must be assigned exactly once"
-        );
+        assert_eq!(counts, vec![6, 6, 6, 5, 5, 5, 5, 5]);
         let min = *counts.iter().min().unwrap();
         let max = *counts.iter().max().unwrap();
         assert_eq!(min, 5, "minimum layers per node must be 5");
         assert_eq!(max, 6, "maximum layers per node must be 6");
         assert_eq!(max - min, 1, "layer split must be balanced (max diff 1)");
+    }
+
+    #[test]
+    fn flash_layer_ranges_match_guest_base_rem_split() {
+        assert_eq!(deepseek_v4_flash_layer_range_for_node(0), Some((0, 6)));
+        assert_eq!(deepseek_v4_flash_layer_range_for_node(1), Some((6, 12)));
+        assert_eq!(deepseek_v4_flash_layer_range_for_node(2), Some((12, 18)));
+        assert_eq!(deepseek_v4_flash_layer_range_for_node(3), Some((18, 23)));
+        assert_eq!(deepseek_v4_flash_layer_range_for_node(7), Some((38, 43)));
+        assert_eq!(deepseek_v4_flash_layer_range_for_node(8), None);
     }
 
     /// Layer ownership is monotonic non-decreasing in node id (contiguous slices).
@@ -141,5 +183,11 @@ mod tests {
         assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers, 43);
         assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.hidden_size, 4_096);
         assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.sliding_window, 128);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.kv_streams, 2);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.kv_elem_bytes, 4);
+        assert_eq!(
+            deepseek_v4_flash_range_kv_state_bytes(0, 6),
+            Some(6 * 1 * 512 * 2 * 4)
+        );
     }
 }

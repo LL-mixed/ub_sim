@@ -24,6 +24,7 @@
 #include "components/llm_infer/llm_infer.h"
 #include "components/mem_service/mem_service.h"
 #include "components/mem_service/mem_service_client.h"
+#include "components/mem_service/mem_service_deepseek_v4_flash.h"
 #include "components/mem_service/mem_service_profile.h"
 #include "components/mem_service/mem_service_qwen3.h"
 #include "components/mem_service/mem_service_expert_route_flow.h"
@@ -255,6 +256,16 @@ struct w4_qwen3_range_runtime_forward {
 };
 
 static uint64_t qwen3_serving_effective_decode_step(uint64_t decode_step);
+static const char *w4_runtime_model_key(void);
+static int w4_runtime_layer_range_for_node(uint32_t local_node,
+                                           uint32_t cluster_node_count,
+                                           uint32_t *layer_start_out,
+                                           uint32_t *layer_end_out,
+                                           uint32_t *next_node_out);
+static int w4_runtime_init_obmm_range_flow_request(
+    struct mem_service_obmm_range_flow_request *request,
+    uint32_t local_node,
+    uint32_t cluster_node_count);
 
 static void qwen3_range_runtime_forward_release(
     struct w4_qwen3_range_runtime_forward *runtime)
@@ -866,6 +877,7 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
     struct mem_service_cluster_summary initial_summary;
     struct mem_service_cluster_summary update_summary;
     struct mem_service_cluster_summary handoff_summary;
+    struct mem_service_obmm_range_flow_request range_request;
     struct w4_compute_roundtrip roundtrip;
     char remote_request_id[64];
     char remote_block_hash[96];
@@ -905,6 +917,7 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
     memset(&initial_summary, 0, sizeof(initial_summary));
     memset(&update_summary, 0, sizeof(update_summary));
     memset(&handoff_summary, 0, sizeof(handoff_summary));
+    memset(&range_request, 0, sizeof(range_request));
     memset(&roundtrip, 0, sizeof(roundtrip));
 
     remote_owner = w4_cluster_next_owner(placement_node, cluster_node_count);
@@ -1047,9 +1060,13 @@ static int w4_resource_backed_db_cluster_assertions(const char *role, uint32_t c
         return -1;
     }
 
-    if (mem_service_obmm_service_v0_publish_resolve(&svc,
-                                              placement_node,
-                                              cluster_node_count) != 0) {
+    if (w4_runtime_init_obmm_range_flow_request(&range_request,
+                                                placement_node,
+                                                cluster_node_count) != 0 ||
+        mem_service_obmm_service_v0_publish_resolve(&svc,
+                                                    &range_request,
+                                                    placement_node,
+                                                    cluster_node_count) != 0) {
         printf("[w4_guest] gap guest_obmm_service_v0=payload_backing_resolve_failed remote=%s\n",
                remote_role);
         return -1;
@@ -1610,12 +1627,64 @@ static bool is_deepseek_v4_flash_profile(void)
 {
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
 
-    return profile && strcmp(profile, "deepseek_v4_flash") == 0;
+    return profile &&
+           (strcmp(profile, "deepseek-v4-flash") == 0 ||
+            strcmp(profile, "deepseek_v4_flash") == 0);
 }
 
 static bool is_moe_profile(void)
 {
     return is_deepseek_v4_flash_profile();
+}
+
+static const char *w4_runtime_model_key(void)
+{
+    if (is_deepseek_v4_flash_profile()) {
+        return mem_service_deepseek_v4_flash_model_key();
+    }
+    return mem_service_qwen3_model_key();
+}
+
+static int w4_runtime_layer_range_for_node(uint32_t local_node,
+                                           uint32_t cluster_node_count,
+                                           uint32_t *layer_start_out,
+                                           uint32_t *layer_end_out,
+                                           uint32_t *next_node_out)
+{
+    if (is_deepseek_v4_flash_profile()) {
+        return mem_service_deepseek_v4_flash_layer_range_for_node(local_node,
+                                                                  cluster_node_count,
+                                                                  layer_start_out,
+                                                                  layer_end_out,
+                                                                  next_node_out);
+    }
+    if (is_qwen3_profile()) {
+        return mem_service_qwen3_layer_range_for_node(local_node,
+                                                      cluster_node_count,
+                                                      layer_start_out,
+                                                      layer_end_out,
+                                                      next_node_out);
+    }
+    return -1;
+}
+
+static int w4_runtime_init_obmm_range_flow_request(
+    struct mem_service_obmm_range_flow_request *request,
+    uint32_t local_node,
+    uint32_t cluster_node_count)
+{
+    if (is_deepseek_v4_flash_profile()) {
+        return mem_service_deepseek_v4_flash_init_obmm_range_flow_request(
+            request,
+            local_node,
+            cluster_node_count);
+    }
+    if (is_qwen3_profile()) {
+        return mem_service_qwen3_init_obmm_range_flow_request(request,
+                                                             local_node,
+                                                             cluster_node_count);
+    }
+    return -1;
 }
 
 /*
@@ -1640,7 +1709,7 @@ static void w4_layer_forward_dispatch_moe(uint32_t layer_id,
                                           uint64_t decode_step,
                                           struct mem_service_expert_cache *expert_cache)
 {
-    const char *model_key = mem_service_model_key();
+    const char *model_key = w4_runtime_model_key();
     char route_key[128];
     uint32_t i;
 
@@ -11409,13 +11478,13 @@ decode_round_start:
         uint32_t next_node = 0U;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            mem_service_model_layer_range_for_node(dispatch_node,
-                                             cluster_node_count,
-                                             &layer_start,
-                                             &layer_end,
-                                             &next_node) != 0) {
+            w4_runtime_layer_range_for_node(dispatch_node,
+                                            cluster_node_count,
+                                            &layer_start,
+                                            &layer_end,
+                                            &next_node) != 0) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 work item scheduler placement unavailable role=%s nodes=%u\n",
+                    "[w4_guest] fail runtime work item scheduler placement unavailable role=%s nodes=%u\n",
                     role,
                     cluster_node_count);
             goto out;

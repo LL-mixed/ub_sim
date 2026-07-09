@@ -318,7 +318,9 @@ int mem_service_cluster_fetch_record(struct mem_service *svc,
 int mem_service_publish_observe_cluster(struct mem_service *svc,
                                   const struct mem_service_record *local_record,
                                   struct mem_service_cluster_summary *summary);
+struct mem_service_obmm_range_flow_request;
 int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
+                                          const struct mem_service_obmm_range_flow_request *request,
                                           uint32_t local_node,
                                           uint32_t cluster_node_count);
 int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
