@@ -4,19 +4,14 @@
 #include <string.h>
 
 #include "mem_service.h"
+#include "mem_service_deepseek_v4_flash.h"
+#include "mem_service_qwen3.h"
 #include "mem_service_record_table.h"
 
-#include "mem_service_qwen3.h"
-
 /*
- * Stage 0 registry: only qwen3 is registered. The deepseek-v4-flash
- * adapter is added in stage 1. Lookup is a linear scan over a small
- * static table.
- */
-
-/*
- * Adapters expose their profile through a typed accessor. qwen3 is the
- * only registered profile in stage 0; deepseek-v4-flash joins in stage 1.
+ * Adapters expose their profile through a typed accessor. qwen3 (stage 0)
+ * and deepseek-v4-flash (stage 1) are registered here. Lookup is a linear
+ * scan over a small static table.
  */
 const struct mem_service_model_profile *mem_service_qwen3_profile(void);
 
@@ -26,9 +21,10 @@ static const struct mem_service_model_profile *const *profile_table(size_t *coun
     static bool built;
     if (!built) {
         table[0] = mem_service_qwen3_profile();
+        table[1] = mem_service_deepseek_v4_flash_profile();
         built = true;
     }
-    *count_out = table[0] ? 1U : 0U;
+    *count_out = (table[0] ? 1U : 0U) + (table[1] ? 1U : 0U);
     return table;
 }
 

@@ -1,5 +1,6 @@
 //! Model-specific profiles, graph IR, partitioning, and weight metadata.
 
+pub mod deepseek_v4_flash;
 pub mod engram_context;
 pub mod engram_hash;
 pub mod engram_simt_adapter;
