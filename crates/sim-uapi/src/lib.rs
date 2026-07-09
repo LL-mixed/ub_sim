@@ -6970,6 +6970,77 @@ pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<
     Ok(())
 }
 
+/// Per-layer MoE forward model for DeepSeek V4 Flash (stage 2).
+///
+/// This is the layer-internal MoE forward modeling: for each decode step it
+/// generates a synthetic per-token routing trace over all 43 layers, replays
+/// it through the node-side LRU expert cache simulator, and records the
+/// hit/miss/eviction/pread statistics that feed the latency model
+/// `max(compute_time, miss_load_time)` (plan section 5, stage 2.3). Real
+/// routing (indexer + sinkhorn) lives in the inference engine (ds4); this is
+/// the simulator's modeling input (plan section 7.2 synthetic fallback).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashMoeDecodeReport {
+    pub step_count: usize,
+    pub total_layers: u64,
+    pub tokens_per_step: u64,
+    pub top_k: u64,
+    pub expert_bytes: u64,
+    pub cache_capacity_slots: u32,
+    /// Cumulative stats across all steps.
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub pread_bytes: u64,
+    pub hit_rate_milli: u64,
+}
+
+/// Run the Flash MoE decode forward model for `step_count` decode steps.
+///
+/// Each step generates `tokens_per_step` routing decisions per layer (default
+/// 1 decode token) and replays them through a single node-side expert cache
+/// sized by `cache_capacity_slots`. The cache is persistent across steps so
+/// the hit rate reflects a streaming decode stream.
+pub fn deepseek_v4_flash_moe_decode_report(
+    step_count: usize,
+    tokens_per_step: u64,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::{synthetic_route_trace, ExpertCacheSimulator};
+
+    if step_count == 0 {
+        return Err("flash moe decode report requires step_count > 0".to_string());
+    }
+    let total_layers = DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers;
+    let top_k = DEEPSEEK_V4_FLASH_PROFILE.num_experts_used;
+    let mut cache = ExpertCacheSimulator::new(cache_capacity_slots as usize, expert_bytes);
+    for step in 0..step_count {
+        let trace = synthetic_route_trace(tokens_per_step, total_layers, step as u64);
+        cache.replay(&trace);
+    }
+    let hits = cache.hits;
+    let misses = cache.misses;
+    let evictions = cache.evictions;
+    let pread_bytes = cache.pread_bytes;
+    let total = hits + misses;
+    let hit_rate_milli = if total == 0 { 0 } else { (hits * 1000) / total };
+    Ok(DeepseekV4FlashMoeDecodeReport {
+        step_count,
+        total_layers,
+        tokens_per_step,
+        top_k,
+        expert_bytes,
+        cache_capacity_slots,
+        hits,
+        misses,
+        evictions,
+        pread_bytes,
+        hit_rate_milli,
+    })
+}
+
 pub fn qwen3_dense_reference_range_forward_report_with_prompt(
     topology: &SimTopology,
     prompt: &str,
@@ -24462,6 +24533,40 @@ mod tests {
         let qwen3 = super::object_service_profile_for("qwen3");
         assert!(flash.obmm_pool.pool_bytes > qwen3.obmm_pool.pool_bytes);
         assert_eq!(flash.queue_depth, qwen3.queue_depth);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_records_cache_stats_across_steps() {
+        // 8 decode steps, 1 token each, small cache to force misses/evictions.
+        let report = super::deepseek_v4_flash_moe_decode_report(8, 1, 16, 2048 * 1024)
+            .expect("moe decode report");
+        assert_eq!(report.step_count, 8);
+        assert_eq!(report.total_layers, 43);
+        assert_eq!(report.tokens_per_step, 1);
+        assert_eq!(report.top_k, 6);
+        // Each step = 43 layers * 1 token * 6 experts = 258 touches.
+        assert_eq!(report.hits + report.misses, 8 * 43 * 6);
+        assert_eq!(report.pread_bytes, report.misses * 2048 * 1024);
+        assert!(report.hit_rate_milli <= 1000);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_rejects_zero_steps() {
+        let err = super::deepseek_v4_flash_moe_decode_report(0, 1, 16, 1024)
+            .expect_err("zero steps must be rejected");
+        assert!(err.contains("step_count > 0"), "{err}");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_larger_cache_improves_hit_rate() {
+        let small = super::deepseek_v4_flash_moe_decode_report(16, 1, 8, 1024).unwrap();
+        let large = super::deepseek_v4_flash_moe_decode_report(16, 1, 128, 1024).unwrap();
+        assert!(
+            large.hit_rate_milli >= small.hit_rate_milli,
+            "larger cache ({}mil) should not be worse than small ({}mil)",
+            large.hit_rate_milli,
+            small.hit_rate_milli
+        );
     }
 
     #[test]

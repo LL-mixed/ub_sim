@@ -17,6 +17,7 @@ ROUTE_H = SERVICE_DIR / "mem_service_expert_route_flow.h"
 ROUTE_C = SERVICE_DIR / "mem_service_expert_route_flow.c"
 CACHE_H = SERVICE_DIR / "mem_service_expert_cache.h"
 CACHE_C = SERVICE_DIR / "mem_service_expert_cache.c"
+LLM_INFER_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
 
 
 class ExpertRouteFlowTest(unittest.TestCase):
@@ -71,6 +72,45 @@ class ExpertCacheTest(unittest.TestCase):
         # Plan section 3.3: cache is residency/stats only, not payload bytes.
         self.assertIn("payload bytes", self.cache_h)
         self.assertIn("only tracks residency", self.cache_h)
+
+
+class LlmInferMoeDispatchTest(unittest.TestCase):
+    """Validate the per-profile MoE forward dispatch in the guest decode app."""
+
+    def setUp(self):
+        self.source = LLM_INFER_C.read_text()
+
+    def test_profile_detection_helpers_exist(self):
+        self.assertIn("is_deepseek_v4_flash_profile", self.source)
+        self.assertIn("is_moe_profile", self.source)
+        self.assertIn('strcmp(profile, "deepseek_v4_flash")', self.source)
+
+    def test_moe_dispatch_records_route_and_fetches_experts(self):
+        # Per-layer MoE: record route decision + fetch expert weight tiles.
+        self.assertIn("w4_layer_forward_dispatch_moe", self.source)
+        self.assertIn("mem_service_expert_route_record_key", self.source)
+        self.assertIn("mem_service_expert_weight_tile_key", self.source)
+        self.assertIn("mem_service_expert_cache_touch", self.source)
+        self.assertIn("MEM_SERVICE_EXPERT_QUANT_IQ2_XXS", self.source)
+
+    def test_dispatch_called_per_owned_layer_before_compute(self):
+        # The decode round iterates owned layers and dispatches MoE forward.
+        self.assertIn("w4_layer_forward_dispatch(lid, guest_decode_step", self.source)
+        self.assertIn("moe_expert_cache_summary", self.source)
+
+    def test_layer_range_resolution_is_profile_aware(self):
+        # 8-node dispatch uses the model-neutral layer-range resolver so Flash
+        # (43 layers) is supported, not the qwen3-specific one.
+        self.assertIn("mem_service_model_layer_range_for_node", self.source)
+
+    def test_dispatch_guards_on_moe_profile(self):
+        # The dense path must not run MoE expert routing.
+        self.assertIn("if (is_moe_profile())", self.source)
+
+    def test_expert_cache_headers_are_included(self):
+        self.assertIn("mem_service_expert_route_flow.h", self.source)
+        self.assertIn("mem_service_expert_cache.h", self.source)
+        self.assertIn("mem_service_profile.h", self.source)
 
 
 if __name__ == "__main__":

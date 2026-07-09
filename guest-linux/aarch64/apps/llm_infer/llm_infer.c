@@ -24,7 +24,10 @@
 #include "components/llm_infer/llm_infer.h"
 #include "components/mem_service/mem_service.h"
 #include "components/mem_service/mem_service_client.h"
+#include "components/mem_service/mem_service_profile.h"
 #include "components/mem_service/mem_service_qwen3.h"
+#include "components/mem_service/mem_service_expert_route_flow.h"
+#include "components/mem_service/mem_service_expert_cache.h"
 #include "components/mem_service/mem_service_wire_client.h"
 
 #define DT_ROOT "/proc/device-tree"
@@ -1593,6 +1596,114 @@ static bool is_qwen3_profile(void)
 {
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
     return llm_infer_is_qwen3_profile_name(profile);
+}
+
+/*
+ * DeepSeek V4 Flash profile detection (stage 2). The guest app dispatches the
+ * per-layer forward by profile: dense Qwen3 uses a single MLP per layer;
+ * Flash is Mixture-of-Experts and routes each token to top-6 of 256 routed
+ * experts + 1 shared expert, fetching expert weight tiles from the object
+ * store on demand (plan section 3.2/3.3). The MoE path is layer-internal —
+ * the cross-layer handoff (hidden range + KV state) is unchanged.
+ */
+static bool is_deepseek_v4_flash_profile(void)
+{
+    const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
+
+    return profile && strcmp(profile, "deepseek_v4_flash") == 0;
+}
+
+static bool is_moe_profile(void)
+{
+    return is_deepseek_v4_flash_profile();
+}
+
+/*
+ * Per-layer forward dispatch by profile (stage 2).
+ *
+ * For dense Qwen3 the layer computes a single MLP. For DeepSeek V4 Flash the
+ * layer is Mixture-of-Experts: it routes the token to top-6 of 256 routed
+ * experts + 1 shared expert, fetching each routed expert's weight tile from
+ * the object store on demand (plan section 3.2/3.3). This records the
+ * routing decision and touches the node-side expert cache so hit/miss/pread
+ * statistics feed the latency model. The cross-layer handoff (hidden range
+ * + KV state) is unchanged.
+ *
+ * The expert selection here is a deterministic synthetic placeholder (stage
+ * 2 modeling input per plan section 7.2); real routing lives in the
+ * inference engine (ds4).
+ */
+#define DSV4_FLASH_NUM_EXPERTS 256U
+#define DSV4_FLASH_TOP_K 6U
+
+static void w4_layer_forward_dispatch_moe(uint32_t layer_id,
+                                          uint64_t decode_step,
+                                          struct mem_service_expert_cache *expert_cache)
+{
+    const char *model_key = mem_service_model_key();
+    char route_key[128];
+    uint32_t i;
+
+    if (mem_service_expert_route_record_key(route_key,
+                                            sizeof(route_key),
+                                            model_key,
+                                            layer_id,
+                                            (uint32_t)decode_step) == 0) {
+        printf("[w4_guest] stage moe_layer_route model=%s layer=%u step=%" PRIu64
+               " active_experts=%u route_key=%s status=recorded\n",
+               model_key,
+               layer_id,
+               decode_step,
+               DSV4_FLASH_TOP_K,
+               route_key);
+    }
+    /*
+     * Synthetic expert selection: pick DSV4_FLASH_TOP_K experts deterministically
+     * from (layer, step). This exercises the weight-tile addressing and the
+     * node-side cache without a real indexer/sinkhorn.
+     */
+    for (i = 0; i < DSV4_FLASH_TOP_K; ++i) {
+        uint32_t expert_id = (uint32_t)((decode_step * 31U + layer_id * 7U + i * 101U) %
+                                        DSV4_FLASH_NUM_EXPERTS);
+        char tile_key[160];
+
+        if (expert_cache) {
+            mem_service_expert_cache_touch(expert_cache, layer_id, expert_id);
+        }
+        if (mem_service_expert_weight_tile_key(tile_key,
+                                               sizeof(tile_key),
+                                               model_key,
+                                               layer_id,
+                                               expert_id,
+                                               MEM_SERVICE_EXPERT_QUANT_IQ2_XXS) == 0) {
+            printf("[w4_guest] stage moe_expert_fetch model=%s layer=%u expert=%u"
+                   " quant=%s tile_key=%s status=resolved\n",
+                   model_key,
+                   layer_id,
+                   expert_id,
+                   MEM_SERVICE_EXPERT_QUANT_IQ2_XXS,
+                   tile_key);
+        }
+    }
+}
+
+/*
+ * Dispatch the per-layer forward for the active profile. Dense Qwen3 runs a
+ * single MLP (no-op here — the real UB compute is dispatched elsewhere);
+ * Flash MoE records the route and touches the expert cache. Called once per
+ * owned layer in the decode round.
+ */
+static void w4_layer_forward_dispatch(uint32_t layer_id,
+                                      uint64_t decode_step,
+                                      struct mem_service_expert_cache *expert_cache)
+{
+    if (is_moe_profile()) {
+        w4_layer_forward_dispatch_moe(layer_id, decode_step, expert_cache);
+    }
+    /*
+     * Dense Qwen3: the per-layer MLP forward is dispatched to the UB endpoint
+     * in the main compute path; no expert routing is needed.
+     */
 }
 
 static void resolve_role(char *role, size_t role_len);
@@ -11291,14 +11402,14 @@ decode_round_start:
         }
         cluster_stage_ms = monotonic_ms() - stage_start_ms;
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+    if ((is_qwen3_profile() || is_deepseek_v4_flash_profile()) && enable_db_cluster && cluster_node_count == 8U) {
         uint32_t dispatch_node = 0U;
         uint32_t layer_start = 0U;
         uint32_t layer_end = 0U;
         uint32_t next_node = 0U;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
-            mem_service_qwen3_layer_range_for_node(dispatch_node,
+            mem_service_model_layer_range_for_node(dispatch_node,
                                              cluster_node_count,
                                              &layer_start,
                                              &layer_end,
@@ -12237,6 +12348,35 @@ decode_round_start:
                        qwen3_engram_config.context_indices_ref.payload_checksum,
                        qwen3_engram_config.context_gate_weight_ref.payload_checksum);
             }
+        }
+    }
+
+    /*
+     * Per-layer forward dispatch by profile (stage 2). For the active MoE
+     * profile (DeepSeek V4 Flash), record the routing decision and touch the
+     * node-side expert cache for each owned layer before the UB compute
+     * dispatch. Dense Qwen3 is a no-op here (single MLP dispatched below).
+     */
+    if (is_moe_profile() && round_layer_end > round_layer_start) {
+        static struct mem_service_expert_cache g_expert_cache;
+        static bool g_expert_cache_init;
+        if (!g_expert_cache_init) {
+            mem_service_expert_cache_init(&g_expert_cache, 64U, 2048ULL * 1024ULL);
+            g_expert_cache_init = true;
+        }
+        for (uint32_t lid = round_layer_start; lid < round_layer_end; ++lid) {
+            w4_layer_forward_dispatch(lid, guest_decode_step, &g_expert_cache);
+        }
+        if (guest_decode_step + 1 >= (uint64_t)guest_decode_step_limit) {
+            struct mem_service_expert_cache_stats stats;
+            mem_service_expert_cache_stats(&g_expert_cache, &stats);
+            printf("[w4_guest] stage moe_expert_cache_summary"
+                   " hits=%" PRIu64 " misses=%" PRIu64 " evictions=%" PRIu64
+                   " pread_bytes=%" PRIu64 " status=ok\n",
+                   stats.hits,
+                   stats.misses,
+                   stats.evictions,
+                   stats.pread_bytes);
         }
     }
 
