@@ -1332,6 +1332,23 @@ validate_w5_artifact_file_size() {
   return 0
 }
 
+compute_w5_object_store_bin_max_bytes() {
+  local base_bytes="${1:-268435456}"
+  local steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-0}"
+  local per_step_bytes=$((24 * 1024 * 1024))
+  local step_budget
+
+  if ! [[ "$steps" == <-> ]]; then
+    steps=0
+  fi
+  step_budget=$((steps * per_step_bytes))
+  if (( step_budget > base_bytes )); then
+    printf '%s\n' "$step_budget"
+    return 0
+  fi
+  printf '%s\n' "$base_bytes"
+}
+
 validate_w5_artifact_sizes() {
   local object_json="${SIM_W5_MEMORY_OBJECT_STORE:-}"
   local object_bin=""
@@ -1350,6 +1367,8 @@ validate_w5_artifact_sizes() {
   local store_required=1
   local shortpath_required=0
   local prefix_cache_required=0
+
+  max_object_bin="$(compute_w5_object_store_bin_max_bytes "$max_object_bin")"
 
   if runtime_boundary_lookup_produces_store_after_guest; then
     store_required=0

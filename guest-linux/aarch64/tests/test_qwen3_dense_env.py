@@ -330,6 +330,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("SIM_W5_TEST_MAX_MEMORY_STORE_JSON_BYTES:-16777216", runner_text)
         self.assertIn("SIM_W5_TEST_MAX_OBJECT_STORE_JSON_BYTES:-8388608", runner_text)
         self.assertIn("SIM_W5_TEST_MAX_OBJECT_STORE_BIN_BYTES:-268435456", runner_text)
+        self.assertIn("compute_w5_object_store_bin_max_bytes", runner_text)
+        self.assertIn("per_step_bytes=$((24 * 1024 * 1024))", runner_text)
         self.assertIn("SIM_W5_TEST_MAX_SHORTPATH_STREAM_BYTES:-1048576", runner_text)
         self.assertIn("SIM_W5_TEST_MAX_SHORTPATH_KV_STREAM_BYTES:-1048576", runner_text)
         self.assertIn("SIM_W5_TEST_MAX_PREFIX_CACHE_KV_STREAM_BYTES:-1048576", runner_text)
@@ -535,6 +537,49 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("FAIL: W5 artifact size too large label=shortpath_kv_stream", result.stderr)
             self.assertIn("bytes=9 max_bytes=1", result.stderr)
+
+    def test_w5_artifact_size_validation_cli_scales_object_bin_limit_by_decode_steps(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_llm_infer_eight_node_guest.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_dir = tmp_path / "registry"
+            registry_dir.mkdir()
+            memory_store = tmp_path / "memory_store.json"
+            memory_bin = tmp_path / "memory_store.bin"
+            object_store = tmp_path / "object_store.json"
+            object_bin = tmp_path / "object_store.bin"
+            shortpath_stream = registry_dir / "w5_memory_shortpath_stream.txt"
+            shortpath_kv_stream = registry_dir / "w5_memory_shortpath_kv_stream.txt"
+
+            for path in (memory_store, object_store, object_bin, shortpath_stream, shortpath_kv_stream):
+                path.write_bytes(b"ok")
+            with memory_bin.open("wb") as f:
+                f.truncate(300 * 1024 * 1024)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SIM_UAPI_W5_PROFILE": "qwen3_14b_engram_decode",
+                    "SIM_QWEN3_GUEST_DECODE_STEPS": "16",
+                    "SIM_W5_MEMORY_STORE": str(memory_store),
+                    "SIM_W5_MEMORY_OBJECT_STORE": str(object_store),
+                    "SIM_W5_MEMORY_REGISTRY_DIR": str(registry_dir),
+                    "TRACE_FILE": str(tmp_path / "trace.txt"),
+                }
+            )
+
+            result = subprocess.run(
+                ["zsh", str(runner), "--validate-w5-artifact-sizes-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("label=memory_store_bin", result.stderr)
+            self.assertIn("max_bytes=402653184", result.stderr)
 
     def test_guest_consumes_w5_prefix_cache_reuse_as_kv_object_ref(self):
         guest_source = (

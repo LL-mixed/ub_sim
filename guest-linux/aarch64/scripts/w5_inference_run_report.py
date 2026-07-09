@@ -18,7 +18,7 @@ BAD_MARKERS = (
     "obmm_pool: unavailable",
 )
 
-ARTIFACT_LIMITS = {
+ARTIFACT_BASE_LIMITS = {
     "memory_store_json": 16 * 1024 * 1024,
     "memory_store_bin": 256 * 1024 * 1024,
     "object_store_json": 8 * 1024 * 1024,
@@ -28,9 +28,20 @@ ARTIFACT_LIMITS = {
     "prefix_cache_kv_stream": 1024 * 1024,
 }
 
+OBJECT_STORE_BIN_BYTES_PER_DECODE_STEP = 24 * 1024 * 1024
+
 OPTIONAL_ARTIFACTS = {
     "memory_store_bin",
 }
+
+
+def artifact_limits(parsed):
+    limits = dict(ARTIFACT_BASE_LIMITS)
+    expected_steps = parse_int(parsed["summary"].get("decode_steps_expected"))
+    step_budget = expected_steps * OBJECT_STORE_BIN_BYTES_PER_DECODE_STEP
+    for label in ("memory_store_bin", "object_store_bin"):
+        limits[label] = max(limits[label], step_budget)
+    return limits
 
 CONTEXT_SUMMARY_PREFIXES = (
     "engram_context",
@@ -770,7 +781,7 @@ def validate(
             )
 
     artifact_sizes = {}
-    for label, limit in ARTIFACT_LIMITS.items():
+    for label, limit in artifact_limits(parsed).items():
         path = paths.get(label)
         size = file_size(path) if path is not None else None
         artifact_sizes[label] = {"path": str(path) if path else "", "bytes": size, "max_bytes": limit}

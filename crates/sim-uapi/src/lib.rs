@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-#[cfg(all(unix, not(test)))]
+#[cfg(unix)]
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::ops::Range;
@@ -1858,7 +1858,8 @@ pub const SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR: &str = "SIM_UAPI_QWEN3_OBJECT_REGI
 pub const SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT: &str = "SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT";
 const SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN: &str = "SIM_UAPI_QWEN3_OBJECT_REF_PAYLOAD_SCAN";
 const SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM: &str = "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM";
-const SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH: &str = "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH";
+const SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH: &str =
+    "SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH";
 pub const SIM_QWEN3_GUEST_ENGRAM_STATE_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_STATE_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF: &str = "SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF";
 pub const SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF: &str =
@@ -2456,6 +2457,79 @@ fn qwen3_object_service_snapshot_write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+struct Qwen3ObjectServiceSnapshotWriteGuard {
+    #[cfg(unix)]
+    lock_file: fs::File,
+    _thread_guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(unix)]
+impl Drop for Qwen3ObjectServiceSnapshotWriteGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.lock_file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn qwen3_object_service_snapshot_write_guard(
+    snapshot_path: &Path,
+) -> Result<Qwen3ObjectServiceSnapshotWriteGuard, String> {
+    let thread_guard = qwen3_object_service_snapshot_write_lock()
+        .lock()
+        .map_err(|_| "qwen3_object_service_snapshot_write_lock_poisoned".to_string())?;
+    #[cfg(unix)]
+    {
+        if let Some(parent) = snapshot_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "qwen3_object_service_snapshot_lock_dir_create_failed:{}:{err}",
+                    parent.display()
+                )
+            })?;
+        }
+        let lock_path = qwen3_object_service_snapshot_lock_path(snapshot_path);
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|err| {
+                format!(
+                    "qwen3_object_service_snapshot_lock_open_failed:{}:{err}",
+                    lock_path.display()
+                )
+            })?;
+        let rc = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
+        if rc < 0 {
+            return Err(format!(
+                "qwen3_object_service_snapshot_lock_failed:{}",
+                lock_path.display()
+            ));
+        }
+        Ok(Qwen3ObjectServiceSnapshotWriteGuard {
+            lock_file,
+            _thread_guard: thread_guard,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Qwen3ObjectServiceSnapshotWriteGuard {
+            _thread_guard: thread_guard,
+        })
+    }
+}
+
+fn qwen3_object_service_snapshot_lock_path(snapshot_path: &Path) -> PathBuf {
+    if snapshot_path.extension().and_then(|value| value.to_str()) == Some("json") {
+        snapshot_path.with_extension("lock")
+    } else {
+        let mut path = snapshot_path.as_os_str().to_os_string();
+        path.push(".lock");
+        PathBuf::from(path)
+    }
+}
+
 fn qwen3_w5_memory_runtime_commit_handles(
 ) -> &'static Mutex<Vec<std::thread::JoinHandle<Result<(), String>>>> {
     static HANDLES: OnceLock<Mutex<Vec<std::thread::JoinHandle<Result<(), String>>>>> =
@@ -2747,9 +2821,7 @@ fn qwen3_object_service_snapshot_put_with_metadata(
     if payload.is_empty() {
         return Err("qwen3_object_service_publish_empty_payload".to_string());
     }
-    let _guard = qwen3_object_service_snapshot_write_lock()
-        .lock()
-        .map_err(|_| "qwen3_object_service_snapshot_write_lock_poisoned".to_string())?;
+    let _guard = qwen3_object_service_snapshot_write_guard(snapshot_path)?;
     let mut service = if snapshot_path.exists() {
         let bytes = fs::read(snapshot_path).map_err(|err| {
             format!(
@@ -2763,6 +2835,7 @@ fn qwen3_object_service_snapshot_put_with_metadata(
                 snapshot_path.display()
             )
         })?;
+        qwen3_upgrade_object_service_snapshot_profile(&mut snapshot);
         qwen3_object_service_snapshot_hydrate_payloads(snapshot_path, &mut snapshot)?;
         LingquObjectServiceStub::import_snapshot(snapshot)
             .map_err(|err| format!("qwen3_object_service_snapshot_import_failed:{err}"))?
@@ -2794,7 +2867,7 @@ fn qwen3_object_service_snapshot_put_with_metadata(
             ));
         }
     }
-    service
+    let handle = service
         .submit_publish(
             LingquObjectPublishReq {
                 task: None,
@@ -2825,6 +2898,24 @@ fn qwen3_object_service_snapshot_put_with_metadata(
             1,
         )
         .map_err(|err| format!("qwen3_object_service_publish_failed:{err}"))?;
+    let mut completions = service.poll_ready(u64::MAX);
+    let completion = completions
+        .drain(..)
+        .find(|event| event.op_id == handle.0)
+        .ok_or_else(|| format!("qwen3_object_service_publish_completion_missing:{key}"))?;
+    match completion.status {
+        CompletionStatus::Success => {}
+        CompletionStatus::RetryableFailure { code } => {
+            return Err(format!(
+                "qwen3_object_service_publish_retryable:{code}:key={key}"
+            ));
+        }
+        CompletionStatus::FatalFailure { code } => {
+            return Err(format!(
+                "qwen3_object_service_publish_fatal:{code}:key={key}"
+            ));
+        }
+    }
     let record = service
         .latest_record(key)
         .ok_or_else(|| format!("qwen3_object_service_publish_record_missing:{key}"))?;
@@ -4770,9 +4861,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         logits_hot_ref = Some(qwen3_hot_ref_from_obmm(&logits_key, logits_ref));
     }
 
-    let _guard = qwen3_object_service_snapshot_write_lock()
-        .lock()
-        .map_err(|_| "qwen3_object_service_snapshot_write_lock_poisoned".to_string())?;
+    let _guard = qwen3_object_service_snapshot_write_guard(&object_store_path)?;
     let mut durable_store = sim_memory::load_lingqu_memory_durable_store_from_path(&store_path)
         .map_err(|err| format!("qwen3_w5_memory_store_load_failed:{err}"))?;
     let snapshot = if object_store_path.exists() {
@@ -4784,6 +4873,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
         })?;
         let mut snapshot = LingquObjectServiceSnapshot::from_json_bytes(&bytes)
             .map_err(|err| format!("qwen3_w5_object_store_decode_failed:{err}"))?;
+        qwen3_upgrade_object_service_snapshot_profile(&mut snapshot);
         qwen3_object_service_snapshot_hydrate_payloads(&object_store_path, &mut snapshot)?;
         snapshot
     } else {
@@ -7365,7 +7455,27 @@ fn qwen3_dense_reference_decode_duration_label(duration: Duration) -> String {
 fn qwen3_dense_reference_object_service_profile() -> LingquObjectServiceProfile {
     let mut profile = LingquObjectServiceProfile::default();
     profile.queue_depth = 512;
+    profile.obmm_pool.queue_depth = 4096;
+    profile.obmm_pool.pool_bytes = 1400 * 1024 * 1024;
     profile
+}
+
+fn qwen3_upgrade_object_service_snapshot_profile(snapshot: &mut LingquObjectServiceSnapshot) {
+    let runtime_profile = qwen3_dense_reference_object_service_profile();
+    snapshot.profile.queue_depth = snapshot
+        .profile
+        .queue_depth
+        .max(runtime_profile.queue_depth);
+    snapshot.profile.obmm_pool.queue_depth = snapshot
+        .profile
+        .obmm_pool
+        .queue_depth
+        .max(runtime_profile.obmm_pool.queue_depth);
+    snapshot.profile.obmm_pool.pool_bytes = snapshot
+        .profile
+        .obmm_pool
+        .pool_bytes
+        .max(runtime_profile.obmm_pool.pool_bytes);
 }
 
 fn qwen3_dense_reference_publish_bootstrap_weight_objects(
@@ -32723,6 +32833,72 @@ mod tests {
                     W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES
                         + W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES
                         + payload.len()
+                );
+
+                let _ = std::fs::remove_dir_all(&root);
+            },
+        );
+    }
+
+    #[test]
+    fn qwen3_object_service_profile_covers_64_step_w5_runtime_objects() {
+        let profile = qwen3_dense_reference_object_service_profile();
+        let minimum_pool_bytes = 1024 * 1024 * 1024;
+        assert!(
+            profile.obmm_pool.pool_bytes >= minimum_pool_bytes,
+            "64-step W5 stream infer retains runtime hidden/KV objects and needs more than the default 256MiB pool"
+        );
+        assert!(
+            profile.obmm_pool.queue_depth >= 4096,
+            "64-step W5 stream infer needs object-service queue headroom for 8-node handoff traffic"
+        );
+    }
+
+    #[test]
+    fn qwen3_object_service_publish_upgrades_bootstrap_snapshot_profile() {
+        run_simpler_native_test_isolated(
+            "qwen3_object_service_publish_upgrades_bootstrap_snapshot_profile",
+            || {
+                let root = std::env::temp_dir().join(format!(
+                    "ub_sim_qwen3_snapshot_profile_upgrade_{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(&root).expect("create snapshot profile test dir");
+                let snapshot_path = root.join("lingqu_object_service_snapshot.json");
+                let bootstrap_snapshot = LingquObjectServiceSnapshot {
+                    profile: LingquObjectServiceProfile::default(),
+                    records: Vec::new(),
+                };
+                std::fs::write(
+                    &snapshot_path,
+                    bootstrap_snapshot
+                        .to_json_bytes()
+                        .expect("encode bootstrap snapshot"),
+                )
+                .expect("write bootstrap snapshot");
+
+                qwen3_object_service_snapshot_put(
+                    &snapshot_path,
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                    1,
+                    1,
+                    "kvcache/qwen3-test/node1/layers-0-4/decode-step0",
+                    &[0x7bu8; 128],
+                )
+                .expect("publish through upgraded snapshot");
+
+                let snapshot = LingquObjectServiceSnapshot::from_json_bytes(
+                    &std::fs::read(&snapshot_path).expect("read upgraded snapshot"),
+                )
+                .expect("decode upgraded snapshot");
+                let runtime_profile = qwen3_dense_reference_object_service_profile();
+                assert!(snapshot.profile.queue_depth >= runtime_profile.queue_depth);
+                assert!(
+                    snapshot.profile.obmm_pool.queue_depth >= runtime_profile.obmm_pool.queue_depth
+                );
+                assert!(
+                    snapshot.profile.obmm_pool.pool_bytes >= runtime_profile.obmm_pool.pool_bytes
                 );
 
                 let _ = std::fs::remove_dir_all(&root);
