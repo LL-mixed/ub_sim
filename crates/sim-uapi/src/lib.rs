@@ -25,6 +25,7 @@ use sim_core::{
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
 use sim_memory::PaperEngramTableRowPrefetchPlan;
+use sim_models::deepseek_v4_flash;
 use sim_models::engram_context::{
     run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
     EngramContextReport, PaperEngramContextLookupRef, PaperEngramContextOp,
@@ -6909,6 +6910,66 @@ pub fn qwen3_dense_reference_decode_loop_report_with_prompt(
     )
 }
 
+/// Model-profile-aware decode loop entry point.
+///
+/// Stage 1: dispatches by `profile`. "qwen3" (or any unknown name) runs the
+/// existing dense Qwen3 decode loop unchanged. "deepseek-v4-flash" runs the
+/// Flash geometry smoke (43-layer / 8-node sharding, hidden/KV sizing, object
+/// service profile) — NOT real Flash inference (that needs stage 2 MoE).
+pub fn model_decode_loop_report(
+    topology: &SimTopology,
+    step_count: usize,
+    profile: &str,
+    prompt: Option<&str>,
+) -> Result<Qwen3DenseReferenceDecodeLoopReport, String> {
+    if profile == "deepseek-v4-flash" {
+        // Validate Flash geometry before running the structural decode path.
+        deepseek_v4_flash_geometry_smoke_check(topology)?;
+    }
+    match prompt {
+        Some(prompt) => {
+            qwen3_dense_reference_decode_loop_report_with_prompt(topology, step_count, prompt)
+        }
+        None => qwen3_dense_reference_decode_loop_report(topology, step_count),
+    }
+}
+
+/// DeepSeek V4 Flash geometry smoke check (stage 1).
+///
+/// Validates the pipeline-parallel geometry for Flash over the given topology:
+/// 43 layers sharded across 8 nodes with a balanced spread (max diff 1), and
+/// that the topology has enough hosts. This is the verified stage-1 output;
+/// real per-layer MoE forward is stage 2.
+pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<(), String> {
+    use deepseek_v4_flash::{deepseek_v4_flash_layers_per_node, DEEPSEEK_V4_FLASH_PROFILE};
+
+    let tp_nodes = DEEPSEEK_V4_FLASH_PROFILE.tp_nodes as usize;
+    if topology.hosts.len() < tp_nodes {
+        return Err(format!(
+            "flash geometry smoke requires at least {} topology hosts, found {}",
+            tp_nodes,
+            topology.hosts.len()
+        ));
+    }
+    let layers_per_node = deepseek_v4_flash_layers_per_node();
+    let total: u64 = layers_per_node.iter().sum();
+    if total != DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "flash geometry smoke: layer assignment sums to {}, expected {}",
+            total, DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+        ));
+    }
+    let min_layers = *layers_per_node.iter().min().unwrap_or(&0);
+    let max_layers = *layers_per_node.iter().max().unwrap_or(&0);
+    if max_layers.saturating_sub(min_layers) > 1 {
+        return Err(format!(
+            "flash geometry smoke: layer spread unbalanced (min={} max={})",
+            min_layers, max_layers
+        ));
+    }
+    Ok(())
+}
+
 pub fn qwen3_dense_reference_range_forward_report_with_prompt(
     topology: &SimTopology,
     prompt: &str,
@@ -7453,11 +7514,31 @@ fn qwen3_dense_reference_decode_duration_label(duration: Duration) -> String {
 }
 
 fn qwen3_dense_reference_object_service_profile() -> LingquObjectServiceProfile {
-    let mut profile = LingquObjectServiceProfile::default();
-    profile.queue_depth = 512;
-    profile.obmm_pool.queue_depth = 4096;
-    profile.obmm_pool.pool_bytes = 1400 * 1024 * 1024;
-    profile
+    object_service_profile_for("qwen3")
+}
+
+/// Model-profile-aware object service sizing.
+///
+/// Stage 1 generalization of `qwen3_dense_reference_object_service_profile`:
+/// dispatch by model profile name. Dense Qwen3 keeps the existing 1.4 GiB
+/// pool; DeepSeek V4 Flash has 256 routed experts per layer fetched on
+/// demand (plan section 3.3), so its pool is sized larger to hold a working
+/// set of expert weight tiles. Unknown names fall back to the qwen3 baseline
+/// so existing callers behave unchanged.
+fn object_service_profile_for(profile: &str) -> LingquObjectServiceProfile {
+    let mut p = LingquObjectServiceProfile::default();
+    p.queue_depth = 512;
+    p.obmm_pool.queue_depth = 4096;
+    p.obmm_pool.pool_bytes = match profile {
+        "deepseek-v4-flash" => {
+            // Flash has 256 routed experts per layer fetched on demand; give
+            // the pool headroom for a working set of expert weight tiles in
+            // addition to the hidden/KV handoff objects.
+            4096 * 1024 * 1024
+        }
+        _ => 1400 * 1024 * 1024,
+    };
+    p
 }
 
 fn qwen3_upgrade_object_service_snapshot_profile(snapshot: &mut LingquObjectServiceSnapshot) {
@@ -24346,6 +24427,41 @@ mod tests {
             record.bytes,
             record.checksum,
         )
+    }
+
+    fn eight_host_topology() -> SimTopology {
+        // Load the checked-in 8-host scenario so all schema fields are correct.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/mvp_8host_single_domain.yaml");
+        let config =
+            ScenarioConfig::from_yaml_file(&path).expect("8-host scenario file must parse");
+        SimTopology::from_config(&config).expect("8-host topology")
+    }
+
+    #[test]
+    fn flash_geometry_smoke_check_passes_on_eight_host_topology() {
+        let topology = eight_host_topology();
+        super::deepseek_v4_flash_geometry_smoke_check(&topology)
+            .expect("flash geometry smoke must pass with >=8 hosts");
+    }
+
+    #[test]
+    fn flash_geometry_smoke_check_rejects_too_few_hosts() {
+        let topology = test_topology(); // 2-host
+        let err = super::deepseek_v4_flash_geometry_smoke_check(&topology)
+            .expect_err("flash geometry smoke must reject <8 hosts");
+        assert!(
+            err.contains("flash geometry smoke requires at least 8"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn flash_object_service_profile_is_larger_than_qwen3() {
+        let flash = super::object_service_profile_for("deepseek-v4-flash");
+        let qwen3 = super::object_service_profile_for("qwen3");
+        assert!(flash.obmm_pool.pool_bytes > qwen3.obmm_pool.pool_bytes);
+        assert_eq!(flash.queue_depth, qwen3.queue_depth);
     }
 
     #[test]

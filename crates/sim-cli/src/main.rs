@@ -80,8 +80,7 @@ use sim_services::{
 };
 use sim_topology::SimTopology;
 use sim_uapi::{
-    qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
-    qwen3_dense_reference_decode_loop_report, qwen3_dense_reference_decode_loop_report_with_prompt,
+    model_decode_loop_report, qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
     qwen3_dense_reference_default_guest_input, qwen3_dense_reference_prefill_text_output_report,
     qwen3_dense_reference_range_forward_report_with_prompt, qwen3_flush_w5_memory_runtime_commits,
     qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
@@ -279,6 +278,9 @@ struct Qwen3DecodeLoopCliArgs {
     step_count: usize,
     prompt: Option<String>,
     matmul_batch: Option<usize>,
+    /// Model profile selector. Defaults to "qwen3" (dense); "deepseek-v4-flash"
+    /// selects the Flash geometry profile (stage 1: geometry smoke only).
+    profile: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -534,6 +536,7 @@ where
             let mut step_count = None;
             let mut prompt = None;
             let mut matmul_batch = None;
+            let mut profile: Option<String> = None;
             let mut positionals = Vec::new();
             let mut pending = args.peekable();
 
@@ -572,6 +575,13 @@ where
                     )?);
                 } else if let Some(value) = text.strip_prefix("--matmul-batch=") {
                     matmul_batch = Some(parse_positive_usize("--matmul-batch", value)?);
+                } else if text == "--profile" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--profile requires a value"))?;
+                    profile = Some(next.to_string_lossy().to_string());
+                } else if let Some(value) = text.strip_prefix("--profile=") {
+                    profile = Some(value.to_string());
                 } else if text.starts_with("--") {
                     anyhow::bail!("unknown qwen3-decode-loop option: {text}");
                 } else {
@@ -609,6 +619,7 @@ where
                 step_count: step_count.unwrap_or(2),
                 prompt,
                 matmul_batch,
+                profile: profile.unwrap_or_else(|| "qwen3".to_string()),
             }))
         }
         _ => Ok(None),
@@ -30463,21 +30474,23 @@ fn run_qwen3_decode_loop_cli(args: &Qwen3DecodeLoopCliArgs) -> anyhow::Result<()
     prepare_qwen3_decode_loop_environment(args)?;
     std::env::set_var("SIM_QWEN3_DECODE_PROGRESS", "1");
     eprintln!(
-        "qwen3-decode-loop: scenario={} steps={} prompt_bytes={} matmul_batch={}",
+        "qwen3-decode-loop: scenario={} steps={} profile={} prompt_bytes={} matmul_batch={}",
         scenario_path.display(),
         args.step_count,
+        args.profile,
         args.prompt.as_deref().map(str::len).unwrap_or(0),
         args.matmul_batch
             .map(|value| value.to_string())
             .unwrap_or_else(|| "default".to_string())
     );
-    let report = if let Some(prompt) = args.prompt.as_deref() {
-        qwen3_dense_reference_decode_loop_report_with_prompt(&topology, args.step_count, prompt)
-    } else {
-        qwen3_dense_reference_decode_loop_report(&topology, args.step_count)
-    }
+    let report = model_decode_loop_report(
+        &topology,
+        args.step_count,
+        &args.profile,
+        args.prompt.as_deref(),
+    )
     .map_err(anyhow::Error::msg)
-    .context("failed to run Qwen3 decode loop")?;
+    .context("failed to run decode loop")?;
     println!("qwen3_dense_reference_decode_loop");
     println!("  scenario: {}", scenario_path.display());
     println!("  steps: {}", report.steps.len());
