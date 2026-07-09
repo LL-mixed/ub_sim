@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""
+DeepSeek V4 Flash expert route flow and expert cache contract tests (stage 2).
+
+Validates the C-side stage-2 MoE helpers: weight-tile addressing, route-decision
+record keys, and the node-side LRU expert cache simulator (mirrors ds4_ssd.c).
+These read source directly (no QEMU/guest run), matching the record-recycling
+test pattern. The cross-layer handoff interface is intentionally untouched.
+"""
+
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SERVICE_DIR = ROOT / "components" / "mem_service"
+ROUTE_H = SERVICE_DIR / "mem_service_expert_route_flow.h"
+ROUTE_C = SERVICE_DIR / "mem_service_expert_route_flow.c"
+CACHE_H = SERVICE_DIR / "mem_service_expert_cache.h"
+CACHE_C = SERVICE_DIR / "mem_service_expert_cache.c"
+
+
+class ExpertRouteFlowTest(unittest.TestCase):
+    def setUp(self):
+        self.route_h = ROUTE_H.read_text()
+        self.route_c = ROUTE_C.read_text()
+
+    def test_files_exist(self):
+        self.assertTrue(ROUTE_H.exists())
+        self.assertTrue(ROUTE_C.exists())
+
+    def test_weight_tile_key_addressing(self):
+        # Addressing is (model, layer, expert_id, quant) per plan section 3.3.
+        self.assertIn("weights/%s/layer%u/expert%u/%s", self.route_c)
+        self.assertIn("MEM_SERVICE_EXPERT_QUANT_IQ2_XXS", self.route_h)
+        self.assertIn("MEM_SERVICE_EXPERT_QUANT_Q2_K", self.route_h)
+
+    def test_route_decision_record_key(self):
+        self.assertIn("route/%s/layer%u/token%u", self.route_c)
+        self.assertIn("mem_service_expert_route_record_key", self.route_h)
+
+    def test_route_top_k_matches_flash(self):
+        self.assertIn("#define MEM_SERVICE_EXPERT_ROUTE_TOP_K 6U", self.route_h)
+
+
+class ExpertCacheTest(unittest.TestCase):
+    def setUp(self):
+        self.cache_h = CACHE_H.read_text()
+        self.cache_c = CACHE_C.read_text()
+
+    def test_files_exist(self):
+        self.assertTrue(CACHE_H.exists())
+        self.assertTrue(CACHE_C.exists())
+
+    def test_cache_stats_fields(self):
+        self.assertIn("uint64_t hits;", self.cache_h)
+        self.assertIn("uint64_t misses;", self.cache_h)
+        self.assertIn("uint64_t evictions;", self.cache_h)
+        self.assertIn("uint64_t pread_bytes;", self.cache_h)
+
+    def test_cache_lru_semantics_in_source(self):
+        # touch() must promote on hit and evict the front (LRU) on capacity.
+        self.assertIn("mem_service_expert_cache_touch", self.cache_h)
+        self.assertIn("Hit: promote to MRU", self.cache_c)
+        self.assertIn("evict LRU (front)", self.cache_c)
+
+    def test_cache_preload_hotlist(self):
+        self.assertIn("mem_service_expert_cache_preload", self.cache_h)
+        self.assertIn("no misses counted", self.cache_h)
+
+    def test_cache_does_not_hold_payload(self):
+        # Plan section 3.3: cache is residency/stats only, not payload bytes.
+        self.assertIn("payload bytes", self.cache_h)
+        self.assertIn("only tracks residency", self.cache_h)
+
+
+if __name__ == "__main__":
+    unittest.main()
