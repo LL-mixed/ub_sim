@@ -80,6 +80,66 @@ pub struct DeepseekV4FlashLayerPlan {
     pub operations: Vec<DeepseekV4FlashOp>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeepseekV4FlashQkvProjectionPlan {
+    pub normalized_hidden: TensorContract,
+    pub q_lora_weight: TensorContract,
+    pub q_lora: TensorContract,
+    pub q_lora_quantized: TensorContract,
+    pub q_lora_scale: TensorContract,
+    pub q_projection_weight: TensorContract,
+    pub q: TensorContract,
+    pub kv_projection_weight: TensorContract,
+    pub kv: TensorContract,
+}
+
+impl DeepseekV4FlashQkvProjectionPlan {
+    pub fn decode(token_count: u32) -> Result<Self, String> {
+        if token_count == 0 {
+            return Err("deepseek QKV token count must be non-zero".to_string());
+        }
+        let p = DEEPSEEK_V4_FLASH_PROFILE;
+        Ok(Self {
+            normalized_hidden: TensorContract::new(
+                [token_count, p.hidden_size as u32],
+                DeepseekV4FlashDtype::Bf16,
+            ),
+            q_lora_weight: TensorContract::new(
+                [p.hidden_size as u32, p.q_lora_rank as u32],
+                DeepseekV4FlashDtype::Bf16,
+            ),
+            q_lora: TensorContract::new(
+                [token_count, p.q_lora_rank as u32],
+                DeepseekV4FlashDtype::F32,
+            ),
+            q_lora_quantized: TensorContract::new(
+                [token_count, p.q_lora_rank as u32],
+                DeepseekV4FlashDtype::I8,
+            ),
+            q_lora_scale: TensorContract::new([token_count, 1], DeepseekV4FlashDtype::F32),
+            q_projection_weight: TensorContract::new(
+                [
+                    p.q_lora_rank as u32,
+                    (p.num_attention_heads * p.head_dim) as u32,
+                ],
+                DeepseekV4FlashDtype::I8,
+            ),
+            q: TensorContract::new(
+                [token_count, p.num_attention_heads as u32, p.head_dim as u32],
+                DeepseekV4FlashDtype::Bf16,
+            ),
+            kv_projection_weight: TensorContract::new(
+                [p.hidden_size as u32, p.head_dim as u32],
+                DeepseekV4FlashDtype::Bf16,
+            ),
+            kv: TensorContract::new(
+                [token_count, p.num_key_value_heads as u32, p.head_dim as u32],
+                DeepseekV4FlashDtype::Bf16,
+            ),
+        })
+    }
+}
+
 impl DeepseekV4FlashLayerPlan {
     pub fn decode(layer_id: u32, token_count: u32) -> Result<Self, String> {
         if token_count == 0 {
@@ -208,6 +268,96 @@ impl DeepseekV4FlashLayerPlan {
         }
         Ok(())
     }
+}
+
+pub fn deepseek_v4_flash_head_rms_norm_reference(
+    values: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+    weight: Option<&[f32]>,
+    eps: f32,
+) -> Result<Vec<f32>, String> {
+    let expected = num_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek head RMSNorm shape overflow".to_string())?;
+    if num_heads == 0 || head_dim == 0 || values.len() != expected {
+        return Err(format!(
+            "deepseek head RMSNorm shape mismatch: values={} expected={expected}",
+            values.len()
+        ));
+    }
+    if let Some(weight) = weight {
+        if weight.len() != head_dim {
+            return Err(format!(
+                "deepseek head RMSNorm weight mismatch: weight={} head_dim={head_dim}",
+                weight.len()
+            ));
+        }
+    }
+
+    let mut output = Vec::with_capacity(values.len());
+    for head in values.chunks_exact(head_dim) {
+        output.extend(deepseek_v4_flash_rms_norm_reference(head, weight, eps)?);
+    }
+    Ok(output)
+}
+
+pub fn deepseek_v4_flash_rope_tail_reference(
+    values: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+    rope_dim: usize,
+    cos: &[f32],
+    sin: &[f32],
+    inverse: bool,
+) -> Result<Vec<f32>, String> {
+    let expected = num_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek RoPE shape overflow".to_string())?;
+    if num_heads == 0
+        || head_dim == 0
+        || rope_dim == 0
+        || rope_dim > head_dim
+        || rope_dim % 2 != 0
+        || values.len() != expected
+    {
+        return Err(format!(
+            "deepseek RoPE shape mismatch: values={} heads={num_heads} head_dim={head_dim} rope_dim={rope_dim}",
+            values.len()
+        ));
+    }
+    if cos.len() != rope_dim / 2 || sin.len() != rope_dim / 2 {
+        return Err(format!(
+            "deepseek RoPE table mismatch: cos={} sin={} expected={}",
+            cos.len(),
+            sin.len(),
+            rope_dim / 2
+        ));
+    }
+    if values
+        .iter()
+        .chain(cos)
+        .chain(sin)
+        .any(|value| !value.is_finite())
+    {
+        return Err("deepseek RoPE input contains non-finite value".to_string());
+    }
+
+    let mut output = values.to_vec();
+    let tail_start = head_dim - rope_dim;
+    let sin_sign = if inverse { -1.0 } else { 1.0 };
+    for head in output.chunks_exact_mut(head_dim) {
+        for pair in 0..rope_dim / 2 {
+            let index = tail_start + pair * 2;
+            let x0 = head[index];
+            let x1 = head[index + 1];
+            let c = cos[pair];
+            let s = sin_sign * sin[pair];
+            head[index] = x0 * c - x1 * s;
+            head[index + 1] = x0 * s + x1 * c;
+        }
+    }
+    Ok(output)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -451,6 +601,57 @@ mod tests {
     fn decode_plan_rejects_invalid_layer_or_empty_batch() {
         assert!(DeepseekV4FlashLayerPlan::decode(43, 1).is_err());
         assert!(DeepseekV4FlashLayerPlan::decode(0, 0).is_err());
+    }
+
+    #[test]
+    fn qkv_projection_plan_matches_flash_shapes() {
+        let plan = DeepseekV4FlashQkvProjectionPlan::decode(8).expect("QKV plan");
+        assert_eq!(
+            plan.q_lora_weight,
+            TensorContract::new([4096, 1024], DeepseekV4FlashDtype::Bf16)
+        );
+        assert_eq!(
+            plan.q_projection_weight,
+            TensorContract::new([1024, 32768], DeepseekV4FlashDtype::I8)
+        );
+        assert_eq!(
+            plan.q,
+            TensorContract::new([8, 64, 512], DeepseekV4FlashDtype::Bf16)
+        );
+        assert_eq!(
+            plan.kv,
+            TensorContract::new([8, 1, 512], DeepseekV4FlashDtype::Bf16)
+        );
+    }
+
+    #[test]
+    fn head_rms_norm_is_independent_per_head() {
+        let output =
+            deepseek_v4_flash_head_rms_norm_reference(&[3.0, 4.0, 0.0, 5.0], 2, 2, None, 1.0e-6)
+                .expect("head RMSNorm");
+        let first_inv = ((25.0f32 / 2.0) + 1.0e-6).sqrt().recip();
+        let second_inv = ((25.0f32 / 2.0) + 1.0e-6).sqrt().recip();
+        assert!((output[0] - 3.0 * first_inv).abs() < 1.0e-6);
+        assert!((output[1] - 4.0 * first_inv).abs() < 1.0e-6);
+        assert!((output[2] - 0.0).abs() < 1.0e-6);
+        assert!((output[3] - 5.0 * second_inv).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn rope_rotates_only_head_tail_and_inverse_restores_input() {
+        let values = [10.0, 20.0, 1.0, 2.0, 3.0, 4.0];
+        let angle0 = 0.25f32;
+        let angle1 = -0.5f32;
+        let cos = [angle0.cos(), angle1.cos()];
+        let sin = [angle0.sin(), angle1.sin()];
+        let rotated = deepseek_v4_flash_rope_tail_reference(&values, 1, 6, 4, &cos, &sin, false)
+            .expect("forward RoPE");
+        assert_eq!(&rotated[..2], &values[..2]);
+        let restored = deepseek_v4_flash_rope_tail_reference(&rotated, 1, 6, 4, &cos, &sin, true)
+            .expect("inverse RoPE");
+        for (actual, expected) in restored.iter().zip(values) {
+            assert!((actual - expected).abs() < 1.0e-5);
+        }
     }
 
     #[test]
