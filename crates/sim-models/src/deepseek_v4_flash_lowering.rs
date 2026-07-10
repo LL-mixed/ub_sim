@@ -14,6 +14,13 @@ pub enum DeepseekV4FlashAttentionKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepseekV4FlashCompressedSelection {
+    None,
+    LearnedIndexer,
+    DeterministicPrefix,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeepseekV4FlashOp {
     HyperConnectionPreAttention,
     AttentionNorm,
@@ -91,6 +98,57 @@ pub struct DeepseekV4FlashQkvProjectionPlan {
     pub q: TensorContract,
     pub kv_projection_weight: TensorContract,
     pub kv: TensorContract,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeepseekV4FlashAttentionCachePlan {
+    pub attention_kind: DeepseekV4FlashAttentionKind,
+    pub sequence_len: u32,
+    pub raw_start: u32,
+    pub raw_rows: u32,
+    pub compress_ratio: u32,
+    pub compressed_rows: u32,
+    pub compressed_selection: DeepseekV4FlashCompressedSelection,
+}
+
+impl DeepseekV4FlashAttentionCachePlan {
+    pub fn decode(layer_id: u32, sequence_len: u32) -> Result<Self, String> {
+        if sequence_len == 0 {
+            return Err("deepseek attention sequence length must be non-zero".to_string());
+        }
+        let compress_ratio = deepseek_v4_flash_layer_compress_ratio(u64::from(layer_id))
+            .ok_or_else(|| format!("deepseek layer out of range: {layer_id}"))?;
+        let profile = DEEPSEEK_V4_FLASH_PROFILE;
+        let raw_rows = sequence_len.min(profile.sliding_window as u32);
+        let raw_start = sequence_len - raw_rows;
+        let (attention_kind, compressed_rows, compressed_selection) = match compress_ratio {
+            0 => (
+                DeepseekV4FlashAttentionKind::SlidingWindow,
+                0,
+                DeepseekV4FlashCompressedSelection::None,
+            ),
+            4 => (
+                DeepseekV4FlashAttentionKind::CompressedSparseRatio4,
+                (sequence_len / 4).min(profile.indexer_top_k as u32),
+                DeepseekV4FlashCompressedSelection::LearnedIndexer,
+            ),
+            128 => (
+                DeepseekV4FlashAttentionKind::HeavilyCompressedRatio128,
+                (sequence_len / 128).min(profile.indexer_top_k as u32),
+                DeepseekV4FlashCompressedSelection::DeterministicPrefix,
+            ),
+            other => return Err(format!("unsupported deepseek compression ratio: {other}")),
+        };
+        Ok(Self {
+            attention_kind,
+            sequence_len,
+            raw_start,
+            raw_rows,
+            compress_ratio,
+            compressed_rows,
+            compressed_selection,
+        })
+    }
 }
 
 impl DeepseekV4FlashQkvProjectionPlan {
@@ -360,6 +418,516 @@ pub fn deepseek_v4_flash_rope_tail_reference(
     Ok(output)
 }
 
+pub fn deepseek_v4_flash_write_kv_row_reference(
+    cache: &mut [f32],
+    head_dim: usize,
+    slot: usize,
+    kv: &[f32],
+) -> Result<(), String> {
+    if head_dim == 0 || kv.len() != head_dim || cache.len() % head_dim != 0 {
+        return Err(format!(
+            "deepseek KV write shape mismatch: cache={} kv={} head_dim={head_dim}",
+            cache.len(),
+            kv.len()
+        ));
+    }
+    let start = slot
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek KV slot offset overflow".to_string())?;
+    let end = start
+        .checked_add(head_dim)
+        .ok_or_else(|| "deepseek KV slot end overflow".to_string())?;
+    let destination = cache
+        .get_mut(start..end)
+        .ok_or_else(|| format!("deepseek KV slot out of range: slot={slot}"))?;
+    if kv.iter().any(|value| !value.is_finite()) {
+        return Err("deepseek KV row contains non-finite value".to_string());
+    }
+    destination.copy_from_slice(kv);
+    Ok(())
+}
+
+pub fn deepseek_v4_flash_gather_kv_rows_reference(
+    cache: &[f32],
+    head_dim: usize,
+    row_indices: &[usize],
+) -> Result<Vec<f32>, String> {
+    if head_dim == 0 || cache.len() % head_dim != 0 {
+        return Err(format!(
+            "deepseek KV gather shape mismatch: cache={} head_dim={head_dim}",
+            cache.len()
+        ));
+    }
+    let mut output = Vec::with_capacity(
+        row_indices
+            .len()
+            .checked_mul(head_dim)
+            .ok_or_else(|| "deepseek KV gather size overflow".to_string())?,
+    );
+    for &row in row_indices {
+        let start = row
+            .checked_mul(head_dim)
+            .ok_or_else(|| "deepseek KV row offset overflow".to_string())?;
+        let end = start
+            .checked_add(head_dim)
+            .ok_or_else(|| "deepseek KV row end overflow".to_string())?;
+        output.extend_from_slice(
+            cache
+                .get(start..end)
+                .ok_or_else(|| format!("deepseek KV row out of range: row={row}"))?,
+        );
+    }
+    Ok(output)
+}
+
+/// DS4-compatible attention over shared KV rows. The learned sink contributes
+/// to the softmax denominator, but has no value row to add to the output.
+pub fn deepseek_v4_flash_sink_attention_reference(
+    q: &[f32],
+    kv_rows: &[f32],
+    sinks: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+) -> Result<Vec<f32>, String> {
+    let q_len = num_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek attention Q shape overflow".to_string())?;
+    if num_heads == 0
+        || head_dim == 0
+        || q.len() != q_len
+        || sinks.len() != num_heads
+        || kv_rows.is_empty()
+        || kv_rows.len() % head_dim != 0
+    {
+        return Err(format!(
+            "deepseek attention shape mismatch: q={} kv={} sinks={} heads={num_heads} head_dim={head_dim}",
+            q.len(),
+            kv_rows.len(),
+            sinks.len()
+        ));
+    }
+    if q.iter()
+        .chain(kv_rows)
+        .chain(sinks)
+        .any(|value| !value.is_finite())
+    {
+        return Err("deepseek attention input contains non-finite value".to_string());
+    }
+
+    let row_count = kv_rows.len() / head_dim;
+    let scale = (head_dim as f32).sqrt().recip();
+    let mut output = vec![0.0f32; q_len];
+    let mut scores = vec![0.0f32; row_count];
+    for head in 0..num_heads {
+        let q_head = &q[head * head_dim..(head + 1) * head_dim];
+        let mut max_score = sinks[head];
+        for (row, kv) in kv_rows.chunks_exact(head_dim).enumerate() {
+            let score = q_head
+                .iter()
+                .zip(kv)
+                .map(|(q_value, kv_value)| q_value * kv_value)
+                .sum::<f32>()
+                * scale;
+            scores[row] = score;
+            max_score = max_score.max(score);
+        }
+
+        let mut denominator = (sinks[head] - max_score).exp();
+        let output_head = &mut output[head * head_dim..(head + 1) * head_dim];
+        for (row, kv) in kv_rows.chunks_exact(head_dim).enumerate() {
+            let weight = (scores[row] - max_score).exp();
+            denominator += weight;
+            for (output_value, kv_value) in output_head.iter_mut().zip(kv) {
+                *output_value += weight * kv_value;
+            }
+        }
+        let inverse_denominator = denominator.recip();
+        for output_value in output_head {
+            *output_value *= inverse_denominator;
+        }
+    }
+    Ok(output)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashCompressorState {
+    head_dim: usize,
+    compress_ratio: usize,
+    width: usize,
+    kv: Vec<f32>,
+    score: Vec<f32>,
+}
+
+impl DeepseekV4FlashCompressorState {
+    pub fn new(head_dim: usize, compress_ratio: usize) -> Result<Self, String> {
+        if head_dim == 0 || !matches!(compress_ratio, 4 | 128) {
+            return Err(format!(
+                "deepseek compressor geometry mismatch: head_dim={head_dim} ratio={compress_ratio}"
+            ));
+        }
+        let lanes = if compress_ratio == 4 { 2usize } else { 1usize };
+        let width = lanes
+            .checked_mul(head_dim)
+            .ok_or_else(|| "deepseek compressor width overflow".to_string())?;
+        let rows = compress_ratio
+            .checked_mul(lanes)
+            .ok_or_else(|| "deepseek compressor row count overflow".to_string())?;
+        let state_len = rows
+            .checked_mul(width)
+            .ok_or_else(|| "deepseek compressor state size overflow".to_string())?;
+        Ok(Self {
+            head_dim,
+            compress_ratio,
+            width,
+            kv: vec![0.0; state_len],
+            score: vec![f32::NEG_INFINITY; state_len],
+        })
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn update_projected(
+        &mut self,
+        position: u32,
+        projected_kv: &[f32],
+        projected_score: &[f32],
+        ape: &[f32],
+        norm_weight: &[f32],
+        rope_dim: usize,
+        cos: &[f32],
+        sin: &[f32],
+    ) -> Result<Option<Vec<f32>>, String> {
+        if projected_kv.len() != self.width
+            || projected_score.len() != self.width
+            || ape.len() != self.width
+            || norm_weight.len() != self.head_dim
+            || projected_kv
+                .iter()
+                .chain(projected_score)
+                .chain(ape)
+                .any(|value| !value.is_finite())
+        {
+            return Err(format!(
+                "deepseek compressor projected shape mismatch: kv={} score={} ape={} norm={} width={} head_dim={}",
+                projected_kv.len(),
+                projected_score.len(),
+                ape.len(),
+                norm_weight.len(),
+                self.width,
+                self.head_dim
+            ));
+        }
+
+        let position_mod = position as usize % self.compress_ratio;
+        let row = if self.compress_ratio == 4 {
+            self.compress_ratio + position_mod
+        } else {
+            position_mod
+        };
+        let row_start = row * self.width;
+        self.kv[row_start..row_start + self.width].copy_from_slice(projected_kv);
+        for index in 0..self.width {
+            self.score[row_start + index] = projected_score[index] + ape[index];
+        }
+
+        if (position as usize + 1) % self.compress_ratio != 0 {
+            return Ok(None);
+        }
+
+        let pooled = self.pool()?;
+        let mut output = deepseek_v4_flash_rms_norm_reference(&pooled, Some(norm_weight), 1.0e-6)?;
+        output = deepseek_v4_flash_rope_tail_reference(
+            &output,
+            1,
+            self.head_dim,
+            rope_dim,
+            cos,
+            sin,
+            false,
+        )?;
+
+        if self.head_dim == DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize {
+            deepseek_v4_flash_fp8_kv_roundtrip_reference(&mut output, rope_dim)?;
+        } else if self.head_dim == DEEPSEEK_V4_FLASH_PROFILE.indexer_head_dim as usize {
+            deepseek_v4_flash_indexer_qat_reference(&mut output)?;
+        }
+
+        if self.compress_ratio == 4 {
+            self.advance_ratio4_window();
+        }
+        Ok(Some(output))
+    }
+
+    fn pool(&self) -> Result<Vec<f32>, String> {
+        let mut output = vec![0.0f32; self.head_dim];
+        for dimension in 0..self.head_dim {
+            let mut pairs = Vec::with_capacity(if self.compress_ratio == 4 {
+                self.compress_ratio * 2
+            } else {
+                self.compress_ratio
+            });
+            if self.compress_ratio == 4 {
+                for row in 0..self.compress_ratio {
+                    let index = row * self.width + dimension;
+                    pairs.push((self.kv[index], self.score[index]));
+                    let current_index =
+                        (self.compress_ratio + row) * self.width + self.head_dim + dimension;
+                    pairs.push((self.kv[current_index], self.score[current_index]));
+                }
+            } else {
+                for row in 0..self.compress_ratio {
+                    let index = row * self.width + dimension;
+                    pairs.push((self.kv[index], self.score[index]));
+                }
+            }
+            let max_score = pairs
+                .iter()
+                .map(|(_, score)| *score)
+                .fold(f32::NEG_INFINITY, f32::max);
+            if !max_score.is_finite() {
+                continue;
+            }
+            let mut denominator = 0.0f32;
+            let mut weighted_sum = 0.0f32;
+            for (value, score) in pairs {
+                let weight = (score - max_score).exp();
+                denominator += weight;
+                weighted_sum += value * weight;
+            }
+            if denominator <= 0.0 || !denominator.is_finite() {
+                return Err("deepseek compressor softmax denominator is invalid".to_string());
+            }
+            output[dimension] = weighted_sum / denominator;
+        }
+        Ok(output)
+    }
+
+    fn advance_ratio4_window(&mut self) {
+        for row in 0..self.compress_ratio {
+            let previous = row * self.width;
+            let current = (self.compress_ratio + row) * self.width;
+            self.kv.copy_within(current..current + self.width, previous);
+            self.score
+                .copy_within(current..current + self.width, previous);
+        }
+        for row in 0..self.compress_ratio {
+            let previous = row * self.width;
+            let current = (self.compress_ratio + row) * self.width;
+            self.kv
+                .copy_within(previous..previous + self.width, current);
+            self.score
+                .copy_within(previous..previous + self.width, current);
+        }
+    }
+}
+
+pub fn deepseek_v4_flash_fp8_kv_roundtrip_reference(
+    values: &mut [f32],
+    rope_dim: usize,
+) -> Result<(), String> {
+    if rope_dim > values.len() || (values.len() - rope_dim) % 64 != 0 {
+        return Err(format!(
+            "deepseek FP8 KV shape mismatch: width={} rope_dim={rope_dim}",
+            values.len()
+        ));
+    }
+    let nope_dim = values.len() - rope_dim;
+    for block in values[..nope_dim].chunks_exact_mut(64) {
+        let amax = block
+            .iter()
+            .map(|value| value.abs())
+            .fold(0.0f32, f32::max)
+            .max(1.0e-4);
+        let scale = 2.0f32.powf((amax / 448.0).log2().ceil());
+        for value in block {
+            *value =
+                deepseek_v4_flash_e4m3fn_roundtrip((*value / scale).clamp(-448.0, 448.0)) * scale;
+        }
+    }
+    Ok(())
+}
+
+fn deepseek_v4_flash_e4m3fn_roundtrip(value: f32) -> f32 {
+    fn positive_value(index: usize) -> f32 {
+        const EXP_SCALE: [f32; 16] = [
+            0.0, 0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0,
+            128.0, 256.0,
+        ];
+        let exponent = (index >> 3) & 0x0f;
+        let mantissa = index & 0x07;
+        if exponent == 0 {
+            mantissa as f32 * 0.001953125
+        } else {
+            (1.0 + mantissa as f32 * 0.125) * EXP_SCALE[exponent]
+        }
+    }
+
+    let sign = if value < 0.0 { -1.0 } else { 1.0 };
+    let magnitude = value.abs().min(448.0);
+    let mut low = 0usize;
+    let mut high = 126usize;
+    while low < high {
+        let middle = (low + high + 1) >> 1;
+        if positive_value(middle) <= magnitude {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let mut best = low;
+    if best < 126 {
+        let best_difference = (magnitude - positive_value(best)).abs();
+        let next_difference = (magnitude - positive_value(best + 1)).abs();
+        if next_difference < best_difference
+            || (next_difference == best_difference && (best + 1) % 2 == 0 && best % 2 != 0)
+        {
+            best += 1;
+        }
+    }
+    sign * positive_value(best)
+}
+
+pub fn deepseek_v4_flash_indexer_qat_reference(values: &mut [f32]) -> Result<(), String> {
+    if values.len() != 128 {
+        return Err(format!(
+            "deepseek indexer QAT expects 128 values, got {}",
+            values.len()
+        ));
+    }
+    let mut stride = 1;
+    while stride < values.len() {
+        for base in (0..values.len()).step_by(2 * stride) {
+            for index in 0..stride {
+                let a = values[base + index];
+                let b = values[base + stride + index];
+                values[base + index] = a + b;
+                values[base + stride + index] = a - b;
+            }
+        }
+        stride *= 2;
+    }
+    for value in values.iter_mut() {
+        *value *= 0.08838834764831845;
+    }
+
+    const FP4_VALUES: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+    for block in values.chunks_exact_mut(32) {
+        let amax = block
+            .iter()
+            .map(|value| value.abs())
+            .fold(0.0f32, f32::max)
+            .max(7.052966104933725e-38);
+        let scale = 2.0f32.powf((amax / 6.0).log2().ceil());
+        for value in block {
+            let sign = if *value < 0.0 { -1.0 } else { 1.0 };
+            let magnitude = (*value / scale).abs().min(6.0);
+            let mut best = 0usize;
+            for candidate in 1..FP4_VALUES.len() {
+                let difference = (magnitude - FP4_VALUES[candidate]).abs();
+                let best_difference = (magnitude - FP4_VALUES[best]).abs();
+                if difference < best_difference
+                    || (difference == best_difference && candidate % 2 == 0 && best % 2 != 0)
+                {
+                    best = candidate;
+                }
+            }
+            *value = sign * FP4_VALUES[best] * scale;
+        }
+    }
+    Ok(())
+}
+
+pub fn deepseek_v4_flash_sparse_indexer_reference(
+    q: &[f32],
+    compressed_kv: &[f32],
+    projected_head_weights: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+    top_k: usize,
+) -> Result<Vec<usize>, String> {
+    let q_len = num_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek indexer Q shape overflow".to_string())?;
+    if num_heads == 0
+        || head_dim == 0
+        || top_k == 0
+        || q.len() != q_len
+        || projected_head_weights.len() != num_heads
+        || compressed_kv.is_empty()
+        || compressed_kv.len() % head_dim != 0
+        || q.iter()
+            .chain(compressed_kv)
+            .chain(projected_head_weights)
+            .any(|value| !value.is_finite())
+    {
+        return Err(format!(
+            "deepseek indexer shape mismatch: q={} kv={} weights={} heads={num_heads} head_dim={head_dim} top_k={top_k}",
+            q.len(),
+            compressed_kv.len(),
+            projected_head_weights.len()
+        ));
+    }
+
+    let row_count = compressed_kv.len() / head_dim;
+    let selection_count = top_k.min(row_count);
+    if selection_count == row_count {
+        return Ok((0..row_count).collect());
+    }
+    let scale = ((num_heads * head_dim) as f32).sqrt().recip();
+    let mut scores = vec![0.0f32; row_count];
+    for (row, kv) in compressed_kv.chunks_exact(head_dim).enumerate() {
+        for head in 0..num_heads {
+            let q_head = &q[head * head_dim..(head + 1) * head_dim];
+            let dot = q_head
+                .iter()
+                .zip(kv)
+                .map(|(q_value, kv_value)| q_value * kv_value)
+                .sum::<f32>()
+                .max(0.0);
+            scores[row] += dot * projected_head_weights[head] * scale;
+        }
+    }
+
+    let mut selected = Vec::with_capacity(selection_count);
+    let mut allowed = vec![false; row_count];
+    for _ in 0..selection_count {
+        let mut best_row = None;
+        let mut best_score = f32::NEG_INFINITY;
+        for row in 0..row_count {
+            if !allowed[row] && scores[row] > best_score {
+                best_row = Some(row);
+                best_score = scores[row];
+            }
+        }
+        let row = best_row.ok_or_else(|| "deepseek indexer selection failed".to_string())?;
+        allowed[row] = true;
+        selected.push(row);
+    }
+    Ok(selected)
+}
+
+pub fn deepseek_v4_flash_mixed_attention_reference(
+    q: &[f32],
+    raw_kv: &[f32],
+    compressed_kv: &[f32],
+    compressed_indices: &[usize],
+    sinks: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+) -> Result<Vec<f32>, String> {
+    if raw_kv.is_empty() || raw_kv.len() % head_dim != 0 {
+        return Err("deepseek mixed attention raw KV shape mismatch".to_string());
+    }
+    let selected_compressed =
+        deepseek_v4_flash_gather_kv_rows_reference(compressed_kv, head_dim, compressed_indices)?;
+    let mut rows = Vec::with_capacity(raw_kv.len() + selected_compressed.len());
+    rows.extend_from_slice(raw_kv);
+    rows.extend_from_slice(&selected_compressed);
+    deepseek_v4_flash_sink_attention_reference(q, &rows, sinks, num_heads, head_dim)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeepseekV4FlashHcSplit {
     pub pre: Vec<f32>,
@@ -604,6 +1172,43 @@ mod tests {
     }
 
     #[test]
+    fn attention_cache_plan_distinguishes_swa_csa_and_hca_reads() {
+        let swa = DeepseekV4FlashAttentionCachePlan::decode(1, 1_024).expect("SWA cache");
+        assert_eq!(swa.raw_start, 896);
+        assert_eq!(swa.raw_rows, 128);
+        assert_eq!(swa.compressed_rows, 0);
+        assert_eq!(
+            swa.compressed_selection,
+            DeepseekV4FlashCompressedSelection::None
+        );
+
+        let csa = DeepseekV4FlashAttentionCachePlan::decode(2, 1_024).expect("CSA cache");
+        assert_eq!(csa.raw_start, 896);
+        assert_eq!(csa.compressed_rows, 256);
+        assert_eq!(
+            csa.compressed_selection,
+            DeepseekV4FlashCompressedSelection::LearnedIndexer
+        );
+
+        let hca = DeepseekV4FlashAttentionCachePlan::decode(3, 1_024).expect("HCA cache");
+        assert_eq!(hca.raw_start, 896);
+        assert_eq!(hca.compressed_rows, 8);
+        assert_eq!(
+            hca.compressed_selection,
+            DeepseekV4FlashCompressedSelection::DeterministicPrefix
+        );
+    }
+
+    #[test]
+    fn attention_cache_plan_caps_compressed_rows_at_model_topk() {
+        let csa = DeepseekV4FlashAttentionCachePlan::decode(2, 16_384).expect("long CSA cache");
+        let hca = DeepseekV4FlashAttentionCachePlan::decode(3, 131_072).expect("long HCA cache");
+        assert_eq!(csa.compressed_rows, 512);
+        assert_eq!(hca.compressed_rows, 512);
+        assert!(DeepseekV4FlashAttentionCachePlan::decode(1, 0).is_err());
+    }
+
+    #[test]
     fn qkv_projection_plan_matches_flash_shapes() {
         let plan = DeepseekV4FlashQkvProjectionPlan::decode(8).expect("QKV plan");
         assert_eq!(
@@ -652,6 +1257,170 @@ mod tests {
         for (actual, expected) in restored.iter().zip(values) {
             assert!((actual - expected).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn kv_write_and_gather_follow_explicit_physical_rows() {
+        let mut cache = vec![0.0; 8];
+        deepseek_v4_flash_write_kv_row_reference(&mut cache, 2, 2, &[5.0, 6.0])
+            .expect("write KV row");
+        deepseek_v4_flash_write_kv_row_reference(&mut cache, 2, 0, &[1.0, 2.0])
+            .expect("write KV row");
+        assert_eq!(cache, vec![1.0, 2.0, 0.0, 0.0, 5.0, 6.0, 0.0, 0.0]);
+        let gathered =
+            deepseek_v4_flash_gather_kv_rows_reference(&cache, 2, &[2, 0]).expect("gather KV rows");
+        assert_eq!(gathered, vec![5.0, 6.0, 1.0, 2.0]);
+        assert!(deepseek_v4_flash_write_kv_row_reference(&mut cache, 2, 4, &[1.0, 2.0]).is_err());
+        assert!(deepseek_v4_flash_gather_kv_rows_reference(&cache, 2, &[4]).is_err());
+    }
+
+    #[test]
+    fn sink_attention_matches_stable_softmax_with_no_sink_value() {
+        let q = [1.0, 0.0, 0.0, 1.0];
+        let kv = [1.0, 0.0, 0.0, 1.0];
+        let output = deepseek_v4_flash_sink_attention_reference(&q, &kv, &[0.0, 0.0], 2, 2)
+            .expect("sink attention");
+        let high = (1.0f32 / 2.0f32.sqrt()).exp();
+        let denominator = high + 2.0;
+        let expected = [
+            high / denominator,
+            1.0 / denominator,
+            1.0 / denominator,
+            high / denominator,
+        ];
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn sink_attention_is_numerically_stable_for_large_scores() {
+        let output = deepseek_v4_flash_sink_attention_reference(
+            &[10_000.0, 10_000.0],
+            &[10_000.0, 10_000.0],
+            &[100_000_000.0],
+            1,
+            2,
+        )
+        .expect("stable sink attention");
+        assert!(output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn ratio4_compressor_emits_only_at_boundaries_and_pools_both_lanes() {
+        let mut state = DeepseekV4FlashCompressorState::new(2, 4).expect("ratio-4 state");
+        assert_eq!(state.width(), 4);
+        let projected = [
+            [10.0, 20.0, 1.0, 2.0],
+            [30.0, 40.0, 3.0, 4.0],
+            [50.0, 60.0, 5.0, 6.0],
+            [70.0, 80.0, 7.0, 8.0],
+        ];
+        for (position, row) in projected.iter().enumerate() {
+            let result = state
+                .update_projected(
+                    position as u32,
+                    row,
+                    &[0.0; 4],
+                    &[0.0; 4],
+                    &[1.0; 2],
+                    2,
+                    &[1.0],
+                    &[0.0],
+                )
+                .expect("ratio-4 update");
+            if position < 3 {
+                assert!(result.is_none());
+            } else {
+                let output = result.expect("ratio-4 boundary output");
+                let inv_rms = ((4.0f32 * 4.0 + 5.0 * 5.0) / 2.0 + 1.0e-6).sqrt().recip();
+                assert!((output[0] - 4.0 * inv_rms).abs() < 1.0e-6);
+                assert!((output[1] - 5.0 * inv_rms).abs() < 1.0e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn ratio128_compressor_keeps_state_until_full_boundary() {
+        let mut state = DeepseekV4FlashCompressorState::new(2, 128).expect("ratio-128 state");
+        for position in 0..128 {
+            let result = state
+                .update_projected(
+                    position,
+                    &[position as f32, 1.0],
+                    &[0.0; 2],
+                    &[0.0; 2],
+                    &[1.0; 2],
+                    2,
+                    &[1.0],
+                    &[0.0],
+                )
+                .expect("ratio-128 update");
+            assert_eq!(result.is_some(), position == 127);
+        }
+    }
+
+    #[test]
+    fn fp8_kv_roundtrip_quantizes_nope_blocks_and_preserves_rope_tail() {
+        let mut values = vec![0.0f32; 128];
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = index as f32 * 0.013 - 0.7;
+        }
+        let rope_before = values[64..].to_vec();
+        let nope_before = values[..64].to_vec();
+        deepseek_v4_flash_fp8_kv_roundtrip_reference(&mut values, 64).expect("FP8 KV roundtrip");
+        assert_ne!(&values[..64], nope_before.as_slice());
+        assert_eq!(&values[64..], rope_before.as_slice());
+    }
+
+    #[test]
+    fn indexer_qat_runs_hadamard_and_fp4_roundtrip() {
+        let mut values = [0.0f32; 128];
+        values[0] = 1.0;
+        deepseek_v4_flash_indexer_qat_reference(&mut values).expect("indexer QAT");
+        assert!(values.iter().all(|value| value.is_finite()));
+        assert!(values.iter().all(|value| *value != 0.0));
+    }
+
+    #[test]
+    fn sparse_indexer_selects_highest_weighted_relu_scores() {
+        let q = [1.0, 0.0, 0.0, 2.0];
+        let compressed_kv = [
+            1.0, 0.0, // row 0: first head
+            0.0, 1.0, // row 1: second head
+            -1.0, -1.0, // row 2: both dots are clamped to zero
+        ];
+        let selected =
+            deepseek_v4_flash_sparse_indexer_reference(&q, &compressed_kv, &[1.0, 2.0], 2, 2, 2)
+                .expect("sparse indexer");
+        assert_eq!(selected, vec![1, 0]);
+    }
+
+    #[test]
+    fn mixed_attention_consumes_raw_and_selected_compressed_rows() {
+        let output = deepseek_v4_flash_mixed_attention_reference(
+            &[1.0, 0.0],
+            &[1.0, 0.0],
+            &[0.0, 1.0, 10.0, 10.0],
+            &[0],
+            &[0.0],
+            1,
+            2,
+        )
+        .expect("mixed attention");
+        assert!(output[0] > output[1]);
+
+        let different = deepseek_v4_flash_mixed_attention_reference(
+            &[1.0, 0.0],
+            &[1.0, 0.0],
+            &[0.0, 1.0, 10.0, 10.0],
+            &[1],
+            &[0.0],
+            1,
+            2,
+        )
+        .expect("mixed attention with another compressed row");
+        assert_ne!(output, different);
     }
 
     #[test]
