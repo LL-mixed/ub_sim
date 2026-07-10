@@ -210,6 +210,196 @@ impl DeepseekV4FlashLayerPlan {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashHcSplit {
+    pub pre: Vec<f32>,
+    pub post: Vec<f32>,
+    /// DS4 Sinkhorn storage, row-major `[destination_hc, source_hc]`.
+    /// HC post intentionally reads this buffer transposed.
+    pub combine: Vec<f32>,
+}
+
+pub fn deepseek_v4_flash_rms_norm_reference(
+    input: &[f32],
+    weight: Option<&[f32]>,
+    eps: f32,
+) -> Result<Vec<f32>, String> {
+    if input.is_empty() {
+        return Err("deepseek rmsnorm input must be non-empty".to_string());
+    }
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err("deepseek rmsnorm epsilon must be finite and positive".to_string());
+    }
+    if let Some(weight) = weight {
+        if weight.len() != input.len() {
+            return Err(format!(
+                "deepseek rmsnorm weight length mismatch: input={} weight={}",
+                input.len(),
+                weight.len()
+            ));
+        }
+    }
+    if input.iter().any(|value| !value.is_finite()) {
+        return Err("deepseek rmsnorm input contains non-finite value".to_string());
+    }
+
+    let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
+    let inv_rms = (mean_square + eps).sqrt().recip();
+    Ok(input
+        .iter()
+        .enumerate()
+        .map(|(index, value)| value * inv_rms * weight.map_or(1.0, |values| values[index]))
+        .collect())
+}
+
+pub fn deepseek_v4_flash_hc_split_reference(
+    mix: &[f32],
+    scale: &[f32],
+    base: &[f32],
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    eps: f32,
+) -> Result<DeepseekV4FlashHcSplit, String> {
+    let mix_hc = (2 + hc_mult)
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek HC width overflow".to_string())?;
+    if hc_mult == 0 || sinkhorn_iters == 0 {
+        return Err("deepseek HC width and Sinkhorn iterations must be non-zero".to_string());
+    }
+    if mix.len() != mix_hc || base.len() != mix_hc || scale.len() != 3 {
+        return Err(format!(
+            "deepseek HC split shape mismatch: mix={} base={} scale={} expected_mix={mix_hc}",
+            mix.len(),
+            base.len(),
+            scale.len()
+        ));
+    }
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err("deepseek HC epsilon must be finite and positive".to_string());
+    }
+
+    let sigmoid = |value: f32| 1.0 / (1.0 + (-value).exp());
+    let pre = (0..hc_mult)
+        .map(|index| sigmoid(mix[index] * scale[0] + base[index]) + eps)
+        .collect();
+    let post = (0..hc_mult)
+        .map(|index| {
+            let offset = hc_mult + index;
+            2.0 * sigmoid(mix[offset] * scale[1] + base[offset])
+        })
+        .collect();
+
+    let mut combine = vec![0.0f32; hc_mult * hc_mult];
+    let combine_offset = 2 * hc_mult;
+    for destination in 0..hc_mult {
+        let mut row_max = f32::NEG_INFINITY;
+        for source in 0..hc_mult {
+            let index = destination * hc_mult + source;
+            let value = mix[combine_offset + index] * scale[2] + base[combine_offset + index];
+            combine[index] = value;
+            row_max = row_max.max(value);
+        }
+        let mut row_sum = 0.0;
+        for source in 0..hc_mult {
+            let index = destination * hc_mult + source;
+            combine[index] = (combine[index] - row_max).exp();
+            row_sum += combine[index];
+        }
+        for source in 0..hc_mult {
+            let index = destination * hc_mult + source;
+            combine[index] = combine[index] / row_sum + eps;
+        }
+    }
+
+    normalize_hc_source_columns(&mut combine, hc_mult, eps);
+    for _ in 1..sinkhorn_iters {
+        normalize_hc_destination_rows(&mut combine, hc_mult, eps);
+        normalize_hc_source_columns(&mut combine, hc_mult, eps);
+    }
+
+    Ok(DeepseekV4FlashHcSplit { pre, post, combine })
+}
+
+fn normalize_hc_source_columns(combine: &mut [f32], hc_mult: usize, eps: f32) {
+    for source in 0..hc_mult {
+        let sum = (0..hc_mult)
+            .map(|destination| combine[destination * hc_mult + source])
+            .sum::<f32>();
+        let inv = (sum + eps).recip();
+        for destination in 0..hc_mult {
+            combine[destination * hc_mult + source] *= inv;
+        }
+    }
+}
+
+fn normalize_hc_destination_rows(combine: &mut [f32], hc_mult: usize, eps: f32) {
+    for destination in 0..hc_mult {
+        let start = destination * hc_mult;
+        let sum = combine[start..start + hc_mult].iter().sum::<f32>();
+        let inv = (sum + eps).recip();
+        for value in &mut combine[start..start + hc_mult] {
+            *value *= inv;
+        }
+    }
+}
+
+pub fn deepseek_v4_flash_hc_weighted_sum_reference(
+    residual_hc: &[f32],
+    pre: &[f32],
+    hidden_size: usize,
+) -> Result<Vec<f32>, String> {
+    let expected = pre
+        .len()
+        .checked_mul(hidden_size)
+        .ok_or_else(|| "deepseek HC residual size overflow".to_string())?;
+    if hidden_size == 0 || residual_hc.len() != expected {
+        return Err(format!(
+            "deepseek HC residual shape mismatch: actual={} expected={expected}",
+            residual_hc.len()
+        ));
+    }
+    let mut output = vec![0.0f32; hidden_size];
+    for (source, weight) in pre.iter().copied().enumerate() {
+        let source_row = &residual_hc[source * hidden_size..(source + 1) * hidden_size];
+        for (output, value) in output.iter_mut().zip(source_row) {
+            *output += value * weight;
+        }
+    }
+    Ok(output)
+}
+
+pub fn deepseek_v4_flash_hc_post_reference(
+    sublayer_output: &[f32],
+    residual_hc: &[f32],
+    post: &[f32],
+    combine: &[f32],
+) -> Result<Vec<f32>, String> {
+    let hc_mult = post.len();
+    if hc_mult == 0 || combine.len() != hc_mult * hc_mult {
+        return Err("deepseek HC post combine shape mismatch".to_string());
+    }
+    let hidden_size = sublayer_output.len();
+    if hidden_size == 0 || residual_hc.len() != hc_mult * hidden_size {
+        return Err("deepseek HC post residual shape mismatch".to_string());
+    }
+
+    let mut output = vec![0.0f32; hc_mult * hidden_size];
+    for destination in 0..hc_mult {
+        let output_row = &mut output[destination * hidden_size..(destination + 1) * hidden_size];
+        for (value, sublayer) in output_row.iter_mut().zip(sublayer_output) {
+            *value = sublayer * post[destination];
+        }
+        for source in 0..hc_mult {
+            let weight = combine[source * hc_mult + destination];
+            let residual_row = &residual_hc[source * hidden_size..(source + 1) * hidden_size];
+            for (value, residual) in output_row.iter_mut().zip(residual_row) {
+                *value += residual * weight;
+            }
+        }
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +451,44 @@ mod tests {
     fn decode_plan_rejects_invalid_layer_or_empty_batch() {
         assert!(DeepseekV4FlashLayerPlan::decode(43, 1).is_err());
         assert!(DeepseekV4FlashLayerPlan::decode(0, 0).is_err());
+    }
+
+    #[test]
+    fn rms_norm_reference_matches_known_vector() {
+        let output = deepseek_v4_flash_rms_norm_reference(&[3.0, 4.0], Some(&[2.0, 0.5]), 1.0e-6)
+            .expect("rmsnorm");
+        let inv_rms = ((25.0f32 / 2.0) + 1.0e-6).sqrt().recip();
+        assert!((output[0] - 6.0 * inv_rms).abs() < 1.0e-6);
+        assert!((output[1] - 2.0 * inv_rms).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn zero_logits_hc_split_is_uniform_and_post_is_one() {
+        let split =
+            deepseek_v4_flash_hc_split_reference(&[0.0; 24], &[1.0; 3], &[0.0; 24], 4, 20, 1.0e-6)
+                .expect("HC split");
+        assert!(split
+            .pre
+            .iter()
+            .all(|value| (*value - 0.500001).abs() < 1.0e-6));
+        assert!(split.post.iter().all(|value| (*value - 1.0).abs() < 1.0e-6));
+        assert!(split
+            .combine
+            .iter()
+            .all(|value| (*value - 0.25).abs() < 2.0e-6));
+    }
+
+    #[test]
+    fn hc_pre_reduction_and_post_preserve_expected_layout() {
+        let residual = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let mixed =
+            deepseek_v4_flash_hc_weighted_sum_reference(&residual, &[0.25, 0.25, 0.25, 0.25], 2)
+                .expect("HC weighted sum");
+        assert_eq!(mixed, vec![4.0, 5.0]);
+
+        let output =
+            deepseek_v4_flash_hc_post_reference(&[10.0, 20.0], &residual, &[1.0; 4], &[0.25; 16])
+                .expect("HC post");
+        assert_eq!(output, vec![14.0, 25.0, 14.0, 25.0, 14.0, 25.0, 14.0, 25.0]);
     }
 }
