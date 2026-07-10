@@ -43,11 +43,13 @@
 
 ### 1.3 参考实现
 
-`/Volumes/repos/ds4`（DwarfStar）既是 DeepSeek V4 Flash 的**算法参考与实测基准**，也是当前真实计算后端的源码来源：
+`/Volumes/repos/ds4`（DwarfStar）和 `vendor/pypto-lib` 是 DeepSeek V4 Flash 的**算法参考与实测基准**，不是 W5 目标运行时：
 - `ds4.c:177-212` `DS4_SHAPE_FLASH` 是 Flash 几何的权威来源。
 - `ds4_distributed.c`（层流水线 PP、TCP 环）的分布式范式与 ub_sim 的层切片一致，可互校延迟模型。
 - `ds4_ssd.c` + `ds4_streaming_hotlist.inc` 的专家缓存语义是 ub_sim 建模专家按需取用的参考。
-- ds4 是纯 host 侧、无 guest/驱动组件。ub_sim 不复制其模型算法，而是从指定 ds4 源码版本构建动态库，通过公开 C API 执行 tokenizer、层切片、MoE、输出头和采样；W5 guest 只负责请求、分段调度和 UB 数据传输。
+- DS4 动态库只保留为单机 oracle，用于逐阶段数值对齐。
+- 模型语义按 DS4 与 pypto-lib 的实现重写到 Rust `sim-models`；GGUF 权重由 Rust weight provider 读取。
+- 实际矩阵/向量算子必须走 `W5 guest -> UAPI -> sim-uapi -> sim-chipbackend-simpler -> simpler C API -> simpler kernel`，不能由 DS4 动态库代算。
 
 ---
 
@@ -375,23 +377,23 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 ### 阶段 3：真实 W5 layer-slice inference
 
-**目标**：复用 ds4 已公开的 `ds4_session_eval_layer_slice()`、tokenizer、output head 和 session/KV 实现，把真实 DeepSeek 计算接入 W5 range runtime。W5 负责 request、节点调度、GSVA hidden handoff、KV/object flow 和 terminal output；ds4 adapter 只负责本节点 layer slice 的模型计算，不能旁路 W5 直接整模型生成答案。
+**目标**：在 Rust `sim-models` 中实现 DeepSeek 模型语义和状态，在 `sim-uapi` 中把本节点 layer slice 降低为 simpler C API dispatch。W5 负责 request、节点调度、GSVA hidden handoff、KV/object flow 和 terminal output；DS4 只提供单机数值 oracle，不能参与 W5 正式运行时计算。
 
 **数据路径**：
 
-1. 入口用 ds4 tokenizer 把原始 request 编码成真实 chat token IDs。
-2. nodeA 的 adapter 读取 token IDs，执行 embedding 和本节点层范围。
-3. 每个节点把 ds4 产生的 F32 hidden 通过现有 W5 GSVA range flow 交给下一节点。
-4. 每个 adapter 保持自己层范围的真实 KV state；W5 负责其对象化、生命周期和跨 request 策略。
-5. terminal node 执行最后一段层和 output head，返回完整 vocab logits。
-6. 入口按 greedy/指定 sampling policy 选 token，并用 ds4 tokenizer 解码文本。
+1. 入口用 Rust tokenizer 把原始 request 编码成真实 chat token IDs。
+2. nodeA 的模型 runtime 读取 token IDs，经 simpler 执行 embedding 和本节点层范围。
+3. 每个节点把 simpler 算子产生的 hidden 通过现有 W5 GSVA range flow 交给下一节点。
+4. 每个节点保持自己层范围的真实 KV state；W5 负责其对象化、生命周期和跨 request 策略。
+5. terminal node 经 simpler 执行最后一段层和 output head，返回完整 vocab logits。
+6. 入口按 greedy/指定 sampling policy 选 token，并用 Rust tokenizer 解码文本。
 
 **实现约束**：
 
 - layer range 来自 active topology，必须支持 2/3/8 节点，不能在模型 adapter 中写死 8。
-- adapter 必须加载对应 layer slice，而不是每个节点映射整模型。
+- weight provider 必须只解析和物化对应 layer slice 所需权重，不把整模型复制进节点私有内存。
 - 没有真实 GGUF、tokenizer 或 output head 时 fail closed；禁止退回 checksum token。
-- simulator 可以调用 host-native ds4 adapter，但 QEMU guest 仍必须通过 UAPI 和 W5 数据面发起 range compute。
+- 正式 profile 禁止调用 host-native DS4 adapter；QEMU guest 必须通过 UAPI 和 W5 数据面发起 range compute。
 
 **固定首 token oracle**：
 
@@ -404,7 +406,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 最终 8-node 验收必须输出 `108149` / `Ada`，并与同一 GGUF 的单机 ds4 oracle 对齐；`55409` / `q3_055409` 明确属于旧 geometry smoke，不是正确结果。
 
-**2026-07-10 real inference checkpoints**：
+**2026-07-10 DS4 oracle 与旧 adapter checkpoints**：
 
 - `deepseek_v4_flash_adapter first-token` 已直接调用 ds4 tokenizer、43 层计算、MoE、output head 和 token text，得到 21 个 prompt tokens、`108149` / `Ada`、top-1 logit `45.004646`。
 - 真实 layer-slice 已按 2-node（`[0,22) [22,43)`）、3-node（`[0,15) [15,29) [29,43)`）和 8-node（`[0,6) ... [38,43)`）分别串行执行成功。
@@ -412,7 +414,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 - sim-uapi 真实 8-range 集成测试逐段执行 ds4 layer slice，断言相邻 range 的 hidden checksum 连续、每段导出非空 ds4 layer-KV snapshot，并验证 terminal token-text/text-output bytes 均为 `Ada`。
 - 固定入口 `./guest-linux/aarch64/scripts/run_w5_cluster_config.sh w5.deepseek-v4-flash.env` 已在 8 个 QEMU guest 上通过。run id `2026-07-10_11-36-26_w5_deepseek_v4_flash_decode_24227`，8/8 worker 通过，输出 `token_ids=[108149]`、`token_pieces="Ada"`。
 - 该 W5 run 的 7 条跨节点 handoff 均为 21 token x 16384 F32 values（1376256 bytes），相邻 input/output checksum 一致；各节点同时生成约 1.5-2.1 MiB 的真实 ds4 layer-KV snapshot。
-- 当前完成边界是**真实 prefill 后的第一个 token**。多 token streaming decode 仍需把上一轮 ds4 layer-KV snapshot 恢复到下一轮 slice session；在完成前，真实 profile 对 `step > 0` fail closed。
+- 上述结果证明 W5 range handoff、KV 对象流和 DS4 oracle 可以对齐，但不证明目标 simpler 路径已经完成。当前迁移边界为：Rust 模型 lowering 已覆盖 HC、RMSNorm、QKV/RoPE、SWA/CSA/HCA、KV compression/indexer；BF16 GEMM 和 INT8 GEMM 已分别通过 simpler C API native test。W5 正式 profile 仍调用 DS4 layer slice，必须继续替换。
 
 ---
 
@@ -477,8 +479,8 @@ W5 store macOS 跨进程锁、snapshot profile 升级和 64-step artifact gate �
 ### 7.5 阶段 1/2 不包含但阶段 3 必须完成
 
 - 专家并行（EP）/ 张量并行（TP）——全连接 mesh 的 all-to-all 专家并行是后续独立项。
-- Flash 的真实浮点计算不属于 geometry/MoE 性能建模阶段，但属于最终真实首 token 的硬目标。实现应复用 ds4 layer-slice API，而不是在 simulator 中重写 81GB 模型计算。
-- ub_sim 不复制或重写 ds4 的模型算法源码；host adapter 在部署时动态加载由指定 ds4 源码版本构建的库，并把该版本纳入验收证据。
+- Flash 的真实浮点计算属于最终真实首 token 的硬目标。模型语义必须在 `sim-models` 中实现，权重从 GGUF 按需读取，算子通过 simpler C API 执行。
+- DS4 和 pypto-lib 版本必须纳入 oracle/参考证据，但正式部署不得依赖 DS4 动态库。
 
 ---
 

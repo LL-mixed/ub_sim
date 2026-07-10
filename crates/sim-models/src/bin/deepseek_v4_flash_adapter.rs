@@ -2,12 +2,13 @@ use sim_models::deepseek_v4_flash_adapter::{
     build_ds4_dynamic_library, ds4_eval_layer_slice, ds4_first_token, ds4_tokenize_chat,
     Ds4RunConfig, Ds4SliceConfig,
 };
+use sim_models::deepseek_v4_flash_gguf::{lower_q8_0_matrix_to_bf16_kxn, GgufCatalog};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 fn usage() -> &'static str {
-    "usage:\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
+    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
 }
 
 fn parse_options(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
@@ -132,6 +133,66 @@ fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().ok_or_else(|| usage().to_string())?;
     let options = parse_options(&args[1..])?;
     match command.as_str() {
+        "catalog" => {
+            let model_path = PathBuf::from(required(&options, "--model")?);
+            let catalog = GgufCatalog::open(&model_path)?;
+            catalog.validate_deepseek_v4_flash()?;
+            let tensor = optional(&options, "--tensor")
+                .map(|name| catalog.tensor(&name).cloned())
+                .transpose()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "ok",
+                    "model": model_path,
+                    "version": catalog.version,
+                    "file_bytes": catalog.file_bytes,
+                    "alignment": catalog.alignment,
+                    "metadata_count": catalog.metadata_count,
+                    "tensor_count": catalog.tensors.len(),
+                    "tensor": tensor,
+                }))
+                .map_err(|err| format!("json_encode_failed:{err}"))?
+            );
+        }
+        "lower-q8-bf16" => {
+            let model_path = PathBuf::from(required(&options, "--model")?);
+            let tensor_name = required(&options, "--tensor")?;
+            let output_path = PathBuf::from(required(&options, "--output")?);
+            let catalog = GgufCatalog::open(&model_path)?;
+            catalog.validate_deepseek_v4_flash()?;
+            let tensor = catalog.tensor(&tensor_name)?;
+            if tensor.tensor_type.name != "q8_0" {
+                return Err(format!(
+                    "deepseek_q8_0_tensor_type_required:{tensor_name}:{}",
+                    tensor.tensor_type.name
+                ));
+            }
+            let lowered = lower_q8_0_matrix_to_bf16_kxn(
+                &catalog.read_tensor(&tensor_name)?,
+                &tensor.dimensions,
+            )?;
+            fs::write(&output_path, &lowered).map_err(|err| {
+                format!(
+                    "deepseek_q8_0_lowered_write_failed:{}:{err}",
+                    output_path.display()
+                )
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "model": model_path,
+                    "tensor": tensor_name,
+                    "source_type": "q8_0",
+                    "output_type": "bf16",
+                    "output_layout": "k_x_n_row_major",
+                    "dimensions": tensor.dimensions,
+                    "output_bytes": lowered.len(),
+                    "output": output_path,
+                })
+            );
+        }
         "build-library" => {
             let ds4_dir = PathBuf::from(required(&options, "--ds4-dir")?);
             let output = PathBuf::from(required(&options, "--output")?);
