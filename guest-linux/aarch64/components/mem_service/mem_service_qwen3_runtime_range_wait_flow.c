@@ -89,14 +89,30 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
         !local_backing_offset_out || !checksum_ms_out ||
         remote_record->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA ||
         remote_record->object_backend_block_bytes != payload_len ||
-        remote_record->object_backend_block_checksum == 0 ||
         rt->local_idx < 0 || (uint32_t)rt->local_idx != local_node ||
         rt->local_idx >= rt->node_count) {
+        fprintf(stderr,
+                "[mem_service] gap range_runtime_input_ub_ssd=invalid_request"
+                " local=node%u step=%" PRIu64 " payload_bytes=%" PRIu64
+                " backend_kind=%u backend_bytes=%" PRIu64
+                " backend_checksum=0x%016" PRIx64 "\n",
+                local_node + 1U,
+                decode_step,
+                payload_len,
+                remote_record ? remote_record->object_backend_kind : 0U,
+                remote_record ? remote_record->object_backend_block_bytes : 0U,
+                remote_record ? remote_record->object_backend_block_checksum : 0U);
         return -1;
     }
     local_slot = &rt->slots[rt->local_idx];
     if (!local_slot->region.addr ||
         mem_service_payload_arena_alloc(rt, payload_len, 64, &local_offset) != 0) {
+        fprintf(stderr,
+                "[mem_service] gap range_runtime_input_ub_ssd=local_buffer_alloc_failed"
+                " local=node%u step=%" PRIu64 " bytes=%" PRIu64 "\n",
+                local_node + 1U,
+                decode_step,
+                payload_len);
         return -1;
     }
     memset(&local_read_buffer, 0, sizeof(local_read_buffer));
@@ -116,6 +132,14 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
     if (mem_service_cluster_runtime_make_gsva_buffer_desc(rt,
                                                           &local_read_buffer,
                                                           &desc) != 0) {
+        fprintf(stderr,
+                "[mem_service] gap range_runtime_input_ub_ssd=gsva_buffer_failed"
+                " local=node%u step=%" PRIu64 " offset=0x%016" PRIx64
+                " bytes=%" PRIu64 "\n",
+                local_node + 1U,
+                decode_step,
+                local_offset,
+                payload_len);
         return -1;
     }
     memset(&request, 0, sizeof(request));
@@ -136,7 +160,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
     request.buffer = desc;
     status = mem_service_ub_ssd_gsva_submit(&request, &completion);
     if (status != MEM_SERVICE_UB_SSD_GSVA_IO_OK) {
-        printf("[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=%s"
+        fprintf(stderr, "[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=%s"
                " local=node%u source=node%u key=%s step=%" PRIu64
                " backend_device_cna=0x%08" PRIx32
                " block_hi=%" PRIu64 " block_lo=%" PRIu64
@@ -160,6 +184,18 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
                                            local_offset,
                                            payload_len,
                                            false) != 0) {
+        fprintf(stderr,
+                "[mem_service] gap range_runtime_input_ub_ssd=completion_invalid"
+                " local=node%u step=%" PRIu64
+                " bytes=%" PRIu64 " completion_bytes=%" PRIu64
+                " expected_checksum=0x%016" PRIx64
+                " completion_checksum=0x%016" PRIx64 "\n",
+                local_node + 1U,
+                decode_step,
+                payload_len,
+                completion.committed_ref.bytes,
+                remote_record->object_backend_block_checksum,
+                completion.committed_ref.checksum64);
         return -1;
     }
     checksum_start_ms = obmm_now_ms();
@@ -168,7 +204,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
         payload_len);
     *checksum_ms_out = obmm_now_ms() - checksum_start_ms;
     if (checksum != remote_record->object_payload_checksum) {
-        printf("[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=checksum_mismatch"
+        fprintf(stderr, "[mem_service] gap qwen3_range_forward_runtime_input_ub_ssd_gsva_read=checksum_mismatch"
                " local=node%u source=node%u key=%s step=%" PRIu64
                " checksum=0x%016" PRIx64 " expected=0x%016" PRIx64
                " backend_expected=0x%016" PRIx64 "\n",
@@ -247,6 +283,16 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         cluster_node_count != request->range_nodes ||
         local_node >= cluster_node_count ||
         request->local_placement.owner_node != local_node) {
+        fprintf(stderr, "[mem_service] gap range_runtime_input=request_invalid"
+               " request=%u model=%u view=%u local=node%u nodes=%u"
+               " request_nodes=%u request_owner=node%u\n",
+               request ? 1U : 0U,
+               request && request->model_key ? 1U : 0U,
+               view_out ? 1U : 0U,
+               local_node + 1U,
+               cluster_node_count,
+               request ? request->range_nodes : 0U,
+               request ? request->local_placement.owner_node + 1U : 0U);
         return -1;
     }
     local_placement = request->local_placement;
@@ -265,6 +311,11 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         bool token_desc_found = false;
 
         if (mem_service_cluster_runtime_require(rt) != 0) {
+            fprintf(stderr,
+                    "[mem_service] gap range_runtime_input=cluster_runtime_missing"
+                    " local=node%u step=%" PRIu64 "\n",
+                    local_node + 1U,
+                    decode_step);
             return -1;
         }
         memset(&token_desc, 0, sizeof(token_desc));
@@ -478,17 +529,41 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
         return 0;
     }
     if (!request->has_predecessor) {
+        fprintf(stderr, "[mem_service] gap range_runtime_input=predecessor_missing"
+               " local=node%u layers=[%u,%u)\n",
+               local_node + 1U,
+               local_placement.layer_start,
+               local_placement.layer_end);
         return -1;
     }
     source_placement = request->predecessor_placement;
     if (source_placement.next_owner_node != local_node) {
+        fprintf(stderr, "[mem_service] gap range_runtime_input=predecessor_target_mismatch"
+               " local=node%u source=node%u target=node%u\n",
+               local_node + 1U,
+               source_placement.owner_node + 1U,
+               source_placement.next_owner_node + 1U);
         return -1;
     }
     source_node = source_placement.owner_node;
     if (mem_service_cluster_runtime_require(rt) != 0) {
+        fprintf(stderr,
+                "[mem_service] gap range_runtime_input=cluster_runtime_missing"
+                " local=node%u step=%" PRIu64 "\n",
+                local_node + 1U,
+                decode_step);
         return -1;
     }
     if (source_node >= cluster_node_count || !rt->ingress_queues[source_node]) {
+        fprintf(stderr, "[mem_service] gap range_runtime_input=source_queue_missing"
+               " local=node%u source=node%u nodes=%u queue=%u\n",
+               local_node + 1U,
+               source_node + 1U,
+               cluster_node_count,
+               source_node < MEM_SERVICE_CLUSTER_MAX_NODES &&
+                       rt->ingress_queues[source_node] ?
+                   1U :
+                   0U);
         return -1;
     }
     ingress_key[0] = '\0';
@@ -1024,6 +1099,15 @@ int mem_service_range_flow_wait_scheduler_work_item(
         cluster_node_count != request->range_nodes ||
         local_node >= cluster_node_count ||
         request->local_placement.owner_node != local_node) {
+        printf("[mem_service] gap range_scheduler_work_item=request_invalid"
+               " request=%u item=%u local=node%u nodes=%u"
+               " request_nodes=%u request_owner=node%u\n",
+               request ? 1U : 0U,
+               item_out ? 1U : 0U,
+               local_node + 1U,
+               cluster_node_count,
+               request ? request->range_nodes : 0U,
+               request ? request->local_placement.owner_node + 1U : 0U);
         return -1;
     }
     memset(item_out, 0, sizeof(*item_out));

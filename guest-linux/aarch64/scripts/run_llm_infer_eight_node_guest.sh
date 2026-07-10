@@ -1669,16 +1669,22 @@ validate_node_log() {
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
     fi
   elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    local expected_kv_restores=$((SIM_QWEN3_GUEST_DECODE_STEPS - 1))
+
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=43 hidden_bytes=[1-9][0-9]* source=dispatch_task output=completion status=ok" "$node_id DeepSeek range compute contract" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=43 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[1-9][0-9]* .*kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id DeepSeek range runtime forward" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek range forward per step" || return 1
     if (( idx > 1 )); then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_runtime_input_loaded node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) producer=node$((idx - 1)) bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=mem_service target=uapi_segment transport=gsva materialize=local_copy status=ok" "$node_id DeepSeek GSVA runtime input" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_runtime_input_loaded node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) producer=node$((idx - 1)) kind=[1-9][0-9]* bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref transport=gsva materialize=uapi_segment status=ok" "$node_id DeepSeek GSVA runtime input" || return 1
     fi
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ .*layers=\\[[0-9]+,[0-9]+\\) .*status=ok" "$node_id DeepSeek runtime output publish" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/deepseek-v4-flash(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ .*status=ok" "$node_id DeepSeek KV publish" || return 1
+    assert_log_count "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek KV publish per step" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_layer_kv_restored node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref materialize=uapi_segment status=ok" "$expected_kv_restores" "$node_id DeepSeek KV restore per decode continuation" || return 1
     if (( idx == terminal_publish_node )); then
       assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=[0-9]+ .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek streamed token per step" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 .*status=ok" "$node_id DeepSeek logits sampling table" || return 1
     else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id DeepSeek logits sampling skipped" || return 1

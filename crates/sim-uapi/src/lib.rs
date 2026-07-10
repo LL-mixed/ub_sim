@@ -6061,7 +6061,7 @@ fn run_deepseek_v4_flash_real_range_runtime(
     if all_token_ids.is_empty() {
         return Err("deepseek_v4_flash_prompt_tokens_missing".to_string());
     }
-    let token_ids: Vec<i32> = all_token_ids
+    let all_token_ids: Vec<i32> = all_token_ids
         .iter()
         .copied()
         .map(|token| {
@@ -6070,11 +6070,14 @@ fn run_deepseek_v4_flash_real_range_runtime(
         })
         .collect::<Result<_, _>>()?;
     let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
-    if decode_step != 0 {
-        return Err(format!(
-            "deepseek_v4_flash_real_decode_requires_kv_restore:step={decode_step}"
-        ));
-    }
+    let (token_ids, previous_token_ids, previous_kv, position) =
+        deepseek_v4_flash_decode_slice_inputs(
+            profile.vocab_size,
+            contract.layer_start,
+            decode_step,
+            &all_token_ids,
+            guest_input,
+        )?;
     let expected_hidden_len = token_ids
         .len()
         .checked_mul(DS4_FLASH_HIDDEN_F32_VALUES)
@@ -6090,27 +6093,36 @@ fn run_deepseek_v4_flash_real_range_runtime(
     let input_hidden = if contract.layer_start == 0 {
         None
     } else {
-        let payload = if let Some(payload) = operands
-            .and_then(|operands| operands.hidden_input.as_ref())
-            .map(Qwen3ObjectBackedOperandView::bytes)
-        {
-            payload
-        } else {
-            guest_input
-                .get(
-                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
-                        ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
+        let payload = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "deepseek_v4_flash_hidden_input_missing:offset={QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={expected_hidden_len}"
                 )
-                .ok_or_else(|| {
-                    format!(
-                        "deepseek_v4_flash_hidden_input_missing:offset={QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={expected_hidden_len}"
-                    )
-                })?
-        };
+            })?;
         if payload.len() != expected_hidden_len {
             return Err(format!(
                 "deepseek_v4_flash_hidden_input_size_mismatch:actual={}:expected={expected_hidden_len}",
                 payload.len()
+            ));
+        }
+        let hidden_ref = deepseek_v4_flash_materialized_object_ref(
+            guest_input,
+            0,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+        )?;
+        let payload_checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+        if hidden_ref.payload_bytes != payload.len() as u64
+            || hidden_ref.payload_checksum != payload_checksum
+        {
+            return Err(format!(
+                "deepseek_v4_flash_hidden_materialization_mismatch:bytes={}:ref_bytes={}:checksum={payload_checksum:#x}:ref_checksum={:#x}",
+                payload.len(),
+                hidden_ref.payload_bytes,
+                hidden_ref.payload_checksum
             ));
         }
         Some(deepseek_v4_flash_f32_values(payload)?)
@@ -6124,11 +6136,11 @@ fn run_deepseek_v4_flash_real_range_runtime(
         context: 1024,
         layer_start: contract.layer_start,
         layer_end: contract.layer_end,
-        position: 0,
+        position,
         token_ids,
         input_hidden,
-        previous_token_ids: Vec::new(),
-        previous_kv: None,
+        previous_token_ids,
+        previous_kv,
         output_logits: terminal_owner,
     })?;
     let output_tensor_payload = deepseek_v4_flash_f32_payload(&slice.hidden);
@@ -6138,13 +6150,14 @@ fn run_deepseek_v4_flash_real_range_runtime(
             output_tensor_payload.len()
         ));
     }
-    let input_checksum = if let Some(input) = slice
-        .report
-        .layer_start
-        .checked_sub(1)
-        .and_then(|_| operands.and_then(|operands| operands.hidden_input.as_ref()))
-    {
-        qwen3_dense_reference_range_object_payload_checksum(input.bytes())
+    let input_checksum = if contract.layer_start > 0 {
+        let payload = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
+            )
+            .ok_or_else(|| "deepseek_v4_flash_hidden_input_checksum_missing".to_string())?;
+        qwen3_dense_reference_range_object_payload_checksum(payload)
     } else {
         qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?
     };
@@ -6277,6 +6290,173 @@ fn run_deepseek_v4_flash_real_range_runtime(
         slice.report.selected_token.as_ref().map(|value| value.text.as_str()).unwrap_or("none"),
     );
     Ok(output)
+}
+
+fn deepseek_v4_flash_decode_slice_inputs(
+    vocab_size: u64,
+    layer_start: u32,
+    decode_step: u64,
+    all_token_ids: &[i32],
+    guest_input: &[u8],
+) -> Result<(Vec<i32>, Vec<i32>, Option<Vec<u8>>, u32), String> {
+    if decode_step == 0 {
+        if all_token_ids.is_empty() {
+            return Err("deepseek_v4_flash_prompt_tokens_missing".to_string());
+        }
+        return Ok((all_token_ids.to_vec(), Vec::new(), None, 0));
+    }
+
+    let history_token = all_token_ids
+        .last()
+        .copied()
+        .ok_or_else(|| format!("deepseek_v4_flash_decode_history_missing:step={decode_step}"))?;
+    let input_token = if layer_start == 0 {
+        let input_token_ref = deepseek_v4_flash_materialized_object_ref(
+            guest_input,
+            0,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+        )?;
+        let payload = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64,
+            )
+            .ok_or_else(|| {
+                format!("deepseek_v4_flash_decode_input_token_materialization_missing:step={decode_step}")
+            })?;
+        let payload_checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+        if input_token_ref.payload_bytes != payload.len() as u64
+            || input_token_ref.payload_checksum != payload_checksum
+        {
+            return Err(format!(
+                "deepseek_v4_flash_decode_input_token_materialization_mismatch:step={decode_step}:checksum={payload_checksum:#x}:ref_checksum={:#x}",
+                input_token_ref.payload_checksum
+            ));
+        }
+        let producer_step = read_u64_le_at(payload, 0);
+        if producer_step + 1 != decode_step {
+            return Err(format!(
+                "deepseek_v4_flash_decode_input_token_step_mismatch:producer={producer_step}:consumer={decode_step}"
+            ));
+        }
+        read_u64_le_at(payload, 8)
+    } else {
+        u64::try_from(history_token)
+            .map_err(|_| "deepseek_v4_flash_decode_history_token_negative".to_string())?
+    };
+    if input_token >= vocab_size {
+        return Err(format!(
+            "deepseek_v4_flash_decode_input_token_out_of_range:token={input_token}:vocab={}",
+            vocab_size
+        ));
+    }
+    let input_token = i32::try_from(input_token)
+        .map_err(|_| "deepseek_v4_flash_decode_input_token_i32_overflow".to_string())?;
+    if history_token != input_token {
+        return Err(format!(
+            "deepseek_v4_flash_decode_history_token_mismatch:history={history_token}:input={input_token}:step={decode_step}"
+        ));
+    }
+    let previous_token_ids = all_token_ids[..all_token_ids.len() - 1].to_vec();
+    if previous_token_ids.is_empty() {
+        return Err(format!(
+            "deepseek_v4_flash_decode_previous_tokens_missing:step={decode_step}"
+        ));
+    }
+    let previous_kv_ref = deepseek_v4_flash_materialized_object_ref(
+        guest_input,
+        1,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+    )?;
+    let previous_kv_header = guest_input
+        .get(
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+        )
+        .ok_or_else(|| {
+            format!("deepseek_v4_flash_decode_previous_kv_header_missing:step={decode_step}")
+        })?;
+    let marker = read_u64_le_at(previous_kv_header, 0);
+    let previous_kv_len = usize::try_from(read_u64_le_at(previous_kv_header, 8))
+        .map_err(|_| "deepseek_v4_flash_decode_previous_kv_size_overflow".to_string())?;
+    let previous_kv_checksum = read_u64_le_at(previous_kv_header, 16);
+    let previous_kv_step = read_u64_le_at(previous_kv_header, 24);
+    if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
+        || previous_kv_step + 1 != decode_step
+        || previous_kv_len == 0
+    {
+        return Err(format!(
+            "deepseek_v4_flash_decode_previous_kv_header_invalid:step={decode_step}:marker={marker:#x}:producer={previous_kv_step}:bytes={previous_kv_len}"
+        ));
+    }
+    let previous_kv_start =
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+    let previous_kv_end = previous_kv_start
+        .checked_add(previous_kv_len)
+        .ok_or_else(|| "deepseek_v4_flash_decode_previous_kv_end_overflow".to_string())?;
+    let previous_kv = guest_input
+        .get(previous_kv_start..previous_kv_end)
+        .ok_or_else(|| {
+            format!(
+                "deepseek_v4_flash_decode_previous_kv_materialization_missing:step={decode_step}:bytes={previous_kv_len}"
+            )
+        })?;
+    let materialized_checksum = qwen3_dense_reference_range_object_payload_checksum(previous_kv);
+    if previous_kv_ref.payload_bytes != previous_kv_len as u64
+        || previous_kv_ref.payload_checksum != previous_kv_checksum
+        || materialized_checksum != previous_kv_checksum
+    {
+        return Err(format!(
+            "deepseek_v4_flash_decode_previous_kv_materialization_mismatch:step={decode_step}:bytes={previous_kv_len}:ref_bytes={}:checksum={materialized_checksum:#x}:expected={previous_kv_checksum:#x}:ref_checksum={:#x}",
+            previous_kv_ref.payload_bytes,
+            previous_kv_ref.payload_checksum
+        ));
+    }
+    let position = u32::try_from(previous_token_ids.len()).map_err(|_| {
+        format!(
+            "deepseek_v4_flash_decode_position_overflow:tokens={}",
+            previous_token_ids.len()
+        )
+    })?;
+    Ok((
+        vec![input_token],
+        previous_token_ids,
+        Some(previous_kv.to_vec()),
+        position,
+    ))
+}
+
+fn deepseek_v4_flash_materialized_object_ref(
+    guest_input: &[u8],
+    index: usize,
+    expected_kind: u16,
+) -> Result<LingquObmmObjectRefWire, String> {
+    let start = QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+        .checked_add(
+            index
+                .checked_mul(LingquObmmObjectRefWire::BYTE_LEN)
+                .ok_or_else(|| "deepseek_v4_flash_object_ref_index_overflow".to_string())?,
+        )
+        .ok_or_else(|| "deepseek_v4_flash_object_ref_offset_overflow".to_string())?;
+    let end = start
+        .checked_add(LingquObmmObjectRefWire::BYTE_LEN)
+        .ok_or_else(|| "deepseek_v4_flash_object_ref_end_overflow".to_string())?;
+    let bytes = guest_input.get(start..end).ok_or_else(|| {
+        format!("deepseek_v4_flash_object_ref_missing:index={index}:kind={expected_kind}")
+    })?;
+    let object_ref = LingquObmmObjectRefWire::from_le_bytes(bytes)
+        .map_err(|err| format!("deepseek_v4_flash_object_ref_parse:index={index}:{err}"))?;
+    object_ref
+        .validate()
+        .map_err(|err| format!("deepseek_v4_flash_object_ref_invalid:index={index}:{err}"))?;
+    if object_ref.object_kind != expected_kind {
+        return Err(format!(
+            "deepseek_v4_flash_object_ref_kind_mismatch:index={index}:actual={}:expected={expected_kind}",
+            object_ref.object_kind
+        ));
+    }
+    Ok(object_ref)
 }
 
 fn deepseek_v4_flash_patch_real_text_output(
@@ -25517,8 +25697,8 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bytes_to_f32s, f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
-        qwen3_dense_profile_previous_kv_cache_from_guest_payload,
+        bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs, f32s_to_bytes, find_u64_marker,
+        kvcache_input_b_payload, qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v,
@@ -25593,12 +25773,13 @@ mod tests {
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
         resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
         run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
-        validate_qwen3_range_dispatch_object_refs, GuestUapiSurface, KvCachePayloadLayout,
-        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
+        validate_qwen3_range_dispatch_object_refs, write_u64_le_at, GuestUapiSurface,
+        KvCachePayloadLayout, LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
         Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
         Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3PaperEngramStateGateRef,
-        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
+        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView,
+        Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind,
+        Qwen3RangeDispatchOperands, Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand,
         UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
@@ -25607,21 +25788,23 @@ mod tests {
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
-        QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
-        QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET, QWEN3_DENSE_REFERENCE_PROFILE,
-        QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND, QWEN3_LOGITS_REFERENCE_ENTRY_WORDS,
-        QWEN3_MLP_REFERENCE_ENTRY_WORDS, QWEN3_SYNTHETIC_ATTENTION_CONTEXT,
-        QWEN3_SYNTHETIC_ATTENTION_SCORE, QWEN3_SYNTHETIC_GUEST_INPUT,
-        QWEN3_SYNTHETIC_LOGITS_CANDIDATES, QWEN3_SYNTHETIC_MLP_ACTIVATION,
-        QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE, QWEN3_SYNTHETIC_TOKEN_TEXT,
-        QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-        SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM, SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH,
-        W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES, QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER,
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET, QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET,
+        QWEN3_DENSE_REFERENCE_PROFILE, QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
+        QWEN3_LOGITS_REFERENCE_ENTRY_WORDS, QWEN3_MLP_REFERENCE_ENTRY_WORDS,
+        QWEN3_SYNTHETIC_ATTENTION_CONTEXT, QWEN3_SYNTHETIC_ATTENTION_SCORE,
+        QWEN3_SYNTHETIC_GUEST_INPUT, QWEN3_SYNTHETIC_LOGITS_CANDIDATES,
+        QWEN3_SYNTHETIC_MLP_ACTIVATION, QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE,
+        QWEN3_SYNTHETIC_TOKEN_TEXT, QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS,
+        QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM,
+        SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH, W4_KVCACHE_BLOCKS,
+        W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
         W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
@@ -25631,6 +25814,7 @@ mod tests {
         BlockHash, CompletionStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId,
         SegmentHandle, SimError, TaskKey,
     };
+    use sim_models::deepseek_v4_flash;
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
         PaperEngramContextLookupRef, PaperEngramContextOp, PaperEngramContextTableView,
@@ -25668,6 +25852,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use std::time::Duration;
     #[cfg(unix)]
     use std::{fs::Permissions, os::unix::fs::PermissionsExt};
@@ -28954,6 +29139,169 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_v4_flash_decode_slice_inputs_restore_exact_previous_state() {
+        let token_payload = {
+            let mut payload = vec![0u8; 64];
+            write_u64_le_at(&mut payload, 0, 0);
+            write_u64_le_at(&mut payload, 8, 108_149);
+            payload
+        };
+        let kv_payload = vec![0x5au8; 128];
+        let token_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+            0,
+            7,
+            1,
+            0x1001,
+            0,
+            token_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&token_payload),
+        );
+        let kv_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            0,
+            0,
+            1,
+            0x1002,
+            0,
+            kv_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+        );
+        let operands = Qwen3RangeDispatchOperands {
+            input_token: Some(
+                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                        token_ref,
+                        token_payload,
+                        "deepseek_decode_token_test",
+                    )
+                    .expect("valid token payload"),
+                ))
+                .expect("token operand"),
+            ),
+            previous_kv: Some(
+                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                        kv_ref,
+                        kv_payload.clone(),
+                        "deepseek_decode_kv_test",
+                    )
+                    .expect("valid KV payload"),
+                ))
+                .expect("KV operand"),
+            ),
+            ..Qwen3RangeDispatchOperands::default()
+        };
+        let mut guest_input = vec![
+            0u8;
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+                + kv_payload.len()
+        ];
+        guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+            ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64]
+            .copy_from_slice(operands.input_token.as_ref().expect("token").bytes());
+        write_obmm_object_ref_wire(
+            &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            token_ref,
+        );
+        write_obmm_object_ref_wire(
+            &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                + LingquObmmObjectRefWire::BYTE_LEN
+                ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                    + LingquObmmObjectRefWire::BYTE_LEN * 2],
+            kv_ref,
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER,
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8,
+            kv_payload.len() as u64,
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16,
+            qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 24,
+            0,
+        );
+        let kv_start =
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
+        guest_input[kv_start..kv_start + kv_payload.len()].copy_from_slice(&kv_payload);
+
+        let (tokens, previous_tokens, previous_kv, position) =
+            deepseek_v4_flash_decode_slice_inputs(
+                deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size,
+                0,
+                1,
+                &[0, 128_803, 128_822, 108_149],
+                &guest_input,
+            )
+            .expect("incremental decode inputs");
+        assert_eq!(tokens, vec![108_149]);
+        assert_eq!(previous_tokens, vec![0, 128_803, 128_822]);
+        assert_eq!(previous_kv, Some(kv_payload));
+        assert_eq!(position, 3);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_decode_slice_inputs_fail_closed_without_kv() {
+        let mut token_payload = vec![0u8; 64];
+        write_u64_le_at(&mut token_payload, 0, 0);
+        write_u64_le_at(&mut token_payload, 8, 108_149);
+        let token_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+            0,
+            7,
+            1,
+            0x2001,
+            0,
+            token_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&token_payload),
+        );
+        let operands = Qwen3RangeDispatchOperands {
+            input_token: Some(
+                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                        token_ref,
+                        token_payload,
+                        "deepseek_decode_missing_kv_test",
+                    )
+                    .expect("valid token payload"),
+                ))
+                .expect("token operand"),
+            ),
+            ..Qwen3RangeDispatchOperands::default()
+        };
+        let mut guest_input = vec![0u8; QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64];
+        guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+            ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64]
+            .copy_from_slice(operands.input_token.as_ref().expect("token").bytes());
+        write_obmm_object_ref_wire(
+            &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            token_ref,
+        );
+        let error = deepseek_v4_flash_decode_slice_inputs(
+            deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size,
+            0,
+            1,
+            &[0, 128_803, 128_822, 108_149],
+            &guest_input,
+        )
+        .expect_err("decode without object-backed state must fail");
+        assert!(error.contains("object_ref_invalid:index=1"));
+    }
+
+    #[test]
     #[ignore = "requires the sibling ds4 repo, 81GB GGUF, and host Metal access"]
     fn deepseek_v4_flash_real_eight_range_pipeline_matches_oracle_when_available() {
         if crate::deepseek_v4_flash_runtime_paths().is_err() {
@@ -28987,6 +29335,26 @@ mod tests {
             );
             let mut terminal_output = Vec::new();
             for node in 0..8u32 {
+                if node > 0 {
+                    let hidden_payload = &guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                        ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES];
+                    let hidden_ref = LingquObmmObjectRefWire::committed(
+                        QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                        node,
+                        node - 1,
+                        1,
+                        0x4400 + u64::from(node),
+                        0,
+                        HIDDEN_BYTES as u64,
+                        qwen3_dense_reference_range_object_payload_checksum(hidden_payload),
+                    );
+                    write_obmm_object_ref_wire(
+                        &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                            ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                                + LingquObmmObjectRefWire::BYTE_LEN],
+                        hidden_ref,
+                    );
+                }
                 let (layer_start, layer_end) =
                     crate::deepseek_v4_flash::deepseek_v4_flash_layer_range_for_node_in_topology(
                         u64::from(node),

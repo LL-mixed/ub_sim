@@ -10,6 +10,46 @@
 #include "mem_service_record_table.h"
 #include "mem_service_ub_ssd_gsva_io.h"
 
+static void mem_service_format_range_kv_state_key(
+    char *key,
+    size_t key_len,
+    const char *model_key,
+    uint32_t local_node,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint64_t decode_step)
+{
+    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
+    uint64_t object_decode_step =
+        mem_service_serving_decode_step_from_env(decode_step);
+
+    if (!key || key_len == 0 || !model_key || model_key[0] == '\0' ||
+        layer_end <= layer_start) {
+        return;
+    }
+    if (run_scope_hash != 0) {
+        snprintf(key,
+                 key_len,
+                 "kvcache/%s/scope/%016" PRIx64
+                 "/node%u/layers-%u-%u/decode-step%" PRIu64,
+                 model_key,
+                 run_scope_hash,
+                 local_node + 1U,
+                 layer_start,
+                 layer_end,
+                 object_decode_step);
+        return;
+    }
+    snprintf(key,
+             key_len,
+             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
+             model_key,
+             local_node + 1U,
+             layer_start,
+             layer_end,
+             object_decode_step);
+}
+
 static void mem_service_qwen3_format_kv_state_key(
     char *key,
     size_t key_len,
@@ -17,33 +57,16 @@ static void mem_service_qwen3_format_kv_state_key(
     const struct mem_service_qwen3_layer_range_placement *placement,
     uint64_t decode_step)
 {
-    uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
-    uint64_t object_decode_step =
-        mem_service_serving_decode_step_from_env(decode_step);
-
     if (!key || key_len == 0 || !placement) {
         return;
     }
-    if (run_scope_hash != 0) {
-        snprintf(key,
-                 key_len,
-                 "kvcache/%s/scope/%016" PRIx64 "/node%u/layers-%u-%u/decode-step%" PRIu64,
-                 mem_service_qwen3_model_key(),
-                 run_scope_hash,
-                 local_node + 1U,
-                 placement->layer_start,
-                 placement->layer_end,
-                 object_decode_step);
-        return;
-    }
-    snprintf(key,
-             key_len,
-             "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
-             local_node + 1U,
-             placement->layer_start,
-             placement->layer_end,
-             object_decode_step);
+    mem_service_format_range_kv_state_key(key,
+                                          key_len,
+                                          mem_service_qwen3_model_key(),
+                                          local_node,
+                                          placement->layer_start,
+                                          placement->layer_end,
+                                          decode_step);
 }
 
 static uint64_t mem_service_qwen3_kv_backend_key_hash(const char *key)
@@ -190,7 +213,6 @@ static int mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend(
     if (!rt || !kv_state || !payload_view_out || !local_backing_offset_out ||
         kv_state->object_backend_kind != MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA ||
         kv_state->object_backend_block_bytes != kv_state->object_backing_len ||
-        kv_state->object_backend_block_checksum == 0 ||
         rt->local_idx < 0 || (uint32_t)rt->local_idx != local_node ||
         rt->local_idx >= rt->node_count) {
         return -1;
@@ -568,6 +590,115 @@ int mem_service_obmm_service_v0_try_resolve_range_kv_state_view(
            kv_state.object_backing_len,
            checksum,
            resolved_backing_offset,
+           resolved_backing,
+           resolved_target);
+    return 0;
+}
+
+int mem_service_range_flow_try_resolve_kv_state_view(
+    struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
+    uint32_t local_node,
+    uint64_t kv_step,
+    struct mem_service_object_payload_view *view_out)
+{
+    struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
+    struct mem_service_cluster_slot *local_slot;
+    struct mem_service_record kv_state;
+    char kv_state_key[256];
+    const uint8_t *payload_view;
+    uint64_t resolved_backing_offset = 0;
+    const char *resolved_backing = "obmm_shmem";
+    const char *resolved_target = "mapped_view";
+    bool backend_selected;
+
+    if (!svc || !request || !request->model_key || !view_out ||
+        request->local_placement.owner_node != local_node ||
+        local_node >= request->range_nodes) {
+        return -1;
+    }
+    memset(view_out, 0, sizeof(*view_out));
+    if (mem_service_cluster_runtime_require(rt) != 0 ||
+        (uint32_t)rt->local_idx != local_node) {
+        return -1;
+    }
+    local_slot = &rt->slots[rt->local_idx];
+    if (!local_slot->region.addr) {
+        return -1;
+    }
+    mem_service_format_range_kv_state_key(
+        kv_state_key,
+        sizeof(kv_state_key),
+        request->model_key,
+        local_node,
+        request->local_placement.layer_start,
+        request->local_placement.layer_end,
+        kv_step);
+    memset(&kv_state, 0, sizeof(kv_state));
+    {
+        struct mem_service_record *local_record =
+            mem_service_find_record(svc, kv_state_key);
+
+        if (local_record) {
+            kv_state = *local_record;
+        }
+    }
+    backend_selected =
+        kv_state.object_backend_kind == MEM_SERVICE_OBJECT_BACKEND_UB_SSD_GSVA;
+    if (kv_state.kind != MEM_SERVICE_RECORD_KVCACHE_OBJECT ||
+        kv_state.object_payload_kind != MEM_SERVICE_OBMM_KIND_MODEL_KV_STATE ||
+        kv_state.object_backing_len == 0 ||
+        (!backend_selected &&
+         kv_state.object_backing_offset + kv_state.object_backing_len >
+             local_slot->region.len)) {
+        printf("[mem_service] stage range_kv_state_resolve_missing"
+               " model=%s local=node%u kv_step=%" PRIu64
+               " key=%s status=miss\n",
+               request->model_key,
+               local_node + 1U,
+               kv_step,
+               kv_state_key);
+        return 1;
+    }
+    if (backend_selected) {
+        if (mem_service_qwen3_kv_read_from_ub_ssd_gsva_backend(
+                rt,
+                &kv_state,
+                local_node,
+                kv_step,
+                &payload_view,
+                &resolved_backing_offset) != 0) {
+            return -1;
+        }
+        resolved_backing = "ub_ssd_gsva";
+        resolved_target = "local_backend_read_buffer";
+    } else {
+        payload_view = (const uint8_t *)local_slot->region.addr +
+                       kv_state.object_backing_offset;
+        resolved_backing_offset = kv_state.object_backing_offset;
+    }
+    view_out->data = payload_view;
+    view_out->len = kv_state.object_backing_len;
+    view_out->checksum = kv_state.object_payload_checksum;
+    view_out->owner_node = local_node;
+    view_out->payload_kind = kv_state.object_payload_kind;
+    view_out->backing_offset = resolved_backing_offset;
+    if (mem_service_record_to_lingqu_object_ref(&kv_state,
+                                                &view_out->object_ref) != 0) {
+        return -1;
+    }
+    printf("[mem_service] stage range_kv_state_resolve"
+           " model=%s local=node%u kv_step=%" PRIu64
+           " key=%s layers=[%u,%u) kv_bytes=%" PRIu64
+           " kv_checksum=0x%016" PRIx64 " backing=%s target=%s status=ok\n",
+           request->model_key,
+           local_node + 1U,
+           kv_step,
+           kv_state_key,
+           request->local_placement.layer_start,
+           request->local_placement.layer_end,
+           view_out->len,
+           view_out->checksum,
            resolved_backing,
            resolved_target);
     return 0;

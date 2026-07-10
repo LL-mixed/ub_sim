@@ -11693,19 +11693,37 @@ decode_round_start:
             range_request.hidden_range_bytes =
                 w4_runtime_handoff_hidden_bytes(guest_decode_step);
             memset(&scheduler_item, 0, sizeof(scheduler_item));
-            if (mem_service_range_flow_wait_scheduler_work_item(
-                    &range_request,
-                    dispatch_node,
-                    cluster_node_count,
-                    guest_decode_step,
-                    &scheduler_item) != 0 ||
-                scheduler_item.kind == MEM_SERVICE_SCHEDULER_WORK_ITEM_NONE) {
+            {
+                int scheduler_rc =
+                    mem_service_range_flow_wait_scheduler_work_item(
+                        &range_request,
+                        dispatch_node,
+                        cluster_node_count,
+                        guest_decode_step,
+                        &scheduler_item);
+
+                if (scheduler_rc != 0 ||
+                    scheduler_item.kind == MEM_SERVICE_SCHEDULER_WORK_ITEM_NONE) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 work item scheduler input resolve failed node=%u layers=[%u,%u)\n",
+                        "[w4_guest] fail qwen3 work item scheduler input resolve"
+                        " failed node=%u layers=[%u,%u)"
+                        " rc=%d kind=%d"
+                        " request_nodes=%u request_owner=%u"
+                        " has_predecessor=%u predecessor_owner=%u"
+                        " predecessor_next=%u hidden_bytes=%" PRIu64 "\n",
                         dispatch_node + 1U,
                         layer_start,
-                        layer_end);
+                        layer_end,
+                        scheduler_rc,
+                        (int)scheduler_item.kind,
+                        range_request.range_nodes,
+                        range_request.local_placement.owner_node + 1U,
+                        range_request.has_predecessor ? 1U : 0U,
+                        range_request.predecessor_placement.owner_node + 1U,
+                        range_request.predecessor_placement.next_owner_node + 1U,
+                        range_request.hidden_range_bytes);
                 goto out;
+                }
             }
             if (scheduler_item.kind == MEM_SERVICE_SCHEDULER_WORK_ITEM_NO_DISPATCH) {
                 input_found_ms =
@@ -11900,20 +11918,43 @@ decode_round_start:
     if (seed_kvcache_payload(ep_mmio, default_segment) != 0) {
         goto out;
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
-        qwen3_memory_decision_config.shortpath_execute && guest_decode_step > 0 &&
-        qwen3_terminal_token_count < guest_decode_step) {
+    if (enable_db_cluster && guest_decode_step > 0 &&
+        qwen3_terminal_token_count < guest_decode_step &&
+        (is_deepseek_v4_flash_profile() ||
+         (is_qwen3_profile() && cluster_node_count == 8U &&
+          qwen3_memory_decision_config.shortpath_execute))) {
         uint64_t previous_token = 0;
+        int token_wait_rc = -1;
 
-        if (!db_service_ready ||
-            mem_service_obmm_service_v0_wait_terminal_token_result(
-                &db_service,
-                guest_decode_step - 1U,
-                600000,
-                &previous_token) != 0) {
+        if (db_service_ready && is_deepseek_v4_flash_profile()) {
+            struct mem_service_obmm_range_flow_request token_request;
+            uint32_t local_node = UINT32_MAX;
+
+            if (w4_cluster_role_index(role, cluster_node_count, &local_node) &&
+                w4_runtime_init_obmm_range_flow_request(&token_request,
+                                                        local_node,
+                                                        cluster_node_count) == 0) {
+                token_wait_rc = mem_service_range_flow_wait_terminal_token(
+                    &db_service,
+                    &token_request,
+                    guest_decode_step - 1U,
+                    600000,
+                    &previous_token);
+            }
+        } else if (db_service_ready) {
+            token_wait_rc =
+                mem_service_obmm_service_v0_wait_terminal_token_result(
+                    &db_service,
+                    guest_decode_step - 1U,
+                    600000,
+                    &previous_token);
+        }
+        if (token_wait_rc != 0) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 shortpath previous terminal token missing"
+                    "[w4_guest] fail previous terminal token missing"
+                    " model=%s"
                     " step=%" PRIu64 "\n",
+                    w4_runtime_model_key(),
                     guest_decode_step - 1U);
             goto out;
         }
@@ -11936,6 +11977,12 @@ decode_round_start:
                                                           qwen3_terminal_token_count) != 0) {
             goto out;
         }
+    } else if (is_deepseek_v4_flash_profile() && enable_db_cluster &&
+               append_qwen3_terminal_tokens_to_prompt(
+                   ep_mmio,
+                   qwen3_terminal_tokens,
+                   qwen3_terminal_token_count) != 0) {
+        goto out;
     }
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
         qwen3_round_input_token_count =
@@ -12106,11 +12153,11 @@ decode_round_start:
             uint8_t empty_object_ref_table[W4_QWEN3_OBJECT_REF_MAX_COUNT *
                                            W4_QWEN3_OBJECT_REF_BYTES] = {0};
 
-            if (is_qwen3_profile() &&
+            if ((is_qwen3_profile() || is_deepseek_v4_flash_profile()) &&
                 (layer_start > 0U || guest_decode_step > 0)) {
                 object_ref_count++;
             }
-            if (is_qwen3_profile() &&
+            if ((is_qwen3_profile() || is_deepseek_v4_flash_profile()) &&
                 (guest_decode_step > 0 || prefix_cache_partial_prefill)) {
                 object_ref_count++;
             }
@@ -12181,15 +12228,20 @@ decode_round_start:
         uint32_t layer_start = 0U;
         uint32_t layer_end = 0U;
         uint32_t next_node = 0U;
+        uint32_t object_ref_write_index = 0U;
         uint64_t hidden_range_bytes =
             w4_runtime_handoff_hidden_bytes(guest_decode_step);
+        struct mem_service_obmm_range_flow_request range_request;
 
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
             w4_runtime_layer_range_for_node(dispatch_node,
                                             cluster_node_count,
                                             &layer_start,
                                             &layer_end,
-                                            &next_node) != 0) {
+                                            &next_node) != 0 ||
+            w4_runtime_init_obmm_range_flow_request(&range_request,
+                                                    dispatch_node,
+                                                    cluster_node_count) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail deepseek v4 flash range input placement"
                     " unavailable role=%s nodes=%u\n",
@@ -12197,45 +12249,172 @@ decode_round_start:
                     cluster_node_count);
             goto out;
         }
-        if (layer_start > 0U) {
-            if (!qwen3_pre_resolved_range_input ||
-                !qwen3_pre_resolved_range_input_view.data ||
-                qwen3_pre_resolved_range_input_view.payload_kind !=
-                    W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT ||
-                qwen3_pre_resolved_range_input_view.len != hidden_range_bytes) {
+        if (layer_start > 0U || guest_decode_step > 0) {
+            struct mem_service_object_payload_view range_input_view;
+            uint32_t expected_kind =
+                layer_start > 0U ?
+                    W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT :
+                    MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT;
+            uint64_t expected_bytes =
+                layer_start > 0U ?
+                    hidden_range_bytes :
+                    MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+
+            memset(&range_input_view, 0, sizeof(range_input_view));
+            if (layer_start > 0U && qwen3_pre_resolved_range_input) {
+                range_input_view = qwen3_pre_resolved_range_input_view;
+            } else if (mem_service_obmm_service_v0_wait_runtime_range_input_view(
+                           dispatch_node,
+                           cluster_node_count,
+                           guest_decode_step,
+                           &range_input_view) != 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail deepseek v4 flash runtime input"
+                        " resolve failed node=%u step=%" PRIu64 "\n",
+                        dispatch_node + 1U,
+                        guest_decode_step);
+                goto out;
+            }
+            if (!range_input_view.data ||
+                range_input_view.payload_kind != expected_kind ||
+                range_input_view.len != expected_bytes) {
                 fprintf(stderr,
                         "[w4_guest] fail deepseek v4 flash runtime range input"
-                        " invalid node=%u layers=[%u,%u) bytes=%" PRIu64
-                        " expected=%" PRIu64 "\n",
+                        " invalid node=%u step=%" PRIu64
+                        " layers=[%u,%u) kind=%u bytes=%" PRIu64
+                        " expected_kind=%u expected_bytes=%" PRIu64 "\n",
                         dispatch_node + 1U,
+                        guest_decode_step,
                         layer_start,
                         layer_end,
-                        qwen3_pre_resolved_range_input_view.len,
-                        hidden_range_bytes);
+                        range_input_view.payload_kind,
+                        range_input_view.len,
+                        expected_kind,
+                        expected_bytes);
                 goto out;
             }
             write_segment_bytes(ep_mmio,
+                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                    ((uint64_t)object_ref_write_index *
+                                     W4_QWEN3_OBJECT_REF_BYTES),
+                                (const uint8_t *)&range_input_view.object_ref,
+                                W4_QWEN3_OBJECT_REF_BYTES);
+            object_ref_write_index++;
+            write_segment_bytes(ep_mmio,
                                 W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
-                                qwen3_pre_resolved_range_input_view.data,
-                                hidden_range_bytes);
+                                range_input_view.data,
+                                range_input_view.len);
             input_loaded_ms = monotonic_ms();
             printf("[w4_guest] stage deepseek_v4_flash_runtime_input_loaded"
                    " node=%u step=%" PRIu64 " layers=[%u,%u)"
-                   " producer=node%u bytes=%" PRIu64
+                   " producer=node%u kind=%u bytes=%" PRIu64
                    " checksum=0x%016" PRIx64
-                   " source=mem_service target=uapi_segment"
-                   " transport=gsva materialize=local_copy status=ok\n",
+                   " source=mem_service target=uapi_object_ref"
+                   " transport=gsva materialize=uapi_segment status=ok\n",
                    dispatch_node + 1U,
                    guest_decode_step,
                    layer_start,
                    layer_end,
-                   qwen3_pre_resolved_range_input_view.source_node + 1U,
-                   qwen3_pre_resolved_range_input_view.len,
-                   qwen3_pre_resolved_range_input_view.checksum);
+                   range_input_view.source_node + 1U,
+                   range_input_view.payload_kind,
+                   range_input_view.len,
+                   range_input_view.checksum);
         } else {
             input_wait_start_ms = monotonic_ms();
             input_found_ms = input_wait_start_ms;
             input_loaded_ms = input_found_ms;
+        }
+        if (guest_decode_step > 0) {
+            struct mem_service_object_payload_view previous_kv_view;
+            uint64_t previous_kv_header[4];
+            int previous_kv_state;
+
+            memset(&previous_kv_view, 0, sizeof(previous_kv_view));
+            kv_resolve_start_ms = monotonic_ms();
+            previous_kv_state =
+                mem_service_range_flow_try_resolve_kv_state_view(
+                    &db_service,
+                    &range_request,
+                    dispatch_node,
+                    guest_decode_step - 1U,
+                    &previous_kv_view);
+            if (previous_kv_state != 0 || !previous_kv_view.data ||
+                previous_kv_view.len == 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail deepseek v4 flash previous range kv"
+                        " missing node=%u step=%" PRIu64
+                        " previous_step=%" PRIu64 " state=%d\n",
+                        dispatch_node + 1U,
+                        guest_decode_step,
+                        guest_decode_step - 1U,
+                        previous_kv_state);
+                goto out;
+            }
+            kv_resolved_ms = monotonic_ms();
+            if (previous_kv_view.len >
+                W4_QWEN3_OUTPUT_SCAN_MAX_BYTES -
+                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET -
+                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES) {
+                fprintf(stderr,
+                        "[w4_guest] fail deepseek v4 flash previous range kv"
+                        " too large node=%u step=%" PRIu64
+                        " bytes=%" PRIu64 "\n",
+                        dispatch_node + 1U,
+                        guest_decode_step,
+                        previous_kv_view.len);
+                goto out;
+            }
+            previous_kv_header[0] = W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER;
+            previous_kv_header[1] = previous_kv_view.len;
+            previous_kv_header[2] = previous_kv_view.checksum;
+            previous_kv_header[3] = guest_decode_step - 1U;
+            write_segment_bytes(ep_mmio,
+                                W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
+                                (const uint8_t *)previous_kv_header,
+                                sizeof(previous_kv_header));
+            write_segment_bytes(ep_mmio,
+                                W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
+                                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
+                                previous_kv_view.data,
+                                previous_kv_view.len);
+            write_segment_bytes(ep_mmio,
+                                W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
+                                    ((uint64_t)object_ref_write_index *
+                                     W4_QWEN3_OBJECT_REF_BYTES),
+                                (const uint8_t *)&previous_kv_view.object_ref,
+                                W4_QWEN3_OBJECT_REF_BYTES);
+            object_ref_write_index++;
+            kv_loaded_ms = monotonic_ms();
+            printf("[w4_guest] stage deepseek_v4_flash_layer_kv_restored"
+                   " node=%u step=%" PRIu64 " previous_step=%" PRIu64
+                   " layers=[%u,%u) kv_bytes=%" PRIu64
+                   " kv_checksum=0x%016" PRIx64
+                   " source=mem_service target=uapi_object_ref"
+                   " materialize=uapi_segment status=ok\n",
+                   dispatch_node + 1U,
+                   guest_decode_step,
+                   guest_decode_step - 1U,
+                   layer_start,
+                   layer_end,
+                   previous_kv_view.len,
+                   previous_kv_view.checksum);
+        }
+        {
+            uint32_t expected_object_ref_count =
+                (layer_start > 0U || guest_decode_step > 0 ? 1U : 0U) +
+                (guest_decode_step > 0 ? 1U : 0U);
+
+            if (object_ref_write_index != expected_object_ref_count) {
+                fprintf(stderr,
+                        "[w4_guest] fail deepseek v4 flash object ref count"
+                        " mismatch node=%u step=%" PRIu64
+                        " actual=%u expected=%u\n",
+                        dispatch_node + 1U,
+                        guest_decode_step,
+                        object_ref_write_index,
+                        expected_object_ref_count);
+                goto out;
+            }
         }
     }
     if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {

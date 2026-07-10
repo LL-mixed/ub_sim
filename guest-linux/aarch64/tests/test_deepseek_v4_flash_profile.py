@@ -100,7 +100,12 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("is_deepseek_v4_flash_profile", runner)
         self.assertIn("is_model_range_profile", runner)
         self.assertIn("deepseek_v4_flash_runtime_input_loaded", runner)
-        self.assertIn("transport=gsva materialize=local_copy", runner)
+        self.assertIn(
+            "target=uapi_object_ref transport=gsva materialize=uapi_segment", runner
+        )
+        self.assertIn("deepseek_v4_flash_layer_kv_restored", runner)
+        self.assertIn("DeepSeek KV restore per decode continuation", runner)
+        self.assertIn("DeepSeek streamed token per step", runner)
         self.assertIn("deepseek_v4_flash_first_token", runner)
         self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS", runner)
         self.assertIn("tokens/deepseek-v4-flash", runner)

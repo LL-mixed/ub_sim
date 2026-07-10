@@ -361,22 +361,24 @@ int mem_service_obmm_service_v0_publish_shortpath_terminal_token_result(
         false);
 }
 
-int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *svc,
-                                                     uint64_t decode_step,
-                                                     uint64_t timeout_ms,
-                                                     uint64_t *sampled_token_out)
+static int mem_service_wait_terminal_token_result_for_model(
+    struct mem_service *svc,
+    const char *model_key,
+    uint64_t decode_step,
+    uint64_t timeout_ms,
+    uint64_t *sampled_token_out)
 {
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     char token_result_key[256];
     long deadline;
     bool first_scan = true;
 
-    if (!svc) {
+    if (!svc || !model_key || model_key[0] == '\0') {
         return -1;
     }
     mem_service_qwen3_format_token_result_key(token_result_key,
                                               sizeof(token_result_key),
-                                              mem_service_qwen3_model_key(),
+                                              model_key,
                                               decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (first_scan || obmm_now_ms() < deadline) {
@@ -454,4 +456,34 @@ int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *s
                token_result_key);
     }
     return -1;
+}
+
+int mem_service_range_flow_wait_terminal_token(
+    struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
+    uint64_t decode_step,
+    uint64_t timeout_ms,
+    uint64_t *sampled_token_out)
+{
+    if (!request) {
+        return -1;
+    }
+    return mem_service_wait_terminal_token_result_for_model(svc,
+                                                             request->model_key,
+                                                             decode_step,
+                                                             timeout_ms,
+                                                             sampled_token_out);
+}
+
+int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *svc,
+                                                     uint64_t decode_step,
+                                                     uint64_t timeout_ms,
+                                                     uint64_t *sampled_token_out)
+{
+    return mem_service_wait_terminal_token_result_for_model(
+        svc,
+        mem_service_qwen3_model_key(),
+        decode_step,
+        timeout_ms,
+        sampled_token_out);
 }

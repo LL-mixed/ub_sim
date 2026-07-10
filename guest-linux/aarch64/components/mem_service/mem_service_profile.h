@@ -97,5 +97,17 @@ int mem_service_range_flow_publish_terminal_token(
     uint64_t text_checksum,
     uint64_t piece_word0,
     uint64_t piece_word1);
+int mem_service_range_flow_wait_terminal_token(
+    struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
+    uint64_t decode_step,
+    uint64_t timeout_ms,
+    uint64_t *sampled_token_out);
+int mem_service_range_flow_try_resolve_kv_state_view(
+    struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
+    uint32_t local_node,
+    uint64_t kv_step,
+    struct mem_service_object_payload_view *view_out);
 
 #endif
