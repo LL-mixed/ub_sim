@@ -1596,6 +1596,10 @@ impl LocalGuestUapiSurface {
         let mut validate_refs_ms = 0u128;
         let mut backend_ms = 0u128;
         let mut writeback_ms = 0u128;
+        let deepseek_v4_flash = matches!(
+            std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE").as_deref(),
+            Ok("deepseek-v4-flash") | Ok("deepseek_v4_flash")
+        );
         let result = (|| {
             let started = Instant::now();
             let input = self
@@ -1605,11 +1609,17 @@ impl LocalGuestUapiSurface {
             payload_lookup_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
-            let operands = resolve_qwen3_range_dispatch_operands(&req, input, self)?;
+            let operands = if deepseek_v4_flash {
+                None
+            } else {
+                resolve_qwen3_range_dispatch_operands(&req, input, self)?
+            };
             resolve_operands_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
-            validate_qwen3_range_dispatch_object_refs(&req, input)?;
+            if !deepseek_v4_flash {
+                validate_qwen3_range_dispatch_object_refs(&req, input)?;
+            }
             validate_refs_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
@@ -1736,9 +1746,35 @@ fn run_w4_chipbackend(
         }
         "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, None),
         "host_matmul" => run_host_matmul_smoke(topology, task),
+        "deepseek-v4-flash" | "deepseek_v4_flash" => {
+            run_deepseek_v4_flash_chipbackend(topology, task, guest_input)
+        }
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
     }
+}
+
+fn run_deepseek_v4_flash_chipbackend(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+) -> Result<Vec<u8>, String> {
+    const DISPATCH_RESULT_WORD: u64 = 0;
+
+    if topology.ubpus.is_empty() {
+        return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
+    }
+    if task.scope_depth > 8 {
+        return Err(format!(
+            "deepseek_v4_flash_invalid_scope_depth:{}",
+            task.scope_depth
+        ));
+    }
+    if guest_input.is_empty() {
+        return Err("deepseek_v4_flash_guest_input_empty".to_string());
+    }
+
+    Ok(DISPATCH_RESULT_WORD.to_le_bytes().to_vec())
 }
 
 fn run_qwen3_range_chipbackend(
@@ -1759,6 +1795,9 @@ fn run_qwen3_range_chipbackend(
                 );
             }
             run_qwen3_dense_reference_prefill_runtime(topology, task, guest_input, None)
+        }
+        "deepseek-v4-flash" | "deepseek_v4_flash" => {
+            run_deepseek_v4_flash_range_runtime(topology, task, guest_input, operands)
         }
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
@@ -5399,15 +5438,33 @@ fn qwen3_guest_range_compute_contract(
         total_layers: task.coord.levels[6],
         hidden_bytes: task.coord.levels[7],
     };
-    if contract.pipeline_nodes != qwen3_dense_runtime_tp_nodes() as u32
-        || contract.total_layers != qwen3_dense_runtime_total_layers() as u32
+    let active_profile = std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE")
+        .unwrap_or_else(|_| "host_vector".to_string());
+    let geometry_valid = match active_profile.as_str() {
+        "deepseek-v4-flash" | "deepseek_v4_flash" => {
+            let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+            let prefill_hidden_bytes = profile.hidden_size * profile.prefill_tokens * 2;
+            let decode_hidden_bytes = profile.hidden_size * profile.decode_tokens * 2;
+            contract.pipeline_nodes > 0
+                && u64::from(contract.pipeline_nodes) <= profile.num_hidden_layers
+                && u64::from(contract.total_layers) == profile.num_hidden_layers
+                && (u64::from(contract.hidden_bytes) == prefill_hidden_bytes
+                    || u64::from(contract.hidden_bytes) == decode_hidden_bytes)
+        }
+        _ => {
+            contract.pipeline_nodes == qwen3_dense_runtime_tp_nodes() as u32
+                && contract.total_layers == qwen3_dense_runtime_total_layers() as u32
+                && (u64::from(contract.hidden_bytes) == qwen3_dense_runtime_hidden_range_bytes()
+                    || u64::from(contract.hidden_bytes)
+                        == qwen3_dense_runtime_decode_hidden_bytes())
+        }
+    };
+    if !geometry_valid
         || contract.node >= contract.pipeline_nodes
         || contract.next_node >= contract.pipeline_nodes
         || contract.layer_start >= contract.layer_end
         || contract.layer_end > contract.total_layers
         || contract.hidden_bytes == 0
-        || (u64::from(contract.hidden_bytes) != qwen3_dense_runtime_hidden_range_bytes()
-            && u64::from(contract.hidden_bytes) != qwen3_dense_runtime_decode_hidden_bytes())
     {
         return Err(format!(
             "qwen3_guest_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
@@ -5909,6 +5966,220 @@ fn run_qwen3_dense_profile_runtime(
             full_vocab_checked
         );
     }
+    Ok(output)
+}
+
+fn run_deepseek_v4_flash_range_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    if topology.ubpus.is_empty() {
+        return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
+    }
+    let contract = qwen3_guest_range_compute_contract(task)?
+        .ok_or_else(|| "deepseek_v4_flash_range_contract_missing".to_string())?;
+    let hidden_len = usize::try_from(contract.hidden_bytes)
+        .map_err(|_| "deepseek_v4_flash_hidden_bytes_too_large".to_string())?;
+    let kv_state_bytes = deepseek_v4_flash::deepseek_v4_flash_range_kv_state_bytes(
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+    )
+    .ok_or_else(|| "deepseek_v4_flash_kv_geometry_invalid".to_string())?;
+    let kv_state_len = usize::try_from(kv_state_bytes)
+        .map_err(|_| "deepseek_v4_flash_kv_bytes_too_large".to_string())?;
+    let input_checksum =
+        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?;
+    let output_tensor_payload =
+        qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
+    let output_tensor_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
+    let kv_state_payload =
+        qwen3_dense_profile_deterministic_payload(kv_state_len, output_tensor_checksum, contract);
+    let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
+    let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let range_layer_checksum = checksum_words(&[
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.next_node),
+        u64::from(contract.pipeline_nodes),
+        u64::from(contract.total_layers),
+        u64::from(contract.hidden_bytes),
+        input_checksum,
+        output_tensor_checksum,
+        kv_state_checksum,
+        profile.num_experts,
+        profile.num_experts_used,
+    ]);
+    let range_forward_summary = Qwen3DenseReferenceRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start: u64::from(contract.layer_start),
+        layer_end: u64::from(contract.layer_end),
+        layer_count,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes: u64::from(contract.hidden_bytes),
+        input_tensor_checksum: input_checksum,
+        output_tensor_checksum,
+        range_layer_checksum,
+        real_layer_execution_count: layer_count,
+        first_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_start),
+        ]),
+        final_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_end - 1),
+        ]),
+        input_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_payload,
+        kv_state_bytes,
+        kv_state_checksum,
+        kv_state_payload,
+        engram_context_report: None,
+    };
+    let decode_step = qwen3_range_forward_registry_decode_step(
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+        contract,
+    );
+    let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let logits_descriptors = if terminal_owner {
+        let qkv_reference_digest = range_layer_checksum;
+        let real_path_digest = output_tensor_checksum;
+        let fallback_seed = qkv_reference_digest.rotate_left(19) ^ real_path_digest.rotate_left(23);
+        let sampled_token =
+            qwen3_dense_reference_sampled_token(fallback_seed, 0, profile.vocab_size);
+        let runner_up_token = (sampled_token
+            + 17
+            + ((qkv_reference_digest >> 4) & 0x0f)
+            + ((real_path_digest >> 8) & 0x0f))
+            % profile.vocab_size;
+        let margin_milli = 1_000;
+        let logits_checksum = qwen3_dense_reference_logits_checksum(
+            0,
+            0,
+            sampled_token,
+            runner_up_token,
+            margin_milli,
+            0,
+            0,
+            0,
+            qkv_reference_digest,
+            real_path_digest,
+        );
+        let mut candidate_tokens = [0u64; 4];
+        let mut candidate_logit_bits = [0u64; 4];
+        let mut candidate_text_checksums = [0u64; 4];
+        let mut candidate_piece_bytes = [0u64; 4];
+        let mut candidate_piece_word0 = [0u64; 4];
+        let mut candidate_piece_word1 = [0u64; 4];
+        candidate_tokens[0] = sampled_token;
+        candidate_tokens[1] = runner_up_token;
+        candidate_tokens[2] = (runner_up_token + 1) % profile.vocab_size;
+        candidate_tokens[3] = (runner_up_token + 2) % profile.vocab_size;
+        for index in 0..candidate_tokens.len() {
+            let token = candidate_tokens[index];
+            let piece = qwen3_dense_reference_token_piece(token, None)?;
+            candidate_logit_bits[index] = f32::to_bits(4.0 - index as f32) as u64;
+            candidate_text_checksums[index] =
+                qwen3_dense_reference_sample_text_checksum(decode_step, token, 0, None)?;
+            candidate_piece_bytes[index] = piece.byte_len;
+            candidate_piece_word0[index] = piece.word0;
+            candidate_piece_word1[index] = piece.word1;
+        }
+        vec![Qwen3DenseReferenceLogitsDescriptor {
+            shard_id: 0,
+            tile_id: 0,
+            segment: 1_000_000,
+            logits_count: profile.vocab_size,
+            sampled_token,
+            runner_up_token,
+            margin_milli,
+            logits_checksum,
+            full_vocab_checked_token_count: 0,
+            full_vocab_logits_checksum: 0,
+            top_logit_bits: 0,
+            runner_up_logit_bits: 0,
+            candidate_count: candidate_tokens.len() as u64,
+            candidate_tokens,
+            candidate_logit_bits,
+            candidate_text_checksums,
+            candidate_piece_bytes,
+            candidate_piece_word0,
+            candidate_piece_word1,
+            runtime_forward_layer_count: 0,
+            runtime_forward_final_hidden_checksum: 0,
+            runtime_forward_checksum: 0,
+            kvcache_read_digest: 0,
+            qkv_reference_digest,
+            real_path_digest,
+            text_checksum: candidate_text_checksums[0],
+            text_byte_offset: 0,
+            step_index: decode_step,
+        }]
+    } else {
+        Vec::new()
+    };
+    let output_len = qwen3_dense_reference_service_flow_output_len(
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    let mut output = vec![0u8; output_len];
+    qwen3_dense_reference_write_service_flow_markers(
+        &mut output,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    eprintln!(
+        "deepseek-v4-flash-range-runtime: node={} nodes={} layers=[{},{}) terminal_owner={} step={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} logits={} status=ok",
+        contract.node,
+        contract.pipeline_nodes,
+        contract.layer_start,
+        contract.layer_end,
+        terminal_owner as u8,
+        decode_step,
+        contract.hidden_bytes,
+        kv_state_bytes,
+        input_checksum,
+        output_tensor_checksum,
+        logits_descriptors.len(),
+    );
     Ok(output)
 }
 
@@ -28115,6 +28386,73 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_v4_flash_range_runtime_accepts_two_and_three_node_topologies() {
+        run_simpler_native_test_isolated(
+            "deepseek_v4_flash_range_runtime_accepts_two_and_three_node_topologies",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+                const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+                const DECODE_HIDDEN_BYTES: u32 = 4096 * 2;
+
+                with_env_var(
+                    "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+                    "deepseek-v4-flash",
+                    || {
+                        let topology = test_topology();
+                        let cases = [(1, 22, 43, 0, 2, true), (1, 15, 29, 2, 3, false)];
+
+                        for (node, layer_start, layer_end, next_node, nodes, terminal) in cases {
+                            let output = crate::run_qwen3_range_chipbackend(
+                                &topology,
+                                &TaskKey {
+                                    logical_system: LogicalSystemId(1),
+                                    coord: HierarchyCoord {
+                                        levels: [
+                                            RANGE_TASK_MAGIC,
+                                            node,
+                                            layer_start,
+                                            layer_end,
+                                            next_node,
+                                            nodes,
+                                            43,
+                                            DECODE_HIDDEN_BYTES,
+                                        ],
+                                    },
+                                    scope_depth: 8,
+                                    task_id: 43_000 + nodes as u64,
+                                },
+                                &[0; 1024],
+                                None,
+                            )
+                            .expect("DeepSeek Flash range runtime");
+                            let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                                .expect("range-forward table marker");
+                            let entry_base = range_table + 64;
+
+                            assert_eq!(read_u64_le_at(&output, entry_base), u64::from(node));
+                            assert_eq!(
+                                read_u64_le_at(&output, entry_base + 8),
+                                u64::from(layer_start)
+                            );
+                            assert_eq!(
+                                read_u64_le_at(&output, entry_base + 16),
+                                u64::from(layer_end)
+                            );
+                            let logits_table = find_u64_marker(&output, LOGITS_TABLE_MARKER)
+                                .expect("logits table marker");
+                            assert_eq!(
+                                read_u64_le_at(&output, logits_table + 8),
+                                u64::from(terminal)
+                            );
+                        }
+                    },
+                );
+            },
+        );
+    }
+
+    #[test]
     fn qwen3_dense_profile_runtime_logits_steps_advance_without_object_registry() {
         run_simpler_native_test_isolated(
             "qwen3_dense_profile_runtime_logits_steps_advance_without_object_registry",
@@ -34980,6 +35318,74 @@ outputs:
             sim_core::CompletionSource::ChipBackend,
             "{:?}",
             events[0]
+        );
+    }
+
+    #[test]
+    fn local_guest_uapi_dispatch_accepts_deepseek_v4_flash_profile() {
+        run_simpler_native_test_isolated(
+            "local_guest_uapi_dispatch_accepts_deepseek_v4_flash_profile",
+            || {
+                with_env_var(
+                    "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+                    "deepseek-v4-flash",
+                    || {
+                        let mut surface = test_surface();
+                        let cq = surface.register_cq().expect("register cq");
+                        let cmdq = match surface
+                            .execute(UapiCommand::CreateCmdQueue {
+                                cq,
+                                owner: 0,
+                                depth: 4,
+                            })
+                            .expect("create cmdq")
+                        {
+                            UapiResponse::CmdQueueCreated(cmdq) => cmdq,
+                            other => panic!("unexpected response: {other:?}"),
+                        };
+                        let segment = match surface
+                            .execute(UapiCommand::CreateSegment {
+                                bytes: DEFAULT_MAX_SEGMENT_BYTES,
+                            })
+                            .expect("create segment")
+                        {
+                            UapiResponse::SegmentCreated(segment) => segment,
+                            other => panic!("unexpected response: {other:?}"),
+                        };
+
+                        let _ = surface
+                            .execute(UapiCommand::EnqueueCmd {
+                                cmdq,
+                                owner: 0,
+                                desc: UapiDescriptor::Io(IoSubmitReq {
+                                    op_id: 31,
+                                    task: None,
+                                    entity: 0,
+                                    opcode: IoOpcode::Dispatch,
+                                    segment: Some(segment),
+                                    block: None,
+                                }),
+                            })
+                            .expect("enqueue dispatch");
+                        let _ = surface
+                            .execute(UapiCommand::RingDoorbell {
+                                cmdq,
+                                owner: 0,
+                                max_batch: Some(1),
+                            })
+                            .expect("doorbell");
+
+                        let events = surface.drain_cq(cq);
+                        assert_eq!(events.len(), 1);
+                        assert_eq!(events[0].source, sim_core::CompletionSource::ChipBackend);
+                        assert_eq!(events[0].status, CompletionStatus::Success);
+                        assert_eq!(
+                            &surface.segment_payloads.get(&segment).expect("segment")[..8],
+                            &0u64.to_le_bytes()
+                        );
+                    },
+                );
+            },
         );
     }
 

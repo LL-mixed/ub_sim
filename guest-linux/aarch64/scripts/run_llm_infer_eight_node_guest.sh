@@ -345,6 +345,15 @@ is_qwen3_dense_profile() {
   [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
 }
 
+is_deepseek_v4_flash_profile() {
+  local profile="$1"
+  [[ "$profile" == "deepseek-v4-flash" || "$profile" == "deepseek_v4_flash" ]]
+}
+
+is_model_range_profile() {
+  is_qwen3_dense_profile "$1" || is_deepseek_v4_flash_profile "$1"
+}
+
 validate_w5_profile_runtime() {
   case "$SIM_UAPI_W5_PROFILE" in
     "")
@@ -1272,6 +1281,9 @@ validate_w5_boundary_observation_summary() {
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
+  if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    return 0
+  fi
   if [[ ! -f "$RUN_SUMMARY_FILE" ]]; then
     trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
     return 1
@@ -1408,6 +1420,14 @@ validate_w5_artifact_sizes() {
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
+  if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    validate_w5_artifact_file_size \
+      "${SIM_W5_FLASH_WEIGHT_CATALOG:-}" \
+      "flash_weight_catalog" \
+      67108864 \
+      1 || return 1
+    return 0
+  fi
   if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
     shortpath_required=0
   fi
@@ -1508,6 +1528,8 @@ validate_node_log() {
     expected_dispatch_word="0x3f8000003f800000"
   elif is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     expected_dispatch_word="0x[0-9a-f]+"
+  elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    expected_dispatch_word="0x0000000000000000"
   fi
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % 8 + 1))
@@ -1548,7 +1570,7 @@ validate_node_log() {
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_cluster_mode=resource_backed_uapi" "$node_id db cluster resource-backed mode" || return 1
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_cluster_runtime_bootstrap local=node${idx} nodes=8 backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id explicit obmm cluster runtime bootstrap" || return 1
   fi
   if [[ "$SIM_W4_RESOURCE_ASSERTIONS" == "1" ]]; then
@@ -1582,7 +1604,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_dispatch_descriptor node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) segment=[0-9]+ task_id=31 object_ref_table_offset=0x[0-9a-f]+ object_ref_count=[0-9]+ source=db_metadata status=ok" "$node_id qwen3 range dispatch descriptor" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_chipbackend_dispatch_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ task_id=31" "$node_id uapi chipbackend descriptor" || return 1
@@ -1646,9 +1668,24 @@ validate_node_log() {
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
     fi
+  elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=43 hidden_bytes=[1-9][0-9]* source=dispatch_task output=completion status=ok" "$node_id DeepSeek range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=43 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[1-9][0-9]* .*kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id DeepSeek range runtime forward" || return 1
+    if (( idx > 1 )); then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_runtime_input_loaded node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) producer=node$((idx - 1)) bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=mem_service target=uapi_segment transport=gsva materialize=local_copy status=ok" "$node_id DeepSeek GSVA runtime input" || return 1
+    fi
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ .*layers=\\[[0-9]+,[0-9]+\\) .*status=ok" "$node_id DeepSeek runtime output publish" || return 1
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/deepseek-v4-flash(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ .*status=ok" "$node_id DeepSeek KV publish" || return 1
+    if (( idx == terminal_publish_node )); then
+      assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 .*status=ok" "$node_id DeepSeek logits sampling table" || return 1
+    else
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id DeepSeek logits sampling skipped" || return 1
+    fi
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
-  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=[1-9][0-9]* retryable=[0-9]+ fatal=0" "$node_id completion status" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1

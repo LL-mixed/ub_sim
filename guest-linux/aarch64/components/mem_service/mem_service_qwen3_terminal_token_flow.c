@@ -13,20 +13,21 @@
 static void mem_service_qwen3_format_token_result_key(
     char *key,
     size_t key_len,
+    const char *model_key,
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
     uint64_t object_decode_step =
         mem_service_serving_decode_step_from_env(decode_step);
 
-    if (!key || key_len == 0) {
+    if (!key || key_len == 0 || !model_key || model_key[0] == '\0') {
         return;
     }
     if (run_scope_hash != 0) {
         snprintf(key,
                  key_len,
                  "tokens/%s/scope/%016" PRIx64 "/decode-step%" PRIu64,
-                 mem_service_qwen3_model_key(),
+                 model_key,
                  run_scope_hash,
                  object_decode_step);
         return;
@@ -34,12 +35,13 @@ static void mem_service_qwen3_format_token_result_key(
     snprintf(key,
              key_len,
              "tokens/%s/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
+             model_key,
              object_decode_step);
 }
 
 static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
     uint32_t local_node,
     uint32_t cluster_node_count,
     uint64_t decode_step,
@@ -55,7 +57,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_token_result;
-    struct mem_service_qwen3_layer_range_placement local_placement;
+    struct mem_service_layer_range_placement local_placement;
     char token_result_key[256];
     uint64_t payload_words[8];
     uint64_t token_result_offset;
@@ -68,17 +70,16 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     long producer_clock_offset_ms;
     uint8_t *base;
 
-    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
-        local_node >= cluster_node_count) {
+    if (!svc || !request || !request->model_key ||
+        cluster_node_count != request->range_nodes ||
+        local_node >= cluster_node_count ||
+        request->local_placement.owner_node != local_node) {
         return -1;
     }
-    if (mem_service_cluster_runtime_require(rt) != 0 ||
-        mem_service_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
-        !mem_service_read_qwen3_layer_range_placement(svc,
-                                                local_node,
-                                                &local_placement)) {
+    if (mem_service_cluster_runtime_require(rt) != 0) {
         return -1;
     }
+    local_placement = request->local_placement;
     if (require_terminal_node && !local_placement.terminal) {
         return 0;
     }
@@ -115,12 +116,13 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
 
     mem_service_qwen3_format_token_result_key(token_result_key,
                                               sizeof(token_result_key),
+                                              request->model_key,
                                               decode_step);
     producer_publish_monotonic_ms = obmm_now_ms();
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
     if (mem_service_put_obmm_object_record(svc,
-                                     mem_service_recycle_qwen3_runtime_record,
+                                     request->recycle_runtime_record,
                                      MEM_SERVICE_RECORD_QWEN3_TOKEN_RESULT,
                                      token_result_key,
                                      local_node,
@@ -162,9 +164,7 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     if (local_publish_seq == 0) {
         local_publish_seq = 1;
     }
-    if (mem_service_qwen3_decode_entry_node(cluster_node_count, &target_node) != 0) {
-        return -1;
-    }
+    target_node = local_placement.next_owner_node;
     object_epoch = (uint16_t)((decode_step + 1U) & 0xffffU);
     if (object_epoch == 0) {
         object_epoch = 1;
@@ -260,6 +260,36 @@ static int mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
     return 0;
 }
 
+int mem_service_range_flow_publish_terminal_token(
+    struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    uint64_t sampled_token,
+    uint64_t runner_up_token,
+    uint64_t margin_milli,
+    uint64_t logits_checksum,
+    uint64_t text_checksum,
+    uint64_t piece_word0,
+    uint64_t piece_word1)
+{
+    return mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
+        svc,
+        request,
+        local_node,
+        cluster_node_count,
+        decode_step,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        logits_checksum,
+        text_checksum,
+        piece_word0,
+        piece_word1,
+        true);
+}
+
 int mem_service_obmm_service_v0_publish_terminal_token_result(struct mem_service *svc,
                                                         uint32_t local_node,
                                                         uint32_t cluster_node_count,
@@ -272,8 +302,16 @@ int mem_service_obmm_service_v0_publish_terminal_token_result(struct mem_service
                                                         uint64_t piece_word0,
                                                         uint64_t piece_word1)
 {
+    struct mem_service_obmm_range_flow_request request;
+
+    if (mem_service_qwen3_init_obmm_range_flow_request(&request,
+                                                       local_node,
+                                                       cluster_node_count) != 0) {
+        return -1;
+    }
     return mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
         svc,
+        &request,
         local_node,
         cluster_node_count,
         decode_step,
@@ -300,8 +338,16 @@ int mem_service_obmm_service_v0_publish_shortpath_terminal_token_result(
     uint64_t piece_word0,
     uint64_t piece_word1)
 {
+    struct mem_service_obmm_range_flow_request request;
+
+    if (mem_service_qwen3_init_obmm_range_flow_request(&request,
+                                                       local_node,
+                                                       cluster_node_count) != 0) {
+        return -1;
+    }
     return mem_service_obmm_service_v0_publish_terminal_token_result_from_node(
         svc,
+        &request,
         local_node,
         cluster_node_count,
         decode_step,
@@ -330,6 +376,7 @@ int mem_service_obmm_service_v0_wait_terminal_token_result(struct mem_service *s
     }
     mem_service_qwen3_format_token_result_key(token_result_key,
                                               sizeof(token_result_key),
+                                              mem_service_qwen3_model_key(),
                                               decode_step);
     deadline = obmm_now_ms() + (long)timeout_ms;
     while (first_scan || obmm_now_ms() < deadline) {

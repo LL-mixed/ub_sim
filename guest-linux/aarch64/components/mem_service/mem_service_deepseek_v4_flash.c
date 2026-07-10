@@ -9,8 +9,8 @@
  * not select this model.
  */
 #define DEEPSEEK_V4_FLASH_TOTAL_LAYERS 43U
-#define DEEPSEEK_V4_FLASH_PIPELINE_NODES 8U
 #define DEEPSEEK_V4_FLASH_HIDDEN_SIZE 4096ULL
+#define DEEPSEEK_V4_FLASH_VOCAB_SIZE 129280ULL
 #define DEEPSEEK_V4_FLASH_PREFILL_TOKENS 128ULL
 #define DEEPSEEK_V4_FLASH_DECODE_TOKENS 1ULL
 #define DEEPSEEK_V4_FLASH_KV_HEADS 1ULL
@@ -23,11 +23,6 @@ uint32_t mem_service_deepseek_v4_flash_layer_count(void)
 {
     return DEEPSEEK_V4_FLASH_TOTAL_LAYERS;
 }
-uint32_t mem_service_deepseek_v4_flash_range_nodes(void)
-{
-    return DEEPSEEK_V4_FLASH_PIPELINE_NODES;
-}
-
 uint64_t mem_service_deepseek_v4_flash_hidden_range_bytes(void)
 {
     return DEEPSEEK_V4_FLASH_HIDDEN_SIZE *
@@ -40,6 +35,11 @@ uint64_t mem_service_deepseek_v4_flash_decode_hidden_bytes(void)
     return DEEPSEEK_V4_FLASH_HIDDEN_SIZE *
            DEEPSEEK_V4_FLASH_DECODE_TOKENS *
            2ULL;
+}
+
+uint64_t mem_service_deepseek_v4_flash_vocab_size(void)
+{
+    return DEEPSEEK_V4_FLASH_VOCAB_SIZE;
 }
 
 uint64_t mem_service_deepseek_v4_flash_handoff_hidden_bytes(uint64_t decode_step)
@@ -84,7 +84,8 @@ int mem_service_deepseek_v4_flash_layer_range_for_node(
     uint32_t start;
     uint32_t count;
 
-    if (cluster_node_count != DEEPSEEK_V4_FLASH_PIPELINE_NODES ||
+    if (cluster_node_count == 0 ||
+        cluster_node_count > DEEPSEEK_V4_FLASH_TOTAL_LAYERS ||
         local_node >= cluster_node_count ||
         !layer_start_out || !layer_end_out || !next_node_out) {
         return -1;
@@ -119,7 +120,7 @@ int mem_service_deepseek_v4_flash_init_obmm_range_flow_request(
         req,
         mem_service_deepseek_v4_flash_model_key(),
         mem_service_deepseek_v4_flash_layer_count(),
-        mem_service_deepseek_v4_flash_range_nodes(),
+        cluster_node_count,
         mem_service_deepseek_v4_flash_hidden_range_bytes(),
         mem_service_deepseek_v4_flash_range_kv_state_bytes(layer_start, layer_end),
         local_node,

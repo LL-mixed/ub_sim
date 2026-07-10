@@ -25,7 +25,7 @@
 
 1. **解耦**：把 Qwen3 从 `mem_service` core 中解耦为第一个"模型适配器"（adapter），mem_service core 不再依赖任何 Qwen3 符号。
 2. **接入 Flash**：以 DeepSeek V4 Flash 为第二个适配器，验证适配层设计能容纳与 Qwen3 差异很大的模型（MoE、压缩注意力、专家权重按需取用）。
-3. **保留既有能力**：8 节点层流水线 streaming infer（多步 decode 循环）、decode-round barrier、range handoff、KV state 对象流、对象回收等机制**行为不变**，Flash 复用同一套跨层接口。
+3. **保留既有能力**：层流水线 streaming infer（多步 decode 循环）、decode-round barrier、range handoff、KV state 对象流、对象回收等机制**行为不变**。Flash 复用同一套跨层接口，pipeline 节点数来自 active topology；8 节点是首个验收配置，不是模型契约，后续必须覆盖 2/3 节点。
 4. **为后续打地基**：适配层建成后，后续模型接入应是"调用方新增模型几何 helper / model adapter，然后把 range-flow request 交给 mem_service"，而非让 mem_service 选择模型。
 
 ### 1.2 设计原则（与仓库现有架构法令对齐）
@@ -164,7 +164,7 @@ return (layer_end - layer_start) * bytes_per_token_per_layer;
 
 **将"压缩注意力非线性 KV → 破坏负载均衡"是误判**：误把 ds4 的"按 token 数算 KV 行数"真实增长，套到了 ub_sim"按层预算 KV 槽位"的对象存储模型上。ub_sim 层切片只关心层数，奇偶比例天然守恒。
 
-**唯一要变的是常量替换**：Flash 不同层类型（滑窗 / ratio-4 / ratio-128）的 `bytes_per_token_per_layer` 系数不同，属常量替换，非结构变化。层切片公式（`base = layers/nodes; rem`）直接适用，43 层 / 8 节点 → 节点 0-2 各 6 层、节点 3-7 各 5 层。
+**唯一要变的是常量替换**：Flash 不同层类型（滑窗 / ratio-4 / ratio-128）的 `bytes_per_token_per_layer` 系数不同，属常量替换，非结构变化。层切片公式（`base = layers/nodes; rem`）直接适用：43 层在 8 节点上切为 `6/6/6/5/5/5/5/5`，在 3 节点上切为 `15/14/14`，在 2 节点上切为 `22/21`。
 
 ---
 
@@ -312,7 +312,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 | 文件 | 改动 |
 |---|---|
-| **新** `components/mem_service/mem_service_deepseek_v4_flash.{c,h}` | Flash client-side geometry helper：43 层 / hidden4096 / range_nodes=8 / 压缩 KV 系数；提供 `mem_service_deepseek_v4_flash_init_obmm_range_flow_request()` |
+| **新** `components/mem_service/mem_service_deepseek_v4_flash.{c,h}` | Flash client-side geometry helper：43 层 / hidden4096 / active-topology `range_nodes` / 压缩 KV 系数；提供 `mem_service_deepseek_v4_flash_init_obmm_range_flow_request()` |
 | `components/mem_service/mem_service_profile.c` | 不注册 flash；仅保留 neutral request 初始化 |
 | `apps/llm_infer/llm_infer.c` | 识别 `deepseek-v4-flash` / `deepseek_v4_flash`，由入口选择 Flash geometry helper |
 | **新** `crates/sim-models/src/deepseek_v4_flash.rs` | Flash geometry：43 层 base/rem 切分、KV bytes helper、MoE 元数据 |
@@ -349,12 +349,12 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 ### 阶段 1：Flash geometry smoke（几何适配，不建模 MoE/缓存）
 
-**目标**：Flash 作为第二个 client-side geometry helper 接入，跑通 8 节点层流水线的几何 smoke。这个阶段只证明 request 构造、43 层切片、hidden/KV sizing、handoff/barrier/object flow contract 正确；不宣称真实 Flash infer 能力。
+**目标**：Flash 作为第二个 client-side geometry helper 接入，先跑通 8 节点层流水线的几何 smoke，再用同一实现覆盖 2/3 节点。这个阶段只证明 request 构造、43 层切片、hidden/KV sizing、handoff/barrier/object flow contract 正确；不宣称真实 Flash infer 能力。
 
 **不包含**：MoE 路由、专家聚合、专家缓存（阶段 2）。每层前向先用占位（如单一等价 FFN 或仅数据搬运），重点验证几何 + 层切片 + KV 系数 + 多步循环。验收名必须叫 `flash-geometry-smoke`，不能叫 `flash-stream-infer-pass`。
 
 **关键验证点**：
-- 43 层 / 8 节点切片正确（节点 0-2 各 6 层、3-7 各 5 层）。
+- 43 层按 active topology 切片正确：8 节点为 `6/6/6/5/5/5/5/5`，3 节点为 `15/14/14`，2 节点为 `22/21`。
 - Flash 压缩 KV 系数（滑窗 / ratio-4 / ratio-128 三类层）正确。
 - 多步 geometry smoke 跑通（先 8 步，对标现有 macOS W5 多步运行入口）。
 - 先走纯 Rust reference decode loop（`sim-cli qwen3-decode-loop` 等价路径，不启动 QEMU，避开沙箱限制）迭代；guest C 侧 + QEMU 8 节点验证留到几何稳定后。
@@ -388,7 +388,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 ### 6.2 阶段 1/2 测试
 
 - Flash profile 存在性、几何正确性（43 层、256 专家、压缩 KV 系数）。
-- 阶段 1：8 节点 `flash-geometry-smoke` 多步通过，不宣称真实 Flash infer。
+- 阶段 1：8 节点 `flash-geometry-smoke` 多步通过，并完成 2/3 节点 geometry/contract 验证；不宣称真实 Flash infer。
 - 阶段 2：专家缓存命中率统计正确，延迟模型与 ds4 互校在合理范围。
 
 ---

@@ -105,6 +105,16 @@ class LlmInferMoeDispatchTest(unittest.TestCase):
         self.assertIn('strcmp(profile, "deepseek-v4-flash")', self.source)
         self.assertIn('strcmp(profile, "deepseek_v4_flash")', self.source)
 
+    def test_dispatch_result_word_is_profile_specific(self):
+        self.assertIn(
+            "W4_DISPATCH_RESULT_WORD_DEEPSEEK_V4_FLASH 0x0000000000000000ULL",
+            self.source,
+        )
+        self.assertIn(
+            "return W4_DISPATCH_RESULT_WORD_DEEPSEEK_V4_FLASH;",
+            self.source,
+        )
+
     def test_moe_dispatch_records_route_and_fetches_experts(self):
         # Per-layer MoE: record route decision + fetch expert weight tiles.
         self.assertIn("w4_layer_forward_dispatch_moe", self.source)

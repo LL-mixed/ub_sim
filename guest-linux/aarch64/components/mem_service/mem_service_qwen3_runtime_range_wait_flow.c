@@ -15,20 +15,21 @@
 static void mem_service_qwen3_format_runtime_wait_token_key(
     char *key,
     size_t key_len,
+    const char *model_key,
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
     uint64_t object_decode_step =
         mem_service_serving_decode_step_from_env(decode_step);
 
-    if (!key || key_len == 0) {
+    if (!key || key_len == 0 || !model_key || model_key[0] == '\0') {
         return;
     }
     if (run_scope_hash != 0) {
         snprintf(key,
                  key_len,
                  "tokens/%s/scope/%016" PRIx64 "/decode-step%" PRIu64,
-                 mem_service_qwen3_model_key(),
+                 model_key,
                  run_scope_hash,
                  object_decode_step);
         return;
@@ -36,7 +37,7 @@ static void mem_service_qwen3_format_runtime_wait_token_key(
     snprintf(key,
              key_len,
              "tokens/%s/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
+             model_key,
              object_decode_step);
 }
 
@@ -201,6 +202,7 @@ static int mem_service_qwen3_read_runtime_input_from_ub_ssd_gsva_backend(
 }
 
 static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
+    const struct mem_service_obmm_range_flow_request *request,
     uint32_t local_node,
     uint32_t cluster_node_count,
     uint64_t decode_step,
@@ -208,8 +210,8 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     struct mem_service_object_payload_view *view_out)
 {
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
-    struct mem_service_qwen3_layer_range_placement local_placement;
-    struct mem_service_qwen3_layer_range_placement source_placement;
+    struct mem_service_layer_range_placement local_placement;
+    struct mem_service_layer_range_placement source_placement;
     struct mem_service_cluster_slot *source_slot = NULL;
     struct mem_service_record remote_hidden_output;
     struct obmm_desc handoff_desc;
@@ -233,7 +235,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     unsigned int relax_attempt = 0;
     uint32_t source_node = UINT32_MAX;
     uint32_t terminal_source_node = UINT32_MAX;
-    uint64_t hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
+    uint64_t hidden_range_bytes;
     const uint8_t *payload_view;
     uint64_t checksum;
     uint64_t resolved_backing_offset = 0;
@@ -241,26 +243,14 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     const char *resolved_target = "mapped_view";
     bool terminal_desc_found = false;
 
-    if (!view_out ||
-        cluster_node_count != mem_service_qwen3_range_nodes() ||
-        local_node >= cluster_node_count) {
+    if (!request || !request->model_key || !view_out ||
+        cluster_node_count != request->range_nodes ||
+        local_node >= cluster_node_count ||
+        request->local_placement.owner_node != local_node) {
         return -1;
     }
-    memset(&local_placement, 0, sizeof(local_placement));
-    local_placement.owner_node = local_node;
-    local_placement.next_owner_node = (local_node + 1U) % cluster_node_count;
-    local_placement.terminal = (local_node + 1U == cluster_node_count);
-    if (mem_service_qwen3_layer_range_for_node(local_node,
-                                         cluster_node_count,
-                                         &local_placement.layer_start,
-                                         &local_placement.layer_end,
-                                         &local_placement.next_owner_node) != 0) {
-        return -1;
-    }
-    local_placement.layer_count =
-        local_placement.layer_end - local_placement.layer_start;
-    local_placement.terminal =
-        local_placement.next_owner_node < local_placement.owner_node;
+    local_placement = request->local_placement;
+    hidden_range_bytes = request->hidden_range_bytes;
     if (local_placement.layer_start == 0 && decode_step == 0) {
         return 0;
     }
@@ -487,20 +477,13 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
                metadata_ms);
         return 0;
     }
-    memset(&source_placement, 0, sizeof(source_placement));
-    source_placement.owner_node = local_node - 1U;
-    source_placement.next_owner_node = local_node;
-    source_placement.terminal = false;
-    if (mem_service_qwen3_layer_range_for_node(source_placement.owner_node,
-                                         cluster_node_count,
-                                         &source_placement.layer_start,
-                                         &source_placement.layer_end,
-                                         &source_placement.next_owner_node) != 0 ||
-        source_placement.next_owner_node != local_node) {
+    if (!request->has_predecessor) {
         return -1;
     }
-    source_placement.layer_count =
-        source_placement.layer_end - source_placement.layer_start;
+    source_placement = request->predecessor_placement;
+    if (source_placement.next_owner_node != local_node) {
+        return -1;
+    }
     source_node = source_placement.owner_node;
     if (mem_service_cluster_runtime_require(rt) != 0) {
         return -1;
@@ -527,6 +510,7 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
             mem_service_qwen3_format_runtime_wait_token_key(
                 token_result_key,
                 sizeof(token_result_key),
+                request->model_key,
                 decode_step);
             if (!terminal_desc_found) {
                 for (int owner_idx = 0;
@@ -1010,13 +994,15 @@ static int mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
     return 0;
 }
 
-int mem_service_obmm_service_v0_wait_runtime_range_input_view(
+int mem_service_range_flow_wait_runtime_input_view(
+    const struct mem_service_obmm_range_flow_request *request,
     uint32_t local_node,
     uint32_t cluster_node_count,
     uint64_t decode_step,
     struct mem_service_object_payload_view *view_out)
 {
     return mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
+        request,
         local_node,
         cluster_node_count,
         decode_step,
@@ -1024,36 +1010,24 @@ int mem_service_obmm_service_v0_wait_runtime_range_input_view(
         view_out);
 }
 
-int mem_service_obmm_service_v0_wait_scheduler_work_item(
+int mem_service_range_flow_wait_scheduler_work_item(
+    const struct mem_service_obmm_range_flow_request *request,
     uint32_t local_node,
     uint32_t cluster_node_count,
     uint64_t decode_step,
     struct mem_service_scheduler_work_item *item_out)
 {
-    struct mem_service_qwen3_layer_range_placement local_placement;
+    struct mem_service_layer_range_placement local_placement;
     struct mem_service_object_payload_view view;
 
-    if (!item_out ||
-        cluster_node_count != mem_service_qwen3_range_nodes() ||
-        local_node >= cluster_node_count) {
+    if (!request || !item_out ||
+        cluster_node_count != request->range_nodes ||
+        local_node >= cluster_node_count ||
+        request->local_placement.owner_node != local_node) {
         return -1;
     }
     memset(item_out, 0, sizeof(*item_out));
-    memset(&local_placement, 0, sizeof(local_placement));
-    local_placement.owner_node = local_node;
-    local_placement.next_owner_node = (local_node + 1U) % cluster_node_count;
-    local_placement.terminal = (local_node + 1U == cluster_node_count);
-    if (mem_service_qwen3_layer_range_for_node(local_node,
-                                         cluster_node_count,
-                                         &local_placement.layer_start,
-                                         &local_placement.layer_end,
-                                         &local_placement.next_owner_node) != 0) {
-        return -1;
-    }
-    local_placement.layer_count =
-        local_placement.layer_end - local_placement.layer_start;
-    local_placement.terminal =
-        local_placement.next_owner_node < local_placement.owner_node;
+    local_placement = request->local_placement;
 
     if (local_placement.layer_start == 0 && decode_step == 0) {
         item_out->kind = MEM_SERVICE_SCHEDULER_WORK_ITEM_RANGE_FORWARD;
@@ -1062,6 +1036,7 @@ int mem_service_obmm_service_v0_wait_scheduler_work_item(
 
     memset(&view, 0, sizeof(view));
     if (mem_service_obmm_service_v0_wait_runtime_range_input_view_internal(
+            request,
             local_node,
             cluster_node_count,
             decode_step,
@@ -1121,6 +1096,48 @@ int mem_service_obmm_service_v0_wait_scheduler_work_item(
     item_out->kind = MEM_SERVICE_SCHEDULER_WORK_ITEM_RANGE_FORWARD;
     item_out->range_input = view;
     return 0;
+}
+
+int mem_service_obmm_service_v0_wait_runtime_range_input_view(
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct mem_service_object_payload_view *view_out)
+{
+    struct mem_service_obmm_range_flow_request request;
+
+    if (mem_service_qwen3_init_obmm_range_flow_request(&request,
+                                                       local_node,
+                                                       cluster_node_count) != 0) {
+        return -1;
+    }
+    request.hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
+    return mem_service_range_flow_wait_runtime_input_view(&request,
+                                                          local_node,
+                                                          cluster_node_count,
+                                                          decode_step,
+                                                          view_out);
+}
+
+int mem_service_obmm_service_v0_wait_scheduler_work_item(
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    struct mem_service_scheduler_work_item *item_out)
+{
+    struct mem_service_obmm_range_flow_request request;
+
+    if (mem_service_qwen3_init_obmm_range_flow_request(&request,
+                                                       local_node,
+                                                       cluster_node_count) != 0) {
+        return -1;
+    }
+    request.hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
+    return mem_service_range_flow_wait_scheduler_work_item(&request,
+                                                            local_node,
+                                                            cluster_node_count,
+                                                            decode_step,
+                                                            item_out);
 }
 
 int mem_service_obmm_service_v0_wait_runtime_range_input(uint32_t local_node,

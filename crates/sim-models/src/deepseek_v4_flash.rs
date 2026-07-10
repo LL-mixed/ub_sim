@@ -79,12 +79,20 @@ pub const DEEPSEEK_V4_FLASH_MODEL_KEY: &str = "deepseek-v4-flash";
 /// as the guest C helper. For 43 layers / 8 nodes this yields nodes 0-2 owning
 /// 6 layers and nodes 3-7 owning 5 layers.
 pub fn deepseek_v4_flash_layer_range_for_node(node_id: u64) -> Option<(u64, u64)> {
+    deepseek_v4_flash_layer_range_for_node_in_topology(node_id, DEEPSEEK_V4_FLASH_PROFILE.tp_nodes)
+}
+
+/// Layer range for one node in the active pipeline topology.
+pub fn deepseek_v4_flash_layer_range_for_node_in_topology(
+    node_id: u64,
+    node_count: u64,
+) -> Option<(u64, u64)> {
     let profile = DEEPSEEK_V4_FLASH_PROFILE;
-    if node_id >= profile.tp_nodes {
+    if node_count == 0 || node_count > profile.num_hidden_layers || node_id >= node_count {
         return None;
     }
-    let base = profile.num_hidden_layers / profile.tp_nodes;
-    let rem = profile.num_hidden_layers % profile.tp_nodes;
+    let base = profile.num_hidden_layers / node_count;
+    let rem = profile.num_hidden_layers % node_count;
     let start = node_id * base + node_id.min(rem);
     let count = base + u64::from(node_id < rem);
     Some((start, start + count))
@@ -156,6 +164,34 @@ mod tests {
         assert_eq!(deepseek_v4_flash_layer_range_for_node(3), Some((18, 23)));
         assert_eq!(deepseek_v4_flash_layer_range_for_node(7), Some((38, 43)));
         assert_eq!(deepseek_v4_flash_layer_range_for_node(8), None);
+    }
+
+    #[test]
+    fn flash_layer_ranges_follow_two_and_three_node_topologies() {
+        assert_eq!(
+            deepseek_v4_flash_layer_range_for_node_in_topology(0, 2),
+            Some((0, 22))
+        );
+        assert_eq!(
+            deepseek_v4_flash_layer_range_for_node_in_topology(1, 2),
+            Some((22, 43))
+        );
+        assert_eq!(
+            deepseek_v4_flash_layer_range_for_node_in_topology(0, 3),
+            Some((0, 15))
+        );
+        assert_eq!(
+            deepseek_v4_flash_layer_range_for_node_in_topology(1, 3),
+            Some((15, 29))
+        );
+        assert_eq!(
+            deepseek_v4_flash_layer_range_for_node_in_topology(2, 3),
+            Some((29, 43))
+        );
+        assert_eq!(
+            deepseek_v4_flash_layer_range_for_node_in_topology(3, 3),
+            None
+        );
     }
 
     /// Layer ownership is monotonic non-decreasing in node id (contiguous slices).

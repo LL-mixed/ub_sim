@@ -14,6 +14,7 @@
 static void mem_service_qwen3_format_runtime_range_key(
     char *key,
     size_t key_len,
+    const char *model_key,
     bool terminal_range,
     uint32_t target_node,
     uint64_t decode_step)
@@ -22,7 +23,7 @@ static void mem_service_qwen3_format_runtime_range_key(
     uint64_t object_decode_step =
         mem_service_serving_decode_step_from_env(decode_step);
 
-    if (!key || key_len == 0) {
+    if (!key || key_len == 0 || !model_key || model_key[0] == '\0') {
         return;
     }
     if (run_scope_hash != 0) {
@@ -31,7 +32,7 @@ static void mem_service_qwen3_format_runtime_range_key(
                  terminal_range ?
                      "hidden/%s/scope/%016" PRIx64 "/node%u/range-runtime-output/decode-step%" PRIu64 :
                      "hidden/%s/scope/%016" PRIx64 "/node%u/range-runtime-input/decode-step%" PRIu64,
-                 mem_service_qwen3_model_key(),
+                 model_key,
                  run_scope_hash,
                  target_node + 1U,
                  object_decode_step);
@@ -42,7 +43,7 @@ static void mem_service_qwen3_format_runtime_range_key(
              terminal_range ?
                  "hidden/%s/node%u/range-runtime-output/decode-step%" PRIu64 :
                  "hidden/%s/node%u/range-runtime-input/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
+             model_key,
              target_node + 1U,
              object_decode_step);
 }
@@ -50,22 +51,24 @@ static void mem_service_qwen3_format_runtime_range_key(
 static void mem_service_qwen3_format_runtime_kv_key(
     char *key,
     size_t key_len,
+    const char *model_key,
     uint32_t local_node,
-    const struct mem_service_qwen3_layer_range_placement *placement,
+    const struct mem_service_layer_range_placement *placement,
     uint64_t decode_step)
 {
     uint64_t run_scope_hash = mem_service_run_scope_hash_from_env();
     uint64_t object_decode_step =
         mem_service_serving_decode_step_from_env(decode_step);
 
-    if (!key || key_len == 0 || !placement) {
+    if (!key || key_len == 0 || !model_key || model_key[0] == '\0' ||
+        !placement) {
         return;
     }
     if (run_scope_hash != 0) {
         snprintf(key,
                  key_len,
                  "kvcache/%s/scope/%016" PRIx64 "/node%u/layers-%u-%u/decode-step%" PRIu64,
-                 mem_service_qwen3_model_key(),
+                 model_key,
                  run_scope_hash,
                  local_node + 1U,
                  placement->layer_start,
@@ -76,7 +79,7 @@ static void mem_service_qwen3_format_runtime_kv_key(
     snprintf(key,
              key_len,
              "kvcache/%s/node%u/layers-%u-%u/decode-step%" PRIu64,
-             mem_service_qwen3_model_key(),
+             model_key,
              local_node + 1U,
              placement->layer_start,
              placement->layer_end,
@@ -212,22 +215,24 @@ static int mem_service_qwen3_publish_record_to_ub_ssd_gsva_backend(
     return 0;
 }
 
-int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service *svc,
-                                                       uint32_t local_node,
-                                                       uint32_t cluster_node_count,
-                                                       uint64_t decode_step,
-                                                       const uint8_t *payload,
-                                                       uint64_t payload_len,
-                                                       uint64_t expected_checksum,
-                                                       const uint8_t *kv_payload,
-                                                       uint64_t kv_payload_len,
-                                                       uint64_t expected_kv_checksum)
+int mem_service_range_flow_publish_runtime_output(
+    struct mem_service *svc,
+    const struct mem_service_obmm_range_flow_request *request,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    const uint8_t *payload,
+    uint64_t payload_len,
+    uint64_t expected_checksum,
+    const uint8_t *kv_payload,
+    uint64_t kv_payload_len,
+    uint64_t expected_kv_checksum)
 {
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
     struct mem_service_record local_hidden_output;
     struct mem_service_record local_kv_state;
-    struct mem_service_qwen3_layer_range_placement local_placement;
+    struct mem_service_layer_range_placement local_placement;
     uint32_t target_node;
     bool terminal_range;
     char local_hidden_output_key[256];
@@ -245,14 +250,19 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     long producer_publish_monotonic_ms;
     long producer_clock_offset_ms;
     uint8_t *base;
-    uint64_t hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
+    uint64_t hidden_range_bytes;
     struct lingqu_object_ref_wire hidden_ref;
     struct lingqu_object_ref_wire kv_ref;
 
-    if (!svc || !payload || payload_len != hidden_range_bytes ||
-        !kv_payload || kv_payload_len == 0 ||
-        cluster_node_count != mem_service_qwen3_range_nodes() ||
+    if (!svc || !request || !request->model_key ||
+        request->local_placement.owner_node != local_node ||
+        cluster_node_count != request->range_nodes ||
         local_node >= cluster_node_count) {
+        return -1;
+    }
+    hidden_range_bytes = request->hidden_range_bytes;
+    if (!payload || payload_len != hidden_range_bytes ||
+        !kv_payload || kv_payload_len == 0) {
         return -1;
     }
     checksum = mem_service_qwen3_hidden_payload_checksum(payload, payload_len);
@@ -272,14 +282,12 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                kv_payload_len);
         return -1;
     }
-    if (mem_service_cluster_runtime_require(rt) != 0 ||
-        mem_service_publish_qwen3_layer_range_placements(svc, cluster_node_count) != 0 ||
-        !mem_service_read_qwen3_layer_range_placement(svc,
-                                                local_node,
-                                                &local_placement)) {
+    if (mem_service_cluster_runtime_require(rt) != 0) {
         return -1;
     }
-    terminal_range = local_placement.layer_end >= mem_service_qwen3_layer_count();
+    local_placement = request->local_placement;
+    terminal_range = local_placement.terminal ||
+                     local_placement.layer_end >= request->total_layers;
     target_node = terminal_range ? local_node : local_placement.next_owner_node;
     local_slot = &rt->slots[rt->local_idx];
     if ((uint32_t)rt->local_idx != local_node || !local_slot->region.addr ||
@@ -324,11 +332,13 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     (void)msync(base + kv_state_offset, kv_payload_len, MS_SYNC);
     mem_service_qwen3_format_runtime_range_key(local_hidden_output_key,
                                                sizeof(local_hidden_output_key),
+                                               request->model_key,
                                                terminal_range,
                                                target_node,
                                                decode_step);
     mem_service_qwen3_format_runtime_kv_key(local_kv_state_key,
                                             sizeof(local_kv_state_key),
+                                            request->model_key,
                                             local_node,
                                             &local_placement,
                                             decode_step);
@@ -336,7 +346,7 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
     producer_publish_ms = mem_service_wallclock_ms();
     producer_clock_offset_ms = producer_publish_ms - producer_publish_monotonic_ms;
     if (mem_service_put_obmm_object_record(svc,
-                                     mem_service_recycle_qwen3_runtime_record,
+                                     request->recycle_runtime_record,
                                      terminal_range ?
                                          MEM_SERVICE_RECORD_HIDDEN_RANGE_OUTPUT :
                                          MEM_SERVICE_RECORD_HIDDEN_RANGE_INPUT,
@@ -348,11 +358,11 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
                                      checksum,
                                      &local_hidden_output) != 0 ||
         mem_service_put_obmm_object_record(svc,
-                                     mem_service_recycle_qwen3_runtime_record,
+                                     request->recycle_runtime_record,
                                      MEM_SERVICE_RECORD_KVCACHE_OBJECT,
                                      local_kv_state_key,
                                      local_node,
-                                     MEM_SERVICE_OBMM_KIND_QWEN3_KV_STATE,
+                                     MEM_SERVICE_OBMM_KIND_MODEL_KV_STATE,
                                      kv_state_offset,
                                      kv_payload_len,
                                      kv_checksum,
@@ -519,4 +529,37 @@ int mem_service_obmm_service_v0_publish_runtime_range_output(struct mem_service 
            object_epoch,
            local_publish_seq);
     return 0;
+}
+
+int mem_service_obmm_service_v0_publish_runtime_range_output(
+    struct mem_service *svc,
+    uint32_t local_node,
+    uint32_t cluster_node_count,
+    uint64_t decode_step,
+    const uint8_t *payload,
+    uint64_t payload_len,
+    uint64_t expected_checksum,
+    const uint8_t *kv_payload,
+    uint64_t kv_payload_len,
+    uint64_t expected_kv_checksum)
+{
+    struct mem_service_obmm_range_flow_request request;
+
+    if (mem_service_qwen3_init_obmm_range_flow_request(&request,
+                                                       local_node,
+                                                       cluster_node_count) != 0) {
+        return -1;
+    }
+    request.hidden_range_bytes = mem_service_qwen3_handoff_hidden_bytes(decode_step);
+    return mem_service_range_flow_publish_runtime_output(svc,
+                                                         &request,
+                                                         local_node,
+                                                         cluster_node_count,
+                                                         decode_step,
+                                                         payload,
+                                                         payload_len,
+                                                         expected_checksum,
+                                                         kv_payload,
+                                                         kv_payload_len,
+                                                         expected_kv_checksum);
 }
