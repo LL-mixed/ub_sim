@@ -2,6 +2,7 @@
 
 pub mod deepseek_v4_flash;
 pub mod deepseek_v4_flash_adapter;
+pub mod deepseek_v4_flash_lowering;
 pub mod deepseek_v4_flash_moe;
 pub mod engram_context;
 pub mod engram_hash;

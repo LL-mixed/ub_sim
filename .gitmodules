@@ -18,3 +18,13 @@
 	url = https://github.com/hw-native-sys/pto-isa.git
 	branch = main
 	ignore = all
+[submodule "vendor/pypto"]
+	path = vendor/pypto
+	url = https://github.com/hw-native-sys/pypto.git
+	branch = main
+	ignore = all
+[submodule "vendor/pypto-lib"]
+	path = vendor/pypto-lib
+	url = https://github.com/hw-native-sys/pypto-lib.git
+	branch = main
+	ignore = all

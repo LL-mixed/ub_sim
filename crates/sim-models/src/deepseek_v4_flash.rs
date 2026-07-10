@@ -31,6 +31,14 @@ pub struct DeepseekV4FlashProfile {
     pub num_key_value_heads: u64,
     /// Dimension per head (Flash = 512).
     pub head_dim: u64,
+    /// RoPE tail dimension within each attention head.
+    pub qk_rope_head_dim: u64,
+    /// Low-rank Q projection width.
+    pub q_lora_rank: u64,
+    /// Low-rank grouped attention-output projection width.
+    pub o_lora_rank: u64,
+    /// Number of grouped attention-output projections.
+    pub output_groups: u64,
     /// KV streams per layer (K + V).
     pub kv_streams: u64,
     /// Bytes per KV element in the current mem_service object contract.
@@ -51,6 +59,20 @@ pub struct DeepseekV4FlashProfile {
     pub num_experts_used: u64,
     /// Shared (always-active) experts (Flash = 1).
     pub num_experts_shared: u64,
+    /// Per-expert SwiGLU intermediate width.
+    pub moe_intermediate_size: u64,
+    /// Number of initial layers using token-id hash routing.
+    pub num_hash_layers: u64,
+    /// Sparse-attention indexer heads.
+    pub indexer_heads: u64,
+    /// Width of one sparse-attention indexer head.
+    pub indexer_head_dim: u64,
+    /// Number of compressed positions retained by the indexer.
+    pub indexer_top_k: u64,
+    /// Hyper-connection stack width.
+    pub hc_mult: u64,
+    /// Sinkhorn iterations used by hyper-connection routing.
+    pub hc_sinkhorn_iters: u64,
 }
 
 pub const DEEPSEEK_V4_FLASH_PROFILE: DeepseekV4FlashProfile = DeepseekV4FlashProfile {
@@ -60,6 +82,10 @@ pub const DEEPSEEK_V4_FLASH_PROFILE: DeepseekV4FlashProfile = DeepseekV4FlashPro
     num_attention_heads: 64,
     num_key_value_heads: 1,
     head_dim: 512,
+    qk_rope_head_dim: 64,
+    q_lora_rank: 1_024,
+    o_lora_rank: 1_024,
+    output_groups: 8,
     kv_streams: 2,
     kv_elem_bytes: 4,
     sliding_window: 128,
@@ -70,7 +96,26 @@ pub const DEEPSEEK_V4_FLASH_PROFILE: DeepseekV4FlashProfile = DeepseekV4FlashPro
     num_experts: 256,
     num_experts_used: 6,
     num_experts_shared: 1,
+    moe_intermediate_size: 2_048,
+    num_hash_layers: 3,
+    indexer_heads: 64,
+    indexer_head_dim: 128,
+    indexer_top_k: 512,
+    hc_mult: 4,
+    hc_sinkhorn_iters: 20,
 };
+
+/// Per-layer KV compression ratios from the Flash model metadata.
+pub const DEEPSEEK_V4_FLASH_COMPRESS_RATIOS: [u32; 43] = [
+    0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+    4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4,
+];
+
+pub fn deepseek_v4_flash_layer_compress_ratio(layer_id: u64) -> Option<u32> {
+    DEEPSEEK_V4_FLASH_COMPRESS_RATIOS
+        .get(usize::try_from(layer_id).ok()?)
+        .copied()
+}
 
 /// DeepSeek V4 Flash model key (namespace for object-store keys).
 pub const DEEPSEEK_V4_FLASH_MODEL_KEY: &str = "deepseek-v4-flash";
@@ -221,6 +266,15 @@ mod tests {
         assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.sliding_window, 128);
         assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.kv_streams, 2);
         assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.kv_elem_bytes, 4);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.hc_mult, 4);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.hc_sinkhorn_iters, 20);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.q_lora_rank, 1_024);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.o_lora_rank, 1_024);
+        assert_eq!(DEEPSEEK_V4_FLASH_PROFILE.moe_intermediate_size, 2_048);
+        assert_eq!(deepseek_v4_flash_layer_compress_ratio(0), Some(0));
+        assert_eq!(deepseek_v4_flash_layer_compress_ratio(2), Some(4));
+        assert_eq!(deepseek_v4_flash_layer_compress_ratio(3), Some(128));
+        assert_eq!(deepseek_v4_flash_layer_compress_ratio(43), None);
         assert_eq!(
             deepseek_v4_flash_range_kv_state_bytes(0, 6),
             Some(6 * 1 * 512 * 2 * 4)
