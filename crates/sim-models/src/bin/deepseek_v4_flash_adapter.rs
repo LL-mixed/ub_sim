@@ -2,13 +2,38 @@ use sim_models::deepseek_v4_flash_adapter::{
     build_ds4_dynamic_library, ds4_eval_layer_slice, ds4_first_token, ds4_tokenize_chat,
     Ds4RunConfig, Ds4SliceConfig,
 };
-use sim_models::deepseek_v4_flash_gguf::{lower_q8_0_matrix_to_bf16_kxn, GgufCatalog};
+use sim_models::deepseek_v4_flash_gguf::{
+    lower_q8_0_matrix_to_bf16_kxn, project_q8_0_matrix, GgufCatalog,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 fn usage() -> &'static str {
-    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
+    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
+}
+
+fn read_f32_payload(path: &PathBuf) -> Result<Vec<f32>, String> {
+    let payload = fs::read(path)
+        .map_err(|err| format!("deepseek_f32_input_read_failed:{}:{err}", path.display()))?;
+    if payload.len() % 4 != 0 {
+        return Err(format!(
+            "deepseek_f32_input_unaligned:{}:{}",
+            path.display(),
+            payload.len()
+        ));
+    }
+    Ok(payload
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect())
+}
+
+fn f32_payload(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
 }
 
 fn parse_options(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
@@ -65,6 +90,15 @@ fn parse_u32(value: Option<String>, default: u32, label: &str) -> Result<u32, St
     match value {
         Some(value) => value
             .parse::<u32>()
+            .map_err(|err| format!("invalid_{label}:{value}:{err}")),
+        None => Ok(default),
+    }
+}
+
+fn parse_usize(value: Option<String>, default: usize, label: &str) -> Result<usize, String> {
+    match value {
+        Some(value) => value
+            .parse::<usize>()
             .map_err(|err| format!("invalid_{label}:{value}:{err}")),
         None => Ok(default),
     }
@@ -193,6 +227,70 @@ fn run(args: &[String]) -> Result<(), String> {
                 })
             );
         }
+        "project-q8" => {
+            let model_path = PathBuf::from(required(&options, "--model")?);
+            let tensor_name = required(&options, "--tensor")?;
+            let input_path = PathBuf::from(required(&options, "--input")?);
+            let output_path = PathBuf::from(required(&options, "--output")?);
+            let catalog = GgufCatalog::open(&model_path)?;
+            catalog.validate_deepseek_v4_flash()?;
+            let tensor = catalog.tensor(&tensor_name)?;
+            if tensor.tensor_type.name != "q8_0" {
+                return Err(format!(
+                    "deepseek_q8_0_tensor_type_required:{tensor_name}:{}",
+                    tensor.tensor_type.name
+                ));
+            }
+            let hidden_size = usize::try_from(tensor.dimensions[0])
+                .map_err(|_| "deepseek_q8_0_hidden_size_too_large".to_string())?;
+            let input = read_f32_payload(&input_path)?;
+            if input.len() % hidden_size != 0 {
+                return Err(format!(
+                    "deepseek_q8_0_token_major_input_misaligned:values={}:hidden={hidden_size}",
+                    input.len()
+                ));
+            }
+            let token_index = parse_usize(optional(&options, "--token-index"), 0, "token_index")?;
+            let token_count = input.len() / hidden_size;
+            let token_start = token_index
+                .checked_mul(hidden_size)
+                .ok_or_else(|| "deepseek_q8_0_token_input_offset_overflow".to_string())?;
+            let token_end = token_start
+                .checked_add(hidden_size)
+                .ok_or_else(|| "deepseek_q8_0_token_input_end_overflow".to_string())?;
+            let token_input = input
+                .get(token_start..token_end)
+                .ok_or_else(|| {
+                    format!(
+                        "deepseek_q8_0_token_index_out_of_range:index={token_index}:tokens={token_count}"
+                    )
+                })?;
+            let projected = project_q8_0_matrix(
+                &catalog.read_tensor(&tensor_name)?,
+                &tensor.dimensions,
+                token_input,
+            )?;
+            fs::write(&output_path, f32_payload(&projected)).map_err(|err| {
+                format!(
+                    "deepseek_q8_0_projection_write_failed:{}:{err}",
+                    output_path.display()
+                )
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "model": model_path,
+                    "tensor": tensor_name,
+                    "input": input_path,
+                    "input_tokens": token_count,
+                    "token_index": token_index,
+                    "output": output_path,
+                    "output_type": "f32",
+                    "output_values": projected.len(),
+                })
+            );
+        }
         "build-library" => {
             let ds4_dir = PathBuf::from(required(&options, "--ds4-dir")?);
             let output = PathBuf::from(required(&options, "--output")?);
@@ -283,5 +381,15 @@ mod tests {
             ("--prompt-file".to_string(), Some("y".to_string())),
         ]);
         assert_eq!(prompt(&both).unwrap_err(), "prompt_options_conflict");
+    }
+
+    #[test]
+    fn token_index_defaults_to_zero_and_rejects_invalid_values() {
+        assert_eq!(parse_usize(None, 0, "token_index"), Ok(0));
+        assert_eq!(
+            parse_usize(Some("17".to_string()), 0, "token_index"),
+            Ok(17)
+        );
+        assert!(parse_usize(Some("-1".to_string()), 0, "token_index").is_err());
     }
 }

@@ -535,6 +535,104 @@ pub fn lower_q8_0_matrix_to_bf16_kxn(
     Ok(output)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Q8_0Activation {
+    pub values: Vec<i8>,
+    pub scales: Vec<f32>,
+}
+
+pub fn quantize_q8_0_activation(input: &[f32]) -> Result<Q8_0Activation, String> {
+    if input.is_empty() || input.len() % 32 != 0 {
+        return Err(format!(
+            "deepseek_q8_0_activation_shape_invalid:{}",
+            input.len()
+        ));
+    }
+    let mut values = vec![0i8; input.len()];
+    let mut scales = Vec::with_capacity(input.len() / 32);
+    for (block, source) in input.chunks_exact(32).enumerate() {
+        if source.iter().any(|value| !value.is_finite()) {
+            return Err(format!("deepseek_q8_0_activation_non_finite:block={block}"));
+        }
+        let amax = source
+            .iter()
+            .fold(0.0f32, |current, value| current.max(value.abs()));
+        let scale = amax / 127.0;
+        let inverse_scale = if scale == 0.0 { 0.0 } else { scale.recip() };
+        scales.push(scale);
+        for (destination, value) in values[block * 32..(block + 1) * 32].iter_mut().zip(source) {
+            *destination = (value * inverse_scale)
+                .round_ties_even()
+                .clamp(-128.0, 127.0) as i8;
+        }
+    }
+    Ok(Q8_0Activation { values, scales })
+}
+
+pub fn project_q8_0_matrix(
+    payload: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    if dimensions.len() != 2 {
+        return Err(format!(
+            "deepseek_q8_0_matrix_rank_mismatch:{}",
+            dimensions.len()
+        ));
+    }
+    let k = usize::try_from(dimensions[0])
+        .map_err(|_| "deepseek_q8_0_matrix_k_too_large".to_string())?;
+    let n = usize::try_from(dimensions[1])
+        .map_err(|_| "deepseek_q8_0_matrix_n_too_large".to_string())?;
+    if k == 0 || n == 0 || k % 32 != 0 {
+        return Err(format!("deepseek_q8_0_matrix_shape_invalid:{k}x{n}"));
+    }
+    if input.len() != k {
+        return Err(format!(
+            "deepseek_q8_0_activation_size_mismatch:actual={}:expected={k}",
+            input.len()
+        ));
+    }
+    let blocks_per_row = k / 32;
+    let row_bytes = blocks_per_row
+        .checked_mul(34)
+        .ok_or_else(|| "deepseek_q8_0_row_bytes_overflow".to_string())?;
+    let expected_bytes = n
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "deepseek_q8_0_payload_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_q8_0_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+
+    let activation = quantize_q8_0_activation(input)?;
+    let mut output = vec![0.0f32; n];
+    for (output_index, row) in payload.chunks_exact(row_bytes).enumerate() {
+        let mut accumulator = 0.0f32;
+        for block in 0..blocks_per_row {
+            let weight_block = &row[block * 34..(block + 1) * 34];
+            let weight_scale = f16_to_f32(u16::from_le_bytes([weight_block[0], weight_block[1]]));
+            if !weight_scale.is_finite() {
+                return Err(format!(
+                    "deepseek_q8_0_scale_non_finite:row={output_index}:block={block}"
+                ));
+            }
+            let activation_values = &activation.values[block * 32..(block + 1) * 32];
+            let dot = weight_block[2..].iter().zip(activation_values).fold(
+                0i32,
+                |sum, (weight, activation)| {
+                    sum + i32::from(i8::from_le_bytes([*weight])) * i32::from(*activation)
+                },
+            );
+            accumulator += weight_scale * activation.scales[block] * dot as f32;
+        }
+        output[output_index] = accumulator;
+    }
+    Ok(output)
+}
+
 fn f16_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits & 0x8000) << 16;
     let exponent = u32::from((bits >> 10) & 0x1f);
@@ -752,5 +850,49 @@ mod tests {
         assert!(lower_q8_0_matrix_to_bf16_kxn(&[0; 33], &[32, 1])
             .unwrap_err()
             .contains("payload_size_mismatch"));
+    }
+
+    #[test]
+    fn q8_0_projection_matches_ds4_block_quantization_rules() {
+        let input: Vec<f32> = (-16..16).map(|value| value as f32 / 4.0).collect();
+        let activation = quantize_q8_0_activation(&input).expect("quantize activation");
+        assert_eq!(activation.scales, vec![4.0 / 127.0]);
+        assert_eq!(activation.values[0], -127);
+        assert_eq!(activation.values[16], 0);
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x3800u16.to_le_bytes());
+        payload.extend((0..32).map(|index| if index % 2 == 0 { 2u8 } else { (-3i8) as u8 }));
+        payload.extend_from_slice(&0x4000u16.to_le_bytes());
+        payload.extend(std::iter::repeat_n(1u8, 32));
+
+        let projected =
+            project_q8_0_matrix(&payload, &[32, 2], &input).expect("project Q8_0 matrix");
+        let first_dot = (0..32).fold(0i32, |sum, index| {
+            let weight = if index % 2 == 0 { 2 } else { -3 };
+            sum + weight * i32::from(activation.values[index])
+        });
+        let second_dot: i32 = activation
+            .values
+            .iter()
+            .map(|value| i32::from(*value))
+            .sum();
+        assert_eq!(projected[0], 0.5 * activation.scales[0] * first_dot as f32);
+        assert_eq!(projected[1], 2.0 * activation.scales[0] * second_dot as f32);
+    }
+
+    #[test]
+    fn q8_0_activation_quantization_fails_closed() {
+        assert!(quantize_q8_0_activation(&[0.0; 31])
+            .unwrap_err()
+            .contains("shape_invalid"));
+        let mut non_finite = [0.0; 32];
+        non_finite[4] = f32::NAN;
+        assert!(quantize_q8_0_activation(&non_finite)
+            .unwrap_err()
+            .contains("non_finite"));
+        assert!(project_q8_0_matrix(&[0; 34], &[32, 1], &[0.0; 31])
+            .unwrap_err()
+            .contains("size_mismatch"));
     }
 }
