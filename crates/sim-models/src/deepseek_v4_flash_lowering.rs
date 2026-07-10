@@ -100,6 +100,80 @@ pub struct DeepseekV4FlashQkvProjectionPlan {
     pub kv: TensorContract,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepseekV4FlashGemmKind {
+    QueryLowRank,
+    QueryExpansion,
+    KeyValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeepseekV4FlashGemmPlan {
+    pub kind: DeepseekV4FlashGemmKind,
+    pub logical_m: u32,
+    pub artifact_m: u32,
+    pub k: u32,
+    pub n: u32,
+    pub input_dtype: DeepseekV4FlashDtype,
+    pub weight_dtype: DeepseekV4FlashDtype,
+    pub output_dtype: DeepseekV4FlashDtype,
+}
+
+impl DeepseekV4FlashGemmPlan {
+    pub fn qkv_decode(token_count: u32) -> Result<Vec<Self>, String> {
+        if token_count == 0 {
+            return Err("deepseek GEMM token count must be non-zero".to_string());
+        }
+        let p = DEEPSEEK_V4_FLASH_PROFILE;
+        let artifact_m = token_count
+            .checked_add(127)
+            .ok_or_else(|| "deepseek GEMM M padding overflow".to_string())?
+            / 128
+            * 128;
+        Ok(vec![
+            Self {
+                kind: DeepseekV4FlashGemmKind::QueryLowRank,
+                logical_m: token_count,
+                artifact_m,
+                k: p.hidden_size as u32,
+                n: p.q_lora_rank as u32,
+                input_dtype: DeepseekV4FlashDtype::Bf16,
+                weight_dtype: DeepseekV4FlashDtype::Bf16,
+                output_dtype: DeepseekV4FlashDtype::F32,
+            },
+            Self {
+                kind: DeepseekV4FlashGemmKind::QueryExpansion,
+                logical_m: token_count,
+                artifact_m,
+                k: p.q_lora_rank as u32,
+                n: (p.num_attention_heads * p.head_dim) as u32,
+                input_dtype: DeepseekV4FlashDtype::I8,
+                weight_dtype: DeepseekV4FlashDtype::I8,
+                output_dtype: DeepseekV4FlashDtype::F32,
+            },
+            Self {
+                kind: DeepseekV4FlashGemmKind::KeyValue,
+                logical_m: token_count,
+                artifact_m,
+                k: p.hidden_size as u32,
+                n: p.head_dim as u32,
+                input_dtype: DeepseekV4FlashDtype::Bf16,
+                weight_dtype: DeepseekV4FlashDtype::Bf16,
+                output_dtype: DeepseekV4FlashDtype::F32,
+            },
+        ])
+    }
+
+    pub fn supports_host_bf16_gemm(&self) -> bool {
+        self.input_dtype == DeepseekV4FlashDtype::Bf16
+            && self.weight_dtype == DeepseekV4FlashDtype::Bf16
+            && self.output_dtype == DeepseekV4FlashDtype::F32
+            && self.artifact_m % 128 == 0
+            && self.k % 128 == 0
+            && self.n % 128 == 0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeepseekV4FlashAttentionCachePlan {
     pub attention_kind: DeepseekV4FlashAttentionKind,
@@ -1227,6 +1301,25 @@ mod tests {
             plan.kv,
             TensorContract::new([8, 1, 512], DeepseekV4FlashDtype::Bf16)
         );
+    }
+
+    #[test]
+    fn qkv_gemm_plan_maps_bf16_ops_and_keeps_int8_expansion_explicit() {
+        let plans = DeepseekV4FlashGemmPlan::qkv_decode(1).expect("QKV GEMM plans");
+        assert_eq!(plans.len(), 3);
+        assert_eq!(plans[0].kind, DeepseekV4FlashGemmKind::QueryLowRank);
+        assert_eq!((plans[0].logical_m, plans[0].artifact_m), (1, 128));
+        assert_eq!((plans[0].k, plans[0].n), (4096, 1024));
+        assert!(plans[0].supports_host_bf16_gemm());
+
+        assert_eq!(plans[1].kind, DeepseekV4FlashGemmKind::QueryExpansion);
+        assert_eq!((plans[1].k, plans[1].n), (1024, 32768));
+        assert_eq!(plans[1].input_dtype, DeepseekV4FlashDtype::I8);
+        assert!(!plans[1].supports_host_bf16_gemm());
+
+        assert_eq!(plans[2].kind, DeepseekV4FlashGemmKind::KeyValue);
+        assert_eq!((plans[2].k, plans[2].n), (4096, 512));
+        assert!(plans[2].supports_host_bf16_gemm());
     }
 
     #[test]

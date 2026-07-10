@@ -27,6 +27,7 @@ use sim_core::{
 use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
 use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
+use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashGemmPlan;
 use sim_models::engram_context::{
     run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
     EngramContextReport, PaperEngramContextLookupRef, PaperEngramContextOp,
@@ -808,6 +809,18 @@ struct UapiRuntimeFailure {
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SimplerRuntimeManifestEnvelope {
     simpler_runtime: SimplerRuntimeManifest,
+    #[serde(default)]
+    host_gemm: Option<HostGemmManifest>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct HostGemmManifest {
+    m: u64,
+    k: u64,
+    n: u64,
+    input_dtype: String,
+    output_dtype: String,
+    tile: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -15898,6 +15911,82 @@ fn simpler_host_artifact_producer_path() -> PathBuf {
         .join("prepare_simpler_host_artifacts.py")
 }
 
+pub fn ensure_simpler_host_gemm_manifest(
+    manifest_path: &Path,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<(), String> {
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_gemm_manifest_version"].as_u64() == Some(2)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest.host_gemm.as_ref().is_some_and(|geometry| {
+                    geometry.m == m
+                        && geometry.k == k
+                        && geometry.n == n
+                        && geometry.input_dtype == "bf16"
+                        && geometry.output_dtype == "fp32"
+                        && geometry.tile == 128
+                })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_gemm_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_gemm")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(m.to_string())
+        .arg("--gemm-k")
+        .arg(k.to_string())
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_gemm_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_gemm_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
 fn simpler_matmul_batch_manifest_path(
     base_manifest_path: &Path,
     _tile_batch: usize,
@@ -16185,6 +16274,121 @@ fn host_matmul_batched_backend_spec_from_manifest(
         simpler_runtime: Some(runtime),
         context: None,
     })
+}
+
+fn host_gemm_backend_spec_from_manifest(
+    manifest_path: &Path,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<DispatchBackendSpec, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_gemm_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SimplerRuntimeManifestEnvelope =
+        serde_json::from_str(&manifest_text).map_err(|err| {
+            format!(
+                "parse_simpler_gemm_manifest_failed:{}:{err}",
+                manifest_path.display()
+            )
+        })?;
+    let geometry = manifest
+        .host_gemm
+        .ok_or_else(|| "simpler_gemm_manifest_missing_geometry".to_string())?;
+    if geometry.m != m
+        || geometry.k != k
+        || geometry.n != n
+        || geometry.input_dtype != "bf16"
+        || geometry.output_dtype != "fp32"
+        || geometry.tile != 128
+    {
+        return Err(format!(
+            "simpler_gemm_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={m}x{k}x{n}:bf16/fp32:tile128",
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.input_dtype,
+            geometry.output_dtype,
+            geometry.tile
+        ));
+    }
+    let input_a_bytes = m
+        .checked_mul(k)
+        .and_then(|elements| elements.checked_mul(2))
+        .ok_or_else(|| "simpler_gemm_input_a_size_overflow".to_string())?;
+    let input_b_bytes = k
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(2))
+        .ok_or_else(|| "simpler_gemm_input_b_size_overflow".to_string())?;
+    let output_c_bytes = m
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(4))
+        .ok_or_else(|| "simpler_gemm_output_size_overflow".to_string())?;
+    let runtime = SimplerRuntimeArtifacts {
+        host_runtime_library: manifest.simpler_runtime.host_runtime_library,
+        orch_shared_object: manifest.simpler_runtime.orch_shared_object,
+        orch_function_name: manifest.simpler_runtime.orch_function_name,
+        aicpu_binary: manifest.simpler_runtime.aicpu_binary,
+        aicore_binary: manifest.simpler_runtime.aicore_binary,
+        kernels: manifest.simpler_runtime.kernels,
+        launch: manifest.simpler_runtime.launch,
+        runtime_env: manifest.simpler_runtime.runtime_env,
+        args: vec![
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_a,
+                bytes: input_a_bytes,
+            },
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_b,
+                bytes: input_b_bytes,
+            },
+            SimplerRuntimeArg::OutputSegment {
+                endpoint: output_c,
+                bytes: output_c_bytes,
+            },
+            SimplerRuntimeArg::ScalarU64(m),
+            SimplerRuntimeArg::ScalarU64(k),
+            SimplerRuntimeArg::ScalarU64(n),
+        ],
+    };
+    Ok(DispatchBackendSpec {
+        profile: DispatchBackendProfile::HostGemm,
+        platform: "a2a3sim".to_string(),
+        runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
+        callable_hint: Some("host_gemm".to_string()),
+        simpler_runtime: Some(runtime),
+        context: None,
+    })
+}
+
+pub fn deepseek_v4_flash_gemm_backend_spec_from_manifest(
+    manifest_path: &Path,
+    plan: &DeepseekV4FlashGemmPlan,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+) -> Result<DispatchBackendSpec, String> {
+    if !plan.supports_host_bf16_gemm() {
+        return Err(format!(
+            "deepseek_gemm_requires_unimplemented_quantized_backend:{:?}:{:?}x{:?}->{:?}",
+            plan.kind, plan.input_dtype, plan.weight_dtype, plan.output_dtype
+        ));
+    }
+    host_gemm_backend_spec_from_manifest(
+        manifest_path,
+        input_a,
+        input_b,
+        output_c,
+        u64::from(plan.artifact_m),
+        u64::from(plan.k),
+        u64::from(plan.n),
+    )
 }
 
 fn host_engram_context_backend_spec_from_manifest(
@@ -16582,6 +16786,158 @@ fn run_host_matmul_smoke(topology: &SimTopology, task: &TaskKey) -> Result<Vec<u
         ));
     }
     Ok(produced.to_vec())
+}
+
+#[cfg(test)]
+fn run_host_gemm_smoke(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+) -> Result<Vec<f32>, String> {
+    const DIM: usize = 128;
+    const ELEMENTS: usize = DIM * DIM;
+    const BF16_ONE: u16 = 0x3f80;
+
+    let scenario_config = scenario_config_for_chipbackend()?;
+    let segment_base = 60_000 + task.task_id.saturating_mul(10);
+    let input_a = SegmentHandle(segment_base + 1);
+    let input_b = SegmentHandle(segment_base + 2);
+    let output_c = SegmentHandle(segment_base + 3);
+    let input_bytes = ELEMENTS * std::mem::size_of::<u16>();
+    let output_bytes = ELEMENTS * std::mem::size_of::<f32>();
+    let host_node = topology
+        .hosts
+        .first()
+        .map(|host| host.node_id)
+        .ok_or_else(|| "missing_host_node".to_string())?;
+    let ubpu_node = topology
+        .ubpus
+        .first()
+        .map(|ubpu| ubpu.node_id)
+        .ok_or_else(|| "missing_ubpu_node".to_string())?;
+
+    let mut identity = vec![0u8; input_bytes];
+    for diagonal in 0..DIM {
+        let byte_offset = (diagonal * DIM + diagonal) * std::mem::size_of::<u16>();
+        identity[byte_offset..byte_offset + 2].copy_from_slice(&BF16_ONE.to_le_bytes());
+    }
+    let _dispatch_lock = host_vector_dispatch_lock_guard()?;
+    let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
+    runtime.seed_host_segment(
+        host_node,
+        input_a,
+        repeated_u16_le_bytes(BF16_ONE, ELEMENTS),
+    );
+    runtime.seed_host_segment(host_node, input_b, identity);
+    runtime.seed_host_segment(host_node, output_c, vec![0u8; output_bytes]);
+
+    let backend_spec = host_gemm_backend_spec_from_manifest(
+        manifest_path,
+        MemoryEndpoint {
+            node: host_node,
+            segment: input_a,
+            offset: 0,
+        },
+        MemoryEndpoint {
+            node: host_node,
+            segment: input_b,
+            offset: 0,
+        },
+        MemoryEndpoint {
+            node: host_node,
+            segment: output_c,
+            offset: 0,
+        },
+        DIM as u64,
+        DIM as u64,
+        DIM as u64,
+    )?;
+    let request = kvcache_host_matmul_request(
+        task.task_id,
+        vec![
+            opaque_binding(
+                "gemm_a_bf16",
+                BufferUsage::Input,
+                MemoryEndpoint {
+                    node: host_node,
+                    segment: input_a,
+                    offset: 0,
+                },
+                input_bytes as u64,
+            ),
+            opaque_binding(
+                "gemm_b_bf16",
+                BufferUsage::Input,
+                MemoryEndpoint {
+                    node: host_node,
+                    segment: input_b,
+                    offset: 0,
+                },
+                input_bytes as u64,
+            ),
+            dense_f32_binding(
+                "gemm_c_f32",
+                BufferUsage::Output,
+                MemoryEndpoint {
+                    node: host_node,
+                    segment: output_c,
+                    offset: 0,
+                },
+                ELEMENTS as u64,
+            ),
+        ],
+    );
+    let dispatch = BackendDispatchOperation {
+        task: task.clone(),
+        function: FunctionLabel {
+            name: "host_gemm".into(),
+            level: PlLevel::L2,
+        },
+        backend_spec,
+        request,
+        target_level: PlLevel::L2,
+        target_node: ubpu_node,
+        legacy_input_segments: vec![input_a, input_b],
+    };
+    let mut sink = VecEventSink::default();
+    let complete_at = scenario_config
+        .pypto
+        .simpler_boundary
+        .dispatch_latency_us
+        .unwrap_or(15);
+    let completion = with_suppressed_stdio(|| {
+        runtime
+            .submit_backend_dispatch(dispatch, &mut sink)
+            .map_err(|err| err.to_string())?;
+        runtime.advance_to(complete_at, &mut sink);
+        runtime
+            .poll_completions(complete_at, &mut sink)
+            .into_iter()
+            .next()
+            .ok_or_else(|| "simpler_capi_gemm_dispatch_did_not_complete".to_string())
+    })?;
+    if completion.status != CompletionStatus::Success {
+        return Err(format!(
+            "simpler_capi_gemm_dispatch_failed:{:?}",
+            completion.status
+        ));
+    }
+    let produced = runtime
+        .host_segment_payload(host_node, output_c)
+        .ok_or_else(|| "missing_host_gemm_output_payload".to_string())?;
+    let values = bytes_to_f32s(produced);
+    if values.len() != ELEMENTS
+        || values
+            .iter()
+            .any(|value| !value.is_finite() || (*value - 1.0).abs() > 1.0e-5)
+    {
+        return Err(format!(
+            "simpler_capi_gemm_output_mismatch:len={} first={:?}",
+            values.len(),
+            values.first()
+        ));
+    }
+    Ok(values)
 }
 
 fn run_simpler_host_engram_context(
@@ -25697,8 +26053,9 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs, f32s_to_bytes, find_u64_marker,
-        kvcache_input_b_payload, qwen3_dense_profile_previous_kv_cache_from_guest_payload,
+        bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs, ensure_simpler_host_gemm_manifest,
+        f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
+        qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v,
@@ -25771,8 +26128,9 @@ mod tests {
         qwen3_register_range_forward_objects, qwen3_runtime_object_payload_view,
         qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at,
-        resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
-        run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
+        deepseek_v4_flash_gemm_backend_spec_from_manifest, resolve_qwen3_range_dispatch_operands,
+        run_host_gemm_smoke, run_host_matmul_batched_smoke, run_host_matmul_smoke,
+        run_qwen3_dense_reference_prefill_runtime,
         validate_qwen3_range_dispatch_object_refs, write_u64_le_at, GuestUapiSurface,
         KvCachePayloadLayout, LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
         Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
@@ -25811,10 +26169,13 @@ mod tests {
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
-        BlockHash, CompletionStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId,
-        SegmentHandle, SimError, TaskKey,
+        BlockHash, CompletionStatus, DispatchBackendProfile, HierarchyCoord, IoOpcode, IoSubmitReq,
+        LogicalSystemId, MemoryEndpoint, SegmentHandle, SimError, TaskKey,
     };
     use sim_models::deepseek_v4_flash;
+    use sim_models::deepseek_v4_flash_lowering::{
+        DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
+    };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
         PaperEngramContextLookupRef, PaperEngramContextOp, PaperEngramContextTableView,
@@ -28960,6 +29321,82 @@ mod tests {
             .expect("host matmul dispatch");
             assert_eq!(output.len(), 128 * 128 * std::mem::size_of::<f32>());
         });
+    }
+
+    #[test]
+    fn host_gemm_dispatch_executes_pure_bf16_matrix_product() {
+        run_simpler_native_test_isolated(
+            "host_gemm_dispatch_executes_pure_bf16_matrix_product",
+            || {
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-gemm-test-artifacts")
+                    .join("host_gemm_manifest.json");
+                ensure_simpler_host_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host GEMM artifact");
+                let output = run_host_gemm_smoke(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 109,
+                    },
+                    &manifest,
+                )
+                .expect("host GEMM dispatch");
+                assert_eq!(output.len(), 128 * 128);
+                assert!(output.iter().all(|value| (*value - 1.0).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_gemm_binding_accepts_bf16_and_rejects_int8_substitution() {
+        let manifest = std::env::temp_dir()
+            .join("simpler-host-gemm-test-artifacts")
+            .join("host_gemm_manifest.json");
+        ensure_simpler_host_gemm_manifest(&manifest, 128, 128, 128)
+            .expect("build host GEMM artifact");
+        let endpoint = |segment| MemoryEndpoint {
+            node: 0,
+            segment: SegmentHandle(segment),
+            offset: 0,
+        };
+        let bf16_plan = DeepseekV4FlashGemmPlan {
+            kind: DeepseekV4FlashGemmKind::QueryLowRank,
+            logical_m: 1,
+            artifact_m: 128,
+            k: 128,
+            n: 128,
+            input_dtype: DeepseekV4FlashDtype::Bf16,
+            weight_dtype: DeepseekV4FlashDtype::Bf16,
+            output_dtype: DeepseekV4FlashDtype::F32,
+        };
+        let spec = deepseek_v4_flash_gemm_backend_spec_from_manifest(
+            &manifest,
+            &bf16_plan,
+            endpoint(1),
+            endpoint(2),
+            endpoint(3),
+        )
+        .expect("DeepSeek BF16 GEMM binding");
+        assert_eq!(spec.profile, DispatchBackendProfile::HostGemm);
+
+        let int8_plan = DeepseekV4FlashGemmPlan {
+            kind: DeepseekV4FlashGemmKind::QueryExpansion,
+            input_dtype: DeepseekV4FlashDtype::I8,
+            weight_dtype: DeepseekV4FlashDtype::I8,
+            ..bf16_plan
+        };
+        let error = deepseek_v4_flash_gemm_backend_spec_from_manifest(
+            Path::new("unused-for-rejected-int8-plan"),
+            &int8_plan,
+            endpoint(1),
+            endpoint(2),
+            endpoint(3),
+        )
+        .expect_err("INT8 GEMM must not use BF16 callable");
+        assert!(error.contains("unimplemented_quantized_backend"));
     }
 
     #[test]

@@ -79,6 +79,24 @@ PROFILE_SPECS = {
             {"kind": "scalar_elems", "name": "SIZE"},
         ),
     ),
+    "host_gemm": ProfileSpec(
+        profile="HostGemm",
+        example="generated_host_gemm",
+        manifest_name="host_gemm_manifest.json",
+        callable_hint="host_gemm",
+        orch_source="host_gemm_orch.cpp",
+        orch_function="build_gemm_graph",
+        kernels=(KernelSpec(0, "host_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "a"},
+            {"kind": "input", "name": "b"},
+            {"kind": "output", "name": "c"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_engram_context": ProfileSpec(
         profile="HostEngramContext",
         example="generated_host_engram_context",
@@ -568,6 +586,197 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_host_gemm_orchestration(build_dir: Path, m: int, k: int, n: int) -> Path:
+    source = build_dir / "host_gemm_orch.cpp"
+    source.write_text(
+        f"""\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+struct CompatContinuousTensor {{
+    uint64_t data;
+    uint32_t shapes[5];
+    uint32_t ndims;
+    uint8_t dtype;
+    uint8_t child_memory;
+    uint8_t reserved[2];
+}};
+
+struct CompatChipStorageTaskArgs {{
+    CompatContinuousTensor tensors[128];
+    uint64_t scalars[128];
+    int32_t tensor_count;
+    int32_t scalar_count;
+}};
+
+extern "C" {{
+
+int build_gemm_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
+    const CompatChipStorageTaskArgs* args =
+        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
+    if (args->tensor_count < 3 || args->scalar_count < 3) {{
+        std::cerr << "build_gemm_graph: expected 3 tensors and 3 scalars\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kM = {m};
+    constexpr uint64_t kK = {k};
+    constexpr uint64_t kN = {n};
+    constexpr uint64_t kTile = 128;
+    const uint64_t m = args->scalars[0];
+    const uint64_t k = args->scalars[1];
+    const uint64_t n = args->scalars[2];
+    if (m != kM || k != kK || n != kN) {{
+        std::cerr << "build_gemm_graph: artifact geometry mismatch got="
+                  << m << "x" << k << "x" << n << " expected="
+                  << kM << "x" << kK << "x" << kN << '\\n';
+        return -1;
+    }}
+    if ((m % kTile) != 0 || (k % kTile) != 0 || (n % kTile) != 0) {{
+        std::cerr << "build_gemm_graph: dimensions must be 128-aligned\\n";
+        return -1;
+    }}
+
+    const uint64_t elements_a = m * k;
+    const uint64_t elements_b = k * n;
+    const uint64_t elements_c = m * n;
+    const size_t size_a = static_cast<size_t>(elements_a * sizeof(uint16_t));
+    const size_t size_b = static_cast<size_t>(elements_b * sizeof(uint16_t));
+    const size_t size_c = static_cast<size_t>(elements_c * sizeof(float));
+    if (args->tensors[0].shapes[0] < elements_a ||
+        args->tensors[1].shapes[0] < elements_b ||
+        args->tensors[2].shapes[0] < elements_c) {{
+        std::cerr << "build_gemm_graph: tensor payload is shorter than geometry\\n";
+        return -1;
+    }}
+
+    auto* host_a = reinterpret_cast<uint8_t*>(args->tensors[0].data);
+    auto* host_b = reinterpret_cast<uint8_t*>(args->tensors[1].data);
+    auto* host_c = reinterpret_cast<uint8_t*>(args->tensors[2].data);
+    void* dev_a = device_malloc(runtime, size_a);
+    void* dev_b = device_malloc(runtime, size_b);
+    void* dev_c = device_malloc(runtime, size_c);
+    if (!dev_a || !dev_b || !dev_c) {{
+        std::cerr << "build_gemm_graph: device allocation failed\\n";
+        return -1;
+    }}
+    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
+        copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
+        std::cerr << "build_gemm_graph: input copy failed\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, host_c, dev_c, size_c);
+
+    for (uint64_t tile_m = 0; tile_m < m / kTile; ++tile_m) {{
+        for (uint64_t tile_n = 0; tile_n < n / kTile; ++tile_n) {{
+            uint64_t task_args[5];
+            task_args[0] = reinterpret_cast<uint64_t>(dev_a);
+            task_args[1] = reinterpret_cast<uint64_t>(dev_b);
+            task_args[2] = reinterpret_cast<uint64_t>(dev_c);
+            task_args[3] = tile_m;
+            task_args[4] = tile_n;
+            add_task(runtime, task_args, 5, 0, CoreType::AIC);
+        }}
+    }}
+    return 0;
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
+    source = build_dir / "host_gemm_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ bfloat16_t* a = reinterpret_cast<__gm__ bfloat16_t*>(args[0]);
+    __gm__ bfloat16_t* b = reinterpret_cast<__gm__ bfloat16_t*>(args[1]);
+    __gm__ float* c = reinterpret_cast<__gm__ float*>(args[2]);
+    const uint64_t tile_m = static_cast<uint64_t>(args[3]);
+    const uint64_t tile_n = static_cast<uint64_t>(args[4]);
+
+    constexpr int M = {m};
+    constexpr int K = {k};
+    constexpr int N = {n};
+    constexpr int TileM = 128;
+    constexpr int TileK = 128;
+    constexpr int TileN = 128;
+
+    using AValid = TileShape2D<bfloat16_t, TileM, TileK>;
+    using AWhole = BaseShape2D<bfloat16_t, M, K>;
+    using BValid = TileShape2D<bfloat16_t, TileK, TileN>;
+    using BWhole = BaseShape2D<bfloat16_t, K, N>;
+    using CValid = TileShape2D<float, TileM, TileN>;
+    using CWhole = BaseShape2D<float, M, N>;
+    using GlobalA = GlobalTensor<bfloat16_t, AValid, AWhole>;
+    using GlobalB = GlobalTensor<bfloat16_t, BValid, BWhole>;
+    using GlobalC = GlobalTensor<float, CValid, CWhole>;
+    using MatA = Tile<TileType::Mat, bfloat16_t, TileM, TileK,
+                      BLayout::ColMajor, TileM, TileK, SLayout::RowMajor, 512>;
+    using MatB = Tile<TileType::Mat, bfloat16_t, TileK, TileN,
+                      BLayout::ColMajor, TileK, TileN, SLayout::RowMajor, 512>;
+    using Left = TileLeft<bfloat16_t, TileM, TileK, TileM, TileK>;
+    using Right = TileRight<bfloat16_t, TileK, TileN, TileK, TileN>;
+    using Acc = TileAcc<float, TileM, TileN, TileM, TileN>;
+
+    MatA a_mat;
+    MatB b_mat;
+    Left a_tile;
+    Right b_tile;
+    Acc c_tile;
+    TASSIGN(a_mat, 0x0);
+    TASSIGN(b_mat, 0x20000);
+    TASSIGN(a_tile, 0x0);
+    TASSIGN(b_tile, 0x0);
+    TASSIGN(c_tile, 0x0);
+
+    for (int k0 = 0; k0 < K; k0 += TileK) {{
+        GlobalA a_global(a + tile_m * TileM * K + k0);
+        GlobalB b_global(b + k0 * N + tile_n * TileN);
+        TLOAD(a_mat, a_global);
+        TLOAD(b_mat, b_global);
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        TMOV(a_tile, a_mat);
+        TMOV(b_tile, b_mat);
+        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        if (k0 == 0) {{
+            TMATMUL(c_tile, a_tile, b_tile);
+        }} else {{
+            TMATMUL_ACC(c_tile, c_tile, a_tile, b_tile);
+        }}
+        set_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+        wait_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+    }}
+
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    GlobalC c_global(c + tile_m * TileM * N + tile_n * TileN);
+    TSTORE(c_global, c_tile);
+}}
+"""
+    )
+    return source
+
+
 def write_host_engram_context_orchestration(build_dir: Path) -> Path:
     source = build_dir / "host_engram_context_orch.cpp"
     source.write_text(
@@ -769,6 +978,8 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             for kernel in spec.kernels
         ],
     }
+    if args.profile == "host_gemm":
+        payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
@@ -783,6 +994,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
+    if args.profile == "host_gemm":
+        gemm_dims = (args.gemm_m, args.gemm_k, args.gemm_n)
+        if any(dim <= 0 or dim % 128 != 0 for dim in gemm_dims):
+            raise SystemExit("--gemm-m/--gemm-k/--gemm-n must be positive and 128-aligned")
     reuse_runtime = None
     if args.reuse_runtime_manifest:
         reuse_manifest = json.loads(Path(args.reuse_runtime_manifest).read_text())
@@ -811,6 +1026,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         builder, api_kind, runtime_name, build_dir
     )
     orch_source = example_root / spec.orch_source
+    if args.profile == "host_gemm":
+        orch_source = write_host_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
     if args.profile == "host_engram_context":
         orch_source = write_host_engram_context_orchestration(build_dir)
     if args.profile == "host_matmul" and args.tile_batch > 1:
@@ -843,7 +1062,18 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_engram_context"
             else None
         )
-        source = Path(vector_source or batched_source or engram_source or (example_root / kernel.source)).resolve()
+        gemm_source = (
+            write_host_gemm_kernel(build_dir, args.gemm_m, args.gemm_k, args.gemm_n)
+            if args.profile == "host_gemm"
+            else None
+        )
+        source = Path(
+            vector_source
+            or batched_source
+            or engram_source
+            or gemm_source
+            or (example_root / kernel.source)
+        ).resolve()
         wrapped = write_wrapped_kernel(
             build_dir,
             args.profile,
@@ -945,6 +1175,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         },
         "note": "args_template is consumed by simulator-side helper to construct SimplerRuntimeArg entries",
     }
+    if args.profile == "host_gemm":
+        manifest["host_gemm_manifest_version"] = 2
+        manifest["host_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "bf16",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
     if args.profile == "host_engram_context":
         manifest["host_engram_context_manifest_version"] = 5
 
@@ -966,6 +1206,9 @@ def main() -> int:
     parser.add_argument("--vector-tile-cols", type=int, default=32)
     parser.add_argument("--matmul-rows", type=int, default=128)
     parser.add_argument("--matmul-cols", type=int, default=128)
+    parser.add_argument("--gemm-m", type=int, default=128)
+    parser.add_argument("--gemm-k", type=int, default=128)
+    parser.add_argument("--gemm-n", type=int, default=128)
     parser.add_argument("--tile-batch", type=int, default=1)
     parser.add_argument("--reuse-runtime-manifest", default=None)
     parser.add_argument("--describe", action="store_true")
