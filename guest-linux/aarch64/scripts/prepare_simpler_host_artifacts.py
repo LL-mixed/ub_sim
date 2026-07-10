@@ -115,6 +115,24 @@ PROFILE_SPECS = {
         ),
         generated=True,
     ),
+    "host_q8_block_dot": ProfileSpec(
+        profile="HostQuantizedGemm",
+        example="generated_host_q8_block_dot",
+        manifest_name="host_q8_block_dot_manifest.json",
+        callable_hint="host_q8_block_dot",
+        orch_source="host_q8_block_dot_orch.cpp",
+        orch_function="build_q8_block_dot_graph",
+        kernels=(KernelSpec(0, "host_q8_block_dot_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "activation_q8"},
+            {"kind": "input", "name": "weight_q8"},
+            {"kind": "output", "name": "dot_i32"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_engram_context": ProfileSpec(
         profile="HostEngramContext",
         example="generated_host_engram_context",
@@ -820,6 +838,180 @@ def write_host_quantized_gemm_kernel(
     return write_host_gemm_kernel(build_dir, m, k, n, quantized=True)
 
 
+def write_host_q8_block_dot_orchestration(build_dir: Path, blocks: int, n: int) -> Path:
+    source = build_dir / "host_q8_block_dot_orch.cpp"
+    source.write_text(
+        f"""\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+struct CompatContinuousTensor {{
+    uint64_t data;
+    uint32_t shapes[5];
+    uint32_t ndims;
+    uint8_t dtype;
+    uint8_t child_memory;
+    uint8_t reserved[2];
+}};
+
+struct CompatChipStorageTaskArgs {{
+    CompatContinuousTensor tensors[128];
+    uint64_t scalars[128];
+    int32_t tensor_count;
+    int32_t scalar_count;
+}};
+
+extern "C" {{
+
+int build_q8_block_dot_graph(
+        OrchestrationRuntime* runtime,
+        const ChipStorageTaskArgs& orch_args) {{
+    const CompatChipStorageTaskArgs* args =
+        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
+    if (args->tensor_count < 3 || args->scalar_count < 3) {{
+        std::cerr << "build_q8_block_dot_graph: expected 3 tensors and 3 scalars\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kBlocks = {blocks};
+    constexpr uint64_t kK = 32;
+    constexpr uint64_t kN = {n};
+    constexpr uint64_t kTileN = 128;
+    if (args->scalars[0] != kBlocks || args->scalars[1] != kK ||
+        args->scalars[2] != kN) {{
+        std::cerr << "build_q8_block_dot_graph: artifact geometry mismatch\\n";
+        return -1;
+    }}
+    if ((kN % kTileN) != 0) {{
+        std::cerr << "build_q8_block_dot_graph: N must be 128-aligned\\n";
+        return -1;
+    }}
+
+    const size_t size_a = static_cast<size_t>(kBlocks * 32 * sizeof(int8_t));
+    const size_t size_b = static_cast<size_t>(kBlocks * 32 * kN * sizeof(int8_t));
+    const size_t size_c = static_cast<size_t>(kBlocks * kN * sizeof(int32_t));
+    if (args->tensors[0].shapes[0] < kBlocks * 32 ||
+        args->tensors[1].shapes[0] < kBlocks * 32 * kN ||
+        args->tensors[2].shapes[0] < kBlocks * kN) {{
+        std::cerr << "build_q8_block_dot_graph: tensor payload is too short\\n";
+        return -1;
+    }}
+
+    auto* host_a = reinterpret_cast<uint8_t*>(args->tensors[0].data);
+    auto* host_b = reinterpret_cast<uint8_t*>(args->tensors[1].data);
+    auto* host_c = reinterpret_cast<uint8_t*>(args->tensors[2].data);
+    void* dev_a = device_malloc(runtime, size_a);
+    void* dev_b = device_malloc(runtime, size_b);
+    void* dev_c = device_malloc(runtime, size_c);
+    if (!dev_a || !dev_b || !dev_c) {{
+        std::cerr << "build_q8_block_dot_graph: device allocation failed\\n";
+        return -1;
+    }}
+    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
+        copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
+        std::cerr << "build_q8_block_dot_graph: input copy failed\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, host_c, dev_c, size_c);
+
+    for (uint64_t block = 0; block < kBlocks; ++block) {{
+        for (uint64_t tile_n = 0; tile_n < kN / kTileN; ++tile_n) {{
+            uint64_t task_args[5];
+            task_args[0] = reinterpret_cast<uint64_t>(dev_a);
+            task_args[1] = reinterpret_cast<uint64_t>(dev_b);
+            task_args[2] = reinterpret_cast<uint64_t>(dev_c);
+            task_args[3] = block;
+            task_args[4] = tile_n;
+            add_task(runtime, task_args, 5, 0, CoreType::AIC);
+        }}
+    }}
+    return 0;
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_q8_block_dot_kernel(build_dir: Path, n: int) -> Path:
+    source = build_dir / "host_q8_block_dot_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(
+        __gm__ int64_t* args) {{
+    __gm__ int8_t* activation = reinterpret_cast<__gm__ int8_t*>(args[0]);
+    __gm__ int8_t* weight = reinterpret_cast<__gm__ int8_t*>(args[1]);
+    __gm__ int32_t* output = reinterpret_cast<__gm__ int32_t*>(args[2]);
+    const uint64_t block = static_cast<uint64_t>(args[3]);
+    const uint64_t tile_n = static_cast<uint64_t>(args[4]);
+
+    constexpr int K = 32;
+    constexpr int N = {n};
+    constexpr int TileN = 128;
+    using AValid = TileShape2D<int8_t, 1, K>;
+    using AWhole = BaseShape2D<int8_t, 1, K>;
+    using BValid = TileShape2D<int8_t, K, TileN>;
+    using BWhole = BaseShape2D<int8_t, K, N>;
+    using CValid = TileShape2D<int32_t, 1, TileN>;
+    using CWhole = BaseShape2D<int32_t, 1, N>;
+    using GlobalA = GlobalTensor<int8_t, AValid, AWhole>;
+    using GlobalB = GlobalTensor<int8_t, BValid, BWhole>;
+    using GlobalC = GlobalTensor<int32_t, CValid, CWhole>;
+    using MatA = Tile<TileType::Mat, int8_t, 1, K,
+                      BLayout::RowMajor, 1, K>;
+    using MatB = Tile<TileType::Mat, int8_t, K, TileN,
+                      BLayout::ColMajor, K, TileN, SLayout::RowMajor, 512>;
+    using Left = TileLeft<int8_t, 1, K, 1, K>;
+    using Right = TileRight<int8_t, K, TileN, K, TileN>;
+    using Acc = TileAcc<int32_t, 1, TileN, 1, TileN>;
+
+    GlobalA global_a(activation + block * K);
+    GlobalB global_b(weight + block * K * N + tile_n * TileN);
+    GlobalC global_c(output + block * N + tile_n * TileN);
+    MatA mat_a;
+    MatB mat_b;
+    Left tile_a;
+    Right tile_b;
+    Acc tile_c;
+    TASSIGN(mat_a, 0x0);
+    TASSIGN(mat_b, 0x20000);
+    TASSIGN(tile_a, 0x0);
+    TASSIGN(tile_b, 0x0);
+    TASSIGN(tile_c, 0x0);
+
+    TLOAD(mat_a, global_a);
+    TLOAD(mat_b, global_b);
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    TEXTRACT(tile_a, mat_a, 0, 0);
+    TMOV(tile_b, mat_b);
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    TGEMV(tile_c, tile_a, tile_b);
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    TSTORE(global_c, tile_c);
+}}
+"""
+    )
+    return source
+
+
 def write_host_engram_context_orchestration(build_dir: Path) -> Path:
     source = build_dir / "host_engram_context_orch.cpp"
     source.write_text(
@@ -1021,7 +1213,7 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             for kernel in spec.kernels
         ],
     }
-    if args.profile in ("host_gemm", "host_quantized_gemm"):
+    if args.profile in ("host_gemm", "host_quantized_gemm", "host_q8_block_dot"):
         payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -1041,6 +1233,11 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         gemm_dims = (args.gemm_m, args.gemm_k, args.gemm_n)
         if any(dim <= 0 or dim % 128 != 0 for dim in gemm_dims):
             raise SystemExit("--gemm-m/--gemm-k/--gemm-n must be positive and 128-aligned")
+    if args.profile == "host_q8_block_dot":
+        if args.gemm_m <= 0 or args.gemm_k != 32 or args.gemm_n <= 0 or args.gemm_n % 128 != 0:
+            raise SystemExit(
+                "host_q8_block_dot requires positive --gemm-m, --gemm-k 32 and 128-aligned --gemm-n"
+            )
     reuse_runtime = None
     if args.reuse_runtime_manifest:
         reuse_manifest = json.loads(Path(args.reuse_runtime_manifest).read_text())
@@ -1076,6 +1273,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     if args.profile == "host_quantized_gemm":
         orch_source = write_host_quantized_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_q8_block_dot":
+        orch_source = write_host_q8_block_dot_orchestration(
+            build_dir, args.gemm_m, args.gemm_n
         )
     if args.profile == "host_engram_context":
         orch_source = write_host_engram_context_orchestration(build_dir)
@@ -1121,12 +1322,18 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_quantized_gemm"
             else None
         )
+        q8_block_dot_source = (
+            write_host_q8_block_dot_kernel(build_dir, args.gemm_n)
+            if args.profile == "host_q8_block_dot"
+            else None
+        )
         source = Path(
             vector_source
             or batched_source
             or engram_source
             or gemm_source
             or quantized_gemm_source
+            or q8_block_dot_source
             or (example_root / kernel.source)
         ).resolve()
         wrapped = write_wrapped_kernel(
@@ -1245,6 +1452,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         manifest["host_quantized_gemm"] = {
             "m": args.gemm_m,
             "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "int8",
+            "output_dtype": "int32",
+            "tile": 128,
+        }
+    if args.profile == "host_q8_block_dot":
+        manifest["host_q8_block_dot_manifest_version"] = 2
+        manifest["host_q8_block_dot"] = {
+            "m": args.gemm_m,
+            "k": 32,
             "n": args.gemm_n,
             "input_dtype": "int8",
             "output_dtype": "int32",

@@ -813,6 +813,8 @@ struct SimplerRuntimeManifestEnvelope {
     host_gemm: Option<GemmManifest>,
     #[serde(default)]
     host_quantized_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_q8_block_dot: Option<GemmManifest>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -16068,6 +16070,86 @@ pub fn ensure_simpler_host_quantized_gemm_manifest(
     Ok(())
 }
 
+pub fn ensure_simpler_host_q8_block_dot_manifest(
+    manifest_path: &Path,
+    blocks: u64,
+    n: u64,
+) -> Result<(), String> {
+    if blocks == 0 || n == 0 || n % 128 != 0 {
+        return Err(format!(
+            "host_q8_block_dot_shape_invalid:blocks={blocks}:n={n}"
+        ));
+    }
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_q8_block_dot_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_q8_block_dot_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_q8_block_dot_manifest_version"].as_u64() == Some(2)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest.host_q8_block_dot.as_ref().is_some_and(|geometry| {
+                    geometry.m == blocks
+                        && geometry.k == 32
+                        && geometry.n == n
+                        && geometry.input_dtype == "int8"
+                        && geometry.output_dtype == "int32"
+                        && geometry.tile == 128
+                })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_q8_block_dot_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_q8_block_dot")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(blocks.to_string())
+        .arg("--gemm-k")
+        .arg("32")
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_q8_block_dot_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_q8_block_dot_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
 fn simpler_matmul_batch_manifest_path(
     base_manifest_path: &Path,
     _tile_batch: usize,
@@ -16532,6 +16614,95 @@ fn host_quantized_gemm_backend_spec_from_manifest(
         platform: "a2a3sim".to_string(),
         runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
         callable_hint: Some("host_quantized_gemm".to_string()),
+        simpler_runtime: Some(runtime),
+        context: None,
+    })
+}
+
+#[cfg(test)]
+fn host_q8_block_dot_backend_spec_from_manifest(
+    manifest_path: &Path,
+    input_activation: MemoryEndpoint,
+    input_weight: MemoryEndpoint,
+    output_dot: MemoryEndpoint,
+    blocks: u64,
+    n: u64,
+) -> Result<DispatchBackendSpec, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_q8_block_dot_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SimplerRuntimeManifestEnvelope =
+        serde_json::from_str(&manifest_text).map_err(|err| {
+            format!(
+                "parse_simpler_q8_block_dot_manifest_failed:{}:{err}",
+                manifest_path.display()
+            )
+        })?;
+    let geometry = manifest
+        .host_q8_block_dot
+        .ok_or_else(|| "simpler_q8_block_dot_manifest_missing_geometry".to_string())?;
+    if geometry.m != blocks
+        || geometry.k != 32
+        || geometry.n != n
+        || geometry.input_dtype != "int8"
+        || geometry.output_dtype != "int32"
+        || geometry.tile != 128
+    {
+        return Err(format!(
+            "simpler_q8_block_dot_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={blocks}x32x{n}:int8/int32:tile128",
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.input_dtype,
+            geometry.output_dtype,
+            geometry.tile
+        ));
+    }
+    let activation_bytes = blocks
+        .checked_mul(32)
+        .ok_or_else(|| "simpler_q8_block_dot_activation_size_overflow".to_string())?;
+    let weight_bytes = activation_bytes
+        .checked_mul(n)
+        .ok_or_else(|| "simpler_q8_block_dot_weight_size_overflow".to_string())?;
+    let output_bytes = blocks
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(4))
+        .ok_or_else(|| "simpler_q8_block_dot_output_size_overflow".to_string())?;
+    let runtime = SimplerRuntimeArtifacts {
+        host_runtime_library: manifest.simpler_runtime.host_runtime_library,
+        orch_shared_object: manifest.simpler_runtime.orch_shared_object,
+        orch_function_name: manifest.simpler_runtime.orch_function_name,
+        aicpu_binary: manifest.simpler_runtime.aicpu_binary,
+        aicore_binary: manifest.simpler_runtime.aicore_binary,
+        kernels: manifest.simpler_runtime.kernels,
+        launch: manifest.simpler_runtime.launch,
+        runtime_env: manifest.simpler_runtime.runtime_env,
+        args: vec![
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_activation,
+                bytes: activation_bytes,
+            },
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_weight,
+                bytes: weight_bytes,
+            },
+            SimplerRuntimeArg::OutputSegment {
+                endpoint: output_dot,
+                bytes: output_bytes,
+            },
+            SimplerRuntimeArg::ScalarU64(blocks),
+            SimplerRuntimeArg::ScalarU64(32),
+            SimplerRuntimeArg::ScalarU64(n),
+        ],
+    };
+    Ok(DispatchBackendSpec {
+        profile: DispatchBackendProfile::HostQuantizedGemm,
+        platform: "a2a3sim".to_string(),
+        runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
+        callable_hint: Some("host_q8_block_dot".to_string()),
         simpler_runtime: Some(runtime),
         context: None,
     })
@@ -17151,6 +17322,261 @@ fn run_host_gemm_smoke(
 }
 
 #[cfg(test)]
+struct HostQuantizedGemmTestRunner {
+    _dispatch_lock: HostVectorDispatchLock,
+    scenario_config: ScenarioConfig,
+    runtime: LocalRuntimeEngine,
+    sink: VecEventSink,
+    host_node: u64,
+    ubpu_node: u64,
+    input_a: SegmentHandle,
+    input_b: SegmentHandle,
+    output_c: SegmentHandle,
+    manifest_path: PathBuf,
+    m: usize,
+    k: usize,
+    n: usize,
+    input_a_bytes: usize,
+    input_b_bytes: usize,
+    output_elements: usize,
+    output_bytes: usize,
+    now_us: u64,
+    q8_block_dot: bool,
+}
+
+#[cfg(test)]
+impl HostQuantizedGemmTestRunner {
+    fn new(
+        topology: &SimTopology,
+        manifest_path: &Path,
+        m: usize,
+        k: usize,
+        n: usize,
+        segment_base: u64,
+    ) -> Result<Self, String> {
+        Self::new_with_mode(topology, manifest_path, m, k, n, segment_base, false)
+    }
+
+    fn new_q8_block_dot(
+        topology: &SimTopology,
+        manifest_path: &Path,
+        blocks: usize,
+        n: usize,
+        segment_base: u64,
+    ) -> Result<Self, String> {
+        Self::new_with_mode(topology, manifest_path, blocks, 32, n, segment_base, true)
+    }
+
+    fn new_with_mode(
+        topology: &SimTopology,
+        manifest_path: &Path,
+        m: usize,
+        k: usize,
+        n: usize,
+        segment_base: u64,
+        q8_block_dot: bool,
+    ) -> Result<Self, String> {
+        let scenario_config = scenario_config_for_chipbackend()?;
+        let input_a_bytes = m
+            .checked_mul(k)
+            .ok_or_else(|| "host_quantized_gemm_input_a_size_overflow".to_string())?;
+        let input_b_rows = if q8_block_dot {
+            m.checked_mul(k)
+                .ok_or_else(|| "host_q8_block_dot_weight_rows_overflow".to_string())?
+        } else {
+            k
+        };
+        let input_b_bytes = input_b_rows
+            .checked_mul(n)
+            .ok_or_else(|| "host_quantized_gemm_input_b_size_overflow".to_string())?;
+        let output_elements = m
+            .checked_mul(n)
+            .ok_or_else(|| "host_quantized_gemm_output_elements_overflow".to_string())?;
+        let output_bytes = output_elements
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| "host_quantized_gemm_output_size_overflow".to_string())?;
+        let host_node = topology
+            .hosts
+            .first()
+            .map(|host| host.node_id)
+            .ok_or_else(|| "missing_host_node".to_string())?;
+        let ubpu_node = topology
+            .ubpus
+            .first()
+            .map(|ubpu| ubpu.node_id)
+            .ok_or_else(|| "missing_ubpu_node".to_string())?;
+        let dispatch_lock = host_vector_dispatch_lock_guard()?;
+        let runtime = LocalRuntimeEngine::from_config(&scenario_config);
+        Ok(Self {
+            _dispatch_lock: dispatch_lock,
+            scenario_config,
+            runtime,
+            sink: VecEventSink::default(),
+            host_node,
+            ubpu_node,
+            input_a: SegmentHandle(segment_base + 1),
+            input_b: SegmentHandle(segment_base + 2),
+            output_c: SegmentHandle(segment_base + 3),
+            manifest_path: manifest_path.to_path_buf(),
+            m,
+            k,
+            n,
+            input_a_bytes,
+            input_b_bytes,
+            output_elements,
+            output_bytes,
+            now_us: 0,
+            q8_block_dot,
+        })
+    }
+
+    fn run(
+        &mut self,
+        task: &TaskKey,
+        input_a_payload: Vec<u8>,
+        input_b_payload: Vec<u8>,
+    ) -> Result<Vec<i32>, String> {
+        if input_a_payload.len() != self.input_a_bytes
+            || input_b_payload.len() != self.input_b_bytes
+        {
+            return Err(format!(
+                "host_quantized_gemm_input_size_mismatch:a={}:b={}:expected_a={}:expected_b={}",
+                input_a_payload.len(),
+                input_b_payload.len(),
+                self.input_a_bytes,
+                self.input_b_bytes
+            ));
+        }
+        self.runtime
+            .seed_host_segment(self.host_node, self.input_a, input_a_payload);
+        self.runtime
+            .seed_host_segment(self.host_node, self.input_b, input_b_payload);
+        self.runtime
+            .seed_host_segment(self.host_node, self.output_c, vec![0u8; self.output_bytes]);
+        let endpoint = |segment| MemoryEndpoint {
+            node: self.host_node,
+            segment,
+            offset: 0,
+        };
+        let backend_spec = if self.q8_block_dot {
+            host_q8_block_dot_backend_spec_from_manifest(
+                &self.manifest_path,
+                endpoint(self.input_a),
+                endpoint(self.input_b),
+                endpoint(self.output_c),
+                self.m as u64,
+                self.n as u64,
+            )?
+        } else {
+            host_quantized_gemm_backend_spec_from_manifest(
+                &self.manifest_path,
+                endpoint(self.input_a),
+                endpoint(self.input_b),
+                endpoint(self.output_c),
+                self.m as u64,
+                self.k as u64,
+                self.n as u64,
+            )?
+        };
+        let request = kvcache_host_matmul_request(
+            task.task_id,
+            vec![
+                opaque_binding(
+                    "quantized_gemm_a_int8",
+                    BufferUsage::Input,
+                    endpoint(self.input_a),
+                    self.input_a_bytes as u64,
+                ),
+                opaque_binding(
+                    "quantized_gemm_b_int8",
+                    BufferUsage::Input,
+                    endpoint(self.input_b),
+                    self.input_b_bytes as u64,
+                ),
+                opaque_binding(
+                    "quantized_gemm_c_int32",
+                    BufferUsage::Output,
+                    endpoint(self.output_c),
+                    self.output_bytes as u64,
+                ),
+            ],
+        );
+        let dispatch = BackendDispatchOperation {
+            task: task.clone(),
+            function: FunctionLabel {
+                name: "host_quantized_gemm".into(),
+                level: PlLevel::L2,
+            },
+            backend_spec,
+            request,
+            target_level: PlLevel::L2,
+            target_node: self.ubpu_node,
+            legacy_input_segments: vec![self.input_a, self.input_b],
+        };
+        let dispatch_latency = self
+            .scenario_config
+            .pypto
+            .simpler_boundary
+            .dispatch_latency_us
+            .unwrap_or(15);
+        self.now_us = self
+            .now_us
+            .checked_add(dispatch_latency)
+            .ok_or_else(|| "simpler_capi_quantized_gemm_time_overflow".to_string())?;
+        let completion = with_suppressed_stdio(|| {
+            self.runtime
+                .submit_backend_dispatch(dispatch, &mut self.sink)
+                .map_err(|err| err.to_string())?;
+            self.runtime.advance_to(self.now_us, &mut self.sink);
+            self.runtime
+                .poll_completions(self.now_us, &mut self.sink)
+                .into_iter()
+                .next()
+                .ok_or_else(|| "simpler_capi_quantized_gemm_dispatch_did_not_complete".to_string())
+        })?;
+        if completion.status != CompletionStatus::Success {
+            return Err(format!(
+                "simpler_capi_quantized_gemm_dispatch_failed:{:?}",
+                completion.status
+            ));
+        }
+        let produced = self
+            .runtime
+            .host_segment_payload(self.host_node, self.output_c)
+            .ok_or_else(|| "missing_host_quantized_gemm_output_payload".to_string())?;
+        let values = bytes_to_i32s(produced);
+        if values.len() != self.output_elements {
+            return Err(format!(
+                "simpler_capi_quantized_gemm_output_size_mismatch:len={} expected={} first={:?}",
+                values.len(),
+                self.output_elements,
+                values.first()
+            ));
+        }
+        Ok(values)
+    }
+}
+
+#[cfg(test)]
+fn run_host_quantized_gemm_payload(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    m: usize,
+    k: usize,
+    n: usize,
+    input_a_payload: Vec<u8>,
+    input_b_payload: Vec<u8>,
+) -> Result<Vec<i32>, String> {
+    let segment_base = 70_000 + task.task_id.saturating_mul(10);
+    HostQuantizedGemmTestRunner::new(topology, manifest_path, m, k, n, segment_base)?.run(
+        task,
+        input_a_payload,
+        input_b_payload,
+    )
+}
+
+#[cfg(test)]
 fn run_host_quantized_gemm_smoke(
     topology: &SimTopology,
     task: &TaskKey,
@@ -17160,118 +17586,27 @@ fn run_host_quantized_gemm_smoke(
     const ELEMENTS: usize = DIM * DIM;
     const INPUT_VALUE: i8 = -3;
 
-    let scenario_config = scenario_config_for_chipbackend()?;
-    let segment_base = 70_000 + task.task_id.saturating_mul(10);
-    let input_a = SegmentHandle(segment_base + 1);
-    let input_b = SegmentHandle(segment_base + 2);
-    let output_c = SegmentHandle(segment_base + 3);
-    let input_bytes = ELEMENTS * std::mem::size_of::<i8>();
-    let output_bytes = ELEMENTS * std::mem::size_of::<i32>();
-    let host_node = topology
-        .hosts
-        .first()
-        .map(|host| host.node_id)
-        .ok_or_else(|| "missing_host_node".to_string())?;
-    let ubpu_node = topology
-        .ubpus
-        .first()
-        .map(|ubpu| ubpu.node_id)
-        .ok_or_else(|| "missing_ubpu_node".to_string())?;
-
-    let mut identity = vec![0u8; input_bytes];
+    let mut identity = vec![0u8; ELEMENTS];
     for diagonal in 0..DIM {
         identity[diagonal * DIM + diagonal] = 1;
     }
-    let _dispatch_lock = host_vector_dispatch_lock_guard()?;
-    let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
-    runtime.seed_host_segment(host_node, input_a, vec![INPUT_VALUE as u8; input_bytes]);
-    runtime.seed_host_segment(host_node, input_b, identity);
-    runtime.seed_host_segment(host_node, output_c, vec![0u8; output_bytes]);
-
-    let endpoint = |segment| MemoryEndpoint {
-        node: host_node,
-        segment,
-        offset: 0,
-    };
-    let backend_spec = host_quantized_gemm_backend_spec_from_manifest(
+    let output = run_host_quantized_gemm_payload(
+        topology,
+        task,
         manifest_path,
-        endpoint(input_a),
-        endpoint(input_b),
-        endpoint(output_c),
-        DIM as u64,
-        DIM as u64,
-        DIM as u64,
+        DIM,
+        DIM,
+        DIM,
+        vec![INPUT_VALUE as u8; ELEMENTS],
+        identity,
     )?;
-    let request = kvcache_host_matmul_request(
-        task.task_id,
-        vec![
-            opaque_binding(
-                "quantized_gemm_a_int8",
-                BufferUsage::Input,
-                endpoint(input_a),
-                input_bytes as u64,
-            ),
-            opaque_binding(
-                "quantized_gemm_b_int8",
-                BufferUsage::Input,
-                endpoint(input_b),
-                input_bytes as u64,
-            ),
-            opaque_binding(
-                "quantized_gemm_c_int32",
-                BufferUsage::Output,
-                endpoint(output_c),
-                output_bytes as u64,
-            ),
-        ],
-    );
-    let dispatch = BackendDispatchOperation {
-        task: task.clone(),
-        function: FunctionLabel {
-            name: "host_quantized_gemm".into(),
-            level: PlLevel::L2,
-        },
-        backend_spec,
-        request,
-        target_level: PlLevel::L2,
-        target_node: ubpu_node,
-        legacy_input_segments: vec![input_a, input_b],
-    };
-    let mut sink = VecEventSink::default();
-    let complete_at = scenario_config
-        .pypto
-        .simpler_boundary
-        .dispatch_latency_us
-        .unwrap_or(15);
-    let completion = with_suppressed_stdio(|| {
-        runtime
-            .submit_backend_dispatch(dispatch, &mut sink)
-            .map_err(|err| err.to_string())?;
-        runtime.advance_to(complete_at, &mut sink);
-        runtime
-            .poll_completions(complete_at, &mut sink)
-            .into_iter()
-            .next()
-            .ok_or_else(|| "simpler_capi_quantized_gemm_dispatch_did_not_complete".to_string())
-    })?;
-    if completion.status != CompletionStatus::Success {
+    if output.iter().any(|value| *value != i32::from(INPUT_VALUE)) {
         return Err(format!(
-            "simpler_capi_quantized_gemm_dispatch_failed:{:?}",
-            completion.status
+            "simpler_capi_quantized_gemm_output_mismatch:first={:?}",
+            output.first()
         ));
     }
-    let produced = runtime
-        .host_segment_payload(host_node, output_c)
-        .ok_or_else(|| "missing_host_quantized_gemm_output_payload".to_string())?;
-    let values = bytes_to_i32s(produced);
-    if values.len() != ELEMENTS || values.iter().any(|value| *value != i32::from(INPUT_VALUE)) {
-        return Err(format!(
-            "simpler_capi_quantized_gemm_output_mismatch:len={} first={:?}",
-            values.len(),
-            values.first()
-        ));
-    }
-    Ok(values)
+    Ok(output)
 }
 
 fn run_simpler_host_engram_context(
@@ -26396,7 +26731,8 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 mod tests {
     use super::{
         bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs,
-        deepseek_v4_flash_gemm_backend_spec_from_manifest, ensure_simpler_host_gemm_manifest,
+        deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
+        ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
         ensure_simpler_host_quantized_gemm_manifest, f32s_to_bytes, find_u64_marker,
         kvcache_input_b_payload, qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
@@ -26474,14 +26810,14 @@ mod tests {
         resolve_qwen3_range_dispatch_operands, run_host_gemm_128, run_host_gemm_smoke,
         run_host_matmul_batched_smoke, run_host_matmul_smoke, run_host_quantized_gemm_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
-        write_u64_le_at, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
-        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
-        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
-        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
-        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
-        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
-        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
-        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        write_u64_le_at, GuestUapiSurface, HostQuantizedGemmTestRunner, KvCachePayloadLayout,
+        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
+        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
+        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
+        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView,
+        Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind,
+        Qwen3RangeDispatchOperands, Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand,
+        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
@@ -26516,7 +26852,10 @@ mod tests {
         LogicalSystemId, MemoryEndpoint, SegmentHandle, SimError, TaskKey,
     };
     use sim_models::deepseek_v4_flash;
-    use sim_models::deepseek_v4_flash_gguf::lower_q8_0_matrix_to_bf16_kxn;
+    use sim_models::deepseek_v4_flash_gguf::{
+        lower_q8_0_matrix_to_bf16_kxn, project_q8_0_matrix, q8_0_weight_block_kxn,
+        quantize_q8_0_activation, GgufCatalog,
+    };
     use sim_models::deepseek_v4_flash_lowering::{
         DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
     };
@@ -29734,6 +30073,142 @@ mod tests {
                 )
                 .expect("execute lowered Q8_0 weight through simpler GEMM");
                 assert!(output.iter().all(|value| (*value + 1.5).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    fn execute_q8_0_projection_through_simpler(
+        q8_weight: &[u8],
+        dimensions: &[u64],
+        input: &[f32],
+        task_id_base: u64,
+    ) -> Result<Vec<f32>, String> {
+        if dimensions.len() != 2 {
+            return Err(format!(
+                "unsupported simpler Q8 projection dimensions:{dimensions:?}"
+            ));
+        }
+        let k =
+            usize::try_from(dimensions[0]).map_err(|_| "Q8 projection K too large".to_string())?;
+        let n =
+            usize::try_from(dimensions[1]).map_err(|_| "Q8 projection N too large".to_string())?;
+        if k == 0 || k % 32 != 0 || n == 0 || n % 128 != 0 {
+            return Err(format!(
+                "unsupported simpler Q8 projection dimensions:{dimensions:?}"
+            ));
+        }
+        let activation = quantize_q8_0_activation(input)?;
+        let manifest = std::env::temp_dir()
+            .join(format!("simpler-host-q8-block-dot-{n}-test-artifacts"))
+            .join("host_q8_block_dot_manifest.json");
+        let blocks = k / 32;
+        ensure_simpler_host_q8_block_dot_manifest(&manifest, blocks as u64, n as u64)?;
+        let topology = test_topology();
+        let mut runner = HostQuantizedGemmTestRunner::new_q8_block_dot(
+            &topology,
+            &manifest,
+            blocks,
+            n,
+            90_000 + task_id_base.saturating_mul(10),
+        )?;
+        let mut weight_blocks = Vec::with_capacity(blocks * 32 * n);
+        let mut weight_scales = Vec::with_capacity(blocks * n);
+        for block in 0..blocks {
+            let (weight_block, block_scales) = q8_0_weight_block_kxn(q8_weight, dimensions, block)?;
+            weight_blocks.extend_from_slice(&weight_block);
+            weight_scales.extend_from_slice(&block_scales);
+        }
+        let dots = runner.run(
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: task_id_base,
+            },
+            activation.values.iter().map(|value| *value as u8).collect(),
+            weight_blocks,
+        )?;
+        let mut actual = vec![0.0f32; n];
+        for block in 0..blocks {
+            for output in 0..n {
+                let partial = block * n + output;
+                actual[output] +=
+                    activation.scales[block] * weight_scales[partial] * dots[partial] as f32;
+            }
+        }
+        Ok(actual)
+    }
+
+    #[test]
+    fn deepseek_q8_0_exact_projection_executes_block_dots_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_q8_0_exact_projection_executes_block_dots_through_simpler",
+            || {
+                const K: usize = 128;
+                const N: usize = 128;
+                const BLOCKS: usize = K / 32;
+                let input: Vec<f32> = (0..K)
+                    .map(|index| ((index as i32 % 23) - 11) as f32 / 3.0)
+                    .collect();
+                let mut q8_weight = Vec::with_capacity(N * BLOCKS * 34);
+                for output in 0..N {
+                    for block in 0..BLOCKS {
+                        let scale = if block % 2 == 0 { 0x3800u16 } else { 0x3c00u16 };
+                        q8_weight.extend_from_slice(&scale.to_le_bytes());
+                        q8_weight.extend(
+                            (0..32).map(|lane| (((output + block + lane) % 7) as i8 - 3) as u8),
+                        );
+                    }
+                }
+                let reference = project_q8_0_matrix(&q8_weight, &[K as u64, N as u64], &input)
+                    .expect("compute exact Q8_0 reference");
+                let actual = execute_q8_0_projection_through_simpler(
+                    &q8_weight,
+                    &[K as u64, N as u64],
+                    &input,
+                    120,
+                )
+                .expect("execute exact Q8 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_q_a_exact_projection_executes_through_simpler_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_q_a_exact_projection_executes_through_simpler_when_available",
+            || {
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let tensor = catalog
+                    .tensor("blk.0.attn_q_a.weight")
+                    .expect("locate real Q A tensor");
+                assert_eq!(tensor.tensor_type.name, "q8_0");
+                let payload = catalog
+                    .read_tensor(&tensor.name)
+                    .expect("read real Q A payload");
+                let k = usize::try_from(tensor.dimensions[0]).expect("Q A K fits usize");
+                let input: Vec<f32> = (0..k)
+                    .map(|index| ((index as i32 % 37) - 18) as f32 / 7.0)
+                    .collect();
+                let reference = project_q8_0_matrix(&payload, &tensor.dimensions, &input)
+                    .expect("compute real Q A reference");
+                let actual = execute_q8_0_projection_through_simpler(
+                    &payload,
+                    &tensor.dimensions,
+                    &input,
+                    1_000,
+                )
+                .expect("execute real Q A through simpler");
+                assert_eq!(actual, reference);
             },
         );
     }

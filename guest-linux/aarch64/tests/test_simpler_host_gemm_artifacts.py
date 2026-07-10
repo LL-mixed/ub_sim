@@ -66,6 +66,28 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("TileAcc<int32_t", kernel_text)
         self.assertIn("TMATMUL_ACC(c_tile", kernel_text)
 
+    def test_q8_block_dot_profile_uses_partial_shape_int8_gemv(self):
+        producer = load_producer()
+        profile = producer.PROFILE_SPECS["host_q8_block_dot"]
+        self.assertEqual(profile.orch_function, "build_q8_block_dot_graph")
+        self.assertEqual(profile.callable_hint, "host_q8_block_dot")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orchestration = producer.write_host_q8_block_dot_orchestration(root, 128, 1024)
+            kernel = producer.write_host_q8_block_dot_kernel(root, 1024)
+            orchestration_text = orchestration.read_text()
+            kernel_text = kernel.read_text()
+
+        self.assertIn("kBlocks = 128", orchestration_text)
+        self.assertIn("kK = 32", orchestration_text)
+        self.assertIn("kN = 1024", orchestration_text)
+        self.assertIn("TileLeft<int8_t, 1, K, 1, K>", kernel_text)
+        self.assertIn("TileRight<int8_t, K, TileN, K, TileN>", kernel_text)
+        self.assertIn("TGEMV(tile_c", kernel_text)
+        self.assertIn("block * K * N", kernel_text)
+        self.assertNotIn("TMATMUL_ACC", kernel_text)
+
 
 if __name__ == "__main__":
     unittest.main()

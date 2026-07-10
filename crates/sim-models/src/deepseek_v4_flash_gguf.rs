@@ -633,6 +633,61 @@ pub fn project_q8_0_matrix(
     Ok(output)
 }
 
+pub fn q8_0_weight_block_kxn(
+    payload: &[u8],
+    dimensions: &[u64],
+    block: usize,
+) -> Result<(Vec<u8>, Vec<f32>), String> {
+    if dimensions.len() != 2 {
+        return Err(format!(
+            "deepseek_q8_0_matrix_rank_mismatch:{}",
+            dimensions.len()
+        ));
+    }
+    let k = usize::try_from(dimensions[0])
+        .map_err(|_| "deepseek_q8_0_matrix_k_too_large".to_string())?;
+    let n = usize::try_from(dimensions[1])
+        .map_err(|_| "deepseek_q8_0_matrix_n_too_large".to_string())?;
+    if k == 0 || n == 0 || k % 32 != 0 {
+        return Err(format!("deepseek_q8_0_matrix_shape_invalid:{k}x{n}"));
+    }
+    let blocks_per_row = k / 32;
+    if block >= blocks_per_row {
+        return Err(format!(
+            "deepseek_q8_0_weight_block_out_of_range:block={block}:blocks={blocks_per_row}"
+        ));
+    }
+    let row_bytes = blocks_per_row
+        .checked_mul(34)
+        .ok_or_else(|| "deepseek_q8_0_row_bytes_overflow".to_string())?;
+    let expected_bytes = n
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "deepseek_q8_0_payload_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_q8_0_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+
+    let mut weights = vec![0u8; 32 * n];
+    let mut scales = vec![0.0f32; n];
+    for output_index in 0..n {
+        let source = output_index * row_bytes + block * 34;
+        let scale = f16_to_f32(u16::from_le_bytes([payload[source], payload[source + 1]]));
+        if !scale.is_finite() {
+            return Err(format!(
+                "deepseek_q8_0_scale_non_finite:row={output_index}:block={block}"
+            ));
+        }
+        scales[output_index] = scale;
+        for lane in 0..32 {
+            weights[lane * n + output_index] = payload[source + 2 + lane];
+        }
+    }
+    Ok((weights, scales))
+}
+
 fn f16_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits & 0x8000) << 16;
     let exponent = u32::from((bits >> 10) & 0x1f);
@@ -894,5 +949,24 @@ mod tests {
         assert!(project_q8_0_matrix(&[0; 34], &[32, 1], &[0.0; 31])
             .unwrap_err()
             .contains("size_mismatch"));
+    }
+
+    #[test]
+    fn extracts_q8_0_weight_block_in_simpler_kxn_layout() {
+        let mut payload = Vec::new();
+        for output in 0..2u8 {
+            for block in 0..2u8 {
+                payload.extend_from_slice(&(0x3800u16 + u16::from(block) * 0x0400).to_le_bytes());
+                payload.extend((0..32u8).map(|lane| output * 64 + block * 32 + lane));
+            }
+        }
+        let (weights, scales) =
+            q8_0_weight_block_kxn(&payload, &[64, 2], 1).expect("extract block");
+        assert_eq!(scales, vec![1.0, 1.0]);
+        assert_eq!(&weights[0..4], &[32, 96, 33, 97]);
+        assert_eq!(&weights[60..64], &[62, 126, 63, 127]);
+        assert!(q8_0_weight_block_kxn(&payload, &[64, 2], 2)
+            .unwrap_err()
+            .contains("out_of_range"));
     }
 }
