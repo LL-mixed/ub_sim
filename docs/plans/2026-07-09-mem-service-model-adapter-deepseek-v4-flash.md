@@ -4,7 +4,7 @@
 
 ## 0. 文档目的与状态
 
-本文是**review 后修订版设计方案**，不是已完成工作的记录。目标是把 `mem_service` 持续打磨成可支持多模型（不再绑定 Qwen3）的层流水线推理服务，并以 DeepSeek V4 Flash 作为第二个接入的模型，验证适配层设计。
+本文是**review 后修订版设计方案**，不是已完成工作的记录。目标是把 `mem_service` 持续打磨成可支持多模型（不再绑定 Qwen3）的层流水线推理服务，并以 DeepSeek V4 Flash 作为第二个接入的模型，最终在 W5 上执行真实 tokenizer、逐层计算、MoE、output head 和采样，输出可与单机 reference 对齐的首 token。
 
 文档组织：
 - 第 1 节：目标与设计原则。
@@ -26,7 +26,8 @@
 1. **解耦**：把 Qwen3 从 `mem_service` core 中解耦为第一个"模型适配器"（adapter），mem_service core 不再依赖任何 Qwen3 符号。
 2. **接入 Flash**：以 DeepSeek V4 Flash 为第二个适配器，验证适配层设计能容纳与 Qwen3 差异很大的模型（MoE、压缩注意力、专家权重按需取用）。
 3. **保留既有能力**：层流水线 streaming infer（多步 decode 循环）、decode-round barrier、range handoff、KV state 对象流、对象回收等机制**行为不变**。Flash 复用同一套跨层接口，pipeline 节点数来自 active topology；8 节点是首个验收配置，不是模型契约，后续必须覆盖 2/3 节点。
-4. **为后续打地基**：适配层建成后，后续模型接入应是"调用方新增模型几何 helper / model adapter，然后把 range-flow request 交给 mem_service"，而非让 mem_service 选择模型。
+4. **拒绝伪完成**：checksum 派生 hidden、确定性占位 logits、synthetic token piece 只能用于 geometry smoke，不能作为 Flash 首 token 或 stream infer 的完成证据。
+5. **为后续打地基**：适配层建成后，后续模型接入应是"调用方新增模型几何 helper / model adapter，然后把 range-flow request 交给 mem_service"，而非让 mem_service 选择模型。
 
 ### 1.2 设计原则（与仓库现有架构法令对齐）
 
@@ -42,11 +43,11 @@
 
 ### 1.3 参考实现
 
-`/Volumes/repos/ds4`（DwarfStar）作为 DeepSeek V4 Flash 的**算法参考与实测基准**，不是可链接的库：
+`/Volumes/repos/ds4`（DwarfStar）既是 DeepSeek V4 Flash 的**算法参考与实测基准**，也是当前真实计算后端的源码来源：
 - `ds4.c:177-212` `DS4_SHAPE_FLASH` 是 Flash 几何的权威来源。
 - `ds4_distributed.c`（层流水线 PP、TCP 环）的分布式范式与 ub_sim 的层切片一致，可互校延迟模型。
 - `ds4_ssd.c` + `ds4_streaming_hotlist.inc` 的专家缓存语义是 ub_sim 建模专家按需取用的参考。
-- ds4 是纯 host 侧、无 guest/驱动组件；其算法逻辑需移植进 ub_sim 的 guest C 侧与 host Rust 侧，不能直接复用二进制。
+- ds4 是纯 host 侧、无 guest/驱动组件。ub_sim 不复制其模型算法，而是从指定 ds4 源码版本构建动态库，通过公开 C API 执行 tokenizer、层切片、MoE、输出头和采样；W5 guest 只负责请求、分段调度和 UB 数据传输。
 
 ---
 
@@ -372,6 +373,44 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 - 与 ds4 2 节点实测互校（prefill 1.38-1.85x、decode -19%）作为 sim 预测的 sanity check。
 - 8 节点全连接 mesh 相对 ds4 软件环的 decode 改善预测（环→mesh 减少跳数）。
 
+### 阶段 3：真实 W5 layer-slice inference
+
+**目标**：复用 ds4 已公开的 `ds4_session_eval_layer_slice()`、tokenizer、output head 和 session/KV 实现，把真实 DeepSeek 计算接入 W5 range runtime。W5 负责 request、节点调度、GSVA hidden handoff、KV/object flow 和 terminal output；ds4 adapter 只负责本节点 layer slice 的模型计算，不能旁路 W5 直接整模型生成答案。
+
+**数据路径**：
+
+1. 入口用 ds4 tokenizer 把原始 request 编码成真实 chat token IDs。
+2. nodeA 的 adapter 读取 token IDs，执行 embedding 和本节点层范围。
+3. 每个节点把 ds4 产生的 F32 hidden 通过现有 W5 GSVA range flow 交给下一节点。
+4. 每个 adapter 保持自己层范围的真实 KV state；W5 负责其对象化、生命周期和跨 request 策略。
+5. terminal node 执行最后一段层和 output head，返回完整 vocab logits。
+6. 入口按 greedy/指定 sampling policy 选 token，并用 ds4 tokenizer 解码文本。
+
+**实现约束**：
+
+- layer range 来自 active topology，必须支持 2/3/8 节点，不能在模型 adapter 中写死 8。
+- adapter 必须加载对应 layer slice，而不是每个节点映射整模型。
+- 没有真实 GGUF、tokenizer 或 output head 时 fail closed；禁止退回 checksum token。
+- simulator 可以调用 host-native ds4 adapter，但 QEMU guest 仍必须通过 UAPI 和 W5 数据面发起 range compute。
+
+**固定首 token oracle**：
+
+- 模型：`DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf`
+- prompt：`Rispondi in italiano con una frase: chi era Ada Lovelace?`
+- chat policy：empty system、`nothink`、greedy、context 1024
+- prompt tokens：21
+- 首 token：ID `108149`，UTF-8 文本 `Ada`
+- top-1 logit：`45.0046463`
+
+最终 8-node 验收必须输出 `108149` / `Ada`，并与同一 GGUF 的单机 ds4 oracle 对齐；`55409` / `q3_055409` 明确属于旧 geometry smoke，不是正确结果。
+
+**2026-07-10 host adapter checkpoint**：
+
+- `deepseek_v4_flash_adapter first-token` 已直接调用 ds4 tokenizer、43 层计算、MoE、output head 和 token text，得到 21 个 prompt tokens、`108149` / `Ada`、top-1 logit `45.004646`。
+- 真实 layer-slice 已按 2-node（`[0,22) [22,43)`）、3-node（`[0,15) [15,29) [29,43)`）和 8-node（`[0,6) ... [38,43)`）分别串行执行成功。
+- 三种切分输出的完整 129280 维 F32 logits 文件逐字节相同，SHA-256 均为 `44f3b631175b528f428f79e46e997482a49da62b37b193d6994d80cf256c60b9`。
+- 这个 checkpoint 只证明 host-native ds4 slice adapter 正确；W5 QEMU range dispatch 尚未调用 adapter，因此不能标记真实 W5 首 token 完成。
+
 ---
 
 ## 6. 测试与验收
@@ -390,6 +429,13 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 - Flash profile 存在性、几何正确性（43 层、256 专家、压缩 KV 系数）。
 - 阶段 1：8 节点 `flash-geometry-smoke` 多步通过，并完成 2/3 节点 geometry/contract 验证；不宣称真实 Flash infer。
 - 阶段 2：专家缓存命中率统计正确，延迟模型与 ds4 互校在合理范围。
+
+### 6.3 阶段 3 测试
+
+- adapter CLI 单独跑完整 43 层时，首 token、文本和 top logits 与 ds4 oracle 对齐。
+- 同一 prompt 分别按 2/3/8 个连续 layer slice 执行，最终 logits 与完整 43 层执行在容差内一致。
+- W5 8-node QEMU 日志必须证明每个节点消费前序真实 F32 hidden，并由 terminal node 输出 `108149` / `Ada`。
+- 删除模型、tokenizer、某段 layer 权重或 output head 的负例全部 fail closed，不能生成 synthetic token。
 
 ---
 
@@ -424,11 +470,11 @@ W5 store macOS 跨进程锁、snapshot profile 升级和 64-step artifact gate �
 - **DS4 参考的时效性**：ds4 的 Flash shape（`ds4.c:177-212`）以仓库当前版本为准，接入前需复核 ds4 是否更新。
 - **guest C 侧改动量大**：`apps/llm_infer/llm_infer.c` 13K 行，阶段 2 MoE 分派改动会触及 decode 循环核心，需谨慎并充分测试。
 
-### 7.5 本方案不包含
+### 7.5 阶段 1/2 不包含但阶段 3 必须完成
 
 - 专家并行（EP）/ 张量并行（TP）——全连接 mesh 的 all-to-all 专家并行是后续独立项。
-- Flash 的真实浮点计算——这是模拟器，建模数据搬运与延迟，非真实跑 81GB 权重（除非 7.2 选 trace 驱动且硬件允许）。
-- ds4 二进制复用——ds4 是参考，不链接。
+- Flash 的真实浮点计算不属于 geometry/MoE 性能建模阶段，但属于最终真实首 token 的硬目标。实现应复用 ds4 layer-slice API，而不是在 simulator 中重写 81GB 模型计算。
+- ub_sim 不复制或重写 ds4 的模型算法源码；host adapter 在部署时动态加载由指定 ds4 源码版本构建的库，并把该版本纳入验收证据。
 
 ---
 
