@@ -43,6 +43,29 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertNotIn("TLOG", kernel_text)
         self.assertNotIn("TEXP", kernel_text)
 
+    def test_quantized_profile_has_distinct_callable_and_integer_types(self):
+        producer = load_producer()
+        profile = producer.PROFILE_SPECS["host_quantized_gemm"]
+        self.assertEqual(profile.orch_function, "build_quantized_gemm_graph")
+        self.assertEqual(profile.callable_hint, "host_quantized_gemm")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orchestration = producer.write_host_quantized_gemm_orchestration(
+                root, 128, 256, 384
+            )
+            kernel = producer.write_host_quantized_gemm_kernel(root, 128, 256, 384)
+            orchestration_text = orchestration.read_text()
+            kernel_text = kernel.read_text()
+
+        self.assertIn("build_quantized_gemm_graph", orchestration_text)
+        self.assertIn("sizeof(int8_t)", orchestration_text)
+        self.assertIn("sizeof(int32_t)", orchestration_text)
+        self.assertIn("TileLeft<int8_t", kernel_text)
+        self.assertIn("TileRight<int8_t", kernel_text)
+        self.assertIn("TileAcc<int32_t", kernel_text)
+        self.assertIn("TMATMUL_ACC(c_tile", kernel_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,24 @@ PROFILE_SPECS = {
         ),
         generated=True,
     ),
+    "host_quantized_gemm": ProfileSpec(
+        profile="HostQuantizedGemm",
+        example="generated_host_quantized_gemm",
+        manifest_name="host_quantized_gemm_manifest.json",
+        callable_hint="host_quantized_gemm",
+        orch_source="host_quantized_gemm_orch.cpp",
+        orch_function="build_quantized_gemm_graph",
+        kernels=(KernelSpec(0, "host_quantized_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "a"},
+            {"kind": "input", "name": "b"},
+            {"kind": "output", "name": "c"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_engram_context": ProfileSpec(
         profile="HostEngramContext",
         example="generated_host_engram_context",
@@ -586,8 +604,14 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
-def write_host_gemm_orchestration(build_dir: Path, m: int, k: int, n: int) -> Path:
-    source = build_dir / "host_gemm_orch.cpp"
+def write_host_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int, *, quantized: bool = False
+) -> Path:
+    source_name = "host_quantized_gemm_orch.cpp" if quantized else "host_gemm_orch.cpp"
+    function_name = "build_quantized_gemm_graph" if quantized else "build_gemm_graph"
+    input_type = "int8_t" if quantized else "uint16_t"
+    output_type = "int32_t" if quantized else "float"
+    source = build_dir / source_name
     source.write_text(
         f"""\
 #include "orchestration_api.h"
@@ -612,11 +636,11 @@ struct CompatChipStorageTaskArgs {{
 
 extern "C" {{
 
-int build_gemm_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
+int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
     const CompatChipStorageTaskArgs* args =
         reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
     if (args->tensor_count < 3 || args->scalar_count < 3) {{
-        std::cerr << "build_gemm_graph: expected 3 tensors and 3 scalars\\n";
+        std::cerr << "{function_name}: expected 3 tensors and 3 scalars\\n";
         return -1;
     }}
 
@@ -628,26 +652,26 @@ int build_gemm_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& o
     const uint64_t k = args->scalars[1];
     const uint64_t n = args->scalars[2];
     if (m != kM || k != kK || n != kN) {{
-        std::cerr << "build_gemm_graph: artifact geometry mismatch got="
+        std::cerr << "{function_name}: artifact geometry mismatch got="
                   << m << "x" << k << "x" << n << " expected="
                   << kM << "x" << kK << "x" << kN << '\\n';
         return -1;
     }}
     if ((m % kTile) != 0 || (k % kTile) != 0 || (n % kTile) != 0) {{
-        std::cerr << "build_gemm_graph: dimensions must be 128-aligned\\n";
+        std::cerr << "{function_name}: dimensions must be 128-aligned\\n";
         return -1;
     }}
 
     const uint64_t elements_a = m * k;
     const uint64_t elements_b = k * n;
     const uint64_t elements_c = m * n;
-    const size_t size_a = static_cast<size_t>(elements_a * sizeof(uint16_t));
-    const size_t size_b = static_cast<size_t>(elements_b * sizeof(uint16_t));
-    const size_t size_c = static_cast<size_t>(elements_c * sizeof(float));
+    const size_t size_a = static_cast<size_t>(elements_a * sizeof({input_type}));
+    const size_t size_b = static_cast<size_t>(elements_b * sizeof({input_type}));
+    const size_t size_c = static_cast<size_t>(elements_c * sizeof({output_type}));
     if (args->tensors[0].shapes[0] < elements_a ||
         args->tensors[1].shapes[0] < elements_b ||
         args->tensors[2].shapes[0] < elements_c) {{
-        std::cerr << "build_gemm_graph: tensor payload is shorter than geometry\\n";
+        std::cerr << "{function_name}: tensor payload is shorter than geometry\\n";
         return -1;
     }}
 
@@ -658,12 +682,12 @@ int build_gemm_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& o
     void* dev_b = device_malloc(runtime, size_b);
     void* dev_c = device_malloc(runtime, size_c);
     if (!dev_a || !dev_b || !dev_c) {{
-        std::cerr << "build_gemm_graph: device allocation failed\\n";
+        std::cerr << "{function_name}: device allocation failed\\n";
         return -1;
     }}
     if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
         copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
-        std::cerr << "build_gemm_graph: input copy failed\\n";
+        std::cerr << "{function_name}: input copy failed\\n";
         return -1;
     }}
     record_tensor_pair(runtime, host_c, dev_c, size_c);
@@ -688,8 +712,21 @@ int build_gemm_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& o
     return source
 
 
-def write_host_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
-    source = build_dir / "host_gemm_kernel.cpp"
+def write_host_quantized_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_orchestration(build_dir, m, k, n, quantized=True)
+
+
+def write_host_gemm_kernel(
+    build_dir: Path, m: int, k: int, n: int, *, quantized: bool = False
+) -> Path:
+    source_name = (
+        "host_quantized_gemm_kernel.cpp" if quantized else "host_gemm_kernel.cpp"
+    )
+    input_type = "int8_t" if quantized else "bfloat16_t"
+    output_type = "int32_t" if quantized else "float"
+    source = build_dir / source_name
     source.write_text(
         f"""\
 #include <cstdint>
@@ -706,9 +743,9 @@ using namespace pto;
 #endif
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
-    __gm__ bfloat16_t* a = reinterpret_cast<__gm__ bfloat16_t*>(args[0]);
-    __gm__ bfloat16_t* b = reinterpret_cast<__gm__ bfloat16_t*>(args[1]);
-    __gm__ float* c = reinterpret_cast<__gm__ float*>(args[2]);
+    __gm__ {input_type}* a = reinterpret_cast<__gm__ {input_type}*>(args[0]);
+    __gm__ {input_type}* b = reinterpret_cast<__gm__ {input_type}*>(args[1]);
+    __gm__ {output_type}* c = reinterpret_cast<__gm__ {output_type}*>(args[2]);
     const uint64_t tile_m = static_cast<uint64_t>(args[3]);
     const uint64_t tile_n = static_cast<uint64_t>(args[4]);
 
@@ -719,22 +756,22 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     constexpr int TileK = 128;
     constexpr int TileN = 128;
 
-    using AValid = TileShape2D<bfloat16_t, TileM, TileK>;
-    using AWhole = BaseShape2D<bfloat16_t, M, K>;
-    using BValid = TileShape2D<bfloat16_t, TileK, TileN>;
-    using BWhole = BaseShape2D<bfloat16_t, K, N>;
-    using CValid = TileShape2D<float, TileM, TileN>;
-    using CWhole = BaseShape2D<float, M, N>;
-    using GlobalA = GlobalTensor<bfloat16_t, AValid, AWhole>;
-    using GlobalB = GlobalTensor<bfloat16_t, BValid, BWhole>;
-    using GlobalC = GlobalTensor<float, CValid, CWhole>;
-    using MatA = Tile<TileType::Mat, bfloat16_t, TileM, TileK,
+    using AValid = TileShape2D<{input_type}, TileM, TileK>;
+    using AWhole = BaseShape2D<{input_type}, M, K>;
+    using BValid = TileShape2D<{input_type}, TileK, TileN>;
+    using BWhole = BaseShape2D<{input_type}, K, N>;
+    using CValid = TileShape2D<{output_type}, TileM, TileN>;
+    using CWhole = BaseShape2D<{output_type}, M, N>;
+    using GlobalA = GlobalTensor<{input_type}, AValid, AWhole>;
+    using GlobalB = GlobalTensor<{input_type}, BValid, BWhole>;
+    using GlobalC = GlobalTensor<{output_type}, CValid, CWhole>;
+    using MatA = Tile<TileType::Mat, {input_type}, TileM, TileK,
                       BLayout::ColMajor, TileM, TileK, SLayout::RowMajor, 512>;
-    using MatB = Tile<TileType::Mat, bfloat16_t, TileK, TileN,
+    using MatB = Tile<TileType::Mat, {input_type}, TileK, TileN,
                       BLayout::ColMajor, TileK, TileN, SLayout::RowMajor, 512>;
-    using Left = TileLeft<bfloat16_t, TileM, TileK, TileM, TileK>;
-    using Right = TileRight<bfloat16_t, TileK, TileN, TileK, TileN>;
-    using Acc = TileAcc<float, TileM, TileN, TileM, TileN>;
+    using Left = TileLeft<{input_type}, TileM, TileK, TileM, TileK>;
+    using Right = TileRight<{input_type}, TileK, TileN, TileK, TileN>;
+    using Acc = TileAcc<{output_type}, TileM, TileN, TileM, TileN>;
 
     MatA a_mat;
     MatB b_mat;
@@ -775,6 +812,12 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
 """
     )
     return source
+
+
+def write_host_quantized_gemm_kernel(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_kernel(build_dir, m, k, n, quantized=True)
 
 
 def write_host_engram_context_orchestration(build_dir: Path) -> Path:
@@ -978,7 +1021,7 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             for kernel in spec.kernels
         ],
     }
-    if args.profile == "host_gemm":
+    if args.profile in ("host_gemm", "host_quantized_gemm"):
         payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -994,7 +1037,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
-    if args.profile == "host_gemm":
+    if args.profile in ("host_gemm", "host_quantized_gemm"):
         gemm_dims = (args.gemm_m, args.gemm_k, args.gemm_n)
         if any(dim <= 0 or dim % 128 != 0 for dim in gemm_dims):
             raise SystemExit("--gemm-m/--gemm-k/--gemm-n must be positive and 128-aligned")
@@ -1028,6 +1071,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     orch_source = example_root / spec.orch_source
     if args.profile == "host_gemm":
         orch_source = write_host_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_quantized_gemm":
+        orch_source = write_host_quantized_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n
         )
     if args.profile == "host_engram_context":
@@ -1067,11 +1114,19 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_gemm"
             else None
         )
+        quantized_gemm_source = (
+            write_host_quantized_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_quantized_gemm"
+            else None
+        )
         source = Path(
             vector_source
             or batched_source
             or engram_source
             or gemm_source
+            or quantized_gemm_source
             or (example_root / kernel.source)
         ).resolve()
         wrapped = write_wrapped_kernel(
@@ -1183,6 +1238,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "n": args.gemm_n,
             "input_dtype": "bf16",
             "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_quantized_gemm":
+        manifest["host_quantized_gemm_manifest_version"] = 1
+        manifest["host_quantized_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "int8",
+            "output_dtype": "int32",
             "tile": 128,
         }
     if args.profile == "host_engram_context":

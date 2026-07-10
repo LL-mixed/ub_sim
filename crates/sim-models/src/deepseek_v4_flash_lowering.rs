@@ -149,7 +149,7 @@ impl DeepseekV4FlashGemmPlan {
                 n: (p.num_attention_heads * p.head_dim) as u32,
                 input_dtype: DeepseekV4FlashDtype::I8,
                 weight_dtype: DeepseekV4FlashDtype::I8,
-                output_dtype: DeepseekV4FlashDtype::F32,
+                output_dtype: DeepseekV4FlashDtype::I32,
             },
             Self {
                 kind: DeepseekV4FlashGemmKind::KeyValue,
@@ -172,6 +172,57 @@ impl DeepseekV4FlashGemmPlan {
             && self.k % 128 == 0
             && self.n % 128 == 0
     }
+
+    pub fn supports_host_quantized_gemm(&self) -> bool {
+        self.input_dtype == DeepseekV4FlashDtype::I8
+            && self.weight_dtype == DeepseekV4FlashDtype::I8
+            && self.output_dtype == DeepseekV4FlashDtype::I32
+            && self.artifact_m % 128 == 0
+            && self.k % 128 == 0
+            && self.n % 128 == 0
+    }
+}
+
+pub fn deepseek_v4_flash_dequantize_gemm_reference(
+    accumulators: &[i32],
+    rows: usize,
+    columns: usize,
+    row_scales: &[f32],
+    column_scales: &[f32],
+) -> Result<Vec<f32>, String> {
+    let elements = rows
+        .checked_mul(columns)
+        .ok_or_else(|| "deepseek GEMM dequant shape overflow".to_string())?;
+    if rows == 0
+        || columns == 0
+        || accumulators.len() != elements
+        || row_scales.len() != rows
+        || column_scales.len() != columns
+    {
+        return Err(format!(
+            "deepseek GEMM dequant shape mismatch: accumulators={} rows={rows} columns={columns} row_scales={} column_scales={}",
+            accumulators.len(),
+            row_scales.len(),
+            column_scales.len()
+        ));
+    }
+    if row_scales
+        .iter()
+        .chain(column_scales)
+        .any(|scale| !scale.is_finite())
+    {
+        return Err("deepseek GEMM dequant scale contains non-finite value".to_string());
+    }
+
+    Ok(accumulators
+        .chunks_exact(columns)
+        .zip(row_scales)
+        .flat_map(|(row, row_scale)| {
+            row.iter()
+                .zip(column_scales)
+                .map(move |(value, column_scale)| *value as f32 * row_scale * column_scale)
+        })
+        .collect())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1304,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn qkv_gemm_plan_maps_bf16_ops_and_keeps_int8_expansion_explicit() {
+    fn qkv_gemm_plan_maps_bf16_and_quantized_ops_explicitly() {
         let plans = DeepseekV4FlashGemmPlan::qkv_decode(1).expect("QKV GEMM plans");
         assert_eq!(plans.len(), 3);
         assert_eq!(plans[0].kind, DeepseekV4FlashGemmKind::QueryLowRank);
@@ -1315,11 +1366,34 @@ mod tests {
         assert_eq!(plans[1].kind, DeepseekV4FlashGemmKind::QueryExpansion);
         assert_eq!((plans[1].k, plans[1].n), (1024, 32768));
         assert_eq!(plans[1].input_dtype, DeepseekV4FlashDtype::I8);
+        assert_eq!(plans[1].output_dtype, DeepseekV4FlashDtype::I32);
         assert!(!plans[1].supports_host_bf16_gemm());
+        assert!(plans[1].supports_host_quantized_gemm());
 
         assert_eq!(plans[2].kind, DeepseekV4FlashGemmKind::KeyValue);
         assert_eq!((plans[2].k, plans[2].n), (4096, 512));
         assert!(plans[2].supports_host_bf16_gemm());
+    }
+
+    #[test]
+    fn query_expansion_dequant_applies_row_and_column_scales() {
+        let output = deepseek_v4_flash_dequantize_gemm_reference(
+            &[2, -4, 6, -8],
+            2,
+            2,
+            &[0.5, 0.25],
+            &[2.0, 4.0],
+        )
+        .expect("query expansion dequant");
+        assert_eq!(output, vec![2.0, -8.0, 3.0, -8.0]);
+    }
+
+    #[test]
+    fn query_expansion_dequant_rejects_wrong_scale_shape() {
+        let error =
+            deepseek_v4_flash_dequantize_gemm_reference(&[1, 2, 3, 4], 2, 2, &[1.0], &[1.0, 1.0])
+                .expect_err("row scale shape must match rows");
+        assert!(error.contains("shape mismatch"));
     }
 
     #[test]
