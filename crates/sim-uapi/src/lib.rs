@@ -30443,9 +30443,14 @@ mod tests {
                 assert_eq!(fn_tensor.dimensions, vec![HC_DIM as u64, MIX as u64]);
                 assert_eq!(fn_tensor.tensor_type.name, "f16");
 
-                let residual: Vec<f32> = (0..HC_DIM)
-                    .map(|index| ((index as i32 % 257) - 128) as f32 / 64.0)
-                    .collect();
+                let token_embedding = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                assert_eq!(token_embedding.len(), HIDDEN);
+                let mut residual = Vec::with_capacity(HC_DIM);
+                for _ in 0..HC {
+                    residual.extend_from_slice(&token_embedding);
+                }
                 let control_input =
                     deepseek_v4_flash_hc_control_input_reference(&residual, HIDDEN, HC, 1.0e-6)
                         .expect("normalize HC control input");

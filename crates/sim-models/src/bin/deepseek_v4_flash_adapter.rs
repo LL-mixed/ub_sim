@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn usage() -> &'static str {
-    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
+    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter embedding --model FILE --tokens CSV --output FILE\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
 }
 
 fn read_f32_payload(path: &PathBuf) -> Result<Vec<f32>, String> {
@@ -187,6 +187,36 @@ fn run(args: &[String]) -> Result<(), String> {
                     "tensor": tensor,
                 }))
                 .map_err(|err| format!("json_encode_failed:{err}"))?
+            );
+        }
+        "embedding" => {
+            let model_path = PathBuf::from(required(&options, "--model")?);
+            let output_path = PathBuf::from(required(&options, "--output")?);
+            let token_ids = parse_tokens(&required(&options, "--tokens")?)?;
+            let catalog = GgufCatalog::open(&model_path)?;
+            catalog.validate_deepseek_v4_flash()?;
+            let mut embeddings = Vec::new();
+            for token_id in &token_ids {
+                let row = usize::try_from(*token_id)
+                    .map_err(|_| format!("deepseek_embedding_token_negative:{token_id}"))?;
+                embeddings.extend(catalog.read_f16_matrix_row("token_embd.weight", row)?);
+            }
+            fs::write(&output_path, f32_payload(&embeddings)).map_err(|err| {
+                format!(
+                    "deepseek_embedding_write_failed:{}:{err}",
+                    output_path.display()
+                )
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "model": model_path,
+                    "tokens": token_ids,
+                    "output": output_path,
+                    "output_type": "f32",
+                    "output_values": embeddings.len(),
+                })
             );
         }
         "lower-q8-bf16" => {
@@ -401,6 +431,7 @@ mod tests {
 
     #[test]
     fn usage_exposes_f16_and_q8_projection_commands() {
+        assert!(usage().contains("embedding"));
         assert!(usage().contains("project-f16"));
         assert!(usage().contains("project-q8"));
     }

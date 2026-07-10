@@ -233,6 +233,59 @@ impl GgufCatalog {
         Ok(payload)
     }
 
+    pub fn read_f16_matrix_row(&self, name: &str, row: usize) -> Result<Vec<f32>, String> {
+        let tensor = self.tensor(name)?;
+        if tensor.tensor_type.name != "f16" || tensor.dimensions.len() != 2 {
+            return Err(format!(
+                "deepseek_f16_matrix_row_type_mismatch:{name}:type={}:rank={}",
+                tensor.tensor_type.name,
+                tensor.dimensions.len()
+            ));
+        }
+        let columns = usize::try_from(tensor.dimensions[0])
+            .map_err(|_| format!("deepseek_f16_matrix_columns_too_large:{name}"))?;
+        let rows = usize::try_from(tensor.dimensions[1])
+            .map_err(|_| format!("deepseek_f16_matrix_rows_too_large:{name}"))?;
+        if row >= rows {
+            return Err(format!(
+                "deepseek_f16_matrix_row_out_of_range:{name}:row={row}:rows={rows}"
+            ));
+        }
+        let row_bytes = columns
+            .checked_mul(2)
+            .ok_or_else(|| format!("deepseek_f16_matrix_row_bytes_overflow:{name}"))?;
+        let row_offset = row
+            .checked_mul(row_bytes)
+            .and_then(|offset| u64::try_from(offset).ok())
+            .and_then(|offset| tensor.absolute_offset.checked_add(offset))
+            .ok_or_else(|| format!("deepseek_f16_matrix_row_offset_overflow:{name}"))?;
+        let mut reader = File::open(&self.path).map_err(|err| {
+            format!(
+                "deepseek_gguf_tensor_open_failed:{}:{err}",
+                self.path.display()
+            )
+        })?;
+        reader
+            .seek(SeekFrom::Start(row_offset))
+            .map_err(|err| format!("deepseek_f16_matrix_row_seek_failed:{name}:{err}"))?;
+        let mut payload = vec![0u8; row_bytes];
+        reader
+            .read_exact(&mut payload)
+            .map_err(|err| format!("deepseek_f16_matrix_row_read_failed:{name}:{err}"))?;
+        payload
+            .chunks_exact(2)
+            .enumerate()
+            .map(|(column, bytes)| {
+                let value = f16_to_f32(u16::from_le_bytes([bytes[0], bytes[1]]));
+                value.is_finite().then_some(value).ok_or_else(|| {
+                    format!(
+                        "deepseek_f16_matrix_row_value_non_finite:{name}:row={row}:column={column}"
+                    )
+                })
+            })
+            .collect()
+    }
+
     pub fn validate_deepseek_v4_flash(&self) -> Result<(), String> {
         let profile = DEEPSEEK_V4_FLASH_PROFILE;
         let expected = [
@@ -929,7 +982,7 @@ mod tests {
         output.extend_from_slice(&2u32.to_le_bytes());
         output.extend_from_slice(&4u64.to_le_bytes());
         output.extend_from_slice(&2u64.to_le_bytes());
-        output.extend_from_slice(&30u32.to_le_bytes());
+        output.extend_from_slice(&1u32.to_le_bytes());
         output.extend_from_slice(&0u64.to_le_bytes());
 
         push_string(&mut output, "blk.0.attn_q_b.weight");
@@ -942,7 +995,9 @@ mod tests {
         while output.len() % 32 != 0 {
             output.push(0);
         }
-        output.extend(0u8..16);
+        for value in [0x3c00u16, 0x4000, 0x4200, 0x4400, 0xbc00, 0x3800, 0, 0x4800] {
+            output.extend_from_slice(&value.to_le_bytes());
+        }
         output.resize(output.len() + 16, 0);
         output.extend_from_slice(&[9, 8, 7, 6, 5, 4]);
         output
@@ -974,14 +1029,24 @@ mod tests {
             assert_eq!(catalog.metadata_u64("deepseek4.block_count"), Ok(43));
             let q_a = catalog.tensor("blk.0.attn_q_a.weight").expect("Q A tensor");
             assert_eq!(q_a.dimensions, vec![4, 2]);
-            assert_eq!(q_a.tensor_type.name, "bf16");
+            assert_eq!(q_a.tensor_type.name, "f16");
             assert_eq!(q_a.bytes, 16);
             assert_eq!(
                 catalog
-                    .read_tensor("blk.0.attn_q_a.weight")
-                    .expect("Q A payload"),
-                (0u8..16).collect::<Vec<_>>()
+                    .read_f16_matrix_row("blk.0.attn_q_a.weight", 0)
+                    .expect("Q A row 0"),
+                vec![1.0, 2.0, 3.0, 4.0]
             );
+            assert_eq!(
+                catalog
+                    .read_f16_matrix_row("blk.0.attn_q_a.weight", 1)
+                    .expect("Q A row 1"),
+                vec![-1.0, 0.5, 0.0, 8.0]
+            );
+            assert!(catalog
+                .read_f16_matrix_row("blk.0.attn_q_a.weight", 2)
+                .unwrap_err()
+                .contains("out_of_range"));
             let q_b = catalog.tensor("blk.0.attn_q_b.weight").expect("Q B tensor");
             assert_eq!(q_b.tensor_type.name, "i8");
             assert_eq!(
