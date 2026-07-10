@@ -27019,8 +27019,9 @@ mod tests {
     };
     use sim_models::deepseek_v4_flash_lowering::{
         deepseek_v4_flash_hc_attention_input_from_mix_reference,
-        deepseek_v4_flash_hc_control_input_reference, DeepseekV4FlashDtype,
-        DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
+        deepseek_v4_flash_hc_control_input_reference, deepseek_v4_flash_head_rms_norm_reference,
+        deepseek_v4_flash_rms_norm_reference, DeepseekV4FlashDtype, DeepseekV4FlashGemmKind,
+        DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -30555,6 +30556,82 @@ mod tests {
                 )
                 .expect("execute real Q A from HC output through simpler");
                 assert_eq!(q_a_actual, q_a_reference);
+
+                let q_a_norm_weight = read_f32("blk.0.attn_q_a_norm.weight");
+                let q_lora_norm = deepseek_v4_flash_rms_norm_reference(
+                    &q_a_actual,
+                    Some(&q_a_norm_weight),
+                    1.0e-6,
+                )
+                .expect("normalize real Q LoRA output");
+                let q_b_tensor = catalog
+                    .tensor("blk.0.attn_q_b.weight")
+                    .expect("locate real Q B tensor");
+                assert_eq!(q_b_tensor.dimensions, vec![1_024, 32_768]);
+                assert_eq!(q_b_tensor.tensor_type.name, "q8_0");
+                let q_b_payload = catalog
+                    .read_tensor(&q_b_tensor.name)
+                    .expect("read real Q B tensor");
+                let q_b_reference =
+                    project_q8_0_matrix(&q_b_payload, &q_b_tensor.dimensions, &q_lora_norm)
+                        .expect("project real Q B reference");
+                let q_b_actual = execute_q8_0_projection_through_simpler(
+                    &q_b_payload,
+                    &q_b_tensor.dimensions,
+                    &q_lora_norm,
+                    1_120,
+                )
+                .expect("execute real Q B through simpler");
+                assert_eq!(q_b_actual, q_b_reference);
+
+                let q_heads =
+                    deepseek_v4_flash_head_rms_norm_reference(&q_b_actual, 64, 512, None, 1.0e-6)
+                        .expect("normalize real query heads");
+                assert_eq!(q_heads.len(), 32_768);
+                for (head, (input, values)) in q_b_actual
+                    .chunks_exact(512)
+                    .zip(q_heads.chunks_exact(512))
+                    .enumerate()
+                {
+                    let input_mean_square =
+                        input.iter().map(|value| value * value).sum::<f32>() / 512.0;
+                    let output_mean_square =
+                        values.iter().map(|value| value * value).sum::<f32>() / 512.0;
+                    let expected_mean_square = input_mean_square / (input_mean_square + 1.0e-6);
+                    assert!(
+                        (output_mean_square - expected_mean_square).abs() < 1.0e-5,
+                        "query head RMS mismatch head={head} actual={output_mean_square} expected={expected_mean_square}"
+                    );
+                }
+
+                let kv_tensor = catalog
+                    .tensor("blk.0.attn_kv.weight")
+                    .expect("locate real KV tensor");
+                assert_eq!(kv_tensor.dimensions, vec![4_096, 512]);
+                assert_eq!(kv_tensor.tensor_type.name, "q8_0");
+                let kv_payload = catalog
+                    .read_tensor(&kv_tensor.name)
+                    .expect("read real KV tensor");
+                let kv_reference = project_q8_0_matrix(
+                    &kv_payload,
+                    &kv_tensor.dimensions,
+                    &output.normalized_hidden,
+                )
+                .expect("project real KV reference");
+                let kv_actual = execute_q8_0_projection_through_simpler(
+                    &kv_payload,
+                    &kv_tensor.dimensions,
+                    &output.normalized_hidden,
+                    1_130,
+                )
+                .expect("execute real KV through simpler");
+                assert_eq!(kv_actual, kv_reference);
+                let kv_norm_weight = read_f32("blk.0.attn_kv_a_norm.weight");
+                let kv_normalized =
+                    deepseek_v4_flash_rms_norm_reference(&kv_actual, Some(&kv_norm_weight), 1.0e-6)
+                        .expect("normalize real KV output");
+                assert_eq!(kv_normalized.len(), 512);
+                assert!(kv_normalized.iter().all(|value| value.is_finite()));
             },
         );
     }
