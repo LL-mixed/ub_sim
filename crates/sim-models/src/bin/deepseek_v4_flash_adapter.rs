@@ -3,14 +3,14 @@ use sim_models::deepseek_v4_flash_adapter::{
     Ds4RunConfig, Ds4SliceConfig,
 };
 use sim_models::deepseek_v4_flash_gguf::{
-    lower_q8_0_matrix_to_bf16_kxn, project_q8_0_matrix, GgufCatalog,
+    lower_q8_0_matrix_to_bf16_kxn, project_f16_matrix, project_q8_0_matrix, GgufCatalog,
 };
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 fn usage() -> &'static str {
-    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
+    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
 }
 
 fn read_f32_payload(path: &PathBuf) -> Result<Vec<f32>, String> {
@@ -227,7 +227,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 })
             );
         }
-        "project-q8" => {
+        "project-f16" | "project-q8" => {
             let model_path = PathBuf::from(required(&options, "--model")?);
             let tensor_name = required(&options, "--tensor")?;
             let input_path = PathBuf::from(required(&options, "--input")?);
@@ -235,18 +235,23 @@ fn run(args: &[String]) -> Result<(), String> {
             let catalog = GgufCatalog::open(&model_path)?;
             catalog.validate_deepseek_v4_flash()?;
             let tensor = catalog.tensor(&tensor_name)?;
-            if tensor.tensor_type.name != "q8_0" {
+            let expected_type = if command == "project-f16" {
+                "f16"
+            } else {
+                "q8_0"
+            };
+            if tensor.tensor_type.name != expected_type {
                 return Err(format!(
-                    "deepseek_q8_0_tensor_type_required:{tensor_name}:{}",
+                    "deepseek_{expected_type}_tensor_type_required:{tensor_name}:{}",
                     tensor.tensor_type.name
                 ));
             }
             let hidden_size = usize::try_from(tensor.dimensions[0])
-                .map_err(|_| "deepseek_q8_0_hidden_size_too_large".to_string())?;
+                .map_err(|_| "deepseek_projection_hidden_size_too_large".to_string())?;
             let input = read_f32_payload(&input_path)?;
             if input.len() % hidden_size != 0 {
                 return Err(format!(
-                    "deepseek_q8_0_token_major_input_misaligned:values={}:hidden={hidden_size}",
+                    "deepseek_projection_token_major_input_misaligned:values={}:hidden={hidden_size}",
                     input.len()
                 ));
             }
@@ -254,25 +259,26 @@ fn run(args: &[String]) -> Result<(), String> {
             let token_count = input.len() / hidden_size;
             let token_start = token_index
                 .checked_mul(hidden_size)
-                .ok_or_else(|| "deepseek_q8_0_token_input_offset_overflow".to_string())?;
+                .ok_or_else(|| "deepseek_projection_token_input_offset_overflow".to_string())?;
             let token_end = token_start
                 .checked_add(hidden_size)
-                .ok_or_else(|| "deepseek_q8_0_token_input_end_overflow".to_string())?;
+                .ok_or_else(|| "deepseek_projection_token_input_end_overflow".to_string())?;
             let token_input = input
                 .get(token_start..token_end)
                 .ok_or_else(|| {
                     format!(
-                        "deepseek_q8_0_token_index_out_of_range:index={token_index}:tokens={token_count}"
+                        "deepseek_projection_token_index_out_of_range:index={token_index}:tokens={token_count}"
                     )
                 })?;
-            let projected = project_q8_0_matrix(
-                &catalog.read_tensor(&tensor_name)?,
-                &tensor.dimensions,
-                token_input,
-            )?;
+            let payload = catalog.read_tensor(&tensor_name)?;
+            let projected = if command == "project-f16" {
+                project_f16_matrix(&payload, &tensor.dimensions, token_input)?
+            } else {
+                project_q8_0_matrix(&payload, &tensor.dimensions, token_input)?
+            };
             fs::write(&output_path, f32_payload(&projected)).map_err(|err| {
                 format!(
-                    "deepseek_q8_0_projection_write_failed:{}:{err}",
+                    "deepseek_projection_write_failed:{}:{err}",
                     output_path.display()
                 )
             })?;
@@ -391,5 +397,11 @@ mod tests {
             Ok(17)
         );
         assert!(parse_usize(Some("-1".to_string()), 0, "token_index").is_err());
+    }
+
+    #[test]
+    fn usage_exposes_f16_and_q8_projection_commands() {
+        assert!(usage().contains("project-f16"));
+        assert!(usage().contains("project-q8"));
     }
 }

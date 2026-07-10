@@ -66,6 +66,28 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("TileAcc<int32_t", kernel_text)
         self.assertIn("TMATMUL_ACC(c_tile", kernel_text)
 
+    def test_fp32_profile_uses_float_inputs_and_distinct_callable(self):
+        producer = load_producer()
+        profile = producer.PROFILE_SPECS["host_fp32_gemm"]
+        self.assertEqual(profile.orch_function, "build_fp32_gemm_graph")
+        self.assertEqual(profile.callable_hint, "host_fp32_gemm")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orchestration = producer.write_host_fp32_gemm_orchestration(
+                root, 128, 256, 128
+            )
+            kernel = producer.write_host_fp32_gemm_kernel(root, 128, 256, 128)
+            orchestration_text = orchestration.read_text()
+            kernel_text = kernel.read_text()
+
+        self.assertIn("build_fp32_gemm_graph", orchestration_text)
+        self.assertIn("sizeof(float)", orchestration_text)
+        self.assertIn("TileLeft<float", kernel_text)
+        self.assertIn("TileRight<float", kernel_text)
+        self.assertIn("TileAcc<float", kernel_text)
+        self.assertIn("TMATMUL_ACC(c_tile", kernel_text)
+
     def test_q8_block_dot_profile_uses_partial_shape_int8_gemv(self):
         producer = load_producer()
         profile = producer.PROFILE_SPECS["host_q8_block_dot"]

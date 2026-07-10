@@ -15991,6 +15991,82 @@ pub fn ensure_simpler_host_gemm_manifest(
     Ok(())
 }
 
+pub fn ensure_simpler_host_fp32_gemm_manifest(
+    manifest_path: &Path,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<(), String> {
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_fp32_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_fp32_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_gemm_manifest_version"].as_u64() == Some(3)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest.host_gemm.as_ref().is_some_and(|geometry| {
+                    geometry.m == m
+                        && geometry.k == k
+                        && geometry.n == n
+                        && geometry.input_dtype == "fp32"
+                        && geometry.output_dtype == "fp32"
+                        && geometry.tile == 128
+                })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_fp32_gemm_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_fp32_gemm")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(m.to_string())
+        .arg("--gemm-k")
+        .arg(k.to_string())
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_fp32_gemm_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_fp32_gemm_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
 pub fn ensure_simpler_host_quantized_gemm_manifest(
     manifest_path: &Path,
     m: u64,
@@ -16439,7 +16515,7 @@ fn host_matmul_batched_backend_spec_from_manifest(
     })
 }
 
-fn host_gemm_backend_spec_from_manifest(
+fn host_gemm_backend_spec_from_manifest_with_dtype(
     manifest_path: &Path,
     input_a: MemoryEndpoint,
     input_b: MemoryEndpoint,
@@ -16447,6 +16523,9 @@ fn host_gemm_backend_spec_from_manifest(
     m: u64,
     k: u64,
     n: u64,
+    input_dtype: &str,
+    input_element_bytes: u64,
+    callable_hint: &str,
 ) -> Result<DispatchBackendSpec, String> {
     let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
         format!(
@@ -16467,12 +16546,12 @@ fn host_gemm_backend_spec_from_manifest(
     if geometry.m != m
         || geometry.k != k
         || geometry.n != n
-        || geometry.input_dtype != "bf16"
+        || geometry.input_dtype != input_dtype
         || geometry.output_dtype != "fp32"
         || geometry.tile != 128
     {
         return Err(format!(
-            "simpler_gemm_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={m}x{k}x{n}:bf16/fp32:tile128",
+            "simpler_gemm_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={m}x{k}x{n}:{input_dtype}/fp32:tile128",
             geometry.m,
             geometry.k,
             geometry.n,
@@ -16483,11 +16562,11 @@ fn host_gemm_backend_spec_from_manifest(
     }
     let input_a_bytes = m
         .checked_mul(k)
-        .and_then(|elements| elements.checked_mul(2))
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
         .ok_or_else(|| "simpler_gemm_input_a_size_overflow".to_string())?;
     let input_b_bytes = k
         .checked_mul(n)
-        .and_then(|elements| elements.checked_mul(2))
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
         .ok_or_else(|| "simpler_gemm_input_b_size_overflow".to_string())?;
     let output_c_bytes = m
         .checked_mul(n)
@@ -16524,10 +16603,33 @@ fn host_gemm_backend_spec_from_manifest(
         profile: DispatchBackendProfile::HostGemm,
         platform: "a2a3sim".to_string(),
         runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
-        callable_hint: Some("host_gemm".to_string()),
+        callable_hint: Some(callable_hint.to_string()),
         simpler_runtime: Some(runtime),
         context: None,
     })
+}
+
+fn host_gemm_backend_spec_from_manifest(
+    manifest_path: &Path,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<DispatchBackendSpec, String> {
+    host_gemm_backend_spec_from_manifest_with_dtype(
+        manifest_path,
+        input_a,
+        input_b,
+        output_c,
+        m,
+        k,
+        n,
+        "bf16",
+        2,
+        "host_gemm",
+    )
 }
 
 fn host_quantized_gemm_backend_spec_from_manifest(
@@ -16727,6 +16829,20 @@ pub fn deepseek_v4_flash_gemm_backend_spec_from_manifest(
             m,
             k,
             n,
+        );
+    }
+    if plan.supports_host_fp32_gemm() {
+        return host_gemm_backend_spec_from_manifest_with_dtype(
+            manifest_path,
+            input_a,
+            input_b,
+            output_c,
+            m,
+            k,
+            n,
+            "fp32",
+            4,
+            "host_fp32_gemm",
         );
     }
     if plan.supports_host_quantized_gemm() {
@@ -17144,26 +17260,42 @@ fn run_host_matmul_smoke(topology: &SimTopology, task: &TaskKey) -> Result<Vec<u
 }
 
 #[cfg(test)]
-fn run_host_gemm_128(
+#[allow(clippy::too_many_arguments)]
+fn run_host_gemm(
     topology: &SimTopology,
     task: &TaskKey,
     manifest_path: &Path,
     input_a_payload: Vec<u8>,
     input_b_payload: Vec<u8>,
+    m: usize,
+    k: usize,
+    n: usize,
+    input_dtype: &str,
+    input_element_bytes: usize,
+    callable_hint: &str,
 ) -> Result<Vec<f32>, String> {
-    const DIM: usize = 128;
-    const ELEMENTS: usize = DIM * DIM;
-
     let scenario_config = scenario_config_for_chipbackend()?;
     let segment_base = 60_000 + task.task_id.saturating_mul(10);
     let input_a = SegmentHandle(segment_base + 1);
     let input_b = SegmentHandle(segment_base + 2);
     let output_c = SegmentHandle(segment_base + 3);
-    let input_bytes = ELEMENTS * std::mem::size_of::<u16>();
-    let output_bytes = ELEMENTS * std::mem::size_of::<f32>();
-    if input_a_payload.len() != input_bytes || input_b_payload.len() != input_bytes {
+    let input_a_bytes = m
+        .checked_mul(k)
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
+        .ok_or_else(|| "host_gemm_input_a_size_overflow".to_string())?;
+    let input_b_bytes = k
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
+        .ok_or_else(|| "host_gemm_input_b_size_overflow".to_string())?;
+    let output_elements = m
+        .checked_mul(n)
+        .ok_or_else(|| "host_gemm_output_elements_overflow".to_string())?;
+    let output_bytes = output_elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "host_gemm_output_size_overflow".to_string())?;
+    if input_a_payload.len() != input_a_bytes || input_b_payload.len() != input_b_bytes {
         return Err(format!(
-            "host_gemm_128_input_size_mismatch:a={}:b={}:expected={input_bytes}",
+            "host_gemm_input_size_mismatch:a={}:expected_a={input_a_bytes}:b={}:expected_b={input_b_bytes}",
             input_a_payload.len(),
             input_b_payload.len()
         ));
@@ -17185,7 +17317,7 @@ fn run_host_gemm_128(
     runtime.seed_host_segment(host_node, input_b, input_b_payload);
     runtime.seed_host_segment(host_node, output_c, vec![0u8; output_bytes]);
 
-    let backend_spec = host_gemm_backend_spec_from_manifest(
+    let backend_spec = host_gemm_backend_spec_from_manifest_with_dtype(
         manifest_path,
         MemoryEndpoint {
             node: host_node,
@@ -17202,32 +17334,35 @@ fn run_host_gemm_128(
             segment: output_c,
             offset: 0,
         },
-        DIM as u64,
-        DIM as u64,
-        DIM as u64,
+        m as u64,
+        k as u64,
+        n as u64,
+        input_dtype,
+        input_element_bytes as u64,
+        callable_hint,
     )?;
     let request = kvcache_host_matmul_request(
         task.task_id,
         vec![
             opaque_binding(
-                "gemm_a_bf16",
+                "gemm_a",
                 BufferUsage::Input,
                 MemoryEndpoint {
                     node: host_node,
                     segment: input_a,
                     offset: 0,
                 },
-                input_bytes as u64,
+                input_a_bytes as u64,
             ),
             opaque_binding(
-                "gemm_b_bf16",
+                "gemm_b",
                 BufferUsage::Input,
                 MemoryEndpoint {
                     node: host_node,
                     segment: input_b,
                     offset: 0,
                 },
-                input_bytes as u64,
+                input_b_bytes as u64,
             ),
             dense_f32_binding(
                 "gemm_c_f32",
@@ -17237,14 +17372,14 @@ fn run_host_gemm_128(
                     segment: output_c,
                     offset: 0,
                 },
-                ELEMENTS as u64,
+                output_elements as u64,
             ),
         ],
     );
     let dispatch = BackendDispatchOperation {
         task: task.clone(),
         function: FunctionLabel {
-            name: "host_gemm".into(),
+            name: callable_hint.into(),
             level: PlLevel::L2,
         },
         backend_spec,
@@ -17280,7 +17415,7 @@ fn run_host_gemm_128(
         .host_segment_payload(host_node, output_c)
         .ok_or_else(|| "missing_host_gemm_output_payload".to_string())?;
     let values = bytes_to_f32s(produced);
-    if values.len() != ELEMENTS || values.iter().any(|value| !value.is_finite()) {
+    if values.len() != output_elements || values.iter().any(|value| !value.is_finite()) {
         return Err(format!(
             "simpler_capi_gemm_output_invalid:len={} first={:?}",
             values.len(),
@@ -17288,6 +17423,29 @@ fn run_host_gemm_128(
         ));
     }
     Ok(values)
+}
+
+#[cfg(test)]
+fn run_host_gemm_128(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    input_a_payload: Vec<u8>,
+    input_b_payload: Vec<u8>,
+) -> Result<Vec<f32>, String> {
+    run_host_gemm(
+        topology,
+        task,
+        manifest_path,
+        input_a_payload,
+        input_b_payload,
+        128,
+        128,
+        128,
+        "bf16",
+        2,
+        "host_gemm",
+    )
 }
 
 #[cfg(test)]
@@ -26732,9 +26890,10 @@ mod tests {
     use super::{
         bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs,
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
-        ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
-        ensure_simpler_host_quantized_gemm_manifest, f32s_to_bytes, find_u64_marker,
-        kvcache_input_b_payload, qwen3_dense_profile_previous_kv_cache_from_guest_payload,
+        ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
+        ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
+        f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
+        qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v,
@@ -26807,17 +26966,18 @@ mod tests {
         qwen3_register_range_forward_objects, qwen3_runtime_object_payload_view,
         qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at, repeated_u16_le_bytes,
-        resolve_qwen3_range_dispatch_operands, run_host_gemm_128, run_host_gemm_smoke,
-        run_host_matmul_batched_smoke, run_host_matmul_smoke, run_host_quantized_gemm_smoke,
-        run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
-        write_u64_le_at, GuestUapiSurface, HostQuantizedGemmTestRunner, KvCachePayloadLayout,
-        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
-        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
-        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView,
-        Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind,
-        Qwen3RangeDispatchOperands, Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        resolve_qwen3_range_dispatch_operands, run_host_gemm, run_host_gemm_128,
+        run_host_gemm_smoke, run_host_matmul_batched_smoke, run_host_matmul_smoke,
+        run_host_quantized_gemm_smoke, run_qwen3_dense_reference_prefill_runtime,
+        validate_qwen3_range_dispatch_object_refs, write_u64_le_at, GuestUapiSurface,
+        HostQuantizedGemmTestRunner, KvCachePayloadLayout, LocalGuestUapiSurface,
+        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
+        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
+        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
+        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
+        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
+        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
+        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
@@ -26853,11 +27013,14 @@ mod tests {
     };
     use sim_models::deepseek_v4_flash;
     use sim_models::deepseek_v4_flash_gguf::{
-        lower_q8_0_matrix_to_bf16_kxn, project_q8_0_matrix, q8_0_weight_block_kxn,
-        quantize_q8_0_activation, GgufCatalog,
+        decode_f32_tensor, lower_f16_matrix_to_f32_kxn_padded, lower_q8_0_matrix_to_bf16_kxn,
+        project_f16_matrix, project_q8_0_matrix, q8_0_weight_block_kxn, quantize_q8_0_activation,
+        GgufCatalog,
     };
     use sim_models::deepseek_v4_flash_lowering::{
-        DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
+        deepseek_v4_flash_hc_attention_input_from_mix_reference,
+        deepseek_v4_flash_hc_control_input_reference, DeepseekV4FlashDtype,
+        DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -30034,6 +30197,45 @@ mod tests {
     }
 
     #[test]
+    fn host_fp32_gemm_dispatch_executes_pure_float_matrix_product() {
+        run_simpler_native_test_isolated(
+            "host_fp32_gemm_dispatch_executes_pure_float_matrix_product",
+            || {
+                const DIM: usize = 128;
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-fp32-gemm-test-artifacts")
+                    .join("host_fp32_gemm_manifest.json");
+                ensure_simpler_host_fp32_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host FP32 GEMM artifact");
+                let mut identity = vec![0.0f32; DIM * DIM];
+                for diagonal in 0..DIM {
+                    identity[diagonal * DIM + diagonal] = 1.0;
+                }
+                let output = run_host_gemm(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 119,
+                    },
+                    &manifest,
+                    f32s_to_bytes(&vec![1.0; DIM * DIM]),
+                    f32s_to_bytes(&identity),
+                    DIM,
+                    DIM,
+                    DIM,
+                    "fp32",
+                    4,
+                    "host_fp32_gemm",
+                )
+                .expect("execute host FP32 GEMM");
+                assert!(output.iter().all(|value| (*value - 1.0).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    #[test]
     fn deepseek_q8_0_lowered_weight_executes_through_simpler_gemm() {
         run_simpler_native_test_isolated(
             "deepseek_q8_0_lowered_weight_executes_through_simpler_gemm",
@@ -30214,6 +30416,150 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_real_hc_attention_input_executes_projection_through_simpler_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_hc_attention_input_executes_projection_through_simpler_when_available",
+            || {
+                const HIDDEN: usize = 4_096;
+                const HC: usize = 4;
+                const HC_DIM: usize = HIDDEN * HC;
+                const MIX: usize = 24;
+                const ARTIFACT_M: usize = 128;
+                const ARTIFACT_N: usize = 128;
+
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let fn_tensor = catalog
+                    .tensor("blk.0.hc_attn_fn.weight")
+                    .expect("locate real HC attention function");
+                assert_eq!(fn_tensor.dimensions, vec![HC_DIM as u64, MIX as u64]);
+                assert_eq!(fn_tensor.tensor_type.name, "f16");
+
+                let residual: Vec<f32> = (0..HC_DIM)
+                    .map(|index| ((index as i32 % 257) - 128) as f32 / 64.0)
+                    .collect();
+                let control_input =
+                    deepseek_v4_flash_hc_control_input_reference(&residual, HIDDEN, HC, 1.0e-6)
+                        .expect("normalize HC control input");
+                let fn_payload = catalog
+                    .read_tensor(&fn_tensor.name)
+                    .expect("read real HC attention function");
+                let reference_mix =
+                    project_f16_matrix(&fn_payload, &fn_tensor.dimensions, &control_input)
+                        .expect("project HC control reference");
+
+                let mut padded_input = vec![0.0f32; ARTIFACT_M * HC_DIM];
+                padded_input[..HC_DIM].copy_from_slice(&control_input);
+                let padded_weight = lower_f16_matrix_to_f32_kxn_padded(
+                    &fn_payload,
+                    &fn_tensor.dimensions,
+                    ARTIFACT_N,
+                )
+                .expect("lower HC function to simpler layout");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-hc-fp32-gemm-test-artifacts")
+                    .join("host_fp32_gemm_manifest.json");
+                ensure_simpler_host_fp32_gemm_manifest(
+                    &manifest,
+                    ARTIFACT_M as u64,
+                    HC_DIM as u64,
+                    ARTIFACT_N as u64,
+                )
+                .expect("build real HC FP32 GEMM artifact");
+                let projected = run_host_gemm(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_100,
+                    },
+                    &manifest,
+                    f32s_to_bytes(&padded_input),
+                    f32s_to_bytes(&padded_weight),
+                    ARTIFACT_M,
+                    HC_DIM,
+                    ARTIFACT_N,
+                    "fp32",
+                    4,
+                    "host_fp32_gemm",
+                )
+                .expect("execute real HC projection through simpler");
+                let actual_mix = &projected[..MIX];
+                for (index, (actual, expected)) in actual_mix.iter().zip(&reference_mix).enumerate()
+                {
+                    let tolerance = 1.0e-4 * expected.abs().max(1.0);
+                    assert!(
+                        (actual - expected).abs() <= tolerance,
+                        "HC mix mismatch index={index} actual={actual} expected={expected} tolerance={tolerance}"
+                    );
+                }
+
+                let read_f32 = |name: &str| {
+                    let tensor = catalog.tensor(name).expect("locate real F32 HC tensor");
+                    assert_eq!(tensor.tensor_type.name, "f32");
+                    decode_f32_tensor(
+                        &catalog.read_tensor(name).expect("read real F32 HC tensor"),
+                        &tensor.dimensions,
+                    )
+                    .expect("decode real F32 HC tensor")
+                };
+                let scale = read_f32("blk.0.hc_attn_scale.weight");
+                let base = read_f32("blk.0.hc_attn_base.weight");
+                let attention_norm = read_f32("blk.0.attn_norm.weight");
+                let output = deepseek_v4_flash_hc_attention_input_from_mix_reference(
+                    &residual,
+                    actual_mix,
+                    &scale,
+                    &base,
+                    &attention_norm,
+                    HIDDEN,
+                    HC,
+                    20,
+                    1.0e-6,
+                )
+                .expect("finish real HC attention input semantics");
+                assert_eq!(output.normalized_hidden.len(), HIDDEN);
+                assert_eq!(output.post.len(), HC);
+                assert_eq!(output.combine.len(), HC * HC);
+                assert!(output
+                    .normalized_hidden
+                    .iter()
+                    .all(|value| value.is_finite()));
+
+                let q_a_tensor = catalog
+                    .tensor("blk.0.attn_q_a.weight")
+                    .expect("locate real Q A tensor");
+                assert_eq!(q_a_tensor.tensor_type.name, "q8_0");
+                let q_a_payload = catalog
+                    .read_tensor(&q_a_tensor.name)
+                    .expect("read real Q A tensor");
+                let q_a_reference = project_q8_0_matrix(
+                    &q_a_payload,
+                    &q_a_tensor.dimensions,
+                    &output.normalized_hidden,
+                )
+                .expect("project real Q A reference from HC output");
+                let q_a_actual = execute_q8_0_projection_through_simpler(
+                    &q_a_payload,
+                    &q_a_tensor.dimensions,
+                    &output.normalized_hidden,
+                    1_110,
+                )
+                .expect("execute real Q A from HC output through simpler");
+                assert_eq!(q_a_actual, q_a_reference);
+            },
+        );
+    }
+
+    #[test]
     fn host_quantized_gemm_dispatch_executes_signed_int8_matrix_product() {
         run_simpler_native_test_isolated(
             "host_quantized_gemm_dispatch_executes_signed_int8_matrix_product",
@@ -30271,6 +30617,29 @@ mod tests {
         )
         .expect("DeepSeek BF16 GEMM binding");
         assert_eq!(spec.profile, DispatchBackendProfile::HostGemm);
+
+        let fp32_plan = DeepseekV4FlashGemmPlan {
+            kind: DeepseekV4FlashGemmKind::HyperConnectionControl,
+            input_dtype: DeepseekV4FlashDtype::F32,
+            weight_dtype: DeepseekV4FlashDtype::F32,
+            output_dtype: DeepseekV4FlashDtype::F32,
+            ..bf16_plan.clone()
+        };
+        let fp32_manifest = std::env::temp_dir()
+            .join("simpler-host-fp32-gemm-test-artifacts")
+            .join("host_fp32_gemm_manifest.json");
+        ensure_simpler_host_fp32_gemm_manifest(&fp32_manifest, 128, 128, 128)
+            .expect("build host FP32 GEMM artifact");
+        let spec = deepseek_v4_flash_gemm_backend_spec_from_manifest(
+            &fp32_manifest,
+            &fp32_plan,
+            endpoint(1),
+            endpoint(2),
+            endpoint(3),
+        )
+        .expect("DeepSeek FP32 GEMM binding");
+        assert_eq!(spec.profile, DispatchBackendProfile::HostGemm);
+        assert_eq!(spec.callable_hint.as_deref(), Some("host_fp32_gemm"));
 
         let int8_plan = DeepseekV4FlashGemmPlan {
             kind: DeepseekV4FlashGemmKind::QueryExpansion,

@@ -535,6 +535,137 @@ pub fn lower_q8_0_matrix_to_bf16_kxn(
     Ok(output)
 }
 
+pub fn lower_f16_matrix_to_f32_kxn_padded(
+    payload: &[u8],
+    dimensions: &[u64],
+    padded_n: usize,
+) -> Result<Vec<f32>, String> {
+    if dimensions.len() != 2 {
+        return Err(format!(
+            "deepseek_f16_matrix_rank_mismatch:{}",
+            dimensions.len()
+        ));
+    }
+    let k = usize::try_from(dimensions[0])
+        .map_err(|_| "deepseek_f16_matrix_k_too_large".to_string())?;
+    let n = usize::try_from(dimensions[1])
+        .map_err(|_| "deepseek_f16_matrix_n_too_large".to_string())?;
+    if k == 0 || n == 0 || padded_n < n {
+        return Err(format!(
+            "deepseek_f16_matrix_shape_invalid:{k}x{n}:padded_n={padded_n}"
+        ));
+    }
+    let expected_bytes = k
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(2))
+        .ok_or_else(|| "deepseek_f16_matrix_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_f16_matrix_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+
+    let output_elements = k
+        .checked_mul(padded_n)
+        .ok_or_else(|| "deepseek_f16_matrix_output_size_overflow".to_string())?;
+    let mut output = vec![0.0f32; output_elements];
+    for output_column in 0..n {
+        for input_row in 0..k {
+            let source = (output_column * k + input_row) * 2;
+            let value = f16_to_f32(u16::from_le_bytes([payload[source], payload[source + 1]]));
+            if !value.is_finite() {
+                return Err(format!(
+                    "deepseek_f16_matrix_value_non_finite:row={input_row}:column={output_column}"
+                ));
+            }
+            output[input_row * padded_n + output_column] = value;
+        }
+    }
+    Ok(output)
+}
+
+pub fn project_f16_matrix(
+    payload: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    if dimensions.len() != 2 {
+        return Err(format!(
+            "deepseek_f16_matrix_rank_mismatch:{}",
+            dimensions.len()
+        ));
+    }
+    let k = usize::try_from(dimensions[0])
+        .map_err(|_| "deepseek_f16_matrix_k_too_large".to_string())?;
+    let n = usize::try_from(dimensions[1])
+        .map_err(|_| "deepseek_f16_matrix_n_too_large".to_string())?;
+    if k == 0 || n == 0 || input.len() != k {
+        return Err(format!(
+            "deepseek_f16_projection_shape_mismatch:matrix={k}x{n}:input={}",
+            input.len()
+        ));
+    }
+    let expected_bytes = k
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(2))
+        .ok_or_else(|| "deepseek_f16_matrix_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_f16_matrix_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+    if input.iter().any(|value| !value.is_finite()) {
+        return Err("deepseek_f16_projection_input_non_finite".to_string());
+    }
+
+    let mut output = vec![0.0f32; n];
+    for (column, output_value) in output.iter_mut().enumerate() {
+        let row = &payload[column * k * 2..(column + 1) * k * 2];
+        let mut accumulator = 0.0f32;
+        for (source, input_value) in row.chunks_exact(2).zip(input) {
+            let weight = f16_to_f32(u16::from_le_bytes([source[0], source[1]]));
+            accumulator += input_value * weight;
+        }
+        *output_value = accumulator;
+    }
+    Ok(output)
+}
+
+pub fn decode_f32_tensor(payload: &[u8], dimensions: &[u64]) -> Result<Vec<f32>, String> {
+    let elements = dimensions.iter().try_fold(1usize, |total, dimension| {
+        let dimension = usize::try_from(*dimension)
+            .map_err(|_| "deepseek_f32_tensor_dimension_too_large".to_string())?;
+        total
+            .checked_mul(dimension)
+            .ok_or_else(|| "deepseek_f32_tensor_elements_overflow".to_string())
+    })?;
+    if dimensions.is_empty() || elements == 0 {
+        return Err("deepseek_f32_tensor_shape_invalid".to_string());
+    }
+    let expected_bytes = elements
+        .checked_mul(4)
+        .ok_or_else(|| "deepseek_f32_tensor_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_f32_tensor_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+    payload
+        .chunks_exact(4)
+        .enumerate()
+        .map(|(index, bytes)| {
+            let value = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            value
+                .is_finite()
+                .then_some(value)
+                .ok_or_else(|| format!("deepseek_f32_tensor_value_non_finite:index={index}"))
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Q8_0Activation {
     pub values: Vec<i8>,
@@ -895,6 +1026,36 @@ mod tests {
         assert_eq!(bf16_at(&output, 1), 2.0);
         assert_eq!(bf16_at(&output, 30 * 2), 7.0);
         assert_eq!(bf16_at(&output, 31 * 2 + 1), 2.0);
+    }
+
+    #[test]
+    fn lowers_f16_rows_to_padded_f32_kxn_layout() {
+        let payload = [
+            0x3c00u16.to_le_bytes(),
+            0x4000u16.to_le_bytes(),
+            0xbc00u16.to_le_bytes(),
+            0x3800u16.to_le_bytes(),
+        ]
+        .concat();
+        let output =
+            lower_f16_matrix_to_f32_kxn_padded(&payload, &[2, 2], 4).expect("lower F16 matrix");
+        assert_eq!(output, vec![1.0, -1.0, 0.0, 0.0, 2.0, 0.5, 0.0, 0.0]);
+        assert_eq!(
+            project_f16_matrix(&payload, &[2, 2], &[3.0, 4.0]).expect("project F16 matrix"),
+            vec![11.0, -1.0]
+        );
+    }
+
+    #[test]
+    fn decodes_f32_tensor_and_rejects_non_finite_values() {
+        let payload = [1.5f32.to_le_bytes(), (-2.0f32).to_le_bytes()].concat();
+        assert_eq!(
+            decode_f32_tensor(&payload, &[2]).expect("decode F32 tensor"),
+            vec![1.5, -2.0]
+        );
+        assert!(decode_f32_tensor(&f32::NAN.to_le_bytes(), &[1])
+            .unwrap_err()
+            .contains("non_finite"));
     }
 
     #[test]

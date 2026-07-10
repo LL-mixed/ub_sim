@@ -102,6 +102,7 @@ pub struct DeepseekV4FlashQkvProjectionPlan {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeepseekV4FlashGemmKind {
+    HyperConnectionControl,
     QueryLowRank,
     QueryExpansion,
     KeyValue,
@@ -120,6 +121,28 @@ pub struct DeepseekV4FlashGemmPlan {
 }
 
 impl DeepseekV4FlashGemmPlan {
+    pub fn hc_control(token_count: u32) -> Result<Self, String> {
+        if token_count == 0 {
+            return Err("deepseek GEMM token count must be non-zero".to_string());
+        }
+        let p = DEEPSEEK_V4_FLASH_PROFILE;
+        let artifact_m = token_count
+            .checked_add(127)
+            .ok_or_else(|| "deepseek GEMM M padding overflow".to_string())?
+            / 128
+            * 128;
+        Ok(Self {
+            kind: DeepseekV4FlashGemmKind::HyperConnectionControl,
+            logical_m: token_count,
+            artifact_m,
+            k: (p.hidden_size * p.hc_mult) as u32,
+            n: 128,
+            input_dtype: DeepseekV4FlashDtype::F32,
+            weight_dtype: DeepseekV4FlashDtype::F32,
+            output_dtype: DeepseekV4FlashDtype::F32,
+        })
+    }
+
     pub fn qkv_decode(token_count: u32) -> Result<Vec<Self>, String> {
         if token_count == 0 {
             return Err("deepseek GEMM token count must be non-zero".to_string());
@@ -167,6 +190,15 @@ impl DeepseekV4FlashGemmPlan {
     pub fn supports_host_bf16_gemm(&self) -> bool {
         self.input_dtype == DeepseekV4FlashDtype::Bf16
             && self.weight_dtype == DeepseekV4FlashDtype::Bf16
+            && self.output_dtype == DeepseekV4FlashDtype::F32
+            && self.artifact_m % 128 == 0
+            && self.k % 128 == 0
+            && self.n % 128 == 0
+    }
+
+    pub fn supports_host_fp32_gemm(&self) -> bool {
+        self.input_dtype == DeepseekV4FlashDtype::F32
+            && self.weight_dtype == DeepseekV4FlashDtype::F32
             && self.output_dtype == DeepseekV4FlashDtype::F32
             && self.artifact_m % 128 == 0
             && self.k % 128 == 0
@@ -1062,6 +1094,15 @@ pub struct DeepseekV4FlashHcSplit {
     pub combine: Vec<f32>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashHcPreOutput {
+    pub normalized_control_input: Vec<f32>,
+    pub mixed_hidden: Vec<f32>,
+    pub normalized_hidden: Vec<f32>,
+    pub post: Vec<f32>,
+    pub combine: Vec<f32>,
+}
+
 pub fn deepseek_v4_flash_rms_norm_reference(
     input: &[f32],
     weight: Option<&[f32]>,
@@ -1209,6 +1250,58 @@ pub fn deepseek_v4_flash_hc_weighted_sum_reference(
         }
     }
     Ok(output)
+}
+
+pub fn deepseek_v4_flash_hc_control_input_reference(
+    residual_hc: &[f32],
+    hidden_size: usize,
+    hc_mult: usize,
+    eps: f32,
+) -> Result<Vec<f32>, String> {
+    let expected = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek HC control input size overflow".to_string())?;
+    if hidden_size == 0 || hc_mult == 0 || residual_hc.len() != expected {
+        return Err(format!(
+            "deepseek HC control input shape mismatch: actual={} expected={expected}",
+            residual_hc.len()
+        ));
+    }
+    deepseek_v4_flash_rms_norm_reference(residual_hc, None, eps)
+}
+
+pub fn deepseek_v4_flash_hc_attention_input_from_mix_reference(
+    residual_hc: &[f32],
+    mix: &[f32],
+    scale: &[f32],
+    base: &[f32],
+    attention_norm_weight: &[f32],
+    hidden_size: usize,
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    eps: f32,
+) -> Result<DeepseekV4FlashHcPreOutput, String> {
+    if attention_norm_weight.len() != hidden_size {
+        return Err(format!(
+            "deepseek attention norm shape mismatch: actual={} expected={hidden_size}",
+            attention_norm_weight.len()
+        ));
+    }
+    let normalized_control_input =
+        deepseek_v4_flash_hc_control_input_reference(residual_hc, hidden_size, hc_mult, eps)?;
+    let split =
+        deepseek_v4_flash_hc_split_reference(mix, scale, base, hc_mult, sinkhorn_iters, eps)?;
+    let mixed_hidden =
+        deepseek_v4_flash_hc_weighted_sum_reference(residual_hc, &split.pre, hidden_size)?;
+    let normalized_hidden =
+        deepseek_v4_flash_rms_norm_reference(&mixed_hidden, Some(attention_norm_weight), eps)?;
+    Ok(DeepseekV4FlashHcPreOutput {
+        normalized_control_input,
+        mixed_hidden,
+        normalized_hidden,
+        post: split.post,
+        combine: split.combine,
+    })
 }
 
 pub fn deepseek_v4_flash_hc_post_reference(
@@ -1373,6 +1466,16 @@ mod tests {
         assert_eq!(plans[2].kind, DeepseekV4FlashGemmKind::KeyValue);
         assert_eq!((plans[2].k, plans[2].n), (4096, 512));
         assert!(plans[2].supports_host_bf16_gemm());
+    }
+
+    #[test]
+    fn hc_control_gemm_plan_pads_tokens_and_mix_width_for_fp32_backend() {
+        let plan = DeepseekV4FlashGemmPlan::hc_control(1).expect("HC control GEMM plan");
+        assert_eq!(plan.kind, DeepseekV4FlashGemmKind::HyperConnectionControl);
+        assert_eq!((plan.logical_m, plan.artifact_m), (1, 128));
+        assert_eq!((plan.k, plan.n), (16_384, 128));
+        assert!(plan.supports_host_fp32_gemm());
+        assert!(!plan.supports_host_bf16_gemm());
     }
 
     #[test]
@@ -1597,6 +1700,45 @@ mod tests {
         let inv_rms = ((25.0f32 / 2.0) + 1.0e-6).sqrt().recip();
         assert!((output[0] - 6.0 * inv_rms).abs() < 1.0e-6);
         assert!((output[1] - 2.0 * inv_rms).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn hc_attention_input_chains_control_norm_mix_and_attention_norm() {
+        let residual = vec![3.0, 4.0, 6.0, 8.0];
+        let output = deepseek_v4_flash_hc_attention_input_from_mix_reference(
+            &residual,
+            &[0.0; 8],
+            &[1.0; 3],
+            &[0.0; 8],
+            &[2.0, 0.5],
+            2,
+            2,
+            3,
+            1.0e-6,
+        )
+        .expect("HC attention input");
+
+        let control_rms = ((9.0f32 + 16.0 + 36.0 + 64.0) / 4.0 + 1.0e-6).sqrt();
+        assert_eq!(
+            output.normalized_control_input,
+            residual
+                .iter()
+                .map(|value| value / control_rms)
+                .collect::<Vec<_>>()
+        );
+        for (actual, expected) in output
+            .mixed_hidden
+            .iter()
+            .zip([4.5 + 9.0e-6, 6.0 + 12.0e-6])
+        {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+        let expected_norm =
+            deepseek_v4_flash_rms_norm_reference(&output.mixed_hidden, Some(&[2.0, 0.5]), 1.0e-6)
+                .unwrap();
+        assert_eq!(output.normalized_hidden, expected_norm);
+        assert_eq!(output.post, vec![1.0, 1.0]);
+        assert_eq!(output.combine.len(), 4);
     }
 
     #[test]

@@ -97,6 +97,24 @@ PROFILE_SPECS = {
         ),
         generated=True,
     ),
+    "host_fp32_gemm": ProfileSpec(
+        profile="HostGemm",
+        example="generated_host_fp32_gemm",
+        manifest_name="host_fp32_gemm_manifest.json",
+        callable_hint="host_fp32_gemm",
+        orch_source="host_fp32_gemm_orch.cpp",
+        orch_function="build_fp32_gemm_graph",
+        kernels=(KernelSpec(0, "host_fp32_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "a"},
+            {"kind": "input", "name": "b"},
+            {"kind": "output", "name": "c"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_quantized_gemm": ProfileSpec(
         profile="HostQuantizedGemm",
         example="generated_host_quantized_gemm",
@@ -623,11 +641,27 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
 
 
 def write_host_gemm_orchestration(
-    build_dir: Path, m: int, k: int, n: int, *, quantized: bool = False
+    build_dir: Path,
+    m: int,
+    k: int,
+    n: int,
+    *,
+    quantized: bool = False,
+    fp32: bool = False,
 ) -> Path:
-    source_name = "host_quantized_gemm_orch.cpp" if quantized else "host_gemm_orch.cpp"
-    function_name = "build_quantized_gemm_graph" if quantized else "build_gemm_graph"
-    input_type = "int8_t" if quantized else "uint16_t"
+    if quantized and fp32:
+        raise ValueError("GEMM cannot be both quantized and FP32")
+    source_name = (
+        "host_quantized_gemm_orch.cpp"
+        if quantized
+        else "host_fp32_gemm_orch.cpp" if fp32 else "host_gemm_orch.cpp"
+    )
+    function_name = (
+        "build_quantized_gemm_graph"
+        if quantized
+        else "build_fp32_gemm_graph" if fp32 else "build_gemm_graph"
+    )
+    input_type = "int8_t" if quantized else "float" if fp32 else "uint16_t"
     output_type = "int32_t" if quantized else "float"
     source = build_dir / source_name
     source.write_text(
@@ -736,13 +770,29 @@ def write_host_quantized_gemm_orchestration(
     return write_host_gemm_orchestration(build_dir, m, k, n, quantized=True)
 
 
-def write_host_gemm_kernel(
-    build_dir: Path, m: int, k: int, n: int, *, quantized: bool = False
+def write_host_fp32_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
 ) -> Path:
+    return write_host_gemm_orchestration(build_dir, m, k, n, fp32=True)
+
+
+def write_host_gemm_kernel(
+    build_dir: Path,
+    m: int,
+    k: int,
+    n: int,
+    *,
+    quantized: bool = False,
+    fp32: bool = False,
+) -> Path:
+    if quantized and fp32:
+        raise ValueError("GEMM cannot be both quantized and FP32")
     source_name = (
-        "host_quantized_gemm_kernel.cpp" if quantized else "host_gemm_kernel.cpp"
+        "host_quantized_gemm_kernel.cpp"
+        if quantized
+        else "host_fp32_gemm_kernel.cpp" if fp32 else "host_gemm_kernel.cpp"
     )
-    input_type = "int8_t" if quantized else "bfloat16_t"
+    input_type = "int8_t" if quantized else "float" if fp32 else "bfloat16_t"
     output_type = "int32_t" if quantized else "float"
     source = build_dir / source_name
     source.write_text(
@@ -836,6 +886,12 @@ def write_host_quantized_gemm_kernel(
     build_dir: Path, m: int, k: int, n: int
 ) -> Path:
     return write_host_gemm_kernel(build_dir, m, k, n, quantized=True)
+
+
+def write_host_fp32_gemm_kernel(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_kernel(build_dir, m, k, n, fp32=True)
 
 
 def write_host_q8_block_dot_orchestration(build_dir: Path, blocks: int, n: int) -> Path:
@@ -1213,7 +1269,12 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             for kernel in spec.kernels
         ],
     }
-    if args.profile in ("host_gemm", "host_quantized_gemm", "host_q8_block_dot"):
+    if args.profile in (
+        "host_gemm",
+        "host_fp32_gemm",
+        "host_quantized_gemm",
+        "host_q8_block_dot",
+    ):
         payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -1229,7 +1290,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
-    if args.profile in ("host_gemm", "host_quantized_gemm"):
+    if args.profile in ("host_gemm", "host_fp32_gemm", "host_quantized_gemm"):
         gemm_dims = (args.gemm_m, args.gemm_k, args.gemm_n)
         if any(dim <= 0 or dim % 128 != 0 for dim in gemm_dims):
             raise SystemExit("--gemm-m/--gemm-k/--gemm-n must be positive and 128-aligned")
@@ -1268,6 +1329,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     orch_source = example_root / spec.orch_source
     if args.profile == "host_gemm":
         orch_source = write_host_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_fp32_gemm":
+        orch_source = write_host_fp32_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n
         )
     if args.profile == "host_quantized_gemm":
@@ -1315,6 +1380,13 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_gemm"
             else None
         )
+        fp32_gemm_source = (
+            write_host_fp32_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_fp32_gemm"
+            else None
+        )
         quantized_gemm_source = (
             write_host_quantized_gemm_kernel(
                 build_dir, args.gemm_m, args.gemm_k, args.gemm_n
@@ -1332,6 +1404,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             or batched_source
             or engram_source
             or gemm_source
+            or fp32_gemm_source
             or quantized_gemm_source
             or q8_block_dot_source
             or (example_root / kernel.source)
@@ -1444,6 +1517,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "k": args.gemm_k,
             "n": args.gemm_n,
             "input_dtype": "bf16",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_fp32_gemm":
+        manifest["host_gemm_manifest_version"] = 3
+        manifest["host_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "fp32",
             "output_dtype": "fp32",
             "tile": 128,
         }
