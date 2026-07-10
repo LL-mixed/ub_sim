@@ -16973,14 +16973,15 @@ fn run_host_matmul_smoke(topology: &SimTopology, task: &TaskKey) -> Result<Vec<u
 }
 
 #[cfg(test)]
-fn run_host_gemm_smoke(
+fn run_host_gemm_128(
     topology: &SimTopology,
     task: &TaskKey,
     manifest_path: &Path,
+    input_a_payload: Vec<u8>,
+    input_b_payload: Vec<u8>,
 ) -> Result<Vec<f32>, String> {
     const DIM: usize = 128;
     const ELEMENTS: usize = DIM * DIM;
-    const BF16_ONE: u16 = 0x3f80;
 
     let scenario_config = scenario_config_for_chipbackend()?;
     let segment_base = 60_000 + task.task_id.saturating_mul(10);
@@ -16989,6 +16990,13 @@ fn run_host_gemm_smoke(
     let output_c = SegmentHandle(segment_base + 3);
     let input_bytes = ELEMENTS * std::mem::size_of::<u16>();
     let output_bytes = ELEMENTS * std::mem::size_of::<f32>();
+    if input_a_payload.len() != input_bytes || input_b_payload.len() != input_bytes {
+        return Err(format!(
+            "host_gemm_128_input_size_mismatch:a={}:b={}:expected={input_bytes}",
+            input_a_payload.len(),
+            input_b_payload.len()
+        ));
+    }
     let host_node = topology
         .hosts
         .first()
@@ -17000,19 +17008,10 @@ fn run_host_gemm_smoke(
         .map(|ubpu| ubpu.node_id)
         .ok_or_else(|| "missing_ubpu_node".to_string())?;
 
-    let mut identity = vec![0u8; input_bytes];
-    for diagonal in 0..DIM {
-        let byte_offset = (diagonal * DIM + diagonal) * std::mem::size_of::<u16>();
-        identity[byte_offset..byte_offset + 2].copy_from_slice(&BF16_ONE.to_le_bytes());
-    }
     let _dispatch_lock = host_vector_dispatch_lock_guard()?;
     let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
-    runtime.seed_host_segment(
-        host_node,
-        input_a,
-        repeated_u16_le_bytes(BF16_ONE, ELEMENTS),
-    );
-    runtime.seed_host_segment(host_node, input_b, identity);
+    runtime.seed_host_segment(host_node, input_a, input_a_payload);
+    runtime.seed_host_segment(host_node, input_b, input_b_payload);
     runtime.seed_host_segment(host_node, output_c, vec![0u8; output_bytes]);
 
     let backend_spec = host_gemm_backend_spec_from_manifest(
@@ -17110,18 +17109,45 @@ fn run_host_gemm_smoke(
         .host_segment_payload(host_node, output_c)
         .ok_or_else(|| "missing_host_gemm_output_payload".to_string())?;
     let values = bytes_to_f32s(produced);
-    if values.len() != ELEMENTS
-        || values
-            .iter()
-            .any(|value| !value.is_finite() || (*value - 1.0).abs() > 1.0e-5)
-    {
+    if values.len() != ELEMENTS || values.iter().any(|value| !value.is_finite()) {
         return Err(format!(
-            "simpler_capi_gemm_output_mismatch:len={} first={:?}",
+            "simpler_capi_gemm_output_invalid:len={} first={:?}",
             values.len(),
             values.first()
         ));
     }
     Ok(values)
+}
+
+#[cfg(test)]
+fn run_host_gemm_smoke(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+) -> Result<Vec<f32>, String> {
+    const DIM: usize = 128;
+    const ELEMENTS: usize = DIM * DIM;
+    const BF16_ONE: u16 = 0x3f80;
+
+    let mut identity = vec![0u8; ELEMENTS * std::mem::size_of::<u16>()];
+    for diagonal in 0..DIM {
+        let byte_offset = (diagonal * DIM + diagonal) * std::mem::size_of::<u16>();
+        identity[byte_offset..byte_offset + 2].copy_from_slice(&BF16_ONE.to_le_bytes());
+    }
+    let output = run_host_gemm_128(
+        topology,
+        task,
+        manifest_path,
+        repeated_u16_le_bytes(BF16_ONE, ELEMENTS),
+        identity,
+    )?;
+    if output.iter().any(|value| (*value - 1.0).abs() > 1.0e-5) {
+        return Err(format!(
+            "simpler_capi_gemm_output_mismatch:first={:?}",
+            output.first()
+        ));
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -26444,9 +26470,9 @@ mod tests {
         qwen3_paper_engram_state_manifest_from_payload, qwen3_paper_engram_state_manifest_payload,
         qwen3_register_range_forward_objects, qwen3_runtime_object_payload_view,
         qwen3_validate_engram_state_object_service_payload,
-        qwen3_validate_engram_state_registry_payload, read_u64_le_at,
-        resolve_qwen3_range_dispatch_operands, run_host_gemm_smoke, run_host_matmul_batched_smoke,
-        run_host_matmul_smoke, run_host_quantized_gemm_smoke,
+        qwen3_validate_engram_state_registry_payload, read_u64_le_at, repeated_u16_le_bytes,
+        resolve_qwen3_range_dispatch_operands, run_host_gemm_128, run_host_gemm_smoke,
+        run_host_matmul_batched_smoke, run_host_matmul_smoke, run_host_quantized_gemm_smoke,
         run_qwen3_dense_reference_prefill_runtime, validate_qwen3_range_dispatch_object_refs,
         write_u64_le_at, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
         Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
@@ -26490,6 +26516,7 @@ mod tests {
         LogicalSystemId, MemoryEndpoint, SegmentHandle, SimError, TaskKey,
     };
     use sim_models::deepseek_v4_flash;
+    use sim_models::deepseek_v4_flash_gguf::lower_q8_0_matrix_to_bf16_kxn;
     use sim_models::deepseek_v4_flash_lowering::{
         DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
     };
@@ -29663,6 +29690,50 @@ mod tests {
                 .expect("host GEMM dispatch");
                 assert_eq!(output.len(), 128 * 128);
                 assert!(output.iter().all(|value| (*value - 1.0).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_q8_0_lowered_weight_executes_through_simpler_gemm() {
+        run_simpler_native_test_isolated(
+            "deepseek_q8_0_lowered_weight_executes_through_simpler_gemm",
+            || {
+                const DIM: usize = 128;
+                const BF16_ONE: u16 = 0x3f80;
+                const F16_HALF: u16 = 0x3800;
+                let mut q8_weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                for column in 0..DIM {
+                    for block in 0..DIM / 32 {
+                        q8_weight.extend_from_slice(&F16_HALF.to_le_bytes());
+                        for lane in 0..32 {
+                            let input = block * 32 + lane;
+                            let quantized = if input == column { -3i8 } else { 0i8 };
+                            q8_weight.push(quantized as u8);
+                        }
+                    }
+                }
+                let lowered = lower_q8_0_matrix_to_bf16_kxn(&q8_weight, &[DIM as u64, DIM as u64])
+                    .expect("lower DeepSeek Q8_0 weight");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-gemm-test-artifacts")
+                    .join("host_gemm_manifest.json");
+                ensure_simpler_host_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host GEMM artifact");
+                let output = run_host_gemm_128(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 111,
+                    },
+                    &manifest,
+                    repeated_u16_le_bytes(BF16_ONE, DIM * DIM),
+                    lowered,
+                )
+                .expect("execute lowered Q8_0 weight through simpler GEMM");
+                assert!(output.iter().all(|value| (*value + 1.5).abs() < 1.0e-5));
             },
         );
     }
