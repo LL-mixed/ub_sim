@@ -32231,7 +32231,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             "SIM_QWEN3_GUEST_PROMPT",
             args.prompt.clone().unwrap_or_default(),
         )
-        .env("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", guest_prompt_token_ids)
+        .env("SIM_LLM_INFER_PROMPT_TOKEN_IDS", guest_prompt_token_ids)
         .env(
             "SIM_W5_TEST_MEMORY_PREFIX_CACHE_REPLAY_SUFFIX_TOKENS",
             prefix_cache_replay_suffix_token_ids,

@@ -35,6 +35,21 @@ RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_s
 case "$SIM_UAPI_W5_PROFILE" in
   deepseek_v4_flash_decode)
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-deepseek-v4-flash}"
+    deepseek_runtime_dir="$REPO_DIR/../ds4"
+    if [[ ! -d "$deepseek_runtime_dir" ]]; then
+      echo "DeepSeek V4 Flash runtime directory is missing: $deepseek_runtime_dir" >&2
+      exit 2
+    fi
+    deepseek_runtime_dir="$(cd "$deepseek_runtime_dir" && pwd)"
+    if [[ ! -f "$deepseek_runtime_dir/ds4flash.gguf" ]]; then
+      echo "DeepSeek V4 Flash model is missing: $deepseek_runtime_dir/ds4flash.gguf" >&2
+      exit 2
+    fi
+    cargo run --manifest-path "$REPO_DIR/Cargo.toml" --release \
+      -p sim-models --bin deepseek_v4_flash_adapter -- \
+      build-library \
+      --ds4-dir "$deepseek_runtime_dir" \
+      --output "$deepseek_runtime_dir/build/libds4_w5.dylib"
     ;;
   *)
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
@@ -98,6 +113,7 @@ export TRACE_FILE
 export RUN_SUMMARY_FILE
 export SIM_UAPI_W5_PROFILE
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE
+export SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}}"
 export SIM_QWEN3_GUEST_ENGRAM
 export SIM_QWEN3_GUEST_ENGRAM_POOL
 export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}"
@@ -315,7 +331,7 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     --w5-profile "$SIM_UAPI_W5_PROFILE"
     --steps "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
     --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
-    --prompt-token-ids "${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
+    --prompt-token-ids "$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
   )
   case "$SIM_W5_TEST_VALIDATE_ONLY" in
     1|true|TRUE|yes|YES)

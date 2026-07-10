@@ -81,7 +81,7 @@ class W5ServingEntryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("SIM_W5_SERVING_REQUEST_ID=req-a", result.stdout)
-        self.assertIn("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=81378,37585,374", result.stdout)
+        self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=81378,37585,374", result.stdout)
         self.assertIn("SIM_QWEN3_GUEST_DECODE_STEPS=4", result.stdout)
         self.assertIn("SIM_QWEN3_SAMPLER_TOP_K=20", result.stdout)
         self.assertIn("SIM_QWEN3_SAMPLER_SEED=7", result.stdout)

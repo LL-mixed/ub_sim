@@ -26,6 +26,7 @@ use sim_core::{
 };
 use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
+use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
 use sim_models::engram_context::{
     run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
     EngramContextReport, PaperEngramContextLookupRef, PaperEngramContextOp,
@@ -1746,7 +1747,7 @@ fn run_w4_chipbackend(
         }
         "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, None),
         "host_matmul" => run_host_matmul_smoke(topology, task),
-        "deepseek-v4-flash" | "deepseek_v4_flash" => {
+        "deepseek-v4-flash" | "deepseek_v4_flash" | "deepseek-v4-flash-geometry-smoke" => {
             run_deepseek_v4_flash_chipbackend(topology, task, guest_input)
         }
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
@@ -1797,8 +1798,14 @@ fn run_qwen3_range_chipbackend(
             run_qwen3_dense_reference_prefill_runtime(topology, task, guest_input, None)
         }
         "deepseek-v4-flash" | "deepseek_v4_flash" => {
-            run_deepseek_v4_flash_range_runtime(topology, task, guest_input, operands)
+            run_deepseek_v4_flash_real_range_runtime(topology, task, guest_input, operands)
         }
+        "deepseek-v4-flash-geometry-smoke" => run_deepseek_v4_flash_geometry_smoke_range_runtime(
+            topology,
+            task,
+            guest_input,
+            operands,
+        ),
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
@@ -4373,8 +4380,10 @@ fn qwen3_dense_runtime_model_key() -> String {
 }
 
 fn qwen3_guest_prompt_base_token_count() -> u64 {
-    std::env::var("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS")
+    std::env::var("SIM_LLM_INFER_PROMPT_TOKEN_IDS")
         .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS").ok())
         .filter(|value| !value.is_empty())
         .map(|value| {
             value
@@ -5442,6 +5451,18 @@ fn qwen3_guest_range_compute_contract(
         .unwrap_or_else(|_| "host_vector".to_string());
     let geometry_valid = match active_profile.as_str() {
         "deepseek-v4-flash" | "deepseek_v4_flash" => {
+            const DS4_HIDDEN_F32_VALUES: u64 = 16_384;
+            const MAX_REAL_PROMPT_TOKENS: u64 = 32;
+
+            let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+            contract.pipeline_nodes > 0
+                && u64::from(contract.pipeline_nodes) <= profile.num_hidden_layers
+                && u64::from(contract.total_layers) == profile.num_hidden_layers
+                && u64::from(contract.hidden_bytes) % (DS4_HIDDEN_F32_VALUES * 4) == 0
+                && u64::from(contract.hidden_bytes)
+                    <= DS4_HIDDEN_F32_VALUES * 4 * MAX_REAL_PROMPT_TOKENS
+        }
+        "deepseek-v4-flash-geometry-smoke" => {
             let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
             let prefill_hidden_bytes = profile.hidden_size * profile.prefill_tokens * 2;
             let decode_hidden_bytes = profile.hidden_size * profile.decode_tokens * 2;
@@ -5969,7 +5990,487 @@ fn run_qwen3_dense_profile_runtime(
     Ok(output)
 }
 
-fn run_deepseek_v4_flash_range_runtime(
+const DS4_FLASH_HIDDEN_F32_VALUES: usize = 16_384;
+
+fn deepseek_v4_flash_f32_payload(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+fn deepseek_v4_flash_f32_values(payload: &[u8]) -> Result<Vec<f32>, String> {
+    if payload.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "deepseek_v4_flash_hidden_payload_unaligned:bytes={}",
+            payload.len()
+        ));
+    }
+    Ok(payload
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn deepseek_v4_flash_runtime_paths() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let mut search_roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        search_roots.extend(current_exe.ancestors().map(Path::to_path_buf));
+    }
+    search_roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let runtime_dir = search_roots
+        .into_iter()
+        .map(|root| root.join("../ds4"))
+        .find(|candidate| {
+            candidate.join("ds4.c").is_file() && candidate.join("ds4flash.gguf").is_file()
+        })
+        .ok_or_else(|| "deepseek_v4_flash_sibling_runtime_not_found".to_string())?;
+    let library_path = runtime_dir.join("build/libds4_w5.dylib");
+    let model_path = runtime_dir.join("ds4flash.gguf");
+    if !library_path.is_file() {
+        return Err(format!(
+            "deepseek_v4_flash_library_missing:{}",
+            library_path.display()
+        ));
+    }
+    if !model_path.is_file() {
+        return Err(format!(
+            "deepseek_v4_flash_model_missing:{}",
+            model_path.display()
+        ));
+    }
+    Ok((runtime_dir, library_path, model_path))
+}
+
+fn run_deepseek_v4_flash_real_range_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    if topology.ubpus.is_empty() {
+        return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
+    }
+    let contract = qwen3_guest_range_compute_contract(task)?
+        .ok_or_else(|| "deepseek_v4_flash_range_contract_missing".to_string())?;
+    let all_token_ids = qwen3_dense_reference_guest_input_token_ids(guest_input);
+    if all_token_ids.is_empty() {
+        return Err("deepseek_v4_flash_prompt_tokens_missing".to_string());
+    }
+    let token_ids: Vec<i32> = all_token_ids
+        .iter()
+        .copied()
+        .map(|token| {
+            i32::try_from(token)
+                .map_err(|_| format!("deepseek_v4_flash_token_out_of_range:{token}"))
+        })
+        .collect::<Result<_, _>>()?;
+    let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
+    if decode_step != 0 {
+        return Err(format!(
+            "deepseek_v4_flash_real_decode_requires_kv_restore:step={decode_step}"
+        ));
+    }
+    let expected_hidden_len = token_ids
+        .len()
+        .checked_mul(DS4_FLASH_HIDDEN_F32_VALUES)
+        .and_then(|values| values.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| "deepseek_v4_flash_hidden_bytes_overflow".to_string())?;
+    if contract.hidden_bytes as usize != expected_hidden_len {
+        return Err(format!(
+            "deepseek_v4_flash_hidden_bytes_mismatch:contract={}:tokens={}:expected={expected_hidden_len}",
+            contract.hidden_bytes,
+            token_ids.len()
+        ));
+    }
+    let input_hidden = if contract.layer_start == 0 {
+        None
+    } else {
+        let payload = if let Some(payload) = operands
+            .and_then(|operands| operands.hidden_input.as_ref())
+            .map(Qwen3ObjectBackedOperandView::bytes)
+        {
+            payload
+        } else {
+            guest_input
+                .get(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                        ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "deepseek_v4_flash_hidden_input_missing:offset={QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={expected_hidden_len}"
+                    )
+                })?
+        };
+        if payload.len() != expected_hidden_len {
+            return Err(format!(
+                "deepseek_v4_flash_hidden_input_size_mismatch:actual={}:expected={expected_hidden_len}",
+                payload.len()
+            ));
+        }
+        Some(deepseek_v4_flash_f32_values(payload)?)
+    };
+    let (runtime_dir, library_path, model_path) = deepseek_v4_flash_runtime_paths()?;
+    let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let slice = ds4_eval_layer_slice_in_memory(&Ds4SliceMemoryConfig {
+        library_path,
+        runtime_dir,
+        model_path,
+        context: 1024,
+        layer_start: contract.layer_start,
+        layer_end: contract.layer_end,
+        position: 0,
+        token_ids,
+        input_hidden,
+        previous_token_ids: Vec::new(),
+        previous_kv: None,
+        output_logits: terminal_owner,
+    })?;
+    let output_tensor_payload = deepseek_v4_flash_f32_payload(&slice.hidden);
+    if output_tensor_payload.len() != expected_hidden_len {
+        return Err(format!(
+            "deepseek_v4_flash_hidden_output_size_mismatch:actual={}:expected={expected_hidden_len}",
+            output_tensor_payload.len()
+        ));
+    }
+    let input_checksum = if let Some(input) = slice
+        .report
+        .layer_start
+        .checked_sub(1)
+        .and_then(|_| operands.and_then(|operands| operands.hidden_input.as_ref()))
+    {
+        qwen3_dense_reference_range_object_payload_checksum(input.bytes())
+    } else {
+        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?
+    };
+    let output_tensor_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
+    let kv_state_payload = slice.kv_payload;
+    let kv_state_bytes = kv_state_payload.len() as u64;
+    let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
+    let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let range_layer_checksum = checksum_words(&[
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.next_node),
+        u64::from(contract.pipeline_nodes),
+        u64::from(contract.total_layers),
+        u64::from(contract.hidden_bytes),
+        input_checksum,
+        output_tensor_checksum,
+        kv_state_checksum,
+        profile.num_experts,
+        profile.num_experts_used,
+    ]);
+    let range_forward_summary = Qwen3DenseReferenceRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start: u64::from(contract.layer_start),
+        layer_end: u64::from(contract.layer_end),
+        layer_count,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes: u64::from(contract.hidden_bytes),
+        input_tensor_checksum: input_checksum,
+        output_tensor_checksum,
+        range_layer_checksum,
+        real_layer_execution_count: layer_count,
+        first_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_start),
+        ]),
+        final_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_end - 1),
+        ]),
+        input_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_payload,
+        kv_state_bytes,
+        kv_state_checksum,
+        kv_state_payload,
+        engram_context_report: None,
+    };
+    let logits_descriptors = if terminal_owner {
+        vec![deepseek_v4_flash_real_logits_descriptor(
+            &slice.logits,
+            &slice.report.candidates,
+            decode_step,
+            range_layer_checksum,
+            output_tensor_checksum,
+            u64::from(contract.total_layers),
+        )?]
+    } else {
+        Vec::new()
+    };
+    let output_len = qwen3_dense_reference_service_flow_output_len(
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    let mut output = vec![0u8; output_len];
+    qwen3_dense_reference_write_service_flow_markers(
+        &mut output,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    if let (Some(descriptor), Some(candidate)) = (
+        logits_descriptors.first(),
+        slice.report.selected_token.as_ref(),
+    ) {
+        deepseek_v4_flash_patch_real_text_output(
+            &mut output,
+            descriptor,
+            candidate.text.as_bytes(),
+        )?;
+    }
+    eprintln!(
+        "deepseek-v4-flash-real-range-runtime: node={} nodes={} layers=[{},{}) terminal_owner={} step={} tokens={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
+        contract.node,
+        contract.pipeline_nodes,
+        contract.layer_start,
+        contract.layer_end,
+        terminal_owner as u8,
+        decode_step,
+        all_token_ids.len(),
+        contract.hidden_bytes,
+        kv_state_bytes,
+        input_checksum,
+        output_tensor_checksum,
+        logits_descriptors.first().map(|value| value.sampled_token).unwrap_or(0),
+        slice.report.selected_token.as_ref().map(|value| value.text.as_str()).unwrap_or("none"),
+    );
+    Ok(output)
+}
+
+fn deepseek_v4_flash_patch_real_text_output(
+    output: &mut [u8],
+    descriptor: &Qwen3DenseReferenceLogitsDescriptor,
+    piece_bytes: &[u8],
+) -> Result<(), String> {
+    const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+    const TOKEN_TEXT_TABLE_MARKER: u64 = 0x7133773474787430;
+    const TEXT_OUTPUT_TABLE_MARKER: u64 = 0x71337734746f7430;
+    const TEXT_OUTPUT_BYTES_TABLE_MARKER: u64 = 0x71337734746f6230;
+
+    if piece_bytes.is_empty() || piece_bytes.len() > 16 {
+        return Err(format!(
+            "deepseek_v4_flash_token_piece_size_invalid:{}",
+            piece_bytes.len()
+        ));
+    }
+    let piece = qwen3_dense_reference_token_piece_from_bytes(descriptor.sampled_token, piece_bytes);
+    let logits_table = find_u64_marker(output, LOGITS_TABLE_MARKER)
+        .ok_or_else(|| "deepseek_v4_flash_logits_table_missing".to_string())?;
+    let logits_table_bytes = read_u64_le_at(output, logits_table + 24) as usize;
+    let token_text_table = logits_table + 64 + logits_table_bytes;
+    if read_u64_le_at(output, token_text_table) != TOKEN_TEXT_TABLE_MARKER {
+        return Err("deepseek_v4_flash_token_text_table_missing".to_string());
+    }
+    let token_text_table_bytes = read_u64_le_at(output, token_text_table + 24) as usize;
+    let token_text_entry = token_text_table + 64;
+    write_u64_le_at(output, token_text_table + 32, piece.byte_len);
+    write_u64_le_at(output, token_text_entry + 24, piece.byte_len);
+    write_u64_le_at(output, token_text_entry + 32, piece.word0);
+    write_u64_le_at(output, token_text_entry + 40, piece.word1);
+
+    let token_words = [
+        descriptor.step_index,
+        descriptor.sampled_token,
+        descriptor.runner_up_token,
+        piece.checksum,
+    ];
+    let text_words = [
+        descriptor.step_index,
+        descriptor.text_byte_offset,
+        piece.byte_len,
+        piece.word0,
+        piece.word1,
+    ];
+    let logits_words = [
+        descriptor.step_index,
+        descriptor.logits_checksum,
+        descriptor.margin_milli,
+        descriptor.logits_count,
+        descriptor.real_path_digest,
+    ];
+    let mut sequence_words = vec![
+        descriptor.step_index,
+        descriptor.sampled_token,
+        descriptor.runner_up_token,
+        descriptor.text_byte_offset,
+        piece.byte_len,
+        piece.checksum,
+        descriptor.text_checksum,
+        descriptor.logits_checksum,
+        descriptor.real_path_digest,
+    ];
+    sequence_words.push(piece.byte_len);
+    let sequence_checksum = checksum_words(&sequence_words);
+    let text_output_table = token_text_table + 64 + token_text_table_bytes;
+    if read_u64_le_at(output, text_output_table) != TEXT_OUTPUT_TABLE_MARKER {
+        return Err("deepseek_v4_flash_text_output_table_missing".to_string());
+    }
+    write_u64_le_at(output, text_output_table + 16, piece.byte_len);
+    write_u64_le_at(output, text_output_table + 24, sequence_checksum);
+    write_u64_le_at(output, text_output_table + 32, checksum_words(&token_words));
+    write_u64_le_at(output, text_output_table + 40, checksum_words(&text_words));
+    write_u64_le_at(
+        output,
+        text_output_table + 48,
+        checksum_words(&logits_words),
+    );
+
+    let text_bytes_table = text_output_table + 64;
+    if read_u64_le_at(output, text_bytes_table) != TEXT_OUTPUT_BYTES_TABLE_MARKER {
+        return Err("deepseek_v4_flash_text_output_bytes_table_missing".to_string());
+    }
+    let allocated_bytes = read_u64_le_at(output, text_bytes_table + 24) as usize;
+    let text_bytes_base = text_bytes_table + 64;
+    if allocated_bytes < piece_bytes.len() || text_bytes_base + allocated_bytes > output.len() {
+        return Err(format!(
+            "deepseek_v4_flash_text_output_bytes_too_small:allocated={allocated_bytes}:needed={}",
+            piece_bytes.len()
+        ));
+    }
+    write_u64_le_at(output, text_bytes_table + 8, piece.byte_len);
+    write_u64_le_at(
+        output,
+        text_bytes_table + 32,
+        qwen3_dense_reference_text_output_bytes_checksum(piece_bytes),
+    );
+    write_u64_le_at(output, text_bytes_table + 40, sequence_checksum);
+    output[text_bytes_base..text_bytes_base + allocated_bytes].fill(0);
+    output[text_bytes_base..text_bytes_base + piece_bytes.len()].copy_from_slice(piece_bytes);
+    Ok(())
+}
+
+fn deepseek_v4_flash_real_logits_descriptor(
+    logits: &[f32],
+    candidates: &[sim_models::deepseek_v4_flash_adapter::Ds4TokenCandidate],
+    decode_step: u64,
+    range_layer_checksum: u64,
+    output_tensor_checksum: u64,
+    layer_count: u64,
+) -> Result<Qwen3DenseReferenceLogitsDescriptor, String> {
+    if logits.len() != deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize {
+        return Err(format!(
+            "deepseek_v4_flash_logits_size_mismatch:actual={}:expected={}",
+            logits.len(),
+            deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size
+        ));
+    }
+    if candidates.len() < 2 || candidates.len() > 4 {
+        return Err(format!(
+            "deepseek_v4_flash_candidate_count_invalid:{}",
+            candidates.len()
+        ));
+    }
+    let mut candidate_tokens = [0u64; 4];
+    let mut candidate_logit_bits = [0u64; 4];
+    let mut candidate_text_checksums = [0u64; 4];
+    let mut candidate_piece_bytes = [0u64; 4];
+    let mut candidate_piece_word0 = [0u64; 4];
+    let mut candidate_piece_word1 = [0u64; 4];
+    for (index, candidate) in candidates.iter().enumerate() {
+        let token = u64::try_from(candidate.id)
+            .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{}", candidate.id))?;
+        let piece = qwen3_dense_reference_token_piece_from_bytes(token, candidate.text.as_bytes());
+        candidate_tokens[index] = token;
+        candidate_logit_bits[index] = u64::from(candidate.logit.to_bits());
+        candidate_text_checksums[index] = piece.checksum;
+        candidate_piece_bytes[index] = piece.byte_len;
+        candidate_piece_word0[index] = piece.word0;
+        candidate_piece_word1[index] = piece.word1;
+    }
+    let sampled_token = candidate_tokens[0];
+    let runner_up_token = candidate_tokens[1];
+    let margin_milli =
+        ((candidates[0].logit - candidates[1].logit).max(0.0) * 1000.0).round() as u64;
+    let logits_payload = deepseek_v4_flash_f32_payload(logits);
+    let full_vocab_logits_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&logits_payload);
+    let logits_checksum = qwen3_dense_reference_logits_checksum(
+        0,
+        0,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        full_vocab_logits_checksum,
+        u64::from(candidates[0].logit.to_bits()),
+        0,
+        range_layer_checksum,
+        output_tensor_checksum,
+    );
+    Ok(Qwen3DenseReferenceLogitsDescriptor {
+        shard_id: 0,
+        tile_id: 0,
+        segment: 1_000_000,
+        logits_count: logits.len() as u64,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        logits_checksum,
+        full_vocab_checked_token_count: logits.len() as u64,
+        full_vocab_logits_checksum,
+        top_logit_bits: u64::from(candidates[0].logit.to_bits()),
+        runner_up_logit_bits: u64::from(candidates[1].logit.to_bits()),
+        candidate_count: candidates.len() as u64,
+        candidate_tokens,
+        candidate_logit_bits,
+        candidate_text_checksums,
+        candidate_piece_bytes,
+        candidate_piece_word0,
+        candidate_piece_word1,
+        runtime_forward_layer_count: layer_count,
+        runtime_forward_final_hidden_checksum: output_tensor_checksum,
+        runtime_forward_checksum: range_layer_checksum,
+        kvcache_read_digest: 0,
+        qkv_reference_digest: range_layer_checksum,
+        real_path_digest: output_tensor_checksum,
+        text_checksum: candidate_text_checksums[0],
+        text_byte_offset: 0,
+        step_index: decode_step,
+    })
+}
+
+fn run_deepseek_v4_flash_geometry_smoke_range_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
@@ -28397,7 +28898,7 @@ mod tests {
 
                 with_env_var(
                     "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
-                    "deepseek-v4-flash",
+                    "deepseek-v4-flash-geometry-smoke",
                     || {
                         let topology = test_topology();
                         let cases = [(1, 22, 43, 0, 2, true), (1, 15, 29, 2, 3, false)];
@@ -28450,6 +28951,112 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    #[ignore = "requires the sibling ds4 repo, 81GB GGUF, and host Metal access"]
+    fn deepseek_v4_flash_real_eight_range_pipeline_matches_oracle_when_available() {
+        if crate::deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        {
+            const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+            const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+            const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+            const PROMPT_TOKENS: [u64; 21] = [
+                0, 128803, 52, 278, 4908, 75, 295, 89034, 399, 3919, 123003, 28, 23442, 9861,
+                63030, 47121, 317, 805, 33, 128804, 128822,
+            ];
+            const HIDDEN_BYTES: usize = PROMPT_TOKENS.len() * 16_384 * 4;
+
+            std::env::set_var("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "deepseek-v4-flash");
+            std::env::set_var(
+                "SIM_LLM_INFER_PROMPT_TOKEN_IDS",
+                PROMPT_TOKENS
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            let topology = test_topology();
+            let mut guest_input =
+                crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &PROMPT_TOKENS);
+            guest_input.resize(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                0,
+            );
+            let mut terminal_output = Vec::new();
+            for node in 0..8u32 {
+                let (layer_start, layer_end) =
+                    crate::deepseek_v4_flash::deepseek_v4_flash_layer_range_for_node_in_topology(
+                        u64::from(node),
+                        8,
+                    )
+                    .expect("DeepSeek layer range");
+                let output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [
+                                RANGE_TASK_MAGIC,
+                                node,
+                                layer_start as u32,
+                                layer_end as u32,
+                                (node + 1) % 8,
+                                8,
+                                43,
+                                HIDDEN_BYTES as u32,
+                            ],
+                        },
+                        scope_depth: 8,
+                        task_id: 44_000 + u64::from(node),
+                    },
+                    &guest_input,
+                    None,
+                )
+                .expect("real DeepSeek Flash range runtime");
+                let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                    .expect("range-forward table marker");
+                let entry_base = range_table + 64;
+                let payload_base = entry_base + 18 * std::mem::size_of::<u64>();
+                let kv_bytes = read_u64_le_at(&output, entry_base + 128);
+                assert!(kv_bytes > 0, "node {node} did not export ds4 KV");
+                guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES]
+                    .copy_from_slice(&output[payload_base..payload_base + HIDDEN_BYTES]);
+                if node == 7 {
+                    terminal_output = output;
+                }
+            }
+            let logits_table = find_u64_marker(&terminal_output, LOGITS_TABLE_MARKER)
+                .expect("real logits table marker");
+            let logits_base = logits_table + 64;
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 32), 108149);
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 40), 666);
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 136), 43);
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 192), 3);
+            assert_eq!(
+                read_u64_le_at(&terminal_output, logits_base + 200),
+                0x0061_6441
+            );
+            let logits_table_bytes = read_u64_le_at(&terminal_output, logits_table + 24);
+            let token_text_table = logits_base + logits_table_bytes as usize;
+            let token_text_entry = token_text_table + 64;
+            assert_eq!(read_u64_le_at(&terminal_output, token_text_entry + 24), 3);
+            assert_eq!(
+                read_u64_le_at(&terminal_output, token_text_entry + 32),
+                0x0061_6441
+            );
+            let token_text_table_bytes = read_u64_le_at(&terminal_output, token_text_table + 24);
+            let text_output_table = token_text_entry + token_text_table_bytes as usize;
+            let text_output_bytes_table = text_output_table + 64;
+            let text_output_bytes = text_output_bytes_table + 64;
+            assert_eq!(
+                &terminal_output[text_output_bytes..text_output_bytes + 3],
+                b"Ada"
+            );
+        }
     }
 
     #[test]

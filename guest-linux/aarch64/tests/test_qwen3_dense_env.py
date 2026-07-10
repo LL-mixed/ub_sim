@@ -999,7 +999,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--expect-prefix-cache-suffix-replay-tokens", serving_matrix_runner_text)
         self.assertIn("multi-token suffixes", serving_matrix_runner_text)
         self.assertIn("expect_fail_closed=true", serving_matrix_runner_text)
-        self.assertIn("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
+        self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_REUSE_OUT_DIR", serving_matrix_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE", serving_matrix_runner_text)
         self.assertIn('write_case_config shared-prefix-seed "$SHARED_PREFIX_TOKEN_IDS"', serving_matrix_runner_text)
@@ -1285,7 +1285,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "\n".join(
                     [
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
-                        "SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=81378,37585,374",
+                        "SIM_LLM_INFER_PROMPT_TOKEN_IDS=81378,37585,374",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=1",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                     ]
@@ -1326,7 +1326,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "\n".join(
                     [
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
-                        "SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=81378,37585,374",
+                        "SIM_LLM_INFER_PROMPT_TOKEN_IDS=81378,37585,374",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=1",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                     ]

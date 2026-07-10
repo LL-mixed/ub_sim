@@ -1357,16 +1357,66 @@ static uint64_t qwen3_prompt_token_ids_checksum(volatile uint8_t *ep_mmio,
     return acc;
 }
 
-static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
+static bool llm_infer_is_model_range_profile_name(const char *profile)
 {
-    const char *csv = getenv("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS");
+    return llm_infer_is_qwen3_profile_name(profile) ||
+           (profile &&
+            (strcmp(profile, "deepseek-v4-flash") == 0 ||
+             strcmp(profile, "deepseek_v4_flash") == 0));
+}
+
+static const char *llm_infer_prompt_token_ids_csv(void)
+{
+    const char *csv = getenv("SIM_LLM_INFER_PROMPT_TOKEN_IDS");
+    const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
+
+    if (csv && csv[0] != '\0') {
+        return csv;
+    }
+    if (llm_infer_is_qwen3_profile_name(profile)) {
+        return getenv("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS");
+    }
+    return NULL;
+}
+
+static uint64_t llm_infer_prompt_token_count_from_env(void)
+{
+    const char *cursor = llm_infer_prompt_token_ids_csv();
+    uint64_t token_count = 0;
+
+    if (!cursor || cursor[0] == '\0') {
+        return 0;
+    }
+    while (*cursor != '\0') {
+        char *end = NULL;
+
+        errno = 0;
+        (void)strtoull(cursor, &end, 10);
+        if (errno != 0 || end == cursor) {
+            return 0;
+        }
+        ++token_count;
+        if (*end == ',') {
+            cursor = end + 1;
+        } else if (*end == '\0') {
+            cursor = end;
+        } else {
+            return 0;
+        }
+    }
+    return token_count;
+}
+
+static int seed_llm_infer_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
+{
+    const char *csv = llm_infer_prompt_token_ids_csv();
     const char *cursor;
     uint64_t token_count = 0;
     uint64_t token_offset = 64;
 
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
 
-    if (!llm_infer_is_qwen3_profile_name(profile) || !csv || csv[0] == '\0') {
+    if (!llm_infer_is_model_range_profile_name(profile) || !csv || csv[0] == '\0') {
         return 0;
     }
 
@@ -1386,7 +1436,7 @@ static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
         if (errno != 0 || end == cursor ||
             token_offset + sizeof(uint64_t) > W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES) {
             fprintf(stderr,
-                    "[w4_guest] invalid qwen3 prompt token ids token_count=%" PRIu64
+                    "[w4_guest] invalid llm prompt token ids token_count=%" PRIu64
                     " cursor=%s\n",
                     token_count,
                     cursor);
@@ -1401,7 +1451,7 @@ static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
             cursor = end;
         } else {
             fprintf(stderr,
-                    "[w4_guest] invalid qwen3 prompt token separator token_count=%" PRIu64
+                    "[w4_guest] invalid llm prompt token separator token_count=%" PRIu64
                     " char=%c\n",
                     token_count,
                     *end);
@@ -1409,11 +1459,11 @@ static int seed_qwen3_prompt_tokens_from_env(volatile uint8_t *ep_mmio)
         }
     }
     if (token_count == 0) {
-        fprintf(stderr, "[w4_guest] qwen3 prompt token ids empty\n");
+        fprintf(stderr, "[w4_guest] llm prompt token ids empty\n");
         return -1;
     }
     write_segment_u64(ep_mmio, 24, token_count);
-    printf("[w4_guest] stage qwen3_prompt_tokens_seeded tokens=%" PRIu64
+    printf("[w4_guest] stage llm_infer_prompt_tokens_seeded tokens=%" PRIu64
            " source=guest_env target=uapi_segment status=ok\n",
            token_count);
     return 0;
@@ -1596,7 +1646,7 @@ static int seed_kvcache_payload(volatile uint8_t *ep_mmio, uint64_t segment)
            segment, W4_LEGACY_KVCACHE_PAYLOAD_BYTES, checksum);
     printf("[w4_guest] stage uapi_kvcache_payload_boundaries segment=%" PRIu64 " offsets=0,248,256,4088,4096,4104 status=ok\n",
            segment);
-    if (seed_qwen3_prompt_tokens_from_env(ep_mmio) != 0) {
+    if (seed_llm_infer_prompt_tokens_from_env(ep_mmio) != 0) {
         return -1;
     }
     return 0;
@@ -1693,7 +1743,9 @@ static int w4_runtime_layer_range_for_node(uint32_t local_node,
 static uint64_t w4_runtime_handoff_hidden_bytes(uint64_t decode_step)
 {
     if (is_deepseek_v4_flash_profile()) {
-        return mem_service_deepseek_v4_flash_handoff_hidden_bytes(decode_step);
+        return mem_service_deepseek_v4_flash_handoff_hidden_bytes(
+            decode_step,
+            llm_infer_prompt_token_count_from_env());
     }
     return mem_service_qwen3_handoff_hidden_bytes(decode_step);
 }
@@ -2313,7 +2365,7 @@ struct w4_qwen3_engram_step_timing {
     uint64_t decision_publish_ms;
 };
 
-static bool qwen3_terminal_token_candidate_index(
+static bool llm_infer_terminal_token_candidate_index(
     const struct w4_qwen3_terminal_token_record *terminal_token,
     uint64_t token,
     uint64_t *index_out);
@@ -2386,7 +2438,7 @@ static int qwen3_read_terminal_token_record_for_step(
     {
         uint64_t sampled_index = UINT64_MAX;
 
-        if (!qwen3_terminal_token_candidate_index(record,
+        if (!llm_infer_terminal_token_candidate_index(record,
                                                   record->sampled_token,
                                                   &sampled_index) ||
             record->candidate_text_checksums[sampled_index] != record->text_checksum) {
@@ -3116,7 +3168,7 @@ static bool qwen3_guest_engram_token_blocked(const struct w4_qwen3_engram_config
     return false;
 }
 
-static int64_t qwen3_guest_logit_score_milli(uint64_t logit_bits, int64_t fallback)
+static int64_t llm_infer_logit_score_milli(uint64_t logit_bits, int64_t fallback)
 {
     union {
         uint32_t bits;
@@ -3134,7 +3186,7 @@ static int64_t qwen3_guest_logit_score_milli(uint64_t logit_bits, int64_t fallba
     return (int64_t)(logit.value * 1000.0f);
 }
 
-static bool qwen3_terminal_token_candidate_index(
+static bool llm_infer_terminal_token_candidate_index(
     const struct w4_qwen3_terminal_token_record *terminal_token,
     uint64_t token,
     uint64_t *index_out)
@@ -3153,7 +3205,7 @@ static bool qwen3_terminal_token_candidate_index(
     return false;
 }
 
-static uint64_t qwen3_sampler_mix64(uint64_t value)
+static uint64_t llm_infer_sampler_mix64(uint64_t value)
 {
     value += 0x9e3779b97f4a7c15ULL;
     value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -3161,7 +3213,7 @@ static uint64_t qwen3_sampler_mix64(uint64_t value)
     return value ^ (value >> 31);
 }
 
-static bool qwen3_rewrite_terminal_token_record_for_selected_candidate(
+static bool llm_infer_rewrite_terminal_token_record_for_selected_candidate(
     struct w4_qwen3_terminal_token_record *terminal_token,
     uint32_t local_node,
     uint64_t decode_step,
@@ -3187,10 +3239,10 @@ static bool qwen3_rewrite_terminal_token_record_for_selected_candidate(
     old_text_checksum = terminal_token->text_checksum;
     old_piece_word0 = terminal_token->piece_word0;
     old_piece_word1 = terminal_token->piece_word1;
-    (void)qwen3_terminal_token_candidate_index(terminal_token,
+    (void)llm_infer_terminal_token_candidate_index(terminal_token,
                                                raw_sampled_token,
                                                &raw_index);
-    if (!qwen3_terminal_token_candidate_index(terminal_token,
+    if (!llm_infer_terminal_token_candidate_index(terminal_token,
                                               selected_token,
                                               &selected_index)) {
         printf("[w4_guest] fail qwen3 terminal rewrite missing selected candidate"
@@ -3264,7 +3316,7 @@ static bool qwen3_rewrite_terminal_token_record_for_selected_candidate(
     return true;
 }
 
-static int qwen3_apply_top_k_sampler(
+static int llm_infer_apply_top_k_sampler(
     const struct w4_qwen3_sampler_config *config,
     struct w4_qwen3_terminal_token_record *terminal_token,
     uint32_t local_node,
@@ -3296,7 +3348,14 @@ static int qwen3_apply_top_k_sampler(
     raw_token = terminal_token->sampled_token;
     *selected_token_out = raw_token;
     if (config->top_k == 1) {
-        return 0;
+        return llm_infer_rewrite_terminal_token_record_for_selected_candidate(
+            terminal_token,
+            local_node,
+            decode_step,
+            raw_token,
+            raw_token,
+            "llm_infer_sampler_terminal_record_rewrite",
+            "greedy_candidate_text_metadata") ? 0 : -1;
     }
     if (terminal_token->candidate_count == 0 || terminal_token->candidate_count > 4) {
         fprintf(stderr,
@@ -3323,7 +3382,7 @@ static int qwen3_apply_top_k_sampler(
     temperature = (double)config->temperature_milli / 1000.0;
     top_p = (double)config->top_p_milli / 1000.0;
     for (uint64_t i = 0; i < terminal_token->candidate_count; ++i) {
-        scores[i] = qwen3_guest_logit_score_milli(
+        scores[i] = llm_infer_logit_score_milli(
             terminal_token->candidate_logit_bits[i],
             -(int64_t)i);
     }
@@ -3375,11 +3434,11 @@ static int qwen3_apply_top_k_sampler(
         }
     }
     seed = config->seed ^
-           qwen3_sampler_mix64(decode_step) ^
-           qwen3_sampler_mix64(position << 1) ^
-           qwen3_sampler_mix64(terminal_token->logits_checksum) ^
-           qwen3_sampler_mix64(terminal_token->full_vocab_logits_checksum);
-    mixed = qwen3_sampler_mix64(seed);
+           llm_infer_sampler_mix64(decode_step) ^
+           llm_infer_sampler_mix64(position << 1) ^
+           llm_infer_sampler_mix64(terminal_token->logits_checksum) ^
+           llm_infer_sampler_mix64(terminal_token->full_vocab_logits_checksum);
+    mixed = llm_infer_sampler_mix64(seed);
     draw = ((double)(mixed >> 11) * (1.0 / 9007199254740992.0)) * nucleus_weight;
     for (uint64_t rank = 0; rank < nucleus_count; ++rank) {
         uint64_t candidate_index = sorted_indices[rank];
@@ -3416,13 +3475,13 @@ static int qwen3_apply_top_k_sampler(
            raw_token,
            *selected_token_out,
            selected_index);
-    return qwen3_rewrite_terminal_token_record_for_selected_candidate(
+    return llm_infer_rewrite_terminal_token_record_for_selected_candidate(
         terminal_token,
         local_node,
         decode_step,
         raw_token,
         *selected_token_out,
-        "qwen3_sampler_terminal_record_rewrite",
+        "llm_infer_sampler_terminal_record_rewrite",
         "sampler_selected_candidate_text_metadata") ? 0 : -1;
 }
 
@@ -3499,7 +3558,7 @@ static uint64_t qwen3_guest_engram_select_token(
         uint64_t sampled_projected_token =
             qwen3_guest_engram_projected_token(config, terminal_token->sampled_token);
 
-        if (qwen3_terminal_token_candidate_index(terminal_token,
+        if (llm_infer_terminal_token_candidate_index(terminal_token,
                                                  terminal_token->sampled_token,
                                                  &sampled_index)) {
             bool sampled_penalized = false;
@@ -3536,12 +3595,12 @@ static uint64_t qwen3_guest_engram_select_token(
 
             if (sampled_index == 0 && top_score_out) {
                 *top_score_out =
-                    qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[0],
+                    llm_infer_logit_score_milli(terminal_token->candidate_logit_bits[0],
                                                   (int64_t)terminal_token->margin_milli);
             }
             if (candidate_count > 1 && runner_up_score_out) {
                 *runner_up_score_out =
-                    qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[1],
+                    llm_infer_logit_score_milli(terminal_token->candidate_logit_bits[1],
                                                   -1);
             }
             if (!sampled_blocked && !sampled_penalized) {
@@ -3562,7 +3621,7 @@ static uint64_t qwen3_guest_engram_select_token(
             qwen3_guest_engram_projected_token(config, token);
         int64_t fallback_score = i == 0 ? (int64_t)terminal_token->margin_milli : -(int64_t)i;
         int64_t score =
-            qwen3_guest_logit_score_milli(terminal_token->candidate_logit_bits[i],
+            llm_infer_logit_score_milli(terminal_token->candidate_logit_bits[i],
                                           fallback_score);
         bool blocked;
 
@@ -3637,7 +3696,7 @@ static bool qwen3_rewrite_terminal_token_record_for_engram_selection(
     uint64_t raw_sampled_token,
     uint64_t selected_token)
 {
-    return qwen3_rewrite_terminal_token_record_for_selected_candidate(
+    return llm_infer_rewrite_terminal_token_record_for_selected_candidate(
         terminal_token,
         local_node,
         decode_step,
@@ -3725,7 +3784,7 @@ static int qwen3_engram_select_and_publish_step(
     memcpy(terminal_token->candidate_logit_bits,
            resolved_candidate_logit_bits,
            resolved_candidate_count * sizeof(uint64_t));
-    if (!qwen3_terminal_token_candidate_index(terminal_token,
+    if (!llm_infer_terminal_token_candidate_index(terminal_token,
                                               terminal_token->sampled_token,
                                               NULL)) {
         terminal_token->sampled_token = terminal_token->candidate_tokens[0];
@@ -5308,7 +5367,7 @@ qwen3_logits_tables:
                         runtime_forward_final_hidden_checksum != 0 ||
                         runtime_forward_checksum != 0;
                     bool runtime_forward_invalid =
-                        runtime_forward_layer_count != llm_infer_qwen3_total_layers() ||
+                        runtime_forward_layer_count != w4_runtime_total_layers() ||
                         runtime_forward_final_hidden_checksum == 0 ||
                         runtime_forward_checksum == 0;
                     if (entry_sampled_token >= w4_runtime_vocab_size() ||
@@ -8108,7 +8167,7 @@ static int qwen3_terminal_token_record_from_logits_payload(
     {
         uint64_t sampled_index = UINT64_MAX;
 
-        if (!qwen3_terminal_token_candidate_index(record,
+        if (!llm_infer_terminal_token_candidate_index(record,
                                                   record->sampled_token,
                                                   &sampled_index) ||
             record->candidate_text_checksums[sampled_index] != record->text_checksum) {
@@ -8870,7 +8929,7 @@ static int qwen3_boundary_controller_resolve_work_item(
     if (!memory_config->shortpath_execute) {
         return 0;
     }
-    if (qwen3_apply_top_k_sampler(sampler_config,
+    if (llm_infer_apply_top_k_sampler(sampler_config,
                                   &result_out->lookup.terminal_logits_record,
                                   dispatch_node,
                                   decode_step,
@@ -13097,7 +13156,7 @@ qwen3_shortpath_publish_runtime_range:
                         terminal_logits_decode_step);
                 goto out;
             }
-            if (qwen3_apply_top_k_sampler(&qwen3_sampler_config,
+            if (llm_infer_apply_top_k_sampler(&qwen3_sampler_config,
                                           &terminal_token,
                                           dispatch_node,
                                           decode_step,

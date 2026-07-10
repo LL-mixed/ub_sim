@@ -153,7 +153,7 @@ def print_current_one_shot_env(requests: list[ServingRequest], entry_node: str) 
             f"decode_steps={request.decode_steps}"
         )
         print(f"SIM_W5_SERVING_REQUEST_ID={request.request_id}")
-        print(f"SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS={request.prompt_token_ids}")
+        print(f"SIM_LLM_INFER_PROMPT_TOKEN_IDS={request.prompt_token_ids}")
         print(f"SIM_QWEN3_GUEST_DECODE_STEPS={request.decode_steps}")
         for field_name, env_name in OPTIONAL_ENV_FIELDS.items():
             if field_name in request.fields:

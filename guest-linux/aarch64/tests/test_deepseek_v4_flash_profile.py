@@ -54,7 +54,9 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         # Mirror ds4 DS4_SHAPE_FLASH (ds4.c:177-212).
         self.assertIn("#define DEEPSEEK_V4_FLASH_TOTAL_LAYERS 43U", self.source)
         self.assertNotIn("DEEPSEEK_V4_FLASH_PIPELINE_NODES", self.source)
-        self.assertIn("#define DEEPSEEK_V4_FLASH_HIDDEN_SIZE 4096ULL", self.source)
+        self.assertIn(
+            "#define DEEPSEEK_V4_FLASH_HIDDEN_F32_VALUES 16384ULL", self.source
+        )
         self.assertIn("#define DEEPSEEK_V4_FLASH_KV_HEADS 1ULL", self.source)
         self.assertIn("#define DEEPSEEK_V4_FLASH_HEAD_DIM 512ULL", self.source)
         self.assertIn('#define DEEPSEEK_V4_FLASH_MODEL_KEY "deepseek-v4-flash"', self.source)
@@ -74,10 +76,12 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("cluster_node_count,", self.source)
 
     def test_flash_handoff_uses_flash_hidden_size(self):
-        # step0 = full prefill range (hidden_size * prefill_tokens * 2);
-        # step>0 = decode range (hidden_size * decode_tokens * 2).
-        self.assertIn("DEEPSEEK_V4_FLASH_PREFILL_TOKENS 128ULL", self.source)
+        # ds4 transports 16384 F32 HC values per token. The actual prefill
+        # byte count follows the request token count; decode transports one.
+        self.assertIn("DEEPSEEK_V4_FLASH_MAX_PREFILL_TOKENS 32ULL", self.source)
         self.assertIn("DEEPSEEK_V4_FLASH_DECODE_TOKENS 1ULL", self.source)
+        self.assertIn("prompt_tokens", self.header)
+        self.assertIn("sizeof(float)", self.source)
         self.assertIn("mem_service_deepseek_v4_flash_decode_hidden_bytes()", self.source)
 
     def test_flash_request_uses_neutral_mem_service_contract(self):
@@ -98,8 +102,30 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("deepseek_v4_flash_runtime_input_loaded", runner)
         self.assertIn("transport=gsva materialize=local_copy", runner)
         self.assertIn("deepseek_v4_flash_first_token", runner)
+        self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS", runner)
         self.assertIn("tokens/deepseek-v4-flash", runner)
         self.assertIn('"flash_weight_catalog"', runner)
+
+    def test_terminal_runtime_layer_validation_uses_active_model(self):
+        infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
+
+        self.assertIn(
+            "runtime_forward_layer_count != w4_runtime_total_layers()", infer_source
+        )
+        self.assertNotIn(
+            "runtime_forward_layer_count != llm_infer_qwen3_total_layers()",
+            infer_source,
+        )
+        self.assertIn("llm_infer_apply_top_k_sampler", infer_source)
+        self.assertIn(
+            "llm_infer_rewrite_terminal_token_record_for_selected_candidate",
+            infer_source,
+        )
+        self.assertNotIn("qwen3_apply_top_k_sampler", infer_source)
+        self.assertNotIn(
+            "qwen3_rewrite_terminal_token_record_for_selected_candidate",
+            infer_source,
+        )
 
     def test_flash_artifact_gate_does_not_require_qwen_stores(self):
         runner = EIGHT_NODE_RUNNER.read_text()

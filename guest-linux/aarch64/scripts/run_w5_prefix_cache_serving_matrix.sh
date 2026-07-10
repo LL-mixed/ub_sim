@@ -214,7 +214,7 @@ write_case_config() {
   cp "$CONFIG_PATH" "$case_config"
   {
     printf '\n'
-    printf 'SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=%s\n' "$prompt_tokens"
+    printf 'SIM_LLM_INFER_PROMPT_TOKEN_IDS=%s\n' "$prompt_tokens"
     printf 'SIM_W5_SERVING_REQUEST_ID=%s\n' "$serving_request_id"
     printf 'SIM_W5_TEST_MEMORY_REUSE_OUT_DIR=%s\n' "$reuse_out_dir"
     if [[ -n "$shortpath_execute" ]]; then

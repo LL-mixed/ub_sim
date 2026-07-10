@@ -119,6 +119,20 @@ type EvalLayerSlice = unsafe extern "C" fn(
     *mut c_char,
     usize,
 ) -> c_int;
+type SessionLayerPayloadBytes = unsafe extern "C" fn(*mut c_void, u32, u32) -> u64;
+type SessionSaveLayerPayload =
+    unsafe extern "C" fn(*mut c_void, *mut libc::FILE, u32, u32, *mut c_char, usize) -> c_int;
+type SessionLoadLayerPayload = unsafe extern "C" fn(
+    *mut c_void,
+    *mut libc::FILE,
+    u64,
+    *const c_int,
+    u32,
+    u32,
+    u32,
+    *mut c_char,
+    usize,
+) -> c_int;
 
 struct Ds4Library {
     handle: *mut c_void,
@@ -136,6 +150,9 @@ struct Ds4Library {
     token_text: TokenText,
     slice_reset: SliceReset,
     eval_layer_slice: EvalLayerSlice,
+    session_layer_payload_bytes: SessionLayerPayloadBytes,
+    session_save_layer_payload: SessionSaveLayerPayload,
+    session_load_layer_payload: SessionLoadLayerPayload,
 }
 
 impl Ds4Library {
@@ -162,6 +179,18 @@ impl Ds4Library {
                 token_text: load_symbol(handle, b"ds4_token_text\0")?,
                 slice_reset: load_symbol(handle, b"ds4_session_layer_slice_reset\0")?,
                 eval_layer_slice: load_symbol(handle, b"ds4_session_eval_layer_slice\0")?,
+                session_layer_payload_bytes: load_symbol(
+                    handle,
+                    b"ds4_session_layer_payload_bytes\0",
+                )?,
+                session_save_layer_payload: load_symbol(
+                    handle,
+                    b"ds4_session_save_layer_payload\0",
+                )?,
+                session_load_layer_payload: load_symbol(
+                    handle,
+                    b"ds4_session_load_layer_payload\0",
+                )?,
             })
         }
     }
@@ -281,8 +310,36 @@ pub struct Ds4SliceReport {
     pub token_count: usize,
     pub output_kind: String,
     pub value_count: usize,
+    pub hidden_value_count: usize,
+    pub logits_count: usize,
+    pub kv_payload_bytes: usize,
     pub output_path: String,
     pub selected_token: Option<Ds4TokenCandidate>,
+    pub candidates: Vec<Ds4TokenCandidate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ds4SliceMemoryConfig {
+    pub library_path: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub model_path: PathBuf,
+    pub context: i32,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub position: u32,
+    pub token_ids: Vec<i32>,
+    pub input_hidden: Option<Vec<f32>>,
+    pub previous_token_ids: Vec<i32>,
+    pub previous_kv: Option<Vec<u8>>,
+    pub output_logits: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ds4SliceOutput {
+    pub report: Ds4SliceReport,
+    pub hidden: Vec<f32>,
+    pub logits: Vec<f32>,
+    pub kv_payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -496,6 +553,42 @@ pub struct Ds4SliceConfig {
 }
 
 pub fn ds4_eval_layer_slice(config: &Ds4SliceConfig) -> Result<Ds4SliceReport, String> {
+    let hidden_values = 16_384usize
+        .checked_mul(config.token_ids.len())
+        .ok_or_else(|| "ds4_slice_hidden_count_overflow".to_string())?;
+    let input_hidden = match &config.input_path {
+        Some(path) => Some(read_f32_file(path, hidden_values)?),
+        None => None,
+    };
+    let output = ds4_eval_layer_slice_in_memory(&Ds4SliceMemoryConfig {
+        library_path: config.library_path.clone(),
+        runtime_dir: config.runtime_dir.clone(),
+        model_path: config.model_path.clone(),
+        context: config.context,
+        layer_start: config.layer_start,
+        layer_end: config.layer_end,
+        position: config.position,
+        token_ids: config.token_ids.clone(),
+        input_hidden,
+        previous_token_ids: Vec::new(),
+        previous_kv: None,
+        output_logits: config.output_logits,
+    })?;
+    let values = if config.output_logits {
+        &output.logits
+    } else {
+        &output.hidden
+    };
+    write_f32_file(&config.output_path, values)?;
+    let mut report = output.report;
+    report.output_path = config.output_path.display().to_string();
+    report.value_count = values.len();
+    Ok(report)
+}
+
+pub fn ds4_eval_layer_slice_in_memory(
+    config: &Ds4SliceMemoryConfig,
+) -> Result<Ds4SliceOutput, String> {
     with_runtime_dir(&config.runtime_dir, || {
         if config.token_ids.is_empty() {
             return Err("ds4_slice_tokens_empty".to_string());
@@ -513,20 +606,25 @@ pub fn ds4_eval_layer_slice(config: &Ds4SliceConfig) -> Result<Ds4SliceReport, S
             .checked_mul(config.token_ids.len() as u64)
             .and_then(|count| usize::try_from(count).ok())
             .ok_or_else(|| "ds4_slice_hidden_count_overflow".to_string())?;
-        let input = match &config.input_path {
-            Some(path) => Some(read_f32_file(path, hidden_count)?),
-            None if config.layer_start == 0 => None,
-            None => return Err("ds4_slice_input_hidden_required".to_string()),
-        };
+        let input = config.input_hidden.as_ref();
+        if let Some(input) = input {
+            if input.len() != hidden_count {
+                return Err(format!(
+                    "ds4_slice_input_hidden_count_mismatch:expected={hidden_count}:actual={}",
+                    input.len()
+                ));
+            }
+        } else if config.layer_start != 0 {
+            return Err("ds4_slice_input_hidden_required".to_string());
+        }
+        if config.previous_kv.is_some() != !config.previous_token_ids.is_empty() {
+            return Err("ds4_slice_previous_kv_token_state_mismatch".to_string());
+        }
         let vocab_size = unsafe { (library.engine_vocab_size)(engine.ptr) };
         if vocab_size <= 0 {
             return Err(format!("ds4_vocab_size_invalid:{vocab_size}"));
         }
-        let mut hidden_output = if config.output_logits {
-            Vec::new()
-        } else {
-            vec![0.0f32; hidden_count]
-        };
+        let mut hidden_output = vec![0.0f32; hidden_count];
         let mut logits = if config.output_logits {
             vec![0.0f32; vocab_size as usize]
         } else {
@@ -541,6 +639,16 @@ pub fn ds4_eval_layer_slice(config: &Ds4SliceConfig) -> Result<Ds4SliceReport, S
                 c_error(&error)
             ));
         }
+        if let Some(previous_kv) = config.previous_kv.as_ref() {
+            load_layer_payload(
+                &library,
+                session.ptr,
+                previous_kv,
+                &config.previous_token_ids,
+                config.layer_start,
+                config.layer_end - 1,
+            )?;
+        }
         error.fill(0);
         let rc = unsafe {
             (library.eval_layer_slice)(
@@ -551,11 +659,7 @@ pub fn ds4_eval_layer_slice(config: &Ds4SliceConfig) -> Result<Ds4SliceReport, S
                 config.layer_start,
                 config.layer_end - 1,
                 input.as_ref().map_or(ptr::null(), |values| values.as_ptr()),
-                if hidden_output.is_empty() {
-                    ptr::null_mut()
-                } else {
-                    hidden_output.as_mut_ptr()
-                },
+                hidden_output.as_mut_ptr(),
                 config.output_logits,
                 if logits.is_empty() {
                     ptr::null_mut()
@@ -569,44 +673,183 @@ pub fn ds4_eval_layer_slice(config: &Ds4SliceConfig) -> Result<Ds4SliceReport, S
         if rc != 0 {
             return Err(format!("ds4_slice_eval_failed:rc={rc}:{}", c_error(&error)));
         }
-        let values = if config.output_logits {
-            &logits
+        let candidates = if config.output_logits {
+            top_raw_logit_candidates(&library, engine.ptr, &logits, 4)?
         } else {
-            &hidden_output
+            Vec::new()
         };
-        write_f32_file(&config.output_path, values)?;
-        let selected_token = if config.output_logits {
-            let (id, logit) = logits
-                .iter()
-                .copied()
-                .enumerate()
-                .max_by(|left, right| left.1.total_cmp(&right.1))
-                .ok_or_else(|| "ds4_slice_logits_empty".to_string())?;
-            Some(Ds4TokenCandidate {
+        let selected_token = candidates.first().cloned();
+        let kv_payload = save_layer_payload(
+            &library,
+            session.ptr,
+            config.layer_start,
+            config.layer_end - 1,
+        )?;
+        Ok(Ds4SliceOutput {
+            report: Ds4SliceReport {
+                model: config.model_path.display().to_string(),
+                layer_start: config.layer_start,
+                layer_end: config.layer_end,
+                position: config.position,
+                token_count: config.token_ids.len(),
+                output_kind: if config.output_logits {
+                    "logits".to_string()
+                } else {
+                    "hidden_f32".to_string()
+                },
+                value_count: if config.output_logits {
+                    logits.len()
+                } else {
+                    hidden_output.len()
+                },
+                hidden_value_count: hidden_output.len(),
+                logits_count: logits.len(),
+                kv_payload_bytes: kv_payload.len(),
+                output_path: String::new(),
+                selected_token,
+                candidates,
+            },
+            hidden: hidden_output,
+            logits,
+            kv_payload,
+        })
+    })
+}
+
+fn top_raw_logit_candidates(
+    library: &Ds4Library,
+    engine: *mut c_void,
+    logits: &[f32],
+    count: usize,
+) -> Result<Vec<Ds4TokenCandidate>, String> {
+    let mut ranked: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+    ranked.sort_unstable_by(|left, right| right.1.total_cmp(&left.1));
+    ranked
+        .into_iter()
+        .take(count)
+        .map(|(id, logit)| {
+            Ok(Ds4TokenCandidate {
                 id: id as i32,
-                text: token_text(&library, engine.ptr, id as i32)?,
+                text: token_text(library, engine, id as i32)?,
                 logit,
                 logprob: f32::NAN,
             })
-        } else {
-            None
-        };
-        Ok(Ds4SliceReport {
-            model: config.model_path.display().to_string(),
-            layer_start: config.layer_start,
-            layer_end: config.layer_end,
-            position: config.position,
-            token_count: config.token_ids.len(),
-            output_kind: if config.output_logits {
-                "logits".to_string()
-            } else {
-                "hidden_f32".to_string()
-            },
-            value_count: values.len(),
-            output_path: config.output_path.display().to_string(),
-            selected_token,
         })
-    })
+        .collect()
+}
+
+struct TemporaryFile(*mut libc::FILE);
+
+impl TemporaryFile {
+    fn open() -> Result<Self, String> {
+        let file = unsafe { libc::tmpfile() };
+        if file.is_null() {
+            return Err(format!(
+                "ds4_slice_tmpfile_failed:{}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self(file))
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { libc::fclose(self.0) };
+        }
+    }
+}
+
+fn save_layer_payload(
+    library: &Ds4Library,
+    session: *mut c_void,
+    layer_start: u32,
+    layer_end: u32,
+) -> Result<Vec<u8>, String> {
+    let payload_bytes =
+        unsafe { (library.session_layer_payload_bytes)(session, layer_start, layer_end) };
+    let payload_len =
+        usize::try_from(payload_bytes).map_err(|_| "ds4_slice_kv_payload_too_large".to_string())?;
+    if payload_len == 0 {
+        return Err("ds4_slice_kv_payload_empty".to_string());
+    }
+    let file = TemporaryFile::open()?;
+    let mut error = [0 as c_char; 512];
+    let rc = unsafe {
+        (library.session_save_layer_payload)(
+            session,
+            file.0,
+            layer_start,
+            layer_end,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "ds4_slice_kv_save_failed:rc={rc}:{}",
+            c_error(&error)
+        ));
+    }
+    if unsafe { libc::fflush(file.0) } != 0
+        || unsafe { libc::fseek(file.0, 0, libc::SEEK_SET) } != 0
+    {
+        return Err(format!(
+            "ds4_slice_kv_rewind_failed:{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut payload = vec![0u8; payload_len];
+    let read = unsafe { libc::fread(payload.as_mut_ptr().cast(), 1, payload_len, file.0) };
+    if read != payload_len {
+        return Err(format!(
+            "ds4_slice_kv_read_failed:expected={payload_len}:actual={read}"
+        ));
+    }
+    Ok(payload)
+}
+
+fn load_layer_payload(
+    library: &Ds4Library,
+    session: *mut c_void,
+    payload: &[u8],
+    tokens: &[i32],
+    layer_start: u32,
+    layer_end: u32,
+) -> Result<(), String> {
+    let file = TemporaryFile::open()?;
+    let written = unsafe { libc::fwrite(payload.as_ptr().cast(), 1, payload.len(), file.0) };
+    if written != payload.len() || unsafe { libc::fseek(file.0, 0, libc::SEEK_SET) } != 0 {
+        return Err(format!(
+            "ds4_slice_kv_stage_failed:expected={}:actual={written}:{}",
+            payload.len(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut error = [0 as c_char; 512];
+    let token_count = u32::try_from(tokens.len())
+        .map_err(|_| "ds4_slice_previous_token_count_too_large".to_string())?;
+    let rc = unsafe {
+        (library.session_load_layer_payload)(
+            session,
+            file.0,
+            payload.len() as u64,
+            tokens.as_ptr(),
+            token_count,
+            layer_start,
+            layer_end,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "ds4_slice_kv_load_failed:rc={rc}:{}",
+            c_error(&error)
+        ));
+    }
+    Ok(())
 }
 
 fn c_error(buffer: &[c_char]) -> String {

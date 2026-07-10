@@ -77,7 +77,7 @@ SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/t
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-$(w5_profile_default_w4_backend "$SIM_UAPI_W5_PROFILE")}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
-SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
+SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}}"
 SIM_QWEN3_SAMPLER_TOP_K="${SIM_QWEN3_SAMPLER_TOP_K:-1}"
 SIM_QWEN3_SAMPLER_TOP_P_MILLI="${SIM_QWEN3_SAMPLER_TOP_P_MILLI:-1000}"
 SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="${SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI:-1000}"
@@ -765,7 +765,7 @@ export SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTE
 export SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}"
 export SIM_QWEN3_GUEST_DECODE_STEP=0
 export SIM_QWEN3_GUEST_DECODE_STEPS="$SIM_QWEN3_GUEST_DECODE_STEPS"
-export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+export SIM_LLM_INFER_PROMPT_TOKEN_IDS="$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
 export SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K"
 export SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
 export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
@@ -849,7 +849,7 @@ export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
 
 DEFAULT_SIM_W5_RUN_ID="\$SIM_W5_RUN_ID"
 DEFAULT_SIM_QWEN3_GUEST_DECODE_STEPS="\$SIM_QWEN3_GUEST_DECODE_STEPS"
-DEFAULT_SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+DEFAULT_SIM_LLM_INFER_PROMPT_TOKEN_IDS="\$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
 DEFAULT_SIM_QWEN3_SAMPLER_TOP_K="\$SIM_QWEN3_SAMPLER_TOP_K"
 DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
 DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
@@ -879,7 +879,7 @@ reset_serving_request_env() {
   SIM_W5_RUN_ID="\$DEFAULT_SIM_W5_RUN_ID"
   SIM_W5_SERVING_REQUEST_ID=""
   SIM_QWEN3_GUEST_DECODE_STEPS="\$DEFAULT_SIM_QWEN3_GUEST_DECODE_STEPS"
-  SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$DEFAULT_SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+  SIM_LLM_INFER_PROMPT_TOKEN_IDS="\$DEFAULT_SIM_LLM_INFER_PROMPT_TOKEN_IDS"
   SIM_QWEN3_SAMPLER_TOP_K="\$DEFAULT_SIM_QWEN3_SAMPLER_TOP_K"
   SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI"
   SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
@@ -911,7 +911,7 @@ apply_serving_request_line() {
         SIM_W5_SERVING_REQUEST_ID="\$value"
         ;;
       prompt_token_ids)
-        SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$value"
+        SIM_LLM_INFER_PROMPT_TOKEN_IDS="\$value"
         ;;
       decode_steps)
         SIM_QWEN3_GUEST_DECODE_STEPS="\$value"
@@ -941,7 +941,7 @@ apply_serving_request_line() {
     log "FAIL: serving request missing request_id"
     return 1
   fi
-  if ! is_token_csv "\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"; then
+  if ! is_token_csv "\$SIM_LLM_INFER_PROMPT_TOKEN_IDS"; then
     log "FAIL: serving request has invalid prompt_token_ids request_id=\$SIM_W5_SERVING_REQUEST_ID"
     return 1
   fi
@@ -961,7 +961,7 @@ apply_serving_request_line() {
   export SIM_W5_RUN_ID
   export SIM_W5_SERVING_REQUEST_ID
   export SIM_QWEN3_GUEST_DECODE_STEPS
-  export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS
+  export SIM_LLM_INFER_PROMPT_TOKEN_IDS
   export SIM_QWEN3_SAMPLER_TOP_K
   export SIM_QWEN3_SAMPLER_TOP_P_MILLI
   export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI
@@ -1036,7 +1036,7 @@ run_serving_requests_file() {
     if ! publish_serving_request_line_to_workers "\$line" "\$request_index"; then
       return 1
     fi
-    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
+    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_LLM_INFER_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
     run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
@@ -1077,7 +1077,7 @@ run_serving_stdin_queue() {
     if ! publish_serving_request_line_to_workers "\$line" "\$request_index"; then
       return 1
     fi
-    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
+    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_LLM_INFER_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
     run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
@@ -1117,7 +1117,7 @@ run_serving_nodea_worker_queue() {
     if ! apply_serving_request_line "\$line"; then
       return 1
     fi
-    log "serving_entry worker_received index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+    log "serving_entry worker_received index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
     run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then

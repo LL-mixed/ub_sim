@@ -12,10 +12,11 @@
 #include "mem_service_profile.h"
 
 uint32_t mem_service_deepseek_v4_flash_layer_count(void);
-uint64_t mem_service_deepseek_v4_flash_hidden_range_bytes(void);
+uint64_t mem_service_deepseek_v4_flash_hidden_range_bytes(uint64_t token_count);
 uint64_t mem_service_deepseek_v4_flash_decode_hidden_bytes(void);
 uint64_t mem_service_deepseek_v4_flash_vocab_size(void);
-uint64_t mem_service_deepseek_v4_flash_handoff_hidden_bytes(uint64_t decode_step);
+uint64_t mem_service_deepseek_v4_flash_handoff_hidden_bytes(uint64_t decode_step,
+                                                            uint64_t prompt_tokens);
 const char *mem_service_deepseek_v4_flash_model_key(void);
 uint64_t mem_service_deepseek_v4_flash_range_kv_state_bytes(uint32_t layer_start,
                                                             uint32_t layer_end);

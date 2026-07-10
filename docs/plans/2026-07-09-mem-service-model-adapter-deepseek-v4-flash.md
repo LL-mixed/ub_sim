@@ -404,12 +404,15 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 
 最终 8-node 验收必须输出 `108149` / `Ada`，并与同一 GGUF 的单机 ds4 oracle 对齐；`55409` / `q3_055409` 明确属于旧 geometry smoke，不是正确结果。
 
-**2026-07-10 host adapter checkpoint**：
+**2026-07-10 real inference checkpoints**：
 
 - `deepseek_v4_flash_adapter first-token` 已直接调用 ds4 tokenizer、43 层计算、MoE、output head 和 token text，得到 21 个 prompt tokens、`108149` / `Ada`、top-1 logit `45.004646`。
 - 真实 layer-slice 已按 2-node（`[0,22) [22,43)`）、3-node（`[0,15) [15,29) [29,43)`）和 8-node（`[0,6) ... [38,43)`）分别串行执行成功。
 - 三种切分输出的完整 129280 维 F32 logits 文件逐字节相同，SHA-256 均为 `44f3b631175b528f428f79e46e997482a49da62b37b193d6994d80cf256c60b9`。
-- 这个 checkpoint 只证明 host-native ds4 slice adapter 正确；W5 QEMU range dispatch 尚未调用 adapter，因此不能标记真实 W5 首 token 完成。
+- sim-uapi 真实 8-range 集成测试逐段执行 ds4 layer slice，断言相邻 range 的 hidden checksum 连续、每段导出非空 ds4 layer-KV snapshot，并验证 terminal token-text/text-output bytes 均为 `Ada`。
+- 固定入口 `./guest-linux/aarch64/scripts/run_w5_cluster_config.sh w5.deepseek-v4-flash.env` 已在 8 个 QEMU guest 上通过。run id `2026-07-10_11-36-26_w5_deepseek_v4_flash_decode_24227`，8/8 worker 通过，输出 `token_ids=[108149]`、`token_pieces="Ada"`。
+- 该 W5 run 的 7 条跨节点 handoff 均为 21 token x 16384 F32 values（1376256 bytes），相邻 input/output checksum 一致；各节点同时生成约 1.5-2.1 MiB 的真实 ds4 layer-KV snapshot。
+- 当前完成边界是**真实 prefill 后的第一个 token**。多 token streaming decode 仍需把上一轮 ds4 layer-KV snapshot 恢复到下一轮 slice session；在完成前，真实 profile 对 `step > 0` fail closed。
 
 ---
 
@@ -435,6 +438,7 @@ pub fn resolve_profile(name: &str) -> Box<dyn ModelProfile>;
 - adapter CLI 单独跑完整 43 层时，首 token、文本和 top logits 与 ds4 oracle 对齐。
 - 同一 prompt 分别按 2/3/8 个连续 layer slice 执行，最终 logits 与完整 43 层执行在容差内一致。
 - W5 8-node QEMU 日志必须证明每个节点消费前序真实 F32 hidden，并由 terminal node 输出 `108149` / `Ada`。
+- W5 summary 的 token piece 必须来自 ds4 candidate metadata；`q3_<id>` formatter 不得满足 DeepSeek 验收。
 - 删除模型、tokenizer、某段 layer 权重或 output head 的负例全部 fail closed，不能生成 synthetic token。
 
 ---
