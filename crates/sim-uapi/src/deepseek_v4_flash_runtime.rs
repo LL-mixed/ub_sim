@@ -9,7 +9,8 @@ use sim_models::deepseek_v4_flash_lowering::{
     deepseek_v4_flash_hc_post_reference, deepseek_v4_flash_hc_split_reference,
     deepseek_v4_flash_hc_weighted_sum_reference, deepseek_v4_flash_head_rms_norm_reference,
     deepseek_v4_flash_mixed_attention_reference, deepseek_v4_flash_rms_norm_reference,
-    deepseek_v4_flash_rope_tail_reference, DeepseekV4FlashCompressorState,
+    deepseek_v4_flash_rope_tail_reference, DeepseekV4FlashCompressorSnapshot,
+    DeepseekV4FlashCompressorState,
 };
 use sim_topology::SimTopology;
 
@@ -128,6 +129,243 @@ impl DeepseekV4FlashModelState {
         self.layers
             .get_mut(layer_id as usize)
             .ok_or_else(|| format!("deepseek layer state out of range:{layer_id}"))
+    }
+
+    pub fn encode_range_state(&self, layer_start: u64, layer_end: u64) -> Result<Vec<u8>, String> {
+        validate_state_range(layer_start, layer_end)?;
+        let mut output = Vec::new();
+        push_state_u64(&mut output, DEEPSEEK_RANGE_STATE_MAGIC);
+        push_state_u64(&mut output, DEEPSEEK_RANGE_STATE_VERSION);
+        push_state_u64(&mut output, layer_start);
+        push_state_u64(&mut output, layer_end);
+        for layer_id in layer_start..layer_end {
+            match self.layer(layer_id)? {
+                DeepseekV4FlashLayerState::Dense(state) => {
+                    push_state_u64(&mut output, DEEPSEEK_STATE_DENSE);
+                    push_state_f32_vec(&mut output, &state.raw_kv);
+                }
+                DeepseekV4FlashLayerState::Ratio4(state) => {
+                    push_state_u64(&mut output, DEEPSEEK_STATE_RATIO4);
+                    push_state_f32_vec(&mut output, &state.raw_kv);
+                    push_state_f32_vec(&mut output, &state.compressed_kv);
+                    push_state_f32_vec(&mut output, &state.indexer_compressed_kv);
+                    push_compressor_snapshot(&mut output, &state.attention_compressor.snapshot());
+                    push_compressor_snapshot(&mut output, &state.indexer_compressor.snapshot());
+                }
+                DeepseekV4FlashLayerState::Ratio128(state) => {
+                    push_state_u64(&mut output, DEEPSEEK_STATE_RATIO128);
+                    push_state_f32_vec(&mut output, &state.raw_kv);
+                    push_state_f32_vec(&mut output, &state.compressed_kv);
+                    push_compressor_snapshot(&mut output, &state.attention_compressor.snapshot());
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    pub fn restore_range_state(
+        &mut self,
+        layer_start: u64,
+        layer_end: u64,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        validate_state_range(layer_start, layer_end)?;
+        let mut reader = StateReader::new(payload);
+        if reader.u64()? != DEEPSEEK_RANGE_STATE_MAGIC
+            || reader.u64()? != DEEPSEEK_RANGE_STATE_VERSION
+            || reader.u64()? != layer_start
+            || reader.u64()? != layer_end
+        {
+            return Err(format!(
+                "deepseek range state header mismatch:start={layer_start}:end={layer_end}"
+            ));
+        }
+        for layer_id in layer_start..layer_end {
+            let tag = reader.u64()?;
+            match (tag, self.layer_mut(layer_id)?) {
+                (DEEPSEEK_STATE_DENSE, DeepseekV4FlashLayerState::Dense(state)) => {
+                    state.raw_kv = reader.f32_vec()?;
+                    validate_state_rows(
+                        &state.raw_kv,
+                        state.head_dim,
+                        state.raw_capacity,
+                        "dense_raw",
+                    )?;
+                }
+                (DEEPSEEK_STATE_RATIO4, DeepseekV4FlashLayerState::Ratio4(state)) => {
+                    state.raw_kv = reader.f32_vec()?;
+                    state.compressed_kv = reader.f32_vec()?;
+                    state.indexer_compressed_kv = reader.f32_vec()?;
+                    validate_state_rows(
+                        &state.raw_kv,
+                        state.head_dim,
+                        state.raw_capacity,
+                        "ratio4_raw",
+                    )?;
+                    validate_state_rows(
+                        &state.compressed_kv,
+                        state.head_dim,
+                        state.compressed_capacity,
+                        "ratio4_compressed",
+                    )?;
+                    validate_state_rows(
+                        &state.indexer_compressed_kv,
+                        state.indexer_head_dim,
+                        state.compressed_capacity,
+                        "ratio4_indexer",
+                    )?;
+                    state.attention_compressor = reader.compressor()?;
+                    state.indexer_compressor = reader.compressor()?;
+                }
+                (DEEPSEEK_STATE_RATIO128, DeepseekV4FlashLayerState::Ratio128(state)) => {
+                    state.raw_kv = reader.f32_vec()?;
+                    state.compressed_kv = reader.f32_vec()?;
+                    validate_state_rows(
+                        &state.raw_kv,
+                        state.head_dim,
+                        state.raw_capacity,
+                        "ratio128_raw",
+                    )?;
+                    validate_state_rows(
+                        &state.compressed_kv,
+                        state.head_dim,
+                        state.compressed_capacity,
+                        "ratio128_compressed",
+                    )?;
+                    state.attention_compressor = reader.compressor()?;
+                }
+                _ => {
+                    return Err(format!(
+                        "deepseek range state layer kind mismatch:layer={layer_id}:tag={tag}"
+                    ));
+                }
+            }
+        }
+        if !reader.is_empty() {
+            return Err(format!(
+                "deepseek range state trailing bytes:{}",
+                reader.remaining()
+            ));
+        }
+        Ok(())
+    }
+}
+
+const DEEPSEEK_RANGE_STATE_MAGIC: u64 = 0x4453_3452_5354_4154;
+const DEEPSEEK_RANGE_STATE_VERSION: u64 = 1;
+const DEEPSEEK_STATE_DENSE: u64 = 0;
+const DEEPSEEK_STATE_RATIO4: u64 = 4;
+const DEEPSEEK_STATE_RATIO128: u64 = 128;
+
+fn validate_state_range(layer_start: u64, layer_end: u64) -> Result<(), String> {
+    if layer_start >= layer_end || layer_end > DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "deepseek range state bounds invalid:start={layer_start}:end={layer_end}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_state_rows(
+    values: &[f32],
+    width: usize,
+    capacity: usize,
+    kind: &str,
+) -> Result<(), String> {
+    if width == 0
+        || values.len() % width != 0
+        || values.len() / width > capacity
+        || values.iter().any(|value| !value.is_finite())
+    {
+        return Err(format!(
+            "deepseek range state rows invalid:kind={kind}:values={}:width={width}:capacity={capacity}",
+            values.len()
+        ));
+    }
+    Ok(())
+}
+
+fn push_state_u64(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_state_f32_vec(output: &mut Vec<u8>, values: &[f32]) {
+    push_state_u64(output, values.len() as u64);
+    for value in values {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+fn push_compressor_snapshot(output: &mut Vec<u8>, snapshot: &DeepseekV4FlashCompressorSnapshot) {
+    push_state_u64(output, snapshot.head_dim as u64);
+    push_state_u64(output, snapshot.compress_ratio as u64);
+    push_state_f32_vec(output, &snapshot.kv);
+    push_state_f32_vec(output, &snapshot.score);
+}
+
+struct StateReader<'a> {
+    payload: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> StateReader<'a> {
+    fn new(payload: &'a [u8]) -> Self {
+        Self { payload, offset: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.payload.len().saturating_sub(self.offset)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.offset == self.payload.len()
+    }
+
+    fn u64(&mut self) -> Result<u64, String> {
+        let end = self
+            .offset
+            .checked_add(8)
+            .ok_or_else(|| "deepseek range state offset overflow".to_string())?;
+        let bytes = self
+            .payload
+            .get(self.offset..end)
+            .ok_or_else(|| "deepseek range state u64 truncated".to_string())?;
+        self.offset = end;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+    }
+
+    fn f32_vec(&mut self) -> Result<Vec<f32>, String> {
+        let count = usize::try_from(self.u64()?)
+            .map_err(|_| "deepseek range state value count overflow".to_string())?;
+        let bytes = count
+            .checked_mul(4)
+            .ok_or_else(|| "deepseek range state value bytes overflow".to_string())?;
+        let end = self
+            .offset
+            .checked_add(bytes)
+            .ok_or_else(|| "deepseek range state value end overflow".to_string())?;
+        let payload = self
+            .payload
+            .get(self.offset..end)
+            .ok_or_else(|| "deepseek range state values truncated".to_string())?;
+        self.offset = end;
+        Ok(payload
+            .chunks_exact(4)
+            .map(|value| f32::from_le_bytes(value.try_into().expect("four bytes")))
+            .collect())
+    }
+
+    fn compressor(&mut self) -> Result<DeepseekV4FlashCompressorState, String> {
+        let head_dim = usize::try_from(self.u64()?)
+            .map_err(|_| "deepseek compressor head dim overflow".to_string())?;
+        let compress_ratio = usize::try_from(self.u64()?)
+            .map_err(|_| "deepseek compressor ratio overflow".to_string())?;
+        DeepseekV4FlashCompressorState::restore(DeepseekV4FlashCompressorSnapshot {
+            head_dim,
+            compress_ratio,
+            kv: self.f32_vec()?,
+            score: self.f32_vec()?,
+        })
     }
 }
 
@@ -1034,5 +1272,61 @@ mod tests {
             state.layer(43).unwrap_err(),
             "deepseek layer state out of range:43"
         );
+    }
+
+    #[test]
+    fn model_range_state_round_trips_all_attention_kinds() {
+        let mut state = DeepseekV4FlashModelState::new().expect("create model state");
+        let head_dim = DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize;
+        match state.layer_mut(0).expect("dense layer") {
+            DeepseekV4FlashLayerState::Dense(layer) => {
+                layer.push_raw(&vec![1.0; head_dim]).expect("dense KV");
+            }
+            _ => panic!("layer 0 must be dense"),
+        }
+        match state.layer_mut(2).expect("ratio-4 layer") {
+            DeepseekV4FlashLayerState::Ratio4(layer) => {
+                layer
+                    .push_raw(&vec![2.0; head_dim])
+                    .expect("ratio-4 raw KV");
+                layer
+                    .push_compressed(&vec![3.0; head_dim])
+                    .expect("ratio-4 compressed KV");
+                layer
+                    .push_indexer_compressed(&vec![4.0; layer.indexer_head_dim])
+                    .expect("ratio-4 indexer KV");
+            }
+            _ => panic!("layer 2 must be ratio-4"),
+        }
+        match state.layer_mut(3).expect("ratio-128 layer") {
+            DeepseekV4FlashLayerState::Ratio128(layer) => {
+                layer
+                    .push_raw(&vec![5.0; head_dim])
+                    .expect("ratio-128 raw KV");
+                layer
+                    .push_compressed(&vec![6.0; head_dim])
+                    .expect("ratio-128 compressed KV");
+            }
+            _ => panic!("layer 3 must be ratio-128"),
+        }
+
+        let payload = state.encode_range_state(0, 4).expect("encode range state");
+        let mut restored = DeepseekV4FlashModelState::new().expect("create restored state");
+        restored
+            .restore_range_state(0, 4, &payload)
+            .expect("restore range state");
+        assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn model_range_state_rejects_wrong_range_and_trailing_bytes() {
+        let state = DeepseekV4FlashModelState::new().expect("create model state");
+        let payload = state.encode_range_state(2, 3).expect("encode state");
+        let mut restored = DeepseekV4FlashModelState::new().expect("create restored state");
+        assert!(restored.restore_range_state(3, 4, &payload).is_err());
+
+        let mut trailing = payload;
+        trailing.push(0);
+        assert!(restored.restore_range_state(2, 3, &trailing).is_err());
     }
 }

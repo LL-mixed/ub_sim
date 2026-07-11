@@ -9,7 +9,8 @@ use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
 use sim_models::deepseek_v4_flash_gguf::GgufCatalog;
 use sim_topology::SimTopology;
 use sim_uapi::{
-    execute_deepseek_gguf_range_with_progress_through_simpler, set_simpler_dispatch_log_enabled,
+    execute_deepseek_gguf_range_with_progress_through_simpler,
+    execute_deepseek_gguf_sequence_range_through_simpler, set_simpler_dispatch_log_enabled,
     DeepseekV4FlashGgufRangeProgress, DeepseekV4FlashModelState,
 };
 
@@ -19,8 +20,11 @@ struct Args {
     model: PathBuf,
     layer_start: u64,
     layer_end: u64,
-    token: usize,
+    tokens: Vec<usize>,
+    position: u32,
     input: Option<PathBuf>,
+    state_input: Option<PathBuf>,
+    state_output: Option<PathBuf>,
     output: PathBuf,
     logits_output: Option<PathBuf>,
     artifact_dir: PathBuf,
@@ -53,53 +57,92 @@ where
     catalog.validate_deepseek_v4_flash()?;
     let input = args.input.as_ref().map(read_f32).transpose()?;
     let mut state = DeepseekV4FlashModelState::new()?;
+    if let Some(path) = &args.state_input {
+        let payload =
+            fs::read(path).map_err(|err| format!("state_read_failed:{}:{err}", path.display()))?;
+        state.restore_range_state(args.layer_start, args.layer_end, &payload)?;
+    }
     let started = Instant::now();
     let mut previous = started;
-    let execution = execute_deepseek_gguf_range_with_progress_through_simpler(
-        &topology,
-        &TaskKey {
-            logical_system: LogicalSystemId(1),
-            coord: HierarchyCoord { levels: [0; 8] },
-            scope_depth: 0,
-            task_id: 1,
-        },
-        &args.artifact_dir,
-        2_000_000,
-        &catalog,
-        &mut state,
-        args.layer_start,
-        args.layer_end,
-        args.token,
-        0,
-        input.as_deref(),
-        args.logits_output.is_some(),
-        |progress| {
-            let now = Instant::now();
-            eprintln!(
-                "{}",
-                progress_json(
-                    progress,
-                    now.duration_since(previous).as_millis(),
-                    now.duration_since(started).as_millis(),
-                )
-            );
-            previous = now;
-        },
-    )?;
-    write_f32(&args.output, &execution.hidden_hc)?;
-    let top_token = if let (Some(path), Some(logits)) =
-        (args.logits_output.as_ref(), execution.logits.as_ref())
-    {
-        write_f32(path, logits)?;
-        logits
-            .iter()
-            .copied()
-            .enumerate()
-            .max_by(|left, right| left.1.total_cmp(&right.1))
-            .map(|(token, logit)| serde_json::json!({"id": token, "logit": logit}))
-    } else {
-        None
+    let task = TaskKey {
+        logical_system: LogicalSystemId(1),
+        coord: HierarchyCoord { levels: [0; 8] },
+        scope_depth: 0,
+        task_id: 1,
     };
+    let (hidden_hc, logits, loaded_routed_expert_bytes, layer_routes) = if args.tokens.len() == 1 {
+        let execution = execute_deepseek_gguf_range_with_progress_through_simpler(
+            &topology,
+            &task,
+            &args.artifact_dir,
+            2_000_000,
+            &catalog,
+            &mut state,
+            args.layer_start,
+            args.layer_end,
+            args.tokens[0],
+            args.position,
+            input.as_deref(),
+            args.logits_output.is_some(),
+            |progress| {
+                let now = Instant::now();
+                eprintln!(
+                    "{}",
+                    progress_json(
+                        progress,
+                        now.duration_since(previous).as_millis(),
+                        now.duration_since(started).as_millis(),
+                    )
+                );
+                previous = now;
+            },
+        )?;
+        (
+            execution.hidden_hc,
+            execution.logits,
+            execution.loaded_routed_expert_bytes,
+            serde_json::json!(execution.layer_routes),
+        )
+    } else {
+        let execution = execute_deepseek_gguf_sequence_range_through_simpler(
+            &topology,
+            &task,
+            &args.artifact_dir,
+            2_000_000,
+            &catalog,
+            &mut state,
+            args.layer_start,
+            args.layer_end,
+            &args.tokens,
+            args.position,
+            input.as_deref(),
+            args.logits_output.is_some(),
+        )?;
+        (
+            execution.hidden_hc,
+            execution.logits,
+            execution.loaded_routed_expert_bytes,
+            serde_json::json!(execution.token_layer_routes),
+        )
+    };
+    write_f32(&args.output, &hidden_hc)?;
+    if let Some(path) = &args.state_output {
+        let payload = state.encode_range_state(args.layer_start, args.layer_end)?;
+        fs::write(path, payload)
+            .map_err(|err| format!("state_write_failed:{}:{err}", path.display()))?;
+    }
+    let top_token =
+        if let (Some(path), Some(logits)) = (args.logits_output.as_ref(), logits.as_ref()) {
+            write_f32(path, logits)?;
+            logits
+                .iter()
+                .copied()
+                .enumerate()
+                .max_by(|left, right| left.1.total_cmp(&right.1))
+                .map(|(token, logit)| serde_json::json!({"id": token, "logit": logit}))
+        } else {
+            None
+        };
     println!(
         "{}",
         serde_json::json!({
@@ -107,11 +150,13 @@ where
             "operation": "deepseek-layer-range",
             "backend": "simpler-c-api",
             "layers": [args.layer_start, args.layer_end],
-            "token": args.token,
-            "loaded_routed_expert_bytes": execution.loaded_routed_expert_bytes,
-            "layer_routes": execution.layer_routes,
-            "hidden_values": execution.hidden_hc.len(),
+            "tokens": args.tokens,
+            "position": args.position,
+            "loaded_routed_expert_bytes": loaded_routed_expert_bytes,
+            "layer_routes": layer_routes,
+            "hidden_values": hidden_hc.len(),
             "output": args.output,
+            "state_output": args.state_output,
             "logits_output": args.logits_output,
             "top_token": top_token,
         })
@@ -162,7 +207,11 @@ where
         "--model",
         "--layers",
         "--token",
+        "--tokens",
+        "--position",
         "--input",
+        "--state-input",
+        "--state-output",
         "--output",
         "--logits-output",
         "--artifact-dir",
@@ -193,12 +242,22 @@ where
     if layer_start >= layer_end || layer_end > DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
         return Err(format!("invalid_layers:{layer_start}:{layer_end}"));
     }
-    let token_text = required("--token")?;
-    let token = token_text
-        .parse::<usize>()
-        .map_err(|_| format!("invalid_token:{token_text}"))?;
-    if token >= DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize {
-        return Err(format!("invalid_token:{token}"));
+    let tokens = match (options.get("--token"), options.get("--tokens")) {
+        (Some(token), None) => vec![parse_token(token)?],
+        (None, Some(tokens)) => {
+            if tokens.is_empty() {
+                return Err("invalid_tokens:empty".to_string());
+            }
+            tokens
+                .split(',')
+                .map(parse_token)
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        (Some(_), Some(_)) => return Err("token_source_conflict".to_string()),
+        (None, None) => return Err("required_token_source_missing".to_string()),
+    };
+    if tokens.is_empty() {
+        return Err("invalid_tokens:empty".to_string());
     }
     let input = options.get("--input").map(PathBuf::from);
     if layer_start == 0 && input.is_some() {
@@ -221,8 +280,19 @@ where
         model: PathBuf::from(required("--model")?),
         layer_start,
         layer_end,
-        token,
+        tokens,
+        position: options
+            .get("--position")
+            .map(|value| {
+                value
+                    .parse::<u32>()
+                    .map_err(|_| format!("invalid_position:{value}"))
+            })
+            .transpose()?
+            .unwrap_or(0),
         input,
+        state_input: options.get("--state-input").map(PathBuf::from),
+        state_output: options.get("--state-output").map(PathBuf::from),
         output: PathBuf::from(required("--output")?),
         logits_output,
         artifact_dir: options
@@ -235,6 +305,16 @@ where
             .transpose()?
             .unwrap_or(false),
     })
+}
+
+fn parse_token(value: &str) -> Result<usize, String> {
+    let token = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid_token:{value}"))?;
+    if token >= DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize {
+        return Err(format!("invalid_token:{token}"));
+    }
+    Ok(token)
 }
 
 fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
@@ -305,6 +385,8 @@ mod tests {
     fn args_accept_first_and_terminal_ranges() {
         let first = parse_args(base_args("0:6")).unwrap();
         assert_eq!(first.input, None);
+        assert_eq!(first.tokens, vec![108_149]);
+        assert_eq!(first.position, 0);
         assert!(!first.dispatch_log);
         let mut terminal = base_args("38:43");
         terminal.extend([
@@ -323,6 +405,33 @@ mod tests {
     }
 
     #[test]
+    fn args_accept_multi_token_state_round_trip_options() {
+        let args = parse_args([
+            "--model",
+            "model.gguf",
+            "--layers",
+            "6:12",
+            "--tokens",
+            "1,2,3",
+            "--position",
+            "7",
+            "--input",
+            "hidden-in.f32",
+            "--state-input",
+            "state-in.bin",
+            "--state-output",
+            "state-out.bin",
+            "--output",
+            "hidden-out.f32",
+        ])
+        .expect("parse multi-token range");
+        assert_eq!(args.tokens, vec![1, 2, 3]);
+        assert_eq!(args.position, 7);
+        assert_eq!(args.state_input, Some(PathBuf::from("state-in.bin")));
+        assert_eq!(args.state_output, Some(PathBuf::from("state-out.bin")));
+    }
+
+    #[test]
     fn args_fail_closed_on_missing_handoff_and_nonterminal_logits() {
         assert_eq!(
             parse_args(base_args("4:5")).unwrap_err(),
@@ -337,5 +446,8 @@ mod tests {
         let mut args = base_args("0:6");
         args.extend(["--dispatch-log", "yes"]);
         assert_eq!(parse_args(args).unwrap_err(), "invalid_dispatch_log:yes");
+        let mut args = base_args("0:6");
+        args.extend(["--tokens", "1,2"]);
+        assert_eq!(parse_args(args).unwrap_err(), "token_source_conflict");
     }
 }

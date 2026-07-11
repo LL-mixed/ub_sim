@@ -58,6 +58,14 @@ pub struct DeepseekV4FlashGgufRangeExecution {
     pub layer_routes: Vec<Vec<usize>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashGgufSequenceExecution {
+    pub hidden_hc: Vec<f32>,
+    pub logits: Option<Vec<f32>>,
+    pub loaded_routed_expert_bytes: usize,
+    pub token_layer_routes: Vec<Vec<Vec<usize>>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeepseekV4FlashGgufRangeProgress {
     pub layer_id: u64,
@@ -448,6 +456,112 @@ pub fn execute_deepseek_gguf_range_through_simpler(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_gguf_sequence_range_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    catalog: &GgufCatalog,
+    state: &mut DeepseekV4FlashModelState,
+    layer_start: u64,
+    layer_end: u64,
+    token_ids: &[usize],
+    position_start: u32,
+    input_hc: Option<&[f32]>,
+    output_logits: bool,
+) -> Result<DeepseekV4FlashGgufSequenceExecution, String> {
+    let expected_hc =
+        (DEEPSEEK_V4_FLASH_PROFILE.hidden_size * DEEPSEEK_V4_FLASH_PROFILE.hc_mult) as usize;
+    validate_deepseek_gguf_sequence_inputs(
+        layer_start,
+        layer_end,
+        token_ids,
+        input_hc,
+        expected_hc,
+    )?;
+    let mut hidden_hc = Vec::with_capacity(token_ids.len().saturating_mul(expected_hc));
+    let mut logits = None;
+    let mut loaded_routed_expert_bytes = 0usize;
+    let mut token_layer_routes = Vec::with_capacity(token_ids.len());
+    for (token_index, token_id) in token_ids.iter().copied().enumerate() {
+        if token_id >= DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize {
+            return Err(format!("deepseek sequence token out of range:{token_id}"));
+        }
+        let position = position_start
+            .checked_add(token_index as u32)
+            .ok_or_else(|| "deepseek sequence position overflow".to_string())?;
+        let token_input = input_hc.map(|values| {
+            let start = token_index * expected_hc;
+            &values[start..start + expected_hc]
+        });
+        let mut token_task = task.clone();
+        token_task.task_id = task
+            .task_id
+            .saturating_add((token_index as u64).saturating_mul(100_000));
+        let execution = execute_deepseek_gguf_range_through_simpler(
+            topology,
+            &token_task,
+            artifact_dir,
+            segment_base.saturating_add((token_index as u64).saturating_mul(20_000_000)),
+            catalog,
+            state,
+            layer_start,
+            layer_end,
+            token_id,
+            position,
+            token_input,
+            output_logits && token_index + 1 == token_ids.len(),
+        )?;
+        loaded_routed_expert_bytes =
+            loaded_routed_expert_bytes.saturating_add(execution.loaded_routed_expert_bytes);
+        token_layer_routes.push(execution.layer_routes);
+        hidden_hc.extend_from_slice(&execution.hidden_hc);
+        if execution.logits.is_some() {
+            logits = execution.logits;
+        }
+    }
+    Ok(DeepseekV4FlashGgufSequenceExecution {
+        hidden_hc,
+        logits,
+        loaded_routed_expert_bytes,
+        token_layer_routes,
+    })
+}
+
+fn validate_deepseek_gguf_sequence_inputs(
+    layer_start: u64,
+    layer_end: u64,
+    token_ids: &[usize],
+    input_hc: Option<&[f32]>,
+    expected_hc: usize,
+) -> Result<(), String> {
+    if layer_start >= layer_end || layer_end > DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "deepseek sequence range invalid:start={layer_start}:end={layer_end}"
+        ));
+    }
+    if token_ids.is_empty() {
+        return Err("deepseek sequence tokens empty".to_string());
+    }
+    if layer_start == 0 && input_hc.is_some() {
+        return Err("deepseek sequence first range rejects external hidden input".to_string());
+    }
+    if layer_start != 0 {
+        let expected = token_ids
+            .len()
+            .checked_mul(expected_hc)
+            .ok_or_else(|| "deepseek sequence hidden size overflow".to_string())?;
+        let actual = input_hc.map_or(0, <[f32]>::len);
+        if actual != expected {
+            return Err(format!(
+                "deepseek sequence hidden shape mismatch:actual={actual}:expected={expected}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn execute_deepseek_gguf_range_with_progress_through_simpler<F>(
     topology: &SimTopology,
     task: &TaskKey,
@@ -693,4 +807,31 @@ fn read_hash_router_experts(
                 .map_err(|_| format!("deepseek hash router expert invalid:{expert}"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_deepseek_gguf_sequence_inputs;
+
+    #[test]
+    fn sequence_inputs_accept_partitioned_multi_token_hidden() {
+        let hidden = vec![0.0; 3 * 16_384];
+        validate_deepseek_gguf_sequence_inputs(6, 12, &[1, 2, 3], Some(&hidden), 16_384)
+            .expect("valid partitioned sequence");
+    }
+
+    #[test]
+    fn sequence_inputs_reject_missing_or_misaligned_hidden() {
+        assert!(validate_deepseek_gguf_sequence_inputs(6, 12, &[1, 2], None, 16_384).is_err());
+        assert!(validate_deepseek_gguf_sequence_inputs(
+            6,
+            12,
+            &[1, 2],
+            Some(&vec![0.0; 16_384]),
+            16_384,
+        )
+        .is_err());
+        assert!(validate_deepseek_gguf_sequence_inputs(0, 6, &[1], Some(&[]), 16_384).is_err());
+        assert!(validate_deepseek_gguf_sequence_inputs(0, 6, &[], None, 16_384).is_err());
+    }
 }

@@ -715,6 +715,14 @@ pub struct DeepseekV4FlashCompressorState {
     score: Vec<f32>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashCompressorSnapshot {
+    pub head_dim: usize,
+    pub compress_ratio: usize,
+    pub kv: Vec<f32>,
+    pub score: Vec<f32>,
+}
+
 impl DeepseekV4FlashCompressorState {
     pub fn new(head_dim: usize, compress_ratio: usize) -> Result<Self, String> {
         if head_dim == 0 || !matches!(compress_ratio, 4 | 128) {
@@ -751,6 +759,34 @@ impl DeepseekV4FlashCompressorState {
 
     pub fn compress_ratio(&self) -> usize {
         self.compress_ratio
+    }
+
+    pub fn snapshot(&self) -> DeepseekV4FlashCompressorSnapshot {
+        DeepseekV4FlashCompressorSnapshot {
+            head_dim: self.head_dim,
+            compress_ratio: self.compress_ratio,
+            kv: self.kv.clone(),
+            score: self.score.clone(),
+        }
+    }
+
+    pub fn restore(snapshot: DeepseekV4FlashCompressorSnapshot) -> Result<Self, String> {
+        let mut state = Self::new(snapshot.head_dim, snapshot.compress_ratio)?;
+        if snapshot.kv.len() != state.kv.len()
+            || snapshot.score.len() != state.score.len()
+            || snapshot.kv.iter().any(|value| !value.is_finite())
+            || snapshot.score.iter().any(|value| value.is_nan())
+        {
+            return Err(format!(
+                "deepseek compressor snapshot mismatch:kv={}:score={}:expected={}",
+                snapshot.kv.len(),
+                snapshot.score.len(),
+                state.kv.len()
+            ));
+        }
+        state.kv = snapshot.kv;
+        state.score = snapshot.score;
+        Ok(state)
     }
 
     pub fn update_projected(
@@ -1775,6 +1811,27 @@ mod tests {
                 assert!((output[1] - 5.0 * inv_rms).abs() < 1.0e-6);
             }
         }
+    }
+
+    #[test]
+    fn compressor_snapshot_round_trips_partial_window() {
+        let mut state = DeepseekV4FlashCompressorState::new(2, 4).expect("ratio-4 state");
+        state
+            .update_projected(
+                0,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0.0; 4],
+                &[0.0; 4],
+                &[1.0; 2],
+                2,
+                &[1.0],
+                &[0.0],
+            )
+            .expect("partial compressor update");
+
+        let restored = DeepseekV4FlashCompressorState::restore(state.snapshot())
+            .expect("restore compressor state");
+        assert_eq!(restored, state);
     }
 
     #[test]

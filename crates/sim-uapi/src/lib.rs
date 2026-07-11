@@ -6,8 +6,10 @@ mod deepseek_v4_flash_runtime;
 pub use deepseek_v4_flash_gguf_runtime::{
     deepseek_v4_flash_embedding_hc, execute_deepseek_gguf_layer_through_simpler,
     execute_deepseek_gguf_output_head_through_simpler, execute_deepseek_gguf_range_through_simpler,
-    execute_deepseek_gguf_range_with_progress_through_simpler, DeepseekV4FlashGgufLayerExecution,
+    execute_deepseek_gguf_range_with_progress_through_simpler,
+    execute_deepseek_gguf_sequence_range_through_simpler, DeepseekV4FlashGgufLayerExecution,
     DeepseekV4FlashGgufRangeExecution, DeepseekV4FlashGgufRangeProgress,
+    DeepseekV4FlashGgufSequenceExecution,
 };
 
 pub use deepseek_v4_flash_runtime::{
