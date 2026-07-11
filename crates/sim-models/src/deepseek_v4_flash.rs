@@ -123,6 +123,9 @@ pub const DEEPSEEK_V4_FLASH_MODEL_KEY: &str = "deepseek-v4-flash";
 /// Clamp used by the Flash shared and routed expert SwiGLU activation.
 pub const DEEPSEEK_V4_FLASH_SWIGLU_CLAMP: f32 = 10.0;
 
+/// Scale applied after normalizing the six selected router probabilities.
+pub const DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE: f32 = 1.5;
+
 /// Layer range for one pipeline node, using the same base/rem contiguous split
 /// as the guest C helper. For 43 layers / 8 nodes this yields nodes 0-2 owning
 /// 6 layers and nodes 3-7 owning 5 layers.

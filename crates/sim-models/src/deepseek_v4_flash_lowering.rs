@@ -1374,6 +1374,94 @@ pub fn deepseek_v4_flash_swiglu_reference(
         .collect())
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashRouterOutput {
+    pub probabilities: Vec<f32>,
+    pub expert_indices: Vec<usize>,
+    pub expert_weights: Vec<f32>,
+}
+
+/// DS4-compatible router decision. Early hash-routed layers supply explicit
+/// expert IDs; later layers select top-k after adding the optional bias.
+pub fn deepseek_v4_flash_router_reference(
+    logits: &[f32],
+    selection_bias: Option<&[f32]>,
+    selected_experts: Option<&[usize]>,
+    top_k: usize,
+    weight_scale: f32,
+) -> Result<DeepseekV4FlashRouterOutput, String> {
+    if logits.is_empty()
+        || top_k == 0
+        || top_k > logits.len()
+        || !weight_scale.is_finite()
+        || weight_scale <= 0.0
+        || logits.iter().any(|value| !value.is_finite())
+    {
+        return Err(format!(
+            "deepseek router arguments invalid:experts={} top_k={top_k} scale={weight_scale}",
+            logits.len()
+        ));
+    }
+    if selection_bias.is_some_and(|bias| {
+        bias.len() != logits.len() || bias.iter().any(|value| !value.is_finite())
+    }) {
+        return Err("deepseek router selection bias shape invalid".to_string());
+    }
+    let probabilities: Vec<f32> = logits
+        .iter()
+        .map(|logit| {
+            let softplus = if *logit > 20.0 {
+                *logit
+            } else if *logit < -20.0 {
+                logit.exp()
+            } else {
+                logit.exp().ln_1p()
+            };
+            softplus.sqrt()
+        })
+        .collect();
+    let expert_indices = if let Some(selected) = selected_experts {
+        if selected.len() != top_k || selected.iter().any(|expert| *expert >= logits.len()) {
+            return Err("deepseek hash router selection invalid".to_string());
+        }
+        selected.to_vec()
+    } else {
+        let scores: Vec<f32> = probabilities
+            .iter()
+            .enumerate()
+            .map(|(index, probability)| {
+                probability + selection_bias.map_or(0.0, |bias| bias[index])
+            })
+            .collect();
+        let mut selected = Vec::with_capacity(top_k);
+        for expert in 0..scores.len() {
+            let insertion = selected
+                .iter()
+                .position(|current| scores[expert] > scores[*current])
+                .unwrap_or(selected.len());
+            if insertion < top_k {
+                selected.insert(insertion, expert);
+                selected.truncate(top_k);
+            }
+        }
+        selected
+    };
+    let sum = expert_indices
+        .iter()
+        .map(|expert| probabilities[*expert])
+        .sum::<f32>()
+        .max(6.103_515_6e-5);
+    let expert_weights = expert_indices
+        .iter()
+        .map(|expert| probabilities[*expert] / sum * weight_scale)
+        .collect();
+    Ok(DeepseekV4FlashRouterOutput {
+        probabilities,
+        expert_indices,
+        expert_weights,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1391,6 +1479,21 @@ mod tests {
         assert_eq!(output, expected);
         assert!(deepseek_v4_flash_swiglu_reference(&[1.0], &[], 10.0).is_err());
         assert!(deepseek_v4_flash_swiglu_reference(&[f32::NAN], &[1.0], 10.0).is_err());
+    }
+
+    #[test]
+    fn router_supports_topk_bias_and_hash_selection() {
+        let logits = [0.0, 1.0, 2.0, 3.0];
+        let topk =
+            deepseek_v4_flash_router_reference(&logits, Some(&[10.0, 0.0, 0.0, 0.0]), None, 2, 1.5)
+                .expect("route top-k experts");
+        assert_eq!(topk.expert_indices, vec![0, 3]);
+        assert!((topk.expert_weights.iter().sum::<f32>() - 1.5).abs() < 1.0e-6);
+
+        let hash = deepseek_v4_flash_router_reference(&logits, None, Some(&[2, 1]), 2, 1.5)
+            .expect("route hash-selected experts");
+        assert_eq!(hash.expert_indices, vec![2, 1]);
+        assert!((hash.expert_weights.iter().sum::<f32>() - 1.5).abs() < 1.0e-6);
     }
 
     #[test]

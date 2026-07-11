@@ -27,7 +27,9 @@ use sim_core::{
 use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
 use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
-use sim_models::deepseek_v4_flash_gguf::{q8_0_weight_block_kxn, quantize_q8_0_activation};
+use sim_models::deepseek_v4_flash_gguf::{
+    lower_f16_matrix_to_f32_kxn_padded, q8_0_weight_block_kxn, quantize_q8_0_activation,
+};
 use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashGemmPlan;
 use sim_models::engram_context::{
     run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -17300,7 +17302,6 @@ fn run_host_matmul_smoke(topology: &SimTopology, task: &TaskKey) -> Result<Vec<u
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 fn run_host_gemm(
     topology: &SimTopology,
     task: &TaskKey,
@@ -17810,6 +17811,77 @@ pub fn execute_deepseek_q8_projection_through_simpler(
         }
     }
     Ok(output)
+}
+
+/// Execute one DeepSeek F16 matrix projection through the simulator's
+/// production simpler FP32 GEMM path.
+pub fn execute_deepseek_f16_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    f16_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let [k, n] = dimensions else {
+        return Err(format!(
+            "unsupported simpler F16 projection dimensions:{dimensions:?}"
+        ));
+    };
+    let k = usize::try_from(*k).map_err(|_| "F16 projection K too large".to_string())?;
+    let n = usize::try_from(*n).map_err(|_| "F16 projection N too large".to_string())?;
+    const ARTIFACT_M: usize = 128;
+    if k == 0 || k % 128 != 0 || n == 0 || n % 128 != 0 || input.len() != k {
+        return Err(format!(
+            "unsupported simpler F16 projection shape:dimensions={dimensions:?}:input={}",
+            input.len()
+        ));
+    }
+    ensure_simpler_host_fp32_gemm_manifest(manifest_path, ARTIFACT_M as u64, k as u64, n as u64)?;
+    let mut padded_input = vec![0.0f32; ARTIFACT_M * k];
+    padded_input[..k].copy_from_slice(input);
+    let weight = lower_f16_matrix_to_f32_kxn_padded(f16_weight, dimensions, n)?;
+    let output = run_host_gemm(
+        topology,
+        task,
+        manifest_path,
+        f32s_to_bytes(&padded_input),
+        f32s_to_bytes(&weight),
+        ARTIFACT_M,
+        k,
+        n,
+        "fp32",
+        4,
+        "host_fp32_gemm",
+    )?;
+    Ok(output[..n].to_vec())
+}
+
+pub fn execute_deepseek_router_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    f16_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+    selection_bias: Option<&[f32]>,
+    selected_experts: Option<&[usize]>,
+) -> Result<sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput, String> {
+    let logits = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        manifest_path,
+        f16_weight,
+        dimensions,
+        input,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_router_reference(
+        &logits,
+        selection_bias,
+        selected_experts,
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.num_experts_used as usize,
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE,
+    )
 }
 
 /// Execute a DS4-style grouped Q8_0 projection. Each group consumes its own
@@ -27136,8 +27208,9 @@ mod tests {
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
         ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
         ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
+        execute_deepseek_f16_projection_through_simpler,
         execute_deepseek_grouped_q8_projection_through_simpler,
-        execute_deepseek_q8_projection_through_simpler,
+        execute_deepseek_q8_projection_through_simpler, execute_deepseek_router_through_simpler,
         execute_deepseek_shared_expert_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
         f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
@@ -27267,9 +27340,9 @@ mod tests {
         deepseek_v4_flash_hc_attention_input_from_mix_reference,
         deepseek_v4_flash_hc_control_input_reference, deepseek_v4_flash_hc_post_reference,
         deepseek_v4_flash_head_rms_norm_reference, deepseek_v4_flash_rms_norm_reference,
-        deepseek_v4_flash_rope_tail_reference, deepseek_v4_flash_sink_attention_reference,
-        deepseek_v4_flash_swiglu_reference, DeepseekV4FlashDtype, DeepseekV4FlashGemmKind,
-        DeepseekV4FlashGemmPlan,
+        deepseek_v4_flash_rope_tail_reference, deepseek_v4_flash_router_reference,
+        deepseek_v4_flash_sink_attention_reference, deepseek_v4_flash_swiglu_reference,
+        DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -30794,6 +30867,123 @@ mod tests {
                 )
                 .expect("execute real shared expert through simpler");
                 assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_f16_projection_executes_through_production_simpler_gemm() {
+        run_simpler_native_test_isolated(
+            "deepseek_f16_projection_executes_through_production_simpler_gemm",
+            || {
+                const DIM: usize = 128;
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 17) - 8) as f32 / 4.0)
+                    .collect();
+                let mut weight = Vec::with_capacity(DIM * DIM * 2);
+                for output in 0..DIM {
+                    for column in 0..DIM {
+                        let value = if output == column { 0x3800u16 } else { 0u16 };
+                        weight.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                let dimensions = [DIM as u64, DIM as u64];
+                let reference = project_f16_matrix(&weight, &dimensions, &input)
+                    .expect("project F16 reference");
+                let actual = execute_deepseek_f16_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_400,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-f16-projection-test-artifacts")
+                        .join("host_fp32_gemm_manifest.json"),
+                    &weight,
+                    &dimensions,
+                    &input,
+                )
+                .expect("execute F16 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_topk_router_matches_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_topk_router_matches_gguf_reference_when_available",
+            || {
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                let tensor = catalog
+                    .tensor("blk.3.ffn_gate_inp.weight")
+                    .expect("locate real layer-3 router");
+                let weight = catalog
+                    .read_tensor(&tensor.name)
+                    .expect("read real layer-3 router");
+                let logits = project_f16_matrix(&weight, &tensor.dimensions, &input)
+                    .expect("project real router reference");
+                let reference = deepseek_v4_flash_router_reference(
+                    &logits,
+                    None,
+                    None,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.num_experts_used as usize,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE,
+                )
+                .expect("select real top-k router reference");
+                let actual = execute_deepseek_router_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_410,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-real-router-test-artifacts")
+                        .join("host_fp32_gemm_manifest.json"),
+                    &weight,
+                    &tensor.dimensions,
+                    &input,
+                    None,
+                    None,
+                )
+                .expect("execute real top-k router through simpler");
+                assert_eq!(actual.expert_indices, reference.expert_indices);
+                for (index, (actual, expected)) in actual
+                    .probabilities
+                    .iter()
+                    .zip(&reference.probabilities)
+                    .enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() <= 1.0e-6,
+                        "router probability mismatch index={index} actual={actual} expected={expected}"
+                    );
+                }
+                for (index, (actual, expected)) in actual
+                    .expert_weights
+                    .iter()
+                    .zip(&reference.expert_weights)
+                    .enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() <= 1.0e-6,
+                        "router weight mismatch index={index} actual={actual} expected={expected}"
+                    );
+                }
+                assert_eq!(actual.expert_indices.len(), 6);
+                assert!((actual.expert_weights.iter().sum::<f32>() - 1.5).abs() < 1.0e-5);
             },
         );
     }
