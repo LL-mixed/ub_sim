@@ -1,17 +1,28 @@
 //! Guest-visible UAPI surface placeholders.
 
+mod deepseek_v4_flash_gguf_runtime;
 mod deepseek_v4_flash_runtime;
 
+pub use deepseek_v4_flash_gguf_runtime::{
+    deepseek_v4_flash_embedding_hc, execute_deepseek_gguf_layer_through_simpler,
+    execute_deepseek_gguf_output_head_through_simpler, execute_deepseek_gguf_range_through_simpler,
+    execute_deepseek_gguf_range_with_progress_through_simpler, DeepseekV4FlashGgufLayerExecution,
+    DeepseekV4FlashGgufRangeExecution, DeepseekV4FlashGgufRangeProgress,
+};
+
 pub use deepseek_v4_flash_runtime::{
+    execute_deepseek_dense_layer_through_simpler,
     execute_deepseek_ratio128_attention_through_simpler,
     execute_deepseek_ratio128_layer_through_simpler,
     execute_deepseek_ratio4_attention_through_simpler,
-    execute_deepseek_ratio4_layer_through_simpler, DeepseekV4FlashRatio128AttentionExecution,
-    DeepseekV4FlashRatio128AttentionState, DeepseekV4FlashRatio128AttentionWeights,
-    DeepseekV4FlashRatio128LayerExecution, DeepseekV4FlashRatio128LayerWeights,
-    DeepseekV4FlashRatio4AttentionExecution, DeepseekV4FlashRatio4AttentionState,
-    DeepseekV4FlashRatio4AttentionWeights, DeepseekV4FlashRatio4LayerExecution,
-    DeepseekV4FlashRatio4LayerWeights,
+    execute_deepseek_ratio4_layer_through_simpler, DeepseekV4FlashDenseAttentionState,
+    DeepseekV4FlashDenseLayerExecution, DeepseekV4FlashDenseLayerWeights,
+    DeepseekV4FlashLayerState, DeepseekV4FlashModelState,
+    DeepseekV4FlashRatio128AttentionExecution, DeepseekV4FlashRatio128AttentionState,
+    DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerExecution,
+    DeepseekV4FlashRatio128LayerWeights, DeepseekV4FlashRatio4AttentionExecution,
+    DeepseekV4FlashRatio4AttentionState, DeepseekV4FlashRatio4AttentionWeights,
+    DeepseekV4FlashRatio4LayerExecution, DeepseekV4FlashRatio4LayerWeights,
 };
 
 use std::cell::RefCell;
@@ -18060,6 +18071,84 @@ pub fn execute_deepseek_routed_experts_through_simpler(
     Ok(output)
 }
 
+pub struct DeepseekV4FlashExpertSliceWeights<'a> {
+    pub logical_expert: usize,
+    pub gate: &'a [u8],
+    pub gate_dimensions: &'a [u64],
+    pub up: &'a [u8],
+    pub up_dimensions: &'a [u64],
+    pub down: &'a [u8],
+    pub down_dimensions: &'a [u64],
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_expert_slices_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    experts: &[DeepseekV4FlashExpertSliceWeights<'_>],
+    selected_experts: &[usize],
+    expert_weights: &[f32],
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if experts.is_empty()
+        || experts.len() != selected_experts.len()
+        || experts.len() != expert_weights.len()
+    {
+        return Err(format!(
+            "deepseek expert slice selection mismatch:slices={}:experts={}:weights={}",
+            experts.len(),
+            selected_experts.len(),
+            expert_weights.len()
+        ));
+    }
+    let output_size = input.len();
+    let mut output = vec![0.0f32; output_size];
+    for (slot, ((weights, &logical_expert), &expert_weight)) in experts
+        .iter()
+        .zip(selected_experts)
+        .zip(expert_weights)
+        .enumerate()
+    {
+        if weights.logical_expert != logical_expert {
+            return Err(format!(
+                "deepseek expert slice id mismatch:slot={slot}:slice={}:selected={logical_expert}",
+                weights.logical_expert
+            ));
+        }
+        let mut expert_task = task.clone();
+        expert_task.task_id = task.task_id.saturating_add((slot as u64).saturating_mul(3));
+        let expert_output = execute_deepseek_routed_expert_through_simpler(
+            topology,
+            &expert_task,
+            artifact_dir,
+            segment_base.saturating_add((slot as u64).saturating_mul(100)),
+            weights.gate,
+            weights.gate_dimensions,
+            weights.up,
+            weights.up_dimensions,
+            weights.down,
+            weights.down_dimensions,
+            0,
+            expert_weight,
+            input,
+            clamp,
+        )?;
+        if expert_output.len() != output_size {
+            return Err(format!(
+                "deepseek expert slice output size mismatch:slot={slot}:actual={}:expected={output_size}",
+                expert_output.len()
+            ));
+        }
+        for (accumulator, value) in output.iter_mut().zip(expert_output) {
+            *accumulator += value;
+        }
+    }
+    Ok(output)
+}
+
 pub struct DeepseekV4FlashMoeWeights<'a> {
     pub router: &'a [u8],
     pub router_dimensions: &'a [u64],
@@ -18098,6 +18187,30 @@ pub struct DeepseekV4FlashFfnExecution {
     pub normalized_hidden: Vec<f32>,
     pub moe_output: Vec<f32>,
     pub output_hc: Vec<f32>,
+}
+
+pub struct DeepseekV4FlashFfnStaticWeights<'a> {
+    pub hc_function: &'a [u8],
+    pub hc_function_dimensions: &'a [u64],
+    pub hc_scale: &'a [f32],
+    pub hc_base: &'a [f32],
+    pub ffn_norm: &'a [f32],
+    pub router: &'a [u8],
+    pub router_dimensions: &'a [u64],
+    pub shared_gate: &'a [u8],
+    pub shared_gate_dimensions: &'a [u64],
+    pub shared_up: &'a [u8],
+    pub shared_up_dimensions: &'a [u64],
+    pub shared_down: &'a [u8],
+    pub shared_down_dimensions: &'a [u64],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashPreparedFfn {
+    pub router: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput,
+    pub normalized_hidden: Vec<f32>,
+    residual_hc: Vec<f32>,
+    split: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashHcSplit,
 }
 
 pub struct DeepseekV4FlashAttentionWeights<'a> {
@@ -18318,6 +18431,162 @@ pub fn execute_deepseek_ffn_through_simpler(
         router: moe.router,
         normalized_hidden,
         moe_output: moe.output,
+        output_hc,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_deepseek_ffn_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    weights: &DeepseekV4FlashFfnStaticWeights<'_>,
+    residual_hc: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    eps: f32,
+) -> Result<DeepseekV4FlashPreparedFfn, String> {
+    let hidden_size = weights.ffn_norm.len();
+    let hc_size = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek prepared FFN HC size overflow".to_string())?;
+    let mix_size = hc_mult
+        .checked_mul(hc_mult.saturating_add(2))
+        .ok_or_else(|| "deepseek prepared FFN HC mix size overflow".to_string())?;
+    if hidden_size == 0
+        || hc_mult == 0
+        || residual_hc.len() != hc_size
+        || weights.hc_function_dimensions != [hc_size as u64, mix_size as u64]
+    {
+        return Err(format!(
+            "deepseek prepared FFN HC shape mismatch:residual={}:norm={hidden_size}:hc_mult={hc_mult}:function={:?}",
+            residual_hc.len(), weights.hc_function_dimensions
+        ));
+    }
+    let control_input =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_control_input_reference(
+            residual_hc,
+            hidden_size,
+            hc_mult,
+            eps,
+        )?;
+    let control = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("hc").join("host_fp32_gemm_manifest.json"),
+        weights.hc_function,
+        weights.hc_function_dimensions,
+        &control_input,
+    )?;
+    let split = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+        &control,
+        weights.hc_scale,
+        weights.hc_base,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+    )?;
+    let mixed_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+            residual_hc,
+            &split.pre,
+            hidden_size,
+        )?;
+    let normalized_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &mixed_hidden,
+            Some(weights.ffn_norm),
+            eps,
+        )?;
+    let mut router_task = task.clone();
+    router_task.task_id = task.task_id.saturating_add(1);
+    let router = execute_deepseek_router_through_simpler(
+        topology,
+        &router_task,
+        &artifact_dir
+            .join("moe/router")
+            .join("host_fp32_gemm_manifest.json"),
+        weights.router,
+        weights.router_dimensions,
+        &normalized_hidden,
+        selection_bias,
+        hash_selected_experts,
+    )?;
+    Ok(DeepseekV4FlashPreparedFfn {
+        router,
+        normalized_hidden,
+        residual_hc: residual_hc.to_vec(),
+        split,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn finish_deepseek_ffn_with_expert_slices_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashFfnStaticWeights<'_>,
+    prepared: DeepseekV4FlashPreparedFfn,
+    experts: &[DeepseekV4FlashExpertSliceWeights<'_>],
+    clamp: f32,
+) -> Result<DeepseekV4FlashFfnExecution, String> {
+    let mut routed_task = task.clone();
+    routed_task.task_id = task.task_id.saturating_add(2);
+    let routed = execute_deepseek_expert_slices_through_simpler(
+        topology,
+        &routed_task,
+        &artifact_dir.join("moe/routed"),
+        segment_base.saturating_add(100),
+        experts,
+        &prepared.router.expert_indices,
+        &prepared.router.expert_weights,
+        &prepared.normalized_hidden,
+        clamp,
+    )?;
+    let mut shared_task = task.clone();
+    shared_task.task_id = task
+        .task_id
+        .saturating_add(2)
+        .saturating_add((experts.len() as u64).saturating_mul(3));
+    let shared = execute_deepseek_shared_expert_through_simpler(
+        topology,
+        &shared_task,
+        &artifact_dir.join("moe/shared"),
+        segment_base.saturating_add(1_000),
+        weights.shared_gate,
+        weights.shared_gate_dimensions,
+        weights.shared_up,
+        weights.shared_up_dimensions,
+        weights.shared_down,
+        weights.shared_down_dimensions,
+        &prepared.normalized_hidden,
+        clamp,
+    )?;
+    if routed.len() != shared.len() {
+        return Err(format!(
+            "deepseek sliced MoE routed/shared output mismatch:routed={}:shared={}",
+            routed.len(),
+            shared.len()
+        ));
+    }
+    let moe_output = routed
+        .into_iter()
+        .zip(shared)
+        .map(|(routed, shared)| routed + shared)
+        .collect::<Vec<_>>();
+    let output_hc = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+        &moe_output,
+        &prepared.residual_hc,
+        &prepared.split.post,
+        &prepared.split.combine,
+    )?;
+    Ok(DeepseekV4FlashFfnExecution {
+        router: prepared.router,
+        normalized_hidden: prepared.normalized_hidden,
+        moe_output,
         output_hc,
     })
 }
@@ -28082,7 +28351,8 @@ mod tests {
         execute_deepseek_routed_expert_through_simpler,
         execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
         execute_deepseek_shared_expert_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
-        f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
+        f32s_to_bytes, find_u64_marker, finish_deepseek_ffn_with_expert_slices_through_simpler,
+        kvcache_input_b_payload, prepare_deepseek_ffn_through_simpler,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -28161,6 +28431,7 @@ mod tests {
         run_host_quantized_gemm_smoke, run_qwen3_dense_reference_prefill_runtime,
         validate_qwen3_range_dispatch_object_refs, write_u64_le_at,
         DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights,
+        DeepseekV4FlashExpertSliceWeights, DeepseekV4FlashFfnStaticWeights,
         DeepseekV4FlashFfnWeights, DeepseekV4FlashIndexerWeights, DeepseekV4FlashMoeWeights,
         DeepseekV4FlashProjectionFormat, DeepseekV4FlashRatio128AttentionState,
         DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerWeights,
@@ -31624,11 +31895,14 @@ mod tests {
                 let n = tensor.dimensions[1] as usize;
                 let row_bytes = (k / 256) * Q2_K_BLOCK_BYTES;
                 let expert_bytes = n * row_bytes;
-                let all_weights = catalog
-                    .read_tensor(&tensor.name)
-                    .expect("read real routed down tensor");
                 let start = EXPERT * expert_bytes;
-                let weight = all_weights[start..start + OUTPUT_ROWS * row_bytes].to_vec();
+                let weight = catalog
+                    .read_tensor_byte_range(
+                        &tensor.name,
+                        start as u64,
+                        (OUTPUT_ROWS * row_bytes) as u64,
+                    )
+                    .expect("read selected real routed down rows");
                 let input = catalog
                     .read_f16_matrix_row("token_embd.weight", 108_149)
                     .expect("read real token embedding")[..k]
@@ -31734,11 +32008,14 @@ mod tests {
                 let n = tensor.dimensions[1] as usize;
                 let row_bytes = (k / 256) * IQ2_XXS_BLOCK_BYTES;
                 let expert_bytes = n * row_bytes;
-                let all_weights = catalog
-                    .read_tensor(&tensor.name)
-                    .expect("read real routed gate tensor");
                 let start = EXPERT * expert_bytes;
-                let weight = all_weights[start..start + OUTPUT_ROWS * row_bytes].to_vec();
+                let weight = catalog
+                    .read_tensor_byte_range(
+                        &tensor.name,
+                        start as u64,
+                        (OUTPUT_ROWS * row_bytes) as u64,
+                    )
+                    .expect("read selected real routed gate rows");
                 let input = catalog
                     .read_f16_matrix_row("token_embd.weight", 108_149)
                     .expect("read real token embedding");
@@ -32136,6 +32413,84 @@ mod tests {
                     10.0,
                 )
                 .expect("execute complete FFN through simpler");
+                let iq2_expert_bytes = iq2_weight.len() / EXPERTS;
+                let q2_expert_bytes = q2_weight.len() / EXPERTS;
+                let iq2_slices = SELECTED
+                    .iter()
+                    .map(|expert| {
+                        iq2_weight[*expert * iq2_expert_bytes..(*expert + 1) * iq2_expert_bytes]
+                            .to_vec()
+                    })
+                    .collect::<Vec<_>>();
+                let q2_slices = SELECTED
+                    .iter()
+                    .map(|expert| {
+                        q2_weight[*expert * q2_expert_bytes..(*expert + 1) * q2_expert_bytes]
+                            .to_vec()
+                    })
+                    .collect::<Vec<_>>();
+                let sliced_dimensions = [DIM as u64, DIM as u64, 1];
+                let expert_slices = SELECTED
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, expert)| DeepseekV4FlashExpertSliceWeights {
+                        logical_expert: *expert,
+                        gate: &iq2_slices[slot],
+                        gate_dimensions: &sliced_dimensions,
+                        up: &iq2_slices[slot],
+                        up_dimensions: &sliced_dimensions,
+                        down: &q2_slices[slot],
+                        down_dimensions: &sliced_dimensions,
+                    })
+                    .collect::<Vec<_>>();
+                let static_weights = DeepseekV4FlashFfnStaticWeights {
+                    hc_function: &hc_function,
+                    hc_function_dimensions: &hc_dimensions,
+                    hc_scale: &[1.0; 3],
+                    hc_base: &[0.0; 3],
+                    ffn_norm: &[1.0; DIM],
+                    router: &router_weight,
+                    router_dimensions: &router_dimensions,
+                    shared_gate: &shared_gate,
+                    shared_gate_dimensions: &shared_dimensions,
+                    shared_up: &shared_up,
+                    shared_up_dimensions: &shared_dimensions,
+                    shared_down: &shared_down,
+                    shared_down_dimensions: &shared_dimensions,
+                };
+                let sliced_task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 270,
+                };
+                let sliced_artifacts =
+                    std::env::temp_dir().join("simpler-deepseek-sliced-ffn-test-artifacts");
+                let prepared = prepare_deepseek_ffn_through_simpler(
+                    &test_topology(),
+                    &sliced_task,
+                    &sliced_artifacts,
+                    &static_weights,
+                    &residual_hc,
+                    None,
+                    Some(&SELECTED),
+                    1,
+                    20,
+                    1.0e-6,
+                )
+                .expect("prepare sliced FFN");
+                let sliced = finish_deepseek_ffn_with_expert_slices_through_simpler(
+                    &test_topology(),
+                    &sliced_task,
+                    &sliced_artifacts,
+                    220_000,
+                    &static_weights,
+                    prepared,
+                    &expert_slices,
+                    10.0,
+                )
+                .expect("finish sliced FFN");
+                assert_eq!(sliced, execution);
                 assert_eq!(execution.router.expert_indices, SELECTED);
                 assert_eq!(execution.output_hc.len(), DIM);
                 assert_eq!(execution.moe_output.len(), DIM);

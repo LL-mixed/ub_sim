@@ -216,8 +216,31 @@ impl GgufCatalog {
 
     pub fn read_tensor(&self, name: &str) -> Result<Vec<u8>, String> {
         let tensor = self.tensor(name)?;
-        let bytes = usize::try_from(tensor.bytes)
-            .map_err(|_| format!("deepseek_gguf_tensor_too_large_to_read:{name}"))?;
+        self.read_tensor_byte_range(name, 0, tensor.bytes)
+    }
+
+    pub fn read_tensor_byte_range(
+        &self,
+        name: &str,
+        offset: u64,
+        bytes: u64,
+    ) -> Result<Vec<u8>, String> {
+        let tensor = self.tensor(name)?;
+        let end = offset
+            .checked_add(bytes)
+            .ok_or_else(|| format!("deepseek_gguf_tensor_range_overflow:{name}"))?;
+        if end > tensor.bytes {
+            return Err(format!(
+                "deepseek_gguf_tensor_range_out_of_bounds:{name}:offset={offset}:bytes={bytes}:tensor_bytes={}",
+                tensor.bytes
+            ));
+        }
+        let bytes = usize::try_from(bytes)
+            .map_err(|_| format!("deepseek_gguf_tensor_range_too_large:{name}"))?;
+        let absolute_offset = tensor
+            .absolute_offset
+            .checked_add(offset)
+            .ok_or_else(|| format!("deepseek_gguf_tensor_absolute_offset_overflow:{name}"))?;
         let mut reader = File::open(&self.path).map_err(|err| {
             format!(
                 "deepseek_gguf_tensor_open_failed:{}:{err}",
@@ -225,13 +248,46 @@ impl GgufCatalog {
             )
         })?;
         reader
-            .seek(SeekFrom::Start(tensor.absolute_offset))
+            .seek(SeekFrom::Start(absolute_offset))
             .map_err(|err| format!("deepseek_gguf_tensor_seek_failed:{name}:{err}"))?;
         let mut payload = vec![0u8; bytes];
         reader
             .read_exact(&mut payload)
             .map_err(|err| format!("deepseek_gguf_tensor_read_failed:{name}:{err}"))?;
         Ok(payload)
+    }
+
+    pub fn read_expert_tensor_slice(
+        &self,
+        name: &str,
+        expert: usize,
+    ) -> Result<(Vec<u8>, Vec<u64>), String> {
+        let tensor = self.tensor(name)?;
+        if tensor.dimensions.len() != 3 {
+            return Err(format!(
+                "deepseek_gguf_expert_tensor_rank_invalid:{name}:rank={}",
+                tensor.dimensions.len()
+            ));
+        }
+        let experts = usize::try_from(tensor.dimensions[2])
+            .map_err(|_| format!("deepseek_gguf_expert_count_too_large:{name}"))?;
+        if expert >= experts {
+            return Err(format!(
+                "deepseek_gguf_expert_out_of_range:{name}:expert={expert}:experts={experts}"
+            ));
+        }
+        if tensor.bytes % tensor.dimensions[2] != 0 {
+            return Err(format!(
+                "deepseek_gguf_expert_tensor_bytes_unaligned:{name}:bytes={}:experts={experts}",
+                tensor.bytes
+            ));
+        }
+        let expert_bytes = tensor.bytes / tensor.dimensions[2];
+        let offset = (expert as u64)
+            .checked_mul(expert_bytes)
+            .ok_or_else(|| format!("deepseek_gguf_expert_offset_overflow:{name}"))?;
+        let payload = self.read_tensor_byte_range(name, offset, expert_bytes)?;
+        Ok((payload, vec![tensor.dimensions[0], tensor.dimensions[1], 1]))
     }
 
     pub fn read_f16_matrix_row(&self, name: &str, row: usize) -> Result<Vec<f32>, String> {
@@ -1392,7 +1448,7 @@ mod tests {
         let mut output = Vec::new();
         output.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
         output.extend_from_slice(&GGUF_VERSION.to_le_bytes());
-        output.extend_from_slice(&2u64.to_le_bytes());
+        output.extend_from_slice(&3u64.to_le_bytes());
         output.extend_from_slice(&3u64.to_le_bytes());
         push_u32_metadata(&mut output, "general.alignment", 32);
         push_u32_metadata(&mut output, "deepseek4.block_count", 43);
@@ -1414,14 +1470,25 @@ mod tests {
         output.extend_from_slice(&24u32.to_le_bytes());
         output.extend_from_slice(&32u64.to_le_bytes());
 
+        push_string(&mut output, "blk.0.ffn_gate_exps.weight");
+        output.extend_from_slice(&3u32.to_le_bytes());
+        output.extend_from_slice(&2u64.to_le_bytes());
+        output.extend_from_slice(&2u64.to_le_bytes());
+        output.extend_from_slice(&3u64.to_le_bytes());
+        output.extend_from_slice(&24u32.to_le_bytes());
+        output.extend_from_slice(&64u64.to_le_bytes());
+
         while output.len() % 32 != 0 {
             output.push(0);
         }
+        let tensor_data_start = output.len();
         for value in [0x3c00u16, 0x4000, 0x4200, 0x4400, 0xbc00, 0x3800, 0, 0x4800] {
             output.extend_from_slice(&value.to_le_bytes());
         }
         output.resize(output.len() + 16, 0);
         output.extend_from_slice(&[9, 8, 7, 6, 5, 4]);
+        output.resize(tensor_data_start + 64, 0);
+        output.extend_from_slice(&[10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33]);
         output
     }
 
@@ -1475,6 +1542,31 @@ mod tests {
                 catalog.read_tensor(&q_b.name).unwrap(),
                 vec![9, 8, 7, 6, 5, 4]
             );
+        });
+    }
+
+    #[test]
+    fn reads_only_the_selected_expert_tensor_slice() {
+        with_fixture(&fixture_bytes(), |path| {
+            let catalog = GgufCatalog::open(path).expect("parse GGUF fixture");
+            let name = "blk.0.ffn_gate_exps.weight";
+            assert_eq!(
+                catalog.read_tensor_byte_range(name, 4, 4).unwrap(),
+                vec![20, 21, 22, 23]
+            );
+            let (payload, dimensions) = catalog
+                .read_expert_tensor_slice(name, 2)
+                .expect("read expert 2 only");
+            assert_eq!(payload, vec![30, 31, 32, 33]);
+            assert_eq!(dimensions, vec![2, 2, 1]);
+            assert!(catalog
+                .read_expert_tensor_slice(name, 3)
+                .unwrap_err()
+                .contains("expert_out_of_range"));
+            assert!(catalog
+                .read_tensor_byte_range(name, 10, 3)
+                .unwrap_err()
+                .contains("range_out_of_bounds"));
         });
     }
 

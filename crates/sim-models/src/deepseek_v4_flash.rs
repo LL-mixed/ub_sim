@@ -129,6 +129,74 @@ pub const DEEPSEEK_V4_FLASH_RMS_EPS: f32 = 1.0e-6;
 /// Scale applied after normalizing the six selected router probabilities.
 pub const DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE: f32 = 1.5;
 
+const DEEPSEEK_V4_FLASH_ROPE_FREQ_BASE: f32 = 10_000.0;
+const DEEPSEEK_V4_FLASH_COMPRESS_ROPE_FREQ_BASE: f32 = 160_000.0;
+const DEEPSEEK_V4_FLASH_ROPE_SCALE_FACTOR: f32 = 16.0;
+const DEEPSEEK_V4_FLASH_ROPE_YARN_BETA_FAST: f32 = 32.0;
+const DEEPSEEK_V4_FLASH_ROPE_YARN_BETA_SLOW: f32 = 1.0;
+const DEEPSEEK_V4_FLASH_ROPE_ORIGINAL_CONTEXT: f32 = 65_536.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashRopeCoefficients {
+    pub cos: Vec<f32>,
+    pub sin: Vec<f32>,
+}
+
+/// Produces the exact per-layer RoPE coefficients used by the DS4 Flash
+/// reference. Compressed layers use the long-context base and YaRN
+/// interpolation; dense layers use ordinary base-10000 RoPE.
+pub fn deepseek_v4_flash_rope_coefficients(
+    layer_id: u64,
+    position: u32,
+) -> Result<DeepseekV4FlashRopeCoefficients, String> {
+    let ratio = deepseek_v4_flash_layer_compress_ratio(layer_id)
+        .ok_or_else(|| format!("deepseek rope layer out of range:{layer_id}"))?;
+    let rope_dim = usize::try_from(DEEPSEEK_V4_FLASH_PROFILE.qk_rope_head_dim)
+        .map_err(|_| "deepseek rope dimension too large".to_string())?;
+    let compressed = ratio != 0;
+    let freq_base = if compressed {
+        DEEPSEEK_V4_FLASH_COMPRESS_ROPE_FREQ_BASE
+    } else {
+        DEEPSEEK_V4_FLASH_ROPE_FREQ_BASE
+    };
+    let freq_scale = if compressed {
+        DEEPSEEK_V4_FLASH_ROPE_SCALE_FACTOR.recip()
+    } else {
+        1.0
+    };
+    let theta_scale = freq_base.powf(-2.0 / rope_dim as f32);
+    let correction = |rotation: f32| {
+        rope_dim as f32
+            * (DEEPSEEK_V4_FLASH_ROPE_ORIGINAL_CONTEXT / (rotation * 2.0 * std::f32::consts::PI))
+                .ln()
+            / (2.0 * freq_base.ln())
+    };
+    let correction_low = correction(DEEPSEEK_V4_FLASH_ROPE_YARN_BETA_FAST)
+        .floor()
+        .max(0.0);
+    let correction_high = correction(DEEPSEEK_V4_FLASH_ROPE_YARN_BETA_SLOW)
+        .ceil()
+        .min((rope_dim - 1) as f32);
+
+    let mut cos = Vec::with_capacity(rope_dim / 2);
+    let mut sin = Vec::with_capacity(rope_dim / 2);
+    let mut theta_extrap = position as f32;
+    for pair in 0..rope_dim / 2 {
+        let theta = if compressed {
+            let y = (pair as f32 - correction_low) / (correction_high - correction_low).max(0.001);
+            let ramp_mix = 1.0 - y.clamp(0.0, 1.0);
+            let theta_interp = freq_scale * theta_extrap;
+            theta_interp * (1.0 - ramp_mix) + theta_extrap * ramp_mix
+        } else {
+            theta_extrap
+        };
+        cos.push(theta.cos());
+        sin.push(theta.sin());
+        theta_extrap *= theta_scale;
+    }
+    Ok(DeepseekV4FlashRopeCoefficients { cos, sin })
+}
+
 /// Layer range for one pipeline node, using the same base/rem contiguous split
 /// as the guest C helper. For 43 layers / 8 nodes this yields nodes 0-2 owning
 /// 6 layers and nodes 3-7 owning 5 layers.
@@ -287,6 +355,43 @@ mod tests {
         assert_eq!(
             deepseek_v4_flash_range_kv_state_bytes(0, 6),
             Some(6 * 1 * 512 * 2 * 4)
+        );
+    }
+
+    #[test]
+    fn flash_rope_coefficients_follow_dense_and_compressed_layer_rules() {
+        let dense =
+            deepseek_v4_flash_rope_coefficients(0, 17).expect("dense layer RoPE coefficients");
+        let compressed =
+            deepseek_v4_flash_rope_coefficients(4, 17).expect("compressed layer RoPE coefficients");
+        assert_eq!(dense.cos.len(), 32);
+        assert_eq!(dense.sin.len(), 32);
+        assert!((dense.cos[0] - 17.0f32.cos()).abs() < 1.0e-6);
+        assert!((dense.sin[0] - 17.0f32.sin()).abs() < 1.0e-6);
+        assert!(dense
+            .cos
+            .iter()
+            .chain(&dense.sin)
+            .all(|value| value.is_finite()));
+        assert!(compressed
+            .cos
+            .iter()
+            .chain(&compressed.sin)
+            .all(|value| value.is_finite()));
+        assert_ne!(dense, compressed);
+    }
+
+    #[test]
+    fn flash_rope_coefficients_are_identity_at_position_zero() {
+        for layer in [0, 2, 3, 42] {
+            let coefficients = deepseek_v4_flash_rope_coefficients(layer, 0)
+                .expect("position-zero RoPE coefficients");
+            assert!(coefficients.cos.iter().all(|value| *value == 1.0));
+            assert!(coefficients.sin.iter().all(|value| *value == 0.0));
+        }
+        assert_eq!(
+            deepseek_v4_flash_rope_coefficients(43, 0).unwrap_err(),
+            "deepseek rope layer out of range:43"
         );
     }
 }

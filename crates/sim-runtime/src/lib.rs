@@ -2226,9 +2226,7 @@ impl LocalRuntimeEngine {
                 &runtime_artifacts.host_runtime_library,
             )?;
             detail_load_runtime_ms = detail_started.elapsed().as_millis();
-            // Dispatch gets a fresh context because HostBuildGraph DeviceRunner
-            // state is not reusable without the currently-unsafe device
-            // finalization path. Copy operations keep their own cached context.
+            // Each dispatch owns and finalizes its native runner context.
             let detail_started = Instant::now();
             let ctx = api
                 .create_context()

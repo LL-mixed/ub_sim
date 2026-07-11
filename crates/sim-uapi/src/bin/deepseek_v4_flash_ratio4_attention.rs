@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use sim_config::ScenarioConfig;
 use sim_core::{HierarchyCoord, LogicalSystemId, TaskKey};
 use sim_models::deepseek_v4_flash::{
-    deepseek_v4_flash_layer_compress_ratio, DEEPSEEK_V4_FLASH_PROFILE, DEEPSEEK_V4_FLASH_RMS_EPS,
+    deepseek_v4_flash_layer_compress_ratio, deepseek_v4_flash_rope_coefficients,
+    DEEPSEEK_V4_FLASH_PROFILE, DEEPSEEK_V4_FLASH_RMS_EPS,
 };
 use sim_models::deepseek_v4_flash_gguf::{decode_f16_tensor, decode_f32_tensor, GgufCatalog};
 use sim_topology::SimTopology;
@@ -22,10 +23,6 @@ struct Args {
     model: PathBuf,
     layer: u64,
     input: PathBuf,
-    rope_cos: PathBuf,
-    rope_sin: PathBuf,
-    compressed_rope_cos: PathBuf,
-    compressed_rope_sin: PathBuf,
     output: PathBuf,
     artifact_dir: PathBuf,
 }
@@ -139,7 +136,6 @@ where
     let hidden_size = DEEPSEEK_V4_FLASH_PROFILE.hidden_size as usize;
     let hc_mult = DEEPSEEK_V4_FLASH_PROFILE.hc_mult as usize;
     let head_dim = DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize;
-    let rope_values = DEEPSEEK_V4_FLASH_PROFILE.qk_rope_head_dim as usize / 2;
     let residuals = read_f32(&args.input)?;
     let row_values = hidden_size * hc_mult;
     if residuals.len() != row_values * 4 {
@@ -149,22 +145,6 @@ where
             row_values * 4
         ));
     }
-    let rope_cos = read_f32(&args.rope_cos)?;
-    let rope_sin = read_f32(&args.rope_sin)?;
-    if rope_cos.len() != rope_values * 4 || rope_sin.len() != rope_values * 4 {
-        return Err(format!(
-            "deepseek_ratio4_rope_shape_invalid:cos={}:sin={}:expected={}",
-            rope_cos.len(),
-            rope_sin.len(),
-            rope_values * 4
-        ));
-    }
-    let compressed_rope_cos = read_f32(&args.compressed_rope_cos)?;
-    let compressed_rope_sin = read_f32(&args.compressed_rope_sin)?;
-    if compressed_rope_cos.len() != rope_values || compressed_rope_sin.len() != rope_values {
-        return Err("deepseek_ratio4_compressed_rope_shape_invalid".to_string());
-    }
-
     let weights = DeepseekV4FlashRatio4AttentionWeights {
         attention: DeepseekV4FlashAttentionWeights {
             hc_function: &hc_function.payload,
@@ -219,7 +199,9 @@ where
     let mut outputs = Vec::with_capacity(residuals.len());
     let mut selected = Vec::new();
     for position in 0..4usize {
-        let rope_start = position * rope_values;
+        let rope = deepseek_v4_flash_rope_coefficients(args.layer, position as u32)?;
+        let compressed_position = (position + 1).saturating_sub(4) as u32;
+        let compressed_rope = deepseek_v4_flash_rope_coefficients(args.layer, compressed_position)?;
         let execution = execute_deepseek_ratio4_attention_through_simpler(
             &topology,
             &TaskKey {
@@ -234,10 +216,10 @@ where
             &weights,
             &residuals[position * row_values..(position + 1) * row_values],
             position as u32,
-            &rope_cos[rope_start..rope_start + rope_values],
-            &rope_sin[rope_start..rope_start + rope_values],
-            &compressed_rope_cos,
-            &compressed_rope_sin,
+            &rope.cos,
+            &rope.sin,
+            &compressed_rope.cos,
+            &compressed_rope.sin,
             hc_mult,
             DEEPSEEK_V4_FLASH_PROFILE.hc_sinkhorn_iters as usize,
             DEEPSEEK_V4_FLASH_PROFILE.num_attention_heads as usize,
@@ -295,10 +277,6 @@ where
         "--model",
         "--layer",
         "--input",
-        "--rope-cos",
-        "--rope-sin",
-        "--compressed-rope-cos",
-        "--compressed-rope-sin",
         "--output",
         "--artifact-dir",
     ];
@@ -331,10 +309,6 @@ where
         model: PathBuf::from(required("--model")?),
         layer,
         input: PathBuf::from(required("--input")?),
-        rope_cos: PathBuf::from(required("--rope-cos")?),
-        rope_sin: PathBuf::from(required("--rope-sin")?),
-        compressed_rope_cos: PathBuf::from(required("--compressed-rope-cos")?),
-        compressed_rope_sin: PathBuf::from(required("--compressed-rope-sin")?),
         output: PathBuf::from(required("--output")?),
         artifact_dir: options
             .get("--artifact-dir")
@@ -376,14 +350,6 @@ mod tests {
             layer,
             "--input",
             "input.f32",
-            "--rope-cos",
-            "cos.f32",
-            "--rope-sin",
-            "sin.f32",
-            "--compressed-rope-cos",
-            "compressed-cos.f32",
-            "--compressed-rope-sin",
-            "compressed-sin.f32",
             "--output",
             "output.f32",
         ]

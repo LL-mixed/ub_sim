@@ -759,6 +759,15 @@ where
             gate.tensor_type.name, up.tensor_type.name, down.tensor_type.name
         ));
     }
+    let (gate_payload, gate_dimensions) =
+        catalog.read_expert_tensor_slice(&gate_name, args.expert)?;
+    let (up_payload, up_dimensions) = catalog.read_expert_tensor_slice(&up_name, args.expert)?;
+    let (down_payload, down_dimensions) =
+        catalog.read_expert_tensor_slice(&down_name, args.expert)?;
+    let loaded_expert_bytes = gate_payload
+        .len()
+        .saturating_add(up_payload.len())
+        .saturating_add(down_payload.len());
     let input = read_f32(&args.input)?;
     let output = execute_deepseek_routed_expert_through_simpler(
         &topology,
@@ -770,13 +779,13 @@ where
         },
         &args.artifact_dir,
         400_000,
-        &catalog.read_tensor(&gate_name)?,
-        &gate.dimensions,
-        &catalog.read_tensor(&up_name)?,
-        &up.dimensions,
-        &catalog.read_tensor(&down_name)?,
-        &down.dimensions,
-        args.expert,
+        &gate_payload,
+        &gate_dimensions,
+        &up_payload,
+        &up_dimensions,
+        &down_payload,
+        &down_dimensions,
+        0,
         args.expert_weight,
         &input,
         DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
@@ -790,6 +799,7 @@ where
             "layer": args.layer,
             "expert": args.expert,
             "expert_weight": args.expert_weight,
+            "loaded_expert_bytes": loaded_expert_bytes,
             "input_values": input.len(),
             "output_values": output.len(),
             "output": args.output,
@@ -824,6 +834,8 @@ where
             tensor.name, tensor.tensor_type.name
         ));
     }
+    let (expert_payload, expert_dimensions) =
+        catalog.read_expert_tensor_slice(&tensor_name, args.expert)?;
     let input = read_f32(&args.input)?;
     let output = execute_deepseek_q2_k_expert_projection_through_simpler(
         &topology,
@@ -835,9 +847,9 @@ where
         },
         &args.manifest,
         300_000,
-        &catalog.read_tensor(&tensor_name)?,
-        &tensor.dimensions,
-        args.expert,
+        &expert_payload,
+        &expert_dimensions,
+        0,
         &input,
     )?;
     write_f32(&args.output, &output)?;
@@ -848,6 +860,7 @@ where
             "model": args.model,
             "layer": args.layer,
             "expert": args.expert,
+            "loaded_expert_bytes": expert_payload.len(),
             "input_values": input.len(),
             "output_values": output.len(),
             "output": args.output,

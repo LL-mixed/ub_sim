@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn usage() -> &'static str {
-    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter embedding --model FILE --tokens CSV --output FILE\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits]"
+    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter embedding --model FILE --tokens CSV --output FILE\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits] [--dump-prefix PATH] [--dump-name NAME]"
 }
 
 fn read_f32_payload(path: &PathBuf) -> Result<Vec<f32>, String> {
@@ -369,15 +369,36 @@ fn run(args: &[String]) -> Result<(), String> {
                 output_path: PathBuf::from(required(&options, "--output")?),
                 output_logits: options.contains_key("--logits"),
             };
+            let dump_prefix = optional(&options, "--dump-prefix");
+            let dump_name = optional(&options, "--dump-name");
+            let previous_prefix = std::env::var_os("DS4_METAL_GRAPH_DUMP_PREFIX");
+            let previous_name = std::env::var_os("DS4_METAL_GRAPH_DUMP_NAME");
+            if let Some(prefix) = dump_prefix.as_deref() {
+                std::env::set_var("DS4_METAL_GRAPH_DUMP_PREFIX", prefix);
+            }
+            if let Some(name) = dump_name.as_deref() {
+                std::env::set_var("DS4_METAL_GRAPH_DUMP_NAME", name);
+            }
+            let result = ds4_eval_layer_slice(&config);
+            restore_env("DS4_METAL_GRAPH_DUMP_PREFIX", previous_prefix);
+            restore_env("DS4_METAL_GRAPH_DUMP_NAME", previous_name);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&ds4_eval_layer_slice(&config)?)
+                serde_json::to_string_pretty(&result?)
                     .map_err(|err| format!("json_encode_failed:{err}"))?
             );
         }
         _ => return Err(format!("unknown_command:{command}\n{}", usage())),
     }
     Ok(())
+}
+
+fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+    if let Some(value) = value {
+        std::env::set_var(name, value);
+    } else {
+        std::env::remove_var(name);
+    }
 }
 
 fn main() {
@@ -434,5 +455,7 @@ mod tests {
         assert!(usage().contains("embedding"));
         assert!(usage().contains("project-f16"));
         assert!(usage().contains("project-q8"));
+        assert!(usage().contains("--dump-prefix PATH"));
+        assert!(usage().contains("--dump-name NAME"));
     }
 }

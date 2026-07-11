@@ -1,6 +1,9 @@
 use std::path::Path;
 
 use sim_core::TaskKey;
+use sim_models::deepseek_v4_flash::{
+    deepseek_v4_flash_layer_compress_ratio, DEEPSEEK_V4_FLASH_PROFILE,
+};
 use sim_models::deepseek_v4_flash_lowering::{
     deepseek_v4_flash_fp8_kv_roundtrip_reference, deepseek_v4_flash_hc_control_input_reference,
     deepseek_v4_flash_hc_post_reference, deepseek_v4_flash_hc_split_reference,
@@ -12,13 +15,121 @@ use sim_topology::SimTopology;
 
 use super::{
     execute_deepseek_compressor_update_through_simpler,
+    execute_deepseek_dense_attention_through_simpler,
     execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
     execute_deepseek_grouped_q8_projection_through_simpler,
     execute_deepseek_indexer_through_simpler, execute_deepseek_q8_projection_through_simpler,
-    f16_bits_to_f32, f32_to_f16_bits, DeepseekV4FlashAttentionWeights,
-    DeepseekV4FlashCompressorWeights, DeepseekV4FlashFfnExecution, DeepseekV4FlashFfnWeights,
-    DeepseekV4FlashIndexerWeights,
+    f16_bits_to_f32, f32_to_f16_bits, DeepseekV4FlashAttentionExecution,
+    DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights, DeepseekV4FlashFfnExecution,
+    DeepseekV4FlashFfnWeights, DeepseekV4FlashIndexerWeights,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashDenseAttentionState {
+    raw_capacity: usize,
+    head_dim: usize,
+    raw_kv: Vec<f32>,
+}
+
+impl DeepseekV4FlashDenseAttentionState {
+    pub fn new(head_dim: usize, raw_capacity: usize) -> Result<Self, String> {
+        if head_dim == 0 || raw_capacity == 0 {
+            return Err(format!(
+                "deepseek dense attention state geometry invalid:head_dim={head_dim}:raw_capacity={raw_capacity}"
+            ));
+        }
+        Ok(Self {
+            raw_capacity,
+            head_dim,
+            raw_kv: Vec::new(),
+        })
+    }
+
+    pub fn raw_rows(&self) -> usize {
+        self.raw_kv.len() / self.head_dim
+    }
+
+    pub fn raw_kv(&self) -> &[f32] {
+        &self.raw_kv
+    }
+
+    pub(crate) fn push_raw(&mut self, row: &[f32]) -> Result<(), String> {
+        push_bounded_row(&mut self.raw_kv, row, self.head_dim, self.raw_capacity)
+    }
+}
+
+pub struct DeepseekV4FlashDenseLayerWeights<'a> {
+    pub attention: DeepseekV4FlashAttentionWeights<'a>,
+    pub ffn: DeepseekV4FlashFfnWeights<'a>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashDenseLayerExecution {
+    pub attention: DeepseekV4FlashAttentionExecution,
+    pub ffn: DeepseekV4FlashFfnExecution,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeepseekV4FlashLayerState {
+    Dense(DeepseekV4FlashDenseAttentionState),
+    Ratio4(DeepseekV4FlashRatio4AttentionState),
+    Ratio128(DeepseekV4FlashRatio128AttentionState),
+}
+
+impl DeepseekV4FlashLayerState {
+    pub fn new(layer_id: u64) -> Result<Self, String> {
+        let head_dim = DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize;
+        let raw_capacity = DEEPSEEK_V4_FLASH_PROFILE.sliding_window as usize;
+        let compressed_capacity = DEEPSEEK_V4_FLASH_PROFILE.indexer_top_k as usize;
+        match deepseek_v4_flash_layer_compress_ratio(layer_id) {
+            Some(0) => Ok(Self::Dense(DeepseekV4FlashDenseAttentionState::new(
+                head_dim,
+                raw_capacity,
+            )?)),
+            Some(4) => Ok(Self::Ratio4(DeepseekV4FlashRatio4AttentionState::new(
+                head_dim,
+                DEEPSEEK_V4_FLASH_PROFILE.indexer_head_dim as usize,
+                raw_capacity,
+                compressed_capacity,
+            )?)),
+            Some(128) => Ok(Self::Ratio128(DeepseekV4FlashRatio128AttentionState::new(
+                head_dim,
+                raw_capacity,
+                compressed_capacity,
+            )?)),
+            Some(ratio) => Err(format!(
+                "deepseek layer compression ratio unsupported:layer={layer_id}:ratio={ratio}"
+            )),
+            None => Err(format!("deepseek layer out of range:{layer_id}")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashModelState {
+    layers: Vec<DeepseekV4FlashLayerState>,
+}
+
+impl DeepseekV4FlashModelState {
+    pub fn new() -> Result<Self, String> {
+        let layers = (0..DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers)
+            .map(DeepseekV4FlashLayerState::new)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { layers })
+    }
+
+    pub fn layer(&self, layer_id: u64) -> Result<&DeepseekV4FlashLayerState, String> {
+        self.layers
+            .get(layer_id as usize)
+            .ok_or_else(|| format!("deepseek layer state out of range:{layer_id}"))
+    }
+
+    pub fn layer_mut(&mut self, layer_id: u64) -> Result<&mut DeepseekV4FlashLayerState, String> {
+        self.layers
+            .get_mut(layer_id as usize)
+            .ok_or_else(|| format!("deepseek layer state out of range:{layer_id}"))
+    }
+}
 
 pub struct DeepseekV4FlashRatio4AttentionWeights<'a> {
     pub attention: DeepseekV4FlashAttentionWeights<'a>,
@@ -235,6 +346,72 @@ fn push_bounded_row(
     }
     cache.extend_from_slice(row);
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_dense_layer_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    state: &mut DeepseekV4FlashDenseAttentionState,
+    weights: &DeepseekV4FlashDenseLayerWeights<'_>,
+    residual_hc: &[f32],
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    num_heads: usize,
+    head_dim: usize,
+    rope_dim: usize,
+    output_groups: usize,
+    eps: f32,
+    clamp: f32,
+) -> Result<DeepseekV4FlashDenseLayerExecution, String> {
+    if head_dim != state.head_dim {
+        return Err(format!(
+            "deepseek dense state geometry mismatch:head_dim={head_dim}/{}",
+            state.head_dim
+        ));
+    }
+    let attention = execute_deepseek_dense_attention_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("attention"),
+        segment_base,
+        &weights.attention,
+        residual_hc,
+        &state.raw_kv,
+        rope_cos,
+        rope_sin,
+        hc_mult,
+        sinkhorn_iters,
+        num_heads,
+        head_dim,
+        rope_dim,
+        output_groups,
+        eps,
+    )?;
+    state.push_raw(&attention.current_kv)?;
+    let mut ffn_task = task.clone();
+    ffn_task.task_id = task.task_id.saturating_add(1_000);
+    let ffn = execute_deepseek_ffn_through_simpler(
+        topology,
+        &ffn_task,
+        &artifact_dir.join("ffn"),
+        segment_base.saturating_add(100_000),
+        &weights.ffn,
+        &attention.output_hc,
+        selection_bias,
+        hash_selected_experts,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+        clamp,
+    )?;
+    Ok(DeepseekV4FlashDenseLayerExecution { attention, ffn })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -828,4 +1005,34 @@ pub fn execute_deepseek_ratio4_attention_through_simpler(
         attention_output,
         output_hc,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_state_selects_attention_kind_for_all_flash_layers() {
+        let state = DeepseekV4FlashModelState::new().expect("create model state");
+        assert!(matches!(
+            state.layer(0),
+            Ok(DeepseekV4FlashLayerState::Dense(_))
+        ));
+        assert!(matches!(
+            state.layer(2),
+            Ok(DeepseekV4FlashLayerState::Ratio4(_))
+        ));
+        assert!(matches!(
+            state.layer(3),
+            Ok(DeepseekV4FlashLayerState::Ratio128(_))
+        ));
+        assert!(matches!(
+            state.layer(42),
+            Ok(DeepseekV4FlashLayerState::Ratio4(_))
+        ));
+        assert_eq!(
+            state.layer(43).unwrap_err(),
+            "deepseek layer state out of range:43"
+        );
+    }
 }

@@ -472,7 +472,7 @@ impl std::fmt::Debug for RuntimeLibrary {
 
 pub struct DeviceContext<'a> {
     api: &'a RuntimeLibrary,
-    ctx: NonNull<c_void>,
+    ctx: Option<NonNull<c_void>>,
 }
 
 impl std::fmt::Debug for DeviceContext<'_> {
@@ -483,24 +483,26 @@ impl std::fmt::Debug for DeviceContext<'_> {
 
 impl DeviceContext<'_> {
     pub fn as_raw(&self) -> DeviceContextHandle {
-        self.ctx.as_ptr()
+        self.ctx.expect("live device context").as_ptr()
+    }
+
+    fn close(&mut self) -> Result<(), SimplerApiError> {
+        let Some(ctx) = self.ctx.take() else {
+            return Ok(());
+        };
+        let finalize_result = unsafe { (self.api.finalize_device)(ctx.as_ptr()) };
+        unsafe { (self.api.destroy_device_context)(ctx.as_ptr()) };
+        SimplerApiError::from_code(finalize_result)
+    }
+
+    pub fn shutdown(mut self) -> Result<(), SimplerApiError> {
+        self.close()
     }
 }
 
 impl Drop for DeviceContext<'_> {
     fn drop(&mut self) {
-        // `simpler_run` already performs runtime-level cleanup. The current
-        // simpler sim C API can crash during Rust test-process teardown if
-        // device finalization is repeated here, so native context cleanup stays
-        // opt-in until the upstream teardown contract is stable.
-        unsafe {
-            if std::env::var_os("SIMPLER_CAPI_FINALIZE_DEVICE").is_some() {
-                (self.api.finalize_device)(self.as_raw());
-            }
-            if std::env::var_os("SIMPLER_CAPI_DESTROY_CONTEXT").is_some() {
-                (self.api.destroy_device_context)(self.as_raw());
-            }
-        }
+        let _ = self.close();
     }
 }
 
@@ -573,7 +575,10 @@ impl RuntimeLibrary {
     pub fn create_context(&self) -> Result<DeviceContext<'_>, SimplerApiError> {
         let ctx = unsafe { (self.create_device_context)() };
         let ctx = NonNull::new(ctx).ok_or(SimplerApiError::NullDeviceContext)?;
-        Ok(DeviceContext { api: self, ctx })
+        Ok(DeviceContext {
+            api: self,
+            ctx: Some(ctx),
+        })
     }
 
     pub fn alloc_device(
