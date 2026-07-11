@@ -2,7 +2,10 @@ use sim_config::ScenarioConfig;
 use sim_core::{HierarchyCoord, LogicalSystemId, TaskKey};
 use sim_models::deepseek_v4_flash_gguf::GgufCatalog;
 use sim_topology::SimTopology;
-use sim_uapi::execute_deepseek_q8_projection_through_simpler;
+use sim_uapi::{
+    execute_deepseek_grouped_q8_projection_through_simpler,
+    execute_deepseek_q8_projection_through_simpler,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -15,6 +18,7 @@ struct ProjectQ8Args {
     input: PathBuf,
     output: PathBuf,
     manifest: PathBuf,
+    groups: usize,
 }
 
 fn main() {
@@ -48,20 +52,35 @@ where
         ));
     }
     let input = read_f32(&args.input)?;
-    let output = execute_deepseek_q8_projection_through_simpler(
-        &topology,
-        &TaskKey {
-            logical_system: LogicalSystemId(1),
-            coord: HierarchyCoord { levels: [0; 8] },
-            scope_depth: 0,
-            task_id: 1,
-        },
-        &args.manifest,
-        100_000,
-        &catalog.read_tensor(&args.tensor)?,
-        &tensor.dimensions,
-        &input,
-    )?;
+    let task = TaskKey {
+        logical_system: LogicalSystemId(1),
+        coord: HierarchyCoord { levels: [0; 8] },
+        scope_depth: 0,
+        task_id: 1,
+    };
+    let weight = catalog.read_tensor(&args.tensor)?;
+    let output = if args.groups == 1 {
+        execute_deepseek_q8_projection_through_simpler(
+            &topology,
+            &task,
+            &args.manifest,
+            100_000,
+            &weight,
+            &tensor.dimensions,
+            &input,
+        )?
+    } else {
+        execute_deepseek_grouped_q8_projection_through_simpler(
+            &topology,
+            &task,
+            &args.manifest,
+            100_000,
+            &weight,
+            &tensor.dimensions,
+            &input,
+            args.groups,
+        )?
+    };
     let output_bytes: Vec<u8> = output
         .iter()
         .flat_map(|value| value.to_le_bytes())
@@ -80,6 +99,7 @@ where
             "tensor": args.tensor,
             "input_values": input.len(),
             "output_values": output.len(),
+            "groups": args.groups,
             "output": args.output,
             "backend": "simpler-c-api",
         })
@@ -95,7 +115,7 @@ where
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     if args.first().map(String::as_str) != Some("project-q8") {
         return Err(
-            "usage: deepseek-v4-flash-simpler project-q8 --model FILE --tensor NAME --input FILE --output FILE [--scenario FILE] [--manifest FILE]"
+            "usage: deepseek-v4-flash-simpler project-q8 --model FILE --tensor NAME --input FILE --output FILE [--groups N] [--scenario FILE] [--manifest FILE]"
                 .to_string(),
         );
     }
@@ -123,11 +143,29 @@ where
     let unknown = options.keys().find(|name| {
         !matches!(
             name.as_str(),
-            "--scenario" | "--model" | "--tensor" | "--input" | "--output" | "--manifest"
+            "--scenario"
+                | "--model"
+                | "--tensor"
+                | "--input"
+                | "--output"
+                | "--manifest"
+                | "--groups"
         )
     });
     if let Some(option) = unknown {
         return Err(format!("unknown_option:{option}"));
+    }
+    let groups = options
+        .get("--groups")
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("invalid_groups:{value}"))
+        })
+        .transpose()?
+        .unwrap_or(1);
+    if groups == 0 {
+        return Err("invalid_groups:0".to_string());
     }
     Ok(ProjectQ8Args {
         scenario: options
@@ -146,6 +184,7 @@ where
                     .join("simpler-deepseek-q8-project-artifacts")
                     .join("host_q8_block_dot_manifest.json")
             }),
+        groups,
     })
 }
 
@@ -192,6 +231,45 @@ mod tests {
             PathBuf::from("scenarios/mvp_2host_single_domain.yaml")
         );
         assert!(args.manifest.ends_with("host_q8_block_dot_manifest.json"));
+        assert_eq!(args.groups, 1);
+    }
+
+    #[test]
+    fn project_q8_args_accept_grouped_projection() {
+        let args = parse_args([
+            "project-q8",
+            "--model",
+            "model.gguf",
+            "--tensor",
+            "blk.0.attn_output_a.weight",
+            "--input",
+            "input.f32",
+            "--output",
+            "output.f32",
+            "--groups",
+            "8",
+        ])
+        .expect("parse grouped project-q8 command");
+        assert_eq!(args.groups, 8);
+    }
+
+    #[test]
+    fn project_q8_args_reject_zero_groups() {
+        let err = parse_args([
+            "project-q8",
+            "--model",
+            "model.gguf",
+            "--tensor",
+            "tensor",
+            "--input",
+            "input",
+            "--output",
+            "output",
+            "--groups",
+            "0",
+        ])
+        .expect_err("reject zero groups");
+        assert_eq!(err, "invalid_groups:0");
     }
 
     #[test]

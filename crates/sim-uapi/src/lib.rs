@@ -17812,6 +17812,81 @@ pub fn execute_deepseek_q8_projection_through_simpler(
     Ok(output)
 }
 
+/// Execute a DS4-style grouped Q8_0 projection. Each group consumes its own
+/// input slice and the matching contiguous range of output rows.
+pub fn execute_deepseek_grouped_q8_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    q8_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+    groups: usize,
+) -> Result<Vec<f32>, String> {
+    let [group_input, output_size] = dimensions else {
+        return Err(format!(
+            "unsupported grouped Q8 projection dimensions:{dimensions:?}"
+        ));
+    };
+    let group_input = usize::try_from(*group_input)
+        .map_err(|_| "grouped Q8 input dimension too large".to_string())?;
+    let output_size = usize::try_from(*output_size)
+        .map_err(|_| "grouped Q8 output dimension too large".to_string())?;
+    let expected_input_values = group_input
+        .checked_mul(groups)
+        .ok_or_else(|| "grouped Q8 input size overflow".to_string())?;
+    if groups == 0
+        || group_input == 0
+        || group_input % 32 != 0
+        || output_size == 0
+        || output_size % groups != 0
+        || input.len() != expected_input_values
+    {
+        return Err(format!(
+            "unsupported grouped Q8 projection shape:dimensions={dimensions:?}:input={}:groups={groups}",
+            input.len()
+        ));
+    }
+    let group_output = output_size / groups;
+    if group_output % 128 != 0 {
+        return Err(format!(
+            "grouped Q8 output must be 128-aligned:output={group_output}"
+        ));
+    }
+    let row_bytes = (group_input / 32)
+        .checked_mul(34)
+        .ok_or_else(|| "grouped Q8 row size overflow".to_string())?;
+    let expected_weight_bytes = output_size
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "grouped Q8 weight size overflow".to_string())?;
+    if q8_weight.len() != expected_weight_bytes {
+        return Err(format!(
+            "grouped Q8 weight size mismatch:actual={}:expected={expected_weight_bytes}",
+            q8_weight.len()
+        ));
+    }
+
+    let mut output = Vec::with_capacity(output_size);
+    for group in 0..groups {
+        let input_start = group * group_input;
+        let weight_start = group * group_output * row_bytes;
+        let weight_end = weight_start + group_output * row_bytes;
+        let mut group_task = task.clone();
+        group_task.task_id = task.task_id.saturating_add(group as u64);
+        output.extend(execute_deepseek_q8_projection_through_simpler(
+            topology,
+            &group_task,
+            manifest_path,
+            segment_base.saturating_add((group as u64).saturating_mul(10)),
+            &q8_weight[weight_start..weight_end],
+            &[group_input as u64, group_output as u64],
+            &input[input_start..input_start + group_input],
+        )?);
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 fn run_host_quantized_gemm_payload(
     topology: &SimTopology,
@@ -26988,6 +27063,7 @@ mod tests {
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
         ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
         ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
+        execute_deepseek_grouped_q8_projection_through_simpler,
         execute_deepseek_q8_projection_through_simpler, f32s_to_bytes, find_u64_marker,
         kvcache_input_b_payload, qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
@@ -30446,6 +30522,75 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_grouped_q8_projection_uses_matching_input_and_output_slices() {
+        run_simpler_native_test_isolated(
+            "deepseek_grouped_q8_projection_uses_matching_input_and_output_slices",
+            || {
+                const GROUP_INPUT: usize = 128;
+                const GROUP_OUTPUT: usize = 128;
+                const GROUPS: usize = 2;
+                const BLOCKS: usize = GROUP_INPUT / 32;
+                const ROW_BYTES: usize = BLOCKS * 34;
+                let input: Vec<f32> = (0..GROUP_INPUT * GROUPS)
+                    .map(|index| {
+                        let group = index / GROUP_INPUT;
+                        ((index as i32 % 19) - 9) as f32 / (group + 2) as f32
+                    })
+                    .collect();
+                let mut weight = Vec::with_capacity(GROUP_OUTPUT * GROUPS * ROW_BYTES);
+                for output in 0..GROUP_OUTPUT * GROUPS {
+                    for block in 0..BLOCKS {
+                        let scale = if output < GROUP_OUTPUT {
+                            0x3800u16
+                        } else {
+                            0x3c00u16
+                        };
+                        weight.extend_from_slice(&scale.to_le_bytes());
+                        weight.extend(
+                            (0..32).map(|lane| {
+                                (((output * 3 + block * 5 + lane) % 11) as i8 - 5) as u8
+                            }),
+                        );
+                    }
+                }
+
+                let mut reference = Vec::with_capacity(GROUP_OUTPUT * GROUPS);
+                for group in 0..GROUPS {
+                    let weight_start = group * GROUP_OUTPUT * ROW_BYTES;
+                    reference.extend(
+                        project_q8_0_matrix(
+                            &weight[weight_start..weight_start + GROUP_OUTPUT * ROW_BYTES],
+                            &[GROUP_INPUT as u64, GROUP_OUTPUT as u64],
+                            &input[group * GROUP_INPUT..(group + 1) * GROUP_INPUT],
+                        )
+                        .expect("compute grouped Q8 reference slice"),
+                    );
+                }
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-grouped-q8-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_grouped_q8_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 122,
+                    },
+                    &manifest,
+                    92_000,
+                    &weight,
+                    &[GROUP_INPUT as u64, (GROUP_OUTPUT * GROUPS) as u64],
+                    &input,
+                    GROUPS,
+                )
+                .expect("execute grouped Q8 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
     fn deepseek_real_q_a_exact_projection_executes_through_simpler_when_available() {
         if deepseek_v4_flash_runtime_paths().is_err() {
             return;
@@ -30480,6 +30625,108 @@ mod tests {
                 )
                 .expect("execute real Q A through simpler");
                 assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_attention_output_projections_execute_through_simpler_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_attention_output_projections_execute_through_simpler_when_available",
+            || {
+                const GROUPS: usize = 8;
+                const GROUP_INPUT: usize = 4_096;
+                const GROUP_OUTPUT: usize = 1_024;
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let input: Vec<f32> = (0..GROUP_INPUT * GROUPS)
+                    .map(|index| {
+                        let head_group = index / GROUP_INPUT;
+                        ((index as i32 % 41) - 20) as f32 / (head_group + 5) as f32
+                    })
+                    .collect();
+
+                let output_a_tensor = catalog
+                    .tensor("blk.0.attn_output_a.weight")
+                    .expect("locate real attention output A tensor");
+                assert_eq!(
+                    output_a_tensor.dimensions,
+                    vec![GROUP_INPUT as u64, (GROUP_OUTPUT * GROUPS) as u64]
+                );
+                let output_a_weight = catalog
+                    .read_tensor(&output_a_tensor.name)
+                    .expect("read real attention output A tensor");
+                let row_bytes = (GROUP_INPUT / 32) * 34;
+                let mut output_a_reference = Vec::with_capacity(GROUP_OUTPUT * GROUPS);
+                for group in 0..GROUPS {
+                    let weight_start = group * GROUP_OUTPUT * row_bytes;
+                    output_a_reference.extend(
+                        project_q8_0_matrix(
+                            &output_a_weight[weight_start..weight_start + GROUP_OUTPUT * row_bytes],
+                            &[GROUP_INPUT as u64, GROUP_OUTPUT as u64],
+                            &input[group * GROUP_INPUT..(group + 1) * GROUP_INPUT],
+                        )
+                        .expect("compute real grouped attention output A reference"),
+                    );
+                }
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-attention-output-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let topology = test_topology();
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 1_100,
+                };
+                let output_a = execute_deepseek_grouped_q8_projection_through_simpler(
+                    &topology,
+                    &task,
+                    &manifest,
+                    110_000,
+                    &output_a_weight,
+                    &output_a_tensor.dimensions,
+                    &input,
+                    GROUPS,
+                )
+                .expect("execute real grouped attention output A through simpler");
+                assert_eq!(output_a, output_a_reference);
+                drop(output_a_weight);
+
+                let output_b_tensor = catalog
+                    .tensor("blk.0.attn_output_b.weight")
+                    .expect("locate real attention output B tensor");
+                assert_eq!(
+                    output_b_tensor.dimensions,
+                    vec![(GROUP_OUTPUT * GROUPS) as u64, GROUP_INPUT as u64]
+                );
+                let output_b_weight = catalog
+                    .read_tensor(&output_b_tensor.name)
+                    .expect("read real attention output B tensor");
+                let output_b_reference =
+                    project_q8_0_matrix(&output_b_weight, &output_b_tensor.dimensions, &output_a)
+                        .expect("compute real attention output B reference");
+                let output_b = execute_deepseek_q8_projection_through_simpler(
+                    &topology,
+                    &TaskKey {
+                        task_id: 1_200,
+                        ..task
+                    },
+                    &manifest,
+                    120_000,
+                    &output_b_weight,
+                    &output_b_tensor.dimensions,
+                    &output_a,
+                )
+                .expect("execute real attention output B through simpler");
+                assert_eq!(output_b, output_b_reference);
             },
         );
     }
