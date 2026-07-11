@@ -34517,7 +34517,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires the sibling ds4 GGUF and native simpler runtime"]
-    fn deepseek_v4_flash_simpler_w5_first_range_exports_hidden_and_kv() {
+    fn deepseek_v4_flash_simpler_w5_two_ranges_handoff_hidden_and_export_kv() {
         if crate::deepseek_v4_flash_gguf_path().is_err() {
             return;
         }
@@ -34535,7 +34535,7 @@ mod tests {
                     QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
                     0,
                 );
-                let output = crate::run_qwen3_range_chipbackend(
+                let first_output = crate::run_qwen3_range_chipbackend(
                     &topology,
                     &TaskKey {
                         logical_system: LogicalSystemId(1),
@@ -34549,18 +34549,71 @@ mod tests {
                     None,
                 )
                 .expect("simpler W5 first range");
-                let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                let first_range_table = find_u64_marker(&first_output, RANGE_FORWARD_MARKER)
                     .expect("range-forward table marker");
-                let entry_base = range_table + 64;
+                let first_entry = first_range_table + 64;
                 assert_eq!(
-                    read_u64_le_at(&output, entry_base + 112),
+                    read_u64_le_at(&first_output, first_entry + 112),
                     HIDDEN_BYTES as u64
                 );
                 assert_eq!(
-                    read_u64_le_at(&output, entry_base + 120),
+                    read_u64_le_at(&first_output, first_entry + 120),
                     HIDDEN_BYTES as u64
                 );
-                assert!(read_u64_le_at(&output, entry_base + 128) > 0);
+                assert!(read_u64_le_at(&first_output, first_entry + 128) > 0);
+
+                let first_payload = first_entry + 18 * std::mem::size_of::<u64>();
+                let hidden = &first_output[first_payload..first_payload + HIDDEN_BYTES];
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    1,
+                    0,
+                    1,
+                    0x43_200,
+                    0,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(hidden),
+                );
+                let mut second_input =
+                    crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &[128_822]);
+                second_input.resize(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                    0,
+                );
+                second_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES]
+                    .copy_from_slice(hidden);
+                write_obmm_object_ref_wire(
+                    &mut second_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                        ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                            + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                let second_output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 1, 6, 12, 2, 8, 43, HIDDEN_BYTES as u32],
+                        },
+                        scope_depth: 8,
+                        task_id: 43_201,
+                    },
+                    &second_input,
+                    None,
+                )
+                .expect("simpler W5 second range");
+                let second_range_table = find_u64_marker(&second_output, RANGE_FORWARD_MARKER)
+                    .expect("second range-forward table marker");
+                let second_entry = second_range_table + 64;
+                assert_eq!(read_u64_le_at(&second_output, second_entry), 1);
+                assert_eq!(read_u64_le_at(&second_output, second_entry + 8), 6);
+                assert_eq!(read_u64_le_at(&second_output, second_entry + 16), 12);
+                assert_eq!(
+                    read_u64_le_at(&second_output, second_entry + 64),
+                    qwen3_dense_reference_range_object_payload_checksum(hidden)
+                );
+                assert!(read_u64_le_at(&second_output, second_entry + 128) > 0);
             },
         );
     }
