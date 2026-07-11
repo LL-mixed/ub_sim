@@ -774,7 +774,7 @@ fn prepare_simpler_capi_args(
                 let start = endpoint.offset as usize;
                 let end = start.saturating_add(*bytes as usize);
                 tensors.push(
-                    simpler_capi::ContinuousTensor::new(
+                    simpler_capi::Tensor::new(
                         payload[start..end].as_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
@@ -792,7 +792,7 @@ fn prepare_simpler_capi_args(
                 let start = endpoint.offset as usize;
                 let end = start.saturating_add(*bytes as usize);
                 tensors.push(
-                    simpler_capi::ContinuousTensor::new(
+                    simpler_capi::Tensor::new(
                         payload[start..end].as_mut_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
@@ -810,7 +810,7 @@ fn prepare_simpler_capi_args(
                 let start = endpoint.offset as usize;
                 let end = start.saturating_add(*bytes as usize);
                 tensors.push(
-                    simpler_capi::ContinuousTensor::new(
+                    simpler_capi::Tensor::new(
                         payload[start..end].as_mut_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
@@ -2283,7 +2283,7 @@ impl LocalRuntimeEngine {
             detail_make_callable_ms = detail_started.elapsed().as_millis();
 
             let detail_started = Instant::now();
-            api.run_prepared(
+            api.run_callable(
                 &ctx,
                 runtime_handle,
                 &callable,
@@ -2304,7 +2304,7 @@ impl LocalRuntimeEngine {
                 },
                 aicore_binary.len(),
             )
-            .map_err(|err| format!("simpler_capi_run_prepared_failed:{err}"))?;
+            .map_err(|err| format!("simpler_capi_run_callable_failed:{err}"))?;
             detail_run_runtime_ms = detail_started.elapsed().as_millis();
 
             Ok(())

@@ -18,6 +18,10 @@ def load_producer():
 
 
 class SimplerHostGemmArtifactsTest(unittest.TestCase):
+    def test_manifest_marks_current_simpler_capi_abi(self):
+        producer = load_producer()
+        self.assertEqual(producer.SIMPLER_CAPI_ABI_VERSION, 2)
+
     def test_profile_is_pure_gemm_with_explicit_geometry(self):
         producer = load_producer()
         profile = producer.PROFILE_SPECS["host_gemm"]
@@ -37,6 +41,8 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("kM = 128", orchestration_text)
         self.assertIn("kK = 256", orchestration_text)
         self.assertIn("kN = 384", orchestration_text)
+        self.assertIn("orch_args.tensor(0)", orchestration_text)
+        self.assertNotIn("CompatChipStorageTaskArgs", orchestration_text)
         self.assertIn("for (int k0 = 0; k0 < K; k0 += TileK)", kernel_text)
         self.assertIn("TMATMUL(c_tile", kernel_text)
         self.assertIn("TMATMUL_ACC(c_tile", kernel_text)
@@ -61,6 +67,7 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("build_quantized_gemm_graph", orchestration_text)
         self.assertIn("sizeof(int8_t)", orchestration_text)
         self.assertIn("sizeof(int32_t)", orchestration_text)
+        self.assertNotIn("CompatChipStorageTaskArgs", orchestration_text)
         self.assertIn("TileLeft<int8_t", kernel_text)
         self.assertIn("TileRight<int8_t", kernel_text)
         self.assertIn("TileAcc<int32_t", kernel_text)
@@ -104,11 +111,24 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("kBlocks = 128", orchestration_text)
         self.assertIn("kK = 32", orchestration_text)
         self.assertIn("kN = 1024", orchestration_text)
+        self.assertIn("orch_args.scalar(0)", orchestration_text)
+        self.assertNotIn("CompatChipStorageTaskArgs", orchestration_text)
         self.assertIn("TileLeft<int8_t, 1, K, 1, K>", kernel_text)
         self.assertIn("TileRight<int8_t, K, TileN, K, TileN>", kernel_text)
         self.assertIn("TGEMV(tile_c", kernel_text)
         self.assertIn("block * K * N", kernel_text)
         self.assertNotIn("TMATMUL_ACC", kernel_text)
+
+    def test_engram_orchestration_uses_current_simpler_task_args(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestration = producer.write_host_engram_context_orchestration(
+                Path(temp_dir)
+            ).read_text()
+
+        self.assertIn("orch_args.tensor(0)", orchestration)
+        self.assertIn("orch_args.scalar(0)", orchestration)
+        self.assertNotIn("CompatChipStorageTaskArgs", orchestration)
 
 
 if __name__ == "__main__":

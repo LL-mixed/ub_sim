@@ -750,7 +750,7 @@ fn dispatch(
     aicore: &[u8],
     prepared: PreparedArgs,
 ) -> anyhow::Result<()> {
-    api.run_prepared(
+    api.run_callable(
         ctx,
         session.runtime_buf.handle(),
         &program.callable,
@@ -1553,7 +1553,7 @@ impl TensorBuf {
         &mut self,
         elem_offset: usize,
         shape: Option<&[usize]>,
-    ) -> anyhow::Result<simpler::ContinuousTensor> {
+    ) -> anyhow::Result<simpler::Tensor> {
         let view_shape = shape
             .map(|shape| shape.iter().map(|v| *v as u32).collect::<Vec<_>>())
             .unwrap_or_else(|| self.shape.clone());
@@ -1571,10 +1571,12 @@ impl TensorBuf {
         {
             anyhow::bail!("tensor view exceeds backing storage");
         }
-        simpler::ContinuousTensor::from_shape(
+        simpler::Tensor::from_shape(
             unsafe { self.data.as_mut_ptr().add(start) } as u64,
+            bytes as u64,
             &view_shape,
             self.dtype,
+            false,
         )
         .map_err(|err| anyhow::anyhow!("failed to build simpler tensor arg: {err}"))
     }

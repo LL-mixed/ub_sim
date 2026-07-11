@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+SIMPLER_CAPI_ABI_VERSION = 2
+
 
 @dataclass(frozen=True)
 class KernelSpec:
@@ -670,28 +672,10 @@ def write_host_gemm_orchestration(
 #include <cstdint>
 #include <iostream>
 
-struct CompatContinuousTensor {{
-    uint64_t data;
-    uint32_t shapes[5];
-    uint32_t ndims;
-    uint8_t dtype;
-    uint8_t child_memory;
-    uint8_t reserved[2];
-}};
-
-struct CompatChipStorageTaskArgs {{
-    CompatContinuousTensor tensors[128];
-    uint64_t scalars[128];
-    int32_t tensor_count;
-    int32_t scalar_count;
-}};
-
 extern "C" {{
 
 int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
-    const CompatChipStorageTaskArgs* args =
-        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
-    if (args->tensor_count < 3 || args->scalar_count < 3) {{
+    if (orch_args.tensor_count() < 3 || orch_args.scalar_count() < 3) {{
         std::cerr << "{function_name}: expected 3 tensors and 3 scalars\\n";
         return -1;
     }}
@@ -700,9 +684,9 @@ int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& or
     constexpr uint64_t kK = {k};
     constexpr uint64_t kN = {n};
     constexpr uint64_t kTile = 128;
-    const uint64_t m = args->scalars[0];
-    const uint64_t k = args->scalars[1];
-    const uint64_t n = args->scalars[2];
+    const uint64_t m = orch_args.scalar(0);
+    const uint64_t k = orch_args.scalar(1);
+    const uint64_t n = orch_args.scalar(2);
     if (m != kM || k != kK || n != kN) {{
         std::cerr << "{function_name}: artifact geometry mismatch got="
                   << m << "x" << k << "x" << n << " expected="
@@ -720,16 +704,16 @@ int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& or
     const size_t size_a = static_cast<size_t>(elements_a * sizeof({input_type}));
     const size_t size_b = static_cast<size_t>(elements_b * sizeof({input_type}));
     const size_t size_c = static_cast<size_t>(elements_c * sizeof({output_type}));
-    if (args->tensors[0].shapes[0] < elements_a ||
-        args->tensors[1].shapes[0] < elements_b ||
-        args->tensors[2].shapes[0] < elements_c) {{
+    if (orch_args.tensor(0).shapes[0] < elements_a ||
+        orch_args.tensor(1).shapes[0] < elements_b ||
+        orch_args.tensor(2).shapes[0] < elements_c) {{
         std::cerr << "{function_name}: tensor payload is shorter than geometry\\n";
         return -1;
     }}
 
-    auto* host_a = reinterpret_cast<uint8_t*>(args->tensors[0].data);
-    auto* host_b = reinterpret_cast<uint8_t*>(args->tensors[1].data);
-    auto* host_c = reinterpret_cast<uint8_t*>(args->tensors[2].data);
+    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
+    auto* host_b = orch_args.tensor(1).data_as<uint8_t>();
+    auto* host_c = orch_args.tensor(2).data_as<uint8_t>();
     void* dev_a = device_malloc(runtime, size_a);
     void* dev_b = device_malloc(runtime, size_b);
     void* dev_c = device_malloc(runtime, size_c);
@@ -902,30 +886,12 @@ def write_host_q8_block_dot_orchestration(build_dir: Path, blocks: int, n: int) 
 #include <cstdint>
 #include <iostream>
 
-struct CompatContinuousTensor {{
-    uint64_t data;
-    uint32_t shapes[5];
-    uint32_t ndims;
-    uint8_t dtype;
-    uint8_t child_memory;
-    uint8_t reserved[2];
-}};
-
-struct CompatChipStorageTaskArgs {{
-    CompatContinuousTensor tensors[128];
-    uint64_t scalars[128];
-    int32_t tensor_count;
-    int32_t scalar_count;
-}};
-
 extern "C" {{
 
 int build_q8_block_dot_graph(
         OrchestrationRuntime* runtime,
         const ChipStorageTaskArgs& orch_args) {{
-    const CompatChipStorageTaskArgs* args =
-        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
-    if (args->tensor_count < 3 || args->scalar_count < 3) {{
+    if (orch_args.tensor_count() < 3 || orch_args.scalar_count() < 3) {{
         std::cerr << "build_q8_block_dot_graph: expected 3 tensors and 3 scalars\\n";
         return -1;
     }}
@@ -934,8 +900,8 @@ int build_q8_block_dot_graph(
     constexpr uint64_t kK = 32;
     constexpr uint64_t kN = {n};
     constexpr uint64_t kTileN = 128;
-    if (args->scalars[0] != kBlocks || args->scalars[1] != kK ||
-        args->scalars[2] != kN) {{
+    if (orch_args.scalar(0) != kBlocks || orch_args.scalar(1) != kK ||
+        orch_args.scalar(2) != kN) {{
         std::cerr << "build_q8_block_dot_graph: artifact geometry mismatch\\n";
         return -1;
     }}
@@ -947,16 +913,16 @@ int build_q8_block_dot_graph(
     const size_t size_a = static_cast<size_t>(kBlocks * 32 * sizeof(int8_t));
     const size_t size_b = static_cast<size_t>(kBlocks * 32 * kN * sizeof(int8_t));
     const size_t size_c = static_cast<size_t>(kBlocks * kN * sizeof(int32_t));
-    if (args->tensors[0].shapes[0] < kBlocks * 32 ||
-        args->tensors[1].shapes[0] < kBlocks * 32 * kN ||
-        args->tensors[2].shapes[0] < kBlocks * kN) {{
+    if (orch_args.tensor(0).shapes[0] < kBlocks * 32 ||
+        orch_args.tensor(1).shapes[0] < kBlocks * 32 * kN ||
+        orch_args.tensor(2).shapes[0] < kBlocks * kN) {{
         std::cerr << "build_q8_block_dot_graph: tensor payload is too short\\n";
         return -1;
     }}
 
-    auto* host_a = reinterpret_cast<uint8_t*>(args->tensors[0].data);
-    auto* host_b = reinterpret_cast<uint8_t*>(args->tensors[1].data);
-    auto* host_c = reinterpret_cast<uint8_t*>(args->tensors[2].data);
+    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
+    auto* host_b = orch_args.tensor(1).data_as<uint8_t>();
+    auto* host_c = orch_args.tensor(2).data_as<uint8_t>();
     void* dev_a = device_malloc(runtime, size_a);
     void* dev_b = device_malloc(runtime, size_b);
     void* dev_c = device_malloc(runtime, size_c);
@@ -1078,51 +1044,33 @@ def write_host_engram_context_orchestration(build_dir: Path) -> Path:
 #include <cstring>
 #include <iostream>
 
-struct CompatContinuousTensor {
-    uint64_t data;
-    uint32_t shapes[5];
-    uint32_t ndims;
-    uint8_t dtype;
-    uint8_t child_memory;
-    uint8_t reserved[2];
-};
-
-struct CompatChipStorageTaskArgs {
-    CompatContinuousTensor tensors[128];
-    uint64_t scalars[128];
-    int32_t tensor_count;
-    int32_t scalar_count;
-};
-
 extern "C" {
 
 int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {
-    const CompatChipStorageTaskArgs* args =
-        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
-    if (args->tensor_count < 6) {
+    if (orch_args.tensor_count() < 6) {
         std::cerr << "build_engram_context_graph: Expected 6 tensor args, got "
-                  << args->tensor_count << '\\n';
+                  << orch_args.tensor_count() << '\\n';
         return -1;
     }
-    if (args->scalar_count < 6) {
+    if (orch_args.scalar_count() < 6) {
         std::cerr << "build_engram_context_graph: Expected 6 scalar args, got "
-                  << args->scalar_count << '\\n';
+                  << orch_args.scalar_count() << '\\n';
         return -1;
     }
 
-    const float* table = reinterpret_cast<const float*>(args->tensors[0].data);
-    const int32_t* indices = reinterpret_cast<const int32_t*>(args->tensors[1].data);
-    const float* hidden = reinterpret_cast<const float*>(args->tensors[2].data);
-    const float* gate_weight = reinterpret_cast<const float*>(args->tensors[3].data);
-    float* output = reinterpret_cast<float*>(args->tensors[4].data);
-    float* gate_state = reinterpret_cast<float*>(args->tensors[5].data);
+    const float* table = orch_args.tensor(0).data_as<float>();
+    const int32_t* indices = orch_args.tensor(1).data_as<int32_t>();
+    const float* hidden = orch_args.tensor(2).data_as<float>();
+    const float* gate_weight = orch_args.tensor(3).data_as<float>();
+    float* output = orch_args.tensor(4).data_as<float>();
+    float* gate_state = orch_args.tensor(5).data_as<float>();
 
-    const uint64_t batch = args->scalars[0];
-    const uint64_t table_rows = args->scalars[1];
-    const uint64_t hidden_size = args->scalars[2];
-    const uint64_t chunk_offset = args->scalars[3];
-    const uint64_t chunk_elems = args->scalars[4];
-    const uint32_t bias_bits = static_cast<uint32_t>(args->scalars[5]);
+    const uint64_t batch = orch_args.scalar(0);
+    const uint64_t table_rows = orch_args.scalar(1);
+    const uint64_t hidden_size = orch_args.scalar(2);
+    const uint64_t chunk_offset = orch_args.scalar(3);
+    const uint64_t chunk_elems = orch_args.scalar(4);
+    const uint32_t bias_bits = static_cast<uint32_t>(orch_args.scalar(5));
     float bias = 0.0f;
     std::memcpy(&bias, &bias_bits, sizeof(float));
 
@@ -1139,12 +1087,12 @@ int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageT
         std::cerr << "build_engram_context_graph: invalid chunk range\\n";
         return -1;
     }
-    if (args->tensors[0].shapes[0] < table_rows * hidden_size ||
-        args->tensors[1].shapes[0] < batch * kIndicesPerBatch ||
-        args->tensors[2].shapes[0] < batch * hidden_size ||
-        args->tensors[3].shapes[0] < batch * hidden_size ||
-        args->tensors[4].shapes[0] < batch * hidden_size ||
-        args->tensors[5].shapes[0] < batch) {
+    if (orch_args.tensor(0).shapes[0] < table_rows * hidden_size ||
+        orch_args.tensor(1).shapes[0] < batch * kIndicesPerBatch ||
+        orch_args.tensor(2).shapes[0] < batch * hidden_size ||
+        orch_args.tensor(3).shapes[0] < batch * hidden_size ||
+        orch_args.tensor(4).shapes[0] < batch * hidden_size ||
+        orch_args.tensor(5).shapes[0] < batch) {
         std::cerr << "build_engram_context_graph: tensor bytes too short\\n";
         return -1;
     }
@@ -1466,6 +1414,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         args_template.append({"kind": "scalar_tile_batch", "name": "TILE_BATCH"})
 
     manifest = {
+        "simpler_capi_abi_version": SIMPLER_CAPI_ABI_VERSION,
         "profile": spec.profile,
         "runtime_variant": "HostBuildGraph",
         "callable_hint": spec.callable_hint,
@@ -1511,7 +1460,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         "note": "args_template is consumed by simulator-side helper to construct SimplerRuntimeArg entries",
     }
     if args.profile == "host_gemm":
-        manifest["host_gemm_manifest_version"] = 2
+        manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {
             "m": args.gemm_m,
             "k": args.gemm_k,
@@ -1521,7 +1470,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "tile": 128,
         }
     if args.profile == "host_fp32_gemm":
-        manifest["host_gemm_manifest_version"] = 3
+        manifest["host_gemm_manifest_version"] = 4
         manifest["host_gemm"] = {
             "m": args.gemm_m,
             "k": args.gemm_k,
@@ -1531,7 +1480,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "tile": 128,
         }
     if args.profile == "host_quantized_gemm":
-        manifest["host_quantized_gemm_manifest_version"] = 1
+        manifest["host_quantized_gemm_manifest_version"] = 2
         manifest["host_quantized_gemm"] = {
             "m": args.gemm_m,
             "k": args.gemm_k,
@@ -1541,7 +1490,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "tile": 128,
         }
     if args.profile == "host_q8_block_dot":
-        manifest["host_q8_block_dot_manifest_version"] = 2
+        manifest["host_q8_block_dot_manifest_version"] = 3
         manifest["host_q8_block_dot"] = {
             "m": args.gemm_m,
             "k": 32,
@@ -1551,7 +1500,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "tile": 128,
         }
     if args.profile == "host_engram_context":
-        manifest["host_engram_context_manifest_version"] = 5
+        manifest["host_engram_context_manifest_version"] = 6
 
     manifest_path = output_dir / spec.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))

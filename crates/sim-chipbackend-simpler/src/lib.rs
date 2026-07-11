@@ -1,10 +1,10 @@
 //! Thin Rust-side runtime loader for `simpler` host `pto_runtime_c_api`.
 //!
 //! Current vendored `simpler` exposes the HostBuildGraph runtime through the
-//! worker C API: initialize a device context once with `simpler_init`, stage a
-//! `ChipCallable` with `prepare_callable`, then launch it via `run_prepared`.
+//! worker C API: initialize a device context with `simpler_init`, register a
+//! `ChipCallable`, then launch it via `simpler_run`.
 
-use std::ffi::{c_char, c_int, c_void, CString};
+use std::ffi::{c_int, c_void};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -26,24 +26,69 @@ type CopyToDeviceCtxFn =
     unsafe extern "C" fn(DeviceContextHandle, *mut c_void, *const c_void, usize) -> c_int;
 type CopyFromDeviceCtxFn =
     unsafe extern "C" fn(DeviceContextHandle, *mut c_void, *const c_void, usize) -> c_int;
-type SimplerInitFn =
-    unsafe extern "C" fn(DeviceContextHandle, c_int, *const u8, usize, *const u8, usize) -> c_int;
-type PrepareCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32, *const c_void) -> c_int;
-type RunPreparedFn = unsafe extern "C" fn(
+type SimplerInitFn = unsafe extern "C" fn(
+    DeviceContextHandle,
+    c_int,
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+) -> c_int;
+type SimplerRegisterCallableFn =
+    unsafe extern "C" fn(DeviceContextHandle, i32, *const c_void) -> c_int;
+type SimplerRunFn = unsafe extern "C" fn(
     DeviceContextHandle,
     RuntimeHandle,
     i32,
     *const c_void,
-    c_int,
-    c_int,
-    c_int,
-    c_int,
-    c_int,
-    c_int,
-    *const c_char,
+    *const CallConfig,
 ) -> c_int;
-type UnregisterCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32) -> c_int;
+type SimplerUnregisterCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32) -> c_int;
 type FinalizeDeviceFn = unsafe extern "C" fn(DeviceContextHandle) -> c_int;
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct RuntimeEnv {
+    ring_task_window: [u64; 4],
+    ring_heap: [u64; 4],
+    ring_dep_pool: [u64; 4],
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct CallConfig {
+    block_dim: i32,
+    aicpu_thread_num: i32,
+    enable_l2_swimlane: i32,
+    enable_dump_tensor: i32,
+    enable_pmu: i32,
+    enable_dep_gen: i32,
+    enable_scope_stats: i32,
+    runtime_env: RuntimeEnv,
+    output_prefix: [u8; 1024],
+}
+
+impl CallConfig {
+    fn new(block_dim: i32, aicpu_thread_num: i32) -> Self {
+        Self {
+            block_dim,
+            aicpu_thread_num,
+            enable_l2_swimlane: 0,
+            enable_dump_tensor: 0,
+            enable_pmu: 0,
+            enable_dep_gen: 0,
+            enable_scope_stats: 0,
+            runtime_env: RuntimeEnv {
+                ring_task_window: [0; 4],
+                ring_heap: [0; 4],
+                ring_dep_pool: [0; 4],
+            },
+            output_prefix: [0; 1024],
+        }
+    }
+}
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,17 +150,26 @@ impl OwnedRuntime {
     }
 }
 
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Clone, Copy, Debug)]
-pub struct ContinuousTensor {
-    data: u64,
-    shapes: [u32; 5],
+pub struct Tensor {
+    buffer_addr: u64,
+    buffer_size: u64,
+    owner_task_id: u64,
+    start_offset: u64,
+    version: i32,
     ndims: u32,
     dtype: DataType,
+    manual_dep: u8,
+    is_contiguous: u8,
     child_memory: u8,
+    shapes: [u32; 5],
+    extent_elem_cache: u64,
+    strides: [u32; 5],
+    _pad_cl2: [u8; 36],
 }
 
-impl ContinuousTensor {
+impl Tensor {
     pub fn new(data: u64, bytes: u64, dtype: DataType) -> Result<Self, SimplerApiError> {
         let elem_size = dtype.element_size() as u64;
         if elem_size == 0 || bytes % elem_size != 0 {
@@ -123,21 +177,12 @@ impl ContinuousTensor {
         }
         let elems = bytes / elem_size;
         let elems = u32::try_from(elems).map_err(|_| SimplerApiError::InvalidTensorShape)?;
-        Ok(Self {
-            data,
-            shapes: [elems, 1, 1, 1, 1],
-            ndims: 1,
-            dtype,
-            child_memory: 0,
-        })
+        Self::from_shape(data, bytes, &[elems], dtype, false)
     }
 
-    pub fn from_shape(data: u64, shape: &[u32], dtype: DataType) -> Result<Self, SimplerApiError> {
-        Self::from_shape_with_child_memory(data, shape, dtype, false)
-    }
-
-    pub fn from_shape_with_child_memory(
+    pub fn from_shape(
         data: u64,
+        bytes: u64,
         shape: &[u32],
         dtype: DataType,
         child_memory: bool,
@@ -145,22 +190,56 @@ impl ContinuousTensor {
         if shape.is_empty() || shape.len() > 5 || shape.contains(&0) {
             return Err(SimplerApiError::InvalidTensorShape);
         }
-        let mut shapes = [1u32; 5];
-        shapes[..shape.len()].copy_from_slice(shape);
+        let mut shapes = [0u32; 5];
+        let mut strides = [0u32; 5];
+        let mut elements = 1u64;
+        for (index, dimension) in shape.iter().copied().enumerate().rev() {
+            strides[index] =
+                u32::try_from(elements).map_err(|_| SimplerApiError::InvalidTensorShape)?;
+            elements = elements
+                .checked_mul(u64::from(dimension))
+                .ok_or(SimplerApiError::InvalidTensorShape)?;
+            shapes[index] = dimension;
+        }
+        let required_bytes = elements
+            .checked_mul(dtype.element_size() as u64)
+            .ok_or(SimplerApiError::InvalidTensorShape)?;
+        if required_bytes > bytes {
+            return Err(SimplerApiError::InvalidTensorShape);
+        }
         Ok(Self {
-            data,
-            shapes,
+            buffer_addr: data,
+            buffer_size: bytes,
+            owner_task_id: u64::MAX,
+            start_offset: 0,
+            version: 0,
             ndims: shape.len() as u32,
             dtype,
+            manual_dep: 0,
+            is_contiguous: 1,
             child_memory: u8::from(child_memory),
+            shapes,
+            extent_elem_cache: elements,
+            strides,
+            _pad_cl2: [0; 36],
         })
+    }
+
+    pub fn from_shape_with_child_memory(
+        data: u64,
+        bytes: u64,
+        shape: &[u32],
+        dtype: DataType,
+        child_memory: bool,
+    ) -> Result<Self, SimplerApiError> {
+        Self::from_shape(data, bytes, shape, dtype, child_memory)
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ChipStorageTaskArgs {
-    tensors: [ContinuousTensor; CHIP_MAX_TENSOR_ARGS],
+    tensors: [Tensor; CHIP_MAX_TENSOR_ARGS],
     scalars: [u64; CHIP_MAX_SCALAR_ARGS],
     tensor_count: i32,
     scalar_count: i32,
@@ -176,16 +255,25 @@ impl std::fmt::Debug for ChipStorageTaskArgs {
 }
 
 impl ChipStorageTaskArgs {
-    pub fn new(tensors: &[ContinuousTensor], scalars: &[u64]) -> Result<Self, SimplerApiError> {
+    pub fn new(tensors: &[Tensor], scalars: &[u64]) -> Result<Self, SimplerApiError> {
         if tensors.len() > CHIP_MAX_TENSOR_ARGS || scalars.len() > CHIP_MAX_SCALAR_ARGS {
             return Err(SimplerApiError::TooManyArgs);
         }
-        let zero_tensor = ContinuousTensor {
-            data: 0,
-            shapes: [0; 5],
+        let zero_tensor = Tensor {
+            buffer_addr: 0,
+            buffer_size: 0,
+            owner_task_id: u64::MAX,
+            start_offset: 0,
+            version: 0,
             ndims: 0,
             dtype: DataType::Uint8,
+            manual_dep: 0,
+            is_contiguous: 0,
             child_memory: 0,
+            shapes: [0; 5],
+            extent_elem_cache: 0,
+            strides: [0; 5],
+            _pad_cl2: [0; 36],
         };
         let mut out = Self {
             tensors: [zero_tensor; CHIP_MAX_TENSOR_ARGS],
@@ -294,9 +382,9 @@ pub fn make_chip_callable(
 fn make_core_callable(binary: &[u8]) -> Result<Vec<u8>, SimplerApiError> {
     let binary_size = u32::try_from(binary.len()).map_err(|_| SimplerApiError::CallableTooLarge)?;
     let mut bytes = vec![0u8; CORE_CALLABLE_BINARY_OFFSET + binary.len()];
-    write_i32(&mut bytes, 64, 0);
-    write_u32(&mut bytes, 68, binary_size);
-    write_u64(&mut bytes, 72, 0);
+    write_i32(&mut bytes, CORE_CALLABLE_SIG_COUNT_OFFSET, 0);
+    write_u32(&mut bytes, CORE_CALLABLE_BINARY_SIZE_OFFSET, binary_size);
+    write_u64(&mut bytes, CORE_CALLABLE_RESOLVED_ADDR_OFFSET, 0);
     bytes[CORE_CALLABLE_BINARY_OFFSET..].copy_from_slice(binary);
     Ok(bytes)
 }
@@ -370,9 +458,9 @@ pub struct RuntimeLibrary {
     copy_to_device_ctx: CopyToDeviceCtxFn,
     copy_from_device_ctx: CopyFromDeviceCtxFn,
     simpler_init: SimplerInitFn,
-    prepare_callable: PrepareCallableFn,
-    run_prepared: RunPreparedFn,
-    unregister_callable: UnregisterCallableFn,
+    register_callable: SimplerRegisterCallableFn,
+    simpler_run: SimplerRunFn,
+    unregister_callable: SimplerUnregisterCallableFn,
     finalize_device: FinalizeDeviceFn,
 }
 
@@ -401,7 +489,7 @@ impl DeviceContext<'_> {
 
 impl Drop for DeviceContext<'_> {
     fn drop(&mut self) {
-        // `run_prepared` already performs runtime-level cleanup. The current
+        // `simpler_run` already performs runtime-level cleanup. The current
         // simpler sim C API can crash during Rust test-process teardown if
         // device finalization is repeated here, so native context cleanup stays
         // opt-in until the upstream teardown contract is stable.
@@ -461,11 +549,14 @@ impl RuntimeLibrary {
                     b"copy_from_device_ctx\0",
                 )?,
                 simpler_init: *load_symbol::<SimplerInitFn>(&lib, b"simpler_init\0")?,
-                prepare_callable: *load_symbol::<PrepareCallableFn>(&lib, b"prepare_callable\0")?,
-                run_prepared: *load_symbol::<RunPreparedFn>(&lib, b"run_prepared\0")?,
-                unregister_callable: *load_symbol::<UnregisterCallableFn>(
+                register_callable: *load_symbol::<SimplerRegisterCallableFn>(
                     &lib,
-                    b"unregister_callable\0",
+                    b"simpler_register_callable\0",
+                )?,
+                simpler_run: *load_symbol::<SimplerRunFn>(&lib, b"simpler_run\0")?,
+                unregister_callable: *load_symbol::<SimplerUnregisterCallableFn>(
+                    &lib,
+                    b"simpler_unregister_callable\0",
                 )?,
                 finalize_device: *load_symbol::<FinalizeDeviceFn>(&lib, b"finalize_device\0")?,
                 _preloaded_libs: preloaded_libs,
@@ -532,7 +623,7 @@ impl RuntimeLibrary {
         }
     }
 
-    pub fn run_prepared(
+    pub fn run_callable(
         &self,
         ctx: &DeviceContext<'_>,
         runtime: OwnedRuntime,
@@ -546,8 +637,8 @@ impl RuntimeLibrary {
         aicore_binary: *const u8,
         aicore_size: usize,
     ) -> Result<(), SimplerApiError> {
-        let output_prefix = CString::new("").map_err(|_| SimplerApiError::InvalidSymbolName)?;
         let callable_id = 0;
+        let config = CallConfig::new(block_dim, aicpu_thread_num);
         unsafe {
             SimplerApiError::from_code((self.simpler_init)(
                 ctx.as_raw(),
@@ -556,24 +647,20 @@ impl RuntimeLibrary {
                 aicpu_size,
                 aicore_binary,
                 aicore_size,
+                std::ptr::null(),
+                0,
             ))?;
-            SimplerApiError::from_code((self.prepare_callable)(
+            SimplerApiError::from_code((self.register_callable)(
                 ctx.as_raw(),
                 callable_id,
                 callable.as_ptr(),
             ))?;
-            let run_result = SimplerApiError::from_code((self.run_prepared)(
+            let run_result = SimplerApiError::from_code((self.simpler_run)(
                 ctx.as_raw(),
                 runtime.as_raw(),
                 callable_id,
                 args as *const _ as *const c_void,
-                block_dim as c_int,
-                aicpu_thread_num as c_int,
-                0,
-                0,
-                0,
-                0,
-                output_prefix.as_ptr(),
+                &config,
             ));
             let unregister_result =
                 SimplerApiError::from_code((self.unregister_callable)(ctx.as_raw(), callable_id));
@@ -648,7 +735,10 @@ const CHIP_MAX_SCALAR_ARGS: usize = 128;
 const CHIP_MAX_CHILDREN: usize = 1024;
 const CALLABLE_ALIGN: usize = 64;
 const CALLABLE_FUNC_NAME_MAX: usize = 64;
-const CORE_CALLABLE_BINARY_OFFSET: usize = 128;
+const CORE_CALLABLE_SIG_COUNT_OFFSET: usize = 128;
+const CORE_CALLABLE_BINARY_SIZE_OFFSET: usize = 132;
+const CORE_CALLABLE_RESOLVED_ADDR_OFFSET: usize = 136;
+const CORE_CALLABLE_BINARY_OFFSET: usize = 192;
 const CHIP_CALLABLE_SIG_COUNT_OFFSET: usize = 512;
 const CHIP_CALLABLE_BINARY_SIZE_OFFSET: usize = 516;
 const CHIP_CALLABLE_FUNC_NAME_OFFSET: usize = 520;
@@ -657,7 +747,10 @@ const CHIP_CALLABLE_CHILD_FUNC_IDS_OFFSET: usize = 588;
 const CHIP_CALLABLE_CHILD_OFFSETS_OFFSET: usize = 4684;
 const CHIP_CALLABLE_CHILD_COUNT_OFFSET: usize = 8780;
 const CHIP_CALLABLE_CONFIG_NAME_LEN_OFFSET: usize = 8848;
-const CHIP_CALLABLE_HEADER_SIZE: usize = 8852;
+const CHIP_CALLABLE_HEADER_SIZE: usize = 8864;
 
-const _: () = assert!(std::mem::size_of::<ContinuousTensor>() == 40);
-const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 6152);
+const _: () = assert!(std::mem::size_of::<Tensor>() == 128);
+const _: () = assert!(std::mem::align_of::<Tensor>() == 64);
+const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 17472);
+const _: () = assert!(std::mem::size_of::<RuntimeEnv>() == 96);
+const _: () = assert!(std::mem::size_of::<CallConfig>() == 1148);
