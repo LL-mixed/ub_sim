@@ -123,6 +123,9 @@ pub const DEEPSEEK_V4_FLASH_MODEL_KEY: &str = "deepseek-v4-flash";
 /// Clamp used by the Flash shared and routed expert SwiGLU activation.
 pub const DEEPSEEK_V4_FLASH_SWIGLU_CLAMP: f32 = 10.0;
 
+/// RMSNorm and hyper-connection numerical epsilon used by the DS4 runtime.
+pub const DEEPSEEK_V4_FLASH_RMS_EPS: f32 = 1.0e-6;
+
 /// Scale applied after normalizing the six selected router probabilities.
 pub const DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE: f32 = 1.5;
 

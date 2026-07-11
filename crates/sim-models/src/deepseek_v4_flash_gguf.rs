@@ -1,4 +1,5 @@
 use crate::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+use crate::deepseek_v4_flash_iq2_tables::{IQ2_XS_SIGNS, IQ2_XXS_GRID};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -725,6 +726,394 @@ pub struct Q8_0Activation {
     pub scales: Vec<f32>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Q8KActivation {
+    pub values: Vec<i8>,
+    pub scales: Vec<f32>,
+    pub block_sums: Vec<i16>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Q2KExpertDotPlan {
+    pub activation_values: Vec<i8>,
+    pub weight_values_kxn: Vec<u8>,
+    pub weight_scales: Vec<f32>,
+    pub minimum_scales: Vec<f32>,
+    pub minimum_sums: Vec<i32>,
+    pub dot_blocks: usize,
+    pub output_size: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Iq2XxsExpertDotPlan {
+    pub activation_values: Vec<i8>,
+    pub weight_values_kxn: Vec<u8>,
+    pub dot_scales: Vec<f32>,
+    pub dot_blocks: usize,
+    pub output_size: usize,
+}
+
+impl Iq2XxsExpertDotPlan {
+    pub fn finish(&self, dots: &[i32]) -> Result<Vec<f32>, String> {
+        let expected = self
+            .dot_blocks
+            .checked_mul(self.output_size)
+            .ok_or_else(|| "deepseek_iq2_xxs_dot_count_overflow".to_string())?;
+        if dots.len() != expected || self.dot_scales.len() != expected {
+            return Err(format!(
+                "deepseek_iq2_xxs_dot_size_mismatch:dots={}:scales={}:expected={expected}",
+                dots.len(),
+                self.dot_scales.len()
+            ));
+        }
+        let mut output = vec![0.0f32; self.output_size];
+        for block in 0..self.dot_blocks {
+            for row in 0..self.output_size {
+                let index = block * self.output_size + row;
+                output[row] += self.dot_scales[index] * dots[index] as f32;
+            }
+        }
+        Ok(output)
+    }
+}
+
+impl Q2KExpertDotPlan {
+    pub fn finish(&self, dots: &[i32]) -> Result<Vec<f32>, String> {
+        let expected_dots = self
+            .dot_blocks
+            .checked_mul(self.output_size)
+            .ok_or_else(|| "deepseek_q2_k_dot_count_overflow".to_string())?;
+        if dots.len() != expected_dots {
+            return Err(format!(
+                "deepseek_q2_k_dot_size_mismatch:actual={}:expected={expected_dots}",
+                dots.len()
+            ));
+        }
+        let quant_blocks = self.weight_scales.len() / self.output_size;
+        let mut output = vec![0.0f32; self.output_size];
+        for block in 0..quant_blocks {
+            for row in 0..self.output_size {
+                let metadata_index = block * self.output_size + row;
+                let quant_sum: i32 = (0..8)
+                    .map(|group| dots[(block * 8 + group) * self.output_size + row])
+                    .sum();
+                output[row] += self.weight_scales[metadata_index] * quant_sum as f32
+                    - self.minimum_scales[metadata_index]
+                        * self.minimum_sums[metadata_index] as f32;
+            }
+        }
+        Ok(output)
+    }
+}
+
+pub fn quantize_q8_k_activation(input: &[f32]) -> Result<Q8KActivation, String> {
+    const BLOCK_ELEMENTS: usize = 256;
+    const SUM_GROUP_ELEMENTS: usize = 16;
+
+    if input.is_empty() || input.len() % BLOCK_ELEMENTS != 0 {
+        return Err(format!(
+            "deepseek_q8_k_activation_shape_invalid:{}",
+            input.len()
+        ));
+    }
+    let mut values = vec![0i8; input.len()];
+    let mut scales = Vec::with_capacity(input.len() / BLOCK_ELEMENTS);
+    let mut block_sums = Vec::with_capacity(input.len() / SUM_GROUP_ELEMENTS);
+    for (block, source) in input.chunks_exact(BLOCK_ELEMENTS).enumerate() {
+        if source.iter().any(|value| !value.is_finite()) {
+            return Err(format!("deepseek_q8_k_activation_non_finite:block={block}"));
+        }
+        let mut signed_max = 0.0f32;
+        let mut absolute_max = 0.0f32;
+        for value in source {
+            if value.abs() > absolute_max {
+                absolute_max = value.abs();
+                signed_max = *value;
+            }
+        }
+        if absolute_max == 0.0 {
+            scales.push(0.0);
+        } else {
+            let inverse_scale = -127.0 / signed_max;
+            scales.push(inverse_scale.recip());
+            for (destination, value) in values[block * BLOCK_ELEMENTS..(block + 1) * BLOCK_ELEMENTS]
+                .iter_mut()
+                .zip(source)
+            {
+                *destination = (value * inverse_scale)
+                    .round_ties_even()
+                    .clamp(-128.0, 127.0) as i8;
+            }
+        }
+        for group in values[block * BLOCK_ELEMENTS..(block + 1) * BLOCK_ELEMENTS]
+            .chunks_exact(SUM_GROUP_ELEMENTS)
+        {
+            block_sums.push(group.iter().map(|value| i16::from(*value)).sum());
+        }
+    }
+    Ok(Q8KActivation {
+        values,
+        scales,
+        block_sums,
+    })
+}
+
+pub fn project_q2_k_expert_matrix(
+    payload: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let plan = lower_q2_k_expert_for_block_dot(payload, dimensions, expert, input)?;
+    let mut dots = vec![0i32; plan.dot_blocks * plan.output_size];
+    for block in 0..plan.dot_blocks {
+        let activation = &plan.activation_values[block * 32..(block + 1) * 32];
+        for row in 0..plan.output_size {
+            dots[block * plan.output_size + row] = (0..32)
+                .map(|lane| {
+                    let weight = i8::from_le_bytes([
+                        plan.weight_values_kxn[(block * 32 + lane) * plan.output_size + row]
+                    ]);
+                    i32::from(activation[lane]) * i32::from(weight)
+                })
+                .sum();
+        }
+    }
+    plan.finish(&dots)
+}
+
+pub fn lower_q2_k_expert_for_block_dot(
+    payload: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Q2KExpertDotPlan, String> {
+    const BLOCK_ELEMENTS: usize = 256;
+    const BLOCK_BYTES: usize = 84;
+
+    let [k, n, experts] = dimensions else {
+        return Err(format!(
+            "deepseek_q2_k_expert_matrix_rank_mismatch:{}",
+            dimensions.len()
+        ));
+    };
+    let k = usize::try_from(*k).map_err(|_| "deepseek_q2_k_matrix_k_too_large".to_string())?;
+    let n = usize::try_from(*n).map_err(|_| "deepseek_q2_k_matrix_n_too_large".to_string())?;
+    let experts = usize::try_from(*experts)
+        .map_err(|_| "deepseek_q2_k_matrix_experts_too_large".to_string())?;
+    if k == 0 || n == 0 || experts == 0 || k % BLOCK_ELEMENTS != 0 {
+        return Err(format!(
+            "deepseek_q2_k_expert_matrix_shape_invalid:{k}x{n}x{experts}"
+        ));
+    }
+    if expert >= experts {
+        return Err(format!(
+            "deepseek_q2_k_expert_out_of_range:expert={expert}:experts={experts}"
+        ));
+    }
+    if input.len() != k {
+        return Err(format!(
+            "deepseek_q2_k_activation_size_mismatch:actual={}:expected={k}",
+            input.len()
+        ));
+    }
+    let blocks_per_row = k / BLOCK_ELEMENTS;
+    let row_bytes = blocks_per_row
+        .checked_mul(BLOCK_BYTES)
+        .ok_or_else(|| "deepseek_q2_k_row_bytes_overflow".to_string())?;
+    let expert_bytes = n
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "deepseek_q2_k_expert_bytes_overflow".to_string())?;
+    let expected_bytes = experts
+        .checked_mul(expert_bytes)
+        .ok_or_else(|| "deepseek_q2_k_payload_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_q2_k_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+
+    let activation = quantize_q8_k_activation(input)?;
+    let expert_start = expert * expert_bytes;
+    let expert_payload = &payload[expert_start..expert_start + expert_bytes];
+    let dot_blocks = blocks_per_row
+        .checked_mul(8)
+        .ok_or_else(|| "deepseek_q2_k_dot_blocks_overflow".to_string())?;
+    let mut weight_values_kxn = vec![0u8; dot_blocks * 32 * n];
+    let mut weight_scales = vec![0.0f32; blocks_per_row * n];
+    let mut minimum_scales = vec![0.0f32; blocks_per_row * n];
+    let mut minimum_sums = vec![0i32; blocks_per_row * n];
+    for (row_index, row) in expert_payload.chunks_exact(row_bytes).enumerate() {
+        for block_index in 0..blocks_per_row {
+            let block = &row[block_index * BLOCK_BYTES..(block_index + 1) * BLOCK_BYTES];
+            let scales = &block[..16];
+            let quants = &block[16..80];
+            let metadata_index = block_index * n + row_index;
+            let weight_scale = f16_to_f32(u16::from_le_bytes([block[80], block[81]]));
+            let weight_min = f16_to_f32(u16::from_le_bytes([block[82], block[83]]));
+            if !weight_scale.is_finite() || !weight_min.is_finite() {
+                return Err(format!(
+                    "deepseek_q2_k_scale_non_finite:row={row_index}:block={block_index}"
+                ));
+            }
+            weight_scales[metadata_index] = activation.scales[block_index] * weight_scale;
+            minimum_scales[metadata_index] = activation.scales[block_index] * weight_min;
+            minimum_sums[metadata_index] = activation.block_sums
+                [block_index * 16..(block_index + 1) * 16]
+                .iter()
+                .zip(scales)
+                .map(|(sum, scale)| i32::from(*sum) * i32::from(scale >> 4))
+                .sum();
+            for group in 0..8 {
+                let quant_base = (group / 4) * 32;
+                let shift = (group % 4) * 2;
+                for lane in 0..32 {
+                    let scale = scales[group * 2 + lane / 16] & 0x0f;
+                    let quant = (quants[quant_base + lane] >> shift) & 0x03;
+                    let destination = ((block_index * 8 + group) * 32 + lane) * n + row_index;
+                    weight_values_kxn[destination] = quant * scale;
+                }
+            }
+        }
+    }
+    Ok(Q2KExpertDotPlan {
+        activation_values: activation.values,
+        weight_values_kxn,
+        weight_scales,
+        minimum_scales,
+        minimum_sums,
+        dot_blocks,
+        output_size: n,
+    })
+}
+
+pub fn project_iq2_xxs_expert_matrix(
+    payload: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let plan = lower_iq2_xxs_expert_for_block_dot(payload, dimensions, expert, input)?;
+    let mut dots = vec![0i32; plan.dot_blocks * plan.output_size];
+    for block in 0..plan.dot_blocks {
+        let activation = &plan.activation_values[block * 32..(block + 1) * 32];
+        for row in 0..plan.output_size {
+            dots[block * plan.output_size + row] = (0..32)
+                .map(|lane| {
+                    let weight = i8::from_le_bytes([
+                        plan.weight_values_kxn[(block * 32 + lane) * plan.output_size + row]
+                    ]);
+                    i32::from(activation[lane]) * i32::from(weight)
+                })
+                .sum();
+        }
+    }
+    plan.finish(&dots)
+}
+
+pub fn lower_iq2_xxs_expert_for_block_dot(
+    payload: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Iq2XxsExpertDotPlan, String> {
+    const BLOCK_ELEMENTS: usize = 256;
+    const BLOCK_BYTES: usize = 66;
+
+    let [k, n, experts] = dimensions else {
+        return Err(format!(
+            "deepseek_iq2_xxs_expert_matrix_rank_mismatch:{}",
+            dimensions.len()
+        ));
+    };
+    let k = usize::try_from(*k).map_err(|_| "deepseek_iq2_xxs_matrix_k_too_large".to_string())?;
+    let n = usize::try_from(*n).map_err(|_| "deepseek_iq2_xxs_matrix_n_too_large".to_string())?;
+    let experts = usize::try_from(*experts)
+        .map_err(|_| "deepseek_iq2_xxs_matrix_experts_too_large".to_string())?;
+    if k == 0 || n == 0 || experts == 0 || k % BLOCK_ELEMENTS != 0 {
+        return Err(format!(
+            "deepseek_iq2_xxs_expert_matrix_shape_invalid:{k}x{n}x{experts}"
+        ));
+    }
+    if expert >= experts {
+        return Err(format!(
+            "deepseek_iq2_xxs_expert_out_of_range:expert={expert}:experts={experts}"
+        ));
+    }
+    if input.len() != k {
+        return Err(format!(
+            "deepseek_iq2_xxs_activation_size_mismatch:actual={}:expected={k}",
+            input.len()
+        ));
+    }
+    let blocks_per_row = k / BLOCK_ELEMENTS;
+    let row_bytes = blocks_per_row
+        .checked_mul(BLOCK_BYTES)
+        .ok_or_else(|| "deepseek_iq2_xxs_row_bytes_overflow".to_string())?;
+    let expert_bytes = n
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "deepseek_iq2_xxs_expert_bytes_overflow".to_string())?;
+    let expected_bytes = experts
+        .checked_mul(expert_bytes)
+        .ok_or_else(|| "deepseek_iq2_xxs_payload_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_iq2_xxs_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+
+    let activation = quantize_q8_k_activation(input)?;
+    let dot_blocks = blocks_per_row
+        .checked_mul(8)
+        .ok_or_else(|| "deepseek_iq2_xxs_dot_blocks_overflow".to_string())?;
+    let mut weight_values_kxn = vec![0u8; dot_blocks * 32 * n];
+    let mut dot_scales = vec![0.0f32; dot_blocks * n];
+    let expert_start = expert * expert_bytes;
+    let expert_payload = &payload[expert_start..expert_start + expert_bytes];
+    for (row_index, row) in expert_payload.chunks_exact(row_bytes).enumerate() {
+        for block_index in 0..blocks_per_row {
+            let block = &row[block_index * BLOCK_BYTES..(block_index + 1) * BLOCK_BYTES];
+            let block_scale = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+            if !block_scale.is_finite() {
+                return Err(format!(
+                    "deepseek_iq2_xxs_scale_non_finite:row={row_index}:block={block_index}"
+                ));
+            }
+            for group in 0..8 {
+                let encoded = &block[2 + group * 8..2 + (group + 1) * 8];
+                let sign_and_scale = u32::from_le_bytes(encoded[4..8].try_into().unwrap());
+                let dot_block = block_index * 8 + group;
+                let local_scale = 2 * (sign_and_scale >> 28) + 1;
+                dot_scales[dot_block * n + row_index] =
+                    0.125 * activation.scales[block_index] * block_scale * local_scale as f32;
+                for pair in 0..4 {
+                    let grid = IQ2_XXS_GRID[encoded[pair] as usize].to_le_bytes();
+                    let signs = IQ2_XS_SIGNS[((sign_and_scale >> (7 * pair)) & 127) as usize];
+                    for lane in 0..8 {
+                        let magnitude = grid[lane] as i8;
+                        let value = if signs & (1 << lane) == 0 {
+                            magnitude
+                        } else {
+                            -magnitude
+                        };
+                        let destination = ((dot_block * 32 + pair * 8 + lane) * n) + row_index;
+                        weight_values_kxn[destination] = value as u8;
+                    }
+                }
+            }
+        }
+    }
+    Ok(Iq2XxsExpertDotPlan {
+        activation_values: activation.values,
+        weight_values_kxn,
+        dot_scales,
+        dot_blocks,
+        output_size: n,
+    })
+}
+
 pub fn quantize_q8_0_activation(input: &[f32]) -> Result<Q8_0Activation, String> {
     if input.is_empty() || input.len() % 32 != 0 {
         return Err(format!(
@@ -1175,6 +1564,118 @@ mod tests {
         assert!(project_q8_0_matrix(&[0; 34], &[32, 1], &[0.0; 31])
             .unwrap_err()
             .contains("size_mismatch"));
+    }
+
+    fn q2_k_block(scales: [u8; 16], quant: u8, scale: u16, minimum: u16) -> Vec<u8> {
+        let mut block = Vec::with_capacity(84);
+        block.extend_from_slice(&scales);
+        block.extend(std::iter::repeat_n(quant, 64));
+        block.extend_from_slice(&scale.to_le_bytes());
+        block.extend_from_slice(&minimum.to_le_bytes());
+        block
+    }
+
+    #[test]
+    fn q8_k_activation_quantization_matches_ds4_signed_scale_rules() {
+        let mut input = vec![0.0f32; 256];
+        input[0] = 2.0;
+        input[1] = -2.0;
+        let activation = quantize_q8_k_activation(&input).expect("quantize Q8_K activation");
+        assert_eq!(activation.scales, vec![-2.0 / 127.0]);
+        assert_eq!(&activation.values[..2], &[-127, 127]);
+        assert_eq!(activation.block_sums[0], 0);
+
+        let zeros = quantize_q8_k_activation(&[0.0; 256]).expect("quantize zero Q8_K");
+        assert_eq!(zeros.scales, vec![0.0]);
+        assert!(zeros.values.iter().all(|value| *value == 0));
+        assert!(zeros.block_sums.iter().all(|value| *value == 0));
+    }
+
+    #[test]
+    fn q2_k_projection_selects_expert_and_applies_scale_and_minimum() {
+        let zero_row = q2_k_block([0; 16], 0, 0x3c00, 0);
+        let quant_row = q2_k_block([2; 16], 0xff, 0x3c00, 0);
+        let min_row = q2_k_block([0x10; 16], 0, 0, 0x3c00);
+        let payload = [
+            zero_row.as_slice(),
+            zero_row.as_slice(),
+            quant_row.as_slice(),
+            min_row.as_slice(),
+        ]
+        .concat();
+        let input = vec![1.0f32; 256];
+
+        assert_eq!(
+            project_q2_k_expert_matrix(&payload, &[256, 2, 2], 0, &input)
+                .expect("project expert zero"),
+            vec![0.0, 0.0]
+        );
+        assert_eq!(
+            project_q2_k_expert_matrix(&payload, &[256, 2, 2], 1, &input)
+                .expect("project expert one"),
+            vec![1536.0, -256.0]
+        );
+    }
+
+    #[test]
+    fn q2_k_projection_fails_closed_on_invalid_layout() {
+        assert!(quantize_q8_k_activation(&[0.0; 255])
+            .unwrap_err()
+            .contains("shape_invalid"));
+        assert!(
+            project_q2_k_expert_matrix(&[0; 84], &[256, 1], 0, &[0.0; 256])
+                .unwrap_err()
+                .contains("rank_mismatch")
+        );
+        assert!(
+            project_q2_k_expert_matrix(&[0; 84], &[256, 1, 1], 1, &[0.0; 256])
+                .unwrap_err()
+                .contains("out_of_range")
+        );
+        assert!(
+            project_q2_k_expert_matrix(&[0; 83], &[256, 1, 1], 0, &[0.0; 256])
+                .unwrap_err()
+                .contains("payload_size_mismatch")
+        );
+    }
+
+    #[test]
+    fn iq2_xxs_projection_decodes_grid_signs_and_local_scale() {
+        let mut positive = Vec::with_capacity(66);
+        positive.extend_from_slice(&0x3c00u16.to_le_bytes());
+        positive.extend(std::iter::repeat_n(0u8, 64));
+        let mut signed = positive.clone();
+        for group in 0..8 {
+            let sign_and_scale = 127u32 | (15u32 << 28);
+            signed[2 + group * 8 + 4..2 + group * 8 + 8]
+                .copy_from_slice(&sign_and_scale.to_le_bytes());
+        }
+        let payload = [positive, signed].concat();
+        let input = vec![1.0f32; 256];
+
+        assert_eq!(
+            project_iq2_xxs_expert_matrix(&payload, &[256, 1, 2], 0, &input)
+                .expect("project positive IQ2_XXS expert"),
+            vec![256.0]
+        );
+        let selected = project_iq2_xxs_expert_matrix(&payload, &[256, 1, 2], 1, &input)
+            .expect("project signed IQ2_XXS expert");
+        assert!(selected[0].is_finite());
+        assert_ne!(selected, vec![256.0]);
+    }
+
+    #[test]
+    fn iq2_xxs_projection_fails_closed_on_invalid_layout() {
+        assert!(
+            project_iq2_xxs_expert_matrix(&[0; 66], &[256, 1], 0, &[0.0; 256])
+                .unwrap_err()
+                .contains("rank_mismatch")
+        );
+        assert!(
+            project_iq2_xxs_expert_matrix(&[0; 65], &[256, 1, 1], 0, &[0.0; 256])
+                .unwrap_err()
+                .contains("payload_size_mismatch")
+        );
     }
 
     #[test]

@@ -28,7 +28,8 @@ use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
 use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
 use sim_models::deepseek_v4_flash_gguf::{
-    lower_f16_matrix_to_f32_kxn_padded, q8_0_weight_block_kxn, quantize_q8_0_activation,
+    lower_f16_matrix_to_f32_kxn_padded, lower_iq2_xxs_expert_for_block_dot,
+    lower_q2_k_expert_for_block_dot, q8_0_weight_block_kxn, quantize_q8_0_activation,
 };
 use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashGemmPlan;
 use sim_models::engram_context::{
@@ -17813,6 +17814,449 @@ pub fn execute_deepseek_q8_projection_through_simpler(
     Ok(output)
 }
 
+/// Execute one selected DeepSeek Q2_K expert matrix through simpler's PTO
+/// int8 block-dot callable, then apply the GGUF Q2_K scale/min correction.
+pub fn execute_deepseek_q2_k_expert_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    q2_weight: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let plan = lower_q2_k_expert_for_block_dot(q2_weight, dimensions, expert, input)?;
+    if plan.output_size % 128 != 0 {
+        return Err(format!(
+            "simpler Q2_K output must be 128-aligned:output={}",
+            plan.output_size
+        ));
+    }
+    ensure_simpler_host_q8_block_dot_manifest(
+        manifest_path,
+        plan.dot_blocks as u64,
+        plan.output_size as u64,
+    )?;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        plan.dot_blocks,
+        plan.output_size,
+        segment_base,
+    )?;
+    let dots = runner.run(
+        task,
+        plan.activation_values
+            .iter()
+            .map(|value| *value as u8)
+            .collect(),
+        plan.weight_values_kxn.clone(),
+    )?;
+    plan.finish(&dots)
+}
+
+/// Execute one selected DeepSeek IQ2_XXS expert matrix through simpler's PTO
+/// int8 block-dot callable and apply the IQ2 block/local scales.
+pub fn execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    iq2_weight: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let plan = lower_iq2_xxs_expert_for_block_dot(iq2_weight, dimensions, expert, input)?;
+    if plan.output_size % 128 != 0 {
+        return Err(format!(
+            "simpler IQ2_XXS output must be 128-aligned:output={}",
+            plan.output_size
+        ));
+    }
+    ensure_simpler_host_q8_block_dot_manifest(
+        manifest_path,
+        plan.dot_blocks as u64,
+        plan.output_size as u64,
+    )?;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        plan.dot_blocks,
+        plan.output_size,
+        segment_base,
+    )?;
+    let dots = runner.run(
+        task,
+        plan.activation_values
+            .iter()
+            .map(|value| *value as u8)
+            .collect(),
+        plan.weight_values_kxn.clone(),
+    )?;
+    plan.finish(&dots)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_routed_expert_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    gate_weight: &[u8],
+    gate_dimensions: &[u64],
+    up_weight: &[u8],
+    up_dimensions: &[u64],
+    down_weight: &[u8],
+    down_dimensions: &[u64],
+    expert: usize,
+    expert_weight: f32,
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if gate_dimensions != up_dimensions {
+        return Err(format!(
+            "deepseek routed expert gate/up shape mismatch:gate={gate_dimensions:?}:up={up_dimensions:?}"
+        ));
+    }
+    let [input_size, intermediate_size, experts] = gate_dimensions else {
+        return Err(format!(
+            "unsupported deepseek routed expert gate shape:{gate_dimensions:?}"
+        ));
+    };
+    if down_dimensions != [*intermediate_size, *input_size, *experts] {
+        return Err(format!(
+            "deepseek routed expert down shape mismatch:down={down_dimensions:?}:expected=[{intermediate_size},{input_size},{experts}]"
+        ));
+    }
+    if !expert_weight.is_finite() {
+        return Err("deepseek routed expert weight non-finite".to_string());
+    }
+    let gate_manifest = artifact_dir
+        .join(format!("iq2_{}x{}", input_size, intermediate_size))
+        .join("host_q8_block_dot_manifest.json");
+    let down_manifest = artifact_dir
+        .join(format!("q2_{}x{}", intermediate_size, input_size))
+        .join("host_q8_block_dot_manifest.json");
+    let gate = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+        topology,
+        task,
+        &gate_manifest,
+        segment_base,
+        gate_weight,
+        gate_dimensions,
+        expert,
+        input,
+    )?;
+    let mut up_task = task.clone();
+    up_task.task_id = task.task_id.saturating_add(1);
+    let up = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+        topology,
+        &up_task,
+        &gate_manifest,
+        segment_base.saturating_add(10),
+        up_weight,
+        up_dimensions,
+        expert,
+        input,
+    )?;
+    let mut activated = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_swiglu_reference(
+        &gate, &up, clamp,
+    )?;
+    for value in &mut activated {
+        *value *= expert_weight;
+    }
+    let mut down_task = task.clone();
+    down_task.task_id = task.task_id.saturating_add(2);
+    execute_deepseek_q2_k_expert_projection_through_simpler(
+        topology,
+        &down_task,
+        &down_manifest,
+        segment_base.saturating_add(20),
+        down_weight,
+        down_dimensions,
+        expert,
+        &activated,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_routed_experts_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    gate_weight: &[u8],
+    gate_dimensions: &[u64],
+    up_weight: &[u8],
+    up_dimensions: &[u64],
+    down_weight: &[u8],
+    down_dimensions: &[u64],
+    selected_experts: &[usize],
+    expert_weights: &[f32],
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if selected_experts.is_empty() || selected_experts.len() != expert_weights.len() {
+        return Err(format!(
+            "deepseek routed expert selection mismatch:experts={}:weights={}",
+            selected_experts.len(),
+            expert_weights.len()
+        ));
+    }
+    let output_size = usize::try_from(
+        *gate_dimensions
+            .first()
+            .ok_or_else(|| "deepseek routed expert gate dimensions missing".to_string())?,
+    )
+    .map_err(|_| "deepseek routed expert output size too large".to_string())?;
+    let mut output = vec![0.0f32; output_size];
+    for (slot, (&expert, &expert_weight)) in selected_experts.iter().zip(expert_weights).enumerate()
+    {
+        let mut expert_task = task.clone();
+        expert_task.task_id = task.task_id.saturating_add((slot as u64).saturating_mul(3));
+        let expert_output = execute_deepseek_routed_expert_through_simpler(
+            topology,
+            &expert_task,
+            artifact_dir,
+            segment_base.saturating_add((slot as u64).saturating_mul(100)),
+            gate_weight,
+            gate_dimensions,
+            up_weight,
+            up_dimensions,
+            down_weight,
+            down_dimensions,
+            expert,
+            expert_weight,
+            input,
+            clamp,
+        )?;
+        if expert_output.len() != output.len() {
+            return Err(format!(
+                "deepseek routed expert output size mismatch:slot={slot}:actual={}:expected={}",
+                expert_output.len(),
+                output.len()
+            ));
+        }
+        for (accumulator, value) in output.iter_mut().zip(expert_output) {
+            *accumulator += value;
+        }
+    }
+    Ok(output)
+}
+
+pub struct DeepseekV4FlashMoeWeights<'a> {
+    pub router: &'a [u8],
+    pub router_dimensions: &'a [u64],
+    pub routed_gate: &'a [u8],
+    pub routed_gate_dimensions: &'a [u64],
+    pub routed_up: &'a [u8],
+    pub routed_up_dimensions: &'a [u64],
+    pub routed_down: &'a [u8],
+    pub routed_down_dimensions: &'a [u64],
+    pub shared_gate: &'a [u8],
+    pub shared_gate_dimensions: &'a [u64],
+    pub shared_up: &'a [u8],
+    pub shared_up_dimensions: &'a [u64],
+    pub shared_down: &'a [u8],
+    pub shared_down_dimensions: &'a [u64],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashMoeExecution {
+    pub router: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput,
+    pub output: Vec<f32>,
+}
+
+pub struct DeepseekV4FlashFfnWeights<'a> {
+    pub hc_function: &'a [u8],
+    pub hc_function_dimensions: &'a [u64],
+    pub hc_scale: &'a [f32],
+    pub hc_base: &'a [f32],
+    pub ffn_norm: &'a [f32],
+    pub moe: DeepseekV4FlashMoeWeights<'a>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashFfnExecution {
+    pub router: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput,
+    pub normalized_hidden: Vec<f32>,
+    pub moe_output: Vec<f32>,
+    pub output_hc: Vec<f32>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_moe_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashMoeWeights<'_>,
+    input: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    clamp: f32,
+) -> Result<DeepseekV4FlashMoeExecution, String> {
+    let router_manifest = artifact_dir
+        .join("router")
+        .join("host_fp32_gemm_manifest.json");
+    let router = execute_deepseek_router_through_simpler(
+        topology,
+        task,
+        &router_manifest,
+        weights.router,
+        weights.router_dimensions,
+        input,
+        selection_bias,
+        hash_selected_experts,
+    )?;
+    let mut routed_task = task.clone();
+    routed_task.task_id = task.task_id.saturating_add(1);
+    let routed = execute_deepseek_routed_experts_through_simpler(
+        topology,
+        &routed_task,
+        &artifact_dir.join("routed"),
+        segment_base.saturating_add(100),
+        weights.routed_gate,
+        weights.routed_gate_dimensions,
+        weights.routed_up,
+        weights.routed_up_dimensions,
+        weights.routed_down,
+        weights.routed_down_dimensions,
+        &router.expert_indices,
+        &router.expert_weights,
+        input,
+        clamp,
+    )?;
+    let mut shared_task = task.clone();
+    shared_task.task_id = task
+        .task_id
+        .saturating_add(1)
+        .saturating_add((router.expert_indices.len() as u64).saturating_mul(3));
+    let shared = execute_deepseek_shared_expert_through_simpler(
+        topology,
+        &shared_task,
+        &artifact_dir.join("shared"),
+        segment_base.saturating_add(1_000),
+        weights.shared_gate,
+        weights.shared_gate_dimensions,
+        weights.shared_up,
+        weights.shared_up_dimensions,
+        weights.shared_down,
+        weights.shared_down_dimensions,
+        input,
+        clamp,
+    )?;
+    if routed.len() != shared.len() {
+        return Err(format!(
+            "deepseek MoE routed/shared output mismatch:routed={}:shared={}",
+            routed.len(),
+            shared.len()
+        ));
+    }
+    let output = routed
+        .into_iter()
+        .zip(shared)
+        .map(|(routed, shared)| routed + shared)
+        .collect();
+    Ok(DeepseekV4FlashMoeExecution { router, output })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_ffn_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashFfnWeights<'_>,
+    residual_hc: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    eps: f32,
+    clamp: f32,
+) -> Result<DeepseekV4FlashFfnExecution, String> {
+    let hidden_size = weights.ffn_norm.len();
+    let hc_size = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek FFN HC size overflow".to_string())?;
+    let mix_size = hc_mult
+        .checked_mul(hc_mult.saturating_add(2))
+        .ok_or_else(|| "deepseek FFN HC mix size overflow".to_string())?;
+    if hidden_size == 0
+        || hc_mult == 0
+        || residual_hc.len() != hc_size
+        || weights.hc_function_dimensions != [hc_size as u64, mix_size as u64]
+    {
+        return Err(format!(
+            "deepseek FFN HC shape mismatch:residual={}:norm={hidden_size}:hc_mult={hc_mult}:function={:?}",
+            residual_hc.len(), weights.hc_function_dimensions
+        ));
+    }
+    let control_input =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_control_input_reference(
+            residual_hc,
+            hidden_size,
+            hc_mult,
+            eps,
+        )?;
+    let control = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("hc").join("host_fp32_gemm_manifest.json"),
+        weights.hc_function,
+        weights.hc_function_dimensions,
+        &control_input,
+    )?;
+    let split = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+        &control,
+        weights.hc_scale,
+        weights.hc_base,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+    )?;
+    let mixed_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+            residual_hc,
+            &split.pre,
+            hidden_size,
+        )?;
+    let normalized_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &mixed_hidden,
+            Some(weights.ffn_norm),
+            eps,
+        )?;
+    let mut moe_task = task.clone();
+    moe_task.task_id = task.task_id.saturating_add(1);
+    let moe = execute_deepseek_moe_through_simpler(
+        topology,
+        &moe_task,
+        &artifact_dir.join("moe"),
+        segment_base.saturating_add(100),
+        &weights.moe,
+        &normalized_hidden,
+        selection_bias,
+        hash_selected_experts,
+        clamp,
+    )?;
+    let output_hc = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+        &moe.output,
+        residual_hc,
+        &split.post,
+        &split.combine,
+    )?;
+    Ok(DeepseekV4FlashFfnExecution {
+        router: moe.router,
+        normalized_hidden,
+        moe_output: moe.output,
+        output_hc,
+    })
+}
+
 /// Execute one DeepSeek F16 matrix projection through the simulator's
 /// production simpler FP32 GEMM path.
 pub fn execute_deepseek_f16_projection_through_simpler(
@@ -17831,16 +18275,22 @@ pub fn execute_deepseek_f16_projection_through_simpler(
     let k = usize::try_from(*k).map_err(|_| "F16 projection K too large".to_string())?;
     let n = usize::try_from(*n).map_err(|_| "F16 projection N too large".to_string())?;
     const ARTIFACT_M: usize = 128;
-    if k == 0 || k % 128 != 0 || n == 0 || n % 128 != 0 || input.len() != k {
+    if k == 0 || k % 128 != 0 || n == 0 || input.len() != k {
         return Err(format!(
             "unsupported simpler F16 projection shape:dimensions={dimensions:?}:input={}",
             input.len()
         ));
     }
-    ensure_simpler_host_fp32_gemm_manifest(manifest_path, ARTIFACT_M as u64, k as u64, n as u64)?;
+    let padded_n = n.next_multiple_of(128);
+    ensure_simpler_host_fp32_gemm_manifest(
+        manifest_path,
+        ARTIFACT_M as u64,
+        k as u64,
+        padded_n as u64,
+    )?;
     let mut padded_input = vec![0.0f32; ARTIFACT_M * k];
     padded_input[..k].copy_from_slice(input);
-    let weight = lower_f16_matrix_to_f32_kxn_padded(f16_weight, dimensions, n)?;
+    let weight = lower_f16_matrix_to_f32_kxn_padded(f16_weight, dimensions, padded_n)?;
     let output = run_host_gemm(
         topology,
         task,
@@ -17849,7 +18299,7 @@ pub fn execute_deepseek_f16_projection_through_simpler(
         f32s_to_bytes(&weight),
         ARTIFACT_M,
         k,
-        n,
+        padded_n,
         "fp32",
         4,
         "host_fp32_gemm",
@@ -27208,9 +27658,14 @@ mod tests {
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
         ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
         ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
-        execute_deepseek_f16_projection_through_simpler,
+        execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
         execute_deepseek_grouped_q8_projection_through_simpler,
-        execute_deepseek_q8_projection_through_simpler, execute_deepseek_router_through_simpler,
+        execute_deepseek_iq2_xxs_expert_projection_through_simpler,
+        execute_deepseek_moe_through_simpler,
+        execute_deepseek_q2_k_expert_projection_through_simpler,
+        execute_deepseek_q8_projection_through_simpler,
+        execute_deepseek_routed_expert_through_simpler,
+        execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
         execute_deepseek_shared_expert_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
         f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
@@ -27289,14 +27744,15 @@ mod tests {
         resolve_qwen3_range_dispatch_operands, run_host_gemm, run_host_gemm_128,
         run_host_gemm_smoke, run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_host_quantized_gemm_smoke, run_qwen3_dense_reference_prefill_runtime,
-        validate_qwen3_range_dispatch_object_refs, write_u64_le_at, GuestUapiSurface,
-        KvCachePayloadLayout, LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
-        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
-        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView,
-        Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind,
-        Qwen3RangeDispatchOperands, Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        validate_qwen3_range_dispatch_object_refs, write_u64_le_at, DeepseekV4FlashFfnWeights,
+        DeepseekV4FlashMoeWeights, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
+        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
+        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
+        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
+        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
+        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
+        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
+        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
@@ -27333,7 +27789,8 @@ mod tests {
     use sim_models::deepseek_v4_flash;
     use sim_models::deepseek_v4_flash_gguf::{
         decode_f32_tensor, lower_f16_matrix_to_f32_kxn_padded, lower_q8_0_matrix_to_bf16_kxn,
-        project_f16_matrix, project_q8_0_matrix, GgufCatalog,
+        project_f16_matrix, project_iq2_xxs_expert_matrix, project_q2_k_expert_matrix,
+        project_q8_0_matrix, GgufCatalog,
     };
     use sim_models::deepseek_v4_flash_lowering::{
         deepseek_v4_flash_fp8_kv_roundtrip_reference,
@@ -30668,6 +31125,614 @@ mod tests {
                 )
                 .expect("execute exact Q8 projection through simpler");
                 assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_q2_k_expert_projection_executes_block_dots_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_q2_k_expert_projection_executes_block_dots_through_simpler",
+            || {
+                const K: usize = 256;
+                const N: usize = 128;
+                const EXPERTS: usize = 2;
+                let input: Vec<f32> = (0..K)
+                    .map(|index| ((index as i32 % 31) - 15) as f32 / 7.0)
+                    .collect();
+                let mut weight = Vec::with_capacity(EXPERTS * N * 84);
+                for expert in 0..EXPERTS {
+                    for row in 0..N {
+                        weight.extend((0..16).map(|group| {
+                            let scale = ((expert + row + group) % 4 + 1) as u8;
+                            let minimum = ((expert * 2 + row + group) % 3) as u8;
+                            scale | (minimum << 4)
+                        }));
+                        weight
+                            .extend((0..64).map(|index| (expert * 17 + row * 5 + index * 3) as u8));
+                        weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                        weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                    }
+                }
+                let dimensions = [K as u64, N as u64, EXPERTS as u64];
+                let reference = project_q2_k_expert_matrix(&weight, &dimensions, 1, &input)
+                    .expect("compute Q2_K expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-q2-k-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_q2_k_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 126,
+                    },
+                    &manifest,
+                    96_000,
+                    &weight,
+                    &dimensions,
+                    1,
+                    &input,
+                )
+                .expect("execute Q2_K expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_q2_k_expert_rows_match_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_q2_k_expert_rows_match_gguf_reference_when_available",
+            || {
+                const EXPERT: usize = 194;
+                const OUTPUT_ROWS: usize = 128;
+                const Q2_K_BLOCK_BYTES: usize = 84;
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                let tensor = catalog
+                    .tensor("blk.0.ffn_down_exps.weight")
+                    .expect("locate real routed down tensor");
+                assert_eq!(tensor.tensor_type.name, "q2_k");
+                let k = tensor.dimensions[0] as usize;
+                let n = tensor.dimensions[1] as usize;
+                let row_bytes = (k / 256) * Q2_K_BLOCK_BYTES;
+                let expert_bytes = n * row_bytes;
+                let all_weights = catalog
+                    .read_tensor(&tensor.name)
+                    .expect("read real routed down tensor");
+                let start = EXPERT * expert_bytes;
+                let weight = all_weights[start..start + OUTPUT_ROWS * row_bytes].to_vec();
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding")[..k]
+                    .to_vec();
+                let dimensions = [k as u64, OUTPUT_ROWS as u64, 1];
+                let reference = project_q2_k_expert_matrix(&weight, &dimensions, 0, &input)
+                    .expect("compute real Q2_K expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-q2-k-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_q2_k_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 127,
+                    },
+                    &manifest,
+                    97_000,
+                    &weight,
+                    &dimensions,
+                    0,
+                    &input,
+                )
+                .expect("execute real Q2_K expert rows through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_iq2_xxs_expert_projection_executes_block_dots_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_iq2_xxs_expert_projection_executes_block_dots_through_simpler",
+            || {
+                const K: usize = 256;
+                const N: usize = 128;
+                const EXPERTS: usize = 2;
+                let input: Vec<f32> = (0..K)
+                    .map(|index| ((index as i32 % 37) - 18) as f32 / 9.0)
+                    .collect();
+                let mut weight = Vec::with_capacity(EXPERTS * N * 66);
+                for expert in 0..EXPERTS {
+                    for row in 0..N {
+                        weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                        for group in 0..8 {
+                            weight.extend(
+                                (0..4).map(|pair| (expert * 29 + row * 7 + group * 5 + pair) as u8),
+                            );
+                            let sign_and_scale = (((expert + row + group) % 16) as u32) << 28
+                                | ((expert * 11 + row + group) % 128) as u32;
+                            weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let dimensions = [K as u64, N as u64, EXPERTS as u64];
+                let reference = project_iq2_xxs_expert_matrix(&weight, &dimensions, 1, &input)
+                    .expect("compute IQ2_XXS expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-iq2-xxs-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 128,
+                    },
+                    &manifest,
+                    98_000,
+                    &weight,
+                    &dimensions,
+                    1,
+                    &input,
+                )
+                .expect("execute IQ2_XXS expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_iq2_xxs_expert_rows_match_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_iq2_xxs_expert_rows_match_gguf_reference_when_available",
+            || {
+                const EXPERT: usize = 194;
+                const OUTPUT_ROWS: usize = 128;
+                const IQ2_XXS_BLOCK_BYTES: usize = 66;
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                let tensor = catalog
+                    .tensor("blk.0.ffn_gate_exps.weight")
+                    .expect("locate real routed gate tensor");
+                assert_eq!(tensor.tensor_type.name, "iq2_xxs");
+                let k = tensor.dimensions[0] as usize;
+                let n = tensor.dimensions[1] as usize;
+                let row_bytes = (k / 256) * IQ2_XXS_BLOCK_BYTES;
+                let expert_bytes = n * row_bytes;
+                let all_weights = catalog
+                    .read_tensor(&tensor.name)
+                    .expect("read real routed gate tensor");
+                let start = EXPERT * expert_bytes;
+                let weight = all_weights[start..start + OUTPUT_ROWS * row_bytes].to_vec();
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                let dimensions = [k as u64, OUTPUT_ROWS as u64, 1];
+                let reference = project_iq2_xxs_expert_matrix(&weight, &dimensions, 0, &input)
+                    .expect("compute real IQ2_XXS expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-iq2-xxs-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 129,
+                    },
+                    &manifest,
+                    99_000,
+                    &weight,
+                    &dimensions,
+                    0,
+                    &input,
+                )
+                .expect("execute real IQ2_XXS expert rows through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_routed_expert_executes_gate_up_and_down_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_routed_expert_executes_gate_up_and_down_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 2;
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 41) - 20) as f32 / 11.0)
+                    .collect();
+                let iq2_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(EXPERTS * DIM * 66);
+                    for expert in 0..EXPERTS {
+                        for row in 0..DIM {
+                            weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                            for group in 0..8 {
+                                weight.extend((0..4).map(|pair| {
+                                    (seed + expert * 31 + row * 3 + group * 7 + pair) as u8
+                                }));
+                                let sign_and_scale =
+                                    ((((seed + expert + row + group) % 16) as u32) << 28)
+                                        | ((seed + expert * 13 + row + group) % 128) as u32;
+                                weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                            }
+                        }
+                    }
+                    weight
+                };
+                let gate_weight = iq2_weight(3);
+                let up_weight = iq2_weight(17);
+                let mut down_weight = Vec::with_capacity(EXPERTS * DIM * 84);
+                for expert in 0..EXPERTS {
+                    for row in 0..DIM {
+                        down_weight.extend((0..16).map(|group| {
+                            (((expert + row + group) % 4 + 1) as u8)
+                                | ((((expert + row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        down_weight
+                            .extend((0..64).map(|index| (expert * 19 + row * 5 + index * 3) as u8));
+                        down_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        down_weight.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let gate = project_iq2_xxs_expert_matrix(&gate_weight, &dimensions, 1, &input)
+                    .expect("project routed gate reference");
+                let up = project_iq2_xxs_expert_matrix(&up_weight, &dimensions, 1, &input)
+                    .expect("project routed up reference");
+                let mut activated = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                    .expect("activate routed expert reference");
+                for value in &mut activated {
+                    *value *= 0.25;
+                }
+                let reference =
+                    project_q2_k_expert_matrix(&down_weight, &dimensions, 1, &activated)
+                        .expect("project routed down reference");
+                let actual = execute_deepseek_routed_expert_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 140,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-routed-expert-test-artifacts"),
+                    101_000,
+                    &gate_weight,
+                    &dimensions,
+                    &up_weight,
+                    &dimensions,
+                    &down_weight,
+                    &dimensions,
+                    1,
+                    0.25,
+                    &input,
+                    10.0,
+                )
+                .expect("execute routed expert through simpler");
+                assert_eq!(actual, reference);
+
+                let gate0 = project_iq2_xxs_expert_matrix(&gate_weight, &dimensions, 0, &input)
+                    .expect("project second routed gate reference");
+                let up0 = project_iq2_xxs_expert_matrix(&up_weight, &dimensions, 0, &input)
+                    .expect("project second routed up reference");
+                let mut activated0 = deepseek_v4_flash_swiglu_reference(&gate0, &up0, 10.0)
+                    .expect("activate second routed expert reference");
+                for value in &mut activated0 {
+                    *value *= 0.125;
+                }
+                let reference0 =
+                    project_q2_k_expert_matrix(&down_weight, &dimensions, 0, &activated0)
+                        .expect("project second routed down reference");
+                let combined_reference: Vec<f32> = reference
+                    .iter()
+                    .zip(reference0)
+                    .map(|(left, right)| left + right)
+                    .collect();
+                let combined = execute_deepseek_routed_experts_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 150,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-routed-expert-test-artifacts"),
+                    102_000,
+                    &gate_weight,
+                    &dimensions,
+                    &up_weight,
+                    &dimensions,
+                    &down_weight,
+                    &dimensions,
+                    &[1, 0],
+                    &[0.25, 0.125],
+                    &input,
+                    10.0,
+                )
+                .expect("execute selected routed experts through simpler");
+                assert_eq!(combined, combined_reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_complete_moe_executes_router_routed_and_shared_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_complete_moe_executes_router_routed_and_shared_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 128;
+                const SELECTED: [usize; 6] = [0, 1, 2, 3, 4, 5];
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 43) - 21) as f32 / 13.0)
+                    .collect();
+                let router_weight = vec![0u8; DIM * EXPERTS * 2];
+                let mut iq2_weight = Vec::with_capacity(EXPERTS * DIM * 66);
+                for _expert in 0..EXPERTS {
+                    for row in 0..DIM {
+                        iq2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        for group in 0..8 {
+                            iq2_weight
+                                .extend((0..4).map(|pair| (row * 3 + group * 7 + pair) as u8));
+                            let sign_and_scale =
+                                (((row + group) % 16) as u32) << 28 | ((row + group) % 128) as u32;
+                            iq2_weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let mut q2_weight = Vec::with_capacity(EXPERTS * DIM * 84);
+                for _expert in 0..EXPERTS {
+                    for row in 0..DIM {
+                        q2_weight.extend((0..16).map(|group| {
+                            (((row + group) % 4 + 1) as u8) | ((((row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        q2_weight.extend((0..64).map(|index| (row * 5 + index * 3) as u8));
+                        q2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        q2_weight.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let shared_gate = q8_weight(1);
+                let shared_up = q8_weight(5);
+                let shared_down = q8_weight(9);
+                let routed_dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let shared_dimensions = [DIM as u64, DIM as u64];
+                let router_dimensions = [DIM as u64, EXPERTS as u64];
+
+                let gate =
+                    project_iq2_xxs_expert_matrix(&iq2_weight, &routed_dimensions, 0, &input)
+                        .expect("project complete MoE routed gate reference");
+                let up = project_iq2_xxs_expert_matrix(&iq2_weight, &routed_dimensions, 0, &input)
+                    .expect("project complete MoE routed up reference");
+                let mut activated = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                    .expect("activate complete MoE routed reference");
+                for value in &mut activated {
+                    *value *= 0.25;
+                }
+                let routed_one =
+                    project_q2_k_expert_matrix(&q2_weight, &routed_dimensions, 0, &activated)
+                        .expect("project complete MoE routed down reference");
+                let shared_gate_ref = project_q8_0_matrix(&shared_gate, &shared_dimensions, &input)
+                    .expect("project complete MoE shared gate reference");
+                let shared_up_ref = project_q8_0_matrix(&shared_up, &shared_dimensions, &input)
+                    .expect("project complete MoE shared up reference");
+                let shared_mid =
+                    deepseek_v4_flash_swiglu_reference(&shared_gate_ref, &shared_up_ref, 10.0)
+                        .expect("activate complete MoE shared reference");
+                let shared_ref = project_q8_0_matrix(&shared_down, &shared_dimensions, &shared_mid)
+                    .expect("project complete MoE shared down reference");
+                let mut routed_sum = vec![0.0f32; DIM];
+                for _ in 0..SELECTED.len() {
+                    for (sum, value) in routed_sum.iter_mut().zip(&routed_one) {
+                        *sum += value;
+                    }
+                }
+                let reference: Vec<f32> = routed_sum
+                    .into_iter()
+                    .zip(shared_ref)
+                    .map(|(routed, shared)| routed + shared)
+                    .collect();
+                let execution = execute_deepseek_moe_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 160,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-complete-moe-test-artifacts"),
+                    110_000,
+                    &DeepseekV4FlashMoeWeights {
+                        router: &router_weight,
+                        router_dimensions: &router_dimensions,
+                        routed_gate: &iq2_weight,
+                        routed_gate_dimensions: &routed_dimensions,
+                        routed_up: &iq2_weight,
+                        routed_up_dimensions: &routed_dimensions,
+                        routed_down: &q2_weight,
+                        routed_down_dimensions: &routed_dimensions,
+                        shared_gate: &shared_gate,
+                        shared_gate_dimensions: &shared_dimensions,
+                        shared_up: &shared_up,
+                        shared_up_dimensions: &shared_dimensions,
+                        shared_down: &shared_down,
+                        shared_down_dimensions: &shared_dimensions,
+                    },
+                    &input,
+                    None,
+                    Some(&SELECTED),
+                    10.0,
+                )
+                .expect("execute complete MoE through simpler");
+                assert_eq!(execution.router.expert_indices, SELECTED);
+                assert!(execution
+                    .router
+                    .expert_weights
+                    .iter()
+                    .all(|weight| (*weight - 0.25).abs() < 1.0e-6));
+                let max_error = execution
+                    .output
+                    .iter()
+                    .zip(&reference)
+                    .map(|(actual, expected)| (actual - expected).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    execution
+                        .output
+                        .iter()
+                        .zip(&reference)
+                        .all(|(actual, expected)| (actual - expected).abs()
+                            <= (expected.abs() * 1.0e-6).max(1.0e-4)),
+                    "complete MoE output mismatch:max_error={max_error}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_complete_ffn_executes_hc_norm_and_moe_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_complete_ffn_executes_hc_norm_and_moe_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 128;
+                const SELECTED: [usize; 6] = [0, 1, 2, 3, 4, 5];
+                let residual_hc: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 43) - 21) as f32 / 13.0)
+                    .collect();
+                let router_weight = vec![0u8; DIM * EXPERTS * 2];
+                let hc_function = vec![0u8; DIM * 3 * 2];
+                let mut iq2_weight = Vec::with_capacity(EXPERTS * DIM * 66);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        iq2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        for group in 0..8 {
+                            iq2_weight
+                                .extend((0..4).map(|pair| (row * 3 + group * 7 + pair) as u8));
+                            let sign_and_scale =
+                                (((row + group) % 16) as u32) << 28 | ((row + group) % 128) as u32;
+                            iq2_weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let mut q2_weight = Vec::with_capacity(EXPERTS * DIM * 84);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        q2_weight.extend((0..16).map(|group| {
+                            (((row + group) % 4 + 1) as u8) | ((((row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        q2_weight.extend((0..64).map(|index| (row * 5 + index * 3) as u8));
+                        q2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        q2_weight.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let shared_gate = q8_weight(1);
+                let shared_up = q8_weight(5);
+                let shared_down = q8_weight(9);
+                let routed_dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let shared_dimensions = [DIM as u64, DIM as u64];
+                let router_dimensions = [DIM as u64, EXPERTS as u64];
+                let hc_dimensions = [DIM as u64, 3];
+                let execution = execute_deepseek_ffn_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 170,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-complete-ffn-test-artifacts"),
+                    120_000,
+                    &DeepseekV4FlashFfnWeights {
+                        hc_function: &hc_function,
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        ffn_norm: &[1.0; DIM],
+                        moe: DeepseekV4FlashMoeWeights {
+                            router: &router_weight,
+                            router_dimensions: &router_dimensions,
+                            routed_gate: &iq2_weight,
+                            routed_gate_dimensions: &routed_dimensions,
+                            routed_up: &iq2_weight,
+                            routed_up_dimensions: &routed_dimensions,
+                            routed_down: &q2_weight,
+                            routed_down_dimensions: &routed_dimensions,
+                            shared_gate: &shared_gate,
+                            shared_gate_dimensions: &shared_dimensions,
+                            shared_up: &shared_up,
+                            shared_up_dimensions: &shared_dimensions,
+                            shared_down: &shared_down,
+                            shared_down_dimensions: &shared_dimensions,
+                        },
+                    },
+                    &residual_hc,
+                    None,
+                    Some(&SELECTED),
+                    1,
+                    20,
+                    1.0e-6,
+                    10.0,
+                )
+                .expect("execute complete FFN through simpler");
+                assert_eq!(execution.router.expert_indices, SELECTED);
+                assert_eq!(execution.output_hc.len(), DIM);
+                assert_eq!(execution.moe_output.len(), DIM);
+                assert!(execution.output_hc.iter().all(|value| value.is_finite()));
+                assert!(execution
+                    .output_hc
+                    .iter()
+                    .zip(&residual_hc)
+                    .zip(&execution.moe_output)
+                    .all(|((actual, residual), moe)| *actual == residual + moe));
+                let mixed: Vec<f32> = residual_hc
+                    .iter()
+                    .map(|value| value * (0.5 + 1.0e-6))
+                    .collect();
+                let expected_normalized =
+                    deepseek_v4_flash_rms_norm_reference(&mixed, Some(&[1.0; DIM]), 1.0e-6)
+                        .expect("compute FFN normalized reference");
+                assert_eq!(execution.normalized_hidden, expected_normalized);
             },
         );
     }
