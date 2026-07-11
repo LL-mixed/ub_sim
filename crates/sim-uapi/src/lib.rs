@@ -27064,8 +27064,9 @@ mod tests {
         ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
         ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
         execute_deepseek_grouped_q8_projection_through_simpler,
-        execute_deepseek_q8_projection_through_simpler, f32s_to_bytes, find_u64_marker,
-        kvcache_input_b_payload, qwen3_dense_profile_previous_kv_cache_from_guest_payload,
+        execute_deepseek_q8_projection_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
+        f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
+        qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
         qwen3_dense_reference_attention_context_tile_from_softmax_and_v,
@@ -27188,10 +27189,12 @@ mod tests {
         project_f16_matrix, project_q8_0_matrix, GgufCatalog,
     };
     use sim_models::deepseek_v4_flash_lowering::{
+        deepseek_v4_flash_fp8_kv_roundtrip_reference,
         deepseek_v4_flash_hc_attention_input_from_mix_reference,
-        deepseek_v4_flash_hc_control_input_reference, deepseek_v4_flash_head_rms_norm_reference,
-        deepseek_v4_flash_rms_norm_reference, DeepseekV4FlashDtype, DeepseekV4FlashGemmKind,
-        DeepseekV4FlashGemmPlan,
+        deepseek_v4_flash_hc_control_input_reference, deepseek_v4_flash_hc_post_reference,
+        deepseek_v4_flash_head_rms_norm_reference, deepseek_v4_flash_rms_norm_reference,
+        deepseek_v4_flash_rope_tail_reference, deepseek_v4_flash_sink_attention_reference,
+        DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -30904,7 +30907,7 @@ mod tests {
                 .expect("execute real Q B through simpler");
                 assert_eq!(q_b_actual, q_b_reference);
 
-                let q_heads =
+                let mut q_heads =
                     deepseek_v4_flash_head_rms_norm_reference(&q_b_actual, 64, 512, None, 1.0e-6)
                         .expect("normalize real query heads");
                 assert_eq!(q_heads.len(), 32_768);
@@ -30947,11 +30950,110 @@ mod tests {
                 .expect("execute real KV through simpler");
                 assert_eq!(kv_actual, kv_reference);
                 let kv_norm_weight = read_f32("blk.0.attn_kv_a_norm.weight");
-                let kv_normalized =
+                let mut kv_normalized =
                     deepseek_v4_flash_rms_norm_reference(&kv_actual, Some(&kv_norm_weight), 1.0e-6)
                         .expect("normalize real KV output");
                 assert_eq!(kv_normalized.len(), 512);
                 assert!(kv_normalized.iter().all(|value| value.is_finite()));
+
+                let rope_cos = vec![1.0f32; 32];
+                let rope_sin = vec![0.0f32; 32];
+                q_heads = deepseek_v4_flash_rope_tail_reference(
+                    &q_heads, 64, 512, 64, &rope_cos, &rope_sin, false,
+                )
+                .expect("apply position-zero query RoPE");
+                kv_normalized = deepseek_v4_flash_rope_tail_reference(
+                    &kv_normalized,
+                    1,
+                    512,
+                    64,
+                    &rope_cos,
+                    &rope_sin,
+                    false,
+                )
+                .expect("apply position-zero KV RoPE");
+                deepseek_v4_flash_fp8_kv_roundtrip_reference(&mut kv_normalized, 64)
+                    .expect("apply real KV FP8 roundtrip");
+                for value in &mut kv_normalized {
+                    *value = f16_bits_to_f32(f32_to_f16_bits(*value));
+                }
+
+                let sinks = read_f32("blk.0.attn_sinks.weight");
+                let mut attention_heads = deepseek_v4_flash_sink_attention_reference(
+                    &q_heads,
+                    &kv_normalized,
+                    &sinks,
+                    64,
+                    512,
+                )
+                .expect("execute real position-zero sink attention");
+                attention_heads = deepseek_v4_flash_rope_tail_reference(
+                    &attention_heads,
+                    64,
+                    512,
+                    64,
+                    &rope_cos,
+                    &rope_sin,
+                    true,
+                )
+                .expect("apply inverse position-zero attention RoPE");
+
+                let output_a_tensor = catalog
+                    .tensor("blk.0.attn_output_a.weight")
+                    .expect("locate real attention output A tensor");
+                let output_a_payload = catalog
+                    .read_tensor(&output_a_tensor.name)
+                    .expect("read real attention output A tensor");
+                let output_manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-layer0-attention-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let output_a = execute_deepseek_grouped_q8_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_140,
+                    },
+                    &output_manifest,
+                    140_000,
+                    &output_a_payload,
+                    &output_a_tensor.dimensions,
+                    &attention_heads,
+                    8,
+                )
+                .expect("execute real attention output A through simpler");
+                let output_b_tensor = catalog
+                    .tensor("blk.0.attn_output_b.weight")
+                    .expect("locate real attention output B tensor");
+                let output_b_payload = catalog
+                    .read_tensor(&output_b_tensor.name)
+                    .expect("read real attention output B tensor");
+                let attention_output = execute_deepseek_q8_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_150,
+                    },
+                    &output_manifest,
+                    150_000,
+                    &output_b_payload,
+                    &output_b_tensor.dimensions,
+                    &output_a,
+                )
+                .expect("execute real attention output B through simpler");
+                let after_attention = deepseek_v4_flash_hc_post_reference(
+                    &attention_output,
+                    &residual,
+                    &output.post,
+                    &output.combine,
+                )
+                .expect("complete real layer-0 attention HC post");
+                assert_eq!(after_attention.len(), HC_DIM);
+                assert!(after_attention.iter().all(|value| value.is_finite()));
+                assert_ne!(after_attention, residual);
             },
         );
     }
