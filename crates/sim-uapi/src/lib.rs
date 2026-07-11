@@ -1,5 +1,19 @@
 //! Guest-visible UAPI surface placeholders.
 
+mod deepseek_v4_flash_runtime;
+
+pub use deepseek_v4_flash_runtime::{
+    execute_deepseek_ratio128_attention_through_simpler,
+    execute_deepseek_ratio128_layer_through_simpler,
+    execute_deepseek_ratio4_attention_through_simpler,
+    execute_deepseek_ratio4_layer_through_simpler, DeepseekV4FlashRatio128AttentionExecution,
+    DeepseekV4FlashRatio128AttentionState, DeepseekV4FlashRatio128AttentionWeights,
+    DeepseekV4FlashRatio128LayerExecution, DeepseekV4FlashRatio128LayerWeights,
+    DeepseekV4FlashRatio4AttentionExecution, DeepseekV4FlashRatio4AttentionState,
+    DeepseekV4FlashRatio4AttentionWeights, DeepseekV4FlashRatio4LayerExecution,
+    DeepseekV4FlashRatio4LayerWeights,
+};
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, VecDeque};
@@ -28062,6 +28076,8 @@ mod tests {
         execute_deepseek_moe_through_simpler,
         execute_deepseek_q2_k_expert_projection_through_simpler,
         execute_deepseek_q8_projection_through_simpler,
+        execute_deepseek_ratio128_attention_through_simpler,
+        execute_deepseek_ratio4_attention_through_simpler,
         execute_deepseek_routed_expert_through_simpler,
         execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
         execute_deepseek_shared_expert_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
@@ -28145,7 +28161,9 @@ mod tests {
         validate_qwen3_range_dispatch_object_refs, write_u64_le_at,
         DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights,
         DeepseekV4FlashFfnWeights, DeepseekV4FlashIndexerWeights, DeepseekV4FlashMoeWeights,
-        DeepseekV4FlashProjectionFormat, GuestUapiSurface, KvCachePayloadLayout,
+        DeepseekV4FlashProjectionFormat, DeepseekV4FlashRatio128AttentionState,
+        DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio4AttentionState,
+        DeepseekV4FlashRatio4AttentionWeights, GuestUapiSurface, KvCachePayloadLayout,
         LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
         Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
         Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
@@ -32348,6 +32366,263 @@ mod tests {
                 )
                 .expect("execute ratio-4 indexer through simpler");
                 assert_eq!(selected, vec![3, 2]);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio4_attention_runs_four_token_stateful_orchestration() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio4_attention_runs_four_token_stateful_orchestration",
+            || {
+                const HIDDEN: usize = 256;
+                const HEAD_DIM: usize = 256;
+                const INDEXER_HEAD_DIM: usize = 128;
+                const INDEXER_HEADS: usize = 2;
+                const RATIO: usize = 4;
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(HIDDEN * (HIDDEN / 32) * 34);
+                    for row in 0..HIDDEN {
+                        for block in 0..HIDDEN / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let f16_weight = |k: usize, n: usize, bits: u16| {
+                    bits.to_le_bytes()
+                        .into_iter()
+                        .cycle()
+                        .take(k * n * 2)
+                        .collect::<Vec<_>>()
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let matrix_dimensions = [HIDDEN as u64, HIDDEN as u64];
+                let hc_dimensions = [HIDDEN as u64, 3];
+                let attention_compressor_dimensions = [HIDDEN as u64, (HEAD_DIM * 2) as u64];
+                let indexer_compressor_dimensions = [HIDDEN as u64, (INDEXER_HEAD_DIM * 2) as u64];
+                let indexer_query_dimensions =
+                    [HIDDEN as u64, (INDEXER_HEADS * INDEXER_HEAD_DIM) as u64];
+                let indexer_head_weight_dimensions = [HIDDEN as u64, INDEXER_HEADS as u64];
+                let attention_compressor_kv = f16_weight(HIDDEN, HEAD_DIM * 2, 0x3000);
+                let attention_compressor_gate = f16_weight(HIDDEN, HEAD_DIM * 2, 0x0000);
+                let indexer_compressor_kv = f16_weight(HIDDEN, INDEXER_HEAD_DIM * 2, 0x3000);
+                let indexer_compressor_gate = f16_weight(HIDDEN, INDEXER_HEAD_DIM * 2, 0x0000);
+                let indexer_query = f16_weight(HIDDEN, INDEXER_HEADS * INDEXER_HEAD_DIM, 0x3000);
+                let indexer_head_weight = f16_weight(HIDDEN, INDEXER_HEADS, 0x3000);
+                let weights = DeepseekV4FlashRatio4AttentionWeights {
+                    attention: DeepseekV4FlashAttentionWeights {
+                        hc_function: &vec![0u8; HIDDEN * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        attention_norm: &[1.0; HIDDEN],
+                        q_a: &q_a,
+                        q_a_dimensions: &matrix_dimensions,
+                        q_a_norm: &[1.0; HIDDEN],
+                        q_b: &q_b,
+                        q_b_dimensions: &matrix_dimensions,
+                        kv: &kv,
+                        kv_dimensions: &matrix_dimensions,
+                        kv_norm: &[1.0; HEAD_DIM],
+                        sinks: &[0.0],
+                        output_a: &output_a,
+                        output_a_dimensions: &matrix_dimensions,
+                        output_b: &output_b,
+                        output_b_dimensions: &matrix_dimensions,
+                    },
+                    attention_compressor: DeepseekV4FlashCompressorWeights {
+                        kv: &attention_compressor_kv,
+                        kv_dimensions: &attention_compressor_dimensions,
+                        gate: &attention_compressor_gate,
+                        gate_dimensions: &attention_compressor_dimensions,
+                        ape: &[0.0; RATIO * HEAD_DIM * 2],
+                        norm: &[1.0; HEAD_DIM],
+                    },
+                    indexer_compressor: DeepseekV4FlashCompressorWeights {
+                        kv: &indexer_compressor_kv,
+                        kv_dimensions: &indexer_compressor_dimensions,
+                        gate: &indexer_compressor_gate,
+                        gate_dimensions: &indexer_compressor_dimensions,
+                        ape: &[0.0; RATIO * INDEXER_HEAD_DIM * 2],
+                        norm: &[1.0; INDEXER_HEAD_DIM],
+                    },
+                    indexer: DeepseekV4FlashIndexerWeights {
+                        query: &indexer_query,
+                        query_dimensions: &indexer_query_dimensions,
+                        query_format: DeepseekV4FlashProjectionFormat::F16,
+                        head_weights: &indexer_head_weight,
+                        head_weight_dimensions: &indexer_head_weight_dimensions,
+                    },
+                };
+                let residual_hc: Vec<f32> = (0..HIDDEN)
+                    .map(|index| ((index as i32 % 29) - 14) as f32 / 17.0)
+                    .collect();
+                let mut state =
+                    DeepseekV4FlashRatio4AttentionState::new(HEAD_DIM, INDEXER_HEAD_DIM, 3, 4)
+                        .expect("create ratio-4 attention state");
+                for position in 0..RATIO {
+                    let execution = execute_deepseek_ratio4_attention_through_simpler(
+                        &test_topology(),
+                        &TaskKey {
+                            logical_system: LogicalSystemId(1),
+                            coord: HierarchyCoord { levels: [0; 8] },
+                            scope_depth: 0,
+                            task_id: 220 + (position as u64) * 100,
+                        },
+                        &std::env::temp_dir()
+                            .join("simpler-deepseek-ratio4-attention-test-artifacts"),
+                        150_000 + (position as u64) * 10_000,
+                        &mut state,
+                        &weights,
+                        &residual_hc,
+                        position as u32,
+                        &[1.0; 32],
+                        &[0.0; 32],
+                        &[1.0; 32],
+                        &[0.0; 32],
+                        1,
+                        20,
+                        1,
+                        HEAD_DIM,
+                        64,
+                        1,
+                        INDEXER_HEADS,
+                        INDEXER_HEAD_DIM,
+                        1,
+                        1.0e-6,
+                    )
+                    .expect("execute ratio-4 attention token");
+                    assert_eq!(execution.current_kv.len(), HEAD_DIM);
+                    assert!(execution.output_hc.iter().all(|value| value.is_finite()));
+                    if position + 1 < RATIO {
+                        assert!(execution.emitted_compressed_kv.is_none());
+                        assert!(execution.emitted_indexer_kv.is_none());
+                        assert!(execution.selected_compressed_rows.is_empty());
+                    } else {
+                        assert!(execution.emitted_compressed_kv.is_some());
+                        assert!(execution.emitted_indexer_kv.is_some());
+                        assert_eq!(execution.selected_compressed_rows, vec![0]);
+                    }
+                }
+                assert_eq!(state.raw_rows(), 3);
+                assert_eq!(state.compressed_rows(), 1);
+                assert_eq!(state.indexer_compressed_rows(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio128_attention_runs_stateful_orchestration() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio128_attention_runs_stateful_orchestration",
+            || {
+                const HIDDEN: usize = 256;
+                const HEAD_DIM: usize = 256;
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(HIDDEN * (HIDDEN / 32) * 34);
+                    for row in 0..HIDDEN {
+                        for block in 0..HIDDEN / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let f16_weight = |k: usize, n: usize, bits: u16| {
+                    bits.to_le_bytes()
+                        .into_iter()
+                        .cycle()
+                        .take(k * n * 2)
+                        .collect::<Vec<_>>()
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let matrix_dimensions = [HIDDEN as u64, HIDDEN as u64];
+                let hc_dimensions = [HIDDEN as u64, 3];
+                let compressor_dimensions = [HIDDEN as u64, HEAD_DIM as u64];
+                let compressor_kv = f16_weight(HIDDEN, HEAD_DIM, 0x3000);
+                let compressor_gate = f16_weight(HIDDEN, HEAD_DIM, 0x0000);
+                let weights = DeepseekV4FlashRatio128AttentionWeights {
+                    attention: DeepseekV4FlashAttentionWeights {
+                        hc_function: &vec![0u8; HIDDEN * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        attention_norm: &[1.0; HIDDEN],
+                        q_a: &q_a,
+                        q_a_dimensions: &matrix_dimensions,
+                        q_a_norm: &[1.0; HIDDEN],
+                        q_b: &q_b,
+                        q_b_dimensions: &matrix_dimensions,
+                        kv: &kv,
+                        kv_dimensions: &matrix_dimensions,
+                        kv_norm: &[1.0; HEAD_DIM],
+                        sinks: &[0.0],
+                        output_a: &output_a,
+                        output_a_dimensions: &matrix_dimensions,
+                        output_b: &output_b,
+                        output_b_dimensions: &matrix_dimensions,
+                    },
+                    attention_compressor: DeepseekV4FlashCompressorWeights {
+                        kv: &compressor_kv,
+                        kv_dimensions: &compressor_dimensions,
+                        gate: &compressor_gate,
+                        gate_dimensions: &compressor_dimensions,
+                        ape: &[0.0; 128 * HEAD_DIM],
+                        norm: &[1.0; HEAD_DIM],
+                    },
+                };
+                let residual_hc: Vec<f32> = (0..HIDDEN)
+                    .map(|index| ((index as i32 % 29) - 14) as f32 / 17.0)
+                    .collect();
+                let mut state = DeepseekV4FlashRatio128AttentionState::new(HEAD_DIM, 3, 4)
+                    .expect("create ratio-128 attention state");
+                let execution = execute_deepseek_ratio128_attention_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 320,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-ratio128-attention-test-artifacts"),
+                    180_000,
+                    &mut state,
+                    &weights,
+                    &residual_hc,
+                    0,
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    1,
+                    20,
+                    1,
+                    HEAD_DIM,
+                    64,
+                    1,
+                    1.0e-6,
+                )
+                .expect("execute ratio-128 attention token");
+                assert_eq!(execution.current_kv.len(), HEAD_DIM);
+                assert!(execution.emitted_compressed_kv.is_none());
+                assert_eq!(state.raw_rows(), 1);
+                assert_eq!(state.compressed_rows(), 0);
+                assert!(execution.output_hc.iter().all(|value| value.is_finite()));
             },
         );
     }
