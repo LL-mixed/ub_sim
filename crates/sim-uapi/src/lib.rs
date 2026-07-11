@@ -34619,6 +34619,81 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the sibling ds4 GGUF and native simpler runtime"]
+    fn deepseek_v4_flash_simpler_w5_terminal_range_exports_logits_and_kv() {
+        if crate::deepseek_v4_flash_gguf_path().is_err() {
+            return;
+        }
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+        const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+        const HIDDEN_BYTES: usize = 16_384 * 4;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-simpler",
+            || {
+                let topology = test_topology();
+                let hidden_values = (0..16_384)
+                    .map(|index| (index as f32 + 1.0) / 16_384.0)
+                    .collect::<Vec<_>>();
+                let hidden = crate::deepseek_v4_flash_f32_payload(&hidden_values);
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    7,
+                    6,
+                    1,
+                    0x43_207,
+                    0,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden),
+                );
+                let mut guest_input =
+                    crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &[128_822]);
+                guest_input.resize(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                    0,
+                );
+                guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES]
+                    .copy_from_slice(&hidden);
+                write_obmm_object_ref_wire(
+                    &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                        ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                            + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                let output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 7, 38, 43, 0, 8, 43, HIDDEN_BYTES as u32],
+                        },
+                        scope_depth: 8,
+                        task_id: 43_207,
+                    },
+                    &guest_input,
+                    None,
+                )
+                .expect("simpler W5 terminal range");
+                let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                    .expect("range-forward table marker");
+                let range_entry = range_table + 64;
+                assert!(read_u64_le_at(&output, range_entry + 128) > 0);
+                let logits_table =
+                    find_u64_marker(&output, LOGITS_TABLE_MARKER).expect("logits table marker");
+                assert_eq!(read_u64_le_at(&output, logits_table + 8), 1);
+                let logits_entry = logits_table + 64;
+                assert!(
+                    read_u64_le_at(&output, logits_entry + 32)
+                        < deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size
+                );
+                assert_eq!(read_u64_le_at(&output, logits_entry + 160), 4);
+            },
+        );
+    }
+
+    #[test]
     fn deepseek_v4_flash_decode_slice_inputs_restore_exact_previous_state() {
         let token_payload = {
             let mut payload = vec![0u8; 64];
