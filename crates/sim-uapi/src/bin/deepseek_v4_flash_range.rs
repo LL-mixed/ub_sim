@@ -9,8 +9,8 @@ use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
 use sim_models::deepseek_v4_flash_gguf::GgufCatalog;
 use sim_topology::SimTopology;
 use sim_uapi::{
-    execute_deepseek_gguf_range_with_progress_through_simpler, DeepseekV4FlashGgufRangeProgress,
-    DeepseekV4FlashModelState,
+    execute_deepseek_gguf_range_with_progress_through_simpler, set_simpler_dispatch_log_enabled,
+    DeepseekV4FlashGgufRangeProgress, DeepseekV4FlashModelState,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -24,6 +24,7 @@ struct Args {
     output: PathBuf,
     logits_output: Option<PathBuf>,
     artifact_dir: PathBuf,
+    dispatch_log: bool,
 }
 
 fn main() {
@@ -39,6 +40,7 @@ where
     S: Into<String>,
 {
     let args = parse_args(args)?;
+    set_simpler_dispatch_log_enabled(args.dispatch_log);
     let config = ScenarioConfig::from_yaml_file(&args.scenario).map_err(|err| {
         format!(
             "deepseek_range_scenario_load_failed:{}:{err}",
@@ -164,6 +166,7 @@ where
         "--output",
         "--logits-output",
         "--artifact-dir",
+        "--dispatch-log",
     ];
     if let Some(option) = options
         .keys()
@@ -226,7 +229,20 @@ where
             .get("--artifact-dir")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("simpler-deepseek-range-artifacts")),
+        dispatch_log: options
+            .get("--dispatch-log")
+            .map(|value| parse_bool("dispatch_log", value))
+            .transpose()?
+            .unwrap_or(false),
     })
+}
+
+fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("invalid_{name}:{value}")),
+    }
 }
 
 fn read_f32(path: &PathBuf) -> Result<Vec<f32>, String> {
@@ -287,13 +303,23 @@ mod tests {
 
     #[test]
     fn args_accept_first_and_terminal_ranges() {
-        assert_eq!(parse_args(base_args("0:6")).unwrap().input, None);
+        let first = parse_args(base_args("0:6")).unwrap();
+        assert_eq!(first.input, None);
+        assert!(!first.dispatch_log);
         let mut terminal = base_args("38:43");
-        terminal.extend(["--input", "hidden-in.f32", "--logits-output", "logits.f32"]);
+        terminal.extend([
+            "--input",
+            "hidden-in.f32",
+            "--logits-output",
+            "logits.f32",
+            "--dispatch-log",
+            "true",
+        ]);
         let args = parse_args(terminal).expect("parse terminal range");
         assert_eq!(args.layer_start, 38);
         assert_eq!(args.layer_end, 43);
         assert_eq!(args.logits_output, Some(PathBuf::from("logits.f32")));
+        assert!(args.dispatch_log);
     }
 
     #[test]
@@ -308,5 +334,8 @@ mod tests {
             parse_args(args).unwrap_err(),
             "deepseek_logits_require_terminal_range:end=6"
         );
+        let mut args = base_args("0:6");
+        args.extend(["--dispatch-log", "yes"]);
+        assert_eq!(parse_args(args).unwrap_err(), "invalid_dispatch_log:yes");
     }
 }

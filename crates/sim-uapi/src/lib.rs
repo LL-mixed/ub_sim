@@ -15683,6 +15683,9 @@ fn with_suppressed_stdio<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, 
 
 #[cfg(all(unix, not(test)))]
 fn simpler_dispatch_log_enabled() -> bool {
+    if SIMPLER_DISPATCH_LOG_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
     std::env::var("SIM_SIMPLER_DISPATCH_LOG")
         .map(|value| {
             matches!(
@@ -15691,6 +15694,18 @@ fn simpler_dispatch_log_enabled() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(all(unix, not(test)))]
+static SIMPLER_DISPATCH_LOG_OVERRIDE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable or disable simpler's native dispatch log for CLI-driven diagnostics.
+pub fn set_simpler_dispatch_log_enabled(enabled: bool) {
+    #[cfg(all(unix, not(test)))]
+    SIMPLER_DISPATCH_LOG_OVERRIDE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(any(not(unix), test))]
+    let _ = enabled;
 }
 
 #[cfg(all(unix, not(test)))]
@@ -19068,21 +19083,48 @@ pub fn execute_deepseek_grouped_q8_projection_through_simpler(
     }
 
     let mut output = Vec::with_capacity(output_size);
+    ensure_simpler_host_q8_block_dot_manifest(
+        manifest_path,
+        (group_input / 32) as u64,
+        group_output as u64,
+    )?;
+    let blocks = group_input / 32;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        blocks,
+        group_output,
+        segment_base,
+    )?;
     for group in 0..groups {
         let input_start = group * group_input;
         let weight_start = group * group_output * row_bytes;
         let weight_end = weight_start + group_output * row_bytes;
         let mut group_task = task.clone();
         group_task.task_id = task.task_id.saturating_add(group as u64);
-        output.extend(execute_deepseek_q8_projection_through_simpler(
-            topology,
+        let activation = quantize_q8_0_activation(&input[input_start..input_start + group_input])?;
+        let dimensions = [group_input as u64, group_output as u64];
+        let mut weight_blocks = Vec::with_capacity(blocks * 32 * group_output);
+        let mut weight_scales = Vec::with_capacity(blocks * group_output);
+        for block in 0..blocks {
+            let (weight_block, block_scales) =
+                q8_0_weight_block_kxn(&q8_weight[weight_start..weight_end], &dimensions, block)?;
+            weight_blocks.extend_from_slice(&weight_block);
+            weight_scales.extend_from_slice(&block_scales);
+        }
+        let dots = runner.run(
             &group_task,
-            manifest_path,
-            segment_base.saturating_add((group as u64).saturating_mul(10)),
-            &q8_weight[weight_start..weight_end],
-            &[group_input as u64, group_output as u64],
-            &input[input_start..input_start + group_input],
-        )?);
+            activation.values.iter().map(|value| *value as u8).collect(),
+            weight_blocks,
+        )?;
+        for output_index in 0..group_output {
+            let mut value = 0.0f32;
+            for block in 0..blocks {
+                let partial = block * group_output + output_index;
+                value += activation.scales[block] * weight_scales[partial] * dots[partial] as f32;
+            }
+            output.push(value);
+        }
     }
     Ok(output)
 }

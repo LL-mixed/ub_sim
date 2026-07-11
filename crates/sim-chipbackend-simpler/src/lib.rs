@@ -475,6 +475,10 @@ pub struct DeviceContext<'a> {
     ctx: Option<NonNull<c_void>>,
 }
 
+// The C runtime attaches the calling thread during simpler_init. Callers must
+// still serialize access to a context; Send allows ownership behind a Mutex.
+unsafe impl Send for DeviceContext<'_> {}
+
 impl std::fmt::Debug for DeviceContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceContext").finish_non_exhaustive()
@@ -643,6 +647,41 @@ impl RuntimeLibrary {
         aicore_size: usize,
     ) -> Result<(), SimplerApiError> {
         let callable_id = 0;
+        self.run_prepared_callable(
+            ctx,
+            runtime,
+            callable,
+            args,
+            callable_id,
+            true,
+            block_dim,
+            aicpu_thread_num,
+            device_id,
+            aicpu_binary,
+            aicpu_size,
+            aicore_binary,
+            aicore_size,
+        )?;
+        unsafe { SimplerApiError::from_code((self.unregister_callable)(ctx.as_raw(), callable_id)) }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_prepared_callable(
+        &self,
+        ctx: &DeviceContext<'_>,
+        runtime: OwnedRuntime,
+        callable: &CallableBuffer,
+        args: &ChipStorageTaskArgs,
+        callable_id: i32,
+        prepare: bool,
+        block_dim: i32,
+        aicpu_thread_num: i32,
+        device_id: i32,
+        aicpu_binary: *const u8,
+        aicpu_size: usize,
+        aicore_binary: *const u8,
+        aicore_size: usize,
+    ) -> Result<(), SimplerApiError> {
         let config = CallConfig::new(block_dim, aicpu_thread_num);
         unsafe {
             SimplerApiError::from_code((self.simpler_init)(
@@ -655,22 +694,20 @@ impl RuntimeLibrary {
                 std::ptr::null(),
                 0,
             ))?;
-            SimplerApiError::from_code((self.register_callable)(
-                ctx.as_raw(),
-                callable_id,
-                callable.as_ptr(),
-            ))?;
-            let run_result = SimplerApiError::from_code((self.simpler_run)(
+            if prepare {
+                SimplerApiError::from_code((self.register_callable)(
+                    ctx.as_raw(),
+                    callable_id,
+                    callable.as_ptr(),
+                ))?;
+            }
+            SimplerApiError::from_code((self.simpler_run)(
                 ctx.as_raw(),
                 runtime.as_raw(),
                 callable_id,
                 args as *const _ as *const c_void,
                 &config,
-            ));
-            let unregister_result =
-                SimplerApiError::from_code((self.unregister_callable)(ctx.as_raw(), callable_id));
-            run_result?;
-            unregister_result
+            ))
         }
     }
 }
