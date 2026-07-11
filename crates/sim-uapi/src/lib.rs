@@ -17887,6 +17887,79 @@ pub fn execute_deepseek_grouped_q8_projection_through_simpler(
     Ok(output)
 }
 
+/// Execute the always-active DeepSeek shared expert through simpler Q8_0
+/// projections with DS4-compatible SwiGLU semantics between the projections.
+pub fn execute_deepseek_shared_expert_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    gate_weight: &[u8],
+    gate_dimensions: &[u64],
+    up_weight: &[u8],
+    up_dimensions: &[u64],
+    down_weight: &[u8],
+    down_dimensions: &[u64],
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if gate_dimensions != up_dimensions {
+        return Err(format!(
+            "deepseek shared expert gate/up shape mismatch:gate={gate_dimensions:?}:up={up_dimensions:?}"
+        ));
+    }
+    let [input_size, intermediate_size] = gate_dimensions else {
+        return Err(format!(
+            "unsupported deepseek shared expert gate shape:{gate_dimensions:?}"
+        ));
+    };
+    if down_dimensions != [*intermediate_size, *input_size] {
+        return Err(format!(
+            "deepseek shared expert down shape mismatch:down={down_dimensions:?}:expected=[{intermediate_size},{input_size}]"
+        ));
+    }
+    let gate_manifest = artifact_dir
+        .join(format!("q8_{}x{}", input_size, intermediate_size))
+        .join("host_q8_block_dot_manifest.json");
+    let down_manifest = artifact_dir
+        .join(format!("q8_{}x{}", intermediate_size, input_size))
+        .join("host_q8_block_dot_manifest.json");
+    let gate = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        task,
+        &gate_manifest,
+        segment_base,
+        gate_weight,
+        gate_dimensions,
+        input,
+    )?;
+    let mut up_task = task.clone();
+    up_task.task_id = task.task_id.saturating_add(1);
+    let up = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &up_task,
+        &gate_manifest,
+        segment_base.saturating_add(10),
+        up_weight,
+        up_dimensions,
+        input,
+    )?;
+    let activated = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_swiglu_reference(
+        &gate, &up, clamp,
+    )?;
+    let mut down_task = task.clone();
+    down_task.task_id = task.task_id.saturating_add(2);
+    execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &down_task,
+        &down_manifest,
+        segment_base.saturating_add(20),
+        down_weight,
+        down_dimensions,
+        &activated,
+    )
+}
+
 #[cfg(test)]
 fn run_host_quantized_gemm_payload(
     topology: &SimTopology,
@@ -27064,7 +27137,8 @@ mod tests {
         ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
         ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
         execute_deepseek_grouped_q8_projection_through_simpler,
-        execute_deepseek_q8_projection_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
+        execute_deepseek_q8_projection_through_simpler,
+        execute_deepseek_shared_expert_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
         f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
@@ -27194,7 +27268,8 @@ mod tests {
         deepseek_v4_flash_hc_control_input_reference, deepseek_v4_flash_hc_post_reference,
         deepseek_v4_flash_head_rms_norm_reference, deepseek_v4_flash_rms_norm_reference,
         deepseek_v4_flash_rope_tail_reference, deepseek_v4_flash_sink_attention_reference,
-        DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
+        deepseek_v4_flash_swiglu_reference, DeepseekV4FlashDtype, DeepseekV4FlashGemmKind,
+        DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -30588,6 +30663,136 @@ mod tests {
                     GROUPS,
                 )
                 .expect("execute grouped Q8 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_shared_expert_executes_three_q8_projections_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_shared_expert_executes_three_q8_projections_through_simpler",
+            || {
+                const DIM: usize = 128;
+                const BLOCKS: usize = DIM / 32;
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 29) - 14) as f32 / 5.0)
+                    .collect();
+                let weight = |seed: usize| {
+                    let mut payload = Vec::with_capacity(DIM * BLOCKS * 34);
+                    for output in 0..DIM {
+                        for block in 0..BLOCKS {
+                            payload.extend_from_slice(&0x3800u16.to_le_bytes());
+                            payload.extend((0..32).map(|lane| {
+                                (((output + block * 3 + lane + seed) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    payload
+                };
+                let gate_weight = weight(1);
+                let up_weight = weight(5);
+                let down_weight = weight(9);
+                let dimensions = [DIM as u64, DIM as u64];
+                let gate = project_q8_0_matrix(&gate_weight, &dimensions, &input)
+                    .expect("project shared gate reference");
+                let up = project_q8_0_matrix(&up_weight, &dimensions, &input)
+                    .expect("project shared up reference");
+                let activated = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                    .expect("activate shared expert reference");
+                let reference = project_q8_0_matrix(&down_weight, &dimensions, &activated)
+                    .expect("project shared down reference");
+                let actual = execute_deepseek_shared_expert_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 130,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-shared-expert-test-artifacts"),
+                    95_000,
+                    &gate_weight,
+                    &dimensions,
+                    &up_weight,
+                    &dimensions,
+                    &down_weight,
+                    &dimensions,
+                    &input,
+                    10.0,
+                )
+                .expect("execute shared expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_shared_expert_matches_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_shared_expert_matches_gguf_reference_when_available",
+            || {
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                let gate = catalog
+                    .tensor("blk.0.ffn_gate_shexp.weight")
+                    .expect("locate real shared gate");
+                let up = catalog
+                    .tensor("blk.0.ffn_up_shexp.weight")
+                    .expect("locate real shared up");
+                let down = catalog
+                    .tensor("blk.0.ffn_down_shexp.weight")
+                    .expect("locate real shared down");
+                let gate_weight = catalog
+                    .read_tensor(&gate.name)
+                    .expect("read real shared gate");
+                let up_weight = catalog.read_tensor(&up.name).expect("read real shared up");
+                let down_weight = catalog
+                    .read_tensor(&down.name)
+                    .expect("read real shared down");
+                let gate_reference = project_q8_0_matrix(&gate_weight, &gate.dimensions, &input)
+                    .expect("project real shared gate reference");
+                let up_reference = project_q8_0_matrix(&up_weight, &up.dimensions, &input)
+                    .expect("project real shared up reference");
+                let activated = deepseek_v4_flash_swiglu_reference(
+                    &gate_reference,
+                    &up_reference,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
+                )
+                .expect("activate real shared expert reference");
+                let reference = project_q8_0_matrix(&down_weight, &down.dimensions, &activated)
+                    .expect("project real shared down reference");
+                let actual = execute_deepseek_shared_expert_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_300,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-real-shared-expert-test-artifacts"),
+                    160_000,
+                    &gate_weight,
+                    &gate.dimensions,
+                    &up_weight,
+                    &up.dimensions,
+                    &down_weight,
+                    &down.dimensions,
+                    &input,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
+                )
+                .expect("execute real shared expert through simpler");
                 assert_eq!(actual, reference);
             },
         );

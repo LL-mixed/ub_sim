@@ -1336,9 +1336,62 @@ pub fn deepseek_v4_flash_hc_post_reference(
     Ok(output)
 }
 
+/// DS4-compatible SwiGLU used by both shared and routed experts.
+pub fn deepseek_v4_flash_swiglu_reference(
+    gate: &[f32],
+    up: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if gate.is_empty() || gate.len() != up.len() {
+        return Err(format!(
+            "deepseek SwiGLU shape mismatch:gate={} up={}",
+            gate.len(),
+            up.len()
+        ));
+    }
+    if !clamp.is_finite() || clamp < 0.0 {
+        return Err(format!("deepseek SwiGLU clamp invalid:{clamp}"));
+    }
+    if gate.iter().chain(up).any(|value| !value.is_finite()) {
+        return Err("deepseek SwiGLU input contains non-finite value".to_string());
+    }
+    Ok(gate
+        .iter()
+        .zip(up)
+        .map(|(gate, up)| {
+            let gate = if clamp > 1.0e-6 {
+                gate.min(clamp)
+            } else {
+                *gate
+            };
+            let up = if clamp > 1.0e-6 {
+                up.clamp(-clamp, clamp)
+            } else {
+                *up
+            };
+            gate * (1.0 + (-gate).exp()).recip() * up
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swiglu_matches_ds4_clamp_semantics() {
+        let output =
+            deepseek_v4_flash_swiglu_reference(&[20.0, -2.0, 1.0], &[20.0, -20.0, 3.0], 10.0)
+                .expect("execute SwiGLU reference");
+        let expected = [
+            10.0 * (1.0 + (-10.0f32).exp()).recip() * 10.0,
+            -2.0 * (1.0 + 2.0f32.exp()).recip() * -10.0,
+            1.0 * (1.0 + (-1.0f32).exp()).recip() * 3.0,
+        ];
+        assert_eq!(output, expected);
+        assert!(deepseek_v4_flash_swiglu_reference(&[1.0], &[], 10.0).is_err());
+        assert!(deepseek_v4_flash_swiglu_reference(&[f32::NAN], &[1.0], 10.0).is_err());
+    }
 
     #[test]
     fn decode_plan_uses_hyper_connection_hidden_and_real_moe_shapes() {

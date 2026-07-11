@@ -120,6 +120,9 @@ pub fn deepseek_v4_flash_layer_compress_ratio(layer_id: u64) -> Option<u32> {
 /// DeepSeek V4 Flash model key (namespace for object-store keys).
 pub const DEEPSEEK_V4_FLASH_MODEL_KEY: &str = "deepseek-v4-flash";
 
+/// Clamp used by the Flash shared and routed expert SwiGLU activation.
+pub const DEEPSEEK_V4_FLASH_SWIGLU_CLAMP: f32 = 10.0;
+
 /// Layer range for one pipeline node, using the same base/rem contiguous split
 /// as the guest C helper. For 43 layers / 8 nodes this yields nodes 0-2 owning
 /// 6 layers and nodes 3-7 owning 5 layers.
