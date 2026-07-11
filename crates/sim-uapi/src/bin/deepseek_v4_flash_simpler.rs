@@ -1,16 +1,22 @@
 use sim_config::ScenarioConfig;
 use sim_core::{HierarchyCoord, LogicalSystemId, TaskKey};
 use sim_models::deepseek_v4_flash::{
-    DEEPSEEK_V4_FLASH_PROFILE, DEEPSEEK_V4_FLASH_RMS_EPS, DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
+    deepseek_v4_flash_layer_compress_ratio, DEEPSEEK_V4_FLASH_PROFILE, DEEPSEEK_V4_FLASH_RMS_EPS,
+    DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
 };
-use sim_models::deepseek_v4_flash_gguf::{decode_f32_tensor, GgufCatalog};
+use sim_models::deepseek_v4_flash_gguf::{decode_f16_tensor, decode_f32_tensor, GgufCatalog};
+use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashCompressorState;
 use sim_topology::SimTopology;
 use sim_uapi::{
-    execute_deepseek_ffn_through_simpler, execute_deepseek_grouped_q8_projection_through_simpler,
-    execute_deepseek_moe_through_simpler, execute_deepseek_q2_k_expert_projection_through_simpler,
+    execute_deepseek_compressor_update_through_simpler,
+    execute_deepseek_dense_attention_through_simpler, execute_deepseek_ffn_through_simpler,
+    execute_deepseek_grouped_q8_projection_through_simpler,
+    execute_deepseek_indexer_through_simpler, execute_deepseek_moe_through_simpler,
+    execute_deepseek_q2_k_expert_projection_through_simpler,
     execute_deepseek_q8_projection_through_simpler, execute_deepseek_routed_expert_through_simpler,
     execute_deepseek_router_through_simpler, execute_deepseek_shared_expert_through_simpler,
-    DeepseekV4FlashFfnWeights, DeepseekV4FlashMoeWeights,
+    DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights, DeepseekV4FlashFfnWeights,
+    DeepseekV4FlashIndexerWeights, DeepseekV4FlashMoeWeights, DeepseekV4FlashProjectionFormat,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -84,6 +90,46 @@ struct MoeArgs {
 
 type FfnArgs = MoeArgs;
 
+#[derive(Debug, PartialEq, Eq)]
+struct AttentionArgs {
+    scenario: PathBuf,
+    model: PathBuf,
+    layer: u64,
+    input: PathBuf,
+    kv_cache: PathBuf,
+    rope_cos: PathBuf,
+    rope_sin: PathBuf,
+    output: PathBuf,
+    kv_output: PathBuf,
+    artifact_dir: PathBuf,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompressorArgs {
+    scenario: PathBuf,
+    model: PathBuf,
+    layer: u64,
+    input: PathBuf,
+    rope_cos: PathBuf,
+    rope_sin: PathBuf,
+    output: PathBuf,
+    artifact_dir: PathBuf,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct IndexerArgs {
+    scenario: PathBuf,
+    model: PathBuf,
+    layer: u64,
+    query_lora: PathBuf,
+    hidden: PathBuf,
+    compressed_kv: PathBuf,
+    rope_cos: PathBuf,
+    rope_sin: PathBuf,
+    output: PathBuf,
+    artifact_dir: PathBuf,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
@@ -93,12 +139,331 @@ fn main() {
         Some("routed-expert") => run_routed_expert(args),
         Some("moe") => run_moe(args),
         Some("ffn") => run_ffn(args),
+        Some("attention") => run_attention(args),
+        Some("compressor") => run_compressor(args),
+        Some("indexer") => run_indexer(args),
         _ => run(args),
     };
     if let Err(err) = result {
         eprintln!("{err}");
         std::process::exit(1);
     }
+}
+
+fn run_indexer<I, S>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args = parse_indexer_args(args)?;
+    let config = ScenarioConfig::from_yaml_file(&args.scenario).map_err(|err| {
+        format!(
+            "deepseek_simpler_scenario_load_failed:{}:{err}",
+            args.scenario.display()
+        )
+    })?;
+    let topology = SimTopology::from_config(&config)
+        .map_err(|err| format!("deepseek_simpler_topology_failed:{err}"))?;
+    let catalog = GgufCatalog::open(&args.model)?;
+    catalog.validate_deepseek_v4_flash()?;
+    let query_name = format!("blk.{}.indexer.attn_q_b.weight", args.layer);
+    let head_weight_name = format!("blk.{}.indexer.proj.weight", args.layer);
+    let query = catalog.tensor(&query_name)?;
+    let head_weight = catalog.tensor(&head_weight_name)?;
+    let query_format = match query.tensor_type.name {
+        "f16" => DeepseekV4FlashProjectionFormat::F16,
+        "q8_0" => DeepseekV4FlashProjectionFormat::Q8_0,
+        other => return Err(format!("deepseek_indexer_query_type_invalid:{other}")),
+    };
+    if head_weight.tensor_type.name != "f16" {
+        return Err(format!(
+            "deepseek_indexer_head_weight_type_invalid:{}",
+            head_weight.tensor_type.name
+        ));
+    }
+    let query_lora = read_f32(&args.query_lora)?;
+    let hidden = read_f32(&args.hidden)?;
+    let compressed_kv = read_f32(&args.compressed_kv)?;
+    let rope_cos = read_f32(&args.rope_cos)?;
+    let rope_sin = read_f32(&args.rope_sin)?;
+    let selected = execute_deepseek_indexer_through_simpler(
+        &topology,
+        &TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord { levels: [0; 8] },
+            scope_depth: 0,
+            task_id: 1,
+        },
+        &args.artifact_dir,
+        800_000,
+        &DeepseekV4FlashIndexerWeights {
+            query: &catalog.read_tensor(&query_name)?,
+            query_dimensions: &query.dimensions,
+            query_format,
+            head_weights: &catalog.read_tensor(&head_weight_name)?,
+            head_weight_dimensions: &head_weight.dimensions,
+        },
+        &query_lora,
+        &hidden,
+        &compressed_kv,
+        DEEPSEEK_V4_FLASH_PROFILE.qk_rope_head_dim as usize,
+        &rope_cos,
+        &rope_sin,
+        DEEPSEEK_V4_FLASH_PROFILE.indexer_heads as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.indexer_head_dim as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.indexer_top_k as usize,
+    )?;
+    let json = serde_json::json!({
+        "status": "ok",
+        "model": args.model,
+        "layer": args.layer,
+        "selected_rows": selected,
+        "backend": "simpler-c-api",
+        "operation": "deepseek-ratio4-indexer",
+    });
+    fs::write(
+        &args.output,
+        serde_json::to_vec_pretty(&json).map_err(|err| format!("json_encode_failed:{err}"))?,
+    )
+    .map_err(|err| {
+        format!(
+            "deepseek_indexer_output_write_failed:{}:{err}",
+            args.output.display()
+        )
+    })?;
+    println!("{json}");
+    Ok(())
+}
+
+fn run_compressor<I, S>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args = parse_compressor_args(args)?;
+    let ratio = deepseek_v4_flash_layer_compress_ratio(args.layer)
+        .ok_or_else(|| format!("invalid_layer:{}", args.layer))? as usize;
+    let config = ScenarioConfig::from_yaml_file(&args.scenario).map_err(|err| {
+        format!(
+            "deepseek_simpler_scenario_load_failed:{}:{err}",
+            args.scenario.display()
+        )
+    })?;
+    let topology = SimTopology::from_config(&config)
+        .map_err(|err| format!("deepseek_simpler_topology_failed:{err}"))?;
+    let catalog = GgufCatalog::open(&args.model)?;
+    catalog.validate_deepseek_v4_flash()?;
+    let name = |suffix: &str| format!("blk.{}.{}.weight", args.layer, suffix);
+    let kv_name = name("attn_compressor_kv");
+    let gate_name = name("attn_compressor_gate");
+    let ape_name = name("attn_compressor_ape");
+    let norm_name = name("attn_compressor_norm");
+    let kv = catalog.tensor(&kv_name)?;
+    let gate = catalog.tensor(&gate_name)?;
+    let ape_tensor = catalog.tensor(&ape_name)?;
+    let norm_tensor = catalog.tensor(&norm_name)?;
+    if kv.tensor_type.name != "f16"
+        || gate.tensor_type.name != "f16"
+        || ape_tensor.tensor_type.name != "f16"
+        || norm_tensor.tensor_type.name != "f32"
+    {
+        return Err("deepseek_compressor_tensor_types_invalid".to_string());
+    }
+    let hidden_size = DEEPSEEK_V4_FLASH_PROFILE.hidden_size as usize;
+    let head_dim = DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize;
+    let input = read_f32(&args.input)?;
+    if input.len() != ratio.saturating_mul(hidden_size) {
+        return Err(format!(
+            "deepseek_compressor_input_shape_invalid:actual={}:expected={}",
+            input.len(),
+            ratio.saturating_mul(hidden_size)
+        ));
+    }
+    let rope_cos = read_f32(&args.rope_cos)?;
+    let rope_sin = read_f32(&args.rope_sin)?;
+    let kv_payload = catalog.read_tensor(&kv_name)?;
+    let gate_payload = catalog.read_tensor(&gate_name)?;
+    let ape = decode_f16_tensor(&catalog.read_tensor(&ape_name)?, &ape_tensor.dimensions)?;
+    let norm = decode_f32_tensor(&catalog.read_tensor(&norm_name)?, &norm_tensor.dimensions)?;
+    let mut state = DeepseekV4FlashCompressorState::new(head_dim, ratio)?;
+    let weights = DeepseekV4FlashCompressorWeights {
+        kv: &kv_payload,
+        kv_dimensions: &kv.dimensions,
+        gate: &gate_payload,
+        gate_dimensions: &gate.dimensions,
+        ape: &ape,
+        norm: &norm,
+    };
+    let mut compressed = None;
+    for position in 0..ratio {
+        let task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord { levels: [0; 8] },
+            scope_depth: 0,
+            task_id: 1 + (position as u64) * 2,
+        };
+        compressed = execute_deepseek_compressor_update_through_simpler(
+            &topology,
+            &task,
+            &args.artifact_dir,
+            &mut state,
+            &weights,
+            position as u32,
+            &input[position * hidden_size..(position + 1) * hidden_size],
+            DEEPSEEK_V4_FLASH_PROFILE.qk_rope_head_dim as usize,
+            &rope_cos,
+            &rope_sin,
+        )?;
+    }
+    let compressed =
+        compressed.ok_or_else(|| "deepseek_compressor_window_did_not_emit".to_string())?;
+    write_f32(&args.output, &compressed)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "ok",
+            "model": args.model,
+            "layer": args.layer,
+            "compress_ratio": ratio,
+            "input_rows": ratio,
+            "output_values": compressed.len(),
+            "output": args.output,
+            "backend": "simpler-c-api",
+            "operation": "deepseek-compressor-window",
+        })
+    );
+    Ok(())
+}
+
+fn run_attention<I, S>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args = parse_attention_args(args)?;
+    let config = ScenarioConfig::from_yaml_file(&args.scenario).map_err(|err| {
+        format!(
+            "deepseek_simpler_scenario_load_failed:{}:{err}",
+            args.scenario.display()
+        )
+    })?;
+    let topology = SimTopology::from_config(&config)
+        .map_err(|err| format!("deepseek_simpler_topology_failed:{err}"))?;
+    let catalog = GgufCatalog::open(&args.model)?;
+    catalog.validate_deepseek_v4_flash()?;
+    let name = |suffix: &str| format!("blk.{}.{}.weight", args.layer, suffix);
+    let hc_function_name = name("hc_attn_fn");
+    let hc_scale_name = name("hc_attn_scale");
+    let hc_base_name = name("hc_attn_base");
+    let attention_norm_name = name("attn_norm");
+    let q_a_name = name("attn_q_a");
+    let q_a_norm_name = name("attn_q_a_norm");
+    let q_b_name = name("attn_q_b");
+    let kv_name = name("attn_kv");
+    let kv_norm_name = name("attn_kv_a_norm");
+    let sinks_name = name("attn_sinks");
+    let output_a_name = name("attn_output_a");
+    let output_b_name = name("attn_output_b");
+    let hc_function = catalog.tensor(&hc_function_name)?;
+    let q_a = catalog.tensor(&q_a_name)?;
+    let q_b = catalog.tensor(&q_b_name)?;
+    let kv = catalog.tensor(&kv_name)?;
+    let output_a = catalog.tensor(&output_a_name)?;
+    let output_b = catalog.tensor(&output_b_name)?;
+    if hc_function.tensor_type.name != "f16"
+        || [q_a, q_b, kv, output_a, output_b]
+            .iter()
+            .any(|tensor| tensor.tensor_type.name != "q8_0")
+    {
+        return Err("deepseek_attention_tensor_types_invalid".to_string());
+    }
+    let decode_f32 = |tensor_name: &str| -> Result<Vec<f32>, String> {
+        let tensor = catalog.tensor(tensor_name)?;
+        if tensor.tensor_type.name != "f32" {
+            return Err(format!(
+                "deepseek_attention_f32_tensor_required:{tensor_name}:{}",
+                tensor.tensor_type.name
+            ));
+        }
+        decode_f32_tensor(&catalog.read_tensor(tensor_name)?, &tensor.dimensions)
+    };
+    let residual_hc = read_f32(&args.input)?;
+    let previous_kv = read_f32(&args.kv_cache)?;
+    let rope_cos = read_f32(&args.rope_cos)?;
+    let rope_sin = read_f32(&args.rope_sin)?;
+    let hc_function_payload = catalog.read_tensor(&hc_function_name)?;
+    let q_a_payload = catalog.read_tensor(&q_a_name)?;
+    let q_b_payload = catalog.read_tensor(&q_b_name)?;
+    let kv_payload = catalog.read_tensor(&kv_name)?;
+    let output_a_payload = catalog.read_tensor(&output_a_name)?;
+    let output_b_payload = catalog.read_tensor(&output_b_name)?;
+    let hc_scale = decode_f32(&hc_scale_name)?;
+    let hc_base = decode_f32(&hc_base_name)?;
+    let attention_norm = decode_f32(&attention_norm_name)?;
+    let q_a_norm = decode_f32(&q_a_norm_name)?;
+    let kv_norm = decode_f32(&kv_norm_name)?;
+    let sinks = decode_f32(&sinks_name)?;
+    let execution = execute_deepseek_dense_attention_through_simpler(
+        &topology,
+        &TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord { levels: [0; 8] },
+            scope_depth: 0,
+            task_id: 1,
+        },
+        &args.artifact_dir,
+        700_000,
+        &DeepseekV4FlashAttentionWeights {
+            hc_function: &hc_function_payload,
+            hc_function_dimensions: &hc_function.dimensions,
+            hc_scale: &hc_scale,
+            hc_base: &hc_base,
+            attention_norm: &attention_norm,
+            q_a: &q_a_payload,
+            q_a_dimensions: &q_a.dimensions,
+            q_a_norm: &q_a_norm,
+            q_b: &q_b_payload,
+            q_b_dimensions: &q_b.dimensions,
+            kv: &kv_payload,
+            kv_dimensions: &kv.dimensions,
+            kv_norm: &kv_norm,
+            sinks: &sinks,
+            output_a: &output_a_payload,
+            output_a_dimensions: &output_a.dimensions,
+            output_b: &output_b_payload,
+            output_b_dimensions: &output_b.dimensions,
+        },
+        &residual_hc,
+        &previous_kv,
+        &rope_cos,
+        &rope_sin,
+        DEEPSEEK_V4_FLASH_PROFILE.hc_mult as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.hc_sinkhorn_iters as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.num_attention_heads as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.qk_rope_head_dim as usize,
+        DEEPSEEK_V4_FLASH_PROFILE.output_groups as usize,
+        DEEPSEEK_V4_FLASH_RMS_EPS,
+    )?;
+    write_f32(&args.output, &execution.output_hc)?;
+    let mut updated_kv = previous_kv;
+    updated_kv.extend_from_slice(&execution.current_kv);
+    write_f32(&args.kv_output, &updated_kv)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "ok",
+            "model": args.model,
+            "layer": args.layer,
+            "kv_rows": updated_kv.len() / DEEPSEEK_V4_FLASH_PROFILE.head_dim as usize,
+            "output_values": execution.output_hc.len(),
+            "output": args.output,
+            "kv_output": args.kv_output,
+            "backend": "simpler-c-api",
+            "operation": "deepseek-dense-attention",
+        })
+    );
+    Ok(())
 }
 
 fn run_ffn<I, S>(args: I) -> Result<(), String>
@@ -1017,6 +1382,250 @@ where
     Ok(parsed)
 }
 
+fn parse_attention_args<I, S>(args: I) -> Result<AttentionArgs, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    if args.first().map(String::as_str) != Some("attention") {
+        return Err(
+            "usage: deepseek-v4-flash-simpler attention --model FILE --layer N --input FILE --kv-cache FILE --rope-cos FILE --rope-sin FILE --output FILE --kv-output FILE [--scenario FILE] [--artifact-dir DIR]"
+                .to_string(),
+        );
+    }
+    let mut options = BTreeMap::new();
+    let mut index = 1;
+    while index < args.len() {
+        let option = &args[index];
+        if !option.starts_with("--") || index + 1 >= args.len() {
+            return Err(format!("invalid_option:{option}"));
+        }
+        if options
+            .insert(option.clone(), args[index + 1].clone())
+            .is_some()
+        {
+            return Err(format!("duplicate_option:{option}"));
+        }
+        index += 2;
+    }
+    if let Some(option) = options.keys().find(|name| {
+        !matches!(
+            name.as_str(),
+            "--scenario"
+                | "--model"
+                | "--layer"
+                | "--input"
+                | "--kv-cache"
+                | "--rope-cos"
+                | "--rope-sin"
+                | "--output"
+                | "--kv-output"
+                | "--artifact-dir"
+        )
+    }) {
+        return Err(format!("unknown_option:{option}"));
+    }
+    let required = |name: &str| {
+        options
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("required_option_missing:{name}"))
+    };
+    let layer_text = required("--layer")?;
+    let layer = layer_text
+        .parse::<u64>()
+        .map_err(|_| format!("invalid_layer:{layer_text}"))?;
+    if layer >= DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!("invalid_layer:{layer}"));
+    }
+    let ratio = deepseek_v4_flash_layer_compress_ratio(layer)
+        .ok_or_else(|| format!("invalid_layer:{layer}"))?;
+    if ratio != 0 {
+        return Err(format!(
+            "dense_attention_requires_uncompressed_layer:layer={layer}:ratio={ratio}"
+        ));
+    }
+    Ok(AttentionArgs {
+        scenario: options
+            .get("--scenario")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("scenarios/mvp_2host_single_domain.yaml")),
+        model: PathBuf::from(required("--model")?),
+        layer,
+        input: PathBuf::from(required("--input")?),
+        kv_cache: PathBuf::from(required("--kv-cache")?),
+        rope_cos: PathBuf::from(required("--rope-cos")?),
+        rope_sin: PathBuf::from(required("--rope-sin")?),
+        output: PathBuf::from(required("--output")?),
+        kv_output: PathBuf::from(required("--kv-output")?),
+        artifact_dir: options
+            .get("--artifact-dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("simpler-deepseek-attention-artifacts")),
+    })
+}
+
+fn parse_compressor_args<I, S>(args: I) -> Result<CompressorArgs, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    if args.first().map(String::as_str) != Some("compressor") {
+        return Err(
+            "usage: deepseek-v4-flash-simpler compressor --model FILE --layer N --input FILE --rope-cos FILE --rope-sin FILE --output FILE [--scenario FILE] [--artifact-dir DIR]"
+                .to_string(),
+        );
+    }
+    let mut options = BTreeMap::new();
+    let mut index = 1;
+    while index < args.len() {
+        let option = &args[index];
+        if !option.starts_with("--") || index + 1 >= args.len() {
+            return Err(format!("invalid_option:{option}"));
+        }
+        if options
+            .insert(option.clone(), args[index + 1].clone())
+            .is_some()
+        {
+            return Err(format!("duplicate_option:{option}"));
+        }
+        index += 2;
+    }
+    if let Some(option) = options.keys().find(|name| {
+        !matches!(
+            name.as_str(),
+            "--scenario"
+                | "--model"
+                | "--layer"
+                | "--input"
+                | "--rope-cos"
+                | "--rope-sin"
+                | "--output"
+                | "--artifact-dir"
+        )
+    }) {
+        return Err(format!("unknown_option:{option}"));
+    }
+    let required = |name: &str| {
+        options
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("required_option_missing:{name}"))
+    };
+    let layer_text = required("--layer")?;
+    let layer = layer_text
+        .parse::<u64>()
+        .map_err(|_| format!("invalid_layer:{layer_text}"))?;
+    if layer >= DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!("invalid_layer:{layer}"));
+    }
+    let ratio = deepseek_v4_flash_layer_compress_ratio(layer)
+        .ok_or_else(|| format!("invalid_layer:{layer}"))?;
+    if ratio == 0 {
+        return Err(format!(
+            "compressor_requires_compressed_layer:layer={layer}"
+        ));
+    }
+    Ok(CompressorArgs {
+        scenario: options
+            .get("--scenario")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("scenarios/mvp_2host_single_domain.yaml")),
+        model: PathBuf::from(required("--model")?),
+        layer,
+        input: PathBuf::from(required("--input")?),
+        rope_cos: PathBuf::from(required("--rope-cos")?),
+        rope_sin: PathBuf::from(required("--rope-sin")?),
+        output: PathBuf::from(required("--output")?),
+        artifact_dir: options
+            .get("--artifact-dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("simpler-deepseek-compressor-artifacts")),
+    })
+}
+
+fn parse_indexer_args<I, S>(args: I) -> Result<IndexerArgs, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    if args.first().map(String::as_str) != Some("indexer") {
+        return Err(
+            "usage: deepseek-v4-flash-simpler indexer --model FILE --layer N --query-lora FILE --hidden FILE --compressed-kv FILE --rope-cos FILE --rope-sin FILE --output FILE [--scenario FILE] [--artifact-dir DIR]"
+                .to_string(),
+        );
+    }
+    let mut options = BTreeMap::new();
+    let mut index = 1;
+    while index < args.len() {
+        let option = &args[index];
+        if !option.starts_with("--") || index + 1 >= args.len() {
+            return Err(format!("invalid_option:{option}"));
+        }
+        if options
+            .insert(option.clone(), args[index + 1].clone())
+            .is_some()
+        {
+            return Err(format!("duplicate_option:{option}"));
+        }
+        index += 2;
+    }
+    if let Some(option) = options.keys().find(|name| {
+        !matches!(
+            name.as_str(),
+            "--scenario"
+                | "--model"
+                | "--layer"
+                | "--query-lora"
+                | "--hidden"
+                | "--compressed-kv"
+                | "--rope-cos"
+                | "--rope-sin"
+                | "--output"
+                | "--artifact-dir"
+        )
+    }) {
+        return Err(format!("unknown_option:{option}"));
+    }
+    let required = |name: &str| {
+        options
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("required_option_missing:{name}"))
+    };
+    let layer_text = required("--layer")?;
+    let layer = layer_text
+        .parse::<u64>()
+        .map_err(|_| format!("invalid_layer:{layer_text}"))?;
+    if layer >= DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!("invalid_layer:{layer}"));
+    }
+    if deepseek_v4_flash_layer_compress_ratio(layer) != Some(4) {
+        return Err(format!("indexer_requires_ratio4_layer:layer={layer}"));
+    }
+    Ok(IndexerArgs {
+        scenario: options
+            .get("--scenario")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("scenarios/mvp_2host_single_domain.yaml")),
+        model: PathBuf::from(required("--model")?),
+        layer,
+        query_lora: PathBuf::from(required("--query-lora")?),
+        hidden: PathBuf::from(required("--hidden")?),
+        compressed_kv: PathBuf::from(required("--compressed-kv")?),
+        rope_cos: PathBuf::from(required("--rope-cos")?),
+        rope_sin: PathBuf::from(required("--rope-sin")?),
+        output: PathBuf::from(required("--output")?),
+        artifact_dir: options
+            .get("--artifact-dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("simpler-deepseek-indexer-artifacts")),
+    })
+}
+
 fn parse_routed_down_args<I, S>(args: I) -> Result<RoutedDownArgs, String>
 where
     I: IntoIterator<Item = S>,
@@ -1479,6 +2088,163 @@ mod tests {
         ])
         .expect_err("reject hash-layer FFN without token");
         assert_eq!(err, "hash_router_token_required:layer=2");
+    }
+
+    #[test]
+    fn attention_args_accept_uncompressed_layer_and_kv_paths() {
+        let args = parse_attention_args([
+            "attention",
+            "--model",
+            "model.gguf",
+            "--layer",
+            "1",
+            "--input",
+            "residual-hc.f32",
+            "--kv-cache",
+            "kv-in.f32",
+            "--rope-cos",
+            "rope-cos.f32",
+            "--rope-sin",
+            "rope-sin.f32",
+            "--output",
+            "output-hc.f32",
+            "--kv-output",
+            "kv-out.f32",
+        ])
+        .expect("parse dense attention command");
+        assert_eq!(args.layer, 1);
+        assert_eq!(args.kv_cache, PathBuf::from("kv-in.f32"));
+        assert_eq!(args.kv_output, PathBuf::from("kv-out.f32"));
+        assert!(args
+            .artifact_dir
+            .ends_with("simpler-deepseek-attention-artifacts"));
+    }
+
+    #[test]
+    fn attention_args_reject_compressed_layer() {
+        let err = parse_attention_args([
+            "attention",
+            "--model",
+            "model.gguf",
+            "--layer",
+            "2",
+            "--input",
+            "residual-hc.f32",
+            "--kv-cache",
+            "kv-in.f32",
+            "--rope-cos",
+            "rope-cos.f32",
+            "--rope-sin",
+            "rope-sin.f32",
+            "--output",
+            "output-hc.f32",
+            "--kv-output",
+            "kv-out.f32",
+        ])
+        .expect_err("reject compressed layer on dense attention path");
+        assert_eq!(
+            err,
+            "dense_attention_requires_uncompressed_layer:layer=2:ratio=4"
+        );
+    }
+
+    #[test]
+    fn compressor_args_accept_ratio4_and_ratio128_layers() {
+        for (layer, ratio) in [(2, 4), (3, 128)] {
+            let layer_text = layer.to_string();
+            let args = parse_compressor_args([
+                "compressor",
+                "--model",
+                "model.gguf",
+                "--layer",
+                layer_text.as_str(),
+                "--input",
+                "hidden-window.f32",
+                "--rope-cos",
+                "rope-cos.f32",
+                "--rope-sin",
+                "rope-sin.f32",
+                "--output",
+                "compressed-kv.f32",
+            ])
+            .expect("parse compressor command");
+            assert_eq!(
+                deepseek_v4_flash_layer_compress_ratio(args.layer),
+                Some(ratio)
+            );
+        }
+    }
+
+    #[test]
+    fn compressor_args_reject_dense_layer() {
+        let err = parse_compressor_args([
+            "compressor",
+            "--model",
+            "model.gguf",
+            "--layer",
+            "1",
+            "--input",
+            "hidden-window.f32",
+            "--rope-cos",
+            "rope-cos.f32",
+            "--rope-sin",
+            "rope-sin.f32",
+            "--output",
+            "compressed-kv.f32",
+        ])
+        .expect_err("reject dense layer compressor");
+        assert_eq!(err, "compressor_requires_compressed_layer:layer=1");
+    }
+
+    #[test]
+    fn indexer_args_accept_ratio4_layer() {
+        let args = parse_indexer_args([
+            "indexer",
+            "--model",
+            "model.gguf",
+            "--layer",
+            "2",
+            "--query-lora",
+            "query-lora.f32",
+            "--hidden",
+            "hidden.f32",
+            "--compressed-kv",
+            "compressed-kv.f32",
+            "--rope-cos",
+            "rope-cos.f32",
+            "--rope-sin",
+            "rope-sin.f32",
+            "--output",
+            "selected.json",
+        ])
+        .expect("parse ratio-4 indexer command");
+        assert_eq!(args.layer, 2);
+        assert_eq!(args.query_lora, PathBuf::from("query-lora.f32"));
+    }
+
+    #[test]
+    fn indexer_args_reject_non_ratio4_layer() {
+        let err = parse_indexer_args([
+            "indexer",
+            "--model",
+            "model.gguf",
+            "--layer",
+            "3",
+            "--query-lora",
+            "query-lora.f32",
+            "--hidden",
+            "hidden.f32",
+            "--compressed-kv",
+            "compressed-kv.f32",
+            "--rope-cos",
+            "rope-cos.f32",
+            "--rope-sin",
+            "rope-sin.f32",
+            "--output",
+            "selected.json",
+        ])
+        .expect_err("reject ratio-128 indexer command");
+        assert_eq!(err, "indexer_requires_ratio4_layer:layer=3");
     }
 
     #[test]

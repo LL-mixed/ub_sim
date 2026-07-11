@@ -687,6 +687,39 @@ pub fn project_f16_matrix(
     Ok(output)
 }
 
+pub fn decode_f16_tensor(payload: &[u8], dimensions: &[u64]) -> Result<Vec<f32>, String> {
+    let elements = dimensions.iter().try_fold(1usize, |total, dimension| {
+        let dimension = usize::try_from(*dimension)
+            .map_err(|_| "deepseek_f16_tensor_dimension_too_large".to_string())?;
+        total
+            .checked_mul(dimension)
+            .ok_or_else(|| "deepseek_f16_tensor_elements_overflow".to_string())
+    })?;
+    if dimensions.is_empty() || elements == 0 {
+        return Err("deepseek_f16_tensor_shape_invalid".to_string());
+    }
+    let expected_bytes = elements
+        .checked_mul(2)
+        .ok_or_else(|| "deepseek_f16_tensor_bytes_overflow".to_string())?;
+    if payload.len() != expected_bytes {
+        return Err(format!(
+            "deepseek_f16_tensor_payload_size_mismatch:actual={}:expected={expected_bytes}",
+            payload.len()
+        ));
+    }
+    payload
+        .chunks_exact(2)
+        .enumerate()
+        .map(|(index, bytes)| {
+            let value = f16_to_f32(u16::from_le_bytes([bytes[0], bytes[1]]));
+            value
+                .is_finite()
+                .then_some(value)
+                .ok_or_else(|| format!("deepseek_f16_tensor_value_non_finite:index={index}"))
+        })
+        .collect()
+}
+
 pub fn decode_f32_tensor(payload: &[u8], dimensions: &[u64]) -> Result<Vec<f32>, String> {
     let elements = dimensions.iter().try_fold(1usize, |total, dimension| {
         let dimension = usize::try_from(*dimension)
@@ -1508,6 +1541,18 @@ mod tests {
             vec![1.5, -2.0]
         );
         assert!(decode_f32_tensor(&f32::NAN.to_le_bytes(), &[1])
+            .unwrap_err()
+            .contains("non_finite"));
+    }
+
+    #[test]
+    fn decodes_f16_tensor_and_rejects_non_finite_values() {
+        let payload = [0x3e00u16.to_le_bytes(), 0xc000u16.to_le_bytes()].concat();
+        assert_eq!(
+            decode_f16_tensor(&payload, &[2]).expect("decode F16 tensor"),
+            vec![1.5, -2.0]
+        );
+        assert!(decode_f16_tensor(&0x7e00u16.to_le_bytes(), &[1])
             .unwrap_err()
             .contains("non_finite"));
     }

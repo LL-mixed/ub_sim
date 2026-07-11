@@ -745,6 +745,14 @@ impl DeepseekV4FlashCompressorState {
         self.width
     }
 
+    pub fn head_dim(&self) -> usize {
+        self.head_dim
+    }
+
+    pub fn compress_ratio(&self) -> usize {
+        self.compress_ratio
+    }
+
     pub fn update_projected(
         &mut self,
         position: u32,
@@ -947,50 +955,53 @@ fn deepseek_v4_flash_e4m3fn_roundtrip(value: f32) -> f32 {
 }
 
 pub fn deepseek_v4_flash_indexer_qat_reference(values: &mut [f32]) -> Result<(), String> {
-    if values.len() != 128 {
+    const HEAD_DIM: usize = 128;
+    if values.is_empty() || values.len() % HEAD_DIM != 0 {
         return Err(format!(
-            "deepseek indexer QAT expects 128 values, got {}",
+            "deepseek indexer QAT expects 128 values per head, got {}",
             values.len()
         ));
     }
-    let mut stride = 1;
-    while stride < values.len() {
-        for base in (0..values.len()).step_by(2 * stride) {
-            for index in 0..stride {
-                let a = values[base + index];
-                let b = values[base + stride + index];
-                values[base + index] = a + b;
-                values[base + stride + index] = a - b;
-            }
-        }
-        stride *= 2;
-    }
-    for value in values.iter_mut() {
-        *value *= 0.08838834764831845;
-    }
-
-    const FP4_VALUES: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
-    for block in values.chunks_exact_mut(32) {
-        let amax = block
-            .iter()
-            .map(|value| value.abs())
-            .fold(0.0f32, f32::max)
-            .max(7.052966104933725e-38);
-        let scale = 2.0f32.powf((amax / 6.0).log2().ceil());
-        for value in block {
-            let sign = if *value < 0.0 { -1.0 } else { 1.0 };
-            let magnitude = (*value / scale).abs().min(6.0);
-            let mut best = 0usize;
-            for candidate in 1..FP4_VALUES.len() {
-                let difference = (magnitude - FP4_VALUES[candidate]).abs();
-                let best_difference = (magnitude - FP4_VALUES[best]).abs();
-                if difference < best_difference
-                    || (difference == best_difference && candidate % 2 == 0 && best % 2 != 0)
-                {
-                    best = candidate;
+    for head in values.chunks_exact_mut(HEAD_DIM) {
+        let mut stride = 1;
+        while stride < head.len() {
+            for base in (0..head.len()).step_by(2 * stride) {
+                for index in 0..stride {
+                    let a = head[base + index];
+                    let b = head[base + stride + index];
+                    head[base + index] = a + b;
+                    head[base + stride + index] = a - b;
                 }
             }
-            *value = sign * FP4_VALUES[best] * scale;
+            stride *= 2;
+        }
+        for value in head.iter_mut() {
+            *value *= 0.08838834764831845;
+        }
+
+        const FP4_VALUES: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+        for block in head.chunks_exact_mut(32) {
+            let amax = block
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0f32, f32::max)
+                .max(7.052966104933725e-38);
+            let scale = 2.0f32.powf((amax / 6.0).log2().ceil());
+            for value in block {
+                let sign = if *value < 0.0 { -1.0 } else { 1.0 };
+                let magnitude = (*value / scale).abs().min(6.0);
+                let mut best = 0usize;
+                for candidate in 1..FP4_VALUES.len() {
+                    let difference = (magnitude - FP4_VALUES[candidate]).abs();
+                    let best_difference = (magnitude - FP4_VALUES[best]).abs();
+                    if difference < best_difference
+                        || (difference == best_difference && candidate % 2 == 0 && best % 2 != 0)
+                    {
+                        best = candidate;
+                    }
+                }
+                *value = sign * FP4_VALUES[best] * scale;
+            }
         }
     }
     Ok(())
@@ -1806,6 +1817,20 @@ mod tests {
         deepseek_v4_flash_indexer_qat_reference(&mut values).expect("indexer QAT");
         assert!(values.iter().all(|value| value.is_finite()));
         assert!(values.iter().all(|value| *value != 0.0));
+    }
+
+    #[test]
+    fn indexer_qat_processes_each_head_independently() {
+        let mut values = vec![0.0f32; 256];
+        values[0] = 1.0;
+        values[128] = 2.0;
+        deepseek_v4_flash_indexer_qat_reference(&mut values).expect("two-head indexer QAT");
+        assert!(values.iter().all(|value| value.is_finite()));
+        assert_ne!(&values[..128], &values[128..]);
+        let mut first = vec![0.0f32; 128];
+        first[0] = 1.0;
+        deepseek_v4_flash_indexer_qat_reference(&mut first).expect("single-head QAT");
+        assert_eq!(&values[..128], first.as_slice());
     }
 
     #[test]

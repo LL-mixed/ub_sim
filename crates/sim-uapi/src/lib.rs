@@ -18086,6 +18086,57 @@ pub struct DeepseekV4FlashFfnExecution {
     pub output_hc: Vec<f32>,
 }
 
+pub struct DeepseekV4FlashAttentionWeights<'a> {
+    pub hc_function: &'a [u8],
+    pub hc_function_dimensions: &'a [u64],
+    pub hc_scale: &'a [f32],
+    pub hc_base: &'a [f32],
+    pub attention_norm: &'a [f32],
+    pub q_a: &'a [u8],
+    pub q_a_dimensions: &'a [u64],
+    pub q_a_norm: &'a [f32],
+    pub q_b: &'a [u8],
+    pub q_b_dimensions: &'a [u64],
+    pub kv: &'a [u8],
+    pub kv_dimensions: &'a [u64],
+    pub kv_norm: &'a [f32],
+    pub sinks: &'a [f32],
+    pub output_a: &'a [u8],
+    pub output_a_dimensions: &'a [u64],
+    pub output_b: &'a [u8],
+    pub output_b_dimensions: &'a [u64],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashAttentionExecution {
+    pub current_kv: Vec<f32>,
+    pub attention_output: Vec<f32>,
+    pub output_hc: Vec<f32>,
+}
+
+pub struct DeepseekV4FlashCompressorWeights<'a> {
+    pub kv: &'a [u8],
+    pub kv_dimensions: &'a [u64],
+    pub gate: &'a [u8],
+    pub gate_dimensions: &'a [u64],
+    pub ape: &'a [f32],
+    pub norm: &'a [f32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepseekV4FlashProjectionFormat {
+    F16,
+    Q8_0,
+}
+
+pub struct DeepseekV4FlashIndexerWeights<'a> {
+    pub query: &'a [u8],
+    pub query_dimensions: &'a [u64],
+    pub query_format: DeepseekV4FlashProjectionFormat,
+    pub head_weights: &'a [u8],
+    pub head_weight_dimensions: &'a [u64],
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn execute_deepseek_moe_through_simpler(
     topology: &SimTopology,
@@ -18255,6 +18306,350 @@ pub fn execute_deepseek_ffn_through_simpler(
         moe_output: moe.output,
         output_hc,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_dense_attention_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashAttentionWeights<'_>,
+    residual_hc: &[f32],
+    previous_kv_rows: &[f32],
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    num_heads: usize,
+    head_dim: usize,
+    rope_dim: usize,
+    output_groups: usize,
+    eps: f32,
+) -> Result<DeepseekV4FlashAttentionExecution, String> {
+    let hidden_size = weights.attention_norm.len();
+    let hc_size = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek attention HC size overflow".to_string())?;
+    let mix_size = hc_mult
+        .checked_mul(hc_mult.saturating_add(2))
+        .ok_or_else(|| "deepseek attention HC mix size overflow".to_string())?;
+    let q_size = num_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek attention Q size overflow".to_string())?;
+    if hidden_size == 0
+        || hc_mult == 0
+        || num_heads == 0
+        || head_dim == 0
+        || rope_dim > head_dim
+        || residual_hc.len() != hc_size
+        || previous_kv_rows.len() % head_dim != 0
+        || weights.hc_function_dimensions != [hc_size as u64, mix_size as u64]
+        || weights.q_a_dimensions.first().copied() != Some(hidden_size as u64)
+        || weights.q_b_dimensions.get(1).copied() != Some(q_size as u64)
+        || weights.kv_dimensions != [hidden_size as u64, head_dim as u64]
+        || weights.sinks.len() != num_heads
+    {
+        return Err(format!(
+            "deepseek dense attention shape mismatch:hidden={hidden_size}:hc={hc_mult}:heads={num_heads}:head_dim={head_dim}:residual={}:previous_kv={}",
+            residual_hc.len(), previous_kv_rows.len()
+        ));
+    }
+    let control_input =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_control_input_reference(
+            residual_hc,
+            hidden_size,
+            hc_mult,
+            eps,
+        )?;
+    let control = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("hc").join("host_fp32_gemm_manifest.json"),
+        weights.hc_function,
+        weights.hc_function_dimensions,
+        &control_input,
+    )?;
+    let split = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+        &control,
+        weights.hc_scale,
+        weights.hc_base,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+    )?;
+    let mixed_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+            residual_hc,
+            &split.pre,
+            hidden_size,
+        )?;
+    let normalized_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &mixed_hidden,
+            Some(weights.attention_norm),
+            eps,
+        )?;
+    let projection_manifest = |name: &str| {
+        artifact_dir
+            .join(name)
+            .join("host_q8_block_dot_manifest.json")
+    };
+    let mut q_a_task = task.clone();
+    q_a_task.task_id = task.task_id.saturating_add(1);
+    let q_a = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &q_a_task,
+        &projection_manifest("q-a"),
+        segment_base.saturating_add(100),
+        weights.q_a,
+        weights.q_a_dimensions,
+        &normalized_hidden,
+    )?;
+    let q_a = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+        &q_a,
+        Some(weights.q_a_norm),
+        eps,
+    )?;
+    let mut q_b_task = task.clone();
+    q_b_task.task_id = task.task_id.saturating_add(2);
+    let q = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &q_b_task,
+        &projection_manifest("q-b"),
+        segment_base.saturating_add(200),
+        weights.q_b,
+        weights.q_b_dimensions,
+        &q_a,
+    )?;
+    let mut q = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_head_rms_norm_reference(
+        &q, num_heads, head_dim, None, eps,
+    )?;
+    let mut kv_task = task.clone();
+    kv_task.task_id = task.task_id.saturating_add(3);
+    let kv = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &kv_task,
+        &projection_manifest("kv"),
+        segment_base.saturating_add(300),
+        weights.kv,
+        weights.kv_dimensions,
+        &normalized_hidden,
+    )?;
+    let mut current_kv =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &kv,
+            Some(weights.kv_norm),
+            eps,
+        )?;
+    q = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &q, num_heads, head_dim, rope_dim, rope_cos, rope_sin, false,
+    )?;
+    current_kv = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &current_kv,
+        1,
+        head_dim,
+        rope_dim,
+        rope_cos,
+        rope_sin,
+        false,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_fp8_kv_roundtrip_reference(
+        &mut current_kv,
+        rope_dim,
+    )?;
+    for value in &mut current_kv {
+        *value = f16_bits_to_f32(f32_to_f16_bits(*value));
+    }
+    let mut kv_rows = Vec::with_capacity(previous_kv_rows.len().saturating_add(head_dim));
+    kv_rows.extend_from_slice(previous_kv_rows);
+    kv_rows.extend_from_slice(&current_kv);
+    let mut heads =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_sink_attention_reference(
+            &q,
+            &kv_rows,
+            weights.sinks,
+            num_heads,
+            head_dim,
+        )?;
+    heads = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &heads, num_heads, head_dim, rope_dim, rope_cos, rope_sin, true,
+    )?;
+    let mut output_a_task = task.clone();
+    output_a_task.task_id = task.task_id.saturating_add(4);
+    let output_a = execute_deepseek_grouped_q8_projection_through_simpler(
+        topology,
+        &output_a_task,
+        &projection_manifest("output-a"),
+        segment_base.saturating_add(400),
+        weights.output_a,
+        weights.output_a_dimensions,
+        &heads,
+        output_groups,
+    )?;
+    let mut output_b_task = task.clone();
+    output_b_task.task_id = task.task_id.saturating_add(4 + output_groups as u64);
+    let attention_output = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &output_b_task,
+        &projection_manifest("output-b"),
+        segment_base.saturating_add(500),
+        weights.output_b,
+        weights.output_b_dimensions,
+        &output_a,
+    )?;
+    let output_hc = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+        &attention_output,
+        residual_hc,
+        &split.post,
+        &split.combine,
+    )?;
+    Ok(DeepseekV4FlashAttentionExecution {
+        current_kv,
+        attention_output,
+        output_hc,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_compressor_update_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    state: &mut sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashCompressorState,
+    weights: &DeepseekV4FlashCompressorWeights<'_>,
+    position: u32,
+    input: &[f32],
+    rope_dim: usize,
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+) -> Result<Option<Vec<f32>>, String> {
+    let width = state.width();
+    let [input_size, output_size] = weights.kv_dimensions else {
+        return Err(format!(
+            "deepseek compressor KV dimensions invalid:{:?}",
+            weights.kv_dimensions
+        ));
+    };
+    if weights.gate_dimensions != weights.kv_dimensions
+        || usize::try_from(*input_size).ok() != Some(input.len())
+        || usize::try_from(*output_size).ok() != Some(width)
+        || weights.ape.len() % width != 0
+        || weights.norm.len() != state.head_dim()
+    {
+        return Err(format!(
+            "deepseek compressor projection shape mismatch:kv={:?}:gate={:?}:input={}:width={width}:ape={}:norm={}",
+            weights.kv_dimensions,
+            weights.gate_dimensions,
+            input.len(),
+            weights.ape.len(),
+            weights.norm.len()
+        ));
+    }
+    let ratio = weights.ape.len() / width;
+    if !matches!(ratio, 4 | 128) {
+        return Err(format!("deepseek compressor APE ratio invalid:{ratio}"));
+    }
+    if ratio != state.compress_ratio() {
+        return Err(format!(
+            "deepseek compressor ratio mismatch:weights={ratio}:state={}",
+            state.compress_ratio()
+        ));
+    }
+    let manifest = artifact_dir.join("host_fp32_gemm_manifest.json");
+    let projected_kv = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &manifest,
+        weights.kv,
+        weights.kv_dimensions,
+        input,
+    )?;
+    let mut gate_task = task.clone();
+    gate_task.task_id = task.task_id.saturating_add(1);
+    let projected_gate = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        &gate_task,
+        &manifest,
+        weights.gate,
+        weights.gate_dimensions,
+        input,
+    )?;
+    let ape_row = position as usize % ratio;
+    state.update_projected(
+        position,
+        &projected_kv,
+        &projected_gate,
+        &weights.ape[ape_row * width..(ape_row + 1) * width],
+        weights.norm,
+        rope_dim,
+        rope_cos,
+        rope_sin,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_indexer_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashIndexerWeights<'_>,
+    normalized_query_lora: &[f32],
+    normalized_hidden: &[f32],
+    compressed_kv: &[f32],
+    rope_dim: usize,
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+    top_k: usize,
+) -> Result<Vec<usize>, String> {
+    let query_manifest = artifact_dir.join(match weights.query_format {
+        DeepseekV4FlashProjectionFormat::F16 => "query-f16/host_fp32_gemm_manifest.json",
+        DeepseekV4FlashProjectionFormat::Q8_0 => "query-q8/host_q8_block_dot_manifest.json",
+    });
+    let query = match weights.query_format {
+        DeepseekV4FlashProjectionFormat::F16 => execute_deepseek_f16_projection_through_simpler(
+            topology,
+            task,
+            &query_manifest,
+            weights.query,
+            weights.query_dimensions,
+            normalized_query_lora,
+        )?,
+        DeepseekV4FlashProjectionFormat::Q8_0 => execute_deepseek_q8_projection_through_simpler(
+            topology,
+            task,
+            &query_manifest,
+            segment_base,
+            weights.query,
+            weights.query_dimensions,
+            normalized_query_lora,
+        )?,
+    };
+    let mut query = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &query, num_heads, head_dim, rope_dim, rope_cos, rope_sin, false,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_indexer_qat_reference(&mut query)?;
+    let mut weight_task = task.clone();
+    weight_task.task_id = task.task_id.saturating_add(1);
+    let head_weights = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        &weight_task,
+        &artifact_dir.join("head-weights/host_fp32_gemm_manifest.json"),
+        weights.head_weights,
+        weights.head_weight_dimensions,
+        normalized_hidden,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_sparse_indexer_reference(
+        &query,
+        compressed_kv,
+        &head_weights,
+        num_heads,
+        head_dim,
+        top_k,
+    )
 }
 
 /// Execute one DeepSeek F16 matrix projection through the simulator's
@@ -27658,8 +28053,11 @@ mod tests {
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
         ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
         ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
+        execute_deepseek_compressor_update_through_simpler,
+        execute_deepseek_dense_attention_through_simpler,
         execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
         execute_deepseek_grouped_q8_projection_through_simpler,
+        execute_deepseek_indexer_through_simpler,
         execute_deepseek_iq2_xxs_expert_projection_through_simpler,
         execute_deepseek_moe_through_simpler,
         execute_deepseek_q2_k_expert_projection_through_simpler,
@@ -27744,15 +28142,17 @@ mod tests {
         resolve_qwen3_range_dispatch_operands, run_host_gemm, run_host_gemm_128,
         run_host_gemm_smoke, run_host_matmul_batched_smoke, run_host_matmul_smoke,
         run_host_quantized_gemm_smoke, run_qwen3_dense_reference_prefill_runtime,
-        validate_qwen3_range_dispatch_object_refs, write_u64_le_at, DeepseekV4FlashFfnWeights,
-        DeepseekV4FlashMoeWeights, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
-        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
-        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
-        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
-        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
-        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
-        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
-        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        validate_qwen3_range_dispatch_object_refs, write_u64_le_at,
+        DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights,
+        DeepseekV4FlashFfnWeights, DeepseekV4FlashIndexerWeights, DeepseekV4FlashMoeWeights,
+        DeepseekV4FlashProjectionFormat, GuestUapiSurface, KvCachePayloadLayout,
+        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
+        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
+        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
+        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView,
+        Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind,
+        Qwen3RangeDispatchOperands, Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand,
+        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
@@ -27799,7 +28199,8 @@ mod tests {
         deepseek_v4_flash_head_rms_norm_reference, deepseek_v4_flash_rms_norm_reference,
         deepseek_v4_flash_rope_tail_reference, deepseek_v4_flash_router_reference,
         deepseek_v4_flash_sink_attention_reference, deepseek_v4_flash_swiglu_reference,
-        DeepseekV4FlashDtype, DeepseekV4FlashGemmKind, DeepseekV4FlashGemmPlan,
+        DeepseekV4FlashCompressorState, DeepseekV4FlashDtype, DeepseekV4FlashGemmKind,
+        DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -31733,6 +32134,220 @@ mod tests {
                     deepseek_v4_flash_rms_norm_reference(&mixed, Some(&[1.0; DIM]), 1.0e-6)
                         .expect("compute FFN normalized reference");
                 assert_eq!(execution.normalized_hidden, expected_normalized);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_dense_attention_executes_projections_and_kv_reuse_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_dense_attention_executes_projections_and_kv_reuse_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const ROPE_DIM: usize = 64;
+                let residual_hc: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 31) - 15) as f32 / 11.0)
+                    .collect();
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let dimensions = [DIM as u64, DIM as u64];
+                let hc_dimensions = [DIM as u64, 3];
+                let execution = execute_deepseek_dense_attention_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 180,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-dense-attention-test-artifacts"),
+                    130_000,
+                    &DeepseekV4FlashAttentionWeights {
+                        hc_function: &vec![0u8; DIM * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        attention_norm: &[1.0; DIM],
+                        q_a: &q_a,
+                        q_a_dimensions: &dimensions,
+                        q_a_norm: &[1.0; DIM],
+                        q_b: &q_b,
+                        q_b_dimensions: &dimensions,
+                        kv: &kv,
+                        kv_dimensions: &dimensions,
+                        kv_norm: &[1.0; DIM],
+                        sinks: &[0.0],
+                        output_a: &output_a,
+                        output_a_dimensions: &dimensions,
+                        output_b: &output_b,
+                        output_b_dimensions: &dimensions,
+                    },
+                    &residual_hc,
+                    &vec![0.0; DIM],
+                    &[1.0; ROPE_DIM / 2],
+                    &[0.0; ROPE_DIM / 2],
+                    1,
+                    20,
+                    1,
+                    DIM,
+                    ROPE_DIM,
+                    1,
+                    1.0e-6,
+                )
+                .expect("execute dense attention through simpler");
+                assert_eq!(execution.current_kv.len(), DIM);
+                assert_eq!(execution.attention_output.len(), DIM);
+                assert_eq!(execution.output_hc.len(), DIM);
+                assert!(execution.current_kv.iter().all(|value| value.is_finite()));
+                assert!(execution
+                    .attention_output
+                    .iter()
+                    .all(|value| value.is_finite()));
+                assert!(execution
+                    .output_hc
+                    .iter()
+                    .zip(&residual_hc)
+                    .zip(&execution.attention_output)
+                    .all(|((actual, residual), attention)| {
+                        let expected = residual + attention;
+                        (actual - expected).abs() <= expected.abs().max(1.0) * 4.0e-6
+                    }));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio4_compressor_projects_each_token_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio4_compressor_projects_each_token_through_simpler",
+            || {
+                const INPUT: usize = 256;
+                const HEAD_DIM: usize = 128;
+                const WIDTH: usize = HEAD_DIM * 2;
+                const RATIO: usize = 4;
+                let dimensions = [INPUT as u64, WIDTH as u64];
+                let kv_weight = vec![0x00, 0x3c]
+                    .into_iter()
+                    .cycle()
+                    .take(INPUT * WIDTH * 2)
+                    .collect::<Vec<_>>();
+                let gate_weight = vec![0u8; INPUT * WIDTH * 2];
+                let input: Vec<f32> = (0..INPUT)
+                    .map(|index| ((index as i32 % 17) - 8) as f32 / 9.0)
+                    .collect();
+                let mut state =
+                    DeepseekV4FlashCompressorState::new(HEAD_DIM, RATIO).expect("ratio-4 state");
+                let weights = DeepseekV4FlashCompressorWeights {
+                    kv: &kv_weight,
+                    kv_dimensions: &dimensions,
+                    gate: &gate_weight,
+                    gate_dimensions: &dimensions,
+                    ape: &[0.0; RATIO * WIDTH],
+                    norm: &[1.0; HEAD_DIM],
+                };
+                for position in 0..RATIO {
+                    let task = TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 190 + (position as u64) * 2,
+                    };
+                    let output = execute_deepseek_compressor_update_through_simpler(
+                        &test_topology(),
+                        &task,
+                        &std::env::temp_dir()
+                            .join("simpler-deepseek-ratio4-compressor-test-artifacts"),
+                        &mut state,
+                        &weights,
+                        position as u32,
+                        &input,
+                        64,
+                        &[1.0; 32],
+                        &[0.0; 32],
+                    )
+                    .expect("execute ratio-4 compressor update through simpler");
+                    if position + 1 < RATIO {
+                        assert!(output.is_none());
+                    } else {
+                        let output = output.expect("emit ratio-4 boundary row");
+                        assert_eq!(output.len(), HEAD_DIM);
+                        assert!(output.iter().all(|value| value.is_finite()));
+                        assert!(output.iter().any(|value| *value != 0.0));
+                    }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio4_indexer_projects_and_selects_compressed_rows_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio4_indexer_projects_and_selects_compressed_rows_through_simpler",
+            || {
+                const INPUT: usize = 256;
+                const HEADS: usize = 2;
+                const HEAD_DIM: usize = 128;
+                let query_dimensions = [INPUT as u64, (HEADS * HEAD_DIM) as u64];
+                let head_weight_dimensions = [INPUT as u64, HEADS as u64];
+                let one = [0x00u8, 0x3c];
+                let query_weight = one
+                    .into_iter()
+                    .cycle()
+                    .take(INPUT * HEADS * HEAD_DIM * 2)
+                    .collect::<Vec<_>>();
+                let head_weight = one
+                    .into_iter()
+                    .cycle()
+                    .take(INPUT * HEADS * 2)
+                    .collect::<Vec<_>>();
+                let input = vec![1.0f32; INPUT];
+                let compressed_kv: Vec<f32> = (0..4)
+                    .flat_map(|row| std::iter::repeat_n((row + 1) as f32, HEAD_DIM))
+                    .collect();
+                let selected = execute_deepseek_indexer_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 200,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-ratio4-indexer-test-artifacts"),
+                    140_000,
+                    &DeepseekV4FlashIndexerWeights {
+                        query: &query_weight,
+                        query_dimensions: &query_dimensions,
+                        query_format: DeepseekV4FlashProjectionFormat::F16,
+                        head_weights: &head_weight,
+                        head_weight_dimensions: &head_weight_dimensions,
+                    },
+                    &input,
+                    &input,
+                    &compressed_kv,
+                    64,
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    HEADS,
+                    HEAD_DIM,
+                    2,
+                )
+                .expect("execute ratio-4 indexer through simpler");
+                assert_eq!(selected, vec![3, 2]);
             },
         );
     }
