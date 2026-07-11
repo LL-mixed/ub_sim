@@ -28077,6 +28077,7 @@ mod tests {
         execute_deepseek_q2_k_expert_projection_through_simpler,
         execute_deepseek_q8_projection_through_simpler,
         execute_deepseek_ratio128_attention_through_simpler,
+        execute_deepseek_ratio128_layer_through_simpler,
         execute_deepseek_ratio4_attention_through_simpler,
         execute_deepseek_routed_expert_through_simpler,
         execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
@@ -28162,15 +28163,16 @@ mod tests {
         DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights,
         DeepseekV4FlashFfnWeights, DeepseekV4FlashIndexerWeights, DeepseekV4FlashMoeWeights,
         DeepseekV4FlashProjectionFormat, DeepseekV4FlashRatio128AttentionState,
-        DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio4AttentionState,
-        DeepseekV4FlashRatio4AttentionWeights, GuestUapiSurface, KvCachePayloadLayout,
-        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
-        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
-        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView,
-        Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind,
-        Qwen3RangeDispatchOperands, Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerWeights,
+        DeepseekV4FlashRatio4AttentionState, DeepseekV4FlashRatio4AttentionWeights,
+        GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
+        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
+        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
+        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
+        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
+        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
+        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
+        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
@@ -32623,6 +32625,176 @@ mod tests {
                 assert_eq!(state.raw_rows(), 1);
                 assert_eq!(state.compressed_rows(), 0);
                 assert!(execution.output_hc.iter().all(|value| value.is_finite()));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio128_complete_layer_executes_attention_and_ffn() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio128_complete_layer_executes_attention_and_ffn",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 6;
+                const SELECTED: [usize; 6] = [0, 1, 2, 3, 4, 5];
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let f16_weight = |k: usize, n: usize, bits: u16| {
+                    bits.to_le_bytes()
+                        .into_iter()
+                        .cycle()
+                        .take(k * n * 2)
+                        .collect::<Vec<_>>()
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let shared_gate = q8_weight(11);
+                let shared_up = q8_weight(13);
+                let shared_down = q8_weight(15);
+                let matrix_dimensions = [DIM as u64, DIM as u64];
+                let hc_dimensions = [DIM as u64, 3];
+                let compressor_dimensions = [DIM as u64, DIM as u64];
+                let compressor_kv = f16_weight(DIM, DIM, 0x3000);
+                let compressor_gate = f16_weight(DIM, DIM, 0x0000);
+                let router_dimensions = [DIM as u64, EXPERTS as u64];
+                let router = vec![0u8; DIM * EXPERTS * 2];
+                let routed_dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let mut routed_gate_up = Vec::with_capacity(EXPERTS * DIM * 66);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        routed_gate_up.extend_from_slice(&0x3400u16.to_le_bytes());
+                        for group in 0..8 {
+                            routed_gate_up
+                                .extend((0..4).map(|pair| (row * 3 + group * 7 + pair) as u8));
+                            let sign_and_scale =
+                                (((row + group) % 16) as u32) << 28 | ((row + group) % 128) as u32;
+                            routed_gate_up.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let mut routed_down = Vec::with_capacity(EXPERTS * DIM * 84);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        routed_down.extend((0..16).map(|group| {
+                            (((row + group) % 4 + 1) as u8) | ((((row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        routed_down.extend((0..64).map(|index| (row * 5 + index * 3) as u8));
+                        routed_down.extend_from_slice(&0x3400u16.to_le_bytes());
+                        routed_down.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let residual_hc: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 43) - 21) as f32 / 13.0)
+                    .collect();
+                let weights = DeepseekV4FlashRatio128LayerWeights {
+                    attention: DeepseekV4FlashRatio128AttentionWeights {
+                        attention: DeepseekV4FlashAttentionWeights {
+                            hc_function: &vec![0u8; DIM * 3 * 2],
+                            hc_function_dimensions: &hc_dimensions,
+                            hc_scale: &[1.0; 3],
+                            hc_base: &[0.0; 3],
+                            attention_norm: &[1.0; DIM],
+                            q_a: &q_a,
+                            q_a_dimensions: &matrix_dimensions,
+                            q_a_norm: &[1.0; DIM],
+                            q_b: &q_b,
+                            q_b_dimensions: &matrix_dimensions,
+                            kv: &kv,
+                            kv_dimensions: &matrix_dimensions,
+                            kv_norm: &[1.0; DIM],
+                            sinks: &[0.0],
+                            output_a: &output_a,
+                            output_a_dimensions: &matrix_dimensions,
+                            output_b: &output_b,
+                            output_b_dimensions: &matrix_dimensions,
+                        },
+                        attention_compressor: DeepseekV4FlashCompressorWeights {
+                            kv: &compressor_kv,
+                            kv_dimensions: &compressor_dimensions,
+                            gate: &compressor_gate,
+                            gate_dimensions: &compressor_dimensions,
+                            ape: &[0.0; 128 * DIM],
+                            norm: &[1.0; DIM],
+                        },
+                    },
+                    ffn: DeepseekV4FlashFfnWeights {
+                        hc_function: &vec![0u8; DIM * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        ffn_norm: &[1.0; DIM],
+                        moe: DeepseekV4FlashMoeWeights {
+                            router: &router,
+                            router_dimensions: &router_dimensions,
+                            routed_gate: &routed_gate_up,
+                            routed_gate_dimensions: &routed_dimensions,
+                            routed_up: &routed_gate_up,
+                            routed_up_dimensions: &routed_dimensions,
+                            routed_down: &routed_down,
+                            routed_down_dimensions: &routed_dimensions,
+                            shared_gate: &shared_gate,
+                            shared_gate_dimensions: &matrix_dimensions,
+                            shared_up: &shared_up,
+                            shared_up_dimensions: &matrix_dimensions,
+                            shared_down: &shared_down,
+                            shared_down_dimensions: &matrix_dimensions,
+                        },
+                    },
+                };
+                let mut state = DeepseekV4FlashRatio128AttentionState::new(DIM, 3, 4)
+                    .expect("create complete layer state");
+                let execution = execute_deepseek_ratio128_layer_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 420,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-complete-layer-test-artifacts"),
+                    220_000,
+                    &mut state,
+                    &weights,
+                    &residual_hc,
+                    0,
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    None,
+                    Some(&SELECTED),
+                    1,
+                    20,
+                    1,
+                    DIM,
+                    64,
+                    1,
+                    1.0e-6,
+                    10.0,
+                )
+                .expect("execute complete ratio-128 layer");
+                assert_eq!(execution.attention.output_hc.len(), DIM);
+                assert_eq!(execution.ffn.router.expert_indices, SELECTED);
+                assert_eq!(execution.ffn.output_hc.len(), DIM);
+                assert!(execution
+                    .ffn
+                    .output_hc
+                    .iter()
+                    .all(|value| value.is_finite()));
+                assert_ne!(execution.ffn.output_hc, execution.attention.output_hc);
             },
         );
     }
