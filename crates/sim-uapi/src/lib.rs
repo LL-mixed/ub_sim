@@ -53,10 +53,12 @@ use sim_core::{
 };
 use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
-use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
+use sim_models::deepseek_v4_flash_adapter::{
+    ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig, Ds4TokenCandidate,
+};
 use sim_models::deepseek_v4_flash_gguf::{
     lower_f16_matrix_to_f32_kxn_padded, lower_iq2_xxs_expert_for_block_dot,
-    lower_q2_k_expert_for_block_dot, q8_0_weight_block_kxn, quantize_q8_0_activation,
+    lower_q2_k_expert_for_block_dot, q8_0_weight_block_kxn, quantize_q8_0_activation, GgufCatalog,
 };
 use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashGemmPlan;
 use sim_models::engram_context::{
@@ -1647,7 +1649,10 @@ impl LocalGuestUapiSurface {
         let mut writeback_ms = 0u128;
         let deepseek_v4_flash = matches!(
             std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE").as_deref(),
-            Ok("deepseek-v4-flash") | Ok("deepseek_v4_flash")
+            Ok("deepseek-v4-flash")
+                | Ok("deepseek_v4_flash")
+                | Ok("deepseek-v4-flash-simpler")
+                | Ok("deepseek_v4_flash_simpler")
         );
         let result = (|| {
             let started = Instant::now();
@@ -1795,7 +1800,11 @@ fn run_w4_chipbackend(
         }
         "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, None),
         "host_matmul" => run_host_matmul_smoke(topology, task),
-        "deepseek-v4-flash" | "deepseek_v4_flash" | "deepseek-v4-flash-geometry-smoke" => {
+        "deepseek-v4-flash"
+        | "deepseek_v4_flash"
+        | "deepseek-v4-flash-simpler"
+        | "deepseek_v4_flash_simpler"
+        | "deepseek-v4-flash-geometry-smoke" => {
             run_deepseek_v4_flash_chipbackend(topology, task, guest_input)
         }
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
@@ -1847,6 +1856,9 @@ fn run_qwen3_range_chipbackend(
         }
         "deepseek-v4-flash" | "deepseek_v4_flash" => {
             run_deepseek_v4_flash_real_range_runtime(topology, task, guest_input, operands)
+        }
+        "deepseek-v4-flash-simpler" | "deepseek_v4_flash_simpler" => {
+            run_deepseek_v4_flash_simpler_range_runtime(topology, task, guest_input, operands)
         }
         "deepseek-v4-flash-geometry-smoke" => run_deepseek_v4_flash_geometry_smoke_range_runtime(
             topology,
@@ -5498,7 +5510,10 @@ fn qwen3_guest_range_compute_contract(
     let active_profile = std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE")
         .unwrap_or_else(|_| "host_vector".to_string());
     let geometry_valid = match active_profile.as_str() {
-        "deepseek-v4-flash" | "deepseek_v4_flash" => {
+        "deepseek-v4-flash"
+        | "deepseek_v4_flash"
+        | "deepseek-v4-flash-simpler"
+        | "deepseek_v4_flash_simpler" => {
             const DS4_HIDDEN_F32_VALUES: u64 = 16_384;
             const MAX_REAL_PROMPT_TOKENS: u64 = 32;
 
@@ -6040,6 +6055,29 @@ fn run_qwen3_dense_profile_runtime(
 
 const DS4_FLASH_HIDDEN_F32_VALUES: usize = 16_384;
 
+#[derive(Clone, Copy)]
+enum DeepseekRangeEngine {
+    Ds4,
+    Simpler,
+}
+
+struct DeepseekRangeEngineOutput {
+    hidden: Vec<f32>,
+    kv_payload: Vec<u8>,
+    logits: Vec<f32>,
+    candidates: Vec<Ds4TokenCandidate>,
+    selected_text: Option<String>,
+}
+
+impl DeepseekRangeEngine {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ds4 => "ds4",
+            Self::Simpler => "simpler",
+        }
+    }
+}
+
 fn deepseek_v4_flash_f32_payload(values: &[f32]) -> Vec<u8> {
     values
         .iter()
@@ -6093,11 +6131,66 @@ fn deepseek_v4_flash_runtime_paths() -> Result<(PathBuf, PathBuf, PathBuf), Stri
     Ok((runtime_dir, library_path, model_path))
 }
 
+fn deepseek_v4_flash_gguf_path() -> Result<PathBuf, String> {
+    let mut search_roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        search_roots.extend(current_exe.ancestors().map(Path::to_path_buf));
+    }
+    search_roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    search_roots
+        .into_iter()
+        .flat_map(|root| {
+            let ds4 = root.join("../ds4");
+            [
+                ds4.join("ds4flash.gguf"),
+                ds4.join(
+                    "gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+                ),
+            ]
+        })
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| "deepseek_v4_flash_sibling_gguf_not_found".to_string())
+}
+
 fn run_deepseek_v4_flash_real_range_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
     operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    run_deepseek_v4_flash_range_runtime_with_engine(
+        topology,
+        task,
+        guest_input,
+        operands,
+        DeepseekRangeEngine::Ds4,
+    )
+}
+
+fn run_deepseek_v4_flash_simpler_range_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    run_deepseek_v4_flash_range_runtime_with_engine(
+        topology,
+        task,
+        guest_input,
+        operands,
+        DeepseekRangeEngine::Simpler,
+    )
+}
+
+fn run_deepseek_v4_flash_range_runtime_with_engine(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+    engine: DeepseekRangeEngine,
 ) -> Result<Vec<u8>, String> {
     let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
     if topology.ubpus.is_empty() {
@@ -6175,23 +6268,94 @@ fn run_deepseek_v4_flash_real_range_runtime(
         }
         Some(deepseek_v4_flash_f32_values(payload)?)
     };
-    let (runtime_dir, library_path, model_path) = deepseek_v4_flash_runtime_paths()?;
     let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
-    let slice = ds4_eval_layer_slice_in_memory(&Ds4SliceMemoryConfig {
-        library_path,
-        runtime_dir,
-        model_path,
-        context: 1024,
-        layer_start: contract.layer_start,
-        layer_end: contract.layer_end,
-        position,
-        token_ids,
-        input_hidden,
-        previous_token_ids,
-        previous_kv,
-        output_logits: terminal_owner,
-    })?;
-    let output_tensor_payload = deepseek_v4_flash_f32_payload(&slice.hidden);
+    let engine_output = match engine {
+        DeepseekRangeEngine::Ds4 => {
+            let (runtime_dir, library_path, model_path) = deepseek_v4_flash_runtime_paths()?;
+            let slice = ds4_eval_layer_slice_in_memory(&Ds4SliceMemoryConfig {
+                library_path,
+                runtime_dir,
+                model_path,
+                context: 1024,
+                layer_start: contract.layer_start,
+                layer_end: contract.layer_end,
+                position,
+                token_ids,
+                input_hidden,
+                previous_token_ids,
+                previous_kv,
+                output_logits: terminal_owner,
+            })?;
+            let selected_text = slice
+                .report
+                .selected_token
+                .as_ref()
+                .map(|candidate| candidate.text.clone());
+            DeepseekRangeEngineOutput {
+                hidden: slice.hidden,
+                kv_payload: slice.kv_payload,
+                logits: slice.logits,
+                candidates: slice.report.candidates,
+                selected_text,
+            }
+        }
+        DeepseekRangeEngine::Simpler => {
+            let model_path = deepseek_v4_flash_gguf_path()?;
+            let catalog = GgufCatalog::open(&model_path)?;
+            catalog.validate_deepseek_v4_flash()?;
+            let mut state = DeepseekV4FlashModelState::new()?;
+            if let Some(payload) = previous_kv.as_deref() {
+                state.restore_range_state(
+                    u64::from(contract.layer_start),
+                    u64::from(contract.layer_end),
+                    payload,
+                )?;
+            }
+            let token_ids = token_ids
+                .into_iter()
+                .map(|token| {
+                    usize::try_from(token)
+                        .map_err(|_| format!("deepseek_v4_flash_token_invalid:{token}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let artifact_dir = std::env::temp_dir().join("ub-sim-deepseek-v4-flash-simpler");
+            let segment_base = 1_000_000_000u64
+                .saturating_add(u64::from(contract.node).saturating_mul(100_000_000))
+                .saturating_add(decode_step.saturating_mul(20_000_000));
+            let execution = execute_deepseek_gguf_sequence_range_through_simpler(
+                topology,
+                task,
+                &artifact_dir,
+                segment_base,
+                &catalog,
+                &mut state,
+                u64::from(contract.layer_start),
+                u64::from(contract.layer_end),
+                &token_ids,
+                position,
+                input_hidden.as_deref(),
+                terminal_owner,
+            )?;
+            let kv_payload = state.encode_range_state(
+                u64::from(contract.layer_start),
+                u64::from(contract.layer_end),
+            )?;
+            let logits = execution.logits.unwrap_or_default();
+            let candidates = if terminal_owner {
+                deepseek_v4_flash_candidates_from_logits(&logits)?
+            } else {
+                Vec::new()
+            };
+            DeepseekRangeEngineOutput {
+                hidden: execution.hidden_hc,
+                kv_payload,
+                logits,
+                candidates,
+                selected_text: None,
+            }
+        }
+    };
+    let output_tensor_payload = deepseek_v4_flash_f32_payload(&engine_output.hidden);
     if output_tensor_payload.len() != expected_hidden_len {
         return Err(format!(
             "deepseek_v4_flash_hidden_output_size_mismatch:actual={}:expected={expected_hidden_len}",
@@ -6211,7 +6375,7 @@ fn run_deepseek_v4_flash_real_range_runtime(
     };
     let output_tensor_checksum =
         qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
-    let kv_state_payload = slice.kv_payload;
+    let kv_state_payload = engine_output.kv_payload;
     let kv_state_bytes = kv_state_payload.len() as u64;
     let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
     let layer_count = u64::from(contract.layer_end - contract.layer_start);
@@ -6260,8 +6424,8 @@ fn run_deepseek_v4_flash_real_range_runtime(
     };
     let logits_descriptors = if terminal_owner {
         vec![deepseek_v4_flash_real_logits_descriptor(
-            &slice.logits,
-            &slice.report.candidates,
+            &engine_output.logits,
+            &engine_output.candidates,
             decode_step,
             range_layer_checksum,
             output_tensor_checksum,
@@ -6311,18 +6475,17 @@ fn run_deepseek_v4_flash_real_range_runtime(
         &[],
         Some(&range_forward_summary),
     )?;
-    if let (Some(descriptor), Some(candidate)) = (
+    if let (Some(descriptor), Some(text)) = (
         logits_descriptors.first(),
-        slice.report.selected_token.as_ref(),
+        engine_output.selected_text.as_deref(),
     ) {
-        deepseek_v4_flash_patch_real_text_output(
-            &mut output,
-            descriptor,
-            candidate.text.as_bytes(),
-        )?;
+        if !text.is_empty() {
+            deepseek_v4_flash_patch_real_text_output(&mut output, descriptor, text.as_bytes())?;
+        }
     }
     eprintln!(
-        "deepseek-v4-flash-real-range-runtime: node={} nodes={} layers=[{},{}) terminal_owner={} step={} tokens={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
+        "deepseek-v4-flash-real-range-runtime: engine={} node={} nodes={} layers=[{},{}) terminal_owner={} step={} tokens={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
+        engine.name(),
         contract.node,
         contract.pipeline_nodes,
         contract.layer_start,
@@ -6335,7 +6498,7 @@ fn run_deepseek_v4_flash_real_range_runtime(
         input_checksum,
         output_tensor_checksum,
         logits_descriptors.first().map(|value| value.sampled_token).unwrap_or(0),
-        slice.report.selected_token.as_ref().map(|value| value.text.as_str()).unwrap_or("none"),
+        engine_output.selected_text.as_deref().unwrap_or("unmapped"),
     );
     Ok(output)
 }
@@ -6609,9 +6772,52 @@ fn deepseek_v4_flash_patch_real_text_output(
     Ok(())
 }
 
+fn deepseek_v4_flash_candidates_from_logits(
+    logits: &[f32],
+) -> Result<Vec<Ds4TokenCandidate>, String> {
+    let expected = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize;
+    if logits.len() != expected {
+        return Err(format!(
+            "deepseek_v4_flash_logits_size_mismatch:actual={}:expected={expected}",
+            logits.len()
+        ));
+    }
+    let mut top = Vec::<(usize, f32)>::with_capacity(4);
+    for (token, logit) in logits.iter().copied().enumerate() {
+        if !logit.is_finite() {
+            return Err(format!(
+                "deepseek_v4_flash_logit_not_finite:token={token}:value={logit}"
+            ));
+        }
+        let insertion = top
+            .iter()
+            .position(|(existing_token, existing_logit)| {
+                logit > *existing_logit || (logit == *existing_logit && token < *existing_token)
+            })
+            .unwrap_or(top.len());
+        if insertion < 4 {
+            top.insert(insertion, (token, logit));
+            top.truncate(4);
+        } else if top.len() < 4 {
+            top.push((token, logit));
+        }
+    }
+    top.into_iter()
+        .map(|(token, logit)| {
+            Ok(Ds4TokenCandidate {
+                id: i32::try_from(token)
+                    .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
+                text: String::new(),
+                logit,
+                logprob: 0.0,
+            })
+        })
+        .collect()
+}
+
 fn deepseek_v4_flash_real_logits_descriptor(
     logits: &[f32],
-    candidates: &[sim_models::deepseek_v4_flash_adapter::Ds4TokenCandidate],
+    candidates: &[Ds4TokenCandidate],
     decode_step: u64,
     range_layer_checksum: u64,
     output_tensor_checksum: u64,
@@ -34256,6 +34462,105 @@ mod tests {
                         }
                     },
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_simpler_profile_accepts_real_range_geometry() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-simpler",
+            || {
+                let contract = crate::qwen3_guest_range_compute_contract(&TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 22, 43, 0, 2, 43, 16_384 * 4],
+                    },
+                    scope_depth: 8,
+                    task_id: 43_102,
+                })
+                .expect("valid simpler profile range")
+                .expect("range contract");
+                assert_eq!(contract.layer_start, 22);
+                assert_eq!(contract.layer_end, 43);
+                assert_eq!(contract.pipeline_nodes, 2);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_candidates_select_top_four_deterministically() {
+        let mut logits =
+            vec![0.0; deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize];
+        logits[11] = 4.0;
+        logits[7] = 5.0;
+        logits[19] = 3.0;
+        logits[3] = 5.0;
+        let candidates =
+            crate::deepseek_v4_flash_candidates_from_logits(&logits).expect("finite logits");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
+            vec![3, 7, 11, 19]
+        );
+        assert!(candidates.iter().all(|candidate| candidate.text.is_empty()));
+
+        logits[21] = f32::NAN;
+        let error = crate::deepseek_v4_flash_candidates_from_logits(&logits)
+            .expect_err("non-finite logits must fail closed");
+        assert!(error.contains("deepseek_v4_flash_logit_not_finite:token=21"));
+    }
+
+    #[test]
+    #[ignore = "requires the sibling ds4 GGUF and native simpler runtime"]
+    fn deepseek_v4_flash_simpler_w5_first_range_exports_hidden_and_kv() {
+        if crate::deepseek_v4_flash_gguf_path().is_err() {
+            return;
+        }
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+        const HIDDEN_BYTES: usize = 16_384 * 4;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-simpler",
+            || {
+                let topology = test_topology();
+                let mut guest_input =
+                    crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &[128_822]);
+                guest_input.resize(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                    0,
+                );
+                let output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 0, 0, 6, 1, 8, 43, HIDDEN_BYTES as u32],
+                        },
+                        scope_depth: 8,
+                        task_id: 43_200,
+                    },
+                    &guest_input,
+                    None,
+                )
+                .expect("simpler W5 first range");
+                let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                    .expect("range-forward table marker");
+                let entry_base = range_table + 64;
+                assert_eq!(
+                    read_u64_le_at(&output, entry_base + 112),
+                    HIDDEN_BYTES as u64
+                );
+                assert_eq!(
+                    read_u64_le_at(&output, entry_base + 120),
+                    HIDDEN_BYTES as u64
+                );
+                assert!(read_u64_le_at(&output, entry_base + 128) > 0);
             },
         );
     }

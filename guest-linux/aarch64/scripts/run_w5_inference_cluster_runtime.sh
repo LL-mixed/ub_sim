@@ -45,11 +45,17 @@ case "$SIM_UAPI_W5_PROFILE" in
       echo "DeepSeek V4 Flash model is missing: $deepseek_runtime_dir/ds4flash.gguf" >&2
       exit 2
     fi
-    cargo run --manifest-path "$REPO_DIR/Cargo.toml" --release \
-      -p sim-models --bin deepseek_v4_flash_adapter -- \
-      build-library \
-      --ds4-dir "$deepseek_runtime_dir" \
-      --output "$deepseek_runtime_dir/build/libds4_w5.dylib"
+    case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+      deepseek-v4-flash|deepseek_v4_flash)
+        cargo run --manifest-path "$REPO_DIR/Cargo.toml" --release \
+          -p sim-models --bin deepseek_v4_flash_adapter -- \
+          build-library \
+          --ds4-dir "$deepseek_runtime_dir" \
+          --output "$deepseek_runtime_dir/build/libds4_w5.dylib"
+        ;;
+      deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+        ;;
+    esac
     ;;
   *)
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"

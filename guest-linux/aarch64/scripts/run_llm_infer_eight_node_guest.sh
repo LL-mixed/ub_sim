@@ -347,7 +347,10 @@ is_qwen3_dense_profile() {
 
 is_deepseek_v4_flash_profile() {
   local profile="$1"
-  [[ "$profile" == "deepseek-v4-flash" || "$profile" == "deepseek_v4_flash" ]]
+  [[ "$profile" == "deepseek-v4-flash" ||
+     "$profile" == "deepseek_v4_flash" ||
+     "$profile" == "deepseek-v4-flash-simpler" ||
+     "$profile" == "deepseek_v4_flash_simpler" ]]
 }
 
 is_model_range_profile() {
@@ -372,8 +375,7 @@ validate_w5_profile_runtime() {
       fi
       ;;
     deepseek_v4_flash_decode)
-      if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "deepseek-v4-flash" &&
-            "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "deepseek_v4_flash" ]]; then
+      if ! is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
         trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires DeepSeek V4 Flash backend, got SIM_UAPI_W4_CHIPBACKEND_PROFILE=$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
         return 1
       fi

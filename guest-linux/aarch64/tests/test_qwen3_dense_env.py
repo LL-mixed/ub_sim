@@ -948,7 +948,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("deepseek-v4-flash", runner_text)
         self.assertIn("deepseek_v4_flash_decode)", legacy_runner_text)
         self.assertIn("echo deepseek-v4-flash", legacy_runner_text)
-        self.assertIn('SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "deepseek-v4-flash"', legacy_runner_text)
+        self.assertIn("deepseek-v4-flash-simpler", legacy_runner_text)
+        self.assertIn(
+            'is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"',
+            legacy_runner_text,
+        )
+        self.assertIn("deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)", runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
         self.assertIn("--no-memory-reuse", config_runner_text)
