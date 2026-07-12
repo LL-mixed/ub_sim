@@ -232,9 +232,9 @@ a Qwen3 adapter inspect build:
 - `mem_service_qwen3_engram_wait_flow.c` contains Qwen3 engram candidate,
   selected-token, history, and state wait helpers compiled as a standalone
   model data-flow translation unit.
-- `mem_service_qwen3_decode_barrier.c` contains Qwen3 decode-round publish
-  and all-node wait barrier helpers compiled as a standalone model data-flow
-  translation unit.
+- `mem_service_qwen3_decode_barrier.c` contains model-range decode-round
+  publish and active-topology all-node wait helpers. The filename remains for
+  build compatibility, but its public API and behavior are model-neutral.
 - `mem_service_keys.c` contains device-independent key construction helpers
   compiled as a standalone core translation unit for guest and host service
   deployments.

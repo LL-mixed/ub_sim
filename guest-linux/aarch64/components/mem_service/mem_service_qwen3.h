@@ -179,15 +179,5 @@ int mem_service_obmm_service_v0_wait_engram_state(struct mem_service *svc,
                                                   uint64_t no_repeat_ngram_size,
                                                   uint64_t repetition_penalty_milli,
                                                   uint64_t *state_checksum_out);
-int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *svc,
-                                                          uint32_t local_node,
-                                                          uint32_t cluster_node_count,
-                                                          uint64_t decode_step,
-                                                          uint64_t round_scope_hash);
-int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *svc,
-                                                           uint32_t cluster_node_count,
-                                                           uint64_t decode_step,
-                                                           uint64_t round_scope_hash,
-                                                           uint64_t timeout_ms);
 
 #endif

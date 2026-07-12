@@ -202,6 +202,21 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         )
         self.assertIn("rcu_preempt|RCU grace-period", runner)
 
+    def test_multistep_flash_uses_topology_neutral_decode_round_barrier(self):
+        infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
+        barrier_source = (
+            SERVICE_DIR / "mem_service_qwen3_decode_barrier.c"
+        ).read_text()
+
+        self.assertIn("guest_decode_steps > 1U", infer_source)
+        self.assertIn("mem_service_publish_decode_round_done", infer_source)
+        self.assertIn("mem_service_wait_all_decode_round_done", infer_source)
+        self.assertNotIn("cluster_node_count == 8U &&\n                mem_service_wait", infer_source)
+        self.assertIn(
+            "cluster_node_count != (uint32_t)rt->node_count", barrier_source
+        )
+        self.assertNotIn("mem_service_qwen3_range_nodes()", barrier_source)
+
     def test_flash_artifact_gate_does_not_require_qwen_stores(self):
         runner = EIGHT_NODE_RUNNER.read_text()
         function_start = runner.index("validate_w5_artifact_sizes()")

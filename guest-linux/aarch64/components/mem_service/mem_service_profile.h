@@ -103,6 +103,16 @@ int mem_service_range_flow_wait_terminal_token(
     uint64_t decode_step,
     uint64_t timeout_ms,
     uint64_t *sampled_token_out);
+int mem_service_publish_decode_round_done(struct mem_service *svc,
+                                          uint32_t local_node,
+                                          uint32_t cluster_node_count,
+                                          uint64_t decode_step,
+                                          uint64_t round_scope_hash);
+int mem_service_wait_all_decode_round_done(struct mem_service *svc,
+                                           uint32_t cluster_node_count,
+                                           uint64_t decode_step,
+                                           uint64_t round_scope_hash,
+                                           uint64_t timeout_ms);
 int mem_service_range_flow_try_resolve_kv_state_view(
     struct mem_service *svc,
     const struct mem_service_obmm_range_flow_request *request,

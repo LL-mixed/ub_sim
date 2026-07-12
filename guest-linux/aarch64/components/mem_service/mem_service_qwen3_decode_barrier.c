@@ -6,11 +6,11 @@
 #include "mem_service_qwen3.h"
 #include "mem_service_qwen3_runtime.h"
 
-int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *svc,
-                                                    uint32_t local_node,
-                                                    uint32_t cluster_node_count,
-                                                    uint64_t decode_step,
-                                                    uint64_t round_scope_hash)
+int mem_service_publish_decode_round_done(struct mem_service *svc,
+                                          uint32_t local_node,
+                                          uint32_t cluster_node_count,
+                                          uint64_t decode_step,
+                                          uint64_t round_scope_hash)
 {
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     struct mem_service_cluster_slot *local_slot;
@@ -20,9 +20,12 @@ int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *sv
     uint64_t slot_offset;
     uint8_t *base;
 
-    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
+    if (!svc || cluster_node_count == 0U || cluster_node_count > 31U ||
         local_node >= cluster_node_count ||
         mem_service_cluster_runtime_require(rt) != 0) {
+        return -1;
+    }
+    if (cluster_node_count != (uint32_t)rt->node_count) {
         return -1;
     }
     local_slot = &rt->slots[rt->local_idx];
@@ -57,7 +60,7 @@ int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *sv
         return -1;
     }
     (void)msync(base + slot_offset, MEM_SERVICE_OBMM_QWEN3_ROUND_DONE_BYTES, MS_SYNC);
-    printf("[mem_service] stage qwen3_decode_round_done_publish local=node%u step=%" PRIu64
+    printf("[mem_service] stage decode_round_done_publish local=node%u step=%" PRIu64
            " offset=0x%016" PRIx64 " slot=%" PRIu64
            " bytes=%" PRIu64 " scope_hash=0x%016" PRIx64
            " checksum=0x%016" PRIx64
@@ -73,11 +76,11 @@ int mem_service_obmm_service_v0_publish_decode_round_done(struct mem_service *sv
     return 0;
 }
 
-int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *svc,
-                                                     uint32_t cluster_node_count,
-                                                     uint64_t decode_step,
-                                                     uint64_t round_scope_hash,
-                                                     uint64_t timeout_ms)
+int mem_service_wait_all_decode_round_done(struct mem_service *svc,
+                                           uint32_t cluster_node_count,
+                                           uint64_t decode_step,
+                                           uint64_t round_scope_hash,
+                                           uint64_t timeout_ms)
 {
     struct mem_service_cluster_runtime *rt = mem_service_cluster_runtime_current();
     long deadline;
@@ -86,8 +89,11 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
     uint64_t slot_index;
     uint64_t slot_offset;
 
-    if (!svc || cluster_node_count != mem_service_qwen3_range_nodes() ||
+    if (!svc || cluster_node_count == 0U || cluster_node_count > 31U ||
         mem_service_cluster_runtime_require(rt) != 0) {
+        return -1;
+    }
+    if (cluster_node_count != (uint32_t)rt->node_count) {
         return -1;
     }
     slot_index = (decode_step ^
@@ -128,7 +134,7 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
             }
         }
         if (ready_mask == expected_mask) {
-            printf("[mem_service] stage qwen3_decode_round_barrier step=%" PRIu64
+            printf("[mem_service] stage decode_round_barrier step=%" PRIu64
                    " nodes=%u ready_mask=0x%02x slot=%" PRIu64
                    " scope_hash=0x%016" PRIx64 " status=ok\n",
                    decode_step,
@@ -140,7 +146,7 @@ int mem_service_obmm_service_v0_wait_all_decode_round_done(struct mem_service *s
         }
         usleep(10000);
     }
-    printf("[mem_service] gap qwen3_decode_round_barrier=timeout step=%" PRIu64
+    printf("[mem_service] gap decode_round_barrier=timeout step=%" PRIu64
            " nodes=%u ready_mask=0x%02x expected_mask=0x%02x"
            " slot=%" PRIu64 " scope_hash=0x%016" PRIx64 "\n",
            decode_step,

@@ -10000,7 +10000,9 @@ int main(int argc, char **argv)
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
                                                     W4_DEFAULT_TIMEOUT_MS);
     decode_round_barrier_enabled =
-        env_bool_is_one("SIM_QWEN3_DECODE_ROUND_BARRIER");
+        env_bool_is_one("SIM_QWEN3_DECODE_ROUND_BARRIER") ||
+        (guest_decode_steps > 1U && enable_db_cluster &&
+         (is_qwen3_profile() || is_deepseek_v4_flash_profile()));
     if (decode_round_barrier_enabled) {
         const char *run_id = getenv("SIM_W5_RUN_ID");
         const char *batch_id = getenv("SIM_W5_BATCH_ID");
@@ -13346,8 +13348,8 @@ qwen3_no_work_item_service_coverage:
            default_segment, block, key, kvcache_db_bytes);
     printf("[w4_guest] dispatch path=ubc_entity_chipbackend\n");
 qwen3_after_service_coverage:
-    if (decode_round_barrier_enabled && is_qwen3_profile() && enable_db_cluster &&
-        cluster_node_count == 8U) {
+    if (decode_round_barrier_enabled && enable_db_cluster &&
+        (is_qwen3_profile() || is_deepseek_v4_flash_profile())) {
         uint32_t dispatch_node = 0U;
         uint64_t stage_start_ms = monotonic_ms();
 
@@ -13358,11 +13360,11 @@ qwen3_after_service_coverage:
         }
         if (!w4_cluster_role_index(role, cluster_node_count, &dispatch_node) ||
             !db_service_ready ||
-            mem_service_obmm_service_v0_publish_decode_round_done(&db_service,
-                                                            dispatch_node,
-                                                            cluster_node_count,
-                                                            guest_decode_step,
-                                                            decode_round_scope_hash) != 0) {
+            mem_service_publish_decode_round_done(&db_service,
+                                                  dispatch_node,
+                                                  cluster_node_count,
+                                                  guest_decode_step,
+                                                  decode_round_scope_hash) != 0) {
             fprintf(stderr,
                     "[w4_guest] fail qwen3 decode round done publish failed role=%s step=%" PRIu64 "\n",
                     role,
@@ -13655,12 +13657,13 @@ qwen3_after_service_coverage:
         if (decode_round_barrier_enabled) {
             uint64_t stage_start_ms = monotonic_ms();
 
-            if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
-                mem_service_obmm_service_v0_wait_all_decode_round_done(&db_service,
-                                                                 cluster_node_count,
-                                                                 guest_decode_step,
-                                                                 decode_round_scope_hash,
-                                                                 decode_round_barrier_timeout_ms) != 0) {
+            if (enable_db_cluster &&
+                (is_qwen3_profile() || is_deepseek_v4_flash_profile()) &&
+                mem_service_wait_all_decode_round_done(&db_service,
+                                                       cluster_node_count,
+                                                       guest_decode_step,
+                                                       decode_round_scope_hash,
+                                                       decode_round_barrier_timeout_ms) != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail qwen3 decode round barrier failed step=%" PRIu64 "\n",
                         guest_decode_step);

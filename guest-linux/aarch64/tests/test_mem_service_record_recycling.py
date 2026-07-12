@@ -3034,16 +3034,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn('#include "mem_service_cluster_runtime.h"', decode_barrier)
         self.assertIn('#include "mem_service_qwen3.h"', decode_barrier)
         self.assertIn('#include "mem_service_qwen3_runtime.h"', decode_barrier)
-        self.assertIn("mem_service_obmm_service_v0_publish_decode_round_done", decode_barrier)
-        self.assertIn("mem_service_obmm_service_v0_wait_all_decode_round_done", decode_barrier)
-        self.assertIn("qwen3_decode_round_barrier", decode_barrier)
-        self.assertIn("Qwen3 decode-round publish", readme)
-        self.assertIn("standalone model data-flow", readme)
-        self.assertIn("translation unit", readme)
+        self.assertIn("mem_service_publish_decode_round_done", decode_barrier)
+        self.assertIn("mem_service_wait_all_decode_round_done", decode_barrier)
+        self.assertIn("stage decode_round_barrier", decode_barrier)
+        self.assertIn("model-range decode-round", readme)
+        self.assertIn("active-topology all-node wait", readme)
+        self.assertIn("model-neutral", readme)
         self.assertFalse((SERVICE_DIR / "mem_service_qwen3_decode_barrier.inc").exists())
         self.assertNotRegex(
             source,
-            r"int mem_service_obmm_service_v0_publish_decode_round_done"
+            r"int mem_service_publish_decode_round_done"
             r"\(struct mem_service \*svc,",
         )
 
