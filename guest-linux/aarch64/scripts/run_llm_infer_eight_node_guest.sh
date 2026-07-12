@@ -7,7 +7,31 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-}"
+SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 TEE_BIN="${TEE_BIN:-/usr/bin/tee}"
+
+case "$SIM_W5_CLUSTER_NODE_COUNT" in
+  2)
+    NODE_IDS=(nodeA nodeB)
+    NODE_IPS=(10.0.0.1 10.0.0.2)
+    DEFAULT_PORT_NUM=2
+    ;;
+  3)
+    NODE_IDS=(nodeA nodeB nodeC)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3)
+    DEFAULT_PORT_NUM=2
+    ;;
+  8)
+    NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
+    DEFAULT_PORT_NUM=7
+    ;;
+  *)
+    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
+    exit 2
+    ;;
+esac
+SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="${SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0}"
 
 w5_profile_default_w4_backend() {
   case "$1" in
@@ -71,7 +95,7 @@ if [[ -n "$SIM_UAPI_W5_PROFILE" && -n "${SIM_W5_PROGRESS_INTERVAL_SECS:-}" ]]; t
 fi
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
-PORT_NUM="${UB_SIM_PORT_NUM:-7}"
+PORT_NUM="${UB_SIM_PORT_NUM:-$DEFAULT_PORT_NUM}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-$(w5_profile_default_w4_backend "$SIM_UAPI_W5_PROFILE")}"
@@ -84,7 +108,7 @@ SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="${SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI:-1000
 SIM_QWEN3_SAMPLER_SEED="${SIM_QWEN3_SAMPLER_SEED:-0}"
 SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-$(w5_profile_default_engram "$SIM_UAPI_W5_PROFILE")}"
 SIM_QWEN3_GUEST_ENGRAM_MODE="${SIM_QWEN3_GUEST_ENGRAM_MODE:-cpu}"
-SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE:-8}"
+SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE:-$SIM_W5_CLUSTER_NODE_COUNT}"
 SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE="${SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE:-3}"
 SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI="${SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI:-1000}"
 SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="${SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW:-0}"
@@ -178,8 +202,6 @@ SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
 FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|dispatch payload mismatch|linqu_llm_infer failed|Kernel panic|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
-NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
-NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
 ALL_IPS_CSV="${(j:,:)NODE_IPS}"
 
 stage_qwen3_object_service_snapshot() {
@@ -743,10 +765,10 @@ fi
 export LINQU_UB_ROLE
 export LINQU_UB_LOCAL_IP
 export LINQU_UB_ALL_IPS="$ALL_IPS_CSV"
-export LINQU_UB_NODE_COUNT=8
+export LINQU_UB_NODE_COUNT=$SIM_W5_CLUSTER_NODE_COUNT
 export LINQU_MEM_SERVICE_CLUSTER=1
 export LINQU_W4_REQUIRE_UAPI_RESOURCE=1
-export SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="${SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0}"
+export SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="$SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION"
 export SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE"
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_W5_RUN_ID="$RUN_ID_BASE"
@@ -1304,7 +1326,7 @@ validate_w5_boundary_observation_summary() {
         trace "FAIL: W5 shortpath timing record counts are incomplete expected_active=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_idle=${idle_expected} path=$RUN_SUMMARY_FILE"
         return 1
       fi
-      for node_id in nodeB nodeC nodeD nodeE nodeF nodeG nodeH; do
+      for node_id in "${NODE_IDS[@]:1}"; do
         if ! rg -q "timing_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
           trace "FAIL: W5 shortpath downstream timing is not idle-only node=$node_id path=$RUN_SUMMARY_FILE"
           return 1
@@ -1521,8 +1543,8 @@ validate_node_log() {
   local node_id="$1"
   local log_file="$2"
   local expected_dispatch_word="0x41a0000041a00000"
-  local engram_candidates_owner_node="8"
-  local terminal_publish_node="8"
+  local engram_candidates_owner_node="$SIM_W5_CLUSTER_NODE_COUNT"
+  local terminal_publish_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local idx owner_role
   local remote_idx
 
@@ -1534,7 +1556,7 @@ validate_node_log() {
     expected_dispatch_word="0x0000000000000000"
   fi
   idx="$(node_index "$node_id")"
-  remote_idx=$((idx % 8 + 1))
+  remote_idx=$((idx % SIM_W5_CLUSTER_NODE_COUNT + 1))
 
   if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && w5_shortpath_execution_armed; then
     if (( idx > 1 )); then
@@ -1573,7 +1595,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_cluster_mode=resource_backed_uapi" "$node_id db cluster resource-backed mode" || return 1
   if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
-    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_cluster_runtime_bootstrap local=node${idx} nodes=8 backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id explicit obmm cluster runtime bootstrap" || return 1
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_cluster_runtime_bootstrap local=node${idx} nodes=$SIM_W5_CLUSTER_NODE_COUNT backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id explicit obmm cluster runtime bootstrap" || return 1
   fi
   if [[ "$SIM_W4_RESOURCE_ASSERTIONS" == "1" ]]; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_(ok|skipped) nodes=8 .*" "$node_id resource-backed db cluster assertions" || return 1
@@ -1673,8 +1695,8 @@ validate_node_log() {
   elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     local expected_kv_restores=$((SIM_QWEN3_GUEST_DECODE_STEPS - 1))
 
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=43 hidden_bytes=[1-9][0-9]* source=dispatch_task output=completion status=ok" "$node_id DeepSeek range compute contract" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=43 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[1-9][0-9]* .*kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id DeepSeek range runtime forward" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=43 hidden_bytes=[1-9][0-9]* source=dispatch_task output=completion status=ok" "$node_id DeepSeek range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=43 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[1-9][0-9]* .*kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id DeepSeek range runtime forward" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek range forward per step" || return 1
     if (( idx > 1 )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_runtime_input_loaded node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) producer=node$((idx - 1)) kind=[1-9][0-9]* bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref transport=gsva materialize=uapi_segment status=ok" "$node_id DeepSeek GSVA runtime input" || return 1
@@ -1682,7 +1704,7 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ .*layers=\\[[0-9]+,[0-9]+\\) .*status=ok" "$node_id DeepSeek runtime output publish" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/deepseek-v4-flash(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ .*status=ok" "$node_id DeepSeek KV publish" || return 1
     assert_log_count "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek KV publish per step" || return 1
-    assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_layer_kv_restored node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref materialize=uapi_segment status=ok" "$expected_kv_restores" "$node_id DeepSeek KV restore per decode continuation" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_layer_kv_restored node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref materialize=object_ref status=ok" "$expected_kv_restores" "$node_id DeepSeek KV restore per decode continuation" || return 1
     if (( idx == terminal_publish_node )); then
       assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1
@@ -1969,9 +1991,9 @@ prepare_environment() {
     fi
   done
   if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
-    trace "W5 serving entry ready for all eight nodes env_file=$env_file"
+    trace "W5 serving entry ready for all $SIM_W5_CLUSTER_NODE_COUNT nodes env_file=$env_file"
   else
-    trace "initramfs runner gate ok for all eight nodes"
+    trace "initramfs runner gate ok for all $SIM_W5_CLUSTER_NODE_COUNT nodes"
   fi
   return 0
 }
@@ -2036,9 +2058,9 @@ main() {
 
   if ! run_w4_app 0; then
     if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
-      trace "FAIL: eight-node w5 inference cluster validation failed profile=$SIM_UAPI_W5_PROFILE"
+      trace "FAIL: W5 inference cluster validation failed nodes=$SIM_W5_CLUSTER_NODE_COUNT profile=$SIM_UAPI_W5_PROFILE"
     else
-      trace "FAIL: eight-node w4 guest resource-backed uapi/chipbackend service coverage validation failed"
+      trace "FAIL: W4 guest resource-backed uapi/chipbackend service coverage validation failed nodes=$SIM_W5_CLUSTER_NODE_COUNT"
     fi
     [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
     exit 1
@@ -2064,11 +2086,11 @@ main() {
       exit 1
     fi
     if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
-      trace "PASS: eight-node w5 inference cluster profile=$SIM_UAPI_W5_PROFILE"
-      echo "eight-node w5 inference cluster validation passed"
+      trace "PASS: W5 inference cluster nodes=$SIM_W5_CLUSTER_NODE_COUNT profile=$SIM_UAPI_W5_PROFILE"
+      echo "$SIM_W5_CLUSTER_NODE_COUNT-node W5 inference cluster validation passed"
     else
-      trace "PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated"
-      echo "eight-node w4 guest validation passed"
+      trace "PASS: W4 guest resource-backed uapi/chipbackend service coverage validated nodes=$SIM_W5_CLUSTER_NODE_COUNT"
+      echo "$SIM_W5_CLUSTER_NODE_COUNT-node W4 guest validation passed"
     fi
   fi
 

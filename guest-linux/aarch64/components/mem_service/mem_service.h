@@ -325,6 +325,7 @@ int mem_service_obmm_service_v0_publish_resolve(struct mem_service *svc,
                                           uint32_t cluster_node_count);
 int mem_service_obmm_service_v0_ensure_cluster_runtime(uint32_t local_node,
                                                  uint32_t cluster_node_count);
+int mem_service_obmm_service_v0_pipeline_start_barrier(uint64_t timeout_ms);
 int mem_service_get_record(struct mem_service *svc, const char *key, struct mem_service_record *out);
 int mem_service_record_to_lingqu_object_ref(const struct mem_service_record *record,
                                             struct lingqu_object_ref_wire *ref_out);

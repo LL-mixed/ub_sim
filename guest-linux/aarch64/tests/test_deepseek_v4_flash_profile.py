@@ -96,6 +96,7 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
 
     def test_eight_node_harness_validates_flash_range_and_first_token(self):
         runner = EIGHT_NODE_RUNNER.read_text()
+        infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
 
         self.assertIn("is_deepseek_v4_flash_profile", runner)
         self.assertIn("is_model_range_profile", runner)
@@ -103,7 +104,17 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn(
             "target=uapi_object_ref transport=gsva materialize=uapi_segment", runner
         )
+        self.assertIn("materialize=object_ref status=ok", infer_source)
         self.assertIn("deepseek_v4_flash_layer_kv_restored", runner)
+        self.assertIn("materialize=object_ref status=ok", runner)
+        self.assertNotIn(
+            "deepseek_v4_flash_layer_kv_restored node=${idx} "
+            "step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) "
+            "kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ "
+            "source=mem_service target=uapi_object_ref "
+            "materialize=uapi_segment",
+            runner,
+        )
         self.assertIn("DeepSeek KV restore per decode continuation", runner)
         self.assertIn("DeepSeek streamed token per step", runner)
         self.assertIn("deepseek_v4_flash_stream_token", runner)

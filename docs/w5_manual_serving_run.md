@@ -1,8 +1,14 @@
 # W5 Manual Serving Run
 
-This is the current manual entry for an 8-node W5 stream inference run. Use
+This is the current manual entry for a W5 stream inference run. Use
 `run_w5_cluster_config.sh` as the host-side entrypoint; lower-level runtime
 scripts remain implementation details.
+
+The same entry supports 2-node, 3-node, and 8-node clusters. Select the active
+topology with `--nodes 2`, `--nodes 3`, or `--nodes 8`; the default is 8. The
+entry derives the QEMU fabric topology, simulator scenario, port count, active
+guest list, layer partition, handoff chain, and validation counts from that
+single value. Do not put those derived values in the env file.
 
 ## Minimal Config
 
@@ -12,6 +18,13 @@ then delegates to `run_w5_cluster_config.sh`:
 
 ```sh
 ./guest-linux/aarch64/scripts/run_w5_in_container.sh w5.env
+```
+
+For a smaller pipeline topology:
+
+```sh
+./guest-linux/aarch64/scripts/run_w5_in_container.sh \
+  -- --nodes 3 w5.deepseek-v4-flash-simpler.env
 ```
 
 For serving requests:
@@ -78,6 +91,13 @@ Run one-shot W5 stream inference:
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh /path/to/w5.env
 ```
 
+Run the same model profile on two or three simulated nodes:
+
+```sh
+./guest-linux/aarch64/scripts/run_w5_cluster_config.sh --nodes 2 /path/to/w5.env
+./guest-linux/aarch64/scripts/run_w5_cluster_config.sh --nodes 3 /path/to/w5.env
+```
+
 Use `run_w5_cluster_config.sh` directly only when already inside a prepared
 container or on a host with QEMU build dependencies installed.
 
@@ -96,7 +116,7 @@ Validate request syntax:
 ./guest-linux/aarch64/scripts/run_w5_serving_entry.sh --requests /path/to/requests.txt --validate-only
 ```
 
-Start the 8-node cluster, submit the requests, and wait for completion:
+Start the cluster, submit the requests, and wait for completion:
 
 ```sh
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh \

@@ -11639,6 +11639,15 @@ decode_round_start:
                     cluster_runtime_node + 1U);
             goto out;
         }
+        if (w4_runtime_range_pipeline_enabled(cluster_node_count) &&
+            guest_decode_step == 0 &&
+            mem_service_obmm_service_v0_pipeline_start_barrier(
+                decode_round_barrier_timeout_ms) != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail pipeline start barrier failed node=%u\n",
+                    cluster_runtime_node + 1U);
+            goto out;
+        }
         if (resource_assertions_enabled && guest_decode_step == 0) {
             if (w4_resource_backed_db_cluster_assertions(role, cluster_node_count) != 0) {
                 fprintf(stderr, "[w4_guest] fail incomplete resource-backed kvcache db cluster assertions\n");
@@ -12266,7 +12275,8 @@ decode_round_start:
             memset(&range_input_view, 0, sizeof(range_input_view));
             if (layer_start > 0U && qwen3_pre_resolved_range_input) {
                 range_input_view = qwen3_pre_resolved_range_input_view;
-            } else if (mem_service_obmm_service_v0_wait_runtime_range_input_view(
+            } else if (mem_service_range_flow_wait_runtime_input_view(
+                           &range_request,
                            dispatch_node,
                            cluster_node_count,
                            guest_decode_step,
@@ -12354,19 +12364,6 @@ decode_round_start:
                 goto out;
             }
             kv_resolved_ms = monotonic_ms();
-            if (previous_kv_view.len >
-                W4_QWEN3_OUTPUT_SCAN_MAX_BYTES -
-                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET -
-                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES) {
-                fprintf(stderr,
-                        "[w4_guest] fail deepseek v4 flash previous range kv"
-                        " too large node=%u step=%" PRIu64
-                        " bytes=%" PRIu64 "\n",
-                        dispatch_node + 1U,
-                        guest_decode_step,
-                        previous_kv_view.len);
-                goto out;
-            }
             previous_kv_header[0] = W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER;
             previous_kv_header[1] = previous_kv_view.len;
             previous_kv_header[2] = previous_kv_view.checksum;
@@ -12375,11 +12372,6 @@ decode_round_start:
                                 W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET,
                                 (const uint8_t *)previous_kv_header,
                                 sizeof(previous_kv_header));
-            write_segment_bytes(ep_mmio,
-                                W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET +
-                                    W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES,
-                                previous_kv_view.data,
-                                previous_kv_view.len);
             write_segment_bytes(ep_mmio,
                                 W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                     ((uint64_t)object_ref_write_index *
@@ -12393,7 +12385,7 @@ decode_round_start:
                    " layers=[%u,%u) kv_bytes=%" PRIu64
                    " kv_checksum=0x%016" PRIx64
                    " source=mem_service target=uapi_object_ref"
-                   " materialize=uapi_segment status=ok\n",
+                   " materialize=object_ref status=ok\n",
                    dispatch_node + 1U,
                    guest_decode_step,
                    guest_decode_step - 1U,

@@ -1103,6 +1103,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "# runtime",
                 "RUN_ID=test-run",
                 "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                "SIM_W5_CLUSTER_NODE_COUNT=8",
                 "SIM_QWEN3_GUEST_DECODE_STEPS=3",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_QWEN3_GUEST_ENGRAM=0",

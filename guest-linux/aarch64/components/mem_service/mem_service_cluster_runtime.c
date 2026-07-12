@@ -2,6 +2,7 @@
 
 #include "mem_service_cluster_runtime.h"
 #include "mem_service_cluster_utils.h"
+#include "mem_service_object_refs.h"
 
 int mem_service_cluster_runtime_make_gsva_buffer_desc(
     const struct mem_service_cluster_runtime *rt,
@@ -409,6 +410,130 @@ int mem_service_cluster_runtime_require(struct mem_service_cluster_runtime *rt)
         return -1;
     }
     return 0;
+}
+
+static bool mem_service_pipeline_ready_marker_valid(
+    const uint64_t words[8],
+    const struct mem_service_cluster_runtime *rt,
+    int owner_idx)
+{
+    return words[0] == 0x6d656d7069706572ULL &&
+           words[1] == rt->bootstrap_generation &&
+           words[2] == (uint64_t)owner_idx &&
+           words[3] == (uint64_t)rt->node_count &&
+           words[7] == mem_service_checksum_bytes(
+                            (const uint8_t *)words,
+                            7U * sizeof(words[0]));
+}
+
+int mem_service_cluster_runtime_pipeline_start_barrier(
+    struct mem_service_cluster_runtime *rt,
+    uint64_t timeout_ms)
+{
+    struct mem_service_cluster_slot *local_slot;
+    uint64_t ready[8] = { 0 };
+    uint64_t expected_mask;
+    uint64_t ready_mask = 0;
+    long deadline;
+
+    if (mem_service_cluster_runtime_require(rt) != 0 || timeout_ms == 0 ||
+        rt->node_count > MEM_SERVICE_CLUSTER_MAX_NODES) {
+        return -1;
+    }
+    local_slot = &rt->slots[rt->local_idx];
+    if (local_slot->region.len <
+        MEM_SERVICE_OBMM_PIPELINE_READY_OFFSET +
+            MEM_SERVICE_OBMM_PIPELINE_READY_BYTES) {
+        return -1;
+    }
+    deadline = obmm_now_ms() + (long)timeout_ms;
+
+    /* Workers announce readiness only after observing the coordinator. This
+     * keeps node0 out of synchronous model compute until every import works. */
+    if (rt->local_idx != 0) {
+        while (obmm_now_ms() < deadline) {
+            uint64_t coordinator[8];
+
+            memcpy(coordinator,
+                   (uint8_t *)rt->slots[0].region.addr +
+                       MEM_SERVICE_OBMM_PIPELINE_READY_OFFSET,
+                   sizeof(coordinator));
+            if (mem_service_pipeline_ready_marker_valid(coordinator, rt, 0)) {
+                break;
+            }
+            usleep(10000);
+        }
+        if (obmm_now_ms() >= deadline) {
+            printf("[mem_service] gap pipeline_start_barrier=coordinator_timeout local=node%d\n",
+                   rt->local_idx + 1);
+            return -1;
+        }
+    }
+
+    ready[0] = 0x6d656d7069706572ULL;
+    ready[1] = rt->bootstrap_generation;
+    ready[2] = (uint64_t)rt->local_idx;
+    ready[3] = (uint64_t)rt->node_count;
+    ready[7] = mem_service_checksum_bytes((const uint8_t *)ready,
+                                           7U * sizeof(ready[0]));
+    memcpy((uint8_t *)local_slot->region.addr +
+               MEM_SERVICE_OBMM_PIPELINE_READY_OFFSET,
+           ready,
+           sizeof(ready));
+    if (mem_service_update_region_range_at(
+            local_slot,
+            MEM_SERVICE_OBMM_PIPELINE_READY_OFFSET,
+            sizeof(ready),
+            true) != 0) {
+        return -1;
+    }
+    (void)msync((uint8_t *)local_slot->region.addr +
+                    MEM_SERVICE_OBMM_PIPELINE_READY_OFFSET,
+                sizeof(ready),
+                MS_SYNC);
+
+    if (rt->local_idx != 0) {
+        printf("[mem_service] stage pipeline_start_barrier local=node%d nodes=%d coordinator=node1 status=ok\n",
+               rt->local_idx + 1,
+               rt->node_count);
+        return 0;
+    }
+
+    expected_mask = (1ULL << rt->node_count) - 1ULL;
+    while (obmm_now_ms() < deadline) {
+        int i;
+
+        ready_mask = 0;
+        for (i = 0; i < rt->node_count; ++i) {
+            uint64_t peer[8];
+
+            memcpy(peer,
+                   (uint8_t *)rt->slots[i].region.addr +
+                       MEM_SERVICE_OBMM_PIPELINE_READY_OFFSET,
+                   sizeof(peer));
+            if (mem_service_pipeline_ready_marker_valid(peer, rt, i)) {
+                ready_mask |= 1ULL << i;
+            }
+        }
+        if (ready_mask == expected_mask) {
+            printf("[mem_service] stage pipeline_start_barrier local=node1 nodes=%d ready_mask=0x%02" PRIx64 " coordinator=node1 status=ok\n",
+                   rt->node_count,
+                   ready_mask);
+            return 0;
+        }
+        usleep(10000);
+    }
+    printf("[mem_service] gap pipeline_start_barrier=workers_timeout local=node1 nodes=%d ready_mask=0x%02" PRIx64 " expected_mask=0x%02" PRIx64 "\n",
+           rt->node_count,
+           ready_mask,
+           expected_mask);
+    return -1;
+}
+
+int mem_service_obmm_service_v0_pipeline_start_barrier(uint64_t timeout_ms)
+{
+    return mem_service_cluster_runtime_pipeline_start_barrier(
+        mem_service_cluster_runtime_current(), timeout_ms);
 }
 
 int mem_service_cluster_runtime_init(struct mem_service_cluster_runtime *rt)

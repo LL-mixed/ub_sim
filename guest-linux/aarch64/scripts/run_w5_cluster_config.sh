@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|8] [--steps N] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -28,6 +28,7 @@ VALIDATE_ONLY=0
 SERVE_QUEUE=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
+NODES_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
 REQUESTS_OVERRIDE=""
 SERVE_REQUESTS_OVERRIDE=""
@@ -121,6 +122,19 @@ while (( $# > 0 )); do
       ;;
     --steps=*)
       STEPS_OVERRIDE="${1#--steps=}"
+      shift
+      ;;
+    --nodes)
+      if (( $# < 2 )); then
+        echo "--nodes requires a value" >&2
+        usage
+        exit 2
+      fi
+      NODES_OVERRIDE="$2"
+      shift 2
+      ;;
+    --nodes=*)
+      NODES_OVERRIDE="${1#--nodes=}"
       shift
       ;;
     --requests)
@@ -246,6 +260,18 @@ if [[ -n "$STEPS_OVERRIDE" ]]; then
   fi
   export SIM_QWEN3_GUEST_DECODE_STEPS="$STEPS_OVERRIDE"
 fi
+if [[ -n "$NODES_OVERRIDE" ]]; then
+  case "$NODES_OVERRIDE" in
+    2|3|8)
+      export SIM_W5_CLUSTER_NODE_COUNT="$NODES_OVERRIDE"
+      ;;
+    *)
+      echo "--nodes must be 2, 3, or 8: $NODES_OVERRIDE" >&2
+      exit 2
+      ;;
+  esac
+fi
+export SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 if [[ -n "$KEEP_LATEST_OVERRIDE" ]]; then
   if [[ ! "$KEEP_LATEST_OVERRIDE" =~ '^[0-9]+$' ]]; then
     echo "--keep-latest must be a non-negative integer: $KEEP_LATEST_OVERRIDE" >&2
@@ -353,6 +379,7 @@ print_w5_effective_env() {
   print_env_section "runtime"
   print_env_value RUN_ID "${RUN_ID:-}"
   print_env_value SIM_UAPI_W5_PROFILE "${SIM_UAPI_W5_PROFILE:-}"
+  print_env_value SIM_W5_CLUSTER_NODE_COUNT "${SIM_W5_CLUSTER_NODE_COUNT:-8}"
   print_env_value SIM_QWEN3_GUEST_DECODE_STEPS "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   print_env_value SIM_QWEN3_DENSE_WEIGHTS_PATH "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   print_env_value SIM_QWEN3_GUEST_ENGRAM "${SIM_QWEN3_GUEST_ENGRAM:-}"
@@ -417,12 +444,21 @@ validate_w5_cluster_config() {
   local keep_latest="${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
   local max_prune_candidates="${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
+  local cluster_node_count="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 
   case "$profile" in
     qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode|deepseek_v4_flash_decode)
       ;;
     *)
       echo "unsupported SIM_UAPI_W5_PROFILE=$profile" >&2
+      return 2
+      ;;
+  esac
+  case "$cluster_node_count" in
+    2|3|8)
+      ;;
+    *)
+      echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $cluster_node_count" >&2
       return 2
       ;;
   esac

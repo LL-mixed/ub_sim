@@ -1664,7 +1664,7 @@ impl LocalGuestUapiSurface {
 
             let started = Instant::now();
             let operands = if deepseek_v4_flash {
-                None
+                resolve_deepseek_v4_flash_range_dispatch_operands(&req, input, self)?
             } else {
                 resolve_qwen3_range_dispatch_operands(&req, input, self)?
             };
@@ -2355,6 +2355,44 @@ fn resolve_qwen3_range_dispatch_operands(
         }
     }
 
+    Ok(Some(operands))
+}
+
+fn resolve_deepseek_v4_flash_range_dispatch_operands(
+    req: &Qwen3RangeDispatchReq,
+    segment_payload: &[u8],
+    surface: &LocalGuestUapiSurface,
+) -> Result<Option<Qwen3RangeDispatchOperands>, String> {
+    if req.object_ref_count == 0 {
+        return Ok(None);
+    }
+    let refs = qwen3_range_dispatch_object_refs(req, segment_payload)?;
+    let mut operands = Qwen3RangeDispatchOperands::default();
+
+    for object_ref in refs {
+        operands.object_refs.push(object_ref);
+        match object_ref.object_kind {
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
+            | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT => {}
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
+                let expected_len = usize::try_from(object_ref.payload_bytes)
+                    .map_err(|_| "deepseek_v4_flash_kv_operand_bytes_too_large".to_string())?;
+                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                if !operand.is_object_backed() || operand.bytes().len() != expected_len {
+                    return Err(format!(
+                        "deepseek_v4_flash_kv_operand_invalid:got={}:expected={expected_len}",
+                        operand.bytes().len()
+                    ));
+                }
+                operands.previous_kv = Some(operand);
+            }
+            kind => {
+                return Err(format!(
+                    "deepseek_v4_flash_object_ref_kind_unsupported:{kind}"
+                ));
+            }
+        }
+    }
     Ok(Some(operands))
 }
 
@@ -6218,6 +6256,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
             decode_step,
             &all_token_ids,
             guest_input,
+            operands,
         )?;
     let executed_token_count = token_ids.len();
     let expected_hidden_len = token_ids
@@ -6512,6 +6551,7 @@ fn deepseek_v4_flash_decode_slice_inputs(
     decode_step: u64,
     all_token_ids: &[i32],
     guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
 ) -> Result<(Vec<i32>, Vec<i32>, Option<Vec<u8>>, u32), String> {
     if decode_step == 0 {
         if all_token_ids.is_empty() {
@@ -6577,11 +6617,12 @@ fn deepseek_v4_flash_decode_slice_inputs(
             "deepseek_v4_flash_decode_previous_tokens_missing:step={decode_step}"
         ));
     }
-    let previous_kv_ref = deepseek_v4_flash_materialized_object_ref(
-        guest_input,
-        1,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
-    )?;
+    let previous_kv_operand = operands
+        .and_then(|value| value.previous_kv.as_ref())
+        .ok_or_else(|| {
+            format!("deepseek_v4_flash_decode_previous_kv_operand_missing:step={decode_step}")
+        })?;
+    let previous_kv_ref = previous_kv_operand.object_ref();
     let previous_kv_header = guest_input
         .get(
             QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
@@ -6604,25 +6645,16 @@ fn deepseek_v4_flash_decode_slice_inputs(
             "deepseek_v4_flash_decode_previous_kv_header_invalid:step={decode_step}:marker={marker:#x}:producer={previous_kv_step}:bytes={previous_kv_len}"
         ));
     }
-    let previous_kv_start =
-        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
-    let previous_kv_end = previous_kv_start
-        .checked_add(previous_kv_len)
-        .ok_or_else(|| "deepseek_v4_flash_decode_previous_kv_end_overflow".to_string())?;
-    let previous_kv = guest_input
-        .get(previous_kv_start..previous_kv_end)
-        .ok_or_else(|| {
-            format!(
-                "deepseek_v4_flash_decode_previous_kv_materialization_missing:step={decode_step}:bytes={previous_kv_len}"
-            )
-        })?;
-    let materialized_checksum = qwen3_dense_reference_range_object_payload_checksum(previous_kv);
+    let previous_kv = previous_kv_operand.bytes();
+    let object_checksum = qwen3_dense_reference_range_object_payload_checksum(previous_kv);
     if previous_kv_ref.payload_bytes != previous_kv_len as u64
         || previous_kv_ref.payload_checksum != previous_kv_checksum
-        || materialized_checksum != previous_kv_checksum
+        || previous_kv.len() != previous_kv_len
+        || object_checksum != previous_kv_checksum
     {
         return Err(format!(
-            "deepseek_v4_flash_decode_previous_kv_materialization_mismatch:step={decode_step}:bytes={previous_kv_len}:ref_bytes={}:checksum={materialized_checksum:#x}:expected={previous_kv_checksum:#x}:ref_checksum={:#x}",
+            "deepseek_v4_flash_decode_previous_kv_operand_mismatch:step={decode_step}:bytes={previous_kv_len}:operand_bytes={}:ref_bytes={}:checksum={object_checksum:#x}:expected={previous_kv_checksum:#x}:ref_checksum={:#x}",
+            previous_kv.len(),
             previous_kv_ref.payload_bytes,
             previous_kv_ref.payload_checksum
         ));
@@ -34816,7 +34848,7 @@ mod tests {
             write_u64_le_at(&mut payload, 8, 108_149);
             payload
         };
-        let kv_payload = vec![0x5au8; 128];
+        let kv_payload = vec![0x5au8; 6_108_720];
         let token_ref = LingquObmmObjectRefWire::committed(
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
             0,
@@ -34866,7 +34898,6 @@ mod tests {
             0u8;
             QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
                 + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
-                + kv_payload.len()
         ];
         guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
             ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64]
@@ -34903,10 +34934,6 @@ mod tests {
             QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 24,
             0,
         );
-        let kv_start =
-            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES;
-        guest_input[kv_start..kv_start + kv_payload.len()].copy_from_slice(&kv_payload);
-
         let (tokens, previous_tokens, previous_kv, position) =
             deepseek_v4_flash_decode_slice_inputs(
                 deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size,
@@ -34914,6 +34941,7 @@ mod tests {
                 1,
                 &[0, 128_803, 128_822, 108_149],
                 &guest_input,
+                Some(&operands),
             )
             .expect("incremental decode inputs");
         assert_eq!(tokens, vec![108_149]);
@@ -34966,9 +34994,10 @@ mod tests {
             1,
             &[0, 128_803, 128_822, 108_149],
             &guest_input,
+            Some(&operands),
         )
         .expect_err("decode without object-backed state must fail");
-        assert!(error.contains("object_ref_invalid:index=1"));
+        assert!(error.contains("previous_kv_operand_missing"));
     }
 
     #[test]
