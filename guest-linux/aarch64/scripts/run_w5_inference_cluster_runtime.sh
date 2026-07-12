@@ -156,8 +156,8 @@ case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
       echo "invalid SIM_W5_CLUSTER_NODE_COUNT=$cluster_nodes" >&2
       exit 2
     fi
-    max_layers_per_node=$(((43 + cluster_nodes - 1) / cluster_nodes))
-    simpler_min_wait_secs=$((${#prompt_token_ids[@]} * max_layers_per_node * 30 + 300))
+    total_model_layers=43
+    simpler_min_wait_secs=$((${#prompt_token_ids[@]} * total_model_layers * 30 + 300))
     APP_WAIT_SECS="${APP_WAIT_SECS:-600}"
     if [[ ! "$APP_WAIT_SECS" =~ '^[1-9][0-9]*$' ]]; then
       echo "invalid APP_WAIT_SECS=$APP_WAIT_SECS" >&2
@@ -167,7 +167,7 @@ case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
       APP_WAIT_SECS="$simpler_min_wait_secs"
     fi
     export APP_WAIT_SECS
-    echo "[w5_inference_cluster] compute_deadline backend=simpler tokens=${#prompt_token_ids[@]} nodes=$cluster_nodes max_layers=$max_layers_per_node app_wait_secs=$APP_WAIT_SECS" >&2
+    echo "[w5_inference_cluster] compute_deadline backend=simpler tokens=${#prompt_token_ids[@]} nodes=$cluster_nodes total_layers=$total_model_layers app_wait_secs=$APP_WAIT_SECS" >&2
     ;;
 esac
 
