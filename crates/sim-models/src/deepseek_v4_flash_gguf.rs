@@ -1,7 +1,7 @@
 use crate::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
 use crate::deepseek_v4_flash_iq2_tables::{IQ2_XS_SIGNS, IQ2_XXS_GRID};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -76,6 +76,18 @@ pub struct GgufCatalog {
     pub metadata_count: u64,
     pub metadata: BTreeMap<String, GgufScalarValue>,
     pub tensors: BTreeMap<String, GgufTensorInfo>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepseekChatThinkMode {
+    Think,
+    NoThink,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeepseekV4FlashTokenizer {
+    token_to_id: HashMap<String, usize>,
+    merge_rank: HashMap<String, usize>,
 }
 
 impl GgufCatalog {
@@ -231,6 +243,10 @@ impl GgufCatalog {
             )
         })?;
         decode_gpt2_token_text(encoded)
+    }
+
+    pub fn tokenizer(&self) -> Result<DeepseekV4FlashTokenizer, String> {
+        DeepseekV4FlashTokenizer::from_catalog(self)
     }
 
     pub fn read_tensor(&self, name: &str) -> Result<Vec<u8>, String> {
@@ -427,6 +443,102 @@ impl GgufCatalog {
     }
 }
 
+impl DeepseekV4FlashTokenizer {
+    pub fn from_catalog(catalog: &GgufCatalog) -> Result<Self, String> {
+        let tokens = catalog.metadata_strings("tokenizer.ggml.tokens")?;
+        let merges = catalog.metadata_strings("tokenizer.ggml.merges")?;
+        let token_to_id = tokens
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(id, token)| (token, id))
+            .collect();
+        let merge_rank = merges
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(rank, merge)| (merge, rank))
+            .collect();
+        Ok(Self {
+            token_to_id,
+            merge_rank,
+        })
+    }
+
+    pub fn tokenize_text(&self, text: &str) -> Result<Vec<usize>, String> {
+        let mut output = Vec::new();
+        for piece in joyai_pretokenize(text) {
+            self.emit_bpe_piece(piece.as_bytes(), &mut output)?;
+        }
+        Ok(output)
+    }
+
+    pub fn tokenize_chat_prompt(
+        &self,
+        system: &str,
+        prompt: &str,
+        think_mode: DeepseekChatThinkMode,
+    ) -> Result<Vec<usize>, String> {
+        let mut output = vec![self.required_token("<｜begin▁of▁sentence｜>")?];
+        if !system.is_empty() {
+            output.extend(self.tokenize_text(system)?);
+        }
+        output.push(self.required_token("<｜User｜>")?);
+        output.extend(self.tokenize_text(prompt)?);
+        output.push(self.required_token("<｜Assistant｜>")?);
+        output.push(self.required_token(match think_mode {
+            DeepseekChatThinkMode::Think => "<think>",
+            DeepseekChatThinkMode::NoThink => "</think>",
+        })?);
+        Ok(output)
+    }
+
+    fn required_token(&self, token: &str) -> Result<usize, String> {
+        self.token_to_id
+            .get(token)
+            .copied()
+            .ok_or_else(|| format!("deepseek_tokenizer_required_token_missing:{token}"))
+    }
+
+    fn emit_bpe_piece(&self, raw_piece: &[u8], output: &mut Vec<usize>) -> Result<(), String> {
+        let mut symbols = raw_piece
+            .iter()
+            .map(|byte| gpt2_byte_to_codepoint(*byte))
+            .map(|codepoint| {
+                char::from_u32(codepoint)
+                    .ok_or_else(|| format!("deepseek_tokenizer_codepoint_invalid:{codepoint:#x}"))
+                    .map(|value| value.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        loop {
+            let best = symbols
+                .windows(2)
+                .enumerate()
+                .filter_map(|(index, pair)| {
+                    let key = format!("{} {}", pair[0], pair[1]);
+                    self.merge_rank.get(&key).map(|rank| (index, *rank))
+                })
+                .min_by_key(|(_, rank)| *rank);
+            let Some((index, _)) = best else {
+                break;
+            };
+            let right = symbols.remove(index + 1);
+            symbols[index].push_str(&right);
+        }
+
+        for symbol in symbols {
+            let token = self
+                .token_to_id
+                .get(&symbol)
+                .copied()
+                .ok_or_else(|| format!("deepseek_tokenizer_bpe_symbol_missing:{symbol}"))?;
+            output.push(token);
+        }
+        Ok(())
+    }
+}
+
 fn validate_entry_count(kind: &str, count: u64) -> Result<(), String> {
     if count > MAX_CATALOG_ENTRIES {
         return Err(format!("deepseek_gguf_{kind}_count_too_large:{count}"));
@@ -462,7 +574,9 @@ fn read_metadata_value(
             let item_type = read_u32(reader)?;
             let count = read_u64(reader)?;
             validate_entry_count("metadata_array", count)?;
-            if key == "tokenizer.ggml.tokens" && item_type == VALUE_STRING {
+            if matches!(key, "tokenizer.ggml.tokens" | "tokenizer.ggml.merges")
+                && item_type == VALUE_STRING
+            {
                 let mut values = Vec::with_capacity(
                     usize::try_from(count)
                         .map_err(|_| "deepseek_gguf_metadata_array_too_large".to_string())?,
@@ -482,6 +596,153 @@ fn read_metadata_value(
         }
     };
     Ok(Some(value))
+}
+
+fn joyai_pretokenize(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut pieces = Vec::new();
+    let mut position = 0usize;
+
+    while position < bytes.len() {
+        let start = position;
+        let byte = bytes[position];
+        if byte.is_ascii_digit() {
+            let mut digits = 0;
+            while position < bytes.len() && bytes[position].is_ascii_digit() && digits < 3 {
+                position += 1;
+                digits += 1;
+            }
+        } else if joyai_cjk_at(text, position) {
+            while position < bytes.len() && joyai_cjk_at(text, position) {
+                position = next_char_boundary(text, position);
+            }
+        } else if joyai_ascii_punctuation(byte)
+            && position + 1 < bytes.len()
+            && bytes[position + 1].is_ascii_alphabetic()
+        {
+            position += 1;
+            while position < bytes.len() && bytes[position].is_ascii_alphabetic() {
+                position += 1;
+            }
+        } else if joyai_letter_like_at(text, position) {
+            position = joyai_consume_letters(text, position);
+        } else if !matches!(byte, b'\n' | b'\r')
+            && !joyai_ascii_punctuation(byte)
+            && position + 1 < bytes.len()
+            && joyai_letter_like_at(text, position + 1)
+        {
+            position += 1;
+            position = joyai_consume_letters(text, position);
+        } else if byte == b' '
+            && position + 1 < bytes.len()
+            && joyai_ascii_punctuation(bytes[position + 1])
+        {
+            position += 1;
+            while position < bytes.len() && joyai_ascii_punctuation(bytes[position]) {
+                position += 1;
+            }
+            while position < bytes.len() && matches!(bytes[position], b'\n' | b'\r') {
+                position += 1;
+            }
+        } else if joyai_ascii_punctuation(byte) {
+            while position < bytes.len() && joyai_ascii_punctuation(bytes[position]) {
+                position += 1;
+            }
+            while position < bytes.len() && matches!(bytes[position], b'\n' | b'\r') {
+                position += 1;
+            }
+        } else if byte.is_ascii_whitespace() {
+            let mut scan = position;
+            let mut last_newline_end = None;
+            while scan < bytes.len() && bytes[scan].is_ascii_whitespace() {
+                if matches!(bytes[scan], b'\n' | b'\r') {
+                    last_newline_end = Some(scan + 1);
+                }
+                scan += 1;
+            }
+            position = if let Some(newline_end) = last_newline_end {
+                newline_end
+            } else if scan < bytes.len()
+                && scan > position + 1
+                && (joyai_letter_like_at(text, scan) || joyai_ascii_punctuation(bytes[scan]))
+            {
+                scan - 1
+            } else {
+                scan
+            };
+        } else {
+            position = next_char_boundary(text, position);
+        }
+
+        if position == start {
+            position = next_char_boundary(text, position);
+        }
+        pieces.push(&text[start..position]);
+    }
+    pieces
+}
+
+fn joyai_ascii_punctuation(byte: u8) -> bool {
+    matches!(byte, b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~')
+}
+
+fn joyai_letter_like_at(text: &str, position: usize) -> bool {
+    let byte = text.as_bytes()[position];
+    if byte.is_ascii() {
+        byte.is_ascii_alphabetic()
+    } else {
+        true
+    }
+}
+
+fn joyai_consume_letters(text: &str, mut position: usize) -> usize {
+    while position < text.len() && joyai_letter_like_at(text, position) {
+        position = next_char_boundary(text, position);
+    }
+    position
+}
+
+fn joyai_cjk_at(text: &str, position: usize) -> bool {
+    if text.as_bytes()[position].is_ascii() {
+        return false;
+    }
+    let Some(character) = text[position..].chars().next() else {
+        return false;
+    };
+    matches!(
+        u32::from(character),
+        0x4e00..=0x9fa5 | 0x3040..=0x309f | 0x30a0..=0x30ff
+    )
+}
+
+fn next_char_boundary(text: &str, position: usize) -> usize {
+    position
+        + text[position..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(1)
+}
+
+fn gpt2_byte_to_codepoint(byte: u8) -> u32 {
+    let byte = u32::from(byte);
+    if (33..=126).contains(&byte) || (161..=172).contains(&byte) || (174..=255).contains(&byte) {
+        return byte;
+    }
+    let mut mapped = 0u32;
+    for candidate in 0u32..=255 {
+        if (33..=126).contains(&candidate)
+            || (161..=172).contains(&candidate)
+            || (174..=255).contains(&candidate)
+        {
+            continue;
+        }
+        if candidate == byte {
+            return 256 + mapped;
+        }
+        mapped += 1;
+    }
+    byte
 }
 
 fn decode_gpt2_token_text(encoded: &str) -> Result<String, String> {
@@ -1522,7 +1783,7 @@ mod tests {
         output.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
         output.extend_from_slice(&GGUF_VERSION.to_le_bytes());
         output.extend_from_slice(&3u64.to_le_bytes());
-        output.extend_from_slice(&4u64.to_le_bytes());
+        output.extend_from_slice(&5u64.to_le_bytes());
         push_u32_metadata(&mut output, "general.alignment", 32);
         push_u32_metadata(&mut output, "deepseek4.block_count", 43);
         push_string(&mut output, "general.architecture");
@@ -1531,8 +1792,20 @@ mod tests {
         push_string_array_metadata(
             &mut output,
             "tokenizer.ggml.tokens",
-            &["A", "\u{0120}B", "<｜special｜>"],
+            &[
+                "A",
+                "\u{0120}B",
+                "<｜special｜>",
+                "<｜begin▁of▁sentence｜>",
+                "<｜User｜>",
+                "<｜Assistant｜>",
+                "<think>",
+                "</think>",
+                "\u{0120}",
+                "B",
+            ],
         );
+        push_string_array_metadata(&mut output, "tokenizer.ggml.merges", &["\u{0120} B"]);
 
         push_string(&mut output, "blk.0.attn_q_a.weight");
         output.extend_from_slice(&2u32.to_le_bytes());
@@ -1600,6 +1873,12 @@ mod tests {
                 catalog.tokenizer_token_text(2).as_deref(),
                 Ok("<｜special｜>")
             );
+            let tokenizer = catalog.tokenizer().expect("load tokenizer");
+            assert_eq!(tokenizer.tokenize_text("A B"), Ok(vec![0, 1]));
+            assert_eq!(
+                tokenizer.tokenize_chat_prompt("", "A B", DeepseekChatThinkMode::NoThink),
+                Ok(vec![3, 4, 0, 1, 5, 7])
+            );
             let q_a = catalog.tensor("blk.0.attn_q_a.weight").expect("Q A tensor");
             assert_eq!(q_a.dimensions, vec![4, 2]);
             assert_eq!(q_a.tensor_type.name, "f16");
@@ -1627,6 +1906,41 @@ mod tests {
                 vec![9, 8, 7, 6, 5, 4]
             );
         });
+    }
+
+    #[test]
+    fn real_tokenizer_matches_fixed_ds4_oracle_when_available() {
+        let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repository root");
+        let Some(model) = [
+            repository_root.join("../ds4/ds4flash.gguf"),
+            repository_root.join(
+                "../ds4/gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+            ),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        else {
+            return;
+        };
+        let catalog = GgufCatalog::open(&model).expect("open real DeepSeek GGUF");
+        let tokenizer = catalog.tokenizer().expect("load real tokenizer");
+
+        assert_eq!(
+            tokenizer
+                .tokenize_chat_prompt(
+                    "",
+                    "Rispondi in italiano con una frase: chi era Ada Lovelace?",
+                    DeepseekChatThinkMode::NoThink,
+                )
+                .expect("tokenize fixed prompt"),
+            vec![
+                0, 128803, 52, 278, 4908, 75, 295, 89034, 399, 3919, 123003, 28, 23442, 9861,
+                63030, 47121, 317, 805, 33, 128804, 128822,
+            ]
+        );
     }
 
     #[test]

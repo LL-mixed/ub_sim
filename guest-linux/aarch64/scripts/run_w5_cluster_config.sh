@@ -394,6 +394,8 @@ print_w5_effective_env() {
   print_env_value SIM_W5_FLASH_WEIGHT_CATALOG "${SIM_W5_FLASH_WEIGHT_CATALOG:-}"
 
   print_env_section "serving"
+  print_env_value SIM_LLM_INFER_PROMPT "${SIM_LLM_INFER_PROMPT:-}"
+  print_env_value SIM_LLM_INFER_PROMPT_TOKEN_IDS "${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-}"
   print_env_value SIM_W5_SERVING_REQUESTS_FILE "${SIM_W5_SERVING_REQUESTS_FILE:-}"
   print_env_value SIM_W5_SERVING_QUEUE "${SIM_W5_SERVING_QUEUE:-0}"
   print_env_value SIM_W5_SERVING_INGRESS "${SIM_W5_SERVING_INGRESS:-cluster}"

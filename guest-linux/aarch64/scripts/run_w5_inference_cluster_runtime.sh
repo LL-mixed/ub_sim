@@ -113,13 +113,48 @@ SIM_W5_TEST_MIN_TERMINAL_MARGIN_MILLI="${SIM_W5_TEST_MIN_TERMINAL_MARGIN_MILLI:-
 SIM_W5_TEST_MIN_SOURCE_CONFIDENCE_MILLI="${SIM_W5_TEST_MIN_SOURCE_CONFIDENCE_MILLI:-}"
 SIM_W5_TEST_APPROXIMATE_REQUIRES_VERIFY="${SIM_W5_TEST_APPROXIMATE_REQUIRES_VERIFY:-1}"
 SIM_W5_TEST_VALIDATE_ONLY="${SIM_W5_TEST_VALIDATE_ONLY:-0}"
+SIM_LLM_INFER_PROMPT="${SIM_LLM_INFER_PROMPT:-}"
+SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-}}"
+
+if [[ -n "$SIM_LLM_INFER_PROMPT" && -n "$SIM_LLM_INFER_PROMPT_TOKEN_IDS" ]]; then
+  echo "SIM_LLM_INFER_PROMPT and SIM_LLM_INFER_PROMPT_TOKEN_IDS are mutually exclusive" >&2
+  exit 2
+fi
+if [[ -n "$SIM_LLM_INFER_PROMPT" ]]; then
+  case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+    deepseek-v4-flash|deepseek_v4_flash|deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+      tokenizer_bin="$REPO_DIR/target/release/deepseek_v4_flash_tokenizer"
+      cargo build --manifest-path "$REPO_DIR/Cargo.toml" --release --quiet \
+        -p sim-models --bin deepseek_v4_flash_tokenizer
+      SIM_LLM_INFER_PROMPT_TOKEN_IDS="$(
+        "$tokenizer_bin" \
+          --model "$deepseek_runtime_dir/ds4flash.gguf" \
+          --prompt "$SIM_LLM_INFER_PROMPT" \
+          --no-think \
+          --token-ids-only
+      )"
+      if [[ ! "$SIM_LLM_INFER_PROMPT_TOKEN_IDS" =~ '^[0-9]+(,[0-9]+)*$' ]]; then
+        echo "DeepSeek tokenizer returned invalid token IDs" >&2
+        exit 2
+      fi
+      prompt_token_ids=("${(@s:,:)SIM_LLM_INFER_PROMPT_TOKEN_IDS}")
+      echo "[w5_inference_cluster] prompt_tokenized source=raw_prompt model=deepseek-v4-flash tokens=${#prompt_token_ids[@]}" >&2
+      ;;
+    *)
+      echo "raw prompt tokenization is not implemented for backend $SIM_UAPI_W4_CHIPBACKEND_PROFILE" >&2
+      exit 2
+      ;;
+  esac
+fi
+SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-81378,37585,374}"
 
 export RUN_ID
 export TRACE_FILE
 export RUN_SUMMARY_FILE
 export SIM_UAPI_W5_PROFILE
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE
-export SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}}"
+export SIM_LLM_INFER_PROMPT
+export SIM_LLM_INFER_PROMPT_TOKEN_IDS
 export SIM_QWEN3_GUEST_ENGRAM
 export SIM_QWEN3_GUEST_ENGRAM_POOL
 export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}"

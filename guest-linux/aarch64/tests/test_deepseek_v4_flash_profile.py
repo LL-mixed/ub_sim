@@ -21,6 +21,8 @@ FLASH_C = SERVICE_DIR / "mem_service_deepseek_v4_flash.c"
 PROFILE_H = SERVICE_DIR / "mem_service_profile.h"
 PROFILE_C = SERVICE_DIR / "mem_service_profile.c"
 EIGHT_NODE_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
+W5_RUNTIME = ROOT / "scripts" / "run_w5_inference_cluster_runtime.sh"
+SIMPLER_CONFIG = ROOT.parents[1] / "w5.deepseek-v4-flash-simpler.env"
 
 
 class DeepseekV4FlashProfileTest(unittest.TestCase):
@@ -124,6 +126,19 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS", runner)
         self.assertIn("tokens/deepseek-v4-flash", runner)
         self.assertIn('"flash_weight_catalog"', runner)
+
+    def test_simpler_entry_tokenizes_raw_oracle_prompt_before_guest_launch(self):
+        runtime = W5_RUNTIME.read_text()
+        config = SIMPLER_CONFIG.read_text()
+
+        self.assertIn(
+            "SIM_LLM_INFER_PROMPT and SIM_LLM_INFER_PROMPT_TOKEN_IDS are mutually exclusive",
+            runtime,
+        )
+        self.assertIn("deepseek_v4_flash_tokenizer", runtime)
+        self.assertIn("--token-ids-only", runtime)
+        self.assertIn("SIM_LLM_INFER_PROMPT='Rispondi in italiano", config)
+        self.assertNotIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=128822", config)
 
     def test_terminal_runtime_layer_validation_uses_active_model(self):
         infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()

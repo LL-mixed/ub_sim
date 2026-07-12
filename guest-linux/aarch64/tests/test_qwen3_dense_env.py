@@ -1116,6 +1116,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_UAPI_W4_CHIPBACKEND_PROFILE=",
                 "SIM_W5_FLASH_WEIGHT_CATALOG=",
                 "# serving",
+                "SIM_LLM_INFER_PROMPT=",
+                "SIM_LLM_INFER_PROMPT_TOKEN_IDS=",
                 "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_W5_SERVING_QUEUE=0",
                 "SIM_W5_SERVING_INGRESS=cluster",
