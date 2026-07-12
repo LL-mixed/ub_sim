@@ -355,7 +355,17 @@ append_kernel_arg_if_missing() {
 
 append_kernel_arg_if_missing "pmd_mapping=25%"
 append_kernel_arg_if_missing "obmm.skip_cache_maintain=1"
-append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"
+case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+    # The synchronous simulator backend intentionally holds the only guest
+    # vCPU while a real simpler range executes. Operation deadlines still
+    # detect a hung dispatch; an RCU wall-clock warning is not actionable here.
+    append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_suppress=1"
+    ;;
+  *)
+    append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"
+    ;;
+esac
 
 trace() {
   local msg="$1"

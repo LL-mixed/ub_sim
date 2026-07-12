@@ -186,6 +186,22 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("linqu_llm_infer failed", runner)
         self.assertIn("Kernel panic", runner)
 
+    def test_simpler_long_dispatch_does_not_trigger_guest_rcu_false_positive(self):
+        runner = EIGHT_NODE_RUNNER.read_text()
+
+        self.assertIn(
+            'deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)', runner
+        )
+        self.assertIn(
+            'append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_suppress=1"',
+            runner,
+        )
+        self.assertIn(
+            'append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"',
+            runner,
+        )
+        self.assertIn("rcu_preempt|RCU grace-period", runner)
+
     def test_flash_artifact_gate_does_not_require_qwen_stores(self):
         runner = EIGHT_NODE_RUNNER.read_text()
         function_start = runner.index("validate_w5_artifact_sizes()")
