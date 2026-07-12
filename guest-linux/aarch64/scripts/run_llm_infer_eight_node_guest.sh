@@ -1542,6 +1542,7 @@ run_w5_artifact_size_validation_cli() {
 validate_node_log() {
   local node_id="$1"
   local log_file="$2"
+  local qemu_log="$RUN_DIR/${node_id}_qemu.log"
   local expected_dispatch_word="0x41a0000041a00000"
   local engram_candidates_owner_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local terminal_publish_node="$SIM_W5_CLUSTER_NODE_COUNT"
@@ -1705,6 +1706,9 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/deepseek-v4-flash(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ .*status=ok" "$node_id DeepSeek KV publish" || return 1
     assert_log_count "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek KV publish per step" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_layer_kv_restored node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref materialize=object_ref status=ok" "$expected_kv_restores" "$node_id DeepSeek KV restore per decode continuation" || return 1
+    if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek-v4-flash-simpler" ]]; then
+      assert_log_count "$qemu_log" "deepseek-v4-flash-real-range-runtime: engine=simpler node=$((idx - 1)) nodes=$SIM_W5_CLUSTER_NODE_COUNT layers=\\[[0-9]+,[0-9]+\\) terminal_owner=[01] step=[0-9]+ history_tokens=[1-9][0-9]* executed_tokens=[1-9][0-9]* position=[0-9]+ hidden_bytes=[1-9][0-9]* kv_bytes=[1-9][0-9]* routed_layers=[1-9][0-9]* routed_expert_bytes=[1-9][0-9]* route_checksum=0x[0-9a-f]*[1-9a-f][0-9a-f]* .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek real GGUF MoE execution per step" || return 1
+    fi
     if (( idx == terminal_publish_node )); then
       assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1

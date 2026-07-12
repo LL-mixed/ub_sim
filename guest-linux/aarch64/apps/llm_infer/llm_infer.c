@@ -27,8 +27,6 @@
 #include "components/mem_service/mem_service_deepseek_v4_flash.h"
 #include "components/mem_service/mem_service_profile.h"
 #include "components/mem_service/mem_service_qwen3.h"
-#include "components/mem_service/mem_service_expert_route_flow.h"
-#include "components/mem_service/mem_service_expert_cache.h"
 #include "components/mem_service/mem_service_wire_client.h"
 
 #define DT_ROOT "/proc/device-tree"
@@ -1693,25 +1691,6 @@ static bool is_deepseek_v4_flash_profile(void)
     return llm_infer_is_deepseek_v4_flash_profile_name(profile);
 }
 
-static bool is_moe_profile(void)
-{
-    return is_deepseek_v4_flash_profile();
-}
-
-static const char *w4_flash_weight_catalog_path(void)
-{
-    const char *path = getenv("SIM_W5_FLASH_WEIGHT_CATALOG");
-
-    if (path && path[0] != '\0') {
-        return path;
-    }
-    path = getenv("SIM_W5_TEST_FLASH_WEIGHT_CATALOG");
-    if (path && path[0] != '\0') {
-        return path;
-    }
-    return NULL;
-}
-
 static const char *w4_runtime_model_key(void)
 {
     if (is_deepseek_v4_flash_profile()) {
@@ -1795,149 +1774,6 @@ static int w4_runtime_init_obmm_range_flow_request(
                                                              cluster_node_count);
     }
     return -1;
-}
-
-/*
- * Per-layer forward dispatch by profile (stage 2).
- *
- * For dense Qwen3 the layer computes a single MLP. For DeepSeek V4 Flash the
- * layer is Mixture-of-Experts: it routes the token to top-6 of 256 routed
- * experts + 1 shared expert, fetching each routed expert's weight tile from
- * the object store on demand (plan section 3.2/3.3). This records the
- * routing decision and touches the node-side expert cache so hit/miss/pread
- * statistics feed the latency model. The cross-layer handoff (hidden range
- * + KV state) is unchanged.
- *
- * The expert selection here uses the deterministic route-decision helper as
- * the guest-side model input for stage 2 readiness. Real routing can later be
- * supplied by the inference engine without changing the weight-tile/cache path.
- */
-#define DSV4_FLASH_NUM_EXPERTS 256U
-
-static int w4_layer_forward_dispatch_moe(uint32_t layer_id,
-                                         uint64_t decode_step,
-                                         struct mem_service_expert_cache *expert_cache)
-{
-    const char *model_key = w4_runtime_model_key();
-    const char *catalog_path = w4_flash_weight_catalog_path();
-    struct mem_service_expert_route_decision decision;
-    char route_key[128];
-    uint32_t i;
-
-    if (mem_service_expert_route_decision_for_decode(&decision,
-                                                     decode_step,
-                                                     layer_id,
-                                                     0,
-                                                     DSV4_FLASH_NUM_EXPERTS) != 0) {
-        fprintf(stderr,
-                "[w4_guest] fail moe route decision build failed model=%s"
-                " layer=%u step=%" PRIu64 "\n",
-                model_key,
-                layer_id,
-                decode_step);
-        return -1;
-    }
-    if (mem_service_expert_route_record_key(route_key,
-                                            sizeof(route_key),
-                                            model_key,
-                                            decision.step_index,
-                                            decision.layer_id,
-                                            decision.token_index) != 0) {
-        fprintf(stderr,
-                "[w4_guest] fail moe route record key build failed model=%s"
-                " layer=%u step=%" PRIu64 "\n",
-                model_key,
-                layer_id,
-                decode_step);
-        return -1;
-    }
-    printf("[w4_guest] stage moe_layer_route model=%s layer=%u step=%" PRIu64
-           " token=%u active_experts=%u route_key=%s status=recorded\n",
-           model_key,
-           decision.layer_id,
-           decision.step_index,
-           decision.token_index,
-           decision.active_expert_count,
-           route_key);
-    for (i = 0; i < decision.active_expert_count; ++i) {
-        uint32_t expert_id = decision.active_experts[i];
-        struct mem_service_expert_weight_tile_ref tile_ref;
-        bool cache_hit = false;
-
-        if (expert_cache) {
-            cache_hit = mem_service_expert_cache_touch(expert_cache, layer_id, expert_id);
-        }
-        if (catalog_path) {
-            if (mem_service_expert_weight_tile_ref_from_catalog_file(
-                    &tile_ref,
-                    catalog_path,
-                    model_key,
-                    layer_id,
-                    expert_id) != 0) {
-                fprintf(stderr,
-                        "[w4_guest] fail moe expert weight catalog resolve failed"
-                        " model=%s layer=%u expert=%u catalog=%s\n",
-                        model_key,
-                        layer_id,
-                        expert_id,
-                        catalog_path);
-                return -1;
-            }
-        } else if (mem_service_expert_weight_tile_ref_init(
-                       &tile_ref,
-                       model_key,
-                       layer_id,
-                       expert_id,
-                       MEM_SERVICE_EXPERT_QUANT_IQ2_XXS,
-                       MEM_SERVICE_EXPERT_WEIGHT_TILE_DEFAULT_BYTES) != 0) {
-            fprintf(stderr,
-                    "[w4_guest] fail moe expert weight tile ref build failed"
-                    " model=%s layer=%u expert=%u quant=%s\n",
-                    model_key,
-                    layer_id,
-                    expert_id,
-                    MEM_SERVICE_EXPERT_QUANT_IQ2_XXS);
-            return -1;
-        }
-        {
-            const char *source = catalog_path ? "weight_catalog" :
-                                 "deterministic_provider";
-            printf("[w4_guest] stage moe_expert_fetch model=%s layer=%u expert=%u"
-                   " quant=%s tile_key=%s bytes=%" PRIu64
-                   " checksum=0x%016" PRIx64 " cache_hit=%u"
-                   " source=%s status=object_ref_ready\n",
-                   tile_ref.model_key,
-                   tile_ref.layer_id,
-                   tile_ref.expert_id,
-                   tile_ref.quant,
-                   tile_ref.object_key,
-                   tile_ref.payload_bytes,
-                   tile_ref.payload_checksum,
-                   cache_hit ? 1U : 0U,
-                   source);
-        }
-    }
-    return 0;
-}
-
-/*
- * Dispatch the per-layer forward for the active profile. Dense Qwen3 runs a
- * single MLP (no-op here — the real UB compute is dispatched elsewhere);
- * Flash MoE records the route and touches the expert cache. Called once per
- * owned layer in the decode round.
- */
-static int w4_layer_forward_dispatch(uint32_t layer_id,
-                                     uint64_t decode_step,
-                                     struct mem_service_expert_cache *expert_cache)
-{
-    if (is_moe_profile()) {
-        return w4_layer_forward_dispatch_moe(layer_id, decode_step, expert_cache);
-    }
-    /*
-     * Dense Qwen3: the per-layer MLP forward is dispatched to the UB endpoint
-     * in the main compute path; no expert routing is needed.
-     */
-    return 0;
 }
 
 static void resolve_role(char *role, size_t role_len);
@@ -12849,50 +12685,6 @@ decode_round_start:
                        qwen3_engram_config.context_indices_ref.payload_checksum,
                        qwen3_engram_config.context_gate_weight_ref.payload_checksum);
             }
-        }
-    }
-
-    /*
-     * Per-layer forward dispatch by profile (stage 2). For the active MoE
-     * profile (DeepSeek V4 Flash), record the routing decision and touch the
-     * node-side expert cache for each owned layer before the UB compute
-     * dispatch. Dense Qwen3 is a no-op here (single MLP dispatched below).
-     */
-    if (is_moe_profile() && round_layer_end > round_layer_start) {
-        static struct mem_service_expert_cache g_expert_cache;
-        static bool g_expert_cache_init;
-        if (!g_expert_cache_init) {
-            mem_service_expert_cache_init(&g_expert_cache, 64U, 2048ULL * 1024ULL);
-            g_expert_cache_init = true;
-        }
-        for (uint32_t lid = round_layer_start; lid < round_layer_end; ++lid) {
-            if (w4_layer_forward_dispatch(lid, guest_decode_step, &g_expert_cache) != 0) {
-                fprintf(stderr,
-                        "[w4_guest] fail moe layer forward dispatch failed"
-                        " role=%s layer=%u step=%" PRIu64 "\n",
-                        role,
-                        lid,
-                        guest_decode_step);
-                goto out;
-            }
-        }
-        if (guest_decode_step + 1 >= (uint64_t)guest_decode_step_limit) {
-            struct mem_service_expert_cache_stats stats;
-            mem_service_expert_cache_stats(&g_expert_cache, &stats);
-            printf("[w4_guest] stage moe_expert_cache_summary"
-                   " hits=%" PRIu64 " misses=%" PRIu64 " evictions=%" PRIu64
-                   " pread_bytes=%" PRIu64
-                   " compute_time_us=%" PRIu64
-                   " miss_load_time_us=%" PRIu64
-                   " estimated_latency_us=%" PRIu64
-                   " status=ok\n",
-                   stats.hits,
-                   stats.misses,
-                   stats.evictions,
-                   stats.pread_bytes,
-                   stats.compute_time_us,
-                   stats.miss_load_time_us,
-                   stats.estimated_latency_us);
         }
     }
 

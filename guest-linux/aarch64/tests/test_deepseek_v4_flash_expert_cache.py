@@ -21,6 +21,14 @@ ROUTE_C = SERVICE_DIR / "mem_service_expert_route_flow.c"
 CACHE_H = SERVICE_DIR / "mem_service_expert_cache.h"
 CACHE_C = SERVICE_DIR / "mem_service_expert_cache.c"
 LLM_INFER_C = ROOT / "apps" / "llm_infer" / "llm_infer.c"
+SIM_UAPI = ROOT.parents[1] / "crates" / "sim-uapi" / "src" / "lib.rs"
+GGUF_RUNTIME = (
+    ROOT.parents[1]
+    / "crates"
+    / "sim-uapi"
+    / "src"
+    / "deepseek_v4_flash_gguf_runtime.rs"
+)
 
 
 class ExpertRouteFlowTest(unittest.TestCase):
@@ -94,14 +102,15 @@ class ExpertCacheTest(unittest.TestCase):
 
 
 class LlmInferMoeDispatchTest(unittest.TestCase):
-    """Validate the per-profile MoE forward dispatch in the guest decode app."""
+    """Validate that only the host model runtime claims MoE execution."""
 
     def setUp(self):
         self.source = LLM_INFER_C.read_text()
+        self.sim_uapi = SIM_UAPI.read_text()
+        self.gguf_runtime = GGUF_RUNTIME.read_text()
 
     def test_profile_detection_helpers_exist(self):
         self.assertIn("is_deepseek_v4_flash_profile", self.source)
-        self.assertIn("is_moe_profile", self.source)
         self.assertIn('strcmp(profile, "deepseek-v4-flash")', self.source)
         self.assertIn('strcmp(profile, "deepseek_v4_flash")', self.source)
 
@@ -115,30 +124,18 @@ class LlmInferMoeDispatchTest(unittest.TestCase):
             self.source,
         )
 
-    def test_moe_dispatch_records_route_and_fetches_experts(self):
-        # Per-layer MoE: record route decision + fetch expert weight tiles.
-        self.assertIn("w4_layer_forward_dispatch_moe", self.source)
-        self.assertIn("mem_service_expert_route_decision_for_decode", self.source)
-        self.assertIn("mem_service_expert_route_record_key", self.source)
-        self.assertIn("mem_service_expert_weight_tile_ref_init", self.source)
-        self.assertIn("mem_service_expert_weight_tile_ref_from_catalog_file", self.source)
-        self.assertIn("mem_service_expert_cache_touch", self.source)
-        self.assertIn("MEM_SERVICE_EXPERT_QUANT_IQ2_XXS", self.source)
-        self.assertIn("MEM_SERVICE_EXPERT_WEIGHT_TILE_DEFAULT_BYTES", self.source)
-        self.assertIn("SIM_W5_FLASH_WEIGHT_CATALOG", self.source)
-        self.assertIn('"weight_catalog"', self.source)
-        self.assertIn("source=%s status=object_ref_ready", self.source)
-        self.assertIn("status=object_ref_ready", self.source)
-        self.assertIn("moe expert weight catalog resolve failed", self.source)
-        self.assertIn("payload_checksum", self.source)
-        self.assertIn("cache_hit=%u", self.source)
+    def test_guest_does_not_claim_deterministic_moe_execution(self):
+        self.assertNotIn("w4_layer_forward_dispatch_moe", self.source)
+        self.assertNotIn("deterministic_provider", self.source)
+        self.assertNotIn("stage moe_layer_route", self.source)
+        self.assertNotIn("stage moe_expert_fetch", self.source)
 
-    def test_dispatch_called_per_owned_layer_before_compute(self):
-        # The decode round iterates owned layers and dispatches MoE forward.
-        self.assertIn("w4_layer_forward_dispatch(lid, guest_decode_step", self.source)
-        self.assertIn("fail moe layer forward dispatch failed", self.source)
-        self.assertIn("moe_expert_cache_summary", self.source)
-        self.assertIn("estimated_latency_us", self.source)
+    def test_host_runtime_reports_actual_gguf_routes_and_weight_bytes(self):
+        self.assertIn("execution.token_layer_routes", self.sim_uapi)
+        self.assertIn("execution.loaded_routed_expert_bytes", self.sim_uapi)
+        self.assertIn("routed_expert_bytes={}", self.sim_uapi)
+        self.assertIn("catalog.read_expert_tensor_slice", self.gguf_runtime)
+        self.assertIn("finish_deepseek_ffn_with_expert_slices_through_simpler", self.gguf_runtime)
 
     def test_layer_range_resolution_is_profile_aware(self):
         # 8-node dispatch resolves model geometry in llm_infer, then uses
@@ -157,13 +154,9 @@ class LlmInferMoeDispatchTest(unittest.TestCase):
             self.source,
         )
 
-    def test_dispatch_guards_on_moe_profile(self):
-        # The dense path must not run MoE expert routing.
-        self.assertIn("if (is_moe_profile())", self.source)
-
-    def test_expert_cache_headers_are_included(self):
-        self.assertIn("mem_service_expert_route_flow.h", self.source)
-        self.assertIn("mem_service_expert_cache.h", self.source)
+    def test_expert_modeling_headers_are_not_in_infer_client(self):
+        self.assertNotIn("mem_service_expert_route_flow.h", self.source)
+        self.assertNotIn("mem_service_expert_cache.h", self.source)
         self.assertIn("mem_service_profile.h", self.source)
 
 

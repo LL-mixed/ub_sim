@@ -107,6 +107,8 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("materialize=object_ref status=ok", infer_source)
         self.assertIn("deepseek_v4_flash_layer_kv_restored", runner)
         self.assertIn("materialize=object_ref status=ok", runner)
+        self.assertIn("DeepSeek real GGUF MoE execution per step", runner)
+        self.assertIn("routed_expert_bytes=[1-9][0-9]*", runner)
         self.assertNotIn(
             "deepseek_v4_flash_layer_kv_restored node=${idx} "
             "step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) "

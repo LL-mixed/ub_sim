@@ -6105,6 +6105,9 @@ struct DeepseekRangeEngineOutput {
     logits: Vec<f32>,
     candidates: Vec<Ds4TokenCandidate>,
     selected_text: Option<String>,
+    routed_layer_count: u64,
+    routed_expert_bytes: u64,
+    route_checksum: u64,
 }
 
 impl DeepseekRangeEngine {
@@ -6337,6 +6340,9 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
                 logits: slice.logits,
                 candidates: slice.report.candidates,
                 selected_text,
+                routed_layer_count: 0,
+                routed_expert_bytes: 0,
+                route_checksum: 0,
             }
         }
         DeepseekRangeEngine::Simpler => {
@@ -6376,6 +6382,8 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
                 input_hidden.as_deref(),
                 terminal_owner,
             )?;
+            let (routed_layer_count, route_checksum) =
+                deepseek_v4_flash_route_execution_summary(&execution.token_layer_routes);
             let kv_payload = state.encode_range_state(
                 u64::from(contract.layer_start),
                 u64::from(contract.layer_end),
@@ -6392,6 +6400,9 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
                 logits,
                 candidates,
                 selected_text: None,
+                routed_layer_count,
+                routed_expert_bytes: execution.loaded_routed_expert_bytes as u64,
+                route_checksum,
             }
         }
     };
@@ -6524,7 +6535,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         }
     }
     eprintln!(
-        "deepseek-v4-flash-real-range-runtime: engine={} node={} nodes={} layers=[{},{}) terminal_owner={} step={} history_tokens={} executed_tokens={} position={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
+        "deepseek-v4-flash-real-range-runtime: engine={} node={} nodes={} layers=[{},{}) terminal_owner={} step={} history_tokens={} executed_tokens={} position={} hidden_bytes={} kv_bytes={} routed_layers={} routed_expert_bytes={} route_checksum=0x{:016x} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
         engine.name(),
         contract.node,
         contract.pipeline_nodes,
@@ -6537,12 +6548,31 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         position,
         contract.hidden_bytes,
         kv_state_bytes,
+        engine_output.routed_layer_count,
+        engine_output.routed_expert_bytes,
+        engine_output.route_checksum,
         input_checksum,
         output_tensor_checksum,
         logits_descriptors.first().map(|value| value.sampled_token).unwrap_or(0),
         engine_output.selected_text.as_deref().unwrap_or("unmapped"),
     );
     Ok(output)
+}
+
+fn deepseek_v4_flash_route_execution_summary(routes: &[Vec<Vec<usize>>]) -> (u64, u64) {
+    let mut words = Vec::new();
+    let mut layer_count = 0u64;
+
+    for (token_index, token_routes) in routes.iter().enumerate() {
+        for (layer_index, experts) in token_routes.iter().enumerate() {
+            layer_count = layer_count.saturating_add(1);
+            words.push(token_index as u64);
+            words.push(layer_index as u64);
+            words.push(experts.len() as u64);
+            words.extend(experts.iter().map(|expert| *expert as u64));
+        }
+    }
+    (layer_count, checksum_words(&words))
 }
 
 fn deepseek_v4_flash_decode_slice_inputs(
@@ -34659,6 +34689,23 @@ mod tests {
         let error = crate::deepseek_v4_flash_top_logits(&logits)
             .expect_err("non-finite logits must fail closed");
         assert!(error.contains("deepseek_v4_flash_logit_not_finite:token=21"));
+    }
+
+    #[test]
+    fn deepseek_v4_flash_route_execution_summary_binds_actual_routes() {
+        let routes = vec![
+            vec![vec![1, 3, 5, 7, 9, 11], vec![2, 4, 6, 8, 10, 12]],
+            vec![vec![13, 14, 15, 16, 17, 18]],
+        ];
+        let (layer_count, checksum) = crate::deepseek_v4_flash_route_execution_summary(&routes);
+        let (_, changed_checksum) = crate::deepseek_v4_flash_route_execution_summary(&[vec![
+            vec![1, 3, 5, 7, 9, 12],
+            vec![2, 4, 6, 8, 10, 11],
+        ]]);
+
+        assert_eq!(layer_count, 3);
+        assert_ne!(checksum, 0);
+        assert_ne!(checksum, changed_checksum);
     }
 
     #[test]
