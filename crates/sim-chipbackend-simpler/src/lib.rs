@@ -394,6 +394,11 @@ pub struct RuntimeBuffer {
     ptr: NonNull<c_void>,
 }
 
+// Runtime buffers are only used while the owning simpler device-context mutex
+// is held. Moving one into that serialized context does not permit concurrent
+// access to the raw allocation.
+unsafe impl Send for RuntimeBuffer {}
+
 impl RuntimeBuffer {
     pub fn allocate(api: &RuntimeLibrary) -> Result<Self, SimplerApiError> {
         let ptr = unsafe { malloc(api.runtime_size()) };

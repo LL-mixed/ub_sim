@@ -533,6 +533,7 @@ static SIMPLER_DEVICE_CONTEXT_CACHE: OnceLock<
 
 struct SharedSimplerDeviceContext {
     context: simpler_capi::DeviceContext<'static>,
+    runtime_buffer: Option<simpler_capi::RuntimeBuffer>,
     callable_ids: HashMap<String, i32>,
     next_callable_id: i32,
 }
@@ -759,6 +760,7 @@ fn with_simpler_device_context<T>(
                 context: api
                     .create_context()
                     .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?,
+                runtime_buffer: None,
                 callable_ids: HashMap::new(),
                 next_callable_id: 0,
             },
@@ -2218,17 +2220,8 @@ impl LocalRuntimeEngine {
             detail_env_ms = detail_started.elapsed().as_millis();
 
             let detail_started = Instant::now();
-            let api = ensure_simpler_runtime_library(
-                simpler_capi,
-                &runtime_artifacts.host_runtime_library,
-            )?;
+            ensure_simpler_runtime_library(simpler_capi, &runtime_artifacts.host_runtime_library)?;
             detail_load_runtime_ms = detail_started.elapsed().as_millis();
-            let detail_started = Instant::now();
-            let runtime = simpler_capi::RuntimeBuffer::allocate(api)
-                .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?;
-            let runtime_handle = runtime.handle();
-            detail_runtime_alloc_ms = detail_started.elapsed().as_millis();
-
             let detail_started = Instant::now();
             let orch_binary = load_binary_artifact(&runtime_artifacts.orch_shared_object)?;
             let aicpu_binary = match runtime_artifacts.aicpu_binary.as_ref() {
@@ -2292,6 +2285,19 @@ impl LocalRuntimeEngine {
 
             let detail_started = Instant::now();
             with_simpler_device_context(simpler_capi, 0, |api, worker| {
+                let runtime_started = Instant::now();
+                if worker.runtime_buffer.is_none() {
+                    worker.runtime_buffer = Some(
+                        simpler_capi::RuntimeBuffer::allocate(api)
+                            .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?,
+                    );
+                }
+                let runtime_handle = worker
+                    .runtime_buffer
+                    .as_ref()
+                    .expect("runtime buffer")
+                    .handle();
+                detail_runtime_alloc_ms = runtime_started.elapsed().as_millis();
                 let (callable_id, prepare) = match worker.callable_ids.get(&callable_key) {
                     Some(callable_id) => (*callable_id, false),
                     None => {
