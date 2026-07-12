@@ -1840,13 +1840,17 @@ prepare_environment() {
   validate_w5_profile_runtime || return 1
   resolve_w5_serving_requests_config || return 1
   validate_qwen3_engram_context_refs || return 1
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
       SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((APP_WAIT_SECS * 1000))"
     fi
     if [[ -z "$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS" ]]; then
       SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$((APP_WAIT_SECS * ${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS} * 1000))"
     fi
+    trace "prepare: model range decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
+    trace "prepare: model range runtime wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
+  fi
+  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
     trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
     trace "prepare: qwen3 runtime range wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"

@@ -120,6 +120,11 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
             runner,
         )
         self.assertIn("DeepSeek KV restore per decode continuation", runner)
+        self.assertIn(
+            'if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then',
+            runner,
+        )
+        self.assertIn("prepare: model range runtime wait timeout ms=", runner)
         self.assertIn("DeepSeek streamed token per step", runner)
         self.assertIn("deepseek_v4_flash_stream_token", runner)
         self.assertIn("deepseek_v4_flash_first_token", runner)
