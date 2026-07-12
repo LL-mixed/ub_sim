@@ -13476,7 +13476,7 @@ qwen3_shortpath_publish_runtime_range:
                 goto out;
             }
             if (is_deepseek_v4_flash_profile()) {
-                printf("[w4_guest] stage deepseek_v4_flash_first_token"
+                printf("[w4_guest] stage deepseek_v4_flash_stream_token"
                        " node=%u step=%" PRIu64 " token=%" PRIu64
                        " runner_up=%" PRIu64
                        " logits_checksum=0x%016" PRIx64
@@ -13486,6 +13486,18 @@ qwen3_shortpath_publish_runtime_range:
                        terminal_token.sampled_token,
                        terminal_token.runner_up_token,
                        terminal_token.logits_checksum);
+                if (decode_step == 0) {
+                    printf("[w4_guest] stage deepseek_v4_flash_first_token"
+                           " node=%u step=0 token=%" PRIu64
+                           " runner_up=%" PRIu64
+                           " logits_checksum=0x%016" PRIx64
+                           " source=terminal_logits target=stream_output"
+                           " status=ok\n",
+                           dispatch_node + 1U,
+                           terminal_token.sampled_token,
+                           terminal_token.runner_up_token,
+                           terminal_token.logits_checksum);
+                }
             }
             terminal_publish_done_ms = monotonic_ms();
         }

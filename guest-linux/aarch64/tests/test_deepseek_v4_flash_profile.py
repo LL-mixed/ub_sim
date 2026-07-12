@@ -106,6 +106,7 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("deepseek_v4_flash_layer_kv_restored", runner)
         self.assertIn("DeepSeek KV restore per decode continuation", runner)
         self.assertIn("DeepSeek streamed token per step", runner)
+        self.assertIn("deepseek_v4_flash_stream_token", runner)
         self.assertIn("deepseek_v4_flash_first_token", runner)
         self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS", runner)
         self.assertIn("tokens/deepseek-v4-flash", runner)

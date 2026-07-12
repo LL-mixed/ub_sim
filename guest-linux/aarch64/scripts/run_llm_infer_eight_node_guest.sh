@@ -1686,7 +1686,7 @@ validate_node_log() {
     if (( idx == terminal_publish_node )); then
       assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1
-      assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=[0-9]+ .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek streamed token per step" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} step=[0-9]+ .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek streamed token per step" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 .*status=ok" "$node_id DeepSeek logits sampling table" || return 1
     else
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id DeepSeek logits sampling skipped" || return 1

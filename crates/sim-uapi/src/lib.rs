@@ -6219,6 +6219,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
             &all_token_ids,
             guest_input,
         )?;
+    let executed_token_count = token_ids.len();
     let expected_hidden_len = token_ids
         .len()
         .checked_mul(DS4_FLASH_HIDDEN_F32_VALUES)
@@ -6484,7 +6485,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         }
     }
     eprintln!(
-        "deepseek-v4-flash-real-range-runtime: engine={} node={} nodes={} layers=[{},{}) terminal_owner={} step={} tokens={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
+        "deepseek-v4-flash-real-range-runtime: engine={} node={} nodes={} layers=[{},{}) terminal_owner={} step={} history_tokens={} executed_tokens={} position={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
         engine.name(),
         contract.node,
         contract.pipeline_nodes,
@@ -6493,6 +6494,8 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         terminal_owner as u8,
         decode_step,
         all_token_ids.len(),
+        executed_token_count,
+        position,
         contract.hidden_bytes,
         kv_state_bytes,
         input_checksum,
