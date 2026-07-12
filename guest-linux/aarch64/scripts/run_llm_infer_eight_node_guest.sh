@@ -175,7 +175,7 @@ SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIME
 SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
-FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|\\[w4_guest\\] fail"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|dispatch payload mismatch|linqu_llm_infer failed|Kernel panic|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)

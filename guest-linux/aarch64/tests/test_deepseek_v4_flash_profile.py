@@ -132,6 +132,23 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
             infer_source,
         )
 
+    def test_simpler_backend_uses_the_same_flash_guest_contract(self):
+        infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
+        runner = EIGHT_NODE_RUNNER.read_text()
+
+        self.assertIn(
+            "llm_infer_is_deepseek_v4_flash_profile_name", infer_source
+        )
+        self.assertIn('strcmp(profile, "deepseek-v4-flash-simpler")', infer_source)
+        self.assertIn('strcmp(profile, "deepseek_v4_flash_simpler")', infer_source)
+        self.assertIn(
+            "return llm_infer_is_deepseek_v4_flash_profile_name(profile);",
+            infer_source,
+        )
+        self.assertIn("dispatch payload mismatch", runner)
+        self.assertIn("linqu_llm_infer failed", runner)
+        self.assertIn("Kernel panic", runner)
+
     def test_flash_artifact_gate_does_not_require_qwen_stores(self):
         runner = EIGHT_NODE_RUNNER.read_text()
         function_start = runner.index("validate_w5_artifact_sizes()")

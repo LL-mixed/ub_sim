@@ -6342,7 +6342,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
             )?;
             let logits = execution.logits.unwrap_or_default();
             let candidates = if terminal_owner {
-                deepseek_v4_flash_candidates_from_logits(&logits)?
+                deepseek_v4_flash_candidates_from_logits(&catalog, &logits)?
             } else {
                 Vec::new()
             };
@@ -6773,8 +6773,24 @@ fn deepseek_v4_flash_patch_real_text_output(
 }
 
 fn deepseek_v4_flash_candidates_from_logits(
+    catalog: &GgufCatalog,
     logits: &[f32],
 ) -> Result<Vec<Ds4TokenCandidate>, String> {
+    deepseek_v4_flash_top_logits(logits)?
+        .into_iter()
+        .map(|(token, logit)| {
+            Ok(Ds4TokenCandidate {
+                id: i32::try_from(token)
+                    .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
+                text: catalog.tokenizer_token_text(token)?,
+                logit,
+                logprob: 0.0,
+            })
+        })
+        .collect()
+}
+
+fn deepseek_v4_flash_top_logits(logits: &[f32]) -> Result<Vec<(usize, f32)>, String> {
     let expected = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize;
     if logits.len() != expected {
         return Err(format!(
@@ -6802,17 +6818,7 @@ fn deepseek_v4_flash_candidates_from_logits(
             top.push((token, logit));
         }
     }
-    top.into_iter()
-        .map(|(token, logit)| {
-            Ok(Ds4TokenCandidate {
-                id: i32::try_from(token)
-                    .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
-                text: String::new(),
-                logit,
-                logprob: 0.0,
-            })
-        })
-        .collect()
+    Ok(top)
 }
 
 fn deepseek_v4_flash_real_logits_descriptor(
@@ -34498,19 +34504,17 @@ mod tests {
         logits[7] = 5.0;
         logits[19] = 3.0;
         logits[3] = 5.0;
-        let candidates =
-            crate::deepseek_v4_flash_candidates_from_logits(&logits).expect("finite logits");
+        let candidates = crate::deepseek_v4_flash_top_logits(&logits).expect("finite logits");
         assert_eq!(
             candidates
                 .iter()
-                .map(|candidate| candidate.id)
+                .map(|(token, _)| *token)
                 .collect::<Vec<_>>(),
-            vec![3, 7, 11, 19]
+            vec![3usize, 7, 11, 19]
         );
-        assert!(candidates.iter().all(|candidate| candidate.text.is_empty()));
 
         logits[21] = f32::NAN;
-        let error = crate::deepseek_v4_flash_candidates_from_logits(&logits)
+        let error = crate::deepseek_v4_flash_top_logits(&logits)
             .expect_err("non-finite logits must fail closed");
         assert!(error.contains("deepseek_v4_flash_logit_not_finite:token=21"));
     }
@@ -34689,6 +34693,7 @@ mod tests {
                         < deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size
                 );
                 assert_eq!(read_u64_le_at(&output, logits_entry + 160), 4);
+                assert!(read_u64_le_at(&output, logits_entry + 192) > 0);
             },
         );
     }

@@ -1357,12 +1357,19 @@ static uint64_t qwen3_prompt_token_ids_checksum(volatile uint8_t *ep_mmio,
     return acc;
 }
 
+static bool llm_infer_is_deepseek_v4_flash_profile_name(const char *profile)
+{
+    return profile &&
+           (strcmp(profile, "deepseek-v4-flash") == 0 ||
+            strcmp(profile, "deepseek_v4_flash") == 0 ||
+            strcmp(profile, "deepseek-v4-flash-simpler") == 0 ||
+            strcmp(profile, "deepseek_v4_flash_simpler") == 0);
+}
+
 static bool llm_infer_is_model_range_profile_name(const char *profile)
 {
     return llm_infer_is_qwen3_profile_name(profile) ||
-           (profile &&
-            (strcmp(profile, "deepseek-v4-flash") == 0 ||
-             strcmp(profile, "deepseek_v4_flash") == 0));
+           llm_infer_is_deepseek_v4_flash_profile_name(profile);
 }
 
 static const char *llm_infer_prompt_token_ids_csv(void)
@@ -1659,9 +1666,7 @@ static uint64_t expected_dispatch_result_word(void)
     if (profile && strcmp(profile, "host_matmul") == 0) {
         return W4_DISPATCH_RESULT_WORD_HOST_MATMUL;
     }
-    if (profile &&
-        (strcmp(profile, "deepseek-v4-flash") == 0 ||
-         strcmp(profile, "deepseek_v4_flash") == 0)) {
+    if (llm_infer_is_deepseek_v4_flash_profile_name(profile)) {
         return W4_DISPATCH_RESULT_WORD_DEEPSEEK_V4_FLASH;
     }
     return W4_DISPATCH_RESULT_WORD;
@@ -1685,9 +1690,7 @@ static bool is_deepseek_v4_flash_profile(void)
 {
     const char *profile = getenv("SIM_UAPI_W4_CHIPBACKEND_PROFILE");
 
-    return profile &&
-           (strcmp(profile, "deepseek-v4-flash") == 0 ||
-            strcmp(profile, "deepseek_v4_flash") == 0);
+    return llm_infer_is_deepseek_v4_flash_profile_name(profile);
 }
 
 static bool is_moe_profile(void)

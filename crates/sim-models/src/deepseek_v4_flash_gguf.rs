@@ -34,6 +34,7 @@ pub enum GgufScalarValue {
     Float(f64),
     Bool(bool),
     String(String),
+    Strings(Vec<String>),
 }
 
 impl GgufScalarValue {
@@ -212,6 +213,24 @@ impl GgufCatalog {
             .get(key)
             .and_then(GgufScalarValue::as_u64)
             .ok_or_else(|| format!("deepseek_gguf_unsigned_metadata_missing:{key}"))
+    }
+
+    pub fn metadata_strings(&self, key: &str) -> Result<&[String], String> {
+        match self.metadata.get(key) {
+            Some(GgufScalarValue::Strings(values)) => Ok(values),
+            _ => Err(format!("deepseek_gguf_string_array_metadata_missing:{key}")),
+        }
+    }
+
+    pub fn tokenizer_token_text(&self, token: usize) -> Result<String, String> {
+        let tokens = self.metadata_strings("tokenizer.ggml.tokens")?;
+        let encoded = tokens.get(token).ok_or_else(|| {
+            format!(
+                "deepseek_gguf_token_out_of_range:{token}:vocab={}",
+                tokens.len()
+            )
+        })?;
+        decode_gpt2_token_text(encoded)
     }
 
     pub fn read_tensor(&self, name: &str) -> Result<Vec<u8>, String> {
@@ -443,6 +462,16 @@ fn read_metadata_value(
             let item_type = read_u32(reader)?;
             let count = read_u64(reader)?;
             validate_entry_count("metadata_array", count)?;
+            if key == "tokenizer.ggml.tokens" && item_type == VALUE_STRING {
+                let mut values = Vec::with_capacity(
+                    usize::try_from(count)
+                        .map_err(|_| "deepseek_gguf_metadata_array_too_large".to_string())?,
+                );
+                for _ in 0..count {
+                    values.push(read_string(reader)?);
+                }
+                return Ok(Some(GgufScalarValue::Strings(values)));
+            }
             skip_array(reader, item_type, count, 0)?;
             return Ok(None);
         }
@@ -453,6 +482,40 @@ fn read_metadata_value(
         }
     };
     Ok(Some(value))
+}
+
+fn decode_gpt2_token_text(encoded: &str) -> Result<String, String> {
+    if encoded.contains('\u{ff5c}') {
+        return Ok(encoded.to_string());
+    }
+    let mut bytes = Vec::with_capacity(encoded.len());
+    for codepoint in encoded.chars().map(u32::from) {
+        let byte = gpt2_codepoint_to_byte(codepoint)
+            .ok_or_else(|| format!("deepseek_gguf_token_codepoint_invalid:{codepoint:#x}"))?;
+        bytes.push(byte);
+    }
+    String::from_utf8(bytes).map_err(|err| format!("deepseek_gguf_token_text_not_utf8:{err}"))
+}
+
+fn gpt2_codepoint_to_byte(codepoint: u32) -> Option<u8> {
+    if (33..=126).contains(&codepoint)
+        || (161..=172).contains(&codepoint)
+        || (174..=255).contains(&codepoint)
+    {
+        return u8::try_from(codepoint).ok();
+    }
+    let mut mapped = 0u32;
+    for byte in 0u32..=255 {
+        if (33..=126).contains(&byte) || (161..=172).contains(&byte) || (174..=255).contains(&byte)
+        {
+            continue;
+        }
+        if codepoint == 256 + mapped {
+            return u8::try_from(byte).ok();
+        }
+        mapped += 1;
+    }
+    None
 }
 
 fn skip_array(reader: &mut File, item_type: u32, count: u64, depth: u8) -> Result<(), String> {
@@ -1444,17 +1507,32 @@ mod tests {
         output.extend_from_slice(&value.to_le_bytes());
     }
 
+    fn push_string_array_metadata(output: &mut Vec<u8>, key: &str, values: &[&str]) {
+        push_string(output, key);
+        output.extend_from_slice(&VALUE_ARRAY.to_le_bytes());
+        output.extend_from_slice(&VALUE_STRING.to_le_bytes());
+        output.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            push_string(output, value);
+        }
+    }
+
     fn fixture_bytes() -> Vec<u8> {
         let mut output = Vec::new();
         output.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
         output.extend_from_slice(&GGUF_VERSION.to_le_bytes());
         output.extend_from_slice(&3u64.to_le_bytes());
-        output.extend_from_slice(&3u64.to_le_bytes());
+        output.extend_from_slice(&4u64.to_le_bytes());
         push_u32_metadata(&mut output, "general.alignment", 32);
         push_u32_metadata(&mut output, "deepseek4.block_count", 43);
         push_string(&mut output, "general.architecture");
         output.extend_from_slice(&VALUE_STRING.to_le_bytes());
         push_string(&mut output, "deepseek4");
+        push_string_array_metadata(
+            &mut output,
+            "tokenizer.ggml.tokens",
+            &["A", "\u{0120}B", "<｜special｜>"],
+        );
 
         push_string(&mut output, "blk.0.attn_q_a.weight");
         output.extend_from_slice(&2u32.to_le_bytes());
@@ -1516,6 +1594,12 @@ mod tests {
             assert_eq!(catalog.version, 3);
             assert_eq!(catalog.alignment, 32);
             assert_eq!(catalog.metadata_u64("deepseek4.block_count"), Ok(43));
+            assert_eq!(catalog.tokenizer_token_text(0).as_deref(), Ok("A"));
+            assert_eq!(catalog.tokenizer_token_text(1).as_deref(), Ok(" B"));
+            assert_eq!(
+                catalog.tokenizer_token_text(2).as_deref(),
+                Ok("<｜special｜>")
+            );
             let q_a = catalog.tensor("blk.0.attn_q_a.weight").expect("Q A tensor");
             assert_eq!(q_a.dimensions, vec![4, 2]);
             assert_eq!(q_a.tensor_type.name, "f16");
