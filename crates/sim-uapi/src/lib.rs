@@ -16095,11 +16095,63 @@ fn ensure_simpler_host_matmul_manifest(manifest_path: &Path) -> Result<(), Strin
 }
 
 fn simpler_manifest_has_current_capi_abi(manifest_path: &Path) -> bool {
-    std::fs::read_to_string(manifest_path)
+    let Some(manifest) = std::fs::read_to_string(manifest_path)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|manifest| manifest["simpler_capi_abi_version"].as_u64())
-        == Some(2)
+    else {
+        return false;
+    };
+    manifest["simpler_capi_abi_version"].as_u64() == Some(2)
+        && simpler_manifest_runtime_matches_current_build(&manifest)
+}
+
+fn simpler_manifest_runtime_matches_current_build(manifest: &serde_json::Value) -> bool {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let build_lib = repo_root.join("vendor/simpler/build/lib");
+    if !build_lib.is_dir() {
+        return true;
+    }
+    simpler_manifest_runtime_matches_build_lib(manifest, &build_lib)
+}
+
+fn simpler_manifest_runtime_matches_build_lib(
+    manifest: &serde_json::Value,
+    build_lib: &Path,
+) -> bool {
+    let runtime_dir = build_lib.join("a2a3/sim/host_build_graph");
+    let artifacts = [
+        (
+            &manifest["simpler_runtime"]["host_runtime_library"]["source"],
+            runtime_dir.join("libhost_runtime.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["aicpu_binary"]["source"],
+            runtime_dir.join("libaicpu_kernel.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["aicore_binary"]["source"],
+            runtime_dir.join("libaicore_kernel.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["runtime_env"]["SIMPLER_LOG_LIBRARY"],
+            build_lib.join("libsimpler_log.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["runtime_env"]["SIMPLER_SIM_CONTEXT_LIBRARY"],
+            build_lib.join("libcpu_sim_context.so"),
+        ),
+    ];
+    artifacts.iter().all(|(cached_source, current)| {
+        cached_source
+            .as_str()
+            .and_then(|cached| std::fs::read(cached).ok())
+            .zip(std::fs::read(current).ok())
+            .is_some_and(|(cached, current)| cached == current)
+    })
 }
 
 fn simpler_engram_context_manifest_path() -> Result<PathBuf, String> {
@@ -29037,6 +29089,61 @@ mod tests {
             }
         }
         text
+    }
+
+    #[test]
+    fn simpler_manifest_cache_rejects_stale_runtime_binaries() {
+        let root = std::env::temp_dir().join(format!(
+            "sim-uapi-simpler-runtime-cache-test-{}",
+            std::process::id()
+        ));
+        let cached = root.join("cached");
+        let build_lib = root.join("build/lib");
+        let runtime_dir = build_lib.join("a2a3/sim/host_build_graph");
+        std::fs::create_dir_all(&cached).expect("create cached runtime dir");
+        std::fs::create_dir_all(&runtime_dir).expect("create current runtime dir");
+        let artifacts = [
+            ("runtime_host.bin", runtime_dir.join("libhost_runtime.so")),
+            ("runtime_aicpu.bin", runtime_dir.join("libaicpu_kernel.so")),
+            (
+                "runtime_aicore.bin",
+                runtime_dir.join("libaicore_kernel.so"),
+            ),
+            ("libsimpler_log.so", build_lib.join("libsimpler_log.so")),
+            (
+                "libcpu_sim_context.so",
+                build_lib.join("libcpu_sim_context.so"),
+            ),
+        ];
+        for (index, (cached_name, current_path)) in artifacts.iter().enumerate() {
+            let bytes = vec![index as u8 + 1; 8];
+            std::fs::write(cached.join(cached_name), &bytes).expect("write cached runtime");
+            if let Some(parent) = current_path.parent() {
+                std::fs::create_dir_all(parent).expect("create current runtime parent");
+            }
+            std::fs::write(current_path, bytes).expect("write current runtime");
+        }
+        let manifest = serde_json::json!({
+            "simpler_runtime": {
+                "host_runtime_library": {"source": cached.join("runtime_host.bin")},
+                "aicpu_binary": {"source": cached.join("runtime_aicpu.bin")},
+                "aicore_binary": {"source": cached.join("runtime_aicore.bin")},
+                "runtime_env": {
+                    "SIMPLER_LOG_LIBRARY": cached.join("libsimpler_log.so"),
+                    "SIMPLER_SIM_CONTEXT_LIBRARY": cached.join("libcpu_sim_context.so"),
+                }
+            }
+        });
+
+        assert!(super::simpler_manifest_runtime_matches_build_lib(
+            &manifest, &build_lib
+        ));
+        std::fs::write(runtime_dir.join("libaicore_kernel.so"), b"new-aicore")
+            .expect("replace current AICore runtime");
+        assert!(!super::simpler_manifest_runtime_matches_build_lib(
+            &manifest, &build_lib
+        ));
+        std::fs::remove_dir_all(root).expect("remove runtime cache test dir");
     }
 
     #[test]
