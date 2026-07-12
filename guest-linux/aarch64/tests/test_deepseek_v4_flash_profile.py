@@ -137,6 +137,9 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         )
         self.assertIn("deepseek_v4_flash_tokenizer", runtime)
         self.assertIn("--token-ids-only", runtime)
+        self.assertIn("max_layers_per_node=$(((43 + cluster_nodes - 1) / cluster_nodes))", runtime)
+        self.assertIn("simpler_min_wait_secs=", runtime)
+        self.assertIn("compute_deadline backend=simpler", runtime)
         self.assertIn("SIM_LLM_INFER_PROMPT='Rispondi in italiano", config)
         self.assertNotIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=128822", config)
 

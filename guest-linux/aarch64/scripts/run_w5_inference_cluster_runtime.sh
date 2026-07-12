@@ -148,6 +148,29 @@ if [[ -n "$SIM_LLM_INFER_PROMPT" ]]; then
 fi
 SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-81378,37585,374}"
 
+case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+    prompt_token_ids=("${(@s:,:)SIM_LLM_INFER_PROMPT_TOKEN_IDS}")
+    cluster_nodes="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
+    if [[ ! "$cluster_nodes" =~ '^[1-9][0-9]*$' ]]; then
+      echo "invalid SIM_W5_CLUSTER_NODE_COUNT=$cluster_nodes" >&2
+      exit 2
+    fi
+    max_layers_per_node=$(((43 + cluster_nodes - 1) / cluster_nodes))
+    simpler_min_wait_secs=$((${#prompt_token_ids[@]} * max_layers_per_node * 30 + 300))
+    APP_WAIT_SECS="${APP_WAIT_SECS:-600}"
+    if [[ ! "$APP_WAIT_SECS" =~ '^[1-9][0-9]*$' ]]; then
+      echo "invalid APP_WAIT_SECS=$APP_WAIT_SECS" >&2
+      exit 2
+    fi
+    if (( APP_WAIT_SECS < simpler_min_wait_secs )); then
+      APP_WAIT_SECS="$simpler_min_wait_secs"
+    fi
+    export APP_WAIT_SECS
+    echo "[w5_inference_cluster] compute_deadline backend=simpler tokens=${#prompt_token_ids[@]} nodes=$cluster_nodes max_layers=$max_layers_per_node app_wait_secs=$APP_WAIT_SECS" >&2
+    ;;
+esac
+
 export RUN_ID
 export TRACE_FILE
 export RUN_SUMMARY_FILE
