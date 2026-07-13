@@ -33,7 +33,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 #[cfg(unix)]
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::ops::Range;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -6139,7 +6139,150 @@ fn deepseek_v4_flash_f32_values(payload: &[u8]) -> Result<Vec<f32>, String> {
         .collect())
 }
 
+const SIM_DEEPSEEK_V4_FLASH: &str = "SIM_DEEPSEEK_V4_FLASH";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeepseekV4FlashModelFormat {
+    Gguf,
+    OfficialSafetensors,
+}
+
+impl DeepseekV4FlashModelFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Gguf => "gguf",
+            Self::OfficialSafetensors => "official-safetensors",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeepseekV4FlashModelSource {
+    path: PathBuf,
+    format: DeepseekV4FlashModelFormat,
+}
+
+fn inspect_deepseek_v4_flash_model_source(
+    path: &Path,
+) -> Result<DeepseekV4FlashModelSource, String> {
+    let resolved = fs::canonicalize(path).map_err(|err| {
+        format!(
+            "deepseek_v4_flash_model_source_missing:{}:{err}",
+            path.display()
+        )
+    })?;
+    if resolved.is_dir() {
+        if resolved.join("model.safetensors.index.json").is_file()
+            || resolved.join("model.safetensors").is_file()
+        {
+            return Ok(DeepseekV4FlashModelSource {
+                path: resolved,
+                format: DeepseekV4FlashModelFormat::OfficialSafetensors,
+            });
+        }
+        return Err(format!(
+            "deepseek_v4_flash_model_source_directory_invalid:{}",
+            resolved.display()
+        ));
+    }
+    if !resolved.is_file() {
+        return Err(format!(
+            "deepseek_v4_flash_model_source_not_file_or_directory:{}",
+            resolved.display()
+        ));
+    }
+    let file_name = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if file_name == "model.safetensors"
+        || file_name.ends_with(".safetensors.index.json")
+        || file_name.ends_with(".safetensors")
+    {
+        return Ok(DeepseekV4FlashModelSource {
+            path: resolved,
+            format: DeepseekV4FlashModelFormat::OfficialSafetensors,
+        });
+    }
+    let mut magic = [0u8; 4];
+    fs::File::open(&resolved)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|err| {
+            format!(
+                "deepseek_v4_flash_model_source_header_read_failed:{}:{err}",
+                resolved.display()
+            )
+        })?;
+    if &magic != b"GGUF" {
+        return Err(format!(
+            "deepseek_v4_flash_model_source_format_unsupported:{}",
+            resolved.display()
+        ));
+    }
+    Ok(DeepseekV4FlashModelSource {
+        path: resolved,
+        format: DeepseekV4FlashModelFormat::Gguf,
+    })
+}
+
+fn resolve_deepseek_v4_flash_model_source(
+    configured: Option<PathBuf>,
+    search_roots: Vec<PathBuf>,
+) -> Result<DeepseekV4FlashModelSource, String> {
+    if let Some(path) = configured {
+        return inspect_deepseek_v4_flash_model_source(&path);
+    }
+    for candidate in search_roots.into_iter().flat_map(|root| {
+        let ds4 = root.join("../ds4");
+        [
+            ds4.join("ds4flash.gguf"),
+            ds4.join(
+                "gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+            ),
+        ]
+    }) {
+        if let Ok(source) = inspect_deepseek_v4_flash_model_source(&candidate) {
+            return Ok(source);
+        }
+    }
+    Err("deepseek_v4_flash_model_source_not_found:set_SIM_DEEPSEEK_V4_FLASH".to_string())
+}
+
+fn deepseek_v4_flash_model_source() -> Result<DeepseekV4FlashModelSource, String> {
+    let configured = std::env::var_os(SIM_DEEPSEEK_V4_FLASH)
+        .map(|value| {
+            if value.is_empty() {
+                Err("deepseek_v4_flash_model_source_empty:SIM_DEEPSEEK_V4_FLASH".to_string())
+            } else {
+                Ok(PathBuf::from(value))
+            }
+        })
+        .transpose()?;
+    let mut search_roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        search_roots.extend(current_exe.ancestors().map(Path::to_path_buf));
+    }
+    search_roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    resolve_deepseek_v4_flash_model_source(configured, search_roots)
+}
+
+fn deepseek_v4_flash_gguf_path() -> Result<PathBuf, String> {
+    let source = deepseek_v4_flash_model_source()?;
+    if source.format != DeepseekV4FlashModelFormat::Gguf {
+        return Err(format!(
+            "deepseek_v4_flash_runtime_format_unsupported:format={}:path={}:official_FP4_FP8_runtime_not_implemented",
+            source.format.label(),
+            source.path.display()
+        ));
+    }
+    Ok(source.path)
+}
+
 fn deepseek_v4_flash_runtime_paths() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let model_path = deepseek_v4_flash_gguf_path()?;
     let mut search_roots = Vec::new();
     if let Ok(current_dir) = std::env::current_dir() {
         search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
@@ -6151,49 +6294,16 @@ fn deepseek_v4_flash_runtime_paths() -> Result<(PathBuf, PathBuf, PathBuf), Stri
     let runtime_dir = search_roots
         .into_iter()
         .map(|root| root.join("../ds4"))
-        .find(|candidate| {
-            candidate.join("ds4.c").is_file() && candidate.join("ds4flash.gguf").is_file()
-        })
+        .find(|candidate| candidate.join("ds4.c").is_file())
         .ok_or_else(|| "deepseek_v4_flash_sibling_runtime_not_found".to_string())?;
     let library_path = runtime_dir.join("build/libds4_w5.dylib");
-    let model_path = runtime_dir.join("ds4flash.gguf");
     if !library_path.is_file() {
         return Err(format!(
             "deepseek_v4_flash_library_missing:{}",
             library_path.display()
         ));
     }
-    if !model_path.is_file() {
-        return Err(format!(
-            "deepseek_v4_flash_model_missing:{}",
-            model_path.display()
-        ));
-    }
     Ok((runtime_dir, library_path, model_path))
-}
-
-fn deepseek_v4_flash_gguf_path() -> Result<PathBuf, String> {
-    let mut search_roots = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
-    }
-    if let Ok(current_exe) = std::env::current_exe() {
-        search_roots.extend(current_exe.ancestors().map(Path::to_path_buf));
-    }
-    search_roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    search_roots
-        .into_iter()
-        .flat_map(|root| {
-            let ds4 = root.join("../ds4");
-            [
-                ds4.join("ds4flash.gguf"),
-                ds4.join(
-                    "gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
-                ),
-            ]
-        })
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| "deepseek_v4_flash_sibling_gguf_not_found".to_string())
 }
 
 fn run_deepseek_v4_flash_real_range_runtime(
@@ -34706,6 +34816,63 @@ mod tests {
         assert_eq!(layer_count, 3);
         assert_ne!(checksum, 0);
         assert_ne!(checksum, changed_checksum);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_model_source_supports_explicit_gguf_and_official_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_deepseek_model_source_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("ub_sim");
+        let sibling = root.join("ds4");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&sibling).expect("create sibling model dir");
+        let fallback = sibling.join("ds4flash.gguf");
+        std::fs::write(&fallback, b"GGUFfallback").expect("write fallback GGUF");
+        let explicit = root.join("explicit.gguf");
+        std::fs::write(&explicit, b"GGUFexplicit").expect("write explicit GGUF");
+
+        let resolved = crate::resolve_deepseek_v4_flash_model_source(
+            Some(explicit.clone()),
+            vec![workspace.clone()],
+        )
+        .expect("resolve explicit GGUF");
+        assert_eq!(
+            resolved.path,
+            explicit.canonicalize().expect("canonical GGUF")
+        );
+        assert_eq!(resolved.format, crate::DeepseekV4FlashModelFormat::Gguf);
+
+        let fallback_resolved =
+            crate::resolve_deepseek_v4_flash_model_source(None, vec![workspace])
+                .expect("resolve sibling fallback");
+        assert_eq!(
+            fallback_resolved.path,
+            fallback.canonicalize().expect("canonical fallback")
+        );
+
+        let official = root.join("official");
+        std::fs::create_dir_all(&official).expect("create official model dir");
+        std::fs::write(official.join("model.safetensors.index.json"), b"{}")
+            .expect("write official index");
+        let official_resolved =
+            crate::resolve_deepseek_v4_flash_model_source(Some(official.clone()), Vec::new())
+                .expect("resolve official checkpoint");
+        assert_eq!(
+            official_resolved.format,
+            crate::DeepseekV4FlashModelFormat::OfficialSafetensors
+        );
+
+        let missing = root.join("missing.gguf");
+        let error = crate::resolve_deepseek_v4_flash_model_source(
+            Some(missing.clone()),
+            vec![root.clone()],
+        )
+        .expect_err("explicit missing path must not use fallback");
+        assert!(error.contains(&missing.display().to_string()));
+        std::fs::remove_dir_all(root).expect("remove model source fixture");
     }
 
     #[test]

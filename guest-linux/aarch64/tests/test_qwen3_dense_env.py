@@ -954,6 +954,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             legacy_runner_text,
         )
         self.assertIn("deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)", runner_text)
+        self.assertIn('--model "$SIM_DEEPSEEK_V4_FLASH"', runner_text)
+        self.assertNotIn('--model "$deepseek_runtime_dir/ds4flash.gguf"', runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
         self.assertIn("--no-memory-reuse", config_runner_text)
@@ -1114,6 +1116,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=0",
                 "# model",
                 "SIM_UAPI_W4_CHIPBACKEND_PROFILE=",
+                "SIM_DEEPSEEK_V4_FLASH=",
                 "SIM_W5_FLASH_WEIGHT_CATALOG=",
                 "# serving",
                 "SIM_LLM_INFER_PROMPT=",

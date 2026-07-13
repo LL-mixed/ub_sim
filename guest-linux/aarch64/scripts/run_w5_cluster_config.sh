@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|8] [--steps N] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|8] [--steps N] [--model PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -33,6 +33,7 @@ KEEP_LATEST_OVERRIDE=""
 REQUESTS_OVERRIDE=""
 SERVE_REQUESTS_OVERRIDE=""
 FLASH_PAYLOAD_DIR_OVERRIDE=""
+MODEL_OVERRIDE=""
 NODEA_INGRESS_OVERRIDE=0
 GSVA_KV_OVERRIDE=0
 REQUIRE_PREFIX_CACHE_OVERRIDE=0
@@ -137,6 +138,19 @@ while (( $# > 0 )); do
       NODES_OVERRIDE="${1#--nodes=}"
       shift
       ;;
+    --model)
+      if (( $# < 2 )); then
+        echo "--model requires a value" >&2
+        usage
+        exit 2
+      fi
+      MODEL_OVERRIDE="$2"
+      shift 2
+      ;;
+    --model=*)
+      MODEL_OVERRIDE="${1#--model=}"
+      shift
+      ;;
     --requests)
       if (( $# < 2 )); then
         echo "--requests requires a value" >&2
@@ -209,6 +223,16 @@ fi
 set -a
 source "$CONFIG_PATH"
 set +a
+
+if [[ -n "$MODEL_OVERRIDE" ]]; then
+  if [[ "$MODEL_OVERRIDE" != /* ]]; then
+    MODEL_OVERRIDE="$PWD/$MODEL_OVERRIDE"
+  fi
+  export SIM_DEEPSEEK_V4_FLASH="$MODEL_OVERRIDE"
+elif [[ -n "${SIM_DEEPSEEK_V4_FLASH:-}" && "$SIM_DEEPSEEK_V4_FLASH" != /* ]]; then
+  config_dir="$(cd "$(dirname "$CONFIG_PATH")" && pwd)"
+  export SIM_DEEPSEEK_V4_FLASH="$config_dir/$SIM_DEEPSEEK_V4_FLASH"
+fi
 
 reject_deprecated_w5_env_var() {
   local old_name="$1"
@@ -391,6 +415,7 @@ print_w5_effective_env() {
 
   print_env_section "model"
   print_env_value SIM_UAPI_W4_CHIPBACKEND_PROFILE "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
+  print_env_value SIM_DEEPSEEK_V4_FLASH "${SIM_DEEPSEEK_V4_FLASH:-}"
   print_env_value SIM_W5_FLASH_WEIGHT_CATALOG "${SIM_W5_FLASH_WEIGHT_CATALOG:-}"
 
   print_env_section "serving"
@@ -491,6 +516,12 @@ validate_w5_cluster_config() {
   fi
   if ! is_deepseek_v4_flash_w5_profile "$profile" && [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
     echo "W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
+    return 2
+  fi
+  if is_deepseek_v4_flash_w5_profile "$profile" &&
+     [[ -n "${SIM_DEEPSEEK_V4_FLASH:-}" ]] &&
+     [[ ! -f "$SIM_DEEPSEEK_V4_FLASH" && ! -d "$SIM_DEEPSEEK_V4_FLASH" ]]; then
+    echo "SIM_DEEPSEEK_V4_FLASH model source is missing: $SIM_DEEPSEEK_V4_FLASH" >&2
     return 2
   fi
   if bool_enabled "${SIM_W5_SERVING_QUEUE:-0}" &&

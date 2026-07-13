@@ -51,6 +51,22 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("--nodes must be 2, 3, or 8: 4", result.stderr)
 
+    def test_cli_model_overrides_deepseek_env_source(self):
+        model = self.repo / "out" / "test-deepseek-v4-flash.gguf"
+        try:
+            model.parent.mkdir(parents=True, exist_ok=True)
+            model.write_bytes(b"GGUFtest")
+            result = self.run_config("--print-env", "--model", str(model))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"SIM_DEEPSEEK_V4_FLASH={model}\n", result.stdout)
+        finally:
+            model.unlink(missing_ok=True)
+
+    def test_deepseek_env_uses_format_neutral_model_source(self):
+        config = self.deepseek_config.read_text(encoding="utf-8")
+        self.assertIn("SIM_DEEPSEEK_V4_FLASH=", config)
+        self.assertNotIn("SIM_DEEPSEEK_V4_FLASH_GGUF", config)
+
     def test_launcher_derives_topology_scenario_and_active_nodes(self):
         source = self.launcher.read_text(encoding="utf-8")
         self.assertIn("SIM_W5_CLUSTER_NODE_COUNT", source)

@@ -35,18 +35,23 @@ RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_s
 case "$SIM_UAPI_W5_PROFILE" in
   deepseek_v4_flash_decode)
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-deepseek-v4-flash}"
-    deepseek_runtime_dir="$REPO_DIR/../ds4"
-    if [[ ! -d "$deepseek_runtime_dir" ]]; then
-      echo "DeepSeek V4 Flash runtime directory is missing: $deepseek_runtime_dir" >&2
-      exit 2
+    SIM_DEEPSEEK_V4_FLASH="${SIM_DEEPSEEK_V4_FLASH:-$REPO_DIR/../ds4/ds4flash.gguf}"
+    if [[ "$SIM_DEEPSEEK_V4_FLASH" != /* ]]; then
+      SIM_DEEPSEEK_V4_FLASH="$REPO_DIR/$SIM_DEEPSEEK_V4_FLASH"
     fi
-    deepseek_runtime_dir="$(cd "$deepseek_runtime_dir" && pwd)"
-    if [[ ! -f "$deepseek_runtime_dir/ds4flash.gguf" ]]; then
-      echo "DeepSeek V4 Flash model is missing: $deepseek_runtime_dir/ds4flash.gguf" >&2
+    export SIM_DEEPSEEK_V4_FLASH
+    if [[ ! -f "$SIM_DEEPSEEK_V4_FLASH" && ! -d "$SIM_DEEPSEEK_V4_FLASH" ]]; then
+      echo "DeepSeek V4 Flash model source is missing: $SIM_DEEPSEEK_V4_FLASH" >&2
       exit 2
     fi
     case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
       deepseek-v4-flash|deepseek_v4_flash)
+        deepseek_runtime_dir="$REPO_DIR/../ds4"
+        if [[ ! -d "$deepseek_runtime_dir" ]]; then
+          echo "DeepSeek V4 Flash DS4 runtime directory is missing: $deepseek_runtime_dir" >&2
+          exit 2
+        fi
+        deepseek_runtime_dir="$(cd "$deepseek_runtime_dir" && pwd)"
         cargo run --manifest-path "$REPO_DIR/Cargo.toml" --release \
           -p sim-models --bin deepseek_v4_flash_adapter -- \
           build-library \
@@ -128,7 +133,7 @@ if [[ -n "$SIM_LLM_INFER_PROMPT" ]]; then
         -p sim-models --bin deepseek_v4_flash_tokenizer
       SIM_LLM_INFER_PROMPT_TOKEN_IDS="$(
         "$tokenizer_bin" \
-          --model "$deepseek_runtime_dir/ds4flash.gguf" \
+          --model "$SIM_DEEPSEEK_V4_FLASH" \
           --prompt "$SIM_LLM_INFER_PROMPT" \
           --no-think \
           --token-ids-only
