@@ -908,7 +908,7 @@ fn simpler_tensor_dtype(
                 simpler_capi::DataType::Int32
             }
         }
-        DispatchBackendProfile::HostFp8Gemm => {
+        DispatchBackendProfile::HostFp8Gemm | DispatchBackendProfile::HostFp4Gemm => {
             if tensor_index < 4 {
                 simpler_capi::DataType::Uint8
             } else {
@@ -1560,6 +1560,7 @@ fn backend_profile_name(profile: DispatchBackendProfile) -> &'static str {
         DispatchBackendProfile::HostGemm => "host_gemm",
         DispatchBackendProfile::HostQuantizedGemm => "host_quantized_gemm",
         DispatchBackendProfile::HostFp8Gemm => "host_fp8_gemm",
+        DispatchBackendProfile::HostFp4Gemm => "host_fp4_gemm",
         DispatchBackendProfile::HostEngramContext => "host_engram_context",
     }
 }
@@ -1590,6 +1591,7 @@ fn validate_simpler_dispatch_spec(
             | (DispatchBackendProfile::HostGemm, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostQuantizedGemm, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostFp8Gemm, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostFp4Gemm, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostEngramContext, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostVector, DispatchRuntimeVariant::HostBuildGraph) => {}
             (profile, runtime_variant) => {

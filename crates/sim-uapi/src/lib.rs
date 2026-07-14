@@ -1,6 +1,7 @@
 //! Guest-visible UAPI surface placeholders.
 
 mod deepseek_v4_flash_gguf_runtime;
+mod deepseek_v4_flash_official_expert_runtime;
 mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_runtime;
 
@@ -17,6 +18,15 @@ pub use deepseek_v4_flash_official_runtime::{
     ensure_simpler_host_fp8_gemm_manifest, execute_deepseek_official_bf16_rows_through_simpler,
     execute_deepseek_official_fp8_rows_through_simpler, execute_fp8_rows_through_simpler,
     DeepseekV4LinearOutputDType, DeepseekV4OfficialBf16Execution, DeepseekV4OfficialFp8Execution,
+};
+
+pub use deepseek_v4_flash_official_expert_runtime::{
+    ensure_simpler_host_fp4_gemm_manifest, execute_deepseek_official_fp4_rows_through_simpler,
+    execute_deepseek_official_routed_expert_through_simpler,
+    execute_deepseek_official_routed_experts_through_simpler,
+    execute_deepseek_official_router_through_simpler, execute_fp4_rows_through_simpler,
+    DeepseekV4OfficialFp4Execution, DeepseekV4OfficialRoutedExpertExecution,
+    DeepseekV4OfficialRoutedExpertsExecution, DeepseekV4OfficialRouterExecution,
 };
 
 pub use deepseek_v4_flash_runtime::{
@@ -857,6 +867,8 @@ struct SimplerRuntimeManifestEnvelope {
     host_quantized_gemm: Option<GemmManifest>,
     #[serde(default)]
     host_fp8_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_fp4_gemm: Option<GemmManifest>,
     #[serde(default)]
     host_q8_block_dot: Option<GemmManifest>,
 }
@@ -28840,9 +28852,9 @@ mod tests {
     use super::{
         bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs,
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
-        ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_fp8_gemm_manifest,
-        ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
-        ensure_simpler_host_quantized_gemm_manifest,
+        ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_fp4_gemm_manifest,
+        ensure_simpler_host_fp8_gemm_manifest, ensure_simpler_host_gemm_manifest,
+        ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
         execute_deepseek_compressor_update_through_simpler,
         execute_deepseek_dense_attention_through_simpler,
         execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
@@ -28850,7 +28862,10 @@ mod tests {
         execute_deepseek_indexer_through_simpler,
         execute_deepseek_iq2_xxs_expert_projection_through_simpler,
         execute_deepseek_moe_through_simpler, execute_deepseek_official_bf16_rows_through_simpler,
+        execute_deepseek_official_fp4_rows_through_simpler,
         execute_deepseek_official_fp8_rows_through_simpler,
+        execute_deepseek_official_routed_expert_through_simpler,
+        execute_deepseek_official_router_through_simpler,
         execute_deepseek_q2_k_expert_projection_through_simpler,
         execute_deepseek_q8_projection_through_simpler,
         execute_deepseek_ratio128_attention_through_simpler,
@@ -28858,10 +28873,10 @@ mod tests {
         execute_deepseek_ratio4_attention_through_simpler,
         execute_deepseek_routed_expert_through_simpler,
         execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
-        execute_deepseek_shared_expert_through_simpler, execute_fp8_rows_through_simpler,
-        f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes, find_u64_marker,
-        finish_deepseek_ffn_with_expert_slices_through_simpler, kvcache_input_b_payload,
-        prepare_deepseek_ffn_through_simpler,
+        execute_deepseek_shared_expert_through_simpler, execute_fp4_rows_through_simpler,
+        execute_fp8_rows_through_simpler, f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes,
+        find_u64_marker, finish_deepseek_ffn_with_expert_slices_through_simpler,
+        kvcache_input_b_payload, prepare_deepseek_ffn_through_simpler,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -28988,7 +29003,8 @@ mod tests {
     };
     use sim_models::deepseek_v4_flash;
     use sim_models::deepseek_v4_flash_checkpoint_reference::{
-        deterministic_hidden_fixture, fp8_matvec_rows_reference,
+        checksum_f32, deterministic_hidden_fixture, fp4_matvec_rows_reference,
+        fp8_matvec_rows_reference, round_to_bf16,
     };
     use sim_models::deepseek_v4_flash_gguf::{
         decode_f32_tensor, lower_f16_matrix_to_f32_kxn_padded, lower_q8_0_matrix_to_bf16_kxn,
@@ -34604,6 +34620,58 @@ mod tests {
     }
 
     #[test]
+    fn host_fp4_gemm_dispatch_executes_packed_e2m1_asymmetric_permutation() {
+        run_simpler_native_test_isolated(
+            "host_fp4_gemm_dispatch_executes_packed_e2m1_asymmetric_permutation",
+            || {
+                const DIM: usize = 128;
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-fp4-gemm-test-artifacts")
+                    .join("host_fp4_gemm_manifest.json");
+                ensure_simpler_host_fp4_gemm_manifest(&manifest, DIM)
+                    .expect("build host FP4 GEMM artifact");
+                let mut packed_weight = vec![0u8; DIM * (DIM / 2)];
+                for row in 0..DIM {
+                    let k = (row + 1) % DIM;
+                    let byte = &mut packed_weight[row * (DIM / 2) + k / 2];
+                    if k % 2 == 0 {
+                        *byte = (*byte & 0xf0) | 0x02;
+                    } else {
+                        *byte = (*byte & 0x0f) | 0x20;
+                    }
+                }
+                let scales = vec![127u8; DIM * (DIM / 32)];
+                let input = deterministic_hidden_fixture(7, DIM);
+                let reference =
+                    fp4_matvec_rows_reference(&packed_weight, &scales, DIM, DIM, 0, DIM, &input)
+                        .expect("packed E2M1 permutation reference");
+                let execution = execute_fp4_rows_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 113,
+                    },
+                    &manifest,
+                    171_200,
+                    &packed_weight,
+                    &scales,
+                    DIM,
+                    DIM,
+                    0,
+                    DIM,
+                    &input,
+                    DeepseekV4LinearOutputDType::Bf16,
+                )
+                .expect("execute packed E2M1 permutation through simpler");
+                assert_eq!(execution.dispatch_count, 1);
+                assert_eq!(execution.output, reference);
+            },
+        );
+    }
+
+    #[test]
     #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
     fn official_linear_production_matches_reference_across_fp8_roles_and_bf16_head() {
         let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
@@ -34679,6 +34747,269 @@ mod tests {
         )
         .expect("official BF16 output head production dispatch");
         assert_eq!(head_production.output, head_reference);
+
+        let fp4_manifest = std::env::temp_dir()
+            .join("simpler-host-fp4-gemm-test-artifacts-k4096")
+            .join("host_fp4_gemm_manifest.json");
+        for (case, expert) in [17usize, 99].into_iter().enumerate() {
+            let tensor_name = format!("layers.0.ffn.experts.{expert}.w1.weight");
+            let reference = checkpoint
+                .reference_matvec_rows(&tensor_name, &input, 0, 8)
+                .expect("official FP4 expert reference");
+            let production = execute_deepseek_official_fp4_rows_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 720 + case as u64 * 10,
+                },
+                &fp4_manifest,
+                173_000 + case as u64 * 100,
+                &tensor_name,
+                0,
+                8,
+                &input,
+                DeepseekV4LinearOutputDType::Bf16,
+            )
+            .expect("official FP4 production dispatch");
+            assert_eq!(production.output, reference);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_router_production_matches_hash_and_learned_cpu_reference_without_expert_reads() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let checkpoint = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+        )
+        .expect("open official checkpoint");
+        let input = deterministic_hidden_fixture(7, checkpoint.config.hidden_size as usize);
+        let manifest = std::env::temp_dir()
+            .join("simpler-host-bf16-gemm-test-artifacts")
+            .join("host_gemm_manifest.json");
+        let (_, expert_cache_before) = checkpoint.cache_stats().expect("cache stats before route");
+
+        for (case, layer) in [2usize, 3].into_iter().enumerate() {
+            let production = execute_deepseek_official_router_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 700 + case as u64 * 10,
+                },
+                &manifest,
+                layer,
+                1,
+                &input,
+            )
+            .expect("official router production dispatch");
+            let logits = checkpoint
+                .reference_matvec_rows(
+                    &format!("layers.{layer}.ffn.gate.weight"),
+                    &input,
+                    0,
+                    checkpoint.config.n_routed_experts as usize,
+                )
+                .expect("official router CPU logits");
+            let hash_selected = if layer < checkpoint.config.num_hash_layers as usize {
+                let name = format!("layers.{layer}.ffn.gate.tid2eid");
+                let top_k = checkpoint.config.num_experts_per_tok as usize;
+                let bytes = checkpoint
+                    .read_tensor_slice(&name, top_k as u64 * 8, top_k as u64 * 8)
+                    .expect("official hash-selected experts");
+                Some(
+                    bytes
+                        .chunks_exact(8)
+                        .map(|chunk| {
+                            usize::try_from(i64::from_le_bytes(chunk.try_into().unwrap())).unwrap()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+            let selection_bias = if hash_selected.is_none() {
+                Some(
+                    checkpoint
+                        .reference_read_vector(&format!("layers.{layer}.ffn.gate.bias"))
+                        .expect("official learned-router selection bias"),
+                )
+            } else {
+                None
+            };
+            let reference = deepseek_v4_flash_router_reference(
+                &logits,
+                selection_bias.as_deref(),
+                hash_selected.as_deref(),
+                checkpoint.config.num_experts_per_tok as usize,
+                checkpoint.config.routed_scaling_factor as f32,
+            )
+            .expect("official router CPU reference");
+            assert_eq!(production.hash_routed, hash_selected.is_some());
+            assert_eq!(production.expert_indices, reference.expert_indices);
+            for (actual, expected) in production
+                .expert_weights
+                .iter()
+                .zip(&reference.expert_weights)
+            {
+                assert!(
+                    (actual - expected).abs() <= 2.0e-3,
+                    "{actual} != {expected}"
+                );
+            }
+            if let Some(bias) = selection_bias {
+                for (&expert, &weight) in production
+                    .expert_indices
+                    .iter()
+                    .zip(&production.expert_weights)
+                {
+                    let biased_sum = production
+                        .expert_indices
+                        .iter()
+                        .map(|selected| production.probabilities[*selected] + bias[*selected])
+                        .sum::<f32>();
+                    let wrong_biased_weight = (production.probabilities[expert] + bias[expert])
+                        / biased_sum
+                        * checkpoint.config.routed_scaling_factor as f32;
+                    assert!((weight - wrong_biased_weight).abs() > 1.0e-4);
+                }
+            }
+        }
+
+        let (_, expert_cache_after) = checkpoint.cache_stats().expect("cache stats after route");
+        assert_eq!(expert_cache_after, expert_cache_before);
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_routed_expert_production_matches_cpu_reference_and_bounds_cache() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let checkpoint = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            &model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+        )
+        .expect("open official checkpoint");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open independent official CPU-reference checkpoint");
+        let input = deterministic_hidden_fixture(7, checkpoint.config.hidden_size as usize);
+        let layer = 0usize;
+        let expert = 17usize;
+        let route_weight = 0.25f32;
+        let prefix = format!("layers.{layer}.ffn.experts.{expert}");
+        let gate = reference_checkpoint
+            .reference_matvec_rows(
+                &format!("{prefix}.w1.weight"),
+                &input,
+                0,
+                checkpoint.config.moe_intermediate_size as usize,
+            )
+            .expect("official routed gate CPU reference");
+        let up = reference_checkpoint
+            .reference_matvec_rows(
+                &format!("{prefix}.w3.weight"),
+                &input,
+                0,
+                checkpoint.config.moe_intermediate_size as usize,
+            )
+            .expect("official routed up CPU reference");
+        let mut activated =
+            deepseek_v4_flash_swiglu_reference(&gate, &up, checkpoint.config.swiglu_limit as f32)
+                .expect("official clamped SwiGLU CPU reference");
+        for value in &mut activated {
+            *value = round_to_bf16(*value * route_weight);
+        }
+        let reference = reference_checkpoint
+            .reference_matvec_rows(
+                &format!("{prefix}.w2.weight"),
+                &activated,
+                0,
+                checkpoint.config.hidden_size as usize,
+            )
+            .expect("official routed down CPU reference");
+        let production = execute_deepseek_official_routed_expert_through_simpler(
+            &checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 800,
+            },
+            &std::env::temp_dir().join("simpler-host-fp4-expert-test-artifacts"),
+            180_000,
+            layer,
+            expert,
+            route_weight,
+            &input,
+        )
+        .expect("official routed expert production dispatch");
+        assert_eq!(production.dispatch_count, 64);
+        assert_eq!(production.gate_checksum, checksum_f32(&gate));
+        assert_eq!(production.up_checksum, checksum_f32(&up));
+        assert_eq!(production.activated_checksum, checksum_f32(&activated));
+        assert_eq!(production.output, reference);
+        let expected_read_bytes = ["w1", "w3", "w2"]
+            .into_iter()
+            .map(|projection| {
+                let weight = checkpoint
+                    .tensor(&format!("{prefix}.{projection}.weight"))
+                    .unwrap();
+                let scale = checkpoint
+                    .tensor(weight.scale_tensor.as_deref().unwrap())
+                    .unwrap();
+                weight.payload_bytes() + scale.payload_bytes()
+            })
+            .sum::<u64>();
+        assert_eq!(production.expert_disk_read_bytes, expected_read_bytes);
+        assert_eq!(production.expert_cache_after.misses, 6);
+        assert_eq!(production.expert_cache_after.evictions, 0);
+
+        let bounded = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits {
+                tensor_bytes: 1024 * 1024,
+                expert_bytes: 5 * 1024 * 1024,
+            },
+        )
+        .expect("open checkpoint with bounded expert cache");
+        for expert in [17usize, 99] {
+            for suffix in ["w1.weight", "w1.scale"] {
+                let name = format!("layers.0.ffn.experts.{expert}.{suffix}");
+                let bytes = bounded.tensor(&name).unwrap().payload_bytes();
+                bounded
+                    .read_expert_slice(&name, 0, bytes)
+                    .expect("read complete selected expert projection");
+            }
+        }
+        let (_, after_eviction) = bounded.cache_stats().expect("bounded cache stats");
+        assert!(after_eviction.evictions >= 1);
+        assert!(after_eviction.resident_bytes <= after_eviction.capacity_bytes);
+        for suffix in ["w1.weight", "w1.scale"] {
+            let name = format!("layers.0.ffn.experts.99.{suffix}");
+            let bytes = bounded.tensor(&name).unwrap().payload_bytes();
+            bounded
+                .read_expert_slice(&name, 0, bytes)
+                .expect("repeat resident expert slice");
+        }
+        let (_, after_hit) = bounded.cache_stats().expect("cache stats after hits");
+        assert_eq!(after_hit.hits, after_eviction.hits + 2);
+        let bad_name = "layers.0.ffn.experts.99.w1.weight";
+        let bad_bytes = bounded.tensor(bad_name).unwrap().payload_bytes();
+        assert!(bounded
+            .read_expert_slice(bad_name, bad_bytes - 1, 2)
+            .is_err());
     }
 
     #[test]

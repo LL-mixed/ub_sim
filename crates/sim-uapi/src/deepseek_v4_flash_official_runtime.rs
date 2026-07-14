@@ -73,9 +73,9 @@ pub struct DeepseekV4OfficialBf16Execution {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct DynamicFp8Activation {
-    values: Vec<u8>,
-    scales: Vec<u8>,
+pub(super) struct DynamicFp8Activation {
+    pub(super) values: Vec<u8>,
+    pub(super) scales: Vec<u8>,
 }
 
 struct HostFp8GemmRunner {
@@ -441,7 +441,7 @@ fn decode_ue8m0(bits: u8) -> Result<f32, String> {
     Ok(2.0f32.powi(i32::from(bits) - 127))
 }
 
-fn quantize_dynamic_fp8(input: &[f32]) -> Result<DynamicFp8Activation, String> {
+pub(super) fn quantize_dynamic_fp8(input: &[f32]) -> Result<DynamicFp8Activation, String> {
     if input.is_empty() || !input.len().is_multiple_of(TILE) {
         return Err(format!(
             "deepseek_v4_production_fp8_activation_shape_invalid:{}",
@@ -468,7 +468,7 @@ fn quantize_dynamic_fp8(input: &[f32]) -> Result<DynamicFp8Activation, String> {
     Ok(DynamicFp8Activation { values, scales })
 }
 
-fn round_to_bf16(value: f32) -> f32 {
+pub(super) fn round_to_bf16(value: f32) -> f32 {
     let bits = value.to_bits();
     if !value.is_finite() {
         return value;
@@ -486,11 +486,11 @@ fn encode_bf16_rne(value: f32) -> Result<u16, String> {
     Ok((bits.wrapping_add(rounding_bias) >> 16) as u16)
 }
 
-fn checksum(values: &[u8]) -> String {
+pub(super) fn checksum(values: &[u8]) -> String {
     format!("fnv1a64:{:016x}", checksum64(values))
 }
 
-fn checksum_f32(values: &[f32]) -> String {
+pub(super) fn checksum_f32(values: &[f32]) -> String {
     let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
     for value in values {
         bytes.extend_from_slice(&value.to_le_bytes());

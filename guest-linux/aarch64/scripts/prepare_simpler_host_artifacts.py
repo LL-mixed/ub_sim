@@ -155,6 +155,26 @@ PROFILE_SPECS = {
         ),
         generated=True,
     ),
+    "host_fp4_gemm": ProfileSpec(
+        profile="HostFp4Gemm",
+        example="generated_host_fp4_gemm",
+        manifest_name="host_fp4_gemm_manifest.json",
+        callable_hint="host_fp4_gemm",
+        orch_source="host_fp4_gemm_orch.cpp",
+        orch_function="build_fp4_gemm_graph",
+        kernels=(KernelSpec(0, "host_fp4_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "activation_fp8"},
+            {"kind": "input", "name": "weight_fp4_lowered_fp8"},
+            {"kind": "input", "name": "activation_scale_ue8m0"},
+            {"kind": "input", "name": "weight_scale_ue8m0_per_32k"},
+            {"kind": "output", "name": "output_fp32"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_q8_block_dot": ProfileSpec(
         profile="HostQuantizedGemm",
         example="generated_host_q8_block_dot",
@@ -866,6 +886,25 @@ int build_fp8_gemm_graph(
     return source
 
 
+def write_host_fp4_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    source = write_host_fp8_gemm_orchestration(build_dir, m, k, n)
+    text = source.read_text()
+    text = text.replace("host_fp8_gemm_orch.cpp", "host_fp4_gemm_orch.cpp")
+    text = text.replace("build_fp8_gemm_graph", "build_fp4_gemm_graph")
+    text = text.replace(
+        " || kM != 128 || kK != 128 || kN != 128", ""
+    ).replace(
+        "artifact geometry must be 128x128x128",
+        "artifact geometry mismatch",
+    )
+    target = build_dir / "host_fp4_gemm_orch.cpp"
+    target.write_text(text)
+    source.unlink()
+    return target
+
+
 def write_host_gemm_kernel(
     build_dir: Path,
     m: int,
@@ -1094,6 +1133,135 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
     wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
     TMATMUL_MX(c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    TSTORE(global_c, c_tile);
+}}
+"""
+    )
+    return source
+
+
+def write_host_fp4_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
+    source = build_dir / "host_fp4_gemm_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ float8_e4m3_t* activation =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[0]);
+    __gm__ float8_e4m3_t* weight =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[1]);
+    __gm__ float8_e8m0_t* activation_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[2]);
+    __gm__ float8_e8m0_t* weight_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[3]);
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[4]);
+
+    constexpr int M = {m};
+    constexpr int K = {k};
+    constexpr int N = {n};
+    constexpr int TileK = 128;
+    constexpr int ScaleK = TileK / 32;
+    constexpr int FullScaleK = K / 32;
+
+    using GlobalA = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, M, TileK, Layout::ND>,
+        BaseShape2D<float8_e4m3_t, M, K, Layout::ND>, Layout::ND>;
+    using GlobalB = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, TileK, N, Layout::DN>,
+        BaseShape2D<float8_e4m3_t, K, N, Layout::DN>, Layout::DN>;
+    using GlobalScaleA = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, M, ScaleK, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, M, FullScaleK, Layout::ND>, Layout::ND>;
+    using GlobalScaleB = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, ScaleK, N, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, FullScaleK, N, Layout::ND>, Layout::ND>;
+    using GlobalC = GlobalTensor<
+        float, TileShape2D<float, M, N, Layout::ND>,
+        BaseShape2D<float, M, N, Layout::ND>, Layout::ND>;
+
+    using MatA = Tile<TileType::Mat, float8_e4m3_t, M, TileK,
+                      BLayout::ColMajor, M, TileK, SLayout::RowMajor, 512>;
+    using MatB = Tile<TileType::Mat, float8_e4m3_t, TileK, N,
+                      BLayout::ColMajor, TileK, N, SLayout::RowMajor, 512>;
+    using MatScaleA = Tile<TileType::Mat, float8_e8m0_t, M, ScaleK,
+                           BLayout::RowMajor, M, ScaleK, SLayout::RowMajor, 32>;
+    using MatScaleB = Tile<TileType::Mat, float8_e8m0_t, TileK, N,
+                           BLayout::ColMajor, ScaleK, N, SLayout::ColMajor, 32>;
+    using Left = TileLeft<float8_e4m3_t, M, TileK, M, TileK>;
+    using Right = TileRight<float8_e4m3_t, TileK, N, TileK, N>;
+    using LeftScale = TileLeftScale<float8_e8m0_t, M, ScaleK, M, ScaleK>;
+    using RightScale = TileRightScale<float8_e8m0_t, TileK, N, ScaleK, N>;
+    using Acc = TileAcc<float, M, N, M, N>;
+
+    MatA a_mat;
+    MatB b_mat;
+    MatScaleA a_scale_mat;
+    MatScaleB b_scale_mat;
+    Left a_tile;
+    Right b_tile;
+    LeftScale a_scale_tile;
+    RightScale b_scale_tile;
+    Acc c_tile;
+    size_t addr = 0;
+    TASSIGN(a_mat, addr);
+    addr += MatA::Numel * sizeof(typename MatA::DType);
+    TASSIGN(b_mat, addr);
+    addr += MatB::Numel * sizeof(typename MatB::DType);
+    TASSIGN(a_scale_mat, addr);
+    addr += MatScaleA::Numel * sizeof(typename MatScaleA::DType);
+    TASSIGN(b_scale_mat, addr);
+    addr += MatScaleB::Numel * sizeof(typename MatScaleB::DType);
+    TASSIGN(a_tile, 0x0);
+    TASSIGN(b_tile, 0x0);
+    TASSIGN(c_tile, 0x0);
+    TASSIGN(a_scale_tile, addr);
+    addr += LeftScale::Numel * sizeof(typename LeftScale::DType);
+    TASSIGN(b_scale_tile, addr);
+
+    GlobalC global_c(output);
+    for (int k0 = 0; k0 < K; k0 += TileK) {{
+        GlobalA global_a(activation + k0);
+        GlobalB global_b(weight + k0);
+        GlobalScaleA global_scale_a(activation_scale + k0 / 32);
+        GlobalScaleB global_scale_b(weight_scale + (k0 / 32) * N);
+        TLOAD(a_mat, global_a);
+        TLOAD(b_mat, global_b);
+        TLOAD(a_scale_mat, global_scale_a);
+        TLOAD(b_scale_mat, global_scale_b);
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        TMOV(a_tile, a_mat);
+        TMOV(b_tile, b_mat);
+        TMOV(a_scale_tile, a_scale_mat);
+        TMOV(b_scale_tile, b_scale_mat);
+        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        if (k0 == 0) {{
+            TMATMUL_MX(c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+        }} else {{
+            TMATMUL_MX(c_tile, c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+        }}
+        set_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+        wait_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+    }}
     set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
     wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
     TSTORE(global_c, c_tile);
@@ -1447,6 +1615,7 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
         "host_fp32_gemm",
         "host_quantized_gemm",
         "host_fp8_gemm",
+        "host_fp4_gemm",
         "host_q8_block_dot",
     ):
         payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
@@ -1477,6 +1646,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         args.platform != "a5sim" or (args.gemm_m, args.gemm_k, args.gemm_n) != (128, 128, 128)
     ):
         raise SystemExit("host_fp8_gemm requires --platform a5sim and 128x128x128 geometry")
+    if args.profile == "host_fp4_gemm" and (
+        args.platform != "a5sim"
+        or args.gemm_m != 128
+        or args.gemm_k <= 0
+        or args.gemm_k % 128 != 0
+        or args.gemm_n != 128
+    ):
+        raise SystemExit(
+            "host_fp4_gemm requires --platform a5sim, M=128, 128-aligned K and N=128"
+        )
     if args.profile == "host_q8_block_dot":
         if args.gemm_m <= 0 or args.gemm_k != 32 or args.gemm_n <= 0 or args.gemm_n % 128 != 0:
             raise SystemExit(
@@ -1524,6 +1703,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         )
     if args.profile == "host_fp8_gemm":
         orch_source = write_host_fp8_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_fp4_gemm":
+        orch_source = write_host_fp4_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n
         )
     if args.profile == "host_q8_block_dot":
@@ -1588,6 +1771,13 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_fp8_gemm"
             else None
         )
+        fp4_gemm_source = (
+            write_host_fp4_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_fp4_gemm"
+            else None
+        )
         q8_block_dot_source = (
             write_host_q8_block_dot_kernel(build_dir, args.gemm_n)
             if args.profile == "host_q8_block_dot"
@@ -1601,6 +1791,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             or fp32_gemm_source
             or quantized_gemm_source
             or fp8_gemm_source
+            or fp4_gemm_source
             or q8_block_dot_source
             or (example_root / kernel.source)
         ).resolve()
@@ -1753,6 +1944,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "k": args.gemm_k,
             "n": args.gemm_n,
             "input_dtype": "fp8_e4m3_ue8m0",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_fp4_gemm":
+        manifest["host_fp4_gemm_manifest_version"] = 2
+        manifest["host_fp4_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "fp8_e4m3+fp4_e2m1_lowered_fp8+ue8m0",
             "output_dtype": "fp32",
             "tile": 128,
         }

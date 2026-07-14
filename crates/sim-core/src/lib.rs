@@ -272,6 +272,7 @@ pub enum DispatchBackendProfile {
     HostGemm,
     HostQuantizedGemm,
     HostFp8Gemm,
+    HostFp4Gemm,
     HostEngramContext,
 }
 

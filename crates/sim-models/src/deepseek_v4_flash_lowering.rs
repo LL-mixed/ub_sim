@@ -1536,6 +1536,14 @@ mod tests {
                 .expect("route top-k experts");
         assert_eq!(topk.expert_indices, vec![0, 3]);
         assert!((topk.expert_weights.iter().sum::<f32>() - 1.5).abs() < 1.0e-6);
+        let unbiased_sum = topk.probabilities[0] + topk.probabilities[3];
+        assert_eq!(
+            topk.expert_weights,
+            vec![
+                topk.probabilities[0] / unbiased_sum * 1.5,
+                topk.probabilities[3] / unbiased_sum * 1.5,
+            ]
+        );
 
         let hash = deepseek_v4_flash_router_reference(&logits, None, Some(&[2, 1]), 2, 1.5)
             .expect("route hash-selected experts");

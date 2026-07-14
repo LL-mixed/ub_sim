@@ -9,6 +9,7 @@ use sim_models::deepseek_v4_flash_checkpoint_reference::deterministic_hidden_fix
 use sim_topology::SimTopology;
 use sim_uapi::{
     execute_deepseek_official_bf16_rows_through_simpler,
+    execute_deepseek_official_fp4_rows_through_simpler,
     execute_deepseek_official_fp8_rows_through_simpler, DeepseekV4LinearOutputDType,
 };
 
@@ -106,8 +107,15 @@ fn run(args: Args) -> Result<(), String> {
         .get(1)
         .copied()
         .ok_or_else(|| format!("tensor is not a matrix: {}", args.tensor))?;
-    let input_size = usize::try_from(input_size)
+    let stored_input_size = usize::try_from(input_size)
         .map_err(|_| format!("tensor input is too large: {}", args.tensor))?;
+    let input_size = if tensor.dtype == DeepseekV4TensorDType::I8 {
+        stored_input_size
+            .checked_mul(2)
+            .ok_or_else(|| format!("tensor logical input is too large: {}", args.tensor))?
+    } else {
+        stored_input_size
+    };
     let input = deterministic_hidden_fixture(args.seed, input_size);
     let scenario_yaml = std::fs::read_to_string(&args.scenario)
         .map_err(|err| format!("read scenario {}: {err}", args.scenario.display()))?;
@@ -148,6 +156,26 @@ fn run(args: Args) -> Result<(), String> {
                 &topology,
                 &task,
                 &artifact,
+                &args.tensor,
+                args.row_start,
+                args.row_count,
+                &input,
+                args.output_dtype,
+            )?;
+            serde_json::to_string_pretty(&execution)
+        }
+        DeepseekV4TensorDType::I8 => {
+            let artifact = args.artifact.unwrap_or_else(|| {
+                PathBuf::from(format!(
+                    "/tmp/simpler-host-fp4-gemm-{input_size}-artifacts/host_fp4_gemm_manifest.json"
+                ))
+            });
+            let execution = execute_deepseek_official_fp4_rows_through_simpler(
+                &checkpoint,
+                &topology,
+                &task,
+                &artifact,
+                800_000,
                 &args.tensor,
                 args.row_start,
                 args.row_count,

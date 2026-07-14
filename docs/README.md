@@ -4,6 +4,8 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current validation entry points:
 
+- [2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md](2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md)
+  - stage-4 evidence for official packed E2M1/UE8M0 routed experts, hash and learned routing, clamped SwiGLU, top-6 combination, selected-only loading, and bounded expert-cache behavior
 - [2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md](2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md)
   - stage-3 evidence for official FP8 E4M3/UE8M0 A5 MX execution, dynamic activation quantization, BF16/F32 output, representative attention/grouped/shared linears, and the checkpoint's BF16 output head
 - [2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md](2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md)
@@ -50,7 +52,7 @@ Current validation entry points:
 - [plans/2026-06-25-mem-service-independent-service-plan.md](plans/2026-06-25-mem-service-independent-service-plan.md)
   - implementation and evaluation plan for turning `mem_service` into an independently releasable/deployable service for LLM serving and pretraining integration
 - [plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md](plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md)
-  - next-stage plan for direct official DeepSeek V4 Flash Safetensors, FP8/FP4 execution, CPU-reference alignment, W5 2/3/8-node validation, and MTP; DS4 remains read-only and 1M context is explicitly not validated
+  - active plan for direct official DeepSeek V4 Flash Safetensors; stages 1 through 4 now cover loader, CPU oracle, FP8 linears, and FP4 routed experts, while first-token, W5 2/3/8-node, and MTP remain; DS4 remains read-only and 1M context is explicitly not validated
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)

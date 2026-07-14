@@ -128,6 +128,31 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("TMATMUL_MX", kernel)
         self.assertNotIn("TMATMUL_ACC", kernel)
 
+    def test_fp4_profile_lowers_packed_e2m1_to_full_k_mx_tiles(self):
+        producer = load_producer()
+        profile = producer.PROFILE_SPECS["host_fp4_gemm"]
+        self.assertEqual(profile.profile, "HostFp4Gemm")
+        self.assertEqual(profile.orch_function, "build_fp4_gemm_graph")
+        self.assertEqual(profile.callable_hint, "host_fp4_gemm")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orchestration = producer.write_host_fp4_gemm_orchestration(
+                root, 128, 4096, 128
+            ).read_text()
+            kernel = producer.write_host_fp4_gemm_kernel(
+                root, 128, 4096, 128
+            ).read_text()
+
+        self.assertIn("build_fp4_gemm_graph", orchestration)
+        self.assertIn("kM = 128", orchestration)
+        self.assertIn("kK = 4096", orchestration)
+        self.assertIn("float8_e4m3_t", kernel)
+        self.assertIn("FullScaleK = K / 32", kernel)
+        self.assertIn("for (int k0 = 0; k0 < K; k0 += TileK)", kernel)
+        self.assertIn("TMATMUL_MX(c_tile, c_tile", kernel)
+        self.assertNotIn("float4_e2m1x2_t", kernel)
+
     def test_q8_block_dot_profile_uses_partial_shape_int8_gemv(self):
         producer = load_producer()
         profile = producer.PROFILE_SPECS["host_q8_block_dot"]
