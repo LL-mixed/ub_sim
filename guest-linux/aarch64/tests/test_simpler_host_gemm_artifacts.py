@@ -95,6 +95,39 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("TileAcc<float", kernel_text)
         self.assertIn("TMATMUL_ACC(c_tile", kernel_text)
 
+    def test_fp8_profile_uses_mx_scales_and_a5_types(self):
+        producer = load_producer()
+        profile = producer.PROFILE_SPECS["host_fp8_gemm"]
+        self.assertEqual(profile.orch_function, "build_fp8_gemm_graph")
+        self.assertEqual(profile.callable_hint, "host_fp8_gemm")
+        self.assertEqual(
+            [arg["name"] for arg in profile.args_template[:5]],
+            [
+                "activation_fp8",
+                "weight_fp8",
+                "activation_scale_ue8m0",
+                "weight_scale_ue8m0",
+                "output_fp32",
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orchestration = producer.write_host_fp8_gemm_orchestration(
+                root, 128, 128, 128
+            ).read_text()
+            kernel = producer.write_host_fp8_gemm_kernel(
+                root, 128, 128, 128
+            ).read_text()
+
+        self.assertIn("expected 5 tensors and 3 scalars", orchestration)
+        self.assertIn("float8_e4m3_t", kernel)
+        self.assertIn("float8_e8m0_t", kernel)
+        self.assertIn("TileLeftScale<float8_e8m0_t", kernel)
+        self.assertIn("TileRightScale<float8_e8m0_t", kernel)
+        self.assertIn("TMATMUL_MX", kernel)
+        self.assertNotIn("TMATMUL_ACC", kernel)
+
     def test_q8_block_dot_profile_uses_partial_shape_int8_gemv(self):
         producer = load_producer()
         profile = producer.PROFILE_SPECS["host_q8_block_dot"]

@@ -135,6 +135,26 @@ PROFILE_SPECS = {
         ),
         generated=True,
     ),
+    "host_fp8_gemm": ProfileSpec(
+        profile="HostFp8Gemm",
+        example="generated_host_fp8_gemm",
+        manifest_name="host_fp8_gemm_manifest.json",
+        callable_hint="host_fp8_gemm",
+        orch_source="host_fp8_gemm_orch.cpp",
+        orch_function="build_fp8_gemm_graph",
+        kernels=(KernelSpec(0, "host_fp8_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "activation_fp8"},
+            {"kind": "input", "name": "weight_fp8"},
+            {"kind": "input", "name": "activation_scale_ue8m0"},
+            {"kind": "input", "name": "weight_scale_ue8m0"},
+            {"kind": "output", "name": "output_fp32"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_q8_block_dot": ProfileSpec(
         profile="HostQuantizedGemm",
         example="generated_host_q8_block_dot",
@@ -760,6 +780,92 @@ def write_host_fp32_gemm_orchestration(
     return write_host_gemm_orchestration(build_dir, m, k, n, fp32=True)
 
 
+def write_host_fp8_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    source = build_dir / "host_fp8_gemm_orch.cpp"
+    source.write_text(
+        f"""\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+extern "C" {{
+
+int build_fp8_gemm_graph(
+        OrchestrationRuntime* runtime,
+        const ChipStorageTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() < 5 || orch_args.scalar_count() < 3) {{
+        std::cerr << "build_fp8_gemm_graph: expected 5 tensors and 3 scalars\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kM = {m};
+    constexpr uint64_t kK = {k};
+    constexpr uint64_t kN = {n};
+    constexpr uint64_t kScaleGroup = 32;
+    if (orch_args.scalar(0) != kM || orch_args.scalar(1) != kK ||
+        orch_args.scalar(2) != kN || kM != 128 || kK != 128 || kN != 128) {{
+        std::cerr << "build_fp8_gemm_graph: artifact geometry must be 128x128x128\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kActivationElements = kM * kK;
+    constexpr uint64_t kWeightElements = kK * kN;
+    constexpr uint64_t kActivationScaleElements = kM * kK / kScaleGroup;
+    constexpr uint64_t kWeightScaleElements = kK * kN / kScaleGroup;
+    constexpr uint64_t kOutputElements = kM * kN;
+    if (orch_args.tensor(0).shapes[0] < kActivationElements ||
+        orch_args.tensor(1).shapes[0] < kWeightElements ||
+        orch_args.tensor(2).shapes[0] < kActivationScaleElements ||
+        orch_args.tensor(3).shapes[0] < kWeightScaleElements ||
+        orch_args.tensor(4).shapes[0] < kOutputElements) {{
+        std::cerr << "build_fp8_gemm_graph: tensor payload is shorter than geometry\\n";
+        return -1;
+    }}
+
+    void* dev_activation = device_malloc(runtime, kActivationElements);
+    void* dev_weight = device_malloc(runtime, kWeightElements);
+    void* dev_activation_scale = device_malloc(runtime, kActivationScaleElements);
+    void* dev_weight_scale = device_malloc(runtime, kWeightScaleElements);
+    void* dev_output = device_malloc(runtime, kOutputElements * sizeof(float));
+    if (!dev_activation || !dev_weight || !dev_activation_scale ||
+        !dev_weight_scale || !dev_output) {{
+        std::cerr << "build_fp8_gemm_graph: device allocation failed\\n";
+        return -1;
+    }}
+    if (copy_to_device(runtime, dev_activation, orch_args.tensor(0).data_as<uint8_t>(),
+                       kActivationElements) != 0 ||
+        copy_to_device(runtime, dev_weight, orch_args.tensor(1).data_as<uint8_t>(),
+                       kWeightElements) != 0 ||
+        copy_to_device(runtime, dev_activation_scale,
+                       orch_args.tensor(2).data_as<uint8_t>(),
+                       kActivationScaleElements) != 0 ||
+        copy_to_device(runtime, dev_weight_scale,
+                       orch_args.tensor(3).data_as<uint8_t>(),
+                       kWeightScaleElements) != 0) {{
+        std::cerr << "build_fp8_gemm_graph: input copy failed\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, orch_args.tensor(4).data_as<uint8_t>(),
+                       dev_output, kOutputElements * sizeof(float));
+
+    uint64_t task_args[5];
+    task_args[0] = reinterpret_cast<uint64_t>(dev_activation);
+    task_args[1] = reinterpret_cast<uint64_t>(dev_weight);
+    task_args[2] = reinterpret_cast<uint64_t>(dev_activation_scale);
+    task_args[3] = reinterpret_cast<uint64_t>(dev_weight_scale);
+    task_args[4] = reinterpret_cast<uint64_t>(dev_output);
+    add_task(runtime, task_args, 5, 0, CoreType::AIC);
+    return 0;
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
 def write_host_gemm_kernel(
     build_dir: Path,
     m: int,
@@ -876,6 +982,125 @@ def write_host_fp32_gemm_kernel(
     build_dir: Path, m: int, k: int, n: int
 ) -> Path:
     return write_host_gemm_kernel(build_dir, m, k, n, fp32=True)
+
+
+def write_host_fp8_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
+    source = build_dir / "host_fp8_gemm_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ float8_e4m3_t* activation =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[0]);
+    __gm__ float8_e4m3_t* weight =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[1]);
+    __gm__ float8_e8m0_t* activation_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[2]);
+    __gm__ float8_e8m0_t* weight_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[3]);
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[4]);
+
+    constexpr int M = {m};
+    constexpr int K = {k};
+    constexpr int N = {n};
+    constexpr int ScaleK = K / 32;
+
+    using GlobalA = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, M, K, Layout::ND>,
+        BaseShape2D<float8_e4m3_t, M, K, Layout::ND>, Layout::ND>;
+    using GlobalB = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, K, N, Layout::DN>,
+        BaseShape2D<float8_e4m3_t, K, N, Layout::DN>, Layout::DN>;
+    using GlobalScaleA = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, M, ScaleK, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, M, ScaleK, Layout::ND>, Layout::ND>;
+    using GlobalScaleB = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, ScaleK, N, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, ScaleK, N, Layout::ND>, Layout::ND>;
+    using GlobalC = GlobalTensor<
+        float, TileShape2D<float, M, N, Layout::ND>,
+        BaseShape2D<float, M, N, Layout::ND>, Layout::ND>;
+
+    using MatA = Tile<TileType::Mat, float8_e4m3_t, M, K,
+                      BLayout::ColMajor, M, K, SLayout::RowMajor, 512>;
+    using MatB = Tile<TileType::Mat, float8_e4m3_t, K, N,
+                      BLayout::ColMajor, K, N, SLayout::RowMajor, 512>;
+    using MatScaleA = Tile<TileType::Mat, float8_e8m0_t, M, ScaleK,
+                           BLayout::RowMajor, M, ScaleK, SLayout::RowMajor, 32>;
+    using MatScaleB = Tile<TileType::Mat, float8_e8m0_t, K, N,
+                           BLayout::ColMajor, ScaleK, N, SLayout::ColMajor, 32>;
+    using Left = TileLeft<float8_e4m3_t, M, K, M, K>;
+    using Right = TileRight<float8_e4m3_t, K, N, K, N>;
+    using LeftScale = TileLeftScale<float8_e8m0_t, M, ScaleK, M, ScaleK>;
+    using RightScale = TileRightScale<float8_e8m0_t, K, N, ScaleK, N>;
+    using Acc = TileAcc<float, M, N, M, N>;
+
+    MatA a_mat;
+    MatB b_mat;
+    MatScaleA a_scale_mat;
+    MatScaleB b_scale_mat;
+    Left a_tile;
+    Right b_tile;
+    LeftScale a_scale_tile;
+    RightScale b_scale_tile;
+    Acc c_tile;
+    size_t addr = 0;
+    TASSIGN(a_mat, addr);
+    addr += MatA::Numel * sizeof(typename MatA::DType);
+    TASSIGN(b_mat, addr);
+    addr += MatB::Numel * sizeof(typename MatB::DType);
+    TASSIGN(a_scale_mat, addr);
+    addr += MatScaleA::Numel * sizeof(typename MatScaleA::DType);
+    TASSIGN(b_scale_mat, addr);
+    addr += MatScaleB::Numel * sizeof(typename MatScaleB::DType);
+    TASSIGN(a_tile, 0x0);
+    TASSIGN(b_tile, 0x0);
+    TASSIGN(c_tile, 0x0);
+    TASSIGN(a_scale_tile, addr);
+    addr += LeftScale::Numel * sizeof(typename LeftScale::DType);
+    TASSIGN(b_scale_tile, addr);
+
+    GlobalA global_a(activation);
+    GlobalB global_b(weight);
+    GlobalScaleA global_scale_a(activation_scale);
+    GlobalScaleB global_scale_b(weight_scale);
+    GlobalC global_c(output);
+    TLOAD(a_mat, global_a);
+    TLOAD(b_mat, global_b);
+    TLOAD(a_scale_mat, global_scale_a);
+    TLOAD(b_scale_mat, global_scale_b);
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    TMOV(a_tile, a_mat);
+    TMOV(b_tile, b_mat);
+    TMOV(a_scale_tile, a_scale_mat);
+    TMOV(b_scale_tile, b_scale_mat);
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    TMATMUL_MX(c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    TSTORE(global_c, c_tile);
+}}
+"""
+    )
+    return source
 
 
 def write_host_q8_block_dot_orchestration(build_dir: Path, blocks: int, n: int) -> Path:
@@ -1221,6 +1446,7 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
         "host_gemm",
         "host_fp32_gemm",
         "host_quantized_gemm",
+        "host_fp8_gemm",
         "host_q8_block_dot",
     ):
         payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
@@ -1238,10 +1464,19 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
-    if args.profile in ("host_gemm", "host_fp32_gemm", "host_quantized_gemm"):
+    if args.profile in (
+        "host_gemm",
+        "host_fp32_gemm",
+        "host_quantized_gemm",
+        "host_fp8_gemm",
+    ):
         gemm_dims = (args.gemm_m, args.gemm_k, args.gemm_n)
         if any(dim <= 0 or dim % 128 != 0 for dim in gemm_dims):
             raise SystemExit("--gemm-m/--gemm-k/--gemm-n must be positive and 128-aligned")
+    if args.profile == "host_fp8_gemm" and (
+        args.platform != "a5sim" or (args.gemm_m, args.gemm_k, args.gemm_n) != (128, 128, 128)
+    ):
+        raise SystemExit("host_fp8_gemm requires --platform a5sim and 128x128x128 geometry")
     if args.profile == "host_q8_block_dot":
         if args.gemm_m <= 0 or args.gemm_k != 32 or args.gemm_n <= 0 or args.gemm_n % 128 != 0:
             raise SystemExit(
@@ -1285,6 +1520,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         )
     if args.profile == "host_quantized_gemm":
         orch_source = write_host_quantized_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_fp8_gemm":
+        orch_source = write_host_fp8_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n
         )
     if args.profile == "host_q8_block_dot":
@@ -1342,6 +1581,13 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_quantized_gemm"
             else None
         )
+        fp8_gemm_source = (
+            write_host_fp8_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_fp8_gemm"
+            else None
+        )
         q8_block_dot_source = (
             write_host_q8_block_dot_kernel(build_dir, args.gemm_n)
             if args.profile == "host_q8_block_dot"
@@ -1354,6 +1600,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             or gemm_source
             or fp32_gemm_source
             or quantized_gemm_source
+            or fp8_gemm_source
             or q8_block_dot_source
             or (example_root / kernel.source)
         ).resolve()
@@ -1372,7 +1619,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             core_type=kernel.core_type,
             pto_isa_root=str(pto_isa_root),
             extra_include_dirs=[
-                str((simpler_root / "src" / "a2a3" / "runtime" / runtime_name / "runtime").resolve())
+                str(
+                    (
+                        simpler_root
+                        / "src"
+                        / ("a5" if args.platform.startswith("a5") else "a2a3")
+                        / "runtime"
+                        / runtime_name
+                        / "runtime"
+                    ).resolve()
+                )
             ],
             build_dir=str(build_dir),
         )
@@ -1416,6 +1672,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     manifest = {
         "simpler_capi_abi_version": SIMPLER_CAPI_ABI_VERSION,
         "profile": spec.profile,
+        "platform": args.platform,
         "runtime_variant": "HostBuildGraph",
         "callable_hint": spec.callable_hint,
         "simpler_runtime": {
@@ -1487,6 +1744,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "n": args.gemm_n,
             "input_dtype": "int8",
             "output_dtype": "int32",
+            "tile": 128,
+        }
+    if args.profile == "host_fp8_gemm":
+        manifest["host_fp8_gemm_manifest_version"] = 1
+        manifest["host_fp8_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "fp8_e4m3_ue8m0",
+            "output_dtype": "fp32",
             "tile": 128,
         }
     if args.profile == "host_q8_block_dot":

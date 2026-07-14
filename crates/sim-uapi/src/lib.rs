@@ -1,6 +1,7 @@
 //! Guest-visible UAPI surface placeholders.
 
 mod deepseek_v4_flash_gguf_runtime;
+mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_runtime;
 
 pub use deepseek_v4_flash_gguf_runtime::{
@@ -10,6 +11,12 @@ pub use deepseek_v4_flash_gguf_runtime::{
     execute_deepseek_gguf_sequence_range_through_simpler, DeepseekV4FlashGgufLayerExecution,
     DeepseekV4FlashGgufRangeExecution, DeepseekV4FlashGgufRangeProgress,
     DeepseekV4FlashGgufSequenceExecution,
+};
+
+pub use deepseek_v4_flash_official_runtime::{
+    ensure_simpler_host_fp8_gemm_manifest, execute_deepseek_official_bf16_rows_through_simpler,
+    execute_deepseek_official_fp8_rows_through_simpler, execute_fp8_rows_through_simpler,
+    DeepseekV4LinearOutputDType, DeepseekV4OfficialBf16Execution, DeepseekV4OfficialFp8Execution,
 };
 
 pub use deepseek_v4_flash_runtime::{
@@ -841,11 +848,15 @@ struct UapiRuntimeFailure {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SimplerRuntimeManifestEnvelope {
+    #[serde(default)]
+    platform: Option<String>,
     simpler_runtime: SimplerRuntimeManifest,
     #[serde(default)]
     host_gemm: Option<GemmManifest>,
     #[serde(default)]
     host_quantized_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_fp8_gemm: Option<GemmManifest>,
     #[serde(default)]
     host_q8_block_dot: Option<GemmManifest>,
 }
@@ -28829,15 +28840,17 @@ mod tests {
     use super::{
         bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs,
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
-        ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
-        ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
+        ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_fp8_gemm_manifest,
+        ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
+        ensure_simpler_host_quantized_gemm_manifest,
         execute_deepseek_compressor_update_through_simpler,
         execute_deepseek_dense_attention_through_simpler,
         execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
         execute_deepseek_grouped_q8_projection_through_simpler,
         execute_deepseek_indexer_through_simpler,
         execute_deepseek_iq2_xxs_expert_projection_through_simpler,
-        execute_deepseek_moe_through_simpler,
+        execute_deepseek_moe_through_simpler, execute_deepseek_official_bf16_rows_through_simpler,
+        execute_deepseek_official_fp8_rows_through_simpler,
         execute_deepseek_q2_k_expert_projection_through_simpler,
         execute_deepseek_q8_projection_through_simpler,
         execute_deepseek_ratio128_attention_through_simpler,
@@ -28845,9 +28858,10 @@ mod tests {
         execute_deepseek_ratio4_attention_through_simpler,
         execute_deepseek_routed_expert_through_simpler,
         execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
-        execute_deepseek_shared_expert_through_simpler, f16_bits_to_f32, f32_to_f16_bits,
-        f32s_to_bytes, find_u64_marker, finish_deepseek_ffn_with_expert_slices_through_simpler,
-        kvcache_input_b_payload, prepare_deepseek_ffn_through_simpler,
+        execute_deepseek_shared_expert_through_simpler, execute_fp8_rows_through_simpler,
+        f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes, find_u64_marker,
+        finish_deepseek_ffn_with_expert_slices_through_simpler, kvcache_input_b_payload,
+        prepare_deepseek_ffn_through_simpler,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -28931,7 +28945,7 @@ mod tests {
         DeepseekV4FlashProjectionFormat, DeepseekV4FlashRatio128AttentionState,
         DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerWeights,
         DeepseekV4FlashRatio4AttentionState, DeepseekV4FlashRatio4AttentionWeights,
-        GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
+        DeepseekV4LinearOutputDType, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
         Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
         Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
         Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
@@ -28973,6 +28987,9 @@ mod tests {
         LogicalSystemId, MemoryEndpoint, SegmentHandle, SimError, TaskKey,
     };
     use sim_models::deepseek_v4_flash;
+    use sim_models::deepseek_v4_flash_checkpoint_reference::{
+        deterministic_hidden_fixture, fp8_matvec_rows_reference,
+    };
     use sim_models::deepseek_v4_flash_gguf::{
         decode_f32_tensor, lower_f16_matrix_to_f32_kxn_padded, lower_q8_0_matrix_to_bf16_kxn,
         project_f16_matrix, project_iq2_xxs_expert_matrix, project_q2_k_expert_matrix,
@@ -34510,6 +34527,158 @@ mod tests {
                 assert!(output.iter().all(|value| *value == -3));
             },
         );
+    }
+
+    #[test]
+    fn host_fp8_gemm_dispatch_executes_scaled_e4m3_asymmetric_permutation() {
+        run_simpler_native_test_isolated(
+            "host_fp8_gemm_dispatch_executes_scaled_e4m3_asymmetric_permutation",
+            || {
+                const DIM: usize = 128;
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-fp8-gemm-test-artifacts")
+                    .join("host_fp8_gemm_manifest.json");
+                ensure_simpler_host_fp8_gemm_manifest(&manifest)
+                    .expect("build host FP8 GEMM artifact");
+                let mut weight = vec![0u8; DIM * DIM];
+                for row in 0..DIM {
+                    weight[row * DIM + (row + 1) % DIM] = 0x38;
+                }
+                let input = deterministic_hidden_fixture(7, DIM);
+                let reference =
+                    fp8_matvec_rows_reference(&weight, &[127], DIM, DIM, 0, DIM, &input)
+                        .expect("FP8 permutation reference");
+                let execution = execute_fp8_rows_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 111,
+                    },
+                    &manifest,
+                    171_000,
+                    &weight,
+                    &[127],
+                    DIM,
+                    DIM,
+                    0,
+                    DIM,
+                    &input,
+                    DeepseekV4LinearOutputDType::Bf16,
+                )
+                .expect("execute scaled E4M3 asymmetric permutation through simpler");
+                assert_eq!(execution.dispatch_count, 1);
+                assert_eq!(execution.output, reference);
+
+                let f32_task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 112,
+                };
+                let f32_execution = execute_fp8_rows_through_simpler(
+                    &test_topology(),
+                    &f32_task,
+                    &manifest,
+                    171_100,
+                    &weight,
+                    &[127],
+                    DIM,
+                    DIM,
+                    0,
+                    DIM,
+                    &input,
+                    DeepseekV4LinearOutputDType::F32,
+                )
+                .expect("execute scaled E4M3 permutation with FP32 output");
+                assert!(f32_execution.output.iter().all(|value| value.is_finite()));
+                for (actual, expected) in f32_execution.output.iter().zip(&reference) {
+                    assert_eq!(
+                        sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16(*actual),
+                        *expected
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_linear_production_matches_reference_across_fp8_roles_and_bf16_head() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let checkpoint = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+        )
+        .expect("open official checkpoint");
+        let input = deterministic_hidden_fixture(7, 4096);
+        let manifest = std::env::temp_dir()
+            .join("simpler-host-fp8-gemm-test-artifacts")
+            .join("host_fp8_gemm_manifest.json");
+        let cases = [
+            ("layers.0.attn.wkv.weight", 0usize, 8usize),
+            ("layers.0.attn.wkv.weight", 127, 2),
+            ("layers.0.attn.wo_a.weight", 0, 2),
+            ("layers.0.ffn.shared_experts.w1.weight", 0, 2),
+        ];
+        for (case, (tensor_name, row_start, row_count)) in cases.into_iter().enumerate() {
+            let reference = checkpoint
+                .reference_matvec_rows(tensor_name, &input, row_start, row_count)
+                .expect("official FP8 reference");
+            let production = execute_deepseek_official_fp8_rows_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 120 + case as u64 * 100,
+                },
+                &manifest,
+                172_000 + case as u64 * 100,
+                tensor_name,
+                row_start,
+                row_count,
+                &input,
+                DeepseekV4LinearOutputDType::Bf16,
+            )
+            .expect("official FP8 production dispatch");
+            assert_eq!(production.output, reference);
+        }
+
+        let head_manifest = std::env::temp_dir()
+            .join("simpler-host-bf16-gemm-test-artifacts")
+            .join("host_gemm_manifest.json");
+        let head_input = input
+            .iter()
+            .map(|value| sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16(*value))
+            .collect::<Vec<_>>();
+        let head_reference = checkpoint
+            .reference_matvec_rows("head.weight", &head_input, 0, 2)
+            .expect("official BF16 output head reference")
+            .into_iter()
+            .map(sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16)
+            .collect::<Vec<_>>();
+        let head_production = execute_deepseek_official_bf16_rows_through_simpler(
+            &checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 620,
+            },
+            &head_manifest,
+            "head.weight",
+            0,
+            2,
+            &head_input,
+            DeepseekV4LinearOutputDType::Bf16,
+        )
+        .expect("official BF16 output head production dispatch");
+        assert_eq!(head_production.output, head_reference);
     }
 
     #[test]

@@ -4,6 +4,8 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current validation entry points:
 
+- [2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md](2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md)
+  - stage-3 evidence for official FP8 E4M3/UE8M0 A5 MX execution, dynamic activation quantization, BF16/F32 output, representative attention/grouped/shared linears, and the checkpoint's BF16 output head
 - [2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md](2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md)
   - stage-2 evidence for independent official FP8/FP4/UE8M0 scalar decoding, dynamic activation quantization, operator checksums, and complete position-0 layer reference forward
 - [2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md](2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md)

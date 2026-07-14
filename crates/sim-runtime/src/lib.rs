@@ -908,6 +908,13 @@ fn simpler_tensor_dtype(
                 simpler_capi::DataType::Int32
             }
         }
+        DispatchBackendProfile::HostFp8Gemm => {
+            if tensor_index < 4 {
+                simpler_capi::DataType::Uint8
+            } else {
+                simpler_capi::DataType::Float32
+            }
+        }
         DispatchBackendProfile::HostEngramContext => {
             if tensor_index == 1 {
                 simpler_capi::DataType::Int32
@@ -1552,6 +1559,7 @@ fn backend_profile_name(profile: DispatchBackendProfile) -> &'static str {
         DispatchBackendProfile::HostMatmul => "host_matmul",
         DispatchBackendProfile::HostGemm => "host_gemm",
         DispatchBackendProfile::HostQuantizedGemm => "host_quantized_gemm",
+        DispatchBackendProfile::HostFp8Gemm => "host_fp8_gemm",
         DispatchBackendProfile::HostEngramContext => "host_engram_context",
     }
 }
@@ -1567,7 +1575,7 @@ fn validate_simpler_dispatch_spec(
     backend_spec: Option<&DispatchBackendSpec>,
 ) -> Result<(), String> {
     if let Some(spec) = backend_spec {
-        if spec.platform != "a2a3sim" {
+        if spec.platform != "a2a3sim" && spec.platform != "a5sim" {
             return Err(format!("unsupported_platform:{}", spec.platform));
         }
     }
@@ -1581,6 +1589,7 @@ fn validate_simpler_dispatch_spec(
             | (DispatchBackendProfile::HostMatmul, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostGemm, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostQuantizedGemm, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostFp8Gemm, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostEngramContext, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostVector, DispatchRuntimeVariant::HostBuildGraph) => {}
             (profile, runtime_variant) => {
