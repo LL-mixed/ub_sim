@@ -3,6 +3,7 @@
 pub mod deepseek_v4_flash;
 pub mod deepseek_v4_flash_adapter;
 pub mod deepseek_v4_flash_checkpoint;
+pub mod deepseek_v4_flash_checkpoint_reference;
 pub mod deepseek_v4_flash_gguf;
 mod deepseek_v4_flash_iq2_tables;
 pub mod deepseek_v4_flash_lowering;

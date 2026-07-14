@@ -4,6 +4,8 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current validation entry points:
 
+- [2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md](2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md)
+  - stage-2 evidence for independent official FP8/FP4/UE8M0 scalar decoding, dynamic activation quantization, operator checksums, and complete position-0 layer reference forward
 - [2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md](2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md)
   - stage-1 evidence for direct official config/index/46-shard schema validation, positioned tensor/expert slice reads, bounded caches, checksums, and fail-closed loader tests
 - [qwen3_simpler_build_output_validation.md](qwen3_simpler_build_output_validation.md)

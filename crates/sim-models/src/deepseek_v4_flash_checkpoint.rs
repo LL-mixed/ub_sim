@@ -105,6 +105,17 @@ impl DeepseekV4Config {
             ("num_experts_per_tok", self.num_experts_per_tok, 6),
             ("num_hash_layers", self.num_hash_layers, 3),
             ("num_nextn_predict_layers", self.num_nextn_predict_layers, 1),
+            ("q_lora_rank", self.q_lora_rank, 1_024),
+            ("qk_rope_head_dim", self.qk_rope_head_dim, 64),
+            ("o_groups", self.o_groups, 8),
+            ("o_lora_rank", self.o_lora_rank, 1_024),
+            ("index_n_heads", self.index_n_heads, 64),
+            ("index_head_dim", self.index_head_dim, 128),
+            ("index_topk", self.index_topk, 512),
+            ("hc_mult", self.hc_mult, 4),
+            ("hc_sinkhorn_iters", self.hc_sinkhorn_iters, 20),
+            ("sliding_window", self.sliding_window, 128),
+            ("compress_rope_theta", self.compress_rope_theta, 160_000),
         ];
         for (name, actual, expected) in required {
             if actual != expected {
@@ -119,6 +130,19 @@ impl DeepseekV4Config {
         if self.model_type != "deepseek_v4"
             || self.expert_dtype != "fp4"
             || self.torch_dtype != "bfloat16"
+            || self.scoring_func != "sqrtsoftplus"
+            || self.topk_method != "noaux_tc"
+            || !self.norm_topk_prob
+            || self.hc_eps != 1.0e-6
+            || self.rms_norm_eps != 1.0e-6
+            || self.routed_scaling_factor != 1.5
+            || self.swiglu_limit != 10.0
+            || self.rope_theta != 10_000.0
+            || self.rope_scaling.kind != "yarn"
+            || self.rope_scaling.beta_fast != 32.0
+            || self.rope_scaling.beta_slow != 1.0
+            || self.rope_scaling.factor != 16.0
+            || self.rope_scaling.original_max_position_embeddings != 65_536
         {
             return Err("deepseek_v4_config_model_or_dtype_mismatch".to_string());
         }
@@ -175,7 +199,7 @@ impl DeepseekV4TensorDType {
         }
     }
 
-    fn storage_bytes(self) -> u64 {
+    pub fn storage_bytes(self) -> u64 {
         match self {
             Self::Bf16 => 2,
             Self::F32 => 4,
@@ -819,10 +843,7 @@ fn validate_quantized_scale_associations(
                 if !name.ends_with(".weight") || tensor.shape.len() != 2 {
                     return Err(format!("deepseek_v4_fp8_weight_schema_invalid:{name}"));
                 }
-                vec![
-                    div_ceil(tensor.shape[0], 128),
-                    div_ceil(tensor.shape[1], 128),
-                ]
+                vec![tensor.shape[0].div_ceil(128), tensor.shape[1].div_ceil(128)]
             }
             DeepseekV4TensorDType::I8 => {
                 if !is_routed_expert_name(name)
@@ -879,10 +900,6 @@ fn validate_quantized_scale_associations(
     Ok(())
 }
 
-fn div_ceil(value: u64, divisor: u64) -> u64 {
-    value / divisor + u64::from(value % divisor != 0)
-}
-
 fn validate_model_tensor_schema(
     config: &DeepseekV4Config,
     tensors: &BTreeMap<String, DeepseekV4TensorMetadata>,
@@ -929,11 +946,23 @@ fn validate_model_tensor_schema(
 
     for layer in 0..config.num_hidden_layers {
         let prefix = format!("layers.{layer}");
-        validate_block_schema(config, tensors, &prefix, layer < config.num_hash_layers)?;
+        validate_block_schema(
+            config,
+            tensors,
+            &prefix,
+            layer < config.num_hash_layers,
+            config.compress_ratios[layer as usize],
+        )?;
     }
     for mtp in 0..config.num_nextn_predict_layers {
         let prefix = format!("mtp.{mtp}");
-        validate_block_schema(config, tensors, &prefix, false)?;
+        validate_block_schema(
+            config,
+            tensors,
+            &prefix,
+            false,
+            config.compress_ratios[(config.num_hidden_layers + mtp) as usize],
+        )?;
         for name in ["e_proj.weight", "h_proj.weight"] {
             require_quantized_weight(tensors, &format!("{prefix}.{name}"))?;
         }
@@ -954,6 +983,7 @@ fn validate_block_schema(
     tensors: &BTreeMap<String, DeepseekV4TensorMetadata>,
     prefix: &str,
     hash_routed: bool,
+    compress_ratio: u32,
 ) -> Result<(), String> {
     for name in ["attn_norm.weight", "ffn_norm.weight"] {
         require_tensor(
@@ -963,28 +993,63 @@ fn validate_block_schema(
             &[config.hidden_size],
         )?;
     }
-    for name in [
-        "hc_attn_base",
-        "hc_attn_fn",
-        "hc_attn_scale",
-        "hc_ffn_base",
-        "hc_ffn_fn",
-        "hc_ffn_scale",
-    ] {
-        require_dtype(
+    let hc_mix = (2 + config.hc_mult) * config.hc_mult;
+    let hc_hidden = config.hc_mult * config.hidden_size;
+    for kind in ["attn", "ffn"] {
+        require_tensor(
             tensors,
-            &format!("{prefix}.{name}"),
+            &format!("{prefix}.hc_{kind}_base"),
             DeepseekV4TensorDType::F32,
+            &[hc_mix],
+        )?;
+        require_tensor(
+            tensors,
+            &format!("{prefix}.hc_{kind}_fn"),
+            DeepseekV4TensorDType::F32,
+            &[hc_mix, hc_hidden],
+        )?;
+        require_tensor(
+            tensors,
+            &format!("{prefix}.hc_{kind}_scale"),
+            DeepseekV4TensorDType::F32,
+            &[3],
         )?;
     }
-    for name in [
-        "attn.wq_a.weight",
-        "attn.wq_b.weight",
-        "attn.wkv.weight",
-        "attn.wo_a.weight",
-        "attn.wo_b.weight",
-    ] {
-        require_quantized_weight(tensors, &format!("{prefix}.{name}"))?;
+    let attention_shapes: [(&str, &[u64]); 5] = [
+        (
+            "attn.wq_a.weight",
+            &[config.q_lora_rank, config.hidden_size],
+        ),
+        (
+            "attn.wq_b.weight",
+            &[
+                config.num_attention_heads * config.head_dim,
+                config.q_lora_rank,
+            ],
+        ),
+        ("attn.wkv.weight", &[config.head_dim, config.hidden_size]),
+        (
+            "attn.wo_a.weight",
+            &[
+                config.o_groups * config.o_lora_rank,
+                config.num_attention_heads * config.head_dim / config.o_groups,
+            ],
+        ),
+        (
+            "attn.wo_b.weight",
+            &[config.hidden_size, config.o_groups * config.o_lora_rank],
+        ),
+    ];
+    for (name, shape) in attention_shapes {
+        let tensor = require_quantized_weight(tensors, &format!("{prefix}.{name}"))?;
+        if tensor.dtype != DeepseekV4TensorDType::F8E4M3 || tensor.shape != shape {
+            return Err(format!(
+                "deepseek_v4_attention_weight_contract_mismatch:{}:dtype={}:shape={:?}:expected={shape:?}",
+                tensor.name,
+                tensor.dtype.safetensors_name(),
+                tensor.shape
+            ));
+        }
     }
     require_tensor(
         tensors,
@@ -1005,6 +1070,80 @@ fn validate_block_schema(
         &[config.head_dim],
     )?;
 
+    if compress_ratio != 0 {
+        let coefficient = 1 + u64::from(compress_ratio == 4);
+        let compressor_width = coefficient * config.head_dim;
+        require_tensor(
+            tensors,
+            &format!("{prefix}.attn.compressor.ape"),
+            DeepseekV4TensorDType::F32,
+            &[u64::from(compress_ratio), compressor_width],
+        )?;
+        for projection in ["wkv", "wgate"] {
+            require_tensor(
+                tensors,
+                &format!("{prefix}.attn.compressor.{projection}.weight"),
+                DeepseekV4TensorDType::Bf16,
+                &[compressor_width, config.hidden_size],
+            )?;
+        }
+        require_tensor(
+            tensors,
+            &format!("{prefix}.attn.compressor.norm.weight"),
+            DeepseekV4TensorDType::Bf16,
+            &[config.head_dim],
+        )?;
+    }
+    if compress_ratio == 4 {
+        let indexer_width = 2 * config.index_head_dim;
+        require_tensor(
+            tensors,
+            &format!("{prefix}.attn.indexer.compressor.ape"),
+            DeepseekV4TensorDType::F32,
+            &[4, indexer_width],
+        )?;
+        for projection in ["wkv", "wgate"] {
+            require_tensor(
+                tensors,
+                &format!("{prefix}.attn.indexer.compressor.{projection}.weight"),
+                DeepseekV4TensorDType::Bf16,
+                &[indexer_width, config.hidden_size],
+            )?;
+        }
+        require_tensor(
+            tensors,
+            &format!("{prefix}.attn.indexer.compressor.norm.weight"),
+            DeepseekV4TensorDType::Bf16,
+            &[config.index_head_dim],
+        )?;
+        let query =
+            require_quantized_weight(tensors, &format!("{prefix}.attn.indexer.wq_b.weight"))?;
+        let query_shape = [
+            config.index_n_heads * config.index_head_dim,
+            config.q_lora_rank,
+        ];
+        if query.dtype != DeepseekV4TensorDType::F8E4M3 || query.shape != query_shape {
+            return Err(format!(
+                "deepseek_v4_indexer_query_contract_mismatch:{}:dtype={}:shape={:?}:expected={query_shape:?}",
+                query.name,
+                query.dtype.safetensors_name(),
+                query.shape
+            ));
+        }
+        require_tensor(
+            tensors,
+            &format!("{prefix}.attn.indexer.weights_proj.weight"),
+            DeepseekV4TensorDType::Bf16,
+            &[config.index_n_heads, config.hidden_size],
+        )?;
+    }
+
+    require_tensor(
+        tensors,
+        &format!("{prefix}.ffn.gate.weight"),
+        DeepseekV4TensorDType::Bf16,
+        &[config.n_routed_experts, config.hidden_size],
+    )?;
     if hash_routed {
         require_tensor(
             tensors,
@@ -1015,12 +1154,6 @@ fn validate_block_schema(
     } else {
         require_tensor(
             tensors,
-            &format!("{prefix}.ffn.gate.weight"),
-            DeepseekV4TensorDType::Bf16,
-            &[config.n_routed_experts, config.hidden_size],
-        )?;
-        require_tensor(
-            tensors,
             &format!("{prefix}.ffn.gate.bias"),
             DeepseekV4TensorDType::F32,
             &[config.n_routed_experts],
@@ -1028,10 +1161,23 @@ fn validate_block_schema(
     }
 
     for projection in ["w1", "w2", "w3"] {
-        require_quantized_weight(
+        let tensor = require_quantized_weight(
             tensors,
             &format!("{prefix}.ffn.shared_experts.{projection}.weight"),
         )?;
+        let expected_shape = if projection == "w2" {
+            [config.hidden_size, config.moe_intermediate_size]
+        } else {
+            [config.moe_intermediate_size, config.hidden_size]
+        };
+        if tensor.dtype != DeepseekV4TensorDType::F8E4M3 || tensor.shape != expected_shape {
+            return Err(format!(
+                "deepseek_v4_shared_expert_contract_mismatch:{}:dtype={}:shape={:?}:expected={expected_shape:?}",
+                tensor.name,
+                tensor.dtype.safetensors_name(),
+                tensor.shape
+            ));
+        }
     }
     for expert in 0..config.n_routed_experts {
         for projection in ["w1", "w2", "w3"] {
@@ -1041,6 +1187,17 @@ fn validate_block_schema(
                 return Err(format!(
                     "deepseek_v4_routed_expert_not_fp4:{name}:dtype={}",
                     tensor.dtype.safetensors_name()
+                ));
+            }
+            let expected_shape = if projection == "w2" {
+                [config.hidden_size, config.moe_intermediate_size / 2]
+            } else {
+                [config.moe_intermediate_size, config.hidden_size / 2]
+            };
+            if tensor.shape != expected_shape {
+                return Err(format!(
+                    "deepseek_v4_routed_expert_shape_mismatch:{name}:actual={:?}:expected={expected_shape:?}",
+                    tensor.shape
                 ));
             }
         }
@@ -1100,12 +1257,12 @@ fn parse_layer_id(name: &str) -> Option<u64> {
     suffix.split('.').next()?.parse().ok()
 }
 
-fn tensor_names_for_layer_range<'a>(
-    tensors: &'a BTreeMap<String, DeepseekV4TensorMetadata>,
+fn tensor_names_for_layer_range(
+    tensors: &BTreeMap<String, DeepseekV4TensorMetadata>,
     layer_start: u64,
     layer_end: u64,
     total_layers: u64,
-) -> Result<Vec<&'a str>, String> {
+) -> Result<Vec<&str>, String> {
     if layer_start >= layer_end || layer_end > total_layers {
         return Err(format!(
             "deepseek_v4_layer_range_invalid:{layer_start}:{layer_end}:total={total_layers}"
