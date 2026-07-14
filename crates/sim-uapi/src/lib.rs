@@ -5016,6 +5016,15 @@ fn qwen3_enqueue_w5_memory_runtime_commit(
     Ok(())
 }
 
+fn qwen3_w5_kv_artifact_id(
+    run_id: &str,
+    decode_step: u64,
+    layer_start: u32,
+    layer_end: u32,
+) -> String {
+    format!("artifact/kv/{run_id}/step{decode_step}/layers-{layer_start}-{layer_end}")
+}
+
 fn qwen3_commit_w5_memory_runtime_artifacts(
     store_path: PathBuf,
     object_store_path: PathBuf,
@@ -5148,17 +5157,20 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
     } else {
         None
     };
-    let kv_artifact_id = format!(
-        "artifact/kv/{}/step{}/{}",
-        run_id, refs.decode_step, producer_node
+    let kv_artifact_id = qwen3_w5_kv_artifact_id(
+        &run_id,
+        refs.decode_step,
+        contract.layer_start,
+        contract.layer_end,
     );
     let kv_checksum = qwen3_lingqu_object_payload_checksum(
         format!(
-            "{}:{}:{}:{}:{}:{:x}",
+            "{}:{}:{}:{}:{}:{}:{:x}",
             kv_artifact_id,
             run_id,
             refs.decode_step,
-            producer_node,
+            refs.position,
+            contract.layer_start,
             contract.layer_end,
             refs.kv_ref.payload_checksum
         )
@@ -41389,7 +41401,9 @@ mod tests {
                         && artifact.durable_payload_ref.is_none()
                 }));
                 assert!(artifacts.iter().any(|artifact| {
-                    artifact.artifact_id == "artifact/kv/runtime-memory-commit-test/step0/node8"
+                    artifact.artifact_id
+                        == "artifact/kv/runtime-memory-commit-test/step0/layers-24-28"
+                        && artifact.producer_boundary.node_index == 8
                         && artifact.hot_object_ref.is_some()
                         && artifact.durable_payload_ref.is_none()
                 }));

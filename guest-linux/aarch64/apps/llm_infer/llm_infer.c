@@ -2090,7 +2090,8 @@ struct w4_qwen3_shortpath_kv_stream_entry {
     uint64_t kv_bytes;
     uint64_t kv_checksum;
     uint32_t producer_layer_end;
-    uint32_t target_node;
+    /* Provenance only. KV selection must use step and layer range. */
+    uint32_t creator_node;
     uint32_t target_layer_start;
     uint32_t target_layer_end;
     char artifact_ref[160];
@@ -6205,9 +6206,10 @@ static int parse_qwen3_memory_shortpath_kv_stream_entry(
         parse_u32_field("shortpath_kv_stream_producer_layer_end",
                         fields[2],
                         &parsed.producer_layer_end) != 0 ||
-        parse_u32_field("shortpath_kv_stream_target_node",
+        parse_u32_field("shortpath_kv_stream_creator_node",
                         fields[3],
-                        &parsed.target_node) != 0 ||
+                        &parsed.creator_node) != 0 ||
+        parsed.creator_node == 0U ||
         parse_u32_field("shortpath_kv_stream_target_layer_start",
                         fields[4],
                         &parsed.target_layer_start) != 0 ||
@@ -6351,9 +6353,10 @@ static int parse_qwen3_memory_prefix_cache_kv_stream_entry(
         parse_u32_field("prefix_cache_kv_stream_producer_layer_end",
                         fields[2],
                         &parsed.producer_layer_end) != 0 ||
-        parse_u32_field("prefix_cache_kv_stream_target_node",
+        parse_u32_field("prefix_cache_kv_stream_creator_node",
                         fields[3],
-                        &parsed.target_node) != 0 ||
+                        &parsed.creator_node) != 0 ||
+        parsed.creator_node == 0U ||
         parse_u32_field("prefix_cache_kv_stream_target_layer_start",
                         fields[4],
                         &parsed.target_layer_start) != 0 ||
@@ -6432,7 +6435,7 @@ static int parse_qwen3_memory_prefix_cache_kv_stream_entry(
             printf("[w4_guest] stage qwen3_w5_memory_prefix_cache_gsva_rejected"
                    " entry_index=%" PRIu64
                    " accepted_index=%" PRIu64
-                   " node=%u step=%" PRIu64
+                   " creator_node=%u step=%" PRIu64
                    " request_id=%s"
                    " previous_step=%" PRIu64
                    " backend=%s segment_id=%s"
@@ -6448,7 +6451,7 @@ static int parse_qwen3_memory_prefix_cache_kv_stream_entry(
                    " target=runtime_recompute status=rejected\n",
                    raw_index,
                    *count,
-                   parsed.target_node,
+                   parsed.creator_node,
                    parsed.step_index + 1U,
                    qwen3_memory_serving_request_id(config),
                    parsed.step_index,
@@ -7263,7 +7266,6 @@ static int qwen3_memory_prefix_cache_kv_ref(
             &config->prefix_cache_kv_stream_entries[i];
 
         if (candidate->valid && candidate->step_index == decode_step &&
-            candidate->target_node == local_node + 1U &&
             candidate->target_layer_start == layer_start &&
             candidate->target_layer_end == layer_end) {
             entry = candidate;
@@ -7283,10 +7285,11 @@ static int qwen3_memory_prefix_cache_kv_ref(
         ref_out->payload_checksum != entry->kv_checksum) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 w5 prefix-cache kv ref mismatch"
-                " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                " node=%u creator_node=%u step=%" PRIu64 " layers=[%u,%u)"
                 " bytes=%" PRIu64 " expected=%" PRIu64
                 " checksum=0x%016" PRIx64 " expected=0x%016" PRIx64 "\n",
                 local_node + 1U,
+                entry->creator_node,
                 decode_step,
                 layer_start,
                 layer_end,
@@ -8794,7 +8797,6 @@ static int qwen3_boundary_controller_resolve_work_item(
 static const struct w4_qwen3_shortpath_kv_stream_entry *
 qwen3_memory_shortpath_kv_entry_for_local_range(
     const struct w4_qwen3_memory_decision_config *config,
-    uint32_t local_node,
     uint32_t layer_start,
     uint32_t layer_end,
     uint64_t decode_step)
@@ -8807,7 +8809,6 @@ qwen3_memory_shortpath_kv_entry_for_local_range(
             &config->shortpath_kv_stream_entries[i];
 
         if (entry->valid && entry->step_index == decode_step &&
-            entry->target_node == local_node + 1U &&
             entry->target_layer_start == layer_start &&
             entry->target_layer_end == layer_end) {
             return entry;
@@ -8844,7 +8845,6 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
         return -1;
     }
     entry = qwen3_memory_shortpath_kv_entry_for_local_range(config,
-                                                            local_node,
                                                             layer_start,
                                                             layer_end,
                                                             decode_step);
@@ -8892,7 +8892,7 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
         return -1;
     }
     printf("[w4_guest] stage qwen3_w5_memory_shortpath_kv_materialized"
-           " node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64
+           " node=%u creator_node=%u consumer_step=%" PRIu64 " kv_step=%" PRIu64
            " layers=[%u,%u)"
            " stream_index=%" PRIu64 " bytes=%" PRIu64
            " checksum=0x%016" PRIx64
@@ -8901,6 +8901,7 @@ static int qwen3_memory_shortpath_materialize_local_kv_state(
            " source=lingqu_memory_service target=local_kv_state"
            " status=ok\n",
            local_node + 1U,
+           entry->creator_node,
            consumer_step,
            decode_step,
            layer_start,

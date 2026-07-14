@@ -675,7 +675,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "mem_service_obmm_service_v0_publish_shortpath_terminal_token_result",
             guest_source,
         )
-        self.assertIn("entry->target_node == local_node + 1U", guest_source)
+        self.assertIn("uint32_t creator_node;", guest_source)
+        self.assertIn("shortpath_kv_stream_creator_node", guest_source)
+        self.assertIn("prefix_cache_kv_stream_creator_node", guest_source)
+        self.assertNotIn("creator_node == local_node + 1U", guest_source)
+        self.assertIn("entry->target_layer_start == layer_start", guest_source)
+        self.assertIn("candidate->target_layer_start == layer_start", guest_source)
         self.assertIn("runtime_kv_checksum = w4_qwen3_hidden_payload_checksum", guest_source)
         self.assertIn("runtime_checksum=0x%016", guest_source)
         self.assertIn("object_checksum =\n            qwen3_lingqu_object_payload_checksum", guest_source)

@@ -7803,6 +7803,10 @@ fn run_lingqu_memory_register_terminal_logits_artifact_from_w5_summary_cli(
     Ok(())
 }
 
+fn w5_kv_artifact_id(run_id: &str, step: u64, layer_start: u32, layer_end: u32) -> String {
+    format!("artifact/kv/{run_id}/step{step}/layers-{layer_start}-{layer_end}")
+}
+
 fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
     args: &[String],
 ) -> anyhow::Result<()> {
@@ -7999,7 +8003,8 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
     let mut promoted_kv_artifact_ids = Vec::new();
     let mut promoted_kv_gsva_refs = 0usize;
     for export in &kv_exports {
-        let artifact_id = format!("artifact/kv/{}/step{}/{}", run_id, export.step, export.node);
+        let artifact_id =
+            w5_kv_artifact_id(&run_id, export.step, export.layer_start, export.layer_end);
         if export.gsva_segment_ref.is_some() {
             promoted_kv_gsva_refs += 1;
         }
@@ -8017,8 +8022,14 @@ fn run_lingqu_memory_promote_terminal_shortpath_artifacts_from_w5_summary_cli(
         };
         let artifact_checksum = cli_bytes_checksum(
             format!(
-                "{}:{}:{}:{}:{}:{:x}",
-                artifact_id, run_id, export.step, export.node, export.layer_end, export.checksum
+                "{}:{}:{}:{}:{}:{}:{:x}",
+                artifact_id,
+                run_id,
+                export.step,
+                export.position,
+                export.layer_start,
+                export.layer_end,
+                export.checksum
             )
             .as_bytes(),
         );
@@ -9722,7 +9733,8 @@ struct W5MemoryShortpathKvArtifact {
     step_index: u64,
     producer_position: u64,
     producer_layer_end: u32,
-    target_node_index: u32,
+    // Provenance only. KV identity and resolve matching must not depend on it.
+    creator_node_index: u32,
     target_layer_start: u32,
     target_layer_end: u32,
     artifact: sim_memory::ExecutionArtifactObject,
@@ -9778,7 +9790,8 @@ struct W5MemoryPublishedKvArtifactRef {
     step_index: u64,
     producer_position: u64,
     producer_layer_end: u32,
-    target_node_index: u32,
+    // Serialized for provenance; the guest resolves by step and layer range.
+    creator_node_index: u32,
     target_layer_start: u32,
     target_layer_end: u32,
     artifact_id: String,
@@ -9786,6 +9799,20 @@ struct W5MemoryPublishedKvArtifactRef {
     payload_bytes: usize,
     payload_checksum: u64,
     gsva_segment_ref: Option<sim_memory::GsvaSegmentObjectRef>,
+}
+
+type W5KvLogicalIdentity = (u64, u64, u32, u32);
+
+fn w5_kv_logical_identity(
+    boundary: &sim_memory::RangeBoundary,
+    producer_position: u64,
+) -> W5KvLogicalIdentity {
+    (
+        boundary.step_index,
+        producer_position,
+        boundary.layer_start,
+        boundary.layer_end,
+    )
 }
 
 #[cfg(test)]
@@ -10129,8 +10156,8 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
         });
     }
     let mut shortpath_kv_artifacts = Vec::new();
-    let mut shortpath_kv_by_target =
-        std::collections::BTreeMap::<(u64, u64, u32, u32, u32), (String, u64)>::new();
+    let mut shortpath_kv_by_identity =
+        std::collections::BTreeMap::<(u64, u64, u32, u32), (String, u64, u32)>::new();
     for entry in &shortpath_entries {
         let Some(shortpath_artifact) = entry.artifact.as_ref() else {
             continue;
@@ -10156,43 +10183,43 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
                 kv_artifact,
                 "shortpath kv materialization",
             )?;
-            let identity = (
-                kv_artifact.producer_boundary.step_index,
-                producer_position,
-                kv_artifact.producer_boundary.node_index,
-                kv_artifact.producer_boundary.layer_start,
-                kv_artifact.producer_boundary.layer_end,
-            );
-            if let Some((existing_artifact_id, existing_checksum)) =
-                shortpath_kv_by_target.get(&identity)
+            let identity =
+                w5_kv_logical_identity(&kv_artifact.producer_boundary, producer_position);
+            if let Some((existing_artifact_id, existing_checksum, existing_creator_node)) =
+                shortpath_kv_by_identity.get(&identity)
             {
                 if existing_artifact_id != &kv_artifact.artifact_id
                     || *existing_checksum != kv_artifact.checksum
                 {
                     anyhow::bail!(
-                        "ambiguous shortpath KV artifacts for step={} position={} target_node={} layers=[{},{}) existing={} checksum={:#x} duplicate={} checksum={:#x}",
+                        "ambiguous shortpath KV artifacts for step={} position={} layers=[{},{}) existing={} checksum={:#x} creator_node={} duplicate={} checksum={:#x} creator_node={}",
                         identity.0,
                         identity.1,
                         identity.2,
                         identity.3,
-                        identity.4,
                         existing_artifact_id,
                         existing_checksum,
+                        existing_creator_node,
                         kv_artifact.artifact_id,
-                        kv_artifact.checksum
+                        kv_artifact.checksum,
+                        kv_artifact.producer_boundary.node_index
                     );
                 }
                 continue;
             }
-            shortpath_kv_by_target.insert(
+            shortpath_kv_by_identity.insert(
                 identity,
-                (kv_artifact.artifact_id.clone(), kv_artifact.checksum),
+                (
+                    kv_artifact.artifact_id.clone(),
+                    kv_artifact.checksum,
+                    kv_artifact.producer_boundary.node_index,
+                ),
             );
             shortpath_kv_artifacts.push(W5MemoryShortpathKvArtifact {
                 step_index: shortpath_artifact.producer_boundary.step_index,
                 producer_position,
                 producer_layer_end: shortpath_artifact.producer_boundary.layer_end,
-                target_node_index: kv_artifact.producer_boundary.node_index,
+                creator_node_index: kv_artifact.producer_boundary.node_index,
                 target_layer_start: kv_artifact.producer_boundary.layer_start,
                 target_layer_end: kv_artifact.producer_boundary.layer_end,
                 artifact: kv_artifact.clone(),
@@ -10262,8 +10289,8 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
                             )
                         })?;
             }
-            let mut prefix_kv_by_target =
-                std::collections::BTreeMap::<(u64, u64, u32, u32, u32), (String, u64)>::new();
+            let mut prefix_kv_by_identity =
+                std::collections::BTreeMap::<(u64, u64, u32, u32), (String, u64, u32)>::new();
             for kv_artifact_id in &prefix_artifact.kv_artifact_ids {
                 let kv_artifact = w5_find_verified_execution_artifact(
                     &execution_artifacts,
@@ -10290,43 +10317,45 @@ fn load_w5_memory_decisions_from_store_with_prefix_lookup(
                     &kv_artifact,
                     "prefix-cache kv materialization",
                 )?;
-                let identity = (
-                    kv_artifact.producer_boundary.step_index,
+                let identity = w5_kv_logical_identity(
+                    &kv_artifact.producer_boundary,
                     kv_artifact.producer_boundary.position,
-                    kv_artifact.producer_boundary.node_index,
-                    kv_artifact.producer_boundary.layer_start,
-                    kv_artifact.producer_boundary.layer_end,
                 );
-                if let Some((existing_artifact_id, existing_checksum)) =
-                    prefix_kv_by_target.get(&identity)
+                if let Some((existing_artifact_id, existing_checksum, existing_creator_node)) =
+                    prefix_kv_by_identity.get(&identity)
                 {
                     if existing_artifact_id != &kv_artifact.artifact_id
                         || *existing_checksum != kv_artifact.checksum
                     {
                         anyhow::bail!(
-                            "ambiguous prefix-cache KV artifacts for step={} position={} target_node={} layers=[{},{}) existing={} checksum={:#x} duplicate={} checksum={:#x}",
+                            "ambiguous prefix-cache KV artifacts for step={} position={} layers=[{},{}) existing={} checksum={:#x} creator_node={} duplicate={} checksum={:#x} creator_node={}",
                             identity.0,
                             identity.1,
                             identity.2,
                             identity.3,
-                            identity.4,
                             existing_artifact_id,
                             existing_checksum,
+                            existing_creator_node,
                             kv_artifact.artifact_id,
-                            kv_artifact.checksum
+                            kv_artifact.checksum,
+                            kv_artifact.producer_boundary.node_index
                         );
                     }
                     continue;
                 }
-                prefix_kv_by_target.insert(
+                prefix_kv_by_identity.insert(
                     identity,
-                    (kv_artifact.artifact_id.clone(), kv_artifact.checksum),
+                    (
+                        kv_artifact.artifact_id.clone(),
+                        kv_artifact.checksum,
+                        kv_artifact.producer_boundary.node_index,
+                    ),
                 );
                 prefix_cache_kv_artifacts.push(W5MemoryShortpathKvArtifact {
                     step_index: kv_artifact.producer_boundary.step_index,
                     producer_position: kv_artifact.producer_boundary.position,
                     producer_layer_end: kv_artifact.producer_boundary.layer_end,
-                    target_node_index: kv_artifact.producer_boundary.node_index,
+                    creator_node_index: kv_artifact.producer_boundary.node_index,
                     target_layer_start: kv_artifact.producer_boundary.layer_start,
                     target_layer_end: kv_artifact.producer_boundary.layer_end,
                     artifact: kv_artifact,
@@ -11184,9 +11213,11 @@ fn validate_w5_shortpath_run_boundary_coverage(
                 kv.artifact.artifact_id
             );
         }
-        let expected_kv_artifact_id = format!(
-            "artifact/kv/{run_id}/step{}/node{}",
-            kv.step_index, kv.target_node_index
+        let expected_kv_artifact_id = w5_kv_artifact_id(
+            run_id,
+            kv.step_index,
+            kv.target_layer_start,
+            kv.target_layer_end,
         );
         if kv.artifact.artifact_id != expected_kv_artifact_id {
             anyhow::bail!(
@@ -11491,7 +11522,7 @@ fn publish_w5_memory_decision_artifact_refs(
             step_index: kv.step_index,
             producer_position: kv.producer_position,
             producer_layer_end: kv.producer_layer_end,
-            target_node_index: kv.target_node_index,
+            creator_node_index: kv.creator_node_index,
             target_layer_start: kv.target_layer_start,
             target_layer_end: kv.target_layer_end,
             artifact_id: published.artifact_id.clone(),
@@ -11562,7 +11593,7 @@ fn publish_w5_memory_decision_artifact_refs(
             step_index: kv.step_index,
             producer_position: kv.producer_position,
             producer_layer_end: kv.producer_layer_end,
-            target_node_index: kv.target_node_index,
+            creator_node_index: kv.creator_node_index,
             target_layer_start: kv.target_layer_start,
             target_layer_end: kv.target_layer_end,
             artifact_id: published.artifact_id.clone(),
@@ -12447,7 +12478,7 @@ fn w5_memory_kv_stream_env_from_refs(
                 published.step_index,
                 published.producer_position,
                 published.producer_layer_end,
-                published.target_node_index,
+                published.creator_node_index,
                 published.target_layer_start,
                 published.target_layer_end,
                 published.ref_hex,
@@ -17053,9 +17084,9 @@ mod tests {
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, validate_w5_shortpath_run_boundary_coverage,
         w5_expected_jump_to_terminal_shortpath_hits, w5_expected_jump_to_terminal_worker_counts,
-        w5_inference_profile_spec, w5_kv_hot_object_ref_from_object_service,
-        w5_memory_boundary_observations_recorded_line, w5_memory_decision_env_vars,
-        w5_memory_decision_publication_object_service_profile,
+        w5_inference_profile_spec, w5_kv_artifact_id, w5_kv_hot_object_ref_from_object_service,
+        w5_kv_logical_identity, w5_memory_boundary_observations_recorded_line,
+        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
         w5_memory_prefix_cache_kv_stream_env_from_refs,
         w5_memory_runtime_paths_should_publish_engram_state,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
@@ -19631,34 +19662,37 @@ mod tests {
         )
         .expect("stateless shortpath does not require pre-staged downstream KV artifacts");
         let make_kv = |producer_layer_end: u32,
-                       target_node_index: u32,
+                       creator_node_index: u32,
                        target_layer_start: u32,
                        target_layer_end: u32| {
             let checksum =
-                0x9000_u64 + u64::from(producer_layer_end) * 0x100 + u64::from(target_node_index);
+                0x9000_u64 + u64::from(producer_layer_end) * 0x100 + u64::from(creator_node_index);
             crate::W5MemoryShortpathKvArtifact {
                 step_index: 0,
                 producer_position: 4,
                 producer_layer_end,
-                target_node_index,
+                creator_node_index,
                 target_layer_start,
                 target_layer_end,
                 artifact: sim_memory::ExecutionArtifactObject {
-                    artifact_id: format!(
-                        "artifact/kv/test-p{producer_layer_end}-node{target_node_index}"
+                    artifact_id: w5_kv_artifact_id(
+                        "test-p",
+                        0,
+                        target_layer_start,
+                        target_layer_end,
                     ),
                     kind: sim_memory::ExecutionArtifactKind::KvCache,
                     model: model.clone(),
                     producer_boundary: sim_memory::RangeBoundary {
                         phase: sim_memory::RangeBoundaryPhase::RangeExit,
                         step_index: 0,
-                        node_index: target_node_index,
+                        node_index: creator_node_index,
                         layer_start: target_layer_start,
                         layer_end: target_layer_end,
-                        next_node_index: Some(if target_node_index == 8 {
+                        next_node_index: Some(if creator_node_index == 8 {
                             1
                         } else {
-                            target_node_index + 1
+                            creator_node_index + 1
                         }),
                         position: 4,
                     },
@@ -19673,7 +19707,7 @@ mod tests {
                     dtype: sim_core::TensorDType::F32,
                     shape: vec![1, 4],
                     durable_payload_ref: Some(sim_memory::LingquBlockPayloadRef::new(
-                        format!("block/kv/test-p{producer_layer_end}-node{target_node_index}"),
+                        format!("block/kv/test-p{producer_layer_end}-layers-{target_layer_start}-{target_layer_end}"),
                         0,
                         16,
                         checksum,
@@ -19791,16 +19825,44 @@ mod tests {
     }
 
     #[test]
+    fn w5_shortpath_kv_identity_excludes_creator_node() {
+        let boundary = sim_memory::RangeBoundary {
+            phase: sim_memory::RangeBoundaryPhase::RangeExit,
+            step_index: 3,
+            node_index: 2,
+            layer_start: 4,
+            layer_end: 8,
+            next_node_index: Some(3),
+            position: 23,
+        };
+        let mut same_kv_from_another_creator = boundary.clone();
+        same_kv_from_another_creator.node_index = 7;
+
+        assert_eq!(
+            w5_kv_artifact_id("run0", 3, 4, 8),
+            "artifact/kv/run0/step3/layers-4-8"
+        );
+        assert!(!w5_kv_artifact_id("run0", 3, 4, 8).contains("node"));
+        assert_eq!(
+            w5_kv_logical_identity(&boundary, boundary.position),
+            w5_kv_logical_identity(
+                &same_kv_from_another_creator,
+                same_kv_from_another_creator.position,
+            )
+        );
+    }
+
+    #[test]
     fn w5_memory_shortpath_kv_stream_uses_compact_materialization_refs() {
         let refs = vec![
             W5MemoryPublishedKvArtifactRef {
                 step_index: 0,
                 producer_position: 20,
                 producer_layer_end: 4,
-                target_node_index: 3,
+                creator_node_index: 3,
                 target_layer_start: 4,
                 target_layer_end: 8,
-                artifact_id: "artifact/kv/run0/step0/node3".to_string(),
+                artifact_id: "artifact/kv/run0/step0/layers-4-8".to_string(),
                 ref_hex: "a".repeat(128),
                 payload_bytes: 4096,
                 payload_checksum: 0xabc,
@@ -19810,10 +19872,10 @@ mod tests {
                 step_index: 0,
                 producer_position: 20,
                 producer_layer_end: 4,
-                target_node_index: 2,
+                creator_node_index: 2,
                 target_layer_start: 0,
                 target_layer_end: 4,
-                artifact_id: "artifact/kv/run0/step0/node2".to_string(),
+                artifact_id: "artifact/kv/run0/step0/layers-0-4".to_string(),
                 ref_hex: "b".repeat(128),
                 payload_bytes: 2048,
                 payload_checksum: 0xdef,
@@ -19836,10 +19898,10 @@ mod tests {
             step_index: 0,
             producer_position: 20,
             producer_layer_end: 4,
-            target_node_index: 2,
+            creator_node_index: 2,
             target_layer_start: 0,
             target_layer_end: 4,
-            artifact_id: "artifact/kv/run0/step0/node2".to_string(),
+            artifact_id: "artifact/kv/run0/step0/layers-0-4".to_string(),
             ref_hex: "b".repeat(128),
             payload_bytes: 2048,
             payload_checksum: 0xdef,
@@ -20258,7 +20320,7 @@ mod tests {
                 step_index: 0,
                 producer_position: 4,
                 producer_layer_end: 1,
-                target_node_index: 2,
+                creator_node_index: 2,
                 target_layer_start: 1,
                 target_layer_end: 2,
                 artifact: make_artifact("other", 0, 2, sim_memory::ExecutionArtifactKind::KvCache),
@@ -25512,7 +25574,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         save_lingqu_memory_durable_store(&store, &seed_store)
             .expect("save seeded durable payloads with second logits");
         let kv_artifact = sim_memory::ExecutionArtifactObject {
-            artifact_id: "artifact/kv/step4/node4".to_string(),
+            artifact_id: "artifact/kv/run0/step4/layers-8-12".to_string(),
             kind: sim_memory::ExecutionArtifactKind::KvCache,
             model: model.clone(),
             producer_boundary: sim_memory::RangeBoundary {
@@ -26063,7 +26125,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             "--kind".to_string(),
             "kv-cache".to_string(),
             "--artifact-id".to_string(),
-            "artifact/kv/step4/node4".to_string(),
+            "artifact/kv/run0/step4/layers-8-12".to_string(),
         ])
         .expect("list KV execution artifact manifest");
 
@@ -26090,7 +26152,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(prefetch_plan.target_step_index, 5);
         assert_eq!(
             prefetch_plan.planned_artifact_ids,
-            vec!["artifact/kv/step4/node4".to_string()]
+            vec!["artifact/kv/run0/step4/layers-8-12".to_string()]
         );
         assert!(prefetch_plan.checksum != 0);
         let store_bytes = fs::read(&store).expect("read durable store");
@@ -26128,7 +26190,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(plans.len(), 1);
         assert_eq!(
             plans[0].planned_artifact_ids,
-            vec!["artifact/kv/step4/node4".to_string()]
+            vec!["artifact/kv/run0/step4/layers-8-12".to_string()]
         );
         let decision_config = W5MemoryDecisionConfig {
             store_path: store.clone(),
@@ -26181,7 +26243,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert_eq!(bundle.prefetch_artifacts.len(), 1);
         assert_eq!(
             bundle.prefetch_artifacts[0].artifact_id,
-            "artifact/kv/step4/node4"
+            "artifact/kv/run0/step4/layers-8-12"
         );
         let bootstrap_store = root.join("bootstrap-store.json");
         let object_store = root.join("object-store.json");
@@ -27259,7 +27321,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .any(|artifact| artifact.artifact_id == "artifact/logits/run0/step1/node4"));
         let kv_artifact = artifacts
             .iter()
-            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node4")
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/layers-4-8")
             .expect("promoted downstream KV artifact");
         assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
         assert_eq!(kv_artifact.producer_boundary.position, 20);
@@ -27379,7 +27441,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .expect("load promoted execution artifacts");
         let kv_artifact = artifacts
             .iter()
-            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node3")
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/layers-4-8")
             .expect("promoted direct KV artifact");
         assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
         assert_eq!(kv_artifact.producer_boundary.position, 20);
@@ -27507,7 +27569,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .expect("load promoted execution artifacts");
         let kv_artifact = artifacts
             .iter()
-            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node8")
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/layers-35-40")
             .expect("promoted terminal node KV artifact");
         assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
         assert_eq!(kv_artifact.producer_boundary.layer_start, 35);
@@ -27663,7 +27725,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .expect("load promoted execution artifacts");
         let kv_artifact = artifacts
             .iter()
-            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/node3")
+            .find(|artifact| artifact.artifact_id == "artifact/kv/run0/step0/layers-4-8")
             .expect("promoted direct Object Service KV artifact");
         assert_eq!(kv_artifact.kind, sim_memory::ExecutionArtifactKind::KvCache);
         assert!(
@@ -28122,7 +28184,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             tokenizer_hash: 0x1001,
             profile_hash: 0x2002,
         };
-        let kv_artifact_id = "artifact/kv/prefix-test/step0/node1".to_string();
+        let kv_artifact_id = "artifact/kv/prefix-test/step0/layers-0-28".to_string();
         let kv_artifact = sim_memory::ExecutionArtifactObject {
             artifact_id: kv_artifact_id.clone(),
             kind: sim_memory::ExecutionArtifactKind::KvCache,
@@ -28501,7 +28563,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             .iter()
             .all(|event| event.status == CompletionStatus::Success));
         let artifact = sim_memory::ExecutionArtifactObject {
-            artifact_id: "artifact/kv/run0/step0/node1".to_string(),
+            artifact_id: "artifact/kv/run0/step0/layers-0-28".to_string(),
             kind: sim_memory::ExecutionArtifactKind::KvCache,
             model,
             producer_boundary: sim_memory::RangeBoundary {
@@ -28586,7 +28648,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert_eq!(prefix_artifacts[0].artifact_id, artifact_id);
         assert_eq!(
             prefix_artifacts[0].kv_artifact_ids,
-            vec!["artifact/kv/run0/step0/node1".to_string()]
+            vec!["artifact/kv/run0/step0/layers-0-28".to_string()]
         );
         assert_eq!(prefix_artifacts[0].hot_object_refs.len(), 1);
         let publication = publish_w5_memory_decision_artifact_refs(
@@ -28630,7 +28692,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
                     step_index: artifact.producer_boundary.step_index,
                     producer_position: artifact.producer_boundary.position,
                     producer_layer_end: artifact.producer_boundary.layer_end,
-                    target_node_index: artifact.producer_boundary.node_index,
+                    creator_node_index: artifact.producer_boundary.node_index,
                     target_layer_start: artifact.producer_boundary.layer_start,
                     target_layer_end: artifact.producer_boundary.layer_end,
                     artifact,
