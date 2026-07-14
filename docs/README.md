@@ -43,6 +43,8 @@ Current validation entry points:
   - plan for adding an opt-in approximate hidden-state match path to W5 shortpath while preserving exact-match correctness
 - [plans/2026-06-25-mem-service-independent-service-plan.md](plans/2026-06-25-mem-service-independent-service-plan.md)
   - implementation and evaluation plan for turning `mem_service` into an independently releasable/deployable service for LLM serving and pretraining integration
+- [plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md](plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md)
+  - next-stage plan for direct official DeepSeek V4 Flash Safetensors, FP8/FP4 execution, CPU-reference alignment, W5 2/3/8-node validation, and MTP; DS4 remains read-only and 1M context is explicitly not validated
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)
