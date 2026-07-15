@@ -217,6 +217,33 @@ PROFILE_SPECS = {
         ),
         generated=True,
     ),
+    "host_deepseek_vector": ProfileSpec(
+        profile="HostVector",
+        example="generated_host_deepseek_vector",
+        manifest_name="host_deepseek_vector_manifest.json",
+        callable_hint="host_deepseek_vector",
+        orch_source="host_deepseek_vector_orch.cpp",
+        orch_function="build_deepseek_vector_graph",
+        kernels=(KernelSpec(0, "host_deepseek_vector_kernel.cpp", "aiv"),),
+        args_template=(
+            {"kind": "input", "name": "input0"},
+            {"kind": "input", "name": "input1"},
+            {"kind": "input", "name": "input2"},
+            {"kind": "output", "name": "output"},
+            {"kind": "scalar_u64", "name": "operation"},
+            {"kind": "scalar_u64", "name": "input0_elements"},
+            {"kind": "scalar_u64", "name": "input1_elements"},
+            {"kind": "scalar_u64", "name": "input2_elements"},
+            {"kind": "scalar_u64", "name": "output_elements"},
+            {"kind": "scalar_u64", "name": "parameter0"},
+            {"kind": "scalar_u64", "name": "parameter1"},
+            {"kind": "scalar_u64", "name": "parameter2"},
+            {"kind": "scalar_u64", "name": "parameter3"},
+            {"kind": "scalar_f32_bits", "name": "float_parameter0"},
+            {"kind": "scalar_f32_bits", "name": "float_parameter1"},
+        ),
+        generated=True,
+    ),
 }
 
 
@@ -1553,6 +1580,584 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_host_deepseek_vector_orchestration(build_dir: Path) -> Path:
+    source = build_dir / "host_deepseek_vector_orch.cpp"
+    source.write_text(
+        """\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+extern "C" {
+
+int build_deepseek_vector_graph(
+        OrchestrationRuntime* runtime,
+        const ChipStorageTaskArgs& orch_args) {
+    if (orch_args.tensor_count() < 4 || orch_args.scalar_count() < 11) {
+        std::cerr << "build_deepseek_vector_graph: expected 4 tensors and 11 scalars\\n";
+        return -1;
+    }
+    const uint64_t len0 = orch_args.scalar(1);
+    const uint64_t len1 = orch_args.scalar(2);
+    const uint64_t len2 = orch_args.scalar(3);
+    const uint64_t out_len = orch_args.scalar(4);
+    if (out_len == 0 ||
+        orch_args.tensor(0).shapes[0] < (len0 == 0 ? 1 : len0) ||
+        orch_args.tensor(1).shapes[0] < (len1 == 0 ? 1 : len1) ||
+        orch_args.tensor(2).shapes[0] < (len2 == 0 ? 1 : len2) ||
+        orch_args.tensor(3).shapes[0] < out_len) {
+        std::cerr << "build_deepseek_vector_graph: tensor payload shorter than declared geometry\\n";
+        return -1;
+    }
+    const size_t bytes0 = static_cast<size_t>((len0 == 0 ? 1 : len0) * sizeof(float));
+    const size_t bytes1 = static_cast<size_t>((len1 == 0 ? 1 : len1) * sizeof(float));
+    const size_t bytes2 = static_cast<size_t>((len2 == 0 ? 1 : len2) * sizeof(float));
+    const size_t output_bytes = static_cast<size_t>(out_len * sizeof(float));
+    void* dev0 = device_malloc(runtime, bytes0);
+    void* dev1 = device_malloc(runtime, bytes1);
+    void* dev2 = device_malloc(runtime, bytes2);
+    void* dev_out = device_malloc(runtime, output_bytes);
+    if (!dev0 || !dev1 || !dev2 || !dev_out ||
+        copy_to_device(runtime, dev0, orch_args.tensor(0).data_as<uint8_t>(), bytes0) != 0 ||
+        copy_to_device(runtime, dev1, orch_args.tensor(1).data_as<uint8_t>(), bytes1) != 0 ||
+        copy_to_device(runtime, dev2, orch_args.tensor(2).data_as<uint8_t>(), bytes2) != 0) {
+        std::cerr << "build_deepseek_vector_graph: allocation or input copy failed\\n";
+        return -1;
+    }
+    record_tensor_pair(
+        runtime,
+        orch_args.tensor(3).data_as<uint8_t>(),
+        dev_out,
+        output_bytes);
+    uint64_t task_args[15];
+    task_args[0] = reinterpret_cast<uint64_t>(dev0);
+    task_args[1] = reinterpret_cast<uint64_t>(dev1);
+    task_args[2] = reinterpret_cast<uint64_t>(dev2);
+    task_args[3] = reinterpret_cast<uint64_t>(dev_out);
+    for (uint64_t index = 0; index < 11; ++index) {
+        task_args[4 + index] = orch_args.scalar(index);
+    }
+    add_task(runtime, task_args, 15, 0, CoreType::AIV);
+    return 0;
+}
+
+}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_deepseek_vector_kernel(build_dir: Path) -> Path:
+    source = build_dir / "host_deepseek_vector_kernel.cpp"
+    source.write_text(
+        """\
+#include <cstdint>
+#include <cmath>
+#include <pto/pto-inst.hpp>
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+namespace {
+
+enum Operation : uint64_t {
+    RMS_NORM = 1,
+    HC_SPLIT = 2,
+    HC_WEIGHTED_SUM = 3,
+    HC_POST = 4,
+    ROPE = 5,
+    KV_FP8_ROUNDTRIP = 6,
+    SINK_ATTENTION = 7,
+    INDEXER_QAT = 8,
+    SCALE = 9,
+    SWIGLU = 10,
+    ADD = 11,
+    ROUTER = 12,
+    TOP_K = 13,
+    HC_HEAD_WEIGHTS = 14,
+};
+
+inline float from_bits(uint64_t value) {
+    union {
+        uint32_t bits;
+        float value;
+    } converted;
+    converted.bits = static_cast<uint32_t>(value);
+    return converted.value;
+}
+
+inline float round_bf16(float value) {
+    union {
+        uint32_t bits;
+        float value;
+    } converted;
+    converted.value = value;
+    const uint32_t exponent = converted.bits & 0x7f800000U;
+    if (exponent == 0x7f800000U) {
+        converted.bits &= 0xffff0000U;
+        return converted.value;
+    }
+    const uint32_t bias = 0x7fffU + ((converted.bits >> 16U) & 1U);
+    converted.bits = (converted.bits + bias) & 0xffff0000U;
+    return converted.value;
+}
+
+inline float accurate_exp_f32(float value) {
+    const float scaled = value * 1.4426950408889634f;
+    const int exponent = static_cast<int>(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    const float remainder = value - static_cast<float>(exponent) * 0.6931471805599453f;
+    float term = 1.0f;
+    float sum = 1.0f;
+    for (int order = 1; order <= 12; ++order) {
+        term *= remainder / static_cast<float>(order);
+        sum += term;
+    }
+    union {
+        uint32_t bits;
+        float value;
+    } power_of_two;
+    power_of_two.bits = static_cast<uint32_t>(exponent + 127) << 23U;
+    return sum * power_of_two.value;
+}
+
+inline float accurate_log1p_f32(float value) {
+    int exponent = 0;
+    double mantissa = frexp(1.0 + static_cast<double>(value), &exponent);
+    if (mantissa < 0.70710678118654752440) {
+        mantissa *= 2.0;
+        --exponent;
+    }
+    const double ratio = (mantissa - 1.0) / (mantissa + 1.0);
+    const double ratio_squared = ratio * ratio;
+    double power = ratio;
+    double sum = 0.0;
+    for (int order = 1; order <= 61; order += 2) {
+        sum += power / static_cast<double>(order);
+        power *= ratio_squared;
+    }
+    return static_cast<float>(2.0 * sum + static_cast<double>(exponent) * 0.69314718055994530942);
+}
+
+inline float accurate_sqrt_f32(float value) {
+    double estimate = static_cast<double>(value) >= 1.0 ? static_cast<double>(value) : 1.0;
+    for (int iteration = 0; iteration < 12; ++iteration) {
+        estimate = 0.5 * (estimate + static_cast<double>(value) / estimate);
+    }
+    return static_cast<float>(estimate);
+}
+
+inline float sigmoid(float value) {
+    return 1.0f / (1.0f + accurate_exp_f32(-value));
+}
+
+inline float separate_mul_add(float left, float right, float addend) {
+    volatile float product = left * right;
+    return product + addend;
+}
+
+inline float separate_add(float left, float right) {
+    volatile float value = left + right;
+    return value;
+}
+
+inline float fp8_positive(uint32_t index) {
+    const uint32_t exponent = index >> 3U;
+    const uint32_t mantissa = index & 7U;
+    if (exponent == 0) {
+        return static_cast<float>(mantissa) * 0.001953125f;
+    }
+    return (1.0f + static_cast<float>(mantissa) * 0.125f) * ldexpf(1.0f, static_cast<int>(exponent) - 7);
+}
+
+inline float fp8_round(float value) {
+    const float sign = value < 0.0f ? -1.0f : 1.0f;
+    const float magnitude = fminf(fabsf(value), 448.0f);
+    uint32_t low = 0;
+    uint32_t high = 126;
+    while (low < high) {
+        const uint32_t middle = (low + high + 1U) >> 1U;
+        if (fp8_positive(middle) <= magnitude) {
+            low = middle;
+        } else {
+            high = middle - 1U;
+        }
+    }
+    uint32_t best = low;
+    if (best < 126U) {
+        const float best_difference = fabsf(magnitude - fp8_positive(best));
+        const float next_difference = fabsf(magnitude - fp8_positive(best + 1U));
+        if (next_difference < best_difference ||
+            (next_difference == best_difference && ((best + 1U) & 1U) == 0 && (best & 1U) != 0)) {
+            ++best;
+        }
+    }
+    return sign * fp8_positive(best);
+}
+
+inline void rms_norm(
+        __gm__ const float* input,
+        __gm__ const float* weight,
+        __gm__ float* output,
+        uint64_t groups,
+        uint64_t width,
+        bool has_weight,
+        bool bf16,
+        float eps) {
+    for (uint64_t group = 0; group < groups; ++group) {
+        const uint64_t base = group * width;
+        float sum = 0.0f;
+        for (uint64_t index = 0; index < width; ++index) {
+            const float value = input[base + index];
+            sum += value * value;
+        }
+        const float inverse = 1.0f / accurate_sqrt_f32(sum / static_cast<float>(width) + eps);
+        for (uint64_t index = 0; index < width; ++index) {
+            float value = input[base + index] * inverse;
+            if (has_weight) {
+                value *= weight[index];
+            }
+            output[base + index] = bf16 ? round_bf16(value) : value;
+        }
+    }
+}
+
+}  // namespace
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {
+    __gm__ const float* input0 = reinterpret_cast<__gm__ const float*>(args[0]);
+    __gm__ const float* input1 = reinterpret_cast<__gm__ const float*>(args[1]);
+    __gm__ const float* input2 = reinterpret_cast<__gm__ const float*>(args[2]);
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[3]);
+    const uint64_t operation = static_cast<uint64_t>(args[4]);
+    const uint64_t len0 = static_cast<uint64_t>(args[5]);
+    const uint64_t len1 = static_cast<uint64_t>(args[6]);
+    const uint64_t len2 = static_cast<uint64_t>(args[7]);
+    const uint64_t out_len = static_cast<uint64_t>(args[8]);
+    const uint64_t p0 = static_cast<uint64_t>(args[9]);
+    const uint64_t p1 = static_cast<uint64_t>(args[10]);
+    const uint64_t p2 = static_cast<uint64_t>(args[11]);
+    const uint64_t p3 = static_cast<uint64_t>(args[12]);
+    const float f0 = from_bits(static_cast<uint64_t>(args[13]));
+    const float f1 = from_bits(static_cast<uint64_t>(args[14]));
+
+    if (operation == RMS_NORM) {
+        rms_norm(input0, input1, output, p0, p1, p2 != 0, p3 != 0, f0);
+        return;
+    }
+    if (operation == HC_SPLIT) {
+        const uint64_t hc = p0;
+        const uint64_t iterations = p1;
+        for (uint64_t index = 0; index < hc; ++index) {
+            output[index] = sigmoid(separate_mul_add(input0[index], input1[0], input2[index])) + f0;
+            output[hc + index] = 2.0f * sigmoid(separate_mul_add(input0[hc + index], input1[1], input2[hc + index]));
+        }
+        const uint64_t offset = 2 * hc;
+        for (uint64_t destination = 0; destination < hc; ++destination) {
+            float row_max = -INFINITY;
+            for (uint64_t source = 0; source < hc; ++source) {
+                const uint64_t index = destination * hc + source;
+                const float value = separate_mul_add(input0[offset + index], input1[2], input2[offset + index]);
+                output[offset + index] = value;
+                row_max = fmaxf(row_max, value);
+            }
+            float sum = 0.0f;
+            for (uint64_t source = 0; source < hc; ++source) {
+                const uint64_t index = offset + destination * hc + source;
+                output[index] = accurate_exp_f32(output[index] - row_max);
+                sum += output[index];
+            }
+            for (uint64_t source = 0; source < hc; ++source) {
+                const uint64_t index = offset + destination * hc + source;
+                output[index] = output[index] / sum + f0;
+            }
+        }
+        for (uint64_t iteration = 0; iteration < iterations; ++iteration) {
+            if (iteration != 0) {
+                for (uint64_t destination = 0; destination < hc; ++destination) {
+                    float sum = 0.0f;
+                    for (uint64_t source = 0; source < hc; ++source) {
+                        sum += output[offset + destination * hc + source];
+                    }
+                    const float inverse = 1.0f / (sum + f0);
+                    for (uint64_t source = 0; source < hc; ++source) {
+                        output[offset + destination * hc + source] *= inverse;
+                    }
+                }
+            }
+            for (uint64_t source = 0; source < hc; ++source) {
+                float sum = 0.0f;
+                for (uint64_t destination = 0; destination < hc; ++destination) {
+                    sum += output[offset + destination * hc + source];
+                }
+                const float inverse = 1.0f / (sum + f0);
+                for (uint64_t destination = 0; destination < hc; ++destination) {
+                    output[offset + destination * hc + source] *= inverse;
+                }
+            }
+        }
+        return;
+    }
+    if (operation == HC_WEIGHTED_SUM) {
+        const uint64_t hidden = p0;
+        const uint64_t hc = p1;
+        for (uint64_t dim = 0; dim < hidden; ++dim) {
+            float value = 0.0f;
+            for (uint64_t source = 0; source < hc; ++source) {
+                value = separate_mul_add(input0[source * hidden + dim], input1[source], value);
+            }
+            output[dim] = p2 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == HC_POST) {
+        const uint64_t hidden = p0;
+        const uint64_t hc = p1;
+        for (uint64_t destination = 0; destination < hc; ++destination) {
+            for (uint64_t dim = 0; dim < hidden; ++dim) {
+                float value = input0[dim] * input2[destination];
+                for (uint64_t source = 0; source < hc; ++source) {
+                    value = separate_mul_add(input1[source * hidden + dim], input2[hc + source * hc + destination], value);
+                }
+                output[destination * hidden + dim] = p2 != 0 ? round_bf16(value) : value;
+            }
+        }
+        return;
+    }
+    if (operation == ROPE) {
+        const uint64_t heads = p0;
+        const uint64_t head_dim = p1;
+        const uint64_t rope_dim = p2;
+        const bool inverse = p3 != 0;
+        const uint64_t tail = head_dim - rope_dim;
+        for (uint64_t index = 0; index < len0; ++index) {
+            output[index] = input0[index];
+        }
+        for (uint64_t head = 0; head < heads; ++head) {
+            for (uint64_t pair = 0; pair < rope_dim / 2; ++pair) {
+                const uint64_t index = head * head_dim + tail + pair * 2;
+                const float x0 = input0[index];
+                const float x1 = input0[index + 1];
+                const float sine = inverse ? -input2[pair] : input2[pair];
+                output[index] = round_bf16(separate_mul_add(-x1, sine, x0 * input1[pair]));
+                output[index + 1] = round_bf16(separate_mul_add(x1, input1[pair], x0 * sine));
+            }
+        }
+        for (uint64_t head = 0; head < heads; ++head) {
+            for (uint64_t index = 0; index < tail; ++index) {
+                const uint64_t offset = head * head_dim + index;
+                output[offset] = round_bf16(output[offset]);
+            }
+        }
+        return;
+    }
+    if (operation == KV_FP8_ROUNDTRIP) {
+        const uint64_t quantized_len = p0;
+        const uint64_t block_size = p1;
+        for (uint64_t block_start = 0; block_start < quantized_len; block_start += block_size) {
+            float absolute_max = 1.0e-4f;
+            for (uint64_t index = block_start; index < block_start + block_size; ++index) {
+                absolute_max = fmaxf(absolute_max, fabsf(input0[index]));
+            }
+            int exponent = static_cast<int>(ceilf(log2f(absolute_max / 448.0f)));
+            exponent = exponent < -127 ? -127 : (exponent > 127 ? 127 : exponent);
+            const float scale = ldexpf(1.0f, exponent);
+            for (uint64_t index = block_start; index < block_start + block_size; ++index) {
+                output[index] = round_bf16(fp8_round(fmaxf(-448.0f, fminf(448.0f, input0[index] / scale))) * scale);
+            }
+        }
+        for (uint64_t index = quantized_len; index < len0; ++index) {
+            output[index] = round_bf16(input0[index]);
+        }
+        return;
+    }
+    if (operation == SINK_ATTENTION) {
+        const uint64_t heads = p0;
+        const uint64_t head_dim = p1;
+        const uint64_t rows = len1 / head_dim;
+        const float scale = 1.0f / accurate_sqrt_f32(static_cast<float>(head_dim));
+        float scores[1024];
+        for (uint64_t head = 0; head < heads; ++head) {
+            float max_score = input2[head];
+            for (uint64_t row = 0; row < rows; ++row) {
+                float score = 0.0f;
+                for (uint64_t dim = 0; dim < head_dim; ++dim) {
+                    score = separate_mul_add(input0[head * head_dim + dim], input1[row * head_dim + dim], score);
+                }
+                scores[row] = score * scale;
+                max_score = fmaxf(max_score, scores[row]);
+            }
+            float denominator = accurate_exp_f32(input2[head] - max_score);
+            for (uint64_t dim = 0; dim < head_dim; ++dim) {
+                float value = 0.0f;
+                for (uint64_t row = 0; row < rows; ++row) {
+                    const float weight = accurate_exp_f32(scores[row] - max_score);
+                    if (dim == 0) {
+                        denominator += weight;
+                    }
+                    value = separate_mul_add(weight, input1[row * head_dim + dim], value);
+                }
+                const float inverse_denominator = 1.0f / denominator;
+                output[head * head_dim + dim] = round_bf16(value * inverse_denominator);
+            }
+        }
+        return;
+    }
+    if (operation == INDEXER_QAT) {
+        const float values[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+        for (uint64_t index = 0; index < len0; ++index) {
+            output[index] = input0[index];
+        }
+        for (uint64_t head = 0; head < len0; head += 128) {
+            for (uint64_t stride = 1; stride < 128; stride *= 2) {
+                for (uint64_t base = 0; base < 128; base += 2 * stride) {
+                    for (uint64_t index = 0; index < stride; ++index) {
+                        const float a = output[head + base + index];
+                        const float b = output[head + base + stride + index];
+                        output[head + base + index] = a + b;
+                        output[head + base + stride + index] = a - b;
+                    }
+                }
+            }
+            for (uint64_t index = 0; index < 128; ++index) {
+                output[head + index] *= 0.08838834764831845f;
+            }
+            for (uint64_t block = 0; block < 128; block += 32) {
+                float absolute_max = 7.052966104933725e-38f;
+                for (uint64_t index = 0; index < 32; ++index) {
+                    absolute_max = fmaxf(absolute_max, fabsf(output[head + block + index]));
+                }
+                const float scale = exp2f(ceilf(log2f(absolute_max / 6.0f)));
+                for (uint64_t index = 0; index < 32; ++index) {
+                    const uint64_t offset = head + block + index;
+                    const float sign = output[offset] < 0.0f ? -1.0f : 1.0f;
+                    const float magnitude = fminf(fabsf(output[offset] / scale), 6.0f);
+                    uint64_t best = 0;
+                    for (uint64_t candidate = 1; candidate < 8; ++candidate) {
+                        const float difference = fabsf(magnitude - values[candidate]);
+                        const float best_difference = fabsf(magnitude - values[best]);
+                        if (difference < best_difference ||
+                            (difference == best_difference && (candidate & 1U) == 0 && (best & 1U) != 0)) {
+                            best = candidate;
+                        }
+                    }
+                    output[offset] = round_bf16(sign * values[best] * scale);
+                }
+            }
+        }
+        return;
+    }
+    if (operation == SCALE) {
+        for (uint64_t index = 0; index < len0; ++index) {
+            volatile float value = input0[index] * f0;
+            output[index] = p0 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == SWIGLU) {
+        for (uint64_t index = 0; index < len0; ++index) {
+            const float gate = f0 > 1.0e-6f ? fminf(input0[index], f0) : input0[index];
+            const float up = f0 > 1.0e-6f ? fmaxf(-f0, fminf(input1[index], f0)) : input1[index];
+            const float value = gate * (1.0f / (1.0f + accurate_exp_f32(-gate))) * up;
+            output[index] = p0 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == ADD) {
+        for (uint64_t index = 0; index < out_len; ++index) {
+            const float value = input0[index] + input1[index];
+            output[index] = p0 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == ROUTER) {
+        const uint64_t experts = p0;
+        const uint64_t top_k = p1;
+        const bool hash = p2 != 0;
+        for (uint64_t expert = 0; expert < experts; ++expert) {
+            const float logit = input0[expert];
+            const float exponential = accurate_exp_f32(logit);
+            const float softplus = logit > 20.0f ? logit : (logit < -20.0f ? exponential : accurate_log1p_f32(exponential));
+            output[expert] = accurate_sqrt_f32(softplus);
+        }
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            output[experts + slot] = hash ? input2[slot] : -1.0f;
+        }
+        if (!hash) {
+            for (uint64_t expert = 0; expert < experts; ++expert) {
+                const float score = output[expert] + input1[expert];
+                uint64_t insertion = top_k;
+                for (uint64_t slot = 0; slot < top_k; ++slot) {
+                    const int64_t current = static_cast<int64_t>(output[experts + slot]);
+                    if (current < 0 || score > output[current] + input1[current]) {
+                        insertion = slot;
+                        break;
+                    }
+                }
+                if (insertion < top_k) {
+                    for (uint64_t slot = top_k - 1; slot > insertion; --slot) {
+                        output[experts + slot] = output[experts + slot - 1];
+                    }
+                    output[experts + insertion] = static_cast<float>(expert);
+                }
+            }
+        }
+        float sum = 0.0f;
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            sum = separate_add(sum, output[static_cast<uint64_t>(output[experts + slot])]);
+        }
+        sum = fmaxf(sum, 6.1035156e-5f);
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            const uint64_t expert = static_cast<uint64_t>(output[experts + slot]);
+            volatile float normalized = output[expert] / sum;
+            output[experts + top_k + slot] = normalized * f0;
+        }
+        return;
+    }
+    if (operation == TOP_K) {
+        const uint64_t top_k = p0;
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            output[slot] = -1.0f;
+            output[top_k + slot] = -INFINITY;
+        }
+        for (uint64_t token = 0; token < len0; ++token) {
+            uint64_t insertion = top_k;
+            for (uint64_t slot = 0; slot < top_k; ++slot) {
+                if (input0[token] > output[top_k + slot]) {
+                    insertion = slot;
+                    break;
+                }
+            }
+            if (insertion < top_k) {
+                for (uint64_t slot = top_k - 1; slot > insertion; --slot) {
+                    output[slot] = output[slot - 1];
+                    output[top_k + slot] = output[top_k + slot - 1];
+                }
+                output[insertion] = static_cast<float>(token);
+                output[top_k + insertion] = input0[token];
+            }
+        }
+        return;
+    }
+    if (operation == HC_HEAD_WEIGHTS) {
+        for (uint64_t index = 0; index < len0; ++index) {
+            const float affine = separate_mul_add(input0[index], f0, input1[index]);
+            const float weight = affine >= 0.0f
+                ? 1.0f / (1.0f + accurate_exp_f32(-affine))
+                : accurate_exp_f32(affine) / (1.0f + accurate_exp_f32(affine));
+            output[index] = weight + f1;
+        }
+    }
+}
+"""
+    )
+    return source
+
+
 def write_wrapped_kernel(
     build_dir: Path,
     spec_key: str,
@@ -1661,6 +2266,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             raise SystemExit(
                 "host_q8_block_dot requires positive --gemm-m, --gemm-k 32 and 128-aligned --gemm-n"
             )
+    if args.profile == "host_deepseek_vector" and args.platform != "a5sim":
+        raise SystemExit("host_deepseek_vector requires --platform a5sim")
     reuse_runtime = None
     if args.reuse_runtime_manifest:
         reuse_manifest = json.loads(Path(args.reuse_runtime_manifest).read_text())
@@ -1715,6 +2322,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         )
     if args.profile == "host_engram_context":
         orch_source = write_host_engram_context_orchestration(build_dir)
+    if args.profile == "host_deepseek_vector":
+        orch_source = write_host_deepseek_vector_orchestration(build_dir)
     if args.profile == "host_matmul" and args.tile_batch > 1:
         orch_source = write_batched_matmul_orchestration(build_dir, args.tile_batch)
     orch_binary = kernel_compiler.compile_orchestration(
@@ -1743,6 +2352,11 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         engram_source = (
             write_host_engram_context_noop_kernel(build_dir)
             if args.profile == "host_engram_context"
+            else None
+        )
+        deepseek_vector_source = (
+            write_host_deepseek_vector_kernel(build_dir)
+            if args.profile == "host_deepseek_vector"
             else None
         )
         gemm_source = (
@@ -1787,6 +2401,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             vector_source
             or batched_source
             or engram_source
+            or deepseek_vector_source
             or gemm_source
             or fp32_gemm_source
             or quantized_gemm_source
@@ -1969,6 +2584,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         }
     if args.profile == "host_engram_context":
         manifest["host_engram_context_manifest_version"] = 6
+    if args.profile == "host_deepseek_vector":
+        manifest["host_deepseek_vector_manifest_version"] = 12
 
     manifest_path = output_dir / spec.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))

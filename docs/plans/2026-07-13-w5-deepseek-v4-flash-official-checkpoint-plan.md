@@ -2,14 +2,15 @@
 
 日期：2026-07-13
 
-状态：执行中；阶段 1 至阶段 4 已完成，阶段 5 待开始
+状态：执行中；阶段 1 至阶段 5 已完成，阶段 6 待开始
 
 已完成证据：
 
 - 阶段 1：[官方 checkpoint loader validation](../2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md)；
 - 阶段 2：[独立 CPU reference oracle validation](../2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md)；
 - 阶段 3：[官方 linear production validation](../2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md)；
-- 阶段 4：[官方 routed-expert production validation](../2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md)。
+- 阶段 4：[官方 routed-expert production validation](../2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md)；
+- 阶段 5：[官方 checkpoint 首 token validation](../2026-07-16-w5-deepseek-v4-flash-official-first-token-report.md)。
 
 ## 1. 目标
 

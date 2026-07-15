@@ -15,10 +15,10 @@ use sim_runtime::{LocalRuntimeEngine, VecEventSink};
 use sim_topology::SimTopology;
 
 use super::{
-    bytes_to_f32s, ensure_simpler_host_gemm_manifest, host_vector_dispatch_lock_guard,
-    kvcache_host_matmul_request, opaque_binding, run_host_gemm, scenario_config_for_chipbackend,
-    simpler_host_artifact_producer_path, with_suppressed_stdio, HostVectorDispatchLock,
-    SimplerRuntimeManifestEnvelope,
+    bytes_to_f32s, ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_gemm_manifest,
+    f32s_to_bytes, host_vector_dispatch_lock_guard, kvcache_host_matmul_request, opaque_binding,
+    run_host_gemm, scenario_config_for_chipbackend, simpler_host_artifact_producer_path,
+    with_suppressed_stdio, HostVectorDispatchLock, SimplerRuntimeManifestEnvelope,
 };
 
 const TILE: usize = 128;
@@ -59,6 +59,21 @@ pub struct DeepseekV4OfficialFp8Execution {
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct DeepseekV4OfficialBf16Execution {
+    pub tensor_name: String,
+    pub output_size: usize,
+    pub input_size: usize,
+    pub row_start: usize,
+    pub row_count: usize,
+    pub output_dtype: String,
+    pub dispatch_count: usize,
+    pub peak_tile_payload_bytes: usize,
+    pub input_checksum: String,
+    pub output: Vec<f32>,
+    pub output_checksum: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct DeepseekV4OfficialF32Execution {
     pub tensor_name: String,
     pub output_size: usize,
     pub input_size: usize,
@@ -499,7 +514,7 @@ pub(super) fn checksum_f32(values: &[f32]) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_fp8_rows(
+pub(super) fn validate_fp8_rows(
     weight: &[u8],
     scales: &[u8],
     output_size: usize,
@@ -813,6 +828,134 @@ pub fn execute_deepseek_official_bf16_rows_through_simpler(
         dispatch_count,
         peak_tile_payload_bytes: TILE * input_size * 4 + TILE * TILE * std::mem::size_of::<f32>(),
         input_checksum: checksum(&input_bf16),
+        output_checksum: checksum_f32(&output),
+        output,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_official_f32_rows_through_simpler(
+    checkpoint: &DeepseekV4Checkpoint,
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    tensor_name: &str,
+    row_start: usize,
+    row_count: usize,
+    input: &[f32],
+    output_dtype: DeepseekV4LinearOutputDType,
+) -> Result<DeepseekV4OfficialF32Execution, String> {
+    let tensor = checkpoint.tensor(tensor_name)?;
+    if tensor.dtype != DeepseekV4TensorDType::F32
+        || tensor.shape.len() != 2
+        || tensor.scale_tensor.is_some()
+    {
+        return Err(format!(
+            "deepseek_v4_production_f32_tensor_contract_invalid:{tensor_name}"
+        ));
+    }
+    let output_size = usize::try_from(tensor.shape[0])
+        .map_err(|_| format!("deepseek_v4_production_f32_output_too_large:{tensor_name}"))?;
+    let input_size = usize::try_from(tensor.shape[1])
+        .map_err(|_| format!("deepseek_v4_production_f32_input_too_large:{tensor_name}"))?;
+    if row_count == 0
+        || input.len() != input_size
+        || !input_size.is_multiple_of(TILE)
+        || input.iter().any(|value| !value.is_finite())
+        || row_start
+            .checked_add(row_count)
+            .is_none_or(|end| end > output_size)
+    {
+        return Err(format!(
+            "deepseek_v4_production_f32_shape_invalid:out={output_size}:in={input_size}:row={row_start}+{row_count}:input={}",
+            input.len()
+        ));
+    }
+    ensure_simpler_host_fp32_gemm_manifest(
+        manifest_path,
+        TILE as u64,
+        input_size as u64,
+        TILE as u64,
+    )?;
+    let row_bytes = input_size
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "deepseek_v4_production_f32_row_bytes_overflow".to_string())?;
+    let mut activation_matrix = vec![0.0f32; TILE * input_size];
+    activation_matrix[..input_size].copy_from_slice(input);
+    let activation_payload = f32s_to_bytes(&activation_matrix);
+    let mut output = vec![0.0f32; row_count];
+    let mut dispatch_count = 0usize;
+    for output_tile_start in (0..row_count).step_by(TILE) {
+        let valid_rows = (row_count - output_tile_start).min(TILE);
+        let global_row = row_start + output_tile_start;
+        let byte_offset = global_row
+            .checked_mul(row_bytes)
+            .ok_or_else(|| "deepseek_v4_production_f32_weight_offset_overflow".to_string())?;
+        let byte_count = valid_rows
+            .checked_mul(row_bytes)
+            .ok_or_else(|| "deepseek_v4_production_f32_weight_bytes_overflow".to_string())?;
+        let weight_rows =
+            checkpoint.read_tensor_slice(tensor_name, byte_offset as u64, byte_count as u64)?;
+        let mut weight_matrix = vec![0.0f32; input_size * TILE];
+        for column in 0..valid_rows {
+            for k in 0..input_size {
+                let source = (column * input_size + k) * 4;
+                let value = f32::from_le_bytes(
+                    weight_rows[source..source + 4]
+                        .try_into()
+                        .expect("four-byte F32 weight"),
+                );
+                if !value.is_finite() {
+                    return Err(format!(
+                        "deepseek_v4_production_f32_weight_non_finite:{tensor_name}:row={}:column={k}",
+                        global_row + column
+                    ));
+                }
+                weight_matrix[k * TILE + column] = value;
+            }
+        }
+        let mut tile_task = task.clone();
+        tile_task.task_id = task
+            .task_id
+            .checked_add(dispatch_count as u64)
+            .ok_or_else(|| "deepseek_v4_production_f32_task_id_overflow".to_string())?;
+        let tile_output = run_host_gemm(
+            topology,
+            &tile_task,
+            manifest_path,
+            activation_payload.clone(),
+            f32s_to_bytes(&weight_matrix),
+            TILE,
+            input_size,
+            TILE,
+            "fp32",
+            4,
+            "host_fp32_gemm",
+        )?;
+        output[output_tile_start..output_tile_start + valid_rows]
+            .copy_from_slice(&tile_output[..valid_rows]);
+        dispatch_count += 1;
+    }
+    if output_dtype == DeepseekV4LinearOutputDType::Bf16 {
+        output
+            .iter_mut()
+            .for_each(|value| *value = round_to_bf16(*value));
+    }
+    let peak_tile_payload_bytes = TILE
+        .checked_mul(input_size)
+        .and_then(|elements| elements.checked_mul(8))
+        .and_then(|bytes| bytes.checked_add(TILE * TILE * 4))
+        .ok_or_else(|| "deepseek_v4_production_f32_peak_payload_overflow".to_string())?;
+    Ok(DeepseekV4OfficialF32Execution {
+        tensor_name: tensor_name.to_string(),
+        output_size,
+        input_size,
+        row_start,
+        row_count,
+        output_dtype: output_dtype.name().to_string(),
+        dispatch_count,
+        peak_tile_payload_bytes,
+        input_checksum: checksum_f32(input),
         output_checksum: checksum_f32(&output),
         output,
     })

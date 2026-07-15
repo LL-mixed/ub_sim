@@ -2,7 +2,10 @@
 
 mod deepseek_v4_flash_gguf_runtime;
 mod deepseek_v4_flash_official_expert_runtime;
+mod deepseek_v4_flash_official_layer_runtime;
+mod deepseek_v4_flash_official_model_runtime;
 mod deepseek_v4_flash_official_runtime;
+mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_runtime;
 
 pub use deepseek_v4_flash_gguf_runtime::{
@@ -16,17 +19,47 @@ pub use deepseek_v4_flash_gguf_runtime::{
 
 pub use deepseek_v4_flash_official_runtime::{
     ensure_simpler_host_fp8_gemm_manifest, execute_deepseek_official_bf16_rows_through_simpler,
+    execute_deepseek_official_f32_rows_through_simpler,
     execute_deepseek_official_fp8_rows_through_simpler, execute_fp8_rows_through_simpler,
-    DeepseekV4LinearOutputDType, DeepseekV4OfficialBf16Execution, DeepseekV4OfficialFp8Execution,
+    DeepseekV4LinearOutputDType, DeepseekV4OfficialBf16Execution, DeepseekV4OfficialF32Execution,
+    DeepseekV4OfficialFp8Execution,
+};
+
+pub use deepseek_v4_flash_official_vector_runtime::{
+    ensure_simpler_host_deepseek_vector_manifest, execute_add_through_simpler,
+    execute_hc_head_weights_through_simpler, execute_hc_post_through_simpler,
+    execute_hc_split_through_simpler, execute_hc_weighted_sum_through_simpler,
+    execute_indexer_qat_through_simpler, execute_kv_fp8_roundtrip_through_simpler,
+    execute_rms_norm_through_simpler, execute_rope_through_simpler, execute_router_through_simpler,
+    execute_scale_through_simpler, execute_sink_attention_through_simpler,
+    execute_swiglu_through_simpler, execute_top_k_through_simpler,
+    DeepseekV4OfficialVectorExecution,
 };
 
 pub use deepseek_v4_flash_official_expert_runtime::{
     ensure_simpler_host_fp4_gemm_manifest, execute_deepseek_official_fp4_rows_through_simpler,
+    execute_deepseek_official_fp8_rows_full_k_through_simpler,
     execute_deepseek_official_routed_expert_through_simpler,
     execute_deepseek_official_routed_experts_through_simpler,
     execute_deepseek_official_router_through_simpler, execute_fp4_rows_through_simpler,
-    DeepseekV4OfficialFp4Execution, DeepseekV4OfficialRoutedExpertExecution,
-    DeepseekV4OfficialRoutedExpertsExecution, DeepseekV4OfficialRouterExecution,
+    execute_fp8_rows_full_k_through_simpler, DeepseekV4OfficialFp4Execution,
+    DeepseekV4OfficialRoutedExpertExecution, DeepseekV4OfficialRoutedExpertsExecution,
+    DeepseekV4OfficialRouterExecution,
+};
+
+pub use deepseek_v4_flash_official_layer_runtime::{
+    execute_deepseek_official_layer_through_simpler, DeepseekV4OfficialLayerExecution,
+    DeepseekV4OfficialLayerKvSummary,
+};
+
+pub use deepseek_v4_flash_official_model_runtime::{
+    execute_deepseek_official_first_token_with_progress_through_simpler,
+    execute_deepseek_official_output_head_through_simpler,
+    validate_deepseek_official_first_token_alignment, DeepseekV4OfficialFirstTokenExecution,
+    DeepseekV4OfficialHeadExecution, DeepseekV4OfficialLayerAlignment,
+    DEEPSEEK_V4_FIRST_TOKEN_ATTENTION_TOLERANCE, DEEPSEEK_V4_FIRST_TOKEN_HIDDEN_TOLERANCE,
+    DEEPSEEK_V4_FIRST_TOKEN_KV_TOLERANCE, DEEPSEEK_V4_FIRST_TOKEN_LOGIT_TOLERANCE,
+    DEEPSEEK_V4_FIRST_TOKEN_ROUTE_WEIGHT_TOLERANCE,
 };
 
 pub use deepseek_v4_flash_runtime::{
@@ -28852,9 +28885,10 @@ mod tests {
     use super::{
         bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs,
         deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
-        ensure_simpler_host_fp32_gemm_manifest, ensure_simpler_host_fp4_gemm_manifest,
-        ensure_simpler_host_fp8_gemm_manifest, ensure_simpler_host_gemm_manifest,
-        ensure_simpler_host_q8_block_dot_manifest, ensure_simpler_host_quantized_gemm_manifest,
+        ensure_simpler_host_deepseek_vector_manifest, ensure_simpler_host_fp32_gemm_manifest,
+        ensure_simpler_host_fp4_gemm_manifest, ensure_simpler_host_fp8_gemm_manifest,
+        ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
+        ensure_simpler_host_quantized_gemm_manifest, execute_add_through_simpler,
         execute_deepseek_compressor_update_through_simpler,
         execute_deepseek_dense_attention_through_simpler,
         execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
@@ -28862,8 +28896,12 @@ mod tests {
         execute_deepseek_indexer_through_simpler,
         execute_deepseek_iq2_xxs_expert_projection_through_simpler,
         execute_deepseek_moe_through_simpler, execute_deepseek_official_bf16_rows_through_simpler,
+        execute_deepseek_official_f32_rows_through_simpler,
         execute_deepseek_official_fp4_rows_through_simpler,
+        execute_deepseek_official_fp8_rows_full_k_through_simpler,
         execute_deepseek_official_fp8_rows_through_simpler,
+        execute_deepseek_official_layer_through_simpler,
+        execute_deepseek_official_output_head_through_simpler,
         execute_deepseek_official_routed_expert_through_simpler,
         execute_deepseek_official_router_through_simpler,
         execute_deepseek_q2_k_expert_projection_through_simpler,
@@ -28874,7 +28912,13 @@ mod tests {
         execute_deepseek_routed_expert_through_simpler,
         execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
         execute_deepseek_shared_expert_through_simpler, execute_fp4_rows_through_simpler,
-        execute_fp8_rows_through_simpler, f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes,
+        execute_fp8_rows_through_simpler, execute_hc_post_through_simpler,
+        execute_hc_split_through_simpler, execute_hc_weighted_sum_through_simpler,
+        execute_indexer_qat_through_simpler, execute_kv_fp8_roundtrip_through_simpler,
+        execute_rms_norm_through_simpler, execute_rope_through_simpler,
+        execute_router_through_simpler, execute_scale_through_simpler,
+        execute_sink_attention_through_simpler, execute_swiglu_through_simpler,
+        execute_top_k_through_simpler, f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes,
         find_u64_marker, finish_deepseek_ffn_with_expert_slices_through_simpler,
         kvcache_input_b_payload, prepare_deepseek_ffn_through_simpler,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
@@ -34519,6 +34563,353 @@ mod tests {
     }
 
     #[test]
+    fn host_deepseek_vector_dispatch_executes_on_a5() {
+        run_simpler_native_test_isolated("host_deepseek_vector_dispatch_executes_on_a5", || {
+            let manifest = std::env::temp_dir()
+                .join("simpler-host-deepseek-vector-test-artifacts")
+                .join("host_deepseek_vector_manifest.json");
+            ensure_simpler_host_deepseek_vector_manifest(&manifest)
+                .expect("build DeepSeek vector artifact");
+            let topology = test_topology();
+            let task = TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 109,
+            };
+            let add = execute_add_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_000,
+                &[1.0, 2.0, -4.0],
+                &[3.0, -2.0, 1.0],
+                false,
+            )
+            .expect("execute A5 vector add");
+            assert_eq!(add.output, vec![4.0, 0.0, -3.0]);
+            let scale = execute_scale_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_100,
+                &add.output,
+                0.5,
+                true,
+            )
+            .expect("execute A5 vector scale");
+            assert_eq!(scale.output, vec![2.0, 0.0, -1.5]);
+            let nontrivial_scale = (128.0f32).sqrt().recip() * (64.0f32).sqrt().recip();
+            let scale_input = [2.7617188, 0.024658203, -1.9111328, -0.018676758];
+            let scale_reference = scale_input
+                .iter()
+                .map(|value| {
+                    sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16(
+                        value * nontrivial_scale,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let scale_nontrivial = execute_scale_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_150,
+                &scale_input,
+                nontrivial_scale,
+                true,
+            )
+            .expect("execute nontrivial A5 vector scale");
+            assert_eq!(scale_nontrivial.output, scale_reference);
+            let rms = execute_rms_norm_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_200,
+                &[2.0, 2.0, -3.0, -3.0],
+                None,
+                2,
+                2,
+                0.0,
+                false,
+            )
+            .expect("execute A5 vector RMSNorm");
+            assert_eq!(rms.output, vec![1.0, 1.0, -1.0, -1.0]);
+            let rms_input = [0.3, -1.2, 2.7, 0.04];
+            let rms_weight = [1.25, 0.75, -0.5, 2.0];
+            let rms_reference =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+                    &rms_input,
+                    Some(&rms_weight),
+                    1.0e-6,
+                )
+                .expect("execute RMSNorm reference");
+            let rms_nontrivial = execute_rms_norm_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_250,
+                &rms_input,
+                Some(&rms_weight),
+                1,
+                rms_input.len(),
+                1.0e-6,
+                false,
+            )
+            .expect("execute nontrivial A5 vector RMSNorm");
+            assert_eq!(rms_nontrivial.output, rms_reference);
+            let swiglu = execute_swiglu_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_300,
+                &[0.0, 0.0],
+                &[4.0, -7.0],
+                10.0,
+                true,
+            )
+            .expect("execute A5 vector SwiGLU");
+            assert_eq!(swiglu.output, vec![0.0, -0.0]);
+            let gate = [-3.75, -0.125, 0.75, 7.5];
+            let up = [1.25, -6.0, 2.5, 12.0];
+            let mut swiglu_reference = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                .expect("execute nontrivial SwiGLU reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut swiglu_reference,
+            )
+            .expect("round nontrivial SwiGLU reference");
+            let swiglu_nontrivial = execute_swiglu_through_simpler(
+                &topology, &task, &manifest, 169_350, &gate, &up, 10.0, true,
+            )
+            .expect("execute nontrivial A5 vector SwiGLU");
+            assert_eq!(swiglu_nontrivial.output, swiglu_reference);
+            let rope_input = [0.25, -0.5, 1.25, -2.0, 3.5, -4.25];
+            let rope_cos = [0.73168886, -0.41614684];
+            let rope_sin = [0.6816388, 0.9092974];
+            let mut rope_reference = deepseek_v4_flash_rope_tail_reference(
+                &rope_input,
+                1,
+                6,
+                4,
+                &rope_cos,
+                &rope_sin,
+                false,
+            )
+            .expect("execute nonzero-position RoPE reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut rope_reference,
+            )
+            .expect("round nonzero-position RoPE reference");
+            let rope = execute_rope_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_360,
+                &rope_input,
+                &rope_cos,
+                &rope_sin,
+                1,
+                6,
+                4,
+                false,
+            )
+            .expect("execute nonzero-position A5 RoPE");
+            assert_eq!(rope.output, rope_reference);
+            let kv_input = (0..68)
+                .map(|index| (index as f32 - 31.0) * 0.073)
+                .collect::<Vec<_>>();
+            let mut kv_reference = kv_input.clone();
+            deepseek_v4_flash_fp8_kv_roundtrip_reference(&mut kv_reference, 4)
+                .expect("execute FP8 KV reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut kv_reference,
+            )
+            .expect("round FP8 KV reference");
+            let kv = execute_kv_fp8_roundtrip_through_simpler(
+                &topology, &task, &manifest, 169_370, &kv_input, 64, 64,
+            )
+            .expect("execute A5 FP8 KV roundtrip");
+            assert_eq!(kv.output, kv_reference);
+            let attention_q = [0.25, -0.75, 1.5, -2.0, 0.125, 0.5, -1.25, 2.25];
+            let attention_rows = [
+                0.5, -1.0, 0.25, 1.5, -0.75, 0.125, 2.0, -0.5, 1.25, 0.75, -1.5, 0.25,
+            ];
+            let sinks = [-0.375, 0.625];
+            let mut attention_reference = deepseek_v4_flash_sink_attention_reference(
+                &attention_q,
+                &attention_rows,
+                &sinks,
+                2,
+                4,
+            )
+            .expect("execute multi-row sink attention reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut attention_reference,
+            )
+            .expect("round sink attention reference");
+            let attention = execute_sink_attention_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_380,
+                &attention_q,
+                &attention_rows,
+                &sinks,
+                2,
+                4,
+            )
+            .expect("execute multi-row A5 sink attention");
+            assert_eq!(attention.output, attention_reference);
+            let indexer_input = (0..128)
+                .map(|index| (index as f32 - 63.0) * 0.019)
+                .collect::<Vec<_>>();
+            let mut indexer_reference = indexer_input.clone();
+            sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_indexer_qat_reference(
+                &mut indexer_reference,
+            )
+            .expect("execute indexer QAT reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut indexer_reference,
+            )
+            .expect("round indexer QAT reference");
+            let indexer = execute_indexer_qat_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_390,
+                &indexer_input,
+            )
+            .expect("execute A5 indexer QAT");
+            assert_eq!(indexer.output, indexer_reference);
+            let logits_for_top_k = [1.0, 3.0, 3.0, -2.0, 4.5];
+            let top_k_reference = sim_models::deepseek_v4_flash_checkpoint_reference::top_k_logits(
+                &logits_for_top_k,
+                3,
+            )
+            .expect("execute top-k reference");
+            let (top_k, top_k_execution) = execute_top_k_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_395,
+                &logits_for_top_k,
+                3,
+            )
+            .expect("execute A5 top-k");
+            assert_eq!(top_k, top_k_reference);
+            let logits = [-3.25, -0.5, 0.0, 1.25, 7.0, 21.0];
+            let expected =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_router_reference(
+                    &logits,
+                    Some(&[0.0; 6]),
+                    None,
+                    3,
+                    2.5,
+                )
+                .expect("execute router reference");
+            let (router, router_execution) = execute_router_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_400,
+                &logits,
+                Some(&[0.0; 6]),
+                None,
+                3,
+                2.5,
+            )
+            .expect("execute A5 vector router");
+            assert_eq!(router, expected);
+            let hc_mix = (0..24)
+                .map(|index| (index as f32 - 11.0) * 0.137)
+                .collect::<Vec<_>>();
+            let hc_scale = [0.75, -1.25, 0.5];
+            let hc_base = (0..24)
+                .map(|index| (index as f32 % 5.0 - 2.0) * 0.031)
+                .collect::<Vec<_>>();
+            let hc_reference =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+                    &hc_mix, &hc_scale, &hc_base, 4, 20, 1.0e-6,
+                )
+                .expect("execute HC split reference");
+            let (hc_split, hc_execution) = execute_hc_split_through_simpler(
+                &topology, &task, &manifest, 169_500, &hc_mix, &hc_scale, &hc_base, 4, 20, 1.0e-6,
+            )
+            .expect("execute A5 HC split");
+            assert_eq!(hc_split, hc_reference);
+            let hidden_hc = (0..16)
+                .map(|index| (index as f32 - 7.0) * 0.113)
+                .collect::<Vec<_>>();
+            let mut weighted_reference = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+                &hidden_hc,
+                &hc_split.pre,
+                4,
+            )
+            .expect("execute HC weighted reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut weighted_reference,
+            )
+            .expect("round HC weighted reference");
+            let weighted = execute_hc_weighted_sum_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_600,
+                &hidden_hc,
+                &hc_split.pre,
+                4,
+                true,
+            )
+            .expect("execute A5 HC weighted sum");
+            assert_eq!(weighted.output, weighted_reference);
+            let mut post_reference =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+                    &weighted.output,
+                    &hidden_hc,
+                    &hc_split.post,
+                    &hc_split.combine,
+                )
+                .expect("execute HC post reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut post_reference,
+            )
+            .expect("round HC post reference");
+            let post = execute_hc_post_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_700,
+                &weighted.output,
+                &hidden_hc,
+                &hc_split.post,
+                &hc_split.combine,
+                4,
+                true,
+            )
+            .expect("execute A5 HC post");
+            assert_eq!(post.output, post_reference);
+            assert_eq!(
+                add.dispatch_count
+                    + scale.dispatch_count
+                    + scale_nontrivial.dispatch_count
+                    + rms.dispatch_count
+                    + rms_nontrivial.dispatch_count
+                    + swiglu.dispatch_count
+                    + swiglu_nontrivial.dispatch_count
+                    + rope.dispatch_count
+                    + kv.dispatch_count
+                    + attention.dispatch_count
+                    + indexer.dispatch_count
+                    + top_k_execution.dispatch_count
+                    + router_execution.dispatch_count
+                    + hc_execution.dispatch_count
+                    + weighted.dispatch_count
+                    + post.dispatch_count,
+                16
+            );
+        });
+    }
+
+    #[test]
     fn host_quantized_gemm_dispatch_executes_signed_int8_matrix_product() {
         run_simpler_native_test_isolated(
             "host_quantized_gemm_dispatch_executes_signed_int8_matrix_product",
@@ -34682,6 +35073,40 @@ mod tests {
         )
         .expect("open official checkpoint");
         let input = deterministic_hidden_fixture(7, 4096);
+        let hc_input = deterministic_hidden_fixture(7, 16_384);
+        let hc_reference = checkpoint
+            .reference_matvec_rows("layers.0.hc_attn_fn", &hc_input, 0, 24)
+            .expect("official F32 mHC function reference");
+        let hc_production = execute_deepseek_official_f32_rows_through_simpler(
+            &checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 114,
+            },
+            &std::env::temp_dir()
+                .join("simpler-host-fp32-gemm-test-artifacts-k16384")
+                .join("host_fp32_gemm_manifest.json"),
+            "layers.0.hc_attn_fn",
+            0,
+            24,
+            &hc_input,
+            DeepseekV4LinearOutputDType::F32,
+        )
+        .expect("official F32 mHC production dispatch");
+        let hc_max_abs_diff = hc_production
+            .output
+            .iter()
+            .zip(&hc_reference)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            hc_max_abs_diff <= 5.0e-6,
+            "official F32 mHC max abs diff {hc_max_abs_diff} exceeds tolerance"
+        );
+
         let manifest = std::env::temp_dir()
             .join("simpler-host-fp8-gemm-test-artifacts")
             .join("host_fp8_gemm_manifest.json");
@@ -34714,6 +35139,27 @@ mod tests {
             )
             .expect("official FP8 production dispatch");
             assert_eq!(production.output, reference);
+            let full_k_production = execute_deepseek_official_fp8_rows_full_k_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 420 + case as u64 * 100,
+                },
+                &std::env::temp_dir()
+                    .join(format!("simpler-host-mx-full-k{}-artifacts", input.len()))
+                    .join("host_fp4_gemm_manifest.json"),
+                172_500 + case as u64 * 100,
+                tensor_name,
+                row_start,
+                row_count,
+                &input,
+                DeepseekV4LinearOutputDType::Bf16,
+            )
+            .expect("official FP8 full-K production dispatch");
+            assert_eq!(full_k_production.output, reference);
         }
 
         let head_manifest = std::env::temp_dir()
@@ -34776,6 +35222,280 @@ mod tests {
             .expect("official FP4 production dispatch");
             assert_eq!(production.output, reference);
         }
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_layer_zero_production_matches_cpu_reference() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for reference");
+        let production_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for production");
+        let hidden = deterministic_hidden_fixture(
+            7,
+            (production_checkpoint.config.hidden_size * production_checkpoint.config.hc_mult)
+                as usize,
+        );
+        let reference = reference_checkpoint
+            .reference_layer_forward(0, 1, 0, &hidden)
+            .expect("official layer zero CPU reference");
+        let production = execute_deepseek_official_layer_through_simpler(
+            &production_checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 10_000,
+            },
+            &std::env::temp_dir().join("deepseek-v4-official-layer-artifacts"),
+            900_000,
+            0,
+            1,
+            0,
+            &hidden,
+        )
+        .expect("official layer zero production execution");
+        assert_eq!(
+            production.input_hidden_checksum,
+            reference.input_hidden_checksum
+        );
+        assert_eq!(production.selected_experts, reference.selected_experts);
+        let attention_max_abs_diff = production
+            .attention_output
+            .iter()
+            .zip(&reference.attention_output)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let q_lora_max_abs_diff = production
+            .q_lora
+            .iter()
+            .zip(&reference.q_lora)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let query_max_abs_diff = production
+            .query
+            .iter()
+            .zip(&reference.query)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let attended_max_abs_diff = production
+            .attended
+            .iter()
+            .zip(&reference.attended)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let low_rank_max_abs_diff = production
+            .low_rank_attention_output
+            .iter()
+            .zip(&reference.low_rank_attention_output)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let kv_max_abs_diff = production
+            .raw_kv
+            .iter()
+            .zip(&reference.raw_kv)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let route_weight_max_abs_diff = production
+            .route_weights
+            .iter()
+            .zip(&reference.route_weights)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let layer_output_max_abs_diff = production
+            .layer_output_hidden
+            .iter()
+            .zip(&reference.layer_output_hidden)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "q_lora_max_abs_diff={q_lora_max_abs_diff} query_max_abs_diff={query_max_abs_diff} attended_max_abs_diff={attended_max_abs_diff} low_rank_max_abs_diff={low_rank_max_abs_diff} attention_max_abs_diff={attention_max_abs_diff} kv_max_abs_diff={kv_max_abs_diff} route_weight_max_abs_diff={route_weight_max_abs_diff} layer_output_max_abs_diff={layer_output_max_abs_diff} attention_checksum_match={} kv_checksum_match={}",
+            production.attention_output_checksum == reference.attention_output_checksum,
+            production.kv.raw_row_checksum == reference.kv.raw_row_checksum
+        );
+        assert_eq!(production.q_lora, reference.q_lora);
+        assert_eq!(production.query, reference.query);
+        assert_eq!(production.attended, reference.attended);
+        assert_eq!(
+            production.low_rank_attention_output,
+            reference.low_rank_attention_output
+        );
+        assert_eq!(production.attention_output, reference.attention_output);
+        assert_eq!(production.raw_kv, reference.raw_kv);
+        assert_eq!(production.route_weights, reference.route_weights);
+        assert_eq!(
+            production.layer_output_hidden,
+            reference.layer_output_hidden
+        );
+        assert!(production.dispatch_count > 0);
+        assert!(production.tensor_disk_read_bytes > 0);
+        assert!(production.expert_disk_read_bytes > 0);
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_ratio4_layer_executes_compressor_and_indexer_through_production() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for reference");
+        let production_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for production");
+        let hidden = deterministic_hidden_fixture(
+            7,
+            (production_checkpoint.config.hidden_size * production_checkpoint.config.hc_mult)
+                as usize,
+        );
+        let reference = reference_checkpoint
+            .reference_layer_forward(2, 1, 0, &hidden)
+            .expect("official ratio-4 CPU reference");
+        let production = execute_deepseek_official_layer_through_simpler(
+            &production_checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 20_000,
+            },
+            &std::env::temp_dir().join("deepseek-v4-official-ratio4-layer-artifacts"),
+            2_000_000,
+            2,
+            1,
+            0,
+            &hidden,
+        )
+        .expect("official ratio-4 production execution");
+        assert_eq!(production.compress_ratio, 4);
+        assert_eq!(production.selected_experts, reference.selected_experts);
+        let indexer_query_max_abs_diff = production
+            .kv
+            .indexer_query
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(reference.kv.indexer_query.as_deref().unwrap())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let indexer_weights_max_abs_diff = production
+            .kv
+            .indexer_weights
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(reference.kv.indexer_weights.as_deref().unwrap())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "indexer_query_max_abs_diff={indexer_query_max_abs_diff} indexer_weights_max_abs_diff={indexer_weights_max_abs_diff}"
+        );
+        assert_eq!(production.kv.indexer_query, reference.kv.indexer_query);
+        assert_eq!(production.kv.indexer_weights, reference.kv.indexer_weights);
+        let attention_compressor_max_abs_diff = production
+            .kv
+            .attention_compressor_pending
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(
+                reference
+                    .kv
+                    .attention_compressor_pending
+                    .as_deref()
+                    .unwrap(),
+            )
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let indexer_compressor_max_abs_diff = production
+            .kv
+            .indexer_compressor_pending
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(reference.kv.indexer_compressor_pending.as_deref().unwrap())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "attention_compressor_max_abs_diff={attention_compressor_max_abs_diff} indexer_compressor_max_abs_diff={indexer_compressor_max_abs_diff}"
+        );
+        assert_eq!(
+            production.kv.attention_compressor_pending,
+            reference.kv.attention_compressor_pending
+        );
+        assert_eq!(
+            production.kv.indexer_compressor_pending,
+            reference.kv.indexer_compressor_pending
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_output_head_production_matches_cpu_reference() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for reference");
+        let production_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for production");
+        let hidden = deterministic_hidden_fixture(
+            13,
+            (production_checkpoint.config.hidden_size * production_checkpoint.config.hc_mult)
+                as usize,
+        );
+        let reference = reference_checkpoint
+            .reference_output_head(&hidden, 5)
+            .expect("official output head CPU reference");
+        let production = execute_deepseek_official_output_head_through_simpler(
+            &production_checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 30_000,
+            },
+            &std::env::temp_dir().join("deepseek-v4-official-output-head-artifacts"),
+            &hidden,
+            5,
+        )
+        .expect("official output head production execution");
+        assert_eq!(production.hc_head_checksum, reference.hc_head_checksum);
+        assert_eq!(
+            production.normalized_hidden_checksum,
+            reference.normalized_hidden_checksum
+        );
+        assert_eq!(production.logits, reference.logits);
+        assert_eq!(production.logits_checksum, reference.logits_checksum);
+        assert_eq!(production.top_k, reference.top_k);
+        assert!(production.dispatch_count > 0);
+        assert!(production.tensor_disk_read_bytes > 0);
     }
 
     #[test]
@@ -34854,16 +35574,8 @@ mod tests {
             .expect("official router CPU reference");
             assert_eq!(production.hash_routed, hash_selected.is_some());
             assert_eq!(production.expert_indices, reference.expert_indices);
-            for (actual, expected) in production
-                .expert_weights
-                .iter()
-                .zip(&reference.expert_weights)
-            {
-                assert!(
-                    (actual - expected).abs() <= 2.0e-3,
-                    "{actual} != {expected}"
-                );
-            }
+            assert_eq!(production.probabilities, reference.probabilities);
+            assert_eq!(production.expert_weights, reference.expert_weights);
             if let Some(bias) = selection_bias {
                 for (&expert, &weight) in production
                     .expert_indices

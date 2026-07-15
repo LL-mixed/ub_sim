@@ -188,6 +188,47 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("orch_args.scalar(0)", orchestration)
         self.assertNotIn("CompatChipStorageTaskArgs", orchestration)
 
+    def test_deepseek_vector_profile_uses_a5_kernel_dispatch(self):
+        producer = load_producer()
+        profile = producer.PROFILE_SPECS["host_deepseek_vector"]
+        self.assertEqual(profile.profile, "HostVector")
+        self.assertEqual(profile.orch_function, "build_deepseek_vector_graph")
+        self.assertEqual(profile.callable_hint, "host_deepseek_vector")
+        self.assertEqual(len(profile.args_template), 15)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            orchestration = producer.write_host_deepseek_vector_orchestration(
+                root
+            ).read_text()
+            kernel = producer.write_host_deepseek_vector_kernel(root).read_text()
+
+        self.assertIn("expected 4 tensors and 11 scalars", orchestration)
+        self.assertIn("orch_args.tensor(3)", orchestration)
+        self.assertIn("orch_args.scalar(index)", orchestration)
+        self.assertNotIn("CompatChipStorageTaskArgs", orchestration)
+        for operation in (
+            "RMS_NORM",
+            "HC_SPLIT",
+            "HC_WEIGHTED_SUM",
+            "HC_POST",
+            "ROPE",
+            "KV_FP8_ROUNDTRIP",
+            "SINK_ATTENTION",
+            "INDEXER_QAT",
+            "SCALE",
+            "SWIGLU",
+            "ADD",
+            "ROUTER",
+            "TOP_K",
+            "HC_HEAD_WEIGHTS",
+        ):
+            self.assertIn(operation, kernel)
+        self.assertIn("round_bf16", kernel)
+        self.assertIn("float scores[1024]", kernel)
+        self.assertNotIn("reference", kernel.lower())
+        self.assertNotIn("fallback", kernel.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

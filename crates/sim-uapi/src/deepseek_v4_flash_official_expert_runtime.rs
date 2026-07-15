@@ -11,14 +11,16 @@ use sim_core::{
 use sim_models::deepseek_v4_flash_checkpoint::{
     DeepseekV4CacheStats, DeepseekV4Checkpoint, DeepseekV4TensorDType,
 };
-use sim_models::deepseek_v4_flash_lowering::{
-    deepseek_v4_flash_router_reference, deepseek_v4_flash_swiglu_reference,
-};
 use sim_runtime::{LocalRuntimeEngine, VecEventSink};
 use sim_topology::SimTopology;
 
 use super::deepseek_v4_flash_official_runtime::{
-    checksum, checksum_f32, quantize_dynamic_fp8, round_to_bf16, DeepseekV4LinearOutputDType,
+    checksum, checksum_f32, quantize_dynamic_fp8, round_to_bf16, validate_fp8_rows,
+    DeepseekV4LinearOutputDType, DeepseekV4OfficialFp8Execution,
+};
+use super::deepseek_v4_flash_official_vector_runtime::{
+    execute_add_through_simpler, execute_router_through_simpler, execute_scale_through_simpler,
+    execute_swiglu_through_simpler,
 };
 use super::{
     bytes_to_f32s, host_vector_dispatch_lock_guard, kvcache_host_matmul_request, opaque_binding,
@@ -62,6 +64,8 @@ pub struct DeepseekV4OfficialRouterExecution {
     pub probabilities: Vec<f32>,
     pub expert_indices: Vec<usize>,
     pub expert_weights: Vec<f32>,
+    pub dispatch_count: usize,
+    pub peak_payload_bytes: usize,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -90,6 +94,7 @@ pub struct DeepseekV4OfficialRoutedExpertsExecution {
     pub dispatch_count: usize,
 }
 
+#[cfg(test)]
 fn combine_routed_expert_outputs<'a>(
     outputs: impl IntoIterator<Item = &'a [f32]>,
     expected_experts: usize,
@@ -685,6 +690,167 @@ pub fn execute_deepseek_official_fp4_rows_through_simpler(
     Ok(execution)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn execute_fp8_rows_full_k_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    weight: &[u8],
+    scales: &[u8],
+    output_size: usize,
+    input_size: usize,
+    row_start: usize,
+    row_count: usize,
+    input: &[f32],
+    output_dtype: DeepseekV4LinearOutputDType,
+) -> Result<DeepseekV4OfficialFp8Execution, String> {
+    let scale_columns = validate_fp8_rows(
+        weight,
+        scales,
+        output_size,
+        input_size,
+        row_start,
+        row_count,
+        input,
+    )?;
+    ensure_simpler_host_fp4_gemm_manifest(manifest_path, input_size)?;
+    let activation = quantize_dynamic_fp8(input)?;
+    let mx_scale_columns = input_size / MX_SCALE_GROUP;
+    let mut activation_matrix = vec![0u8; ARTIFACT_M * input_size];
+    activation_matrix[..input_size].copy_from_slice(&activation.values);
+    let mut activation_scale_matrix = vec![127u8; ARTIFACT_M * mx_scale_columns];
+    for group in 0..mx_scale_columns {
+        activation_scale_matrix[group] = activation.scales[group / 4];
+    }
+    let mut runner = HostFp4GemmRunner::new(topology, manifest_path, segment_base, input_size)?;
+    let mut output = vec![0.0f32; row_count];
+    let mut dispatch_count = 0usize;
+    for output_tile_start in (0..row_count).step_by(TILE_N) {
+        let valid_rows = (row_count - output_tile_start).min(TILE_N);
+        let mut weight_matrix = vec![0u8; input_size * TILE_N];
+        let mut weight_scale_matrix = vec![127u8; mx_scale_columns * TILE_N];
+        for column in 0..valid_rows {
+            let source_row = output_tile_start + column;
+            weight_matrix[column * input_size..(column + 1) * input_size]
+                .copy_from_slice(&weight[source_row * input_size..(source_row + 1) * input_size]);
+            let global_row = row_start + source_row;
+            for group in 0..mx_scale_columns {
+                weight_scale_matrix[group * TILE_N + column] =
+                    scales[(global_row / TILE_N) * scale_columns + group / 4];
+            }
+        }
+        let mut tile_task = task.clone();
+        tile_task.task_id = task
+            .task_id
+            .checked_add(dispatch_count as u64)
+            .ok_or_else(|| "deepseek_v4_production_fp8_full_k_task_id_overflow".to_string())?;
+        let tile_output = runner.run_tile(
+            &tile_task,
+            activation_matrix.clone(),
+            weight_matrix,
+            activation_scale_matrix.clone(),
+            weight_scale_matrix,
+        )?;
+        output[output_tile_start..output_tile_start + valid_rows]
+            .copy_from_slice(&tile_output[..valid_rows]);
+        dispatch_count += 1;
+    }
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err("deepseek_v4_production_fp8_full_k_output_non_finite".to_string());
+    }
+    if output_dtype == DeepseekV4LinearOutputDType::Bf16 {
+        output
+            .iter_mut()
+            .for_each(|value| *value = round_to_bf16(*value));
+    }
+    Ok(DeepseekV4OfficialFp8Execution {
+        tensor_name: None,
+        output_size,
+        input_size,
+        row_start,
+        row_count,
+        output_dtype: output_dtype.name().to_string(),
+        dispatch_count,
+        peak_tile_payload_bytes: ARTIFACT_M * input_size
+            + input_size * TILE_N
+            + ARTIFACT_M * mx_scale_columns
+            + mx_scale_columns * TILE_N
+            + ARTIFACT_M * TILE_N * std::mem::size_of::<f32>(),
+        activation_values_checksum: checksum(&activation.values),
+        activation_scales_checksum: checksum(&activation.scales),
+        output_checksum: checksum_f32(&output),
+        output,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_official_fp8_rows_full_k_through_simpler(
+    checkpoint: &DeepseekV4Checkpoint,
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    tensor_name: &str,
+    row_start: usize,
+    row_count: usize,
+    input: &[f32],
+    output_dtype: DeepseekV4LinearOutputDType,
+) -> Result<DeepseekV4OfficialFp8Execution, String> {
+    let tensor = checkpoint.tensor(tensor_name)?;
+    if tensor.dtype != DeepseekV4TensorDType::F8E4M3
+        || tensor.shape.len() != 2
+        || tensor.scale_tensor.is_none()
+    {
+        return Err(format!(
+            "deepseek_v4_production_fp8_full_k_tensor_contract_invalid:{tensor_name}"
+        ));
+    }
+    let output_size = tensor.shape[0] as usize;
+    let input_size = tensor.shape[1] as usize;
+    let weight_offset = row_start
+        .checked_mul(input_size)
+        .ok_or_else(|| "deepseek_v4_production_fp8_full_k_weight_offset_overflow".to_string())?;
+    let weight_bytes = row_count
+        .checked_mul(input_size)
+        .ok_or_else(|| "deepseek_v4_production_fp8_full_k_weight_bytes_overflow".to_string())?;
+    let weight =
+        checkpoint.read_tensor_slice(tensor_name, weight_offset as u64, weight_bytes as u64)?;
+    let scale_name = tensor
+        .scale_tensor
+        .as_deref()
+        .ok_or_else(|| format!("deepseek_v4_production_fp8_full_k_scale_missing:{tensor_name}"))?;
+    let scale_tensor = checkpoint.tensor(scale_name)?;
+    let expected_shape = [
+        output_size.div_ceil(TILE_N) as u64,
+        (input_size / TILE_K) as u64,
+    ];
+    if scale_tensor.dtype != DeepseekV4TensorDType::F8E8M0 || scale_tensor.shape != expected_shape {
+        return Err(format!(
+            "deepseek_v4_production_fp8_full_k_scale_contract_invalid:{scale_name}:dtype={}:shape={:?}:expected={expected_shape:?}",
+            scale_tensor.dtype.safetensors_name(),
+            scale_tensor.shape
+        ));
+    }
+    let scales = checkpoint.read_tensor_slice(scale_name, 0, scale_tensor.payload_bytes())?;
+    let mut execution = execute_fp8_rows_full_k_through_simpler(
+        topology,
+        task,
+        manifest_path,
+        segment_base,
+        &weight,
+        &scales,
+        output_size,
+        input_size,
+        row_start,
+        row_count,
+        input,
+        output_dtype,
+    )?;
+    execution.tensor_name = Some(tensor_name.to_string());
+    Ok(execution)
+}
+
 fn read_hash_selected_experts(
     checkpoint: &DeepseekV4Checkpoint,
     layer: usize,
@@ -767,7 +933,7 @@ pub fn execute_deepseek_official_router_through_simpler(
     let tensor_name = format!("layers.{layer}.ffn.gate.weight");
     let experts = usize::try_from(checkpoint.config.n_routed_experts)
         .map_err(|_| "deepseek_v4_production_expert_count_too_large".to_string())?;
-    let logits = super::execute_deepseek_official_bf16_rows_through_simpler(
+    let logits_execution = super::execute_deepseek_official_bf16_rows_through_simpler(
         checkpoint,
         topology,
         task,
@@ -777,8 +943,8 @@ pub fn execute_deepseek_official_router_through_simpler(
         experts,
         input,
         DeepseekV4LinearOutputDType::F32,
-    )?
-    .output;
+    )?;
+    let logits = logits_execution.output;
     let hash_routed = (layer as u64) < checkpoint.config.num_hash_layers;
     let hash_selected = if hash_routed {
         Some(read_hash_selected_experts(checkpoint, layer, token_id)?)
@@ -792,7 +958,20 @@ pub fn execute_deepseek_official_router_through_simpler(
     };
     let top_k = usize::try_from(checkpoint.config.num_experts_per_tok)
         .map_err(|_| "deepseek_v4_production_topk_too_large".to_string())?;
-    let route = deepseek_v4_flash_router_reference(
+    let vector_manifest = manifest_path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "deepseek_v4_router_artifact_root_missing".to_string())?
+        .join("vector/host_deepseek_vector_manifest.json");
+    let mut route_task = task.clone();
+    route_task.task_id = task
+        .task_id
+        .saturating_add(logits_execution.dispatch_count as u64);
+    let (route, route_execution) = execute_router_through_simpler(
+        topology,
+        &route_task,
+        &vector_manifest,
+        task.task_id.saturating_mul(10_000).saturating_add(700),
         &logits,
         selection_bias.as_deref(),
         hash_selected.as_deref(),
@@ -807,6 +986,12 @@ pub fn execute_deepseek_official_router_through_simpler(
         probabilities: route.probabilities,
         expert_indices: route.expert_indices,
         expert_weights: route.expert_weights,
+        dispatch_count: logits_execution
+            .dispatch_count
+            .saturating_add(route_execution.dispatch_count),
+        peak_payload_bytes: logits_execution
+            .peak_tile_payload_bytes
+            .max(route_execution.peak_payload_bytes),
     })
 }
 
@@ -844,7 +1029,11 @@ pub fn execute_deepseek_official_routed_expert_through_simpler(
         .join("host_fp4_gemm_manifest.json");
     let intermediate = config.moe_intermediate_size as usize;
     let hidden = config.hidden_size as usize;
-    let gate = execute_deepseek_official_fp4_rows_through_simpler(
+    let vector_manifest = artifact_dir
+        .parent()
+        .ok_or_else(|| "deepseek_v4_expert_artifact_root_missing".to_string())?
+        .join("vector/host_deepseek_vector_manifest.json");
+    let gate_matrix = execute_deepseek_official_fp4_rows_through_simpler(
         checkpoint,
         topology,
         task,
@@ -854,40 +1043,105 @@ pub fn execute_deepseek_official_routed_expert_through_simpler(
         0,
         intermediate,
         input,
-        DeepseekV4LinearOutputDType::Bf16,
+        DeepseekV4LinearOutputDType::F32,
+    )?;
+    let mut gate_round_task = task.clone();
+    gate_round_task.task_id = task
+        .task_id
+        .saturating_add(gate_matrix.dispatch_count as u64);
+    let gate = execute_scale_through_simpler(
+        topology,
+        &gate_round_task,
+        &vector_manifest,
+        segment_base.saturating_add(100),
+        &gate_matrix.output,
+        1.0,
+        true,
     )?;
     let mut up_task = task.clone();
-    up_task.task_id = task.task_id.saturating_add(gate.dispatch_count as u64);
-    let up = execute_deepseek_official_fp4_rows_through_simpler(
+    up_task.task_id = gate_round_task
+        .task_id
+        .saturating_add(gate.dispatch_count as u64);
+    let up_matrix = execute_deepseek_official_fp4_rows_through_simpler(
         checkpoint,
         topology,
         &up_task,
         &gate_manifest,
-        segment_base.saturating_add(100),
+        segment_base.saturating_add(200),
         &format!("{prefix}.w3.weight"),
         0,
         intermediate,
         input,
-        DeepseekV4LinearOutputDType::Bf16,
+        DeepseekV4LinearOutputDType::F32,
     )?;
-    let mut activated =
-        deepseek_v4_flash_swiglu_reference(&gate.output, &up.output, config.swiglu_limit as f32)?;
-    for value in &mut activated {
-        *value = round_to_bf16(*value * route_weight);
-    }
+    let mut up_round_task = up_task.clone();
+    up_round_task.task_id = up_task
+        .task_id
+        .saturating_add(up_matrix.dispatch_count as u64);
+    let up = execute_scale_through_simpler(
+        topology,
+        &up_round_task,
+        &vector_manifest,
+        segment_base.saturating_add(300),
+        &up_matrix.output,
+        1.0,
+        true,
+    )?;
+    let mut activation_task = task.clone();
+    activation_task.task_id = up_round_task
+        .task_id
+        .saturating_add(up.dispatch_count as u64);
+    let activated_raw = execute_swiglu_through_simpler(
+        topology,
+        &activation_task,
+        &vector_manifest,
+        segment_base.saturating_add(400),
+        &gate.output,
+        &up.output,
+        config.swiglu_limit as f32,
+        false,
+    )?;
+    let mut scale_task = activation_task.clone();
+    scale_task.task_id = scale_task
+        .task_id
+        .saturating_add(activated_raw.dispatch_count as u64);
+    let activated = execute_scale_through_simpler(
+        topology,
+        &scale_task,
+        &vector_manifest,
+        segment_base.saturating_add(500),
+        &activated_raw.output,
+        route_weight,
+        true,
+    )?;
     let mut down_task = task.clone();
-    down_task.task_id = up_task.task_id.saturating_add(up.dispatch_count as u64);
-    let down = execute_deepseek_official_fp4_rows_through_simpler(
+    down_task.task_id = scale_task
+        .task_id
+        .saturating_add(activated.dispatch_count as u64);
+    let down_matrix = execute_deepseek_official_fp4_rows_through_simpler(
         checkpoint,
         topology,
         &down_task,
         &down_manifest,
-        segment_base.saturating_add(200),
+        segment_base.saturating_add(600),
         &format!("{prefix}.w2.weight"),
         0,
         hidden,
-        &activated,
-        DeepseekV4LinearOutputDType::Bf16,
+        &activated.output,
+        DeepseekV4LinearOutputDType::F32,
+    )?;
+    let mut down_round_task = down_task.clone();
+    down_round_task.task_id = down_task
+        .task_id
+        .saturating_add(down_matrix.dispatch_count as u64);
+    let down = execute_scale_through_simpler(
+        topology,
+        &down_round_task,
+        &vector_manifest,
+        segment_base.saturating_add(700),
+        &down_matrix.output,
+        1.0,
+        true,
     )?;
     let (_, expert_cache_after) = checkpoint.cache_stats()?;
     let expert_disk_read_bytes = expert_cache_after
@@ -898,12 +1152,19 @@ pub fn execute_deepseek_official_routed_expert_through_simpler(
         layer,
         expert,
         route_weight,
-        gate_checksum: gate.output_checksum,
-        up_checksum: up.output_checksum,
-        activated_checksum: checksum_f32(&activated),
-        output_checksum: down.output_checksum,
+        gate_checksum: checksum_f32(&gate.output),
+        up_checksum: checksum_f32(&up.output),
+        activated_checksum: checksum_f32(&activated.output),
+        output_checksum: checksum_f32(&down.output),
         output: down.output,
-        dispatch_count: gate.dispatch_count + up.dispatch_count + down.dispatch_count,
+        dispatch_count: gate_matrix.dispatch_count
+            + gate.dispatch_count
+            + up_matrix.dispatch_count
+            + up.dispatch_count
+            + activated_raw.dispatch_count
+            + activated.dispatch_count
+            + down_matrix.dispatch_count
+            + down.dispatch_count,
         expert_cache_before,
         expert_cache_after,
         expert_disk_read_bytes,
@@ -956,13 +1217,30 @@ pub fn execute_deepseek_official_routed_experts_through_simpler(
         dispatch_count += execution.dispatch_count;
         executions.push(execution);
     }
-    let output = combine_routed_expert_outputs(
-        executions
-            .iter()
-            .map(|execution| execution.output.as_slice()),
-        expected,
-        checkpoint.config.hidden_size as usize,
-    )?;
+    let vector_manifest = artifact_dir
+        .parent()
+        .ok_or_else(|| "deepseek_v4_experts_artifact_root_missing".to_string())?
+        .join("vector/host_deepseek_vector_manifest.json");
+    let mut output = executions
+        .first()
+        .ok_or_else(|| "deepseek_v4_production_routed_selection_empty".to_string())?
+        .output
+        .clone();
+    for (index, execution) in executions.iter().enumerate().skip(1) {
+        let mut add_task = task.clone();
+        add_task.task_id = task.task_id.saturating_add(dispatch_count as u64);
+        let addition = execute_add_through_simpler(
+            topology,
+            &add_task,
+            &vector_manifest,
+            segment_base.saturating_add(10_000 + index as u64 * 100),
+            &output,
+            &execution.output,
+            false,
+        )?;
+        dispatch_count = dispatch_count.saturating_add(addition.dispatch_count);
+        output = addition.output;
+    }
     Ok(DeepseekV4OfficialRoutedExpertsExecution {
         selected_experts: selected_experts.to_vec(),
         expert_weights: expert_weights.to_vec(),

@@ -9,6 +9,7 @@ use sim_models::deepseek_v4_flash_checkpoint_reference::deterministic_hidden_fix
 use sim_topology::SimTopology;
 use sim_uapi::{
     execute_deepseek_official_bf16_rows_through_simpler,
+    execute_deepseek_official_f32_rows_through_simpler,
     execute_deepseek_official_fp4_rows_through_simpler,
     execute_deepseek_official_fp8_rows_through_simpler, DeepseekV4LinearOutputDType,
 };
@@ -129,6 +130,25 @@ fn run(args: Args) -> Result<(), String> {
         task_id: 1,
     };
     let json = match tensor.dtype {
+        DeepseekV4TensorDType::F32 => {
+            let artifact = args.artifact.unwrap_or_else(|| {
+                PathBuf::from(format!(
+                    "/tmp/simpler-host-fp32-gemm-{input_size}-artifacts/host_fp32_gemm_manifest.json"
+                ))
+            });
+            let execution = execute_deepseek_official_f32_rows_through_simpler(
+                &checkpoint,
+                &topology,
+                &task,
+                &artifact,
+                &args.tensor,
+                args.row_start,
+                args.row_count,
+                &input,
+                args.output_dtype,
+            )?;
+            serde_json::to_string_pretty(&execution)
+        }
         DeepseekV4TensorDType::F8E4M3 => {
             let artifact = args.artifact.unwrap_or_else(|| {
                 PathBuf::from("/tmp/simpler-host-fp8-gemm-artifacts/host_fp8_gemm_manifest.json")

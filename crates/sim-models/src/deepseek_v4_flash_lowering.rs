@@ -672,7 +672,7 @@ pub fn deepseek_v4_flash_sink_attention_reference(
     }
 
     let row_count = kv_rows.len() / head_dim;
-    let scale = (head_dim as f32).sqrt().recip();
+    let scale = deterministic_sqrt_f32(head_dim as f32).recip();
     let mut output = vec![0.0f32; q_len];
     let mut scores = vec![0.0f32; row_count];
     for head in 0..num_heads {
@@ -689,10 +689,10 @@ pub fn deepseek_v4_flash_sink_attention_reference(
             max_score = max_score.max(score);
         }
 
-        let mut denominator = (sinks[head] - max_score).exp();
+        let mut denominator = deterministic_exp_f32(sinks[head] - max_score);
         let output_head = &mut output[head * head_dim..(head + 1) * head_dim];
         for (row, kv) in kv_rows.chunks_exact(head_dim).enumerate() {
-            let weight = (scores[row] - max_score).exp();
+            let weight = deterministic_exp_f32(scores[row] - max_score);
             denominator += weight;
             for (output_value, kv_value) in output_head.iter_mut().zip(kv) {
                 *output_value += weight * kv_value;
@@ -1175,7 +1175,7 @@ pub fn deepseek_v4_flash_rms_norm_reference(
     }
 
     let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
-    let inv_rms = (mean_square + eps).sqrt().recip();
+    let inv_rms = deterministic_sqrt_f32(mean_square + eps).recip();
     Ok(input
         .iter()
         .enumerate()
@@ -1209,7 +1209,7 @@ pub fn deepseek_v4_flash_hc_split_reference(
         return Err("deepseek HC epsilon must be finite and positive".to_string());
     }
 
-    let sigmoid = |value: f32| 1.0 / (1.0 + (-value).exp());
+    let sigmoid = |value: f32| 1.0 / (1.0 + deterministic_exp_f32(-value));
     let pre = (0..hc_mult)
         .map(|index| sigmoid(mix[index] * scale[0] + base[index]) + eps)
         .collect();
@@ -1233,7 +1233,7 @@ pub fn deepseek_v4_flash_hc_split_reference(
         let mut row_sum = 0.0;
         for source in 0..hc_mult {
             let index = destination * hc_mult + source;
-            combine[index] = (combine[index] - row_max).exp();
+            combine[index] = deterministic_exp_f32(combine[index] - row_max);
             row_sum += combine[index];
         }
         for source in 0..hc_mult {
@@ -1416,7 +1416,7 @@ pub fn deepseek_v4_flash_swiglu_reference(
             } else {
                 *up
             };
-            gate * (1.0 + (-gate).exp()).recip() * up
+            gate * (1.0 + deterministic_exp_f32(-gate)).recip() * up
         })
         .collect())
 }
@@ -1426,6 +1426,51 @@ pub struct DeepseekV4FlashRouterOutput {
     pub probabilities: Vec<f32>,
     pub expert_indices: Vec<usize>,
     pub expert_weights: Vec<f32>,
+}
+
+pub(crate) fn deterministic_exp_f32(value: f32) -> f32 {
+    let scaled = value * std::f32::consts::LOG2_E;
+    let exponent = if scaled >= 0.0 {
+        (scaled + 0.5) as i32
+    } else {
+        (scaled - 0.5) as i32
+    };
+    let remainder = value - exponent as f32 * std::f32::consts::LN_2;
+    let mut term = 1.0f32;
+    let mut sum = 1.0f32;
+    for order in 1..=12 {
+        term *= remainder / order as f32;
+        sum += term;
+    }
+    sum * f32::from_bits(((exponent + 127) as u32) << 23)
+}
+
+pub(crate) fn deterministic_log1p_f32(value: f32) -> f32 {
+    let bits = (1.0 + f64::from(value)).to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let mut exponent = raw_exponent - 1022;
+    let mut mantissa = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1022u64 << 52));
+    if mantissa < std::f64::consts::FRAC_1_SQRT_2 {
+        mantissa *= 2.0;
+        exponent -= 1;
+    }
+    let ratio = (mantissa - 1.0) / (mantissa + 1.0);
+    let ratio_squared = ratio * ratio;
+    let mut power = ratio;
+    let mut sum = 0.0f64;
+    for order in (1..=61).step_by(2) {
+        sum += power / f64::from(order);
+        power *= ratio_squared;
+    }
+    (2.0 * sum + f64::from(exponent) * std::f64::consts::LN_2) as f32
+}
+
+pub(crate) fn deterministic_sqrt_f32(value: f32) -> f32 {
+    let mut estimate = if value >= 1.0 { f64::from(value) } else { 1.0 };
+    for _ in 0..12 {
+        estimate = 0.5 * (estimate + f64::from(value) / estimate);
+    }
+    estimate as f32
 }
 
 /// DS4-compatible router decision. Early hash-routed layers supply explicit
@@ -1457,14 +1502,15 @@ pub fn deepseek_v4_flash_router_reference(
     let probabilities: Vec<f32> = logits
         .iter()
         .map(|logit| {
+            let exponential = deterministic_exp_f32(*logit);
             let softplus = if *logit > 20.0 {
                 *logit
             } else if *logit < -20.0 {
-                logit.exp()
+                exponential
             } else {
-                logit.exp().ln_1p()
+                deterministic_log1p_f32(exponential)
             };
-            softplus.sqrt()
+            deterministic_sqrt_f32(softplus)
         })
         .collect();
     let expert_indices = if let Some(selected) = selected_experts {
@@ -1493,14 +1539,17 @@ pub fn deepseek_v4_flash_router_reference(
         }
         selected
     };
-    let sum = expert_indices
-        .iter()
-        .map(|expert| probabilities[*expert])
-        .sum::<f32>()
-        .max(6.103_515_6e-5);
+    let mut sum = 0.0f32;
+    for expert in &expert_indices {
+        sum += probabilities[*expert];
+    }
+    let sum = sum.max(6.103_515_6e-5);
     let expert_weights = expert_indices
         .iter()
-        .map(|expert| probabilities[*expert] / sum * weight_scale)
+        .map(|expert| {
+            let normalized = probabilities[*expert] / sum;
+            normalized * weight_scale
+        })
         .collect();
     Ok(DeepseekV4FlashRouterOutput {
         probabilities,
