@@ -58,7 +58,7 @@ case "$SIM_UAPI_W5_PROFILE" in
           --ds4-dir "$deepseek_runtime_dir" \
           --output "$deepseek_runtime_dir/build/libds4_w5.dylib"
         ;;
-      deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+      deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
         ;;
     esac
     ;;
@@ -127,7 +127,7 @@ if [[ -n "$SIM_LLM_INFER_PROMPT" && -n "$SIM_LLM_INFER_PROMPT_TOKEN_IDS" ]]; the
 fi
 if [[ -n "$SIM_LLM_INFER_PROMPT" ]]; then
   case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
-    deepseek-v4-flash|deepseek_v4_flash|deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+    deepseek-v4-flash|deepseek_v4_flash|deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
       tokenizer_bin="$REPO_DIR/target/release/deepseek_v4_flash_tokenizer"
       cargo build --manifest-path "$REPO_DIR/Cargo.toml" --release --quiet \
         -p sim-models --bin deepseek_v4_flash_tokenizer
@@ -154,7 +154,7 @@ fi
 SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-81378,37585,374}"
 
 case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
-  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
     prompt_token_ids=("${(@s:,:)SIM_LLM_INFER_PROMPT_TOKEN_IDS}")
     cluster_nodes="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
     if [[ ! "$cluster_nodes" =~ '^[1-9][0-9]*$' ]]; then
@@ -162,17 +162,29 @@ case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
       exit 2
     fi
     total_model_layers=43
-    simpler_min_wait_secs=$((${#prompt_token_ids[@]} * total_model_layers * 30 + 300))
+    case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+      deepseek-v4-flash-official|deepseek_v4_flash_official)
+        deadline_backend=official
+        layer_wait_secs=300
+        deadline_overhead_secs=900
+        ;;
+      *)
+        deadline_backend=simpler
+        layer_wait_secs=30
+        deadline_overhead_secs=300
+        ;;
+    esac
+    model_min_wait_secs=$((${#prompt_token_ids[@]} * total_model_layers * layer_wait_secs + deadline_overhead_secs))
     APP_WAIT_SECS="${APP_WAIT_SECS:-600}"
     if [[ ! "$APP_WAIT_SECS" =~ '^[1-9][0-9]*$' ]]; then
       echo "invalid APP_WAIT_SECS=$APP_WAIT_SECS" >&2
       exit 2
     fi
-    if (( APP_WAIT_SECS < simpler_min_wait_secs )); then
-      APP_WAIT_SECS="$simpler_min_wait_secs"
+    if (( APP_WAIT_SECS < model_min_wait_secs )); then
+      APP_WAIT_SECS="$model_min_wait_secs"
     fi
     export APP_WAIT_SECS
-    echo "[w5_inference_cluster] compute_deadline backend=simpler tokens=${#prompt_token_ids[@]} nodes=$cluster_nodes total_layers=$total_model_layers app_wait_secs=$APP_WAIT_SECS" >&2
+    echo "[w5_inference_cluster] compute_deadline backend=$deadline_backend tokens=${#prompt_token_ids[@]} nodes=$cluster_nodes total_layers=$total_model_layers layer_wait_secs=$layer_wait_secs overhead_secs=$deadline_overhead_secs app_wait_secs=$APP_WAIT_SECS" >&2
     ;;
 esac
 

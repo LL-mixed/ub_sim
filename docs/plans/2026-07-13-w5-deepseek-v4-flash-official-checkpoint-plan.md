@@ -2,7 +2,7 @@
 
 日期：2026-07-13
 
-状态：执行中；阶段 1 至阶段 5 已完成，阶段 6 待开始
+状态：执行中；阶段 1 至阶段 5 已完成，阶段 6 已接入 W5、正在修复连续推理验收问题
 
 已完成证据：
 
@@ -11,6 +11,19 @@
 - 阶段 3：[官方 linear production validation](../2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md)；
 - 阶段 4：[官方 routed-expert production validation](../2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md)；
 - 阶段 5：[官方 checkpoint 首 token validation](../2026-07-16-w5-deepseek-v4-flash-official-first-token-report.md)。
+
+阶段 6 当前进展（尚未达到完成门槛）：
+
+- 已实现官方 Safetensors 的 stateful layer/range runtime、ratio-4/ratio-128 KV
+  compressor 状态更新、W5 backend/profile/CLI 和 fail-closed checkpoint gate；
+- native 4-token `layers=[2,3)` 验证已跨过 position 3 的 ratio-4 compressor
+  boundary，状态为 4 个 raw rows、1 个 compressed row、1 个 indexer row；
+- 2026-07-16 的 2-node 4-step W5 实跑在 step 0 覆盖全部 43 层，nodeA/nodeB
+  分别完成 22/21 层，handoff checksum 匹配，terminal raw/selected token 均为
+  `294`；随后因官方候选缺少 token text metadata 被 terminal rewrite fail-closed
+  拒绝，因此该次运行不计为通过；
+- 当前阻塞点是为官方 logits 候选补齐 tokenizer text metadata；修复后仍需完成
+  2/3/8-node 的 4-step 和 8-step 矩阵，并核对跨 topology 状态与 terminal logits。
 
 ## 1. 目标
 

@@ -23,6 +23,7 @@ PROFILE_C = SERVICE_DIR / "mem_service_profile.c"
 EIGHT_NODE_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
 W5_RUNTIME = ROOT / "scripts" / "run_w5_inference_cluster_runtime.sh"
 SIMPLER_CONFIG = ROOT.parents[1] / "w5.deepseek-v4-flash-simpler.env"
+OFFICIAL_CONFIG = ROOT.parents[1] / "w5.deepseek-v4-flash-official.env"
 
 
 class DeepseekV4FlashProfileTest(unittest.TestCase):
@@ -143,8 +144,11 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("deepseek_v4_flash_tokenizer", runtime)
         self.assertIn("--token-ids-only", runtime)
         self.assertIn("total_model_layers=43", runtime)
-        self.assertIn("simpler_min_wait_secs=", runtime)
-        self.assertIn("compute_deadline backend=simpler", runtime)
+        self.assertIn("model_min_wait_secs=", runtime)
+        self.assertIn("deadline_backend=official", runtime)
+        self.assertIn("layer_wait_secs=300", runtime)
+        self.assertIn("deadline_overhead_secs=900", runtime)
+        self.assertIn("compute_deadline backend=$deadline_backend", runtime)
         self.assertIn("SIM_LLM_INFER_PROMPT='Rispondi in italiano", config)
         self.assertNotIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=128822", config)
 
@@ -178,6 +182,7 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         )
         self.assertIn('strcmp(profile, "deepseek-v4-flash-simpler")', infer_source)
         self.assertIn('strcmp(profile, "deepseek_v4_flash_simpler")', infer_source)
+        self.assertIn('strcmp(profile, "deepseek-v4-flash-official")', infer_source)
         self.assertIn(
             "return llm_infer_is_deepseek_v4_flash_profile_name(profile);",
             infer_source,
@@ -190,7 +195,8 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         runner = EIGHT_NODE_RUNNER.read_text()
 
         self.assertIn(
-            'deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)', runner
+            'deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official',
+            runner,
         )
         self.assertIn(
             'append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_suppress=1"',
@@ -201,6 +207,19 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
             runner,
         )
         self.assertIn("rcu_preempt|RCU grace-period", runner)
+
+    def test_official_profile_is_explicit_and_safetensors_only(self):
+        config = OFFICIAL_CONFIG.read_text()
+        runtime = W5_RUNTIME.read_text()
+
+        self.assertIn(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE=deepseek-v4-flash-official",
+            config,
+        )
+        self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=1", config)
+        self.assertNotIn(".gguf", config.lower())
+        self.assertNotIn("../ds4", config)
+        self.assertIn("deepseek-v4-flash-official", runtime)
 
     def test_multistep_flash_uses_topology_neutral_decode_round_barrier(self):
         infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()

@@ -33,6 +33,7 @@ const ADD: u64 = 11;
 const ROUTER: u64 = 12;
 const TOP_K: u64 = 13;
 const HC_HEAD_WEIGHTS: u64 = 14;
+const COMPRESSOR_POOL: u64 = 15;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct DeepseekV4OfficialVectorExecution {
@@ -47,7 +48,7 @@ pub fn ensure_simpler_host_deepseek_vector_manifest(manifest_path: &Path) -> Res
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_deepseek_vector_manifest_version"].as_u64() == Some(12)
+            if value["host_deepseek_vector_manifest_version"].as_u64() == Some(13)
                 && manifest.platform.as_deref() == Some("a5sim")
                 && manifest.simpler_runtime.orch_function_name == "build_deepseek_vector_graph"
             {
@@ -530,6 +531,71 @@ pub fn execute_indexer_qat_through_simpler(
         input.len(),
         [0; 4],
         [0.0, 0.0],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_compressor_pool_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest: &Path,
+    segment: u64,
+    kv_state: &[f32],
+    score_state: &[f32],
+    norm: &[f32],
+    cos: &[f32],
+    sin: &[f32],
+    head_dim: usize,
+    ratio: usize,
+    width: usize,
+    rope_dim: usize,
+    eps: f32,
+) -> Result<DeepseekV4OfficialVectorExecution, String> {
+    let rows = ratio
+        .checked_mul(if ratio == 4 { 2 } else { 1 })
+        .ok_or_else(|| "deepseek_vector_compressor_rows_overflow".to_string())?;
+    if !matches!(ratio, 4 | 128)
+        || width != head_dim * if ratio == 4 { 2 } else { 1 }
+        || kv_state.len() != rows * width
+        || score_state.len() != kv_state.len()
+        || norm.len() != head_dim
+        || rope_dim > head_dim
+        || !rope_dim.is_multiple_of(2)
+        || cos.len() != rope_dim / 2
+        || sin.len() != cos.len()
+        || !eps.is_finite()
+        || eps <= 0.0
+        || score_state
+            .iter()
+            .any(|value| value.is_nan() || *value == f32::INFINITY)
+    {
+        return Err("deepseek_vector_compressor_pool_shape_invalid".to_string());
+    }
+    let sanitized_scores = score_state
+        .iter()
+        .map(|value| {
+            if *value == f32::NEG_INFINITY {
+                -f32::MAX
+            } else {
+                *value
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut controls = norm.to_vec();
+    controls.extend_from_slice(cos);
+    controls.extend_from_slice(sin);
+    execute_vector(
+        topology,
+        task,
+        manifest,
+        segment,
+        COMPRESSOR_POOL,
+        kv_state,
+        &sanitized_scores,
+        &controls,
+        head_dim,
+        [head_dim as u64, ratio as u64, width as u64, rope_dim as u64],
+        [eps, 0.0],
     )
 }
 

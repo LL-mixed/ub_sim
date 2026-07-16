@@ -524,6 +524,15 @@ validate_w5_cluster_config() {
     echo "SIM_DEEPSEEK_V4_FLASH model source is missing: $SIM_DEEPSEEK_V4_FLASH" >&2
     return 2
   fi
+  if [[ "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek-v4-flash-official" ||
+        "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek_v4_flash_official" ]]; then
+    if [[ ! -d "${SIM_DEEPSEEK_V4_FLASH:-}" ||
+          ! -f "${SIM_DEEPSEEK_V4_FLASH:-}/config.json" ||
+          ! -f "${SIM_DEEPSEEK_V4_FLASH:-}/model.safetensors.index.json" ]]; then
+      echo "official DeepSeek profile requires a checkpoint directory with config.json and model.safetensors.index.json: ${SIM_DEEPSEEK_V4_FLASH:-unset}" >&2
+      return 2
+    fi
+  fi
   if bool_enabled "${SIM_W5_SERVING_QUEUE:-0}" &&
      { bool_enabled "${SIM_W5_TEST_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_TEST_POST_RUN_HEALTH:-0}"; }; then
     echo "SIM_W5_SERVING_QUEUE cannot be combined with post-run maintenance" >&2
@@ -710,6 +719,15 @@ run_w5_readiness_checks() {
       cd "$ROOT_DIR"
       AARCH64_LINUX_CC="$guest_link_cc" "$SCRIPT_DIR/build_initramfs.sh" --w5-guest-link-only
     )
+    if [[ "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek-v4-flash-official" ||
+          "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek_v4_flash_official" ]]; then
+      (
+        cd "$ROOT_DIR/../.."
+        cargo run --release -p sim-models --bin deepseek_v4_flash_checkpoint -- \
+          validate --model "$SIM_DEEPSEEK_V4_FLASH" >/dev/null
+      )
+      return 0
+    fi
     if [[ -z "$flash_weight_catalog" ]]; then
       flash_weight_catalog_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/w5_flash_weight_catalog.XXXXXX")"
       generated_flash_weight_catalog="$flash_weight_catalog_tmpdir/weight.catalog"

@@ -222,6 +222,7 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
             "ROUTER",
             "TOP_K",
             "HC_HEAD_WEIGHTS",
+            "COMPRESSOR_POOL",
         ):
             self.assertIn(operation, kernel)
         self.assertIn("round_bf16", kernel)

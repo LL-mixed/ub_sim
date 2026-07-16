@@ -789,6 +789,62 @@ impl DeepseekV4FlashCompressorState {
         Ok(state)
     }
 
+    pub fn update_pre_scored_with_pool<F>(
+        &mut self,
+        position: u32,
+        projected_kv: &[f32],
+        projected_score: &[f32],
+        pool: F,
+    ) -> Result<Option<Vec<f32>>, String>
+    where
+        F: FnOnce(&[f32], &[f32], usize, usize, usize) -> Result<Vec<f32>, String>,
+    {
+        if projected_kv.len() != self.width
+            || projected_score.len() != self.width
+            || projected_kv
+                .iter()
+                .chain(projected_score)
+                .any(|value| !value.is_finite())
+        {
+            return Err(format!(
+                "deepseek compressor pre-scored shape mismatch:kv={}:score={}:width={}",
+                projected_kv.len(),
+                projected_score.len(),
+                self.width
+            ));
+        }
+        let position_mod = position as usize % self.compress_ratio;
+        let row = if self.compress_ratio == 4 {
+            self.compress_ratio + position_mod
+        } else {
+            position_mod
+        };
+        let row_start = row * self.width;
+        self.kv[row_start..row_start + self.width].copy_from_slice(projected_kv);
+        self.score[row_start..row_start + self.width].copy_from_slice(projected_score);
+        if (position as usize + 1) % self.compress_ratio != 0 {
+            return Ok(None);
+        }
+        let output = pool(
+            &self.kv,
+            &self.score,
+            self.head_dim,
+            self.compress_ratio,
+            self.width,
+        )?;
+        if output.len() != self.head_dim || output.iter().any(|value| !value.is_finite()) {
+            return Err(format!(
+                "deepseek compressor external pool output mismatch:actual={}:expected={}",
+                output.len(),
+                self.head_dim
+            ));
+        }
+        if self.compress_ratio == 4 {
+            self.advance_ratio4_window();
+        }
+        Ok(Some(output))
+    }
+
     pub fn update_projected(
         &mut self,
         position: u32,
@@ -893,7 +949,7 @@ impl DeepseekV4FlashCompressorState {
             let mut denominator = 0.0f32;
             let mut weighted_sum = 0.0f32;
             for (value, score) in pairs {
-                let weight = (score - max_score).exp();
+                let weight = deterministic_exp_f32(score - max_score);
                 denominator += weight;
                 weighted_sum += value * weight;
             }
@@ -1429,6 +1485,15 @@ pub struct DeepseekV4FlashRouterOutput {
 }
 
 pub(crate) fn deterministic_exp_f32(value: f32) -> f32 {
+    if value == f32::NEG_INFINITY {
+        return 0.0;
+    }
+    if value == f32::INFINITY {
+        return f32::INFINITY;
+    }
+    if value.is_nan() {
+        return f32::NAN;
+    }
     let scaled = value * std::f32::consts::LOG2_E;
     let exponent = if scaled >= 0.0 {
         (scaled + 0.5) as i32
@@ -1889,6 +1954,39 @@ mod tests {
         let restored = DeepseekV4FlashCompressorState::restore(state.snapshot())
             .expect("restore compressor state");
         assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn compressor_external_pool_receives_complete_boundary_state() {
+        let mut state = DeepseekV4FlashCompressorState::new(2, 4).expect("ratio-4 state");
+        for position in 0..4 {
+            let result = state
+                .update_pre_scored_with_pool(
+                    position,
+                    &[position as f32, 0.0, 10.0 + position as f32, 20.0],
+                    &[0.0; 4],
+                    |kv, score, head_dim, ratio, width| {
+                        assert_eq!((head_dim, ratio, width), (2, 4, 4));
+                        assert_eq!(kv.len(), 32);
+                        assert_eq!(score.len(), 32);
+                        Ok(vec![kv[7 * width + 2], kv[7 * width + 3]])
+                    },
+                )
+                .expect("external compressor pool");
+            if position < 3 {
+                assert!(result.is_none());
+            } else {
+                assert_eq!(result, Some(vec![13.0, 20.0]));
+            }
+        }
+        assert_eq!(state.snapshot().kv.len(), 32);
+    }
+
+    #[test]
+    fn deterministic_exp_handles_softmax_infinities() {
+        assert_eq!(deterministic_exp_f32(f32::NEG_INFINITY), 0.0);
+        assert_eq!(deterministic_exp_f32(f32::INFINITY), f32::INFINITY);
+        assert!(deterministic_exp_f32(f32::NAN).is_nan());
     }
 
     #[test]

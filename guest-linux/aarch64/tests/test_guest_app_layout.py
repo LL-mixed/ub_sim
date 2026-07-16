@@ -156,6 +156,7 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     macos_env = ROOT.parents[1] / "w5.macos.env"
     flash_env = ROOT.parents[1] / "w5.deepseek-v4-flash.env"
     flash_simpler_env = ROOT.parents[1] / "w5.deepseek-v4-flash-simpler.env"
+    flash_official_env = ROOT.parents[1] / "w5.deepseek-v4-flash-official.env"
 
     assert helper.exists()
     assert helper.stat().st_mode & 0o111
@@ -180,6 +181,14 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
         in flash_simpler_env_text
     )
     assert "SIM_QWEN3_DENSE_WEIGHTS_PATH" not in flash_simpler_env_text
+    assert flash_official_env.exists()
+    flash_official_env_text = flash_official_env.read_text()
+    assert (
+        "SIM_UAPI_W4_CHIPBACKEND_PROFILE=deepseek-v4-flash-official"
+        in flash_official_env_text
+    )
+    assert "SIM_LLM_INFER_PROMPT_TOKEN_IDS=1" in flash_official_env_text
+    assert ".gguf" not in flash_official_env_text.lower()
     assert "run_w5_in_container.sh" in manual_doc
     assert "run_w5_in_container.sh" in script_inventory
 

@@ -958,7 +958,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             'is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"',
             legacy_runner_text,
         )
-        self.assertIn("deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)", runner_text)
+        self.assertIn(
+            "deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official",
+            runner_text,
+        )
         self.assertIn('--model "$SIM_DEEPSEEK_V4_FLASH"', runner_text)
         self.assertNotIn('--model "$deepseek_runtime_dir/ds4flash.gguf"', runner_text)
         self.assertIn("--gsva-kv", config_runner_text)

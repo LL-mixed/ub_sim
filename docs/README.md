@@ -54,7 +54,7 @@ Current validation entry points:
 - [plans/2026-06-25-mem-service-independent-service-plan.md](plans/2026-06-25-mem-service-independent-service-plan.md)
   - implementation and evaluation plan for turning `mem_service` into an independently releasable/deployable service for LLM serving and pretraining integration
 - [plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md](plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md)
-  - active plan for direct official DeepSeek V4 Flash Safetensors; stages 1 through 5 now cover loader, CPU oracle, FP8 linears, FP4 routed experts, and the complete official first token, while W5 2/3/8-node continuous inference and MTP remain; DS4 remains read-only and 1M context is explicitly not validated
+  - active plan for direct official DeepSeek V4 Flash Safetensors; stages 1 through 5 are complete, and stage 6 now has stateful official range execution plus the fail-closed W5 profile/CLI; a 2-node step-0 run covered all 43 layers and selected token 294 but correctly failed because official candidates did not yet carry token text metadata, so the 2/3/8-node 4/8-step matrix and MTP remain incomplete; DS4 remains read-only and 1M context is explicitly not validated
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)

@@ -1361,7 +1361,9 @@ static bool llm_infer_is_deepseek_v4_flash_profile_name(const char *profile)
            (strcmp(profile, "deepseek-v4-flash") == 0 ||
             strcmp(profile, "deepseek_v4_flash") == 0 ||
             strcmp(profile, "deepseek-v4-flash-simpler") == 0 ||
-            strcmp(profile, "deepseek_v4_flash_simpler") == 0);
+            strcmp(profile, "deepseek_v4_flash_simpler") == 0 ||
+            strcmp(profile, "deepseek-v4-flash-official") == 0 ||
+            strcmp(profile, "deepseek_v4_flash_official") == 0);
 }
 
 static bool llm_infer_is_model_range_profile_name(const char *profile)

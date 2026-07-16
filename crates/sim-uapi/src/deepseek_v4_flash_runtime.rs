@@ -27,9 +27,9 @@ use super::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeepseekV4FlashDenseAttentionState {
-    raw_capacity: usize,
-    head_dim: usize,
-    raw_kv: Vec<f32>,
+    pub(crate) raw_capacity: usize,
+    pub(crate) head_dim: usize,
+    pub(crate) raw_kv: Vec<f32>,
 }
 
 impl DeepseekV4FlashDenseAttentionState {
@@ -378,15 +378,15 @@ pub struct DeepseekV4FlashRatio4AttentionWeights<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeepseekV4FlashRatio4AttentionState {
-    raw_capacity: usize,
-    compressed_capacity: usize,
-    head_dim: usize,
-    indexer_head_dim: usize,
-    raw_kv: Vec<f32>,
-    compressed_kv: Vec<f32>,
-    indexer_compressed_kv: Vec<f32>,
-    attention_compressor: DeepseekV4FlashCompressorState,
-    indexer_compressor: DeepseekV4FlashCompressorState,
+    pub(crate) raw_capacity: usize,
+    pub(crate) compressed_capacity: usize,
+    pub(crate) head_dim: usize,
+    pub(crate) indexer_head_dim: usize,
+    pub(crate) raw_kv: Vec<f32>,
+    pub(crate) compressed_kv: Vec<f32>,
+    pub(crate) indexer_compressed_kv: Vec<f32>,
+    pub(crate) attention_compressor: DeepseekV4FlashCompressorState,
+    pub(crate) indexer_compressor: DeepseekV4FlashCompressorState,
 }
 
 impl DeepseekV4FlashRatio4AttentionState {
@@ -438,11 +438,11 @@ impl DeepseekV4FlashRatio4AttentionState {
         &self.indexer_compressed_kv
     }
 
-    fn push_raw(&mut self, row: &[f32]) -> Result<(), String> {
+    pub(crate) fn push_raw(&mut self, row: &[f32]) -> Result<(), String> {
         push_bounded_row(&mut self.raw_kv, row, self.head_dim, self.raw_capacity)
     }
 
-    fn push_compressed(&mut self, row: &[f32]) -> Result<(), String> {
+    pub(crate) fn push_compressed(&mut self, row: &[f32]) -> Result<(), String> {
         push_bounded_row(
             &mut self.compressed_kv,
             row,
@@ -451,7 +451,7 @@ impl DeepseekV4FlashRatio4AttentionState {
         )
     }
 
-    fn push_indexer_compressed(&mut self, row: &[f32]) -> Result<(), String> {
+    pub(crate) fn push_indexer_compressed(&mut self, row: &[f32]) -> Result<(), String> {
         push_bounded_row(
             &mut self.indexer_compressed_kv,
             row,
@@ -478,12 +478,12 @@ pub struct DeepseekV4FlashRatio128AttentionWeights<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeepseekV4FlashRatio128AttentionState {
-    raw_capacity: usize,
-    compressed_capacity: usize,
-    head_dim: usize,
-    raw_kv: Vec<f32>,
-    compressed_kv: Vec<f32>,
-    attention_compressor: DeepseekV4FlashCompressorState,
+    pub(crate) raw_capacity: usize,
+    pub(crate) compressed_capacity: usize,
+    pub(crate) head_dim: usize,
+    pub(crate) raw_kv: Vec<f32>,
+    pub(crate) compressed_kv: Vec<f32>,
+    pub(crate) attention_compressor: DeepseekV4FlashCompressorState,
 }
 
 impl DeepseekV4FlashRatio128AttentionState {
@@ -523,11 +523,11 @@ impl DeepseekV4FlashRatio128AttentionState {
         &self.compressed_kv
     }
 
-    fn push_raw(&mut self, row: &[f32]) -> Result<(), String> {
+    pub(crate) fn push_raw(&mut self, row: &[f32]) -> Result<(), String> {
         push_bounded_row(&mut self.raw_kv, row, self.head_dim, self.raw_capacity)
     }
 
-    fn push_compressed(&mut self, row: &[f32]) -> Result<(), String> {
+    pub(crate) fn push_compressed(&mut self, row: &[f32]) -> Result<(), String> {
         push_bounded_row(
             &mut self.compressed_kv,
             row,

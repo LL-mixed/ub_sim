@@ -356,7 +356,7 @@ append_kernel_arg_if_missing() {
 append_kernel_arg_if_missing "pmd_mapping=25%"
 append_kernel_arg_if_missing "obmm.skip_cache_maintain=1"
 case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
-  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
     # The synchronous simulator backend intentionally holds the only guest
     # vCPU while a real simpler range executes. Operation deadlines still
     # detect a hung dispatch; an RCU wall-clock warning is not actionable here.
@@ -382,7 +382,9 @@ is_deepseek_v4_flash_profile() {
   [[ "$profile" == "deepseek-v4-flash" ||
      "$profile" == "deepseek_v4_flash" ||
      "$profile" == "deepseek-v4-flash-simpler" ||
-     "$profile" == "deepseek_v4_flash_simpler" ]]
+     "$profile" == "deepseek_v4_flash_simpler" ||
+     "$profile" == "deepseek-v4-flash-official" ||
+     "$profile" == "deepseek_v4_flash_official" ]]
 }
 
 is_model_range_profile() {
@@ -1716,7 +1718,10 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/deepseek-v4-flash(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ .*status=ok" "$node_id DeepSeek KV publish" || return 1
     assert_log_count "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek KV publish per step" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_layer_kv_restored node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref materialize=object_ref status=ok" "$expected_kv_restores" "$node_id DeepSeek KV restore per decode continuation" || return 1
-    if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek-v4-flash-simpler" ]]; then
+    if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek-v4-flash-simpler" ||
+          "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek_v4_flash_simpler" ||
+          "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek-v4-flash-official" ||
+          "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek_v4_flash_official" ]]; then
       assert_log_count "$qemu_log" "deepseek-v4-flash-real-range-runtime: engine=simpler node=$((idx - 1)) nodes=$SIM_W5_CLUSTER_NODE_COUNT layers=\\[[0-9]+,[0-9]+\\) terminal_owner=[01] step=[0-9]+ history_tokens=[1-9][0-9]* executed_tokens=[1-9][0-9]* position=[0-9]+ hidden_bytes=[1-9][0-9]* kv_bytes=[1-9][0-9]* routed_layers=[1-9][0-9]* routed_expert_bytes=[1-9][0-9]* route_checksum=0x[0-9a-f]*[1-9a-f][0-9a-f]* .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek real GGUF MoE execution per step" || return 1
     fi
     if (( idx == terminal_publish_node )); then

@@ -8,7 +8,9 @@ use sim_models::deepseek_v4_flash::{
     deepseek_v4_flash_rope_coefficients, DEEPSEEK_V4_FLASH_RMS_EPS,
 };
 use sim_models::deepseek_v4_flash_checkpoint::{DeepseekV4CacheStats, DeepseekV4Checkpoint};
-use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashHcSplit;
+use sim_models::deepseek_v4_flash_lowering::{
+    DeepseekV4FlashCompressorState, DeepseekV4FlashHcSplit,
+};
 use sim_topology::SimTopology;
 
 use super::deepseek_v4_flash_official_expert_runtime::{
@@ -21,13 +23,15 @@ use super::deepseek_v4_flash_official_runtime::{
     execute_deepseek_official_f32_rows_through_simpler, DeepseekV4LinearOutputDType,
 };
 use super::deepseek_v4_flash_official_vector_runtime::{
-    execute_add_through_simpler, execute_hc_post_through_simpler, execute_hc_split_through_simpler,
+    execute_add_through_simpler, execute_compressor_pool_through_simpler,
+    execute_hc_post_through_simpler, execute_hc_split_through_simpler,
     execute_hc_weighted_sum_through_simpler, execute_indexer_qat_through_simpler,
     execute_kv_fp8_roundtrip_through_simpler, execute_rms_norm_through_simpler,
     execute_rope_through_simpler, execute_scale_through_simpler,
     execute_sink_attention_through_simpler, execute_swiglu_through_simpler,
     DeepseekV4OfficialVectorExecution,
 };
+use super::deepseek_v4_flash_runtime::DeepseekV4FlashLayerState;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct DeepseekV4OfficialLayerKvSummary {
@@ -88,11 +92,14 @@ struct HcPre {
     split: DeepseekV4FlashHcSplit,
 }
 
-struct AttentionOutput {
-    output: Vec<f32>,
+struct AttentionProjection {
     kv: Vec<f32>,
     q_lora: Vec<f32>,
     query: Vec<f32>,
+}
+
+struct AttentionOutput {
+    output: Vec<f32>,
     attended: Vec<f32>,
     low_rank_output: Vec<f32>,
 }
@@ -320,21 +327,18 @@ impl<'a> ProductionContext<'a> {
         })
     }
 
-    fn attention(
+    fn attention_projection(
         &mut self,
         prefix: &str,
         layer_id: u64,
         position: u32,
         hidden: &[f32],
-    ) -> Result<AttentionOutput, String> {
+    ) -> Result<AttentionProjection, String> {
         let config = &self.checkpoint.config;
         let heads = config.num_attention_heads as usize;
         let head_dim = config.head_dim as usize;
         let rope_dim = config.qk_rope_head_dim as usize;
         let q_rank = config.q_lora_rank as usize;
-        let output_groups = config.o_groups as usize;
-        let output_rank = config.o_lora_rank as usize;
-        let hidden_size = config.hidden_size as usize;
 
         let q_lora = self.fp8_rows(&format!("{prefix}.attn.wq_a.weight"), 0, q_rank, hidden)?;
         let q_norm_weight = self
@@ -431,6 +435,30 @@ impl<'a> ProductionContext<'a> {
         )?;
         self.record_vector(&kv);
 
+        Ok(AttentionProjection {
+            kv: kv.output,
+            q_lora: q_lora.output,
+            query: q.output,
+        })
+    }
+
+    fn attention_output(
+        &mut self,
+        prefix: &str,
+        layer_id: u64,
+        position: u32,
+        query: &[f32],
+        rows: &[f32],
+    ) -> Result<AttentionOutput, String> {
+        let config = &self.checkpoint.config;
+        let heads = config.num_attention_heads as usize;
+        let head_dim = config.head_dim as usize;
+        let rope_dim = config.qk_rope_head_dim as usize;
+        let output_groups = config.o_groups as usize;
+        let output_rank = config.o_lora_rank as usize;
+        let hidden_size = config.hidden_size as usize;
+        let rope = deepseek_v4_flash_rope_coefficients(layer_id, position)?;
+
         let sinks = self
             .checkpoint
             .reference_read_vector(&format!("{prefix}.attn.attn_sink"))?;
@@ -439,8 +467,8 @@ impl<'a> ProductionContext<'a> {
             &self.current_task(),
             &self.vector_manifest(),
             self.next_segment,
-            &q.output,
-            &kv.output,
+            query,
+            rows,
             &sinks,
             heads,
             head_dim,
@@ -482,9 +510,6 @@ impl<'a> ProductionContext<'a> {
         )?;
         Ok(AttentionOutput {
             output,
-            kv: kv.output,
-            q_lora: q_lora.output,
-            query: q.output,
             attended: attended.output,
             low_rank_output,
         })
@@ -576,6 +601,64 @@ impl<'a> ProductionContext<'a> {
         Ok(pending)
     }
 
+    fn compressor_update(
+        &mut self,
+        prefix: &str,
+        layer_id: u64,
+        position: u32,
+        state: &mut DeepseekV4FlashCompressorState,
+        pending: &[f32],
+    ) -> Result<Option<Vec<f32>>, String> {
+        let width = state.width();
+        if pending.len() != width * 2 {
+            return Err(format!(
+                "deepseek_v4_production_compressor_pending_shape_invalid:actual={}:expected={}",
+                pending.len(),
+                width * 2
+            ));
+        }
+        let head_dim = state.head_dim();
+        let ratio = state.compress_ratio();
+        let norm = self
+            .checkpoint
+            .reference_read_vector(&format!("{prefix}.norm.weight"))?;
+        let compressed_position = (position as usize + 1).saturating_sub(ratio) as u32;
+        let rope = deepseek_v4_flash_rope_coefficients(layer_id, compressed_position)?;
+        state
+            .update_pre_scored_with_pool(
+                position,
+                &pending[..width],
+                &pending[width..],
+                |kv, score, pool_head_dim, pool_ratio, pool_width| {
+                    let execution = execute_compressor_pool_through_simpler(
+                        self.topology,
+                        &self.current_task(),
+                        &self.vector_manifest(),
+                        self.next_segment,
+                        kv,
+                        score,
+                        &norm,
+                        &rope.cos,
+                        &rope.sin,
+                        pool_head_dim,
+                        pool_ratio,
+                        pool_width,
+                        self.checkpoint.config.qk_rope_head_dim as usize,
+                        self.checkpoint.config.rms_norm_eps as f32,
+                    )?;
+                    self.record_vector(&execution);
+                    Ok(execution.output)
+                },
+            )
+            .and_then(|output| {
+                if norm.len() != head_dim {
+                    Err("deepseek_v4_production_compressor_norm_shape_invalid".to_string())
+                } else {
+                    Ok(output)
+                }
+            })
+    }
+
     fn shared_expert(&mut self, prefix: &str, input: &[f32]) -> Result<Vec<f32>, String> {
         let intermediate = self.checkpoint.config.moe_intermediate_size as usize;
         let hidden_size = self.checkpoint.config.hidden_size as usize;
@@ -648,12 +731,13 @@ impl<'a> ProductionContext<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn execute_deepseek_official_layer_through_simpler(
+pub fn execute_deepseek_official_stateful_layer_through_simpler(
     checkpoint: &DeepseekV4Checkpoint,
     topology: &SimTopology,
     task: &TaskKey,
     artifact_dir: &Path,
     segment_base: u64,
+    state: &mut DeepseekV4FlashLayerState,
     layer_id: u64,
     token_id: u64,
     position: u32,
@@ -664,7 +748,6 @@ pub fn execute_deepseek_official_layer_through_simpler(
     let hc_mult = config.hc_mult as usize;
     if layer_id >= config.num_hidden_layers
         || token_id >= config.vocab_size
-        || position != 0
         || hidden_hc.len() != hidden_size * hc_mult
         || hidden_hc.iter().any(|value| !value.is_finite())
     {
@@ -693,15 +776,14 @@ pub fn execute_deepseek_official_layer_through_simpler(
     };
 
     let attention_pre = context.hc_pre(&prefix, "attn", hidden_hc)?;
-    let attention = context.attention(
+    let attention_projection = context.attention_projection(
         &prefix,
         layer_id,
         position,
         &attention_pre.normalized_hidden,
     )?;
-    let attention_output = attention.output;
-    let kv = attention.kv;
-    let q_lora = attention.q_lora;
+    let kv = attention_projection.kv;
+    let q_lora = attention_projection.q_lora;
     let attention_compressor_pending = if ratio == 0 {
         None
     } else {
@@ -738,6 +820,88 @@ pub fn execute_deepseek_official_layer_through_simpler(
     };
     let indexer_query_checksum = indexer_query.as_deref().map(checksum_f32);
     let indexer_weights_checksum = indexer_weights.as_deref().map(checksum_f32);
+    let (raw_rows, compressed_rows, indexer_rows, attention_rows) = match (ratio, state) {
+        (0, DeepseekV4FlashLayerState::Dense(state)) => {
+            state.push_raw(&kv)?;
+            (state.raw_rows(), 0, 0, state.raw_kv().to_vec())
+        }
+        (4, DeepseekV4FlashLayerState::Ratio4(state)) => {
+            state.push_raw(&kv)?;
+            let emitted_attention = context.compressor_update(
+                &format!("{prefix}.attn.compressor"),
+                layer_id,
+                position,
+                &mut state.attention_compressor,
+                attention_compressor_pending.as_deref().ok_or_else(|| {
+                    "deepseek_v4_attention_compressor_pending_missing".to_string()
+                })?,
+            )?;
+            if let Some(row) = emitted_attention.as_deref() {
+                state.push_compressed(row)?;
+            }
+            let emitted_indexer = context.compressor_update(
+                &format!("{prefix}.attn.indexer.compressor"),
+                layer_id,
+                position,
+                &mut state.indexer_compressor,
+                indexer_compressor_pending
+                    .as_deref()
+                    .ok_or_else(|| "deepseek_v4_indexer_compressor_pending_missing".to_string())?,
+            )?;
+            if let Some(row) = emitted_indexer.as_deref() {
+                state.push_indexer_compressed(row)?;
+            }
+            if state.compressed_rows() != state.indexer_compressed_rows()
+                || state.compressed_rows() > config.index_topk as usize
+            {
+                return Err(format!(
+                    "deepseek_v4_production_compressed_frontier_invalid:attention={}:indexer={}:topk={}",
+                    state.compressed_rows(),
+                    state.indexer_compressed_rows(),
+                    config.index_topk
+                ));
+            }
+            let mut rows = state.raw_kv().to_vec();
+            rows.extend_from_slice(state.compressed_kv());
+            (
+                state.raw_rows(),
+                state.compressed_rows(),
+                state.indexer_compressed_rows(),
+                rows,
+            )
+        }
+        (128, DeepseekV4FlashLayerState::Ratio128(state)) => {
+            state.push_raw(&kv)?;
+            let emitted = context.compressor_update(
+                &format!("{prefix}.attn.compressor"),
+                layer_id,
+                position,
+                &mut state.attention_compressor,
+                attention_compressor_pending.as_deref().ok_or_else(|| {
+                    "deepseek_v4_attention_compressor_pending_missing".to_string()
+                })?,
+            )?;
+            if let Some(row) = emitted.as_deref() {
+                state.push_compressed(row)?;
+            }
+            let mut rows = state.raw_kv().to_vec();
+            rows.extend_from_slice(state.compressed_kv());
+            (state.raw_rows(), state.compressed_rows(), 0, rows)
+        }
+        _ => {
+            return Err(format!(
+                "deepseek_v4_production_layer_state_kind_mismatch:layer={layer_id}:ratio={ratio}"
+            ))
+        }
+    };
+    let attention = context.attention_output(
+        &prefix,
+        layer_id,
+        position,
+        &attention_projection.query,
+        &attention_rows,
+    )?;
+    let attention_output = attention.output;
     let attention_output_checksum = checksum_f32(&attention_output);
     let attention_hidden = execute_hc_post_through_simpler(
         context.topology,
@@ -802,16 +966,16 @@ pub fn execute_deepseek_official_layer_through_simpler(
         attention_output_checksum,
         attention_output,
         q_lora,
-        query: attention.query,
+        query: attention_projection.query,
         attended: attention.attended,
         low_rank_attention_output: attention.low_rank_output,
         selected_experts,
         route_weights,
         kv: DeepseekV4OfficialLayerKvSummary {
-            raw_rows: 1,
+            raw_rows,
             raw_row_checksum: checksum_f32(&kv),
-            compressed_rows: usize::from(ratio != 0 && 1 >= ratio),
-            indexer_rows: usize::from(ratio == 4 && 1 >= ratio),
+            compressed_rows,
+            indexer_rows,
             attention_compressor_pending_checksum,
             indexer_compressor_pending_checksum,
             attention_compressor_pending,
@@ -831,6 +995,38 @@ pub fn execute_deepseek_official_layer_through_simpler(
         tensor_cache,
         expert_cache,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_official_layer_through_simpler(
+    checkpoint: &DeepseekV4Checkpoint,
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    layer_id: u64,
+    token_id: u64,
+    position: u32,
+    hidden_hc: &[f32],
+) -> Result<DeepseekV4OfficialLayerExecution, String> {
+    if position != 0 {
+        return Err(format!(
+            "deepseek_v4_stateless_layer_requires_position_zero:position={position}"
+        ));
+    }
+    let mut state = DeepseekV4FlashLayerState::new(layer_id)?;
+    execute_deepseek_official_stateful_layer_through_simpler(
+        checkpoint,
+        topology,
+        task,
+        artifact_dir,
+        segment_base,
+        &mut state,
+        layer_id,
+        token_id,
+        position,
+        hidden_hc,
+    )
 }
 
 #[cfg(test)]

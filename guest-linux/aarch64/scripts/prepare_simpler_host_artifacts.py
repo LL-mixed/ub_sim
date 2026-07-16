@@ -1680,6 +1680,7 @@ enum Operation : uint64_t {
     ROUTER = 12,
     TOP_K = 13,
     HC_HEAD_WEIGHTS = 14,
+    COMPRESSOR_POOL = 15,
 };
 
 inline float from_bits(uint64_t value) {
@@ -2047,6 +2048,134 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
                     }
                     output[offset] = round_bf16(sign * values[best] * scale);
                 }
+            }
+        }
+        return;
+    }
+    if (operation == COMPRESSOR_POOL) {
+        const uint64_t head_dim = p0;
+        const uint64_t ratio = p1;
+        const uint64_t width = p2;
+        const uint64_t rope_dim = p3;
+        for (uint64_t dim = 0; dim < head_dim; ++dim) {
+            float max_score = -INFINITY;
+            if (ratio == 4) {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    max_score = fmaxf(max_score, input1[row * width + dim]);
+                    max_score = fmaxf(
+                        max_score,
+                        input1[(ratio + row) * width + head_dim + dim]);
+                }
+            } else {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    max_score = fmaxf(max_score, input1[row * width + dim]);
+                }
+            }
+            float denominator = 0.0f;
+            float weighted_sum = 0.0f;
+            if (ratio == 4) {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    const uint64_t previous = row * width + dim;
+                    const uint64_t current = (ratio + row) * width + head_dim + dim;
+                    if (input1[previous] > -1.0e30f) {
+                        const float weight = accurate_exp_f32(input1[previous] - max_score);
+                        denominator += weight;
+                        weighted_sum = separate_mul_add(input0[previous], weight, weighted_sum);
+                    }
+                    if (input1[current] > -1.0e30f) {
+                        const float weight = accurate_exp_f32(input1[current] - max_score);
+                        denominator += weight;
+                        weighted_sum = separate_mul_add(input0[current], weight, weighted_sum);
+                    }
+                }
+            } else {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    const uint64_t index = row * width + dim;
+                    if (input1[index] > -1.0e30f) {
+                        const float weight = accurate_exp_f32(input1[index] - max_score);
+                        denominator += weight;
+                        weighted_sum = separate_mul_add(input0[index], weight, weighted_sum);
+                    }
+                }
+            }
+            output[dim] = denominator == 0.0f ? 0.0f : weighted_sum / denominator;
+        }
+        float square_sum = 0.0f;
+        for (uint64_t dim = 0; dim < head_dim; ++dim) {
+            square_sum += output[dim] * output[dim];
+        }
+        const float inverse = 1.0f /
+            accurate_sqrt_f32(square_sum / static_cast<float>(head_dim) + f0);
+        for (uint64_t dim = 0; dim < head_dim; ++dim) {
+            output[dim] *= inverse * input2[dim];
+        }
+        const uint64_t tail = head_dim - rope_dim;
+        const uint64_t cos_offset = head_dim;
+        const uint64_t sin_offset = head_dim + rope_dim / 2;
+        for (uint64_t pair = 0; pair < rope_dim / 2; ++pair) {
+            const uint64_t index = tail + pair * 2;
+            const float x0 = output[index];
+            const float x1 = output[index + 1];
+            output[index] = separate_mul_add(
+                -x1,
+                input2[sin_offset + pair],
+                x0 * input2[cos_offset + pair]);
+            output[index + 1] = separate_mul_add(
+                x1,
+                input2[cos_offset + pair],
+                x0 * input2[sin_offset + pair]);
+        }
+        if (head_dim == 128) {
+            for (uint64_t stride = 1; stride < 128; stride *= 2) {
+                for (uint64_t base = 0; base < 128; base += 2 * stride) {
+                    for (uint64_t index = 0; index < stride; ++index) {
+                        const float a = output[base + index];
+                        const float b = output[base + stride + index];
+                        output[base + index] = a + b;
+                        output[base + stride + index] = a - b;
+                    }
+                }
+            }
+            const float values[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+            for (uint64_t index = 0; index < 128; ++index) {
+                output[index] *= 0.08838834764831845f;
+            }
+            for (uint64_t block = 0; block < 128; block += 32) {
+                float absolute_max = 7.052966104933725e-38f;
+                for (uint64_t index = 0; index < 32; ++index) {
+                    absolute_max = fmaxf(absolute_max, fabsf(output[block + index]));
+                }
+                const float scale = exp2f(ceilf(log2f(absolute_max / 6.0f)));
+                for (uint64_t index = 0; index < 32; ++index) {
+                    const uint64_t offset = block + index;
+                    const float sign = output[offset] < 0.0f ? -1.0f : 1.0f;
+                    const float magnitude = fminf(fabsf(output[offset] / scale), 6.0f);
+                    uint64_t best = 0;
+                    for (uint64_t candidate = 1; candidate < 8; ++candidate) {
+                        const float difference = fabsf(magnitude - values[candidate]);
+                        const float best_difference = fabsf(magnitude - values[best]);
+                        if (difference < best_difference ||
+                            (difference == best_difference && (candidate & 1U) == 0 && (best & 1U) != 0)) {
+                            best = candidate;
+                        }
+                    }
+                    output[offset] = round_bf16(sign * values[best] * scale);
+                }
+            }
+        } else {
+            for (uint64_t block_start = 0; block_start < tail; block_start += 64) {
+                float absolute_max = 1.0e-4f;
+                for (uint64_t index = block_start; index < block_start + 64; ++index) {
+                    absolute_max = fmaxf(absolute_max, fabsf(output[index]));
+                }
+                const float scale = exp2f(ceilf(log2f(absolute_max / 448.0f)));
+                for (uint64_t index = block_start; index < block_start + 64; ++index) {
+                    output[index] = round_bf16(
+                        fp8_round(fmaxf(-448.0f, fminf(448.0f, output[index] / scale))) * scale);
+                }
+            }
+            for (uint64_t index = tail; index < head_dim; ++index) {
+                output[index] = round_bf16(output[index]);
             }
         }
         return;
@@ -2585,7 +2714,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     if args.profile == "host_engram_context":
         manifest["host_engram_context_manifest_version"] = 6
     if args.profile == "host_deepseek_vector":
-        manifest["host_deepseek_vector_manifest_version"] = 12
+        manifest["host_deepseek_vector_manifest_version"] = 13
 
     manifest_path = output_dir / spec.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))

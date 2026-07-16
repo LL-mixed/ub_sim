@@ -6,12 +6,15 @@ use std::time::Instant;
 use sim_config::ScenarioConfig;
 use sim_core::{HierarchyCoord, LogicalSystemId, TaskKey};
 use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+use sim_models::deepseek_v4_flash_checkpoint::{DeepseekV4CacheLimits, DeepseekV4Checkpoint};
 use sim_models::deepseek_v4_flash_gguf::GgufCatalog;
 use sim_topology::SimTopology;
 use sim_uapi::{
     execute_deepseek_gguf_range_with_progress_through_simpler,
-    execute_deepseek_gguf_sequence_range_through_simpler, set_simpler_dispatch_log_enabled,
-    DeepseekV4FlashGgufRangeProgress, DeepseekV4FlashModelState,
+    execute_deepseek_gguf_sequence_range_through_simpler,
+    execute_deepseek_official_range_with_progress_through_simpler,
+    execute_deepseek_official_sequence_range_through_simpler, set_simpler_dispatch_log_enabled,
+    DeepseekV4FlashGgufRangeProgress, DeepseekV4FlashModelState, DeepseekV4OfficialRangeProgress,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -53,8 +56,6 @@ where
     })?;
     let topology = SimTopology::from_config(&config)
         .map_err(|err| format!("deepseek_range_topology_failed:{err}"))?;
-    let catalog = GgufCatalog::open(&args.model)?;
-    catalog.validate_deepseek_v4_flash()?;
     let input = args.input.as_ref().map(read_f32).transpose()?;
     let mut state = DeepseekV4FlashModelState::new()?;
     if let Some(path) = &args.state_input {
@@ -70,60 +71,126 @@ where
         scope_depth: 0,
         task_id: 1,
     };
-    let (hidden_hc, logits, loaded_routed_expert_bytes, layer_routes) = if args.tokens.len() == 1 {
-        let execution = execute_deepseek_gguf_range_with_progress_through_simpler(
-            &topology,
-            &task,
-            &args.artifact_dir,
-            2_000_000,
-            &catalog,
-            &mut state,
-            args.layer_start,
-            args.layer_end,
-            args.tokens[0],
-            args.position,
-            input.as_deref(),
-            args.logits_output.is_some(),
-            |progress| {
-                let now = Instant::now();
-                eprintln!(
-                    "{}",
-                    progress_json(
-                        progress,
-                        now.duration_since(previous).as_millis(),
-                        now.duration_since(started).as_millis(),
-                    )
-                );
-                previous = now;
-            },
-        )?;
-        (
-            execution.hidden_hc,
-            execution.logits,
-            execution.loaded_routed_expert_bytes,
-            serde_json::json!(execution.layer_routes),
-        )
+    let official = is_official_model_path(&args.model);
+    let (hidden_hc, logits, loaded_routed_expert_bytes, layer_routes, model_format) = if official {
+        let checkpoint = DeepseekV4Checkpoint::open(&args.model, DeepseekV4CacheLimits::default())?;
+        if args.tokens.len() == 1 {
+            let execution = execute_deepseek_official_range_with_progress_through_simpler(
+                &checkpoint,
+                &topology,
+                &task,
+                &args.artifact_dir,
+                2_000_000,
+                &mut state,
+                args.layer_start,
+                args.layer_end,
+                args.tokens[0],
+                args.position,
+                input.as_deref(),
+                args.logits_output.is_some(),
+                |progress| {
+                    let now = Instant::now();
+                    eprintln!(
+                        "{}",
+                        official_progress_json(
+                            progress,
+                            now.duration_since(previous).as_millis(),
+                            now.duration_since(started).as_millis(),
+                        )
+                    );
+                    previous = now;
+                },
+            )?;
+            (
+                execution.hidden_hc,
+                execution.logits,
+                execution.routed_expert_bytes,
+                serde_json::json!(execution.layer_routes),
+                "official-safetensors",
+            )
+        } else {
+            let execution = execute_deepseek_official_sequence_range_through_simpler(
+                &checkpoint,
+                &topology,
+                &task,
+                &args.artifact_dir,
+                2_000_000,
+                &mut state,
+                args.layer_start,
+                args.layer_end,
+                &args.tokens,
+                args.position,
+                input.as_deref(),
+                args.logits_output.is_some(),
+            )?;
+            (
+                execution.hidden_hc,
+                execution.logits,
+                execution.routed_expert_bytes,
+                serde_json::json!(execution.token_layer_routes),
+                "official-safetensors",
+            )
+        }
     } else {
-        let execution = execute_deepseek_gguf_sequence_range_through_simpler(
-            &topology,
-            &task,
-            &args.artifact_dir,
-            2_000_000,
-            &catalog,
-            &mut state,
-            args.layer_start,
-            args.layer_end,
-            &args.tokens,
-            args.position,
-            input.as_deref(),
-            args.logits_output.is_some(),
-        )?;
-        (
-            execution.hidden_hc,
-            execution.logits,
-            execution.loaded_routed_expert_bytes,
-            serde_json::json!(execution.token_layer_routes),
-        )
+        let catalog = GgufCatalog::open(&args.model)?;
+        catalog.validate_deepseek_v4_flash()?;
+        if args.tokens.len() == 1 {
+            let execution = execute_deepseek_gguf_range_with_progress_through_simpler(
+                &topology,
+                &task,
+                &args.artifact_dir,
+                2_000_000,
+                &catalog,
+                &mut state,
+                args.layer_start,
+                args.layer_end,
+                args.tokens[0],
+                args.position,
+                input.as_deref(),
+                args.logits_output.is_some(),
+                |progress| {
+                    let now = Instant::now();
+                    eprintln!(
+                        "{}",
+                        progress_json(
+                            progress,
+                            now.duration_since(previous).as_millis(),
+                            now.duration_since(started).as_millis(),
+                        )
+                    );
+                    previous = now;
+                },
+            )?;
+            (
+                execution.hidden_hc,
+                execution.logits,
+                execution.loaded_routed_expert_bytes as u64,
+                serde_json::json!(execution.layer_routes),
+                "gguf",
+            )
+        } else {
+            let execution = execute_deepseek_gguf_sequence_range_through_simpler(
+                &topology,
+                &task,
+                &args.artifact_dir,
+                2_000_000,
+                &catalog,
+                &mut state,
+                args.layer_start,
+                args.layer_end,
+                &args.tokens,
+                args.position,
+                input.as_deref(),
+                args.logits_output.is_some(),
+            )?;
+            (
+                execution.hidden_hc,
+                execution.logits,
+                execution.loaded_routed_expert_bytes as u64,
+                serde_json::json!(execution.token_layer_routes),
+                "gguf",
+            )
+        }
     };
     write_f32(&args.output, &hidden_hc)?;
     if let Some(path) = &args.state_output {
@@ -149,6 +216,7 @@ where
             "status": "ok",
             "operation": "deepseek-layer-range",
             "backend": "simpler-c-api",
+            "model_format": model_format,
             "layers": [args.layer_start, args.layer_end],
             "tokens": args.tokens,
             "position": args.position,
@@ -179,6 +247,37 @@ fn progress_json(
         "layer_elapsed_ms": layer_elapsed_ms,
         "total_elapsed_ms": total_elapsed_ms,
     })
+}
+
+fn official_progress_json(
+    progress: &DeepseekV4OfficialRangeProgress,
+    layer_elapsed_ms: u128,
+    total_elapsed_ms: u128,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "progress",
+        "operation": "deepseek-layer-range",
+        "model_format": "official-safetensors",
+        "layer": progress.layer_id,
+        "compression_ratio": progress.compression_ratio,
+        "routed_experts": progress.routed_experts,
+        "routed_expert_bytes": progress.routed_expert_bytes,
+        "raw_rows": progress.raw_rows,
+        "compressed_rows": progress.compressed_rows,
+        "layer_elapsed_ms": layer_elapsed_ms,
+        "total_elapsed_ms": total_elapsed_ms,
+    })
+}
+
+fn is_official_model_path(path: &std::path::Path) -> bool {
+    if path.is_dir() {
+        return true;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.ends_with(".safetensors") || name.ends_with(".safetensors.index.json")
+        })
 }
 
 fn parse_args<I, S>(args: I) -> Result<Args, String>
@@ -449,5 +548,16 @@ mod tests {
         let mut args = base_args("0:6");
         args.extend(["--tokens", "1,2"]);
         assert_eq!(parse_args(args).unwrap_err(), "token_source_conflict");
+    }
+
+    #[test]
+    fn model_format_detection_distinguishes_official_and_gguf_sources() {
+        assert!(is_official_model_path(std::path::Path::new(
+            "checkpoint/model.safetensors.index.json"
+        )));
+        assert!(is_official_model_path(std::path::Path::new(
+            "checkpoint/model-00001-of-00061.safetensors"
+        )));
+        assert!(!is_official_model_path(std::path::Path::new("model.gguf")));
     }
 }

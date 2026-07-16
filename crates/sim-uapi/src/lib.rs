@@ -4,6 +4,7 @@ mod deepseek_v4_flash_gguf_runtime;
 mod deepseek_v4_flash_official_expert_runtime;
 mod deepseek_v4_flash_official_layer_runtime;
 mod deepseek_v4_flash_official_model_runtime;
+mod deepseek_v4_flash_official_range_runtime;
 mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_runtime;
@@ -27,13 +28,13 @@ pub use deepseek_v4_flash_official_runtime::{
 
 pub use deepseek_v4_flash_official_vector_runtime::{
     ensure_simpler_host_deepseek_vector_manifest, execute_add_through_simpler,
-    execute_hc_head_weights_through_simpler, execute_hc_post_through_simpler,
-    execute_hc_split_through_simpler, execute_hc_weighted_sum_through_simpler,
-    execute_indexer_qat_through_simpler, execute_kv_fp8_roundtrip_through_simpler,
-    execute_rms_norm_through_simpler, execute_rope_through_simpler, execute_router_through_simpler,
-    execute_scale_through_simpler, execute_sink_attention_through_simpler,
-    execute_swiglu_through_simpler, execute_top_k_through_simpler,
-    DeepseekV4OfficialVectorExecution,
+    execute_compressor_pool_through_simpler, execute_hc_head_weights_through_simpler,
+    execute_hc_post_through_simpler, execute_hc_split_through_simpler,
+    execute_hc_weighted_sum_through_simpler, execute_indexer_qat_through_simpler,
+    execute_kv_fp8_roundtrip_through_simpler, execute_rms_norm_through_simpler,
+    execute_rope_through_simpler, execute_router_through_simpler, execute_scale_through_simpler,
+    execute_sink_attention_through_simpler, execute_swiglu_through_simpler,
+    execute_top_k_through_simpler, DeepseekV4OfficialVectorExecution,
 };
 
 pub use deepseek_v4_flash_official_expert_runtime::{
@@ -48,7 +49,8 @@ pub use deepseek_v4_flash_official_expert_runtime::{
 };
 
 pub use deepseek_v4_flash_official_layer_runtime::{
-    execute_deepseek_official_layer_through_simpler, DeepseekV4OfficialLayerExecution,
+    execute_deepseek_official_layer_through_simpler,
+    execute_deepseek_official_stateful_layer_through_simpler, DeepseekV4OfficialLayerExecution,
     DeepseekV4OfficialLayerKvSummary,
 };
 
@@ -60,6 +62,12 @@ pub use deepseek_v4_flash_official_model_runtime::{
     DEEPSEEK_V4_FIRST_TOKEN_ATTENTION_TOLERANCE, DEEPSEEK_V4_FIRST_TOKEN_HIDDEN_TOLERANCE,
     DEEPSEEK_V4_FIRST_TOKEN_KV_TOLERANCE, DEEPSEEK_V4_FIRST_TOKEN_LOGIT_TOLERANCE,
     DEEPSEEK_V4_FIRST_TOKEN_ROUTE_WEIGHT_TOLERANCE,
+};
+
+pub use deepseek_v4_flash_official_range_runtime::{
+    execute_deepseek_official_range_with_progress_through_simpler,
+    execute_deepseek_official_sequence_range_through_simpler, DeepseekV4OfficialRangeExecution,
+    DeepseekV4OfficialRangeProgress, DeepseekV4OfficialSequenceExecution,
 };
 
 pub use deepseek_v4_flash_runtime::{
@@ -106,6 +114,7 @@ use sim_models::deepseek_v4_flash;
 use sim_models::deepseek_v4_flash_adapter::{
     ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig, Ds4TokenCandidate,
 };
+use sim_models::deepseek_v4_flash_checkpoint::{DeepseekV4CacheLimits, DeepseekV4Checkpoint};
 use sim_models::deepseek_v4_flash_gguf::{
     lower_f16_matrix_to_f32_kxn_padded, lower_iq2_xxs_expert_for_block_dot,
     lower_q2_k_expert_for_block_dot, q8_0_weight_block_kxn, quantize_q8_0_activation, GgufCatalog,
@@ -1709,6 +1718,8 @@ impl LocalGuestUapiSurface {
                 | Ok("deepseek_v4_flash")
                 | Ok("deepseek-v4-flash-simpler")
                 | Ok("deepseek_v4_flash_simpler")
+                | Ok("deepseek-v4-flash-official")
+                | Ok("deepseek_v4_flash_official")
         );
         let result = (|| {
             let started = Instant::now();
@@ -1860,6 +1871,8 @@ fn run_w4_chipbackend(
         | "deepseek_v4_flash"
         | "deepseek-v4-flash-simpler"
         | "deepseek_v4_flash_simpler"
+        | "deepseek-v4-flash-official"
+        | "deepseek_v4_flash_official"
         | "deepseek-v4-flash-geometry-smoke" => {
             run_deepseek_v4_flash_chipbackend(topology, task, guest_input)
         }
@@ -1914,6 +1927,17 @@ fn run_qwen3_range_chipbackend(
             run_deepseek_v4_flash_real_range_runtime(topology, task, guest_input, operands)
         }
         "deepseek-v4-flash-simpler" | "deepseek_v4_flash_simpler" => {
+            run_deepseek_v4_flash_simpler_range_runtime(topology, task, guest_input, operands)
+        }
+        "deepseek-v4-flash-official" | "deepseek_v4_flash_official" => {
+            let source = deepseek_v4_flash_model_source()?;
+            if source.format != DeepseekV4FlashModelFormat::OfficialSafetensors {
+                return Err(format!(
+                    "deepseek_v4_flash_official_profile_requires_safetensors:path={}:format={}",
+                    source.path.display(),
+                    source.format.label()
+                ));
+            }
             run_deepseek_v4_flash_simpler_range_runtime(topology, task, guest_input, operands)
         }
         "deepseek-v4-flash-geometry-smoke" => run_deepseek_v4_flash_geometry_smoke_range_runtime(
@@ -5619,7 +5643,9 @@ fn qwen3_guest_range_compute_contract(
         "deepseek-v4-flash"
         | "deepseek_v4_flash"
         | "deepseek-v4-flash-simpler"
-        | "deepseek_v4_flash_simpler" => {
+        | "deepseek_v4_flash_simpler"
+        | "deepseek-v4-flash-official"
+        | "deepseek_v4_flash_official" => {
             const DS4_HIDDEN_F32_VALUES: u64 = 16_384;
             const MAX_REAL_PROMPT_TOKENS: u64 = 32;
 
@@ -6524,9 +6550,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
             }
         }
         DeepseekRangeEngine::Simpler => {
-            let model_path = deepseek_v4_flash_gguf_path()?;
-            let catalog = GgufCatalog::open(&model_path)?;
-            catalog.validate_deepseek_v4_flash()?;
+            let model_source = deepseek_v4_flash_model_source()?;
             let mut state = DeepseekV4FlashModelState::new()?;
             if let Some(payload) = previous_kv.as_deref() {
                 state.restore_range_state(
@@ -6546,41 +6570,89 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
             let segment_base = 1_000_000_000u64
                 .saturating_add(u64::from(contract.node).saturating_mul(100_000_000))
                 .saturating_add(decode_step.saturating_mul(20_000_000));
-            let execution = execute_deepseek_gguf_sequence_range_through_simpler(
-                topology,
-                task,
-                &artifact_dir,
-                segment_base,
-                &catalog,
-                &mut state,
-                u64::from(contract.layer_start),
-                u64::from(contract.layer_end),
-                &token_ids,
-                position,
-                input_hidden.as_deref(),
-                terminal_owner,
-            )?;
-            let (routed_layer_count, route_checksum) =
-                deepseek_v4_flash_route_execution_summary(&execution.token_layer_routes);
-            let kv_payload = state.encode_range_state(
-                u64::from(contract.layer_start),
-                u64::from(contract.layer_end),
-            )?;
-            let logits = execution.logits.unwrap_or_default();
-            let candidates = if terminal_owner {
-                deepseek_v4_flash_candidates_from_logits(&catalog, &logits)?
-            } else {
-                Vec::new()
-            };
-            DeepseekRangeEngineOutput {
-                hidden: execution.hidden_hc,
-                kv_payload,
-                logits,
-                candidates,
-                selected_text: None,
-                routed_layer_count,
-                routed_expert_bytes: execution.loaded_routed_expert_bytes as u64,
-                route_checksum,
+            match model_source.format {
+                DeepseekV4FlashModelFormat::Gguf => {
+                    let catalog = GgufCatalog::open(&model_source.path)?;
+                    catalog.validate_deepseek_v4_flash()?;
+                    let execution = execute_deepseek_gguf_sequence_range_through_simpler(
+                        topology,
+                        task,
+                        &artifact_dir,
+                        segment_base,
+                        &catalog,
+                        &mut state,
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                        &token_ids,
+                        position,
+                        input_hidden.as_deref(),
+                        terminal_owner,
+                    )?;
+                    let (routed_layer_count, route_checksum) =
+                        deepseek_v4_flash_route_execution_summary(&execution.token_layer_routes);
+                    let kv_payload = state.encode_range_state(
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                    )?;
+                    let logits = execution.logits.unwrap_or_default();
+                    let candidates = if terminal_owner {
+                        deepseek_v4_flash_candidates_from_logits(&catalog, &logits)?
+                    } else {
+                        Vec::new()
+                    };
+                    DeepseekRangeEngineOutput {
+                        hidden: execution.hidden_hc,
+                        kv_payload,
+                        logits,
+                        candidates,
+                        selected_text: None,
+                        routed_layer_count,
+                        routed_expert_bytes: execution.loaded_routed_expert_bytes as u64,
+                        route_checksum,
+                    }
+                }
+                DeepseekV4FlashModelFormat::OfficialSafetensors => {
+                    let checkpoint = DeepseekV4Checkpoint::open(
+                        &model_source.path,
+                        DeepseekV4CacheLimits::default(),
+                    )?;
+                    let execution = execute_deepseek_official_sequence_range_through_simpler(
+                        &checkpoint,
+                        topology,
+                        task,
+                        &artifact_dir,
+                        segment_base,
+                        &mut state,
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                        &token_ids,
+                        position,
+                        input_hidden.as_deref(),
+                        terminal_owner,
+                    )?;
+                    let (routed_layer_count, route_checksum) =
+                        deepseek_v4_flash_route_execution_summary(&execution.token_layer_routes);
+                    let kv_payload = state.encode_range_state(
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                    )?;
+                    let logits = execution.logits.unwrap_or_default();
+                    let candidates = if terminal_owner {
+                        deepseek_v4_flash_official_candidates_from_logits(&logits)?
+                    } else {
+                        Vec::new()
+                    };
+                    DeepseekRangeEngineOutput {
+                        hidden: execution.hidden_hc,
+                        kv_payload,
+                        logits,
+                        candidates,
+                        selected_text: None,
+                        routed_layer_count,
+                        routed_expert_bytes: execution.routed_expert_bytes,
+                        route_checksum,
+                    }
+                }
             }
         }
     };
@@ -7026,6 +7098,23 @@ fn deepseek_v4_flash_candidates_from_logits(
                 id: i32::try_from(token)
                     .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
                 text: catalog.tokenizer_token_text(token)?,
+                logit,
+                logprob: 0.0,
+            })
+        })
+        .collect()
+}
+
+fn deepseek_v4_flash_official_candidates_from_logits(
+    logits: &[f32],
+) -> Result<Vec<Ds4TokenCandidate>, String> {
+    deepseek_v4_flash_top_logits(logits)?
+        .into_iter()
+        .map(|(token, logit)| {
+            Ok(Ds4TokenCandidate {
+                id: i32::try_from(token)
+                    .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
+                text: String::new(),
                 logit,
                 logprob: 0.0,
             })
@@ -28889,6 +28978,7 @@ mod tests {
         ensure_simpler_host_fp4_gemm_manifest, ensure_simpler_host_fp8_gemm_manifest,
         ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
         ensure_simpler_host_quantized_gemm_manifest, execute_add_through_simpler,
+        execute_compressor_pool_through_simpler,
         execute_deepseek_compressor_update_through_simpler,
         execute_deepseek_dense_attention_through_simpler,
         execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
@@ -34780,6 +34870,63 @@ mod tests {
             )
             .expect("execute A5 indexer QAT");
             assert_eq!(indexer.output, indexer_reference);
+            let mut compressor_reference =
+                sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashCompressorState::new(2, 4)
+                    .expect("create reference compressor");
+            let mut compressor_production = compressor_reference.clone();
+            let mut compressor = None;
+            for position in 0..4u32 {
+                let projected = [1.0 + position as f32, 2.0, 5.0 + position as f32, 7.0];
+                let expected = compressor_reference
+                    .update_projected(
+                        position,
+                        &projected,
+                        &[0.0; 4],
+                        &[0.0; 4],
+                        &[1.0; 2],
+                        2,
+                        &[1.0],
+                        &[0.0],
+                    )
+                    .expect("update reference compressor");
+                let actual = compressor_production
+                    .update_pre_scored_with_pool(
+                        position,
+                        &projected,
+                        &[0.0; 4],
+                        |kv_state, score_state, head_dim, ratio, width| {
+                            execute_compressor_pool_through_simpler(
+                                &topology,
+                                &task,
+                                &manifest,
+                                169_392,
+                                kv_state,
+                                score_state,
+                                &[1.0; 2],
+                                &[1.0],
+                                &[0.0],
+                                head_dim,
+                                ratio,
+                                width,
+                                2,
+                                1.0e-6,
+                            )
+                            .map(|execution| {
+                                compressor = Some(execution.clone());
+                                execution.output
+                            })
+                        },
+                    )
+                    .expect("update A5 compressor");
+                if let (Some(mut expected), Some(actual)) = (expected, actual) {
+                    sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                        &mut expected,
+                    )
+                    .expect("round compressor reference");
+                    assert_eq!(actual, expected);
+                }
+            }
+            let compressor = compressor.expect("A5 compressor boundary dispatch");
             let logits_for_top_k = [1.0, 3.0, 3.0, -2.0, 4.5];
             let top_k_reference = sim_models::deepseek_v4_flash_checkpoint_reference::top_k_logits(
                 &logits_for_top_k,
@@ -34899,12 +35046,13 @@ mod tests {
                     + kv.dispatch_count
                     + attention.dispatch_count
                     + indexer.dispatch_count
+                    + compressor.dispatch_count
                     + top_k_execution.dispatch_count
                     + router_execution.dispatch_count
                     + hc_execution.dispatch_count
                     + weighted.dispatch_count
                     + post.dispatch_count,
-                16
+                17
             );
         });
     }
@@ -35998,6 +36146,30 @@ mod tests {
                 assert_eq!(contract.layer_start, 22);
                 assert_eq!(contract.layer_end, 43);
                 assert_eq!(contract.pipeline_nodes, 2);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_official_profile_accepts_real_range_geometry() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-official",
+            || {
+                let contract = crate::qwen3_guest_range_compute_contract(&TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 2, 29, 43, 0, 3, 43, 16_384 * 4],
+                    },
+                    scope_depth: 8,
+                    task_id: 43_103,
+                })
+                .expect("valid official profile range")
+                .expect("range contract");
+                assert_eq!(contract.layer_start, 29);
+                assert_eq!(contract.layer_end, 43);
+                assert_eq!(contract.pipeline_nodes, 3);
             },
         );
     }
