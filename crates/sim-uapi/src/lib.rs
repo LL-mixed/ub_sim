@@ -111,9 +111,7 @@ use sim_core::{
 };
 use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
-use sim_models::deepseek_v4_flash_adapter::{
-    ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig, Ds4TokenCandidate,
-};
+use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
 use sim_models::deepseek_v4_flash_checkpoint::{DeepseekV4CacheLimits, DeepseekV4Checkpoint};
 use sim_models::deepseek_v4_flash_gguf::{
     lower_f16_matrix_to_f32_kxn_padded, lower_iq2_xxs_expert_for_block_dot,
@@ -6197,11 +6195,17 @@ struct DeepseekRangeEngineOutput {
     hidden: Vec<f32>,
     kv_payload: Vec<u8>,
     logits: Vec<f32>,
-    candidates: Vec<Ds4TokenCandidate>,
-    selected_text: Option<String>,
+    candidates: Vec<DeepseekRangeCandidate>,
+    selected_text_bytes: Option<Vec<u8>>,
     routed_layer_count: u64,
     routed_expert_bytes: u64,
     route_checksum: u64,
+}
+
+struct DeepseekRangeCandidate {
+    id: i32,
+    text_bytes: Vec<u8>,
+    logit: f32,
 }
 
 impl DeepseekRangeEngine {
@@ -6533,17 +6537,26 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
                 previous_kv,
                 output_logits: terminal_owner,
             })?;
-            let selected_text = slice
+            let selected_text_bytes = slice
                 .report
                 .selected_token
                 .as_ref()
-                .map(|candidate| candidate.text.clone());
+                .map(|candidate| candidate.text.as_bytes().to_vec());
             DeepseekRangeEngineOutput {
                 hidden: slice.hidden,
                 kv_payload: slice.kv_payload,
                 logits: slice.logits,
-                candidates: slice.report.candidates,
-                selected_text,
+                candidates: slice
+                    .report
+                    .candidates
+                    .into_iter()
+                    .map(|candidate| DeepseekRangeCandidate {
+                        id: candidate.id,
+                        text_bytes: candidate.text.into_bytes(),
+                        logit: candidate.logit,
+                    })
+                    .collect(),
+                selected_text_bytes,
                 routed_layer_count: 0,
                 routed_expert_bytes: 0,
                 route_checksum: 0,
@@ -6600,12 +6613,15 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
                     } else {
                         Vec::new()
                     };
+                    let selected_text_bytes = candidates
+                        .first()
+                        .map(|candidate| candidate.text_bytes.clone());
                     DeepseekRangeEngineOutput {
                         hidden: execution.hidden_hc,
                         kv_payload,
                         logits,
                         candidates,
-                        selected_text: None,
+                        selected_text_bytes,
                         routed_layer_count,
                         routed_expert_bytes: execution.loaded_routed_expert_bytes as u64,
                         route_checksum,
@@ -6638,16 +6654,22 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
                     )?;
                     let logits = execution.logits.unwrap_or_default();
                     let candidates = if terminal_owner {
-                        deepseek_v4_flash_official_candidates_from_logits(&logits)?
+                        deepseek_v4_flash_official_candidates_from_logits(
+                            &model_source.path,
+                            &logits,
+                        )?
                     } else {
                         Vec::new()
                     };
+                    let selected_text_bytes = candidates
+                        .first()
+                        .map(|candidate| candidate.text_bytes.clone());
                     DeepseekRangeEngineOutput {
                         hidden: execution.hidden_hc,
                         kv_payload,
                         logits,
                         candidates,
-                        selected_text: None,
+                        selected_text_bytes,
                         routed_layer_count,
                         routed_expert_bytes: execution.routed_expert_bytes,
                         route_checksum,
@@ -6676,6 +6698,11 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
     };
     let output_tensor_checksum =
         qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
+    let selected_text = engine_output
+        .selected_text_bytes
+        .as_deref()
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_else(|| "unmapped".to_string());
     let kv_state_payload = engine_output.kv_payload;
     let kv_state_bytes = kv_state_payload.len() as u64;
     let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
@@ -6776,12 +6803,12 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         &[],
         Some(&range_forward_summary),
     )?;
-    if let (Some(descriptor), Some(text)) = (
+    if let (Some(descriptor), Some(text_bytes)) = (
         logits_descriptors.first(),
-        engine_output.selected_text.as_deref(),
+        engine_output.selected_text_bytes.as_deref(),
     ) {
-        if !text.is_empty() {
-            deepseek_v4_flash_patch_real_text_output(&mut output, descriptor, text.as_bytes())?;
+        if !text_bytes.is_empty() {
+            deepseek_v4_flash_patch_real_text_output(&mut output, descriptor, text_bytes)?;
         }
     }
     eprintln!(
@@ -6804,7 +6831,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         input_checksum,
         output_tensor_checksum,
         logits_descriptors.first().map(|value| value.sampled_token).unwrap_or(0),
-        engine_output.selected_text.as_deref().unwrap_or("unmapped"),
+        selected_text,
     );
     Ok(output)
 }
@@ -7090,33 +7117,42 @@ fn deepseek_v4_flash_patch_real_text_output(
 fn deepseek_v4_flash_candidates_from_logits(
     catalog: &GgufCatalog,
     logits: &[f32],
-) -> Result<Vec<Ds4TokenCandidate>, String> {
+) -> Result<Vec<DeepseekRangeCandidate>, String> {
     deepseek_v4_flash_top_logits(logits)?
         .into_iter()
         .map(|(token, logit)| {
-            Ok(Ds4TokenCandidate {
+            Ok(DeepseekRangeCandidate {
                 id: i32::try_from(token)
                     .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
-                text: catalog.tokenizer_token_text(token)?,
+                text_bytes: catalog.tokenizer_token_text(token)?.into_bytes(),
                 logit,
-                logprob: 0.0,
             })
         })
         .collect()
 }
 
 fn deepseek_v4_flash_official_candidates_from_logits(
+    tokenizer_path: &Path,
     logits: &[f32],
-) -> Result<Vec<Ds4TokenCandidate>, String> {
+) -> Result<Vec<DeepseekRangeCandidate>, String> {
     deepseek_v4_flash_top_logits(logits)?
         .into_iter()
         .map(|(token, logit)| {
-            Ok(Ds4TokenCandidate {
+            let encoded = token_piece_bytes_from_tokenizer_path(tokenizer_path, token as u64)
+                .map_err(|err| {
+                    format!("deepseek_v4_flash_official_tokenizer_piece_failed:{token}:{err}")
+                })?;
+            let text_bytes = token_piece_decode_bytes(&encoded);
+            if text_bytes.is_empty() {
+                return Err(format!(
+                    "deepseek_v4_flash_official_tokenizer_piece_empty:{token}"
+                ));
+            }
+            Ok(DeepseekRangeCandidate {
                 id: i32::try_from(token)
                     .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
-                text: String::new(),
+                text_bytes,
                 logit,
-                logprob: 0.0,
             })
         })
         .collect()
@@ -7155,7 +7191,7 @@ fn deepseek_v4_flash_top_logits(logits: &[f32]) -> Result<Vec<(usize, f32)>, Str
 
 fn deepseek_v4_flash_real_logits_descriptor(
     logits: &[f32],
-    candidates: &[Ds4TokenCandidate],
+    candidates: &[DeepseekRangeCandidate],
     decode_step: u64,
     range_layer_checksum: u64,
     output_tensor_checksum: u64,
@@ -7183,7 +7219,7 @@ fn deepseek_v4_flash_real_logits_descriptor(
     for (index, candidate) in candidates.iter().enumerate() {
         let token = u64::try_from(candidate.id)
             .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{}", candidate.id))?;
-        let piece = qwen3_dense_reference_token_piece_from_bytes(token, candidate.text.as_bytes());
+        let piece = qwen3_dense_reference_token_piece_from_bytes(token, &candidate.text_bytes);
         candidate_tokens[index] = token;
         candidate_logit_bits[index] = u64::from(candidate.logit.to_bits());
         candidate_text_checksums[index] = piece.checksum;
@@ -36195,6 +36231,52 @@ mod tests {
         let error = crate::deepseek_v4_flash_top_logits(&logits)
             .expect_err("non-finite logits must fail closed");
         assert!(error.contains("deepseek_v4_flash_logit_not_finite:token=21"));
+    }
+
+    #[test]
+    fn deepseek_v4_flash_official_candidates_carry_real_tokenizer_bytes() {
+        let tokenizer_dir = std::env::temp_dir().join(format!(
+            "ub_sim_deepseek_official_tokenizer_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tokenizer_dir);
+        std::fs::create_dir_all(&tokenizer_dir).expect("create tokenizer fixture");
+        std::fs::write(tokenizer_dir.join("tokenizer_config.json"), r#"{}"#)
+            .expect("write tokenizer config");
+        std::fs::write(
+            tokenizer_dir.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Ġof":294,"ãĢ":298,"ings":1045,"ES":2048}}}"#,
+        )
+        .expect("write tokenizer json");
+
+        let mut logits =
+            vec![0.0; deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize];
+        logits[294] = 5.0;
+        logits[298] = 4.0;
+        logits[1045] = 3.0;
+        logits[2048] = 2.0;
+        let candidates =
+            crate::deepseek_v4_flash_official_candidates_from_logits(&tokenizer_dir, &logits)
+                .expect("decode official candidates");
+        assert_eq!(candidates.len(), 4);
+        assert_eq!(candidates[0].id, 294);
+        assert_eq!(candidates[0].text_bytes, b" of");
+        assert!(candidates
+            .iter()
+            .all(|candidate| !candidate.text_bytes.is_empty()));
+
+        let descriptor =
+            crate::deepseek_v4_flash_real_logits_descriptor(&logits, &candidates, 0, 11, 22, 43)
+                .expect("build official logits descriptor");
+        assert_eq!(descriptor.sampled_token, 294);
+        assert_eq!(descriptor.candidate_piece_bytes[0], 3);
+        assert_eq!(
+            descriptor.candidate_piece_word0[0] & 0x00ff_ffff,
+            0x0066_6f20
+        );
+        assert_ne!(descriptor.candidate_text_checksums[0], 0);
+
+        std::fs::remove_dir_all(tokenizer_dir).expect("remove tokenizer fixture");
     }
 
     #[test]

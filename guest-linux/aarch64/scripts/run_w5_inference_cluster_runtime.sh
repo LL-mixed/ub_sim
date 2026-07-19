@@ -165,7 +165,7 @@ case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
     case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
       deepseek-v4-flash-official|deepseek_v4_flash_official)
         deadline_backend=official
-        layer_wait_secs=300
+        layer_wait_secs=600
         deadline_overhead_secs=900
         ;;
       *)

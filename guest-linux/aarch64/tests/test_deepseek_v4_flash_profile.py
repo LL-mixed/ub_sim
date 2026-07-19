@@ -146,7 +146,7 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("total_model_layers=43", runtime)
         self.assertIn("model_min_wait_secs=", runtime)
         self.assertIn("deadline_backend=official", runtime)
-        self.assertIn("layer_wait_secs=300", runtime)
+        self.assertIn("layer_wait_secs=600", runtime)
         self.assertIn("deadline_overhead_secs=900", runtime)
         self.assertIn("compute_deadline backend=$deadline_backend", runtime)
         self.assertIn("SIM_LLM_INFER_PROMPT='Rispondi in italiano", config)

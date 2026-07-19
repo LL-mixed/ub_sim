@@ -626,7 +626,17 @@ pub fn token_piece_bytes_from_tokenizer_path(
 ) -> Result<Vec<u8>, String> {
     let tokenizer_config = read_tokenizer_asset_file(tokenizer_path, "tokenizer_config.json")?;
     let tokenizer_json = read_tokenizer_asset_file(tokenizer_path, "tokenizer.json")?;
-    let vocab_json = read_tokenizer_asset_file(tokenizer_path, "vocab.json")?;
+    let vocab_path = tokenizer_path.join("vocab.json");
+    let vocab_json = match fs::read(&vocab_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => b"{}".to_vec(),
+        Err(err) => {
+            return Err(format!(
+                "qwen3_tokenizer_asset_read_failed:{}:{err}",
+                vocab_path.display()
+            ))
+        }
+    };
     tokenizer_piece_bytes(&tokenizer_config, &tokenizer_json, &vocab_json, token_id)
 }
 
@@ -5905,6 +5915,29 @@ outputs:
             token_piece_bytes_from_tokenizer_path(&temp, 151_643).expect("added token bytes"),
             b"<|endoftext|>"
         );
+
+        fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
+    }
+
+    #[test]
+    fn tokenizer_piece_uses_embedded_vocab_without_sidecar_vocab() {
+        let temp = std::env::temp_dir().join(format!(
+            "qwen3_embedded_tokenizer_vocab_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).expect("create tokenizer temp dir");
+        fs::write(temp.join("tokenizer_config.json"), r#"{}"#).expect("write tokenizer config");
+        fs::write(
+            temp.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Ġof":294}}}"#,
+        )
+        .expect("write tokenizer json");
+
+        let encoded = token_piece_bytes_from_tokenizer_path(&temp, 294)
+            .expect("read embedded tokenizer vocab");
+        assert_eq!(encoded, "Ġof".as_bytes());
+        assert_eq!(token_piece_decode_bytes(&encoded), b" of");
 
         fs::remove_dir_all(&temp).expect("remove tokenizer temp dir");
     }
