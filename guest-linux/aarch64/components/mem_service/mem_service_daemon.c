@@ -583,8 +583,8 @@ int mem_service_run_wire_fixture_check(void)
          MEM_SERVICE_WIRE_OP_STATUS,
          fixtures[2].payload,
          MEM_SERVICE_WIRE_STATUS_OK,
-         217,
-         0x3f4609a1U},
+         299,
+         0xb491a239U},
         {"list_records_response",
          MEM_SERVICE_WIRE_OP_LIST_RECORDS,
          fixtures[3].payload,
@@ -8878,14 +8878,27 @@ static enum mem_service_wire_status mem_service_status(struct mem_service *svc,
                                                        char *response,
                                                        size_t response_len)
 {
-    bool ready = svc->shmem_ready && svc->urma_ready && svc->block_ready;
+    bool ready = svc->control_plane_ready &&
+                 svc->provider_registry_ready &&
+                 svc->durable_ready;
+    size_t provider_ready_count;
+    bool data_plane_ready;
+
+    (void)mem_service_provider_registry_refresh(&svc->providers);
+    provider_ready_count =
+        mem_service_provider_registry_ready_count(&svc->providers);
+    data_plane_ready =
+        mem_service_provider_registry_data_plane_ready(&svc->providers);
 
     snprintf(response,
              response_len,
              "ready=%u\n"
-             "shmem_ready=%u\n"
-             "urma_ready=%u\n"
-             "block_ready=%u\n"
+             "control_plane_ready=%u\n"
+             "provider_registry_ready=%u\n"
+             "durable_ready=%u\n"
+             "data_plane_ready=%u\n"
+             "provider_count=%zu\n"
+             "provider_ready_count=%zu\n"
              "record_count=%zu\n"
              "prefix_group_count=%zu\n"
              "prefix_entry_count=%zu\n"
@@ -8895,9 +8908,12 @@ static enum mem_service_wire_status mem_service_status(struct mem_service *svc,
              "execution_artifact_count=%zu\n"
              "training_artifact_count=%zu\n",
              ready ? 1U : 0U,
-             svc->shmem_ready ? 1U : 0U,
-             svc->urma_ready ? 1U : 0U,
-             svc->block_ready ? 1U : 0U,
+             svc->control_plane_ready ? 1U : 0U,
+             svc->provider_registry_ready ? 1U : 0U,
+             svc->durable_ready ? 1U : 0U,
+             data_plane_ready ? 1U : 0U,
+             svc->providers.count,
+             provider_ready_count,
              svc->record_count,
              mem_service_count_record_kind(svc, MEM_SERVICE_RECORD_PREFIX_GROUP),
              mem_service_count_record_kind(svc, MEM_SERVICE_RECORD_REQUEST_PREFIX),
@@ -9334,9 +9350,9 @@ static enum mem_service_wire_status mem_service_restore_snapshot(struct mem_serv
 
     if (payload == NULL || payload[0] == '\0' ||
         mem_service_init(&restored,
-                         svc->shmem_ready,
-                         svc->urma_ready,
-                         svc->block_ready) != 0 ||
+                         svc->control_plane_ready,
+                         svc->provider_registry_ready,
+                         svc->durable_ready) != 0 ||
         mem_service_import_snapshot_text(&restored, payload) != 0) {
         return MEM_SERVICE_WIRE_STATUS_INVALID_SESSION;
     }
@@ -9375,9 +9391,9 @@ static enum mem_service_wire_status mem_service_restore_snapshot_page_begin(
 
     mem_service_restore_snapshot_stage_reset();
     if (mem_service_init(&mem_service_restore_snapshot_stage.svc,
-                         svc->shmem_ready,
-                         svc->urma_ready,
-                         svc->block_ready) != 0) {
+                         svc->control_plane_ready,
+                         svc->provider_registry_ready,
+                         svc->durable_ready) != 0) {
         return MEM_SERVICE_WIRE_STATUS_INTERNAL;
     }
     mem_service_restore_snapshot_stage.active = true;
@@ -10062,7 +10078,8 @@ static enum mem_service_wire_status mem_service_dispatch_operation(
         snprintf(response, response_len, "ok");
         return MEM_SERVICE_WIRE_STATUS_OK;
     case MEM_SERVICE_WIRE_OP_READY:
-        if (svc->shmem_ready && svc->urma_ready && svc->block_ready) {
+        if (svc->control_plane_ready && svc->provider_registry_ready &&
+            svc->durable_ready) {
             snprintf(response, response_len, "ok");
             return MEM_SERVICE_WIRE_STATUS_OK;
         }
@@ -12612,9 +12629,32 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     const char *storage_root,
     const struct mem_service_daemon_limits *limits)
 {
+    const struct mem_service_daemon_runtime runtime = {
+        .limits = limits,
+        .providers = NULL,
+    };
+
+    return mem_service_run_unix_daemon_with_runtime(listen_spec,
+                                                    store_path,
+                                                    metrics_listen_spec,
+                                                    storage_root,
+                                                    &runtime);
+}
+
+int mem_service_run_unix_daemon_with_runtime(
+    const char *listen_spec,
+    const char *store_path,
+    const char *metrics_listen_spec,
+    const char *storage_root,
+    const struct mem_service_daemon_runtime *runtime)
+{
     struct mem_service svc;
     struct sockaddr_un addr;
     const char *path = mem_service_unix_path_from_spec(listen_spec);
+    const struct mem_service_daemon_limits *limits =
+        runtime != NULL ? runtime->limits : NULL;
+    const struct mem_service_provider_registry *providers =
+        runtime != NULL ? runtime->providers : NULL;
     int server_fd;
     int metrics_fd = -1;
     int rc = 1;
@@ -12629,6 +12669,20 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     if (mem_service_init(&svc, true, true, true) != 0) {
         fprintf(stderr, "mem_service serve: init failed\n");
         return 1;
+    }
+    if (providers != NULL) {
+        if (!providers->initialized ||
+            providers->count > MEM_SERVICE_MAX_PROVIDERS) {
+            fprintf(stderr,
+                    "mem_service serve: invalid provider registry\n");
+            return 1;
+        }
+        svc.providers = *providers;
+        if (mem_service_provider_registry_refresh(&svc.providers) != 0) {
+            fprintf(stderr,
+                    "mem_service serve: provider probe failed\n");
+            return 1;
+        }
     }
     if (mem_service_prepare_durable_catalog_layout(storage_root) != 0) {
         fprintf(stderr,
@@ -12756,6 +12810,12 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     if (limits != NULL && limits->max_checkpoint_records > 0) {
         printf(" max_checkpoint_records=%" PRIu64, limits->max_checkpoint_records);
     }
+    printf(" provider_count=%zu provider_ready_count=%zu data_plane_ready=%u",
+           svc.providers.count,
+           mem_service_provider_registry_ready_count(&svc.providers),
+           mem_service_provider_registry_data_plane_ready(&svc.providers)
+               ? 1U
+               : 0U);
     printf("\n");
     fflush(stdout);
     while (!mem_service_daemon_stop) {

@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "lingqu_object_service.h"
+#include "mem_service_provider.h"
 
 enum mem_service_record_kind {
     MEM_SERVICE_RECORD_PREFIX_GROUP = 1,
@@ -172,13 +173,14 @@ struct mem_service_audit_event {
 };
 
 struct mem_service {
-    bool shmem_ready;
-    bool urma_ready;
-    bool block_ready;
+    bool control_plane_ready;
+    bool provider_registry_ready;
+    bool durable_ready;
     bool enforce_expected_context;
     size_t record_count;
     uint64_t audit_next_sequence;
     uint64_t audit_event_count;
+    struct mem_service_provider_registry providers;
     struct mem_service_metrics metrics;
     struct mem_service_record records[MEM_SERVICE_MAX_RECORDS];
     struct mem_service_idempotency_record
@@ -283,9 +285,9 @@ bool mem_service_group_covers_blocks(const struct mem_service_record *group_meta
                                const struct mem_service_record *primary_block_meta,
                                const struct mem_service_record *aux_block_meta);
 int mem_service_init(struct mem_service *svc,
-                       bool shmem_ready,
-                       bool urma_ready,
-                       bool block_ready);
+                     bool control_plane_ready,
+                     bool provider_registry_ready,
+                     bool durable_ready);
 int mem_service_bootstrap_kvcache(struct mem_service *svc,
                             const struct mem_service_block_ctx *ctx,
                             struct mem_service_record *resolved_out);

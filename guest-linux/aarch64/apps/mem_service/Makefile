@@ -25,6 +25,9 @@ MEM_SERVICE_OBMM_OBJECTS := $(ROOT)/components/mem_service/mem_service_obmm_obje
 MEM_SERVICE_UB_SSD_GSVA_BACKEND := $(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_backend.c
 MEM_SERVICE_UB_SSD_GSVA_IO := $(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_io.c
 MEM_SERVICE_RECORDS := $(ROOT)/components/mem_service/mem_service_records.c
+MEM_SERVICE_PROVIDER := $(ROOT)/components/mem_service/mem_service_provider.c
+MEM_SERVICE_PROVIDER_ROCE := $(ROOT)/components/mem_service/providers/mem_service_provider_roce.c
+MEM_SERVICE_PROVIDER_ROCE_CLI := $(ROOT)/components/mem_service/providers/mem_service_provider_roce_cli.c
 MEM_SERVICE_PROFILE := $(ROOT)/components/mem_service/mem_service_profile.c
 MEM_SERVICE_DEEPSEEK_V4_FLASH := $(ROOT)/components/mem_service/mem_service_deepseek_v4_flash.c
 MEM_SERVICE_EXPERT_ROUTE_FLOW := $(ROOT)/components/mem_service/mem_service_expert_route_flow.c
@@ -137,6 +140,8 @@ MEM_SERVICE_PUBLIC_HEADERS := \
 	$(ROOT)/components/mem_service/mem_service.h \
 	$(ROOT)/components/mem_service/mem_service_core.h \
 	$(ROOT)/components/mem_service/mem_service_client.h \
+	$(ROOT)/components/mem_service/mem_service_provider.h \
+	$(ROOT)/components/mem_service/providers/mem_service_provider_roce.h \
 	$(ROOT)/components/mem_service/mem_service_wire.h \
 	$(ROOT)/components/mem_service/mem_service_wire_client.h \
 	$(ROOT)/components/mem_service/mem_service_wire_payload.h \
@@ -145,7 +150,11 @@ MEM_SERVICE_PUBLIC_HEADERS := \
 
 MEM_SERVICE_CLIENT_SDK_SRCS := \
 	$(ROOT)/components/mem_service/mem_service_client.c \
-	$(ROOT)/components/mem_service/mem_service_wire_client.c
+	$(ROOT)/components/mem_service/mem_service_wire_client.c \
+	$(ROOT)/components/mem_service/mem_service_provider.c
+
+MEM_SERVICE_PROVIDER_SDK_SRCS := \
+	$(ROOT)/components/mem_service/providers/mem_service_provider_roce.c
 
 MEM_SERVICE_CLIENT_EXAMPLES := \
 	examples/mem_service_serving_example.c \
@@ -161,7 +170,8 @@ MEM_SERVICE_CORE_SRCS := \
 	$(MEM_SERVICE_OBJECT_REFS) \
 	$(MEM_SERVICE_UB_SSD_GSVA_BACKEND) \
 	$(MEM_SERVICE_UB_SSD_GSVA_IO) \
-	$(MEM_SERVICE_RECORDS)
+	$(MEM_SERVICE_RECORDS) \
+	$(MEM_SERVICE_PROVIDER)
 
 MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	mem_service.c \
@@ -183,6 +193,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_UB_SSD_GSVA_BACKEND) \
 	$(MEM_SERVICE_UB_SSD_GSVA_IO) \
 	$(MEM_SERVICE_RECORDS) \
+	$(MEM_SERVICE_PROVIDER) \
 	$(MEM_SERVICE_PROFILE) \
 	$(MEM_SERVICE_DEEPSEEK_V4_FLASH) \
 	$(MEM_SERVICE_EXPERT_ROUTE_FLOW) \
@@ -199,7 +210,7 @@ MEM_SERVICE_QWEN3_ADAPTER_SRCS := \
 	$(MEM_SERVICE_QWEN3) \
 	$(LLM_INFER)
 
-.PHONY: all host-artifact-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify release-certification-verify install installed-sdk-example-smoke installed-sdk-pkgconfig-smoke installed-sdk-runtime-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
+.PHONY: all host-artifact-smoke roce-provider-smoke network-transport-block-smoke package-tarball package-tarball-smoke package-deb package-deb-smoke package-rpm package-rpm-smoke linux-ops-certification-smoke linux-ops-upgrade-rollback-smoke linux-ops-deployment-smoke remote-transport-evidence-verify remote-transport-certification-bundle remote-transport-certification-bundle-verify release-certification-verify install installed-sdk-example-smoke installed-sdk-pkgconfig-smoke installed-sdk-runtime-smoke install-smoke print-release-manifest print-package-manifest print-wire-schema print-admin-output-schema print-upgrade-rollback-policy print-ops-certification-policy print-alert-rules print-api-abi-policy print-compat-matrix print-compat-baseline-v1 print-compat-old-new-matrix clean
 
 all: linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3
 
@@ -215,8 +226,15 @@ linqu_mem_service_qwen3: $(MEM_SERVICE_QWEN3_ADAPTER_SRCS)
 linqu_mem_service_host: $(MEM_SERVICE_CORE_SRCS)
 	$(HOST_CC) $(HOST_CFLAGS) $(INCLUDES) $^ -lm -o $@
 
+linqu_mem_service_provider_roce: $(MEM_SERVICE_PROVIDER_ROCE_CLI) $(MEM_SERVICE_PROVIDER_ROCE) $(filter-out mem_service.c,$(MEM_SERVICE_CORE_SRCS))
+	$(HOST_CC) $(HOST_CFLAGS) $(INCLUDES) $^ -lrdmacm -libverbs -o $@
+
+roce-provider-smoke: linqu_mem_service_provider_roce
+	./linqu_mem_service_provider_roce protocol-fixtures
+
 host-artifact-smoke: linqu_mem_service_host
 	./linqu_mem_service_host --smoke
+	./linqu_mem_service_host provider-fixtures
 	./linqu_mem_service_host version
 	./linqu_mem_service_host version-fixtures
 	./linqu_mem_service_host release-fixtures
@@ -287,7 +305,9 @@ package-tarball-smoke: package-tarball
 	test -x $(PACKAGE_VERIFY_ROOT)/usr/libexec/lingqu/mem_service/linqu_mem_service_host
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/include/lingqu/mem_service/mem_service_client.h
+	test -f $(PACKAGE_VERIFY_ROOT)/usr/include/lingqu/mem_service/mem_service_provider_roce.h
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/src/lingqu/mem_service/mem_service_client.c
+	test -f $(PACKAGE_VERIFY_ROOT)/usr/src/lingqu/mem_service/mem_service_provider_roce.c
 	test -f $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/ops-certification-policy.txt
 	test -x $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_layout.sh
 	test -x $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/scripts/verify_mem_service_installed_sdk.sh
@@ -304,7 +324,9 @@ package-tarball-smoke: package-tarball
 	grep -q '^backend=snapshot+journal$$' $(PACKAGE_VERIFY_ROOT)/etc/lingqu/mem_service/mem_service.conf
 	grep -q '^prefix=/usr$$' $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
 	grep -q '^Cflags: -I$${includedir}$$' $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
-	grep -q '^sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c$$' $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
+	grep -q '^sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c $${sourcedir}/mem_service_provider.c$$' $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
+	grep -q '^payload_provider_roce_sources=$${sourcedir}/mem_service_provider_roce.c$$' $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
+	grep -q '^payload_provider_roce_libs=-lrdmacm -libverbs$$' $(PACKAGE_VERIFY_ROOT)/usr/lib/pkgconfig/lingqu-mem-service.pc
 	grep -q '^package_format=installed-layout-v1$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^artifact_format=tar$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
 	grep -q '^artifact_gate=package-tarball-smoke$$' $(PACKAGE_VERIFY_ROOT)/usr/share/lingqu/mem_service/package-manifest.txt
@@ -626,6 +648,7 @@ install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_S
 	cp linqu_mem_service_host $(INSTALL_HOSTDIR)/linqu_mem_service_host
 	cp $(MEM_SERVICE_PUBLIC_HEADERS) $(INSTALL_INCLUDEDIR)/
 	cp $(MEM_SERVICE_CLIENT_SDK_SRCS) $(INSTALL_SRCDIR)/
+	cp $(MEM_SERVICE_PROVIDER_SDK_SRCS) $(INSTALL_SRCDIR)/
 	cp $(MEM_SERVICE_CLIENT_EXAMPLES) $(INSTALL_EXAMPLEDIR)/
 	cp $(MEM_SERVICE_RELEASE_MANIFEST) $(INSTALL_DATADIR)/release-manifest.txt
 	cp $(MEM_SERVICE_PACKAGE_MANIFEST) $(INSTALL_DATADIR)/package-manifest.txt
@@ -658,12 +681,14 @@ install: $(MEM_SERVICE_RELEASE_MANIFEST) $(MEM_SERVICE_PACKAGE_MANIFEST) $(MEM_S
 	printf '%s\n' 'Version: $(MEM_SERVICE_RPM_VERSION)' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	printf '%s\n' 'Cflags: -I$${includedir}' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	printf '%s\n' 'Libs:' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
-	printf '%s\n' 'sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
+	printf '%s\n' 'sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c $${sourcedir}/mem_service_provider.c' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
+	printf '%s\n' 'payload_provider_roce_sources=$${sourcedir}/mem_service_provider_roce.c' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
+	printf '%s\n' 'payload_provider_roce_libs=-lrdmacm -libverbs' >> $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 
 installed-sdk-example-smoke: install
 	mkdir -p $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)
-	$(HOST_CC) $(HOST_CFLAGS) -I$(INSTALL_INCLUDEDIR) $(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c $(INSTALL_SRCDIR)/mem_service_client.c $(INSTALL_SRCDIR)/mem_service_wire_client.c -o $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example
-	$(HOST_CC) $(HOST_CFLAGS) -I$(INSTALL_INCLUDEDIR) $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c $(INSTALL_SRCDIR)/mem_service_client.c $(INSTALL_SRCDIR)/mem_service_wire_client.c -o $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example
+	$(HOST_CC) $(HOST_CFLAGS) -I$(INSTALL_INCLUDEDIR) $(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c $(INSTALL_SRCDIR)/mem_service_client.c $(INSTALL_SRCDIR)/mem_service_wire_client.c $(INSTALL_SRCDIR)/mem_service_provider.c -o $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example
+	$(HOST_CC) $(HOST_CFLAGS) -I$(INSTALL_INCLUDEDIR) $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c $(INSTALL_SRCDIR)/mem_service_client.c $(INSTALL_SRCDIR)/mem_service_wire_client.c $(INSTALL_SRCDIR)/mem_service_provider.c -o $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example
 	test -x $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_serving_example
 	test -x $(INSTALLED_SDK_EXAMPLE_SMOKE_DIR)/mem_service_pretraining_example
 
@@ -676,8 +701,12 @@ installed-sdk-pkgconfig-smoke: install
 	$(PKG_CONFIG) --define-prefix --exists lingqu-mem-service; \
 	cflags="$$($(PKG_CONFIG) --define-prefix --cflags lingqu-mem-service)"; \
 	sdk_sources="$$($(PKG_CONFIG) --define-prefix --variable=sdk_sources lingqu-mem-service)"; \
+	roce_sources="$$($(PKG_CONFIG) --define-prefix --variable=payload_provider_roce_sources lingqu-mem-service)"; \
+	roce_libs="$$($(PKG_CONFIG) --define-prefix --variable=payload_provider_roce_libs lingqu-mem-service)"; \
 	test -n "$$cflags"; \
 	test -n "$$sdk_sources"; \
+	test -f "$$roce_sources"; \
+	test "$$roce_libs" = "-lrdmacm -libverbs"; \
 	$(HOST_CC) $(HOST_CFLAGS) $$cflags $(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c $$sdk_sources -o $(INSTALLED_SDK_PKGCONFIG_SMOKE_DIR)/mem_service_serving_example; \
 	$(HOST_CC) $(HOST_CFLAGS) $$cflags $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c $$sdk_sources -o $(INSTALLED_SDK_PKGCONFIG_SMOKE_DIR)/mem_service_pretraining_example
 	test -x $(INSTALLED_SDK_PKGCONFIG_SMOKE_DIR)/mem_service_serving_example
@@ -738,12 +767,17 @@ install-smoke: install
 	test -f $(INSTALL_INCLUDEDIR)/mem_service_wire.h
 	test -f $(INSTALL_SRCDIR)/mem_service_client.c
 	test -f $(INSTALL_SRCDIR)/mem_service_wire_client.c
+	test -f $(INSTALL_SRCDIR)/mem_service_provider.c
+	test -f $(INSTALL_SRCDIR)/mem_service_provider_roce.c
+	test -f $(INSTALL_INCLUDEDIR)/mem_service_provider_roce.h
 	test -f $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	grep -q '^prefix=$(PREFIX)$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	grep -q '^includedir=$${prefix}/include/lingqu/mem_service$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	grep -q '^sourcedir=$${prefix}/src/lingqu/mem_service$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	grep -q '^Cflags: -I$${includedir}$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
-	grep -q '^sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
+	grep -q '^sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c $${sourcedir}/mem_service_provider.c$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
+	grep -q '^payload_provider_roce_sources=$${sourcedir}/mem_service_provider_roce.c$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
+	grep -q '^payload_provider_roce_libs=-lrdmacm -libverbs$$' $(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_serving_example.c
 	test -f $(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c
 	test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh
@@ -798,8 +832,8 @@ install-smoke: install
 	grep -q '^mem_service_release_manifest_version=1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_format=installed-layout-v1$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_manifest=share/lingqu/mem_service/package-manifest.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_len=9369$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^package_manifest_checksum=0xa4d2a97f$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_len=9579$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^package_manifest_checksum=0x073128f3$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^package_gate=package-fixtures$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -838,13 +872,13 @@ install-smoke: install
 	grep -q '^wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^wire_schema_manifest_checksum=0x14a081c9$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^admin_output_schema_len=6719$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^admin_output_schema_checksum=0x7a09d525$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^admin_output_schema_len=6925$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^admin_output_schema_checksum=0xef4c77f8$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_output_format=text-kv$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^admin_metric_prefix=lingqu_mem_service_$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_rollback_policy_len=2143$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^upgrade_rollback_policy_checksum=0x4315e596$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^upgrade_rollback_policy_checksum=0x096e86d0$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^upgrade_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^rollback_policy=current-version-only$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^old_server_runtime_binary=certified$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -892,7 +926,7 @@ install-smoke: install
 	grep -q '^pkgconfig=lib/pkgconfig/lingqu-mem-service.pc$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^pkgconfig_name=lingqu-mem-service$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^pkgconfig_cflags=-I$${includedir}$$' $(INSTALL_DATADIR)/release-manifest.txt
-	grep -q '^pkgconfig_sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^pkgconfig_sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c $${sourcedir}/mem_service_provider.c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix_len=1979$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^compat_matrix_checksum=0xe6d3e50c$$' $(INSTALL_DATADIR)/release-manifest.txt
@@ -998,6 +1032,7 @@ install-smoke: install
 	grep -q '^operation=audit_log:10$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^public_header=include/lingqu/mem_service/mem_service_client.h$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^client_source=src/lingqu/mem_service/mem_service_client.c$$' $(INSTALL_DATADIR)/release-manifest.txt
+	grep -q '^client_source=src/lingqu/mem_service/mem_service_provider.c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^example_source=share/lingqu/mem_service/examples/mem_service_serving_example.c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^example_source=share/lingqu/mem_service/examples/mem_service_pretraining_example.c$$' $(INSTALL_DATADIR)/release-manifest.txt
 	grep -q '^mem_service_wire_schema_manifest_version=1$$' $(INSTALL_DATADIR)/wire-schema.txt
@@ -1045,11 +1080,11 @@ install-smoke: install
 	grep -q '^rpm_package_payload=rpm-cpio+metadata$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^rpm_package_gate=package-rpm-smoke$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^rpm_package_runtime=requires-linux-rpm-toolchain$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^installed_file_count=46$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^installed_file_count=50$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^pkgconfig=lib/pkgconfig/lingqu-mem-service.pc$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^pkgconfig_name=lingqu-mem-service$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^pkgconfig_cflags=-I$${includedir}$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^pkgconfig_sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^pkgconfig_sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c $${sourcedir}/mem_service_provider.c$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^runtime_config=etc/lingqu/mem_service/mem_service.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^runtime_config_source=share/lingqu/mem_service/config/mem_service.runtime.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^host_runtime_config=etc/lingqu/mem_service/mem_service.host.conf$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1100,7 +1135,7 @@ install-smoke: install
 	grep -q '^encryption_policy_command=encryption-policy$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^encryption_policy_gate=encryption-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate_count=34$$' $(INSTALL_DATADIR)/package-manifest.txt
-	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x4315e596$$' $(INSTALL_DATADIR)/package-manifest.txt
+	grep -q '^contract=upgrade-rollback-policy path=share/lingqu/mem_service/upgrade-rollback-policy.txt checksum=0x096e86d0$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^contract=ops-certification-policy path=share/lingqu/mem_service/ops-certification-policy.txt' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=package-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
 	grep -q '^required_gate=version-fixtures$$' $(INSTALL_DATADIR)/package-manifest.txt
@@ -1222,4 +1257,4 @@ install-smoke: install
 	$(INSTALL_HOSTDIR)/linqu_mem_service_host release-readiness-fixtures
 
 clean:
-	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3 linqu_mem_service_host
+	rm -f linqu_mem_service linqu_mem_service_core linqu_mem_service_qwen3 linqu_mem_service_host linqu_mem_service_provider_roce

@@ -301,20 +301,22 @@ const char *mem_service_kvcache_state_name(enum mem_service_kvcache_state state)
 }
 
 int mem_service_init(struct mem_service *svc,
-                       bool shmem_ready,
-                       bool urma_ready,
-                       bool block_ready)
+                     bool control_plane_ready,
+                     bool provider_registry_ready,
+                     bool durable_ready)
 {
     if (!svc) {
         return -1;
     }
     memset(svc, 0, sizeof(*svc));
-    svc->shmem_ready = shmem_ready;
-    svc->urma_ready = urma_ready;
-    svc->block_ready = block_ready;
+    svc->control_plane_ready = control_plane_ready;
+    svc->provider_registry_ready = provider_registry_ready;
+    svc->durable_ready = durable_ready;
     svc->enforce_expected_context = true;
     svc->audit_next_sequence = 1U;
-    if (!svc->shmem_ready || !svc->urma_ready || !svc->block_ready) {
+    if (!svc->control_plane_ready || !svc->provider_registry_ready ||
+        !svc->durable_ready ||
+        mem_service_provider_registry_init(&svc->providers) != 0) {
         return -1;
     }
     return 0;

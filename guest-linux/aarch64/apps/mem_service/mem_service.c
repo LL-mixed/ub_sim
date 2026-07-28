@@ -34,11 +34,11 @@
 #define MEM_SERVICE_CONFIG_SCHEMA_VERSION 1U
 #define MEM_SERVICE_DEPLOYMENT_SMOKE_VERSION 1U
 #define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_VERSION 1U
-#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6719U
-#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6925U
+#define MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0xef4c77f8U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_VERSION 1U
 #define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2143U
-#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x4315e596U
+#define MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x096e86d0U
 #define MEM_SERVICE_ALERT_RULES_VERSION 1U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_LEN 2096U
 #define MEM_SERVICE_ALERT_RULES_EXPECTED_CHECKSUM 0x05a9245cU
@@ -50,9 +50,9 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9369U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4d2a97fU
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9579U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x073128f3U
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 50U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
@@ -75,6 +75,7 @@ static void usage(const char *argv0)
     printf("Usage: %s [--smoke] [--self-test]", argv0);
     printf(" [version] [version-fixtures]");
     printf(" [release-readiness [--ops-evidence-file <path> --remote-transport-evidence-file <path>]] [release-readiness-fixtures]");
+    printf(" [provider-status] [provider-fixtures]");
     printf(" [wire-fixtures] [wire-schema] [wire-schema-fixtures]");
     printf(" [store-fixtures] [journal-fixtures] [journal-compaction-fixtures] [journal-torn-recovery-fixtures] [config-fixtures]");
     printf(" [restore-policy-fixtures]");
@@ -2915,7 +2916,15 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n") != 0 ||
+                                "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c ${sourcedir}/mem_service_provider.c\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pkgconfig_payload_provider_roce_sources=${sourcedir}/mem_service_provider_roce.c\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3152,11 +3161,15 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=public_headers count=8\n") != 0 ||
+                                "file_class=public_headers count=10\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=client_sources count=2\n") != 0 ||
+                                "file_class=client_sources count=3\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "file_class=provider_sources count=1\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4948,7 +4961,13 @@ static int run_package_fixture_check(void)
         strstr(manifest, "pkgconfig_name=lingqu-mem-service\n") == NULL ||
         strstr(manifest, "pkgconfig_cflags=-I${includedir}\n") == NULL ||
         strstr(manifest,
-               "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n") ==
+               "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c ${sourcedir}/mem_service_provider.c\n") ==
+            NULL ||
+        strstr(manifest,
+               "pkgconfig_payload_provider_roce_sources=${sourcedir}/mem_service_provider_roce.c\n") ==
+            NULL ||
+        strstr(manifest,
+               "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs\n") ==
             NULL ||
         strstr(manifest,
                "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n") ==
@@ -5219,7 +5238,9 @@ static int run_release_manifest(void)
     printf("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc\n");
     printf("pkgconfig_name=lingqu-mem-service\n");
     printf("pkgconfig_cflags=-I${includedir}\n");
-    printf("pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c\n");
+    printf("pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c ${sourcedir}/mem_service_provider.c\n");
+    printf("pkgconfig_payload_provider_roce_sources=${sourcedir}/mem_service_provider_roce.c\n");
+    printf("pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs\n");
     printf("compat_matrix=share/lingqu/mem_service/compat-matrix.txt\n");
     printf("compat_matrix_len=%u\n", MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN);
     printf("compat_matrix_checksum=0x%08x\n",
@@ -5355,6 +5376,8 @@ static int run_release_manifest(void)
     printf("public_header=include/lingqu/mem_service/mem_service.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_core.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_client.h\n");
+    printf("public_header=include/lingqu/mem_service/mem_service_provider.h\n");
+    printf("public_header=include/lingqu/mem_service/mem_service_provider_roce.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_wire.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_wire_client.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_wire_payload.h\n");
@@ -5362,6 +5385,8 @@ static int run_release_manifest(void)
     printf("public_header=include/lingqu/mem_service/lingqu_object_service.h\n");
     printf("client_source=src/lingqu/mem_service/mem_service_client.c\n");
     printf("client_source=src/lingqu/mem_service/mem_service_wire_client.c\n");
+    printf("client_source=src/lingqu/mem_service/mem_service_provider.c\n");
+    printf("provider_source=src/lingqu/mem_service/mem_service_provider_roce.c\n");
     printf("example_source=share/lingqu/mem_service/examples/mem_service_serving_example.c\n");
     printf("example_source=share/lingqu/mem_service/examples/mem_service_pretraining_example.c\n");
     printf("operation=health:%u\n", MEM_SERVICE_WIRE_OP_HEALTH);
@@ -5474,7 +5499,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 46U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 50U ||
         MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 34U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
@@ -5522,7 +5547,8 @@ static int run_release_fixture_check(void)
         return 1;
     }
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
-           "public_headers=8 client_sources=2 examples=2 config_artifacts=6 "
+           "public_headers=10 client_sources=3 provider_sources=1 "
+           "examples=2 config_artifacts=6 "
            "host_artifacts=1 "
            "package_artifacts=4 "
            "pkgconfig_artifacts=1 "
@@ -7305,6 +7331,10 @@ static int render_admin_output_schema(char *schema, size_t schema_len, size_t *u
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
+                                "admin_command=provider-status operation=status response=text-kv\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
                                 "admin_command=list-records operation=list_records response=record-lines\n") != 0 ||
         append_wire_schema_line(schema,
                                 schema_len,
@@ -7349,15 +7379,27 @@ static int render_admin_output_schema(char *schema, size_t schema_len, size_t *u
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
-                                "status_field=shmem_ready type=u32\n") != 0 ||
+                                "status_field=control_plane_ready type=u32\n") != 0 ||
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
-                                "status_field=urma_ready type=u32\n") != 0 ||
+                                "status_field=provider_registry_ready type=u32\n") != 0 ||
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
-                                "status_field=block_ready type=u32\n") != 0 ||
+                                "status_field=durable_ready type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=data_plane_ready type=u32\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=provider_count type=u64\n") != 0 ||
+        append_wire_schema_line(schema,
+                                schema_len,
+                                &used,
+                                "status_field=provider_ready_count type=u64\n") != 0 ||
         append_wire_schema_line(schema,
                                 schema_len,
                                 &used,
@@ -9653,6 +9695,9 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "release-readiness-fixtures") == 0) {
         return run_release_readiness_fixture_check();
     }
+    if (strcmp(argv[1], "provider-fixtures") == 0) {
+        return mem_service_run_provider_fixture_check();
+    }
     if (strcmp(argv[1], "wire-fixtures") == 0) {
         return mem_service_run_wire_fixture_check();
     }
@@ -9853,6 +9898,13 @@ int main(int argc, char **argv)
                                           argv,
                                           MEM_SERVICE_WIRE_OP_STATUS,
                                           "status",
+                                          NULL);
+    }
+    if (strcmp(argv[1], "provider-status") == 0) {
+        return run_client_payload_command(argc,
+                                          argv,
+                                          MEM_SERVICE_WIRE_OP_STATUS,
+                                          "provider-status",
                                           NULL);
     }
     if (strcmp(argv[1], "list-records") == 0) {

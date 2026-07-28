@@ -6,6 +6,7 @@ cli_payload_separator=payload-newline-for-payload-commands
 admin_command=health operation=health response=payload_optional
 admin_command=ready operation=ready response=payload_optional
 admin_command=status operation=status response=text-kv
+admin_command=provider-status operation=status response=text-kv
 admin_command=list-records operation=list_records response=record-lines
 admin_command=metrics operation=metrics response=text-kv
 admin_command=metrics-export operation=metrics response=prometheus-text
@@ -17,9 +18,12 @@ admin_command=export-snapshot-to operation=export_snapshot_page response=local-f
 admin_command=restore-snapshot operation=restore_snapshot response=text-kv
 admin_command=restore-snapshot-page operation=restore_snapshot_page response=text-kv
 status_field=ready type=u32
-status_field=shmem_ready type=u32
-status_field=urma_ready type=u32
-status_field=block_ready type=u32
+status_field=control_plane_ready type=u32
+status_field=provider_registry_ready type=u32
+status_field=durable_ready type=u32
+status_field=data_plane_ready type=u32
+status_field=provider_count type=u64
+status_field=provider_ready_count type=u64
 status_field=record_count type=u64
 status_field=prefix_group_count type=u64
 status_field=prefix_entry_count type=u64

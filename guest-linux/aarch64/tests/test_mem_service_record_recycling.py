@@ -37,6 +37,8 @@ SERVICE_WIRE_CLIENT_C = SERVICE_DIR / "mem_service_wire_client.c"
 SERVICE_WIRE_CLIENT_H = SERVICE_DIR / "mem_service_wire_client.h"
 SERVICE_WIRE_PAYLOAD_H = SERVICE_DIR / "mem_service_wire_payload.h"
 SERVICE_WIRE_SCHEMA_H = SERVICE_DIR / "mem_service_wire_schema.h"
+SERVICE_PROVIDER_C = SERVICE_DIR / "mem_service_provider.c"
+SERVICE_PROVIDER_H = SERVICE_DIR / "mem_service_provider.h"
 SERVICE_DAEMON_RUNTIME_TEST = ROOT / "tests" / "test_mem_service_daemon_runtime.py"
 SERVICE_OBJECT_REFS_C = SERVICE_DIR / "mem_service_object_refs.c"
 SERVICE_OBJECT_REFS_H = SERVICE_DIR / "mem_service_object_refs.h"
@@ -178,6 +180,15 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'MEM_SERVICE_PROVIDER_SRC="$ROOT_DIR/components/mem_service/mem_service_provider.c"',
+            build_script,
+        )
+        self.assertIn(
+            'write_signature_line "mem_service_provider_src" '
+            '"$MEM_SERVICE_PROVIDER_SRC"',
+            build_script,
+        )
+        self.assertIn(
             'MEM_SERVICE_OBMM_OBJECTS_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_objects.c"',
             build_script,
         )
@@ -289,6 +300,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             '"$MEM_SERVICE_CLIENT_SRC" '
             '"$MEM_SERVICE_WIRE_CLIENT_SRC" '
             '"$MEM_SERVICE_METADATA_SRC" '
+            '"$MEM_SERVICE_PROVIDER_SRC" '
             '"$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" '
             '"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" '
             '"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" '
@@ -306,7 +318,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             '"$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" '
             '"$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" '
             '"$MEM_SERVICE_WIRE_CLIENT_SRC" '
-            '"$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" '
+            '"$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" '
+            '"$MEM_SERVICE_KEYS_SRC" '
             '"$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" '
             '"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" '
             '"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" '
@@ -324,7 +337,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             build_script,
         )
         self.assertIn(
-            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
+            '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"',
             build_script,
         )
         self.assertIn("linqu_mem_service", build_script)
@@ -567,14 +580,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x14a081c9U",
             cli_source,
         )
-        self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6719U", cli_source)
+        self.assertIn("MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6925U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U",
+            "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0xef4c77f8U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2143U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x4315e596U",
+            "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x096e86d0U",
             cli_source,
         )
         self.assertIn("MEM_SERVICE_OPS_CERTIFICATION_POLICY_EXPECTED_LEN 1118U", cli_source)
@@ -588,16 +601,16 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("run_remote_transport_generate_evidence", cli_source)
         self.assertIn("run_remote_transport_verify", cli_source)
         self.assertIn("MEM_SERVICE_RELEASE_VERSION \"0.1.0\"", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9369U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9579U", cli_source)
         self.assertIn(
-            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4d2a97fU",
+            "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x073128f3U",
             cli_source,
         )
         self.assertIn('strcmp(argv[1], "release-readiness")', cli_source)
         self.assertIn('strcmp(argv[1], "release-readiness-fixtures")', cli_source)
         self.assertIn("render_release_readiness", cli_source)
         self.assertIn("run_release_readiness_fixture_check", cli_source)
-        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 46U", cli_source)
+        self.assertIn("MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 50U", cli_source)
         self.assertIn(
             'MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"',
             cli_source,
@@ -769,6 +782,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("./linqu_mem_service_host typed-payload-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host restore-policy-fixtures", cli_makefile)
         self.assertIn("MEM_SERVICE_PUBLIC_HEADERS :=", cli_makefile)
+        self.assertIn("mem_service_provider.h", cli_makefile)
+        self.assertIn("$(MEM_SERVICE_PROVIDER)", cli_makefile)
         self.assertIn("MEM_SERVICE_CLIENT_SDK_SRCS :=", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_SCHEMA)", cli_makefile)
         self.assertIn("$(MEM_SERVICE_CONFIG_EXAMPLE)", cli_makefile)
@@ -863,14 +878,14 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         )
         self.assertIn("^metrics_export_format=prometheus-text$$", cli_makefile)
         self.assertIn("^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$", cli_makefile)
-        self.assertIn("^admin_output_schema_checksum=0x7a09d525$$", cli_makefile)
+        self.assertIn("^admin_output_schema_checksum=0xef4c77f8$$", cli_makefile)
         self.assertIn("^admin_output_format=text-kv$$", cli_makefile)
         self.assertIn("^admin_metric_prefix=lingqu_mem_service_$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$",
             cli_makefile,
         )
-        self.assertIn("^package_manifest_checksum=0xa4d2a97f$$", cli_makefile)
+        self.assertIn("^package_manifest_checksum=0x073128f3$$", cli_makefile)
         self.assertIn("./linqu_mem_service_host checkpoint-retention-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host payload-gc-fixtures", cli_makefile)
         self.assertIn("./linqu_mem_service_host record-retention-fixtures", cli_makefile)
@@ -952,7 +967,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             cli_makefile.count("| grep -q 'release-readiness --ops-evidence-file'"),
             8,
         )
-        self.assertIn("^upgrade_rollback_policy_checksum=0x4315e596$$", cli_makefile)
+        self.assertIn("^upgrade_rollback_policy_checksum=0x096e86d0$$", cli_makefile)
         self.assertIn(
             "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$",
             cli_makefile,
@@ -1149,7 +1164,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             release_manifest,
         )
         self.assertIn("admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt", release_manifest)
-        self.assertIn("admin_output_schema_checksum=0x7a09d525", release_manifest)
+        self.assertIn("admin_output_schema_checksum=0xef4c77f8", release_manifest)
         self.assertIn("admin_output_format=text-kv", release_manifest)
         self.assertIn("admin_metric_prefix=lingqu_mem_service_", release_manifest)
         self.assertIn(
@@ -1159,7 +1174,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("package_format=installed-layout-v1", release_manifest)
         self.assertIn("package_manifest=share/lingqu/mem_service/package-manifest.txt", release_manifest)
         self.assertIn("service_version=0.1.0", release_manifest)
-        self.assertIn("package_manifest_checksum=0xa4d2a97f", release_manifest)
+        self.assertIn("package_manifest_checksum=0x073128f3", release_manifest)
         self.assertIn(
             "release_readiness_evidence_verify=release-readiness --ops-evidence-file --remote-transport-evidence-file",
             release_manifest,
@@ -1271,7 +1286,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "linux_ops_upgrade_rollback_smoke=linux-ops-upgrade-rollback-smoke",
             release_manifest,
         )
-        self.assertIn("upgrade_rollback_policy_checksum=0x4315e596", release_manifest)
+        self.assertIn("upgrade_rollback_policy_checksum=0x096e86d0", release_manifest)
         self.assertIn(
             "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures",
             release_manifest,
@@ -1501,7 +1516,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "rpm_package_runtime=requires-linux-rpm-toolchain",
             package_manifest,
         )
-        self.assertIn("installed_file_count=46", package_manifest)
+        self.assertIn("installed_file_count=50", package_manifest)
         self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest)
         self.assertIn("pkgconfig_name=lingqu-mem-service", package_manifest)
         self.assertIn("pkgconfig_cflags=-I${includedir}", package_manifest)
@@ -1901,6 +1916,8 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertTrue(SERVICE_WIRE_CLIENT_H.exists())
         self.assertTrue(SERVICE_WIRE_PAYLOAD_H.exists())
         self.assertTrue(SERVICE_WIRE_SCHEMA_H.exists())
+        self.assertTrue(SERVICE_PROVIDER_C.exists())
+        self.assertTrue(SERVICE_PROVIDER_H.exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.c").exists())
         self.assertTrue((SERVICE_DIR / "mem_service_qwen3.h").exists())
         self.assertTrue((CLI_DIR / "admin-output-schema.txt").exists())
@@ -1921,6 +1938,25 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
         self.assertIn("operation=query_training_artifact:97", release_manifest)
         self.assertIn("status=internal:10", release_manifest)
         self.assertFalse((ROOT / "apps" / "mem_service_demo").exists())
+
+    def test_provider_contract_is_transport_neutral_and_fail_closed(self):
+        provider_header = SERVICE_PROVIDER_H.read_text()
+        provider_source = SERVICE_PROVIDER_C.read_text()
+        daemon_source = SERVICE_DAEMON_C.read_text()
+
+        for transport_name in ("roce", "rdma", "urma", "shmem", "tcp", "cuda"):
+            self.assertNotIn(transport_name, provider_header.lower())
+            self.assertNotIn(transport_name, provider_source.lower())
+        self.assertIn("struct mem_service_provider_ops", provider_header)
+        self.assertIn("register_region", provider_header)
+        self.assertIn("submit_transfer", provider_header)
+        self.assertIn("poll_completion", provider_header)
+        self.assertIn("mem_service_provider_registry_register", provider_source)
+        self.assertIn("bounds=fail-closed", provider_source)
+        self.assertIn("data_plane_ready", daemon_source)
+        self.assertNotIn("shmem_ready=", daemon_source)
+        self.assertNotIn("urma_ready=", daemon_source)
+        self.assertNotIn("block_ready=", daemon_source)
 
     def test_pretraining_worker_runtime_gate_covers_restart_and_conflict(self):
         daemon_runtime_test = SERVICE_DAEMON_RUNTIME_TEST.read_text()
@@ -2244,7 +2280,7 @@ class MemServiceRecordRecyclingTests(unittest.TestCase):
             "0x6454ba82U",
             "0x8d9812a7U",
             "0xde8843f2U",
-            "0x3f4609a1U",
+            "0xb491a239U",
             "0x3ae50a76U",
             "0x3fc9bd20U",
             "0xe54d9bffU",

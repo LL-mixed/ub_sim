@@ -34,3 +34,33 @@ Git history uses short imperative subjects such as `Add TCP transport benchmark 
 ## Security & Configuration Tips
 
 Do not commit model weights, kernel artifacts, SSH targets, secrets, or local absolute paths except documented examples. Use environment variables such as `AARCH64_LINUX_CC`, `BUSYBOX`, and `SIM_QWEN3_0_6B_WEIGHTS_PATH` for machine-specific configuration. Compiled guest apps and submodules are gitignored (e.g. `guest-linux/aarch64/apps/mem_service/linqu_mem_service*`, `guest-linux/aarch64/apps/obmm_*/obmm_*`, `apps/llm_infer/linqu_llm_infer`); build them rather than expecting them in-tree. `vendor/qemu_8.2.0_ub` and `guest-linux/kernel_ub` are git submodules — initialize with `git submodule update --init` on a fresh clone. `CLAUDE.md` is also gitignored; it is local environment notes only.
+
+## Memory Service Architecture Law
+
+`mem_service` is the repository's complete replacement for Mooncake. No
+deployment or serving integration may depend on Mooncake as a sidecar,
+fallback, transfer engine, store, or scheduler.
+
+The service core must remain transport-neutral:
+
+- Core headers, records, readiness, wire contracts, and placement policy must
+  not name RoCE, RDMA verbs, URMA, UB shared memory, TCP, CUDA, or a device CNA.
+- Transport-specific code must implement the provider contract outside the
+  core. The QEMU eight-node environment selects UB/URMA and shared-memory
+  providers; DGX deployments select a RoCE full-mesh provider.
+- Serving engines call one Memory Service SDK. DS4 and W5 must not select,
+  configure, or call a transport directly.
+- The control plane resolves object identity, placement, version, lease, and
+  lifecycle. Payloads move directly between provider endpoints; the control
+  plane must not proxy the payload.
+- Service readiness and provider readiness are separate. A control-plane
+  process may be ready with zero data providers, but it must report
+  `data_plane_ready=0`.
+- Every provider must pass the same registration, bounds, transfer,
+  completion, checksum, and fail-closed conformance suite.
+
+Provider-neutral contracts live in
+`guest-linux/aarch64/components/mem_service/`. Concrete provider
+implementations live under
+`guest-linux/aarch64/components/mem_service/providers/` and follow that
+directory's `README.md`.

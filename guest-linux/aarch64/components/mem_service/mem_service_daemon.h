@@ -24,6 +24,13 @@ struct mem_service_daemon_limits {
     uint32_t max_retained_record_tenant;
 };
 
+struct mem_service_provider_registry;
+
+struct mem_service_daemon_runtime {
+    const struct mem_service_daemon_limits *limits;
+    const struct mem_service_provider_registry *providers;
+};
+
 int mem_service_run_unix_daemon(const char *listen_spec);
 int mem_service_run_unix_daemon_with_store(const char *listen_spec, const char *store_path);
 int mem_service_run_unix_daemon_with_store_and_metrics(const char *listen_spec,
@@ -40,6 +47,12 @@ int mem_service_run_unix_daemon_with_store_metrics_catalog_and_limits(
     const char *metrics_listen_spec,
     const char *storage_root,
     const struct mem_service_daemon_limits *limits);
+int mem_service_run_unix_daemon_with_runtime(
+    const char *listen_spec,
+    const char *store_path,
+    const char *metrics_listen_spec,
+    const char *storage_root,
+    const struct mem_service_daemon_runtime *runtime);
 int mem_service_run_wire_fixture_check(void);
 int mem_service_run_store_fixture_check(void);
 int mem_service_run_journal_fixture_check(void);

@@ -132,6 +132,7 @@ class MemServiceDaemonRuntimeTests(unittest.TestCase):
             str(SERVICE_DIR / "mem_service_client.c"),
             str(SERVICE_DIR / "mem_service_wire_client.c"),
             str(SERVICE_DIR / "mem_service_metadata.c"),
+            str(SERVICE_DIR / "mem_service_provider.c"),
             str(SERVICE_DIR / "mem_service_keys.c"),
             str(SERVICE_DIR / "mem_service_object_refs.c"),
             str(SERVICE_DIR / "mem_service_ub_ssd_gsva_backend.c"),
@@ -362,6 +363,120 @@ class MemServiceDaemonRuntimeTests(unittest.TestCase):
             str(self.client_binary),
         ]
         subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+
+    def _compile_provider_daemon_binary(self) -> Path:
+        source = self.root / "mem_service_provider_daemon.c"
+        binary = self.root / "mem_service_provider_daemon"
+
+        source.write_text(
+            r'''
+#include <stdint.h>
+#include <string.h>
+
+#include "components/mem_service/mem_service_daemon.h"
+#include "components/mem_service/mem_service_provider.h"
+
+static int fixture_probe(
+    void *context,
+    enum mem_service_provider_state *state_out)
+{
+    if (context == 0 || state_out == 0) {
+        return -1;
+    }
+    *state_out = MEM_SERVICE_PROVIDER_STATE_READY;
+    return 0;
+}
+
+static int fixture_submit(
+    void *context,
+    const struct mem_service_transfer_request *request,
+    uint64_t *completion_id_out)
+{
+    uint64_t *next_id = context;
+
+    if (next_id == 0 || request == 0 || completion_id_out == 0) {
+        return -1;
+    }
+    *next_id += 1;
+    *completion_id_out = *next_id;
+    return 0;
+}
+
+static int fixture_poll(
+    void *context,
+    uint64_t completion_id,
+    struct mem_service_transfer_completion *completion_out)
+{
+    uint64_t *next_id = context;
+
+    if (next_id == 0 || completion_out == 0 ||
+        completion_id == 0 || completion_id != *next_id) {
+        return -1;
+    }
+    memset(completion_out, 0, sizeof(*completion_out));
+    completion_out->id = completion_id;
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    static const struct mem_service_provider_ops ops = {
+        .probe = fixture_probe,
+        .submit_transfer = fixture_submit,
+        .poll_completion = fixture_poll,
+    };
+    struct mem_service_provider_registry providers;
+    struct mem_service_provider_registration registration;
+    struct mem_service_daemon_runtime runtime;
+    uint64_t next_id = 0;
+
+    if (argc != 2 ||
+        mem_service_provider_registry_init(&providers) != 0) {
+        return 2;
+    }
+    memset(&registration, 0, sizeof(registration));
+    registration.name = "fixture";
+    registration.instance = "injected";
+    registration.capabilities = MEM_SERVICE_PROVIDER_CAP_PEER_TRANSFER;
+    registration.ops = &ops;
+    registration.context = &next_id;
+    if (mem_service_provider_registry_register(
+            &providers, &registration) != 0) {
+        return 1;
+    }
+    memset(&runtime, 0, sizeof(runtime));
+    runtime.providers = &providers;
+    return mem_service_run_unix_daemon_with_runtime(
+        argv[1], 0, 0, 0, &runtime);
+}
+'''
+        )
+        cmd = [
+            "cc",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            f"-I{ROOT}",
+            f"-I{ROOT.parent}",
+            f"-I{ROOT / 'libs' / 'obmm_queue'}",
+            f"-I{ROOT / 'apps' / 'obmm_queue'}",
+            str(source),
+            str(SERVICE_DIR / "mem_service_daemon.c"),
+            str(SERVICE_DIR / "mem_service_client.c"),
+            str(SERVICE_DIR / "mem_service_wire_client.c"),
+            str(SERVICE_DIR / "mem_service_metadata.c"),
+            str(SERVICE_DIR / "mem_service_provider.c"),
+            str(SERVICE_DIR / "mem_service_keys.c"),
+            str(SERVICE_DIR / "mem_service_object_refs.c"),
+            str(SERVICE_DIR / "mem_service_ub_ssd_gsva_backend.c"),
+            str(SERVICE_DIR / "mem_service_ub_ssd_gsva_io.c"),
+            str(SERVICE_DIR / "mem_service_records.c"),
+            "-lm",
+            "-o",
+            str(binary),
+        ]
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+        return binary
 
     def _compile_sdk_example(self, source_name: str, binary_name: str) -> Path:
         binary = self.root / binary_name
@@ -1046,6 +1161,70 @@ int main(int argc, char **argv)
             time.sleep(0.05)
         self._stop_server(proc)
         self.fail("mem_service daemon did not become ready")
+
+    def test_provider_registry_fixture_and_neutral_readiness(self):
+        fixture = self._run_client("provider-fixtures")
+        self.assertEqual(fixture.returncode, 0, fixture.stderr + fixture.stdout)
+        self.assertIn("status=ok", fixture.stdout)
+        self.assertIn("all_required=fail-closed", fixture.stdout)
+        self.assertIn("bounds=fail-closed", fixture.stdout)
+        self.assertIn("sdk=ok", fixture.stdout)
+        self.assertIn("descriptor_wire=fail-closed", fixture.stdout)
+
+        proc = self._start_server()
+        try:
+            status = self._run_client(
+                "provider-status",
+                "--connect",
+                f"unix:{self.socket}",
+            )
+            self.assertEqual(status.returncode, 0, status.stderr + status.stdout)
+            self.assertIn("control_plane_ready=1", status.stdout)
+            self.assertIn("provider_registry_ready=1", status.stdout)
+            self.assertIn("durable_ready=1", status.stdout)
+            self.assertIn("data_plane_ready=0", status.stdout)
+            self.assertIn("provider_count=0", status.stdout)
+            self.assertIn("provider_ready_count=0", status.stdout)
+            self.assertNotIn("shmem_ready=", status.stdout)
+            self.assertNotIn("urma_ready=", status.stdout)
+            self.assertNotIn("block_ready=", status.stdout)
+        finally:
+            self._stop_server(proc)
+
+    def test_daemon_runtime_accepts_injected_ready_provider_registry(self):
+        provider_daemon = self._compile_provider_daemon_binary()
+        proc = subprocess.Popen(
+            [str(provider_daemon), f"unix:{self.socket}"],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    stdout, stderr = proc.communicate(timeout=1)
+                    self.fail(
+                        "provider daemon exited "
+                        f"rc={proc.returncode}\nstdout={stdout}\nstderr={stderr}"
+                    )
+                status = self._run_client(
+                    "provider-status",
+                    "--connect",
+                    f"unix:{self.socket}",
+                )
+                if status.returncode == 0:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("provider daemon did not become ready")
+
+            self.assertIn("data_plane_ready=1", status.stdout)
+            self.assertIn("provider_count=1", status.stdout)
+            self.assertIn("provider_ready_count=1", status.stdout)
+        finally:
+            self._stop_server(proc)
 
     def test_daemon_rejects_non_loopback_metrics_listener(self):
         metrics_port = self._free_tcp_port()
@@ -1780,8 +1959,9 @@ int main(int argc, char **argv)
         fixtures = self._run_client("release-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("public_headers=8", fixtures.stdout)
-        self.assertIn("client_sources=2", fixtures.stdout)
+        self.assertIn("public_headers=10", fixtures.stdout)
+        self.assertIn("client_sources=3", fixtures.stdout)
+        self.assertIn("provider_sources=1", fixtures.stdout)
         self.assertIn("examples=2", fixtures.stdout)
         self.assertIn("compat_artifacts=3", fixtures.stdout)
         self.assertIn("operations=23", fixtures.stdout)
@@ -1807,10 +1987,10 @@ int main(int argc, char **argv)
         self.assertIn("upgrade_rollback_runtime_smokes=1", fixtures.stdout)
         self.assertIn("api_abi_policy_len=856", fixtures.stdout)
         self.assertIn("api_abi_policy_checksum=0xd0cc1392", fixtures.stdout)
-        self.assertIn("admin_output_schema_len=6719", fixtures.stdout)
-        self.assertIn("admin_output_schema_checksum=0x7a09d525", fixtures.stdout)
+        self.assertIn("admin_output_schema_len=6925", fixtures.stdout)
+        self.assertIn("admin_output_schema_checksum=0xef4c77f8", fixtures.stdout)
         self.assertIn("upgrade_rollback_policy_len=2143", fixtures.stdout)
-        self.assertIn("upgrade_rollback_policy_checksum=0x4315e596", fixtures.stdout)
+        self.assertIn("upgrade_rollback_policy_checksum=0x096e86d0", fixtures.stdout)
         self.assertIn("alert_rules_len=2096", fixtures.stdout)
         self.assertIn("alert_rules_checksum=0x05a9245c", fixtures.stdout)
         self.assertIn("ops_certification_policies=1", fixtures.stdout)
@@ -1824,8 +2004,8 @@ int main(int argc, char **argv)
         self.assertIn("retention_smokes=1", fixtures.stdout)
         self.assertIn("payload_gc_smokes=1", fixtures.stdout)
         self.assertIn("record_retention_smokes=1", fixtures.stdout)
-        self.assertIn("package_manifest_len=9369", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xa4d2a97f", fixtures.stdout)
+        self.assertIn("package_manifest_len=9579", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x073128f3", fixtures.stdout)
         self.assertIn("metrics_http_listeners=1", fixtures.stdout)
         self.assertIn("metrics_scrape_paths=1", fixtures.stdout)
         self.assertIn("compat_runtime_smokes=1", fixtures.stdout)
@@ -1850,8 +2030,8 @@ int main(int argc, char **argv)
         self.assertIn("wire_version=1", version.stdout)
         self.assertIn("wire_schema_manifest_checksum=0x14a081c9", version.stdout)
         self.assertIn("api_abi_policy_checksum=0xd0cc1392", version.stdout)
-        self.assertIn("package_manifest_len=9369", version.stdout)
-        self.assertIn("package_manifest_checksum=0xa4d2a97f", version.stdout)
+        self.assertIn("package_manifest_len=9579", version.stdout)
+        self.assertIn("package_manifest_checksum=0x073128f3", version.stdout)
         self.assertIn("release_manifest_command=release-manifest", version.stdout)
         self.assertIn("package_manifest_command=package-manifest", version.stdout)
         self.assertIn("config_security_gate=config-fixtures", version.stdout)
@@ -1861,16 +2041,16 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("service_version=0.1.0", fixtures.stdout)
-        self.assertIn("package_manifest_len=9369", fixtures.stdout)
-        self.assertIn("package_manifest_checksum=0xa4d2a97f", fixtures.stdout)
+        self.assertIn("package_manifest_len=9579", fixtures.stdout)
+        self.assertIn("package_manifest_checksum=0x073128f3", fixtures.stdout)
 
     def test_release_readiness_cli_reports_external_certification_blockers(self):
         readiness = self._run_client("release-readiness")
         self.assertEqual(readiness.returncode, 0, readiness.stderr + readiness.stdout)
         self.assertIn("mem_service_release_readiness_version=1", readiness.stdout)
         self.assertIn("readiness_contract=text-kv", readiness.stdout)
-        self.assertIn("package_manifest_len=9369", readiness.stdout)
-        self.assertIn("package_manifest_checksum=0xa4d2a97f", readiness.stdout)
+        self.assertIn("package_manifest_len=9579", readiness.stdout)
+        self.assertIn("package_manifest_checksum=0x073128f3", readiness.stdout)
         self.assertIn(
             "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
             readiness.stdout,
@@ -1952,7 +2132,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xa4d2a97f\n"
+            "package_manifest_checksum=0x073128f3\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -1967,7 +2147,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xa4d2a97f\n"
+            "package_manifest_checksum=0x073128f3\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -2003,7 +2183,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xa4d2a97f\n"
+            "package_manifest_checksum=0x073128f3\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -2018,7 +2198,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xa4d2a97f\n"
+            "package_manifest_checksum=0x073128f3\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -2111,9 +2291,9 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("package_format=installed-layout-v1", fixtures.stdout)
-        self.assertIn("manifest_len=9369", fixtures.stdout)
-        self.assertIn("manifest_checksum=0xa4d2a97f", fixtures.stdout)
-        self.assertIn("installed_files=46", fixtures.stdout)
+        self.assertIn("manifest_len=9579", fixtures.stdout)
+        self.assertIn("manifest_checksum=0x073128f3", fixtures.stdout)
+        self.assertIn("installed_files=50", fixtures.stdout)
         self.assertIn("required_gates=34", fixtures.stdout)
 
         manifest = self._run_client("package-manifest")
@@ -2491,7 +2671,7 @@ int main(int argc, char **argv)
             "evidence_os=linux\n"
             "evidence_init=systemd\n"
             "ops_certification_policy_checksum=0xe77c644b\n"
-            "package_manifest_checksum=0xa4d2a97f\n"
+            "package_manifest_checksum=0x073128f3\n"
             "linux_systemd_service_smoke=pass\n"
             "linux_systemd_host_service_smoke=pass\n"
             "prometheus_scrape_smoke=pass\n"
@@ -2537,7 +2717,7 @@ int main(int argc, char **argv)
             generated.stdout,
         )
         self.assertIn("ops_certification_policy_checksum=0xe77c644b", generated.stdout)
-        self.assertIn("package_manifest_checksum=0xa4d2a97f", generated.stdout)
+        self.assertIn("package_manifest_checksum=0x073128f3", generated.stdout)
         self.assertIn("rpm_package_smoke=fail", generated.stdout)
 
         with tempfile.TemporaryDirectory(prefix="msvc_ops_probe_", dir=str(_tmp_parent())) as tmp:
@@ -2579,8 +2759,8 @@ int main(int argc, char **argv)
         fixtures = self._run_client("admin-output-fixtures")
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
-        self.assertIn("schema_len=6719", fixtures.stdout)
-        self.assertIn("schema_checksum=0x7a09d525", fixtures.stdout)
+        self.assertIn("schema_len=6925", fixtures.stdout)
+        self.assertIn("schema_checksum=0xef4c77f8", fixtures.stdout)
         self.assertIn("prometheus_prefix=lingqu_mem_service_", fixtures.stdout)
 
         schema = self._run_client("admin-output-schema")
@@ -2592,7 +2772,7 @@ int main(int argc, char **argv)
         self.assertEqual(fixtures.returncode, 0, fixtures.stderr + fixtures.stdout)
         self.assertIn("status=ok", fixtures.stdout)
         self.assertIn("policy_len=2143", fixtures.stdout)
-        self.assertIn("policy_checksum=0x4315e596", fixtures.stdout)
+        self.assertIn("policy_checksum=0x096e86d0", fixtures.stdout)
         self.assertIn("required_gates=19", fixtures.stdout)
         self.assertIn("upgrade_policy=current-version-only", fixtures.stdout)
         self.assertIn("rollback_policy=current-version-only", fixtures.stdout)
@@ -2737,7 +2917,7 @@ int main(int argc, char **argv)
             "transport_backend=transport-tcp-block-v1\n"
             "transport_protocol=tcp-ipv4\n"
             "transport_topology=cross-host\n"
-            "package_manifest_checksum=0xa4d2a97f\n"
+            "package_manifest_checksum=0x073128f3\n"
             "source_address_non_loopback=pass\n"
             "payload_block_round_trip=pass\n"
             "payload_checksum_validation=pass\n"
@@ -4294,7 +4474,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 manifest.read_text(),
             )
             self.assertIn("package_format=installed-layout-v1", manifest.read_text())
-            self.assertIn("package_manifest_checksum=0xa4d2a97f", manifest.read_text())
+            self.assertIn("package_manifest_checksum=0x073128f3", manifest.read_text())
             self.assertIn(
                 "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight",
                 manifest.read_text(),
@@ -4649,7 +4829,7 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
                 "rpm_package_runtime=requires-linux-rpm-toolchain",
                 package_manifest.read_text(),
             )
-            self.assertIn("installed_file_count=46", package_manifest.read_text())
+            self.assertIn("installed_file_count=50", package_manifest.read_text())
             self.assertIn("pkgconfig=lib/pkgconfig/lingqu-mem-service.pc", package_manifest.read_text())
             self.assertIn("pkgconfig_name=lingqu-mem-service", package_manifest.read_text())
             self.assertIn("pkgconfig_cflags=-I${includedir}", package_manifest.read_text())
@@ -4788,10 +4968,10 @@ class MemServiceReleaseInstallTests(unittest.TestCase):
             )
             self.assertIn("cross_version_upgrade=certified", package_manifest.read_text())
             self.assertIn("wire_schema_manifest_checksum=0x14a081c9", manifest.read_text())
-            self.assertIn("admin_output_schema_checksum=0x7a09d525", manifest.read_text())
+            self.assertIn("admin_output_schema_checksum=0xef4c77f8", manifest.read_text())
             self.assertIn("admin_output_format=text-kv", manifest.read_text())
             self.assertIn("admin_metric_prefix=lingqu_mem_service_", manifest.read_text())
-            self.assertIn("upgrade_rollback_policy_checksum=0x4315e596", manifest.read_text())
+            self.assertIn("upgrade_rollback_policy_checksum=0x096e86d0", manifest.read_text())
             self.assertIn("upgrade_policy=current-version-only", manifest.read_text())
             self.assertIn("rollback_policy=current-version-only", manifest.read_text())
             self.assertIn("old_server_runtime_binary=certified", manifest.read_text())

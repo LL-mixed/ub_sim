@@ -316,6 +316,9 @@ def test_app_build_matrix_runner_matches_app_inventory():
 def test_initramfs_mem_service_build_includes_ub_ssd_gsva_backend_sources():
     builder = (ROOT / "scripts" / "build_initramfs.sh").read_text()
 
+    assert 'MEM_SERVICE_PROVIDER_SRC="$ROOT_DIR/components/mem_service/mem_service_provider.c"' in builder
+    assert 'write_signature_line "mem_service_provider_src" "$MEM_SERVICE_PROVIDER_SRC"' in builder
+    assert builder.count('"$MEM_SERVICE_PROVIDER_SRC"') >= 5
     assert 'MEM_SERVICE_GSVA_ACCESS_HDR="$ROOT_DIR/components/mem_service/mem_service_gsva_access.h"' in builder
     assert 'MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_backend.c"' in builder
     assert 'MEM_SERVICE_UB_SSD_GSVA_IO_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_io.c"' in builder
@@ -329,6 +332,11 @@ def test_initramfs_mem_service_build_includes_ub_ssd_gsva_backend_sources():
 def test_serving_control_app_links_ub_ssd_gsva_backend_sources():
     makefile = (ROOT / "apps" / "serving_control" / "Makefile").read_text()
 
+    assert (
+        "MEM_SERVICE_PROVIDER := "
+        "$(ROOT)/components/mem_service/mem_service_provider.c"
+    ) in makefile
+    assert "$(MEM_SERVICE_PROVIDER)" in makefile
     assert (
         "MEM_SERVICE_UB_SSD_GSVA_BACKEND := "
         "$(ROOT)/components/mem_service/mem_service_ub_ssd_gsva_backend.c"
@@ -1483,6 +1491,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_CLUSTER_OBSERVE_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_observe.c"' in build_script
     assert 'MEM_SERVICE_OBMM_OBJECT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_object_flow.c"' in build_script
     assert 'MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"' in build_script
+    assert 'MEM_SERVICE_PROVIDER_SRC="$ROOT_DIR/components/mem_service/mem_service_provider.c"' in build_script
     assert 'MEM_SERVICE_DAEMON_SRC="$ROOT_DIR/components/mem_service/mem_service_daemon.c"' in build_script
     assert 'MEM_SERVICE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_client.c"' in build_script
     assert 'MEM_SERVICE_WIRE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_wire_client.c"' in build_script
@@ -1506,10 +1515,10 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"' in build_script
     assert 'MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"' in build_script
     assert 'MEM_SERVICE_QWEN3_CLI_BIN="$OUT_DIR/linqu_mem_service_qwen3"' in build_script
-    assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
-    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
+    assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
+    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
     assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in build_script
-    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"' in build_script
+    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"' in build_script
     assert "Components do not install guest binaries directly" in components_readme
     assert "standalone demo" not in readme
     assert "linqu_mem_service" in build_script
@@ -1688,6 +1697,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_CLIENT_SDK_SRCS :=" in app_makefile
     assert "$(ROOT)/components/mem_service/mem_service_client.c" in app_makefile
     assert "$(ROOT)/components/mem_service/mem_service_wire_client.c" in app_makefile
+    assert "$(ROOT)/components/mem_service/mem_service_provider.c" in app_makefile
+    assert "MEM_SERVICE_PROVIDER_SDK_SRCS :=" in app_makefile
+    assert (
+        "$(ROOT)/components/mem_service/providers/mem_service_provider_roce.c"
+        in app_makefile
+    )
     assert "$(MEM_SERVICE_CONFIG_SCHEMA)" in app_makefile
     assert "$(MEM_SERVICE_CONFIG_EXAMPLE)" in app_makefile
     assert "$(MEM_SERVICE_CONFIG_RUNTIME)" in app_makefile
@@ -1703,7 +1718,17 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "INSTALL_SCRIPTSDIR := $(INSTALL_DATADIR)/scripts" in app_makefile
     assert "INSTALL_PKGCONFIGDIR := $(DESTDIR)$(PREFIX)/lib/pkgconfig" in app_makefile
     assert "$(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)" in app_makefile
-    assert "sdk_sources=$${sourcedir}/mem_service_client.c $${sourcedir}/mem_service_wire_client.c" in app_makefile
+    assert (
+        "sdk_sources=$${sourcedir}/mem_service_client.c "
+        "$${sourcedir}/mem_service_wire_client.c "
+        "$${sourcedir}/mem_service_provider.c"
+    ) in app_makefile
+    assert (
+        "payload_provider_roce_sources="
+        "$${sourcedir}/mem_service_provider_roce.c"
+        in app_makefile
+    )
+    assert "payload_provider_roce_libs=-lrdmacm -libverbs" in app_makefile
     assert "cp $(MEM_SERVICE_RELEASE_SCRIPTS) $(INSTALL_SCRIPTSDIR)/" in app_makefile
     assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_layout.sh" in app_makefile
     assert "test -x $(INSTALL_SCRIPTSDIR)/verify_mem_service_installed_sdk.sh" in app_makefile
@@ -1739,13 +1764,15 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "lib/pkgconfig/lingqu-mem-service.pc" in verifier
     assert "^file_class=pkgconfig count=1$" in verifier
     assert "^sdk_sources=[$][{]sourcedir[}]/mem_service_client[.]c" in verifier
+    assert "^payload_provider_roce_sources=[$][{]sourcedir[}]" in verifier
+    assert "^payload_provider_roce_libs=-lrdmacm -libverbs$" in verifier
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$" in app_makefile
-    assert "^admin_output_schema_checksum=0x7a09d525$$" in app_makefile
+    assert "^admin_output_schema_checksum=0xef4c77f8$$" in app_makefile
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xa4d2a97f$$" in app_makefile
+    assert "^package_manifest_checksum=0x073128f3$$" in app_makefile
     assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host checkpoint-retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host payload-gc-fixtures" in app_makefile
@@ -1761,6 +1788,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "$(INSTALL_EXAMPLEDIR)/mem_service_pretraining_example.c" in app_makefile
     assert "$(INSTALL_SRCDIR)/mem_service_client.c" in app_makefile
     assert "$(INSTALL_SRCDIR)/mem_service_wire_client.c" in app_makefile
+    assert "$(INSTALL_SRCDIR)/mem_service_provider.c" in app_makefile
+    assert "$(INSTALL_SRCDIR)/mem_service_provider_roce.c" in app_makefile
     assert "$(INSTALL_PKGCONFIGDIR)/$(MEM_SERVICE_PKGCONFIG_NAME)" in app_makefile
     assert "^installed_sdk_example_smoke=installed-sdk-example-smoke$$" in app_makefile
     assert "^release_readiness_command=release-readiness$$" in app_makefile
@@ -1780,7 +1809,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
         in app_makefile
     )
     assert "^package_gate=package-fixtures$$" in app_makefile
-    assert "^upgrade_rollback_policy_checksum=0x4315e596$$" in app_makefile
+    assert "^upgrade_rollback_policy_checksum=0x096e86d0$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
     assert "^compat_runtime_gate=compat-runtime-fixtures$$" in app_makefile
     assert "^serving_fail_closed_matrix=certified$$" in app_makefile
@@ -1990,12 +2019,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x14a081c9U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 856U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0xd0cc1392U" in app_source
-    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6719U" in app_source
-    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x7a09d525U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6925U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0xef4c77f8U" in app_source
     assert "render_admin_output_schema" in app_source
     assert "run_admin_output_fixture_check" in app_source
     assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2143U" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x4315e596U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x096e86d0U" in app_source
     assert "render_upgrade_rollback_policy" in app_source
     assert "run_upgrade_rollback_fixture_check" in app_source
     assert "mem_service_run_upgrade_rollback_runtime_fixture_check" in app_source
@@ -2018,8 +2047,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9369U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xa4d2a97fU" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9579U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x073128f3U" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -2097,7 +2126,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0xa4d2a97f" in release_manifest
+    assert "package_manifest_checksum=0x073128f3" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -2162,7 +2191,17 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "pkgconfig_cflags=-I${includedir}" in release_manifest
     assert (
         "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c "
-        "${sourcedir}/mem_service_wire_client.c"
+        "${sourcedir}/mem_service_wire_client.c "
+        "${sourcedir}/mem_service_provider.c"
+        in release_manifest
+    )
+    assert (
+        "pkgconfig_payload_provider_roce_sources="
+        "${sourcedir}/mem_service_provider_roce.c"
+        in release_manifest
+    )
+    assert (
+        "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs"
         in release_manifest
     )
     assert (
@@ -2198,7 +2237,17 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert "host_daemon_artifact_smoke=host-artifact-smoke" in release_manifest
     assert "public_header=include/lingqu/mem_service/mem_service_client.h" in release_manifest
+    assert "public_header=include/lingqu/mem_service/mem_service_provider.h" in release_manifest
+    assert (
+        "public_header=include/lingqu/mem_service/mem_service_provider_roce.h"
+        in release_manifest
+    )
     assert "client_source=src/lingqu/mem_service/mem_service_client.c" in release_manifest
+    assert "client_source=src/lingqu/mem_service/mem_service_provider.c" in release_manifest
+    assert (
+        "provider_source=src/lingqu/mem_service/mem_service_provider_roce.c"
+        in release_manifest
+    )
     assert (
         "example_source=share/lingqu/mem_service/examples/"
         "mem_service_serving_example.c"
@@ -2209,11 +2258,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
     assert "admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt" in release_manifest
-    assert "admin_output_schema_checksum=0x7a09d525" in release_manifest
+    assert "admin_output_schema_checksum=0xef4c77f8" in release_manifest
     assert "admin_output_format=text-kv" in release_manifest
     assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0x4315e596" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0x096e86d0" in release_manifest
     assert "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures" in release_manifest
     assert "compat_runtime_gate=compat-runtime-fixtures" in release_manifest
     assert "serving_fail_closed_matrix=certified" in release_manifest
@@ -2296,12 +2345,12 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "certification_limit=none" in compat_old_new
     assert "wire_schema_manifest_len=12456" in release_manifest
     assert "wire_schema_manifest_checksum=0x14a081c9" in release_manifest
-    assert "admin_output_schema_len=6719" in release_manifest
-    assert "admin_output_schema_checksum=0x7a09d525" in release_manifest
+    assert "admin_output_schema_len=6925" in release_manifest
+    assert "admin_output_schema_checksum=0xef4c77f8" in release_manifest
     assert "upgrade_rollback_policy_len=2143" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0x4315e596" in release_manifest
-    assert "package_manifest_len=9369" in release_manifest
-    assert "package_manifest_checksum=0xa4d2a97f" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0x096e86d0" in release_manifest
+    assert "package_manifest_len=9579" in release_manifest
+    assert "package_manifest_checksum=0x073128f3" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2505,15 +2554,27 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "rpm_package_payload=rpm-cpio+metadata" in package_manifest
     assert "rpm_package_gate=package-rpm-smoke" in package_manifest
     assert "rpm_package_runtime=requires-linux-rpm-toolchain" in package_manifest
-    assert "installed_file_count=46" in package_manifest
+    assert "installed_file_count=50" in package_manifest
     assert "pkgconfig=lib/pkgconfig/lingqu-mem-service.pc" in package_manifest
     assert "pkgconfig_name=lingqu-mem-service" in package_manifest
     assert "pkgconfig_cflags=-I${includedir}" in package_manifest
     assert (
         "pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c "
-        "${sourcedir}/mem_service_wire_client.c"
+        "${sourcedir}/mem_service_wire_client.c "
+        "${sourcedir}/mem_service_provider.c"
         in package_manifest
     )
+    assert (
+        "pkgconfig_payload_provider_roce_sources="
+        "${sourcedir}/mem_service_provider_roce.c"
+        in package_manifest
+    )
+    assert (
+        "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs"
+        in package_manifest
+    )
+    assert "file_class=public_headers count=10" in package_manifest
+    assert "file_class=provider_sources count=1" in package_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in package_manifest
     assert "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh" in package_manifest
     assert (
@@ -2596,7 +2657,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
-        "upgrade-rollback-policy.txt checksum=0x4315e596"
+        "upgrade-rollback-policy.txt checksum=0x096e86d0"
     ) in package_manifest
     assert "required_gate=package-fixtures" in package_manifest
     assert "required_gate=upgrade-rollback-runtime-fixtures" in package_manifest
@@ -2756,6 +2817,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (component_dir / "mem_service_obmm_object_flow.c").exists()
     assert (component_dir / "mem_service_obmm_object_flow.h").exists()
     assert (component_dir / "mem_service_metadata.c").exists()
+    assert (component_dir / "mem_service_provider.c").exists()
+    assert (component_dir / "mem_service_provider.h").exists()
     assert (component_dir / "mem_service_daemon.c").exists()
     assert (component_dir / "mem_service_daemon.h").exists()
     assert (component_dir / "mem_service_client.c").exists()
@@ -2804,6 +2867,7 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert "components/mem_service/mem_service_client.c" in makefile
     assert "components/mem_service/mem_service_wire_client.c" in makefile
     assert "components/mem_service/mem_service_metadata.c" in makefile
+    assert "components/mem_service/mem_service_provider.c" in makefile
     assert "components/mem_service/mem_service_keys.c" in makefile
     assert "components/mem_service/mem_service_object_refs.c" in makefile
     assert "components/mem_service/mem_service_obmm_objects.c" in makefile
