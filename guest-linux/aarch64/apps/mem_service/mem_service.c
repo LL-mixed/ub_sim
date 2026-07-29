@@ -50,9 +50,9 @@
 #define MEM_SERVICE_REMOTE_TRANSPORT_EVIDENCE_VERSION 1U
 #define MEM_SERVICE_PACKAGE_MANIFEST_VERSION 1U
 #define MEM_SERVICE_RELEASE_VERSION "0.1.0"
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9579U
-#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x073128f3U
-#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 50U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9703U
+#define MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcd341bd9U
+#define MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT 52U
 #define MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT 34U
 #define MEM_SERVICE_PACKAGE_TARBALL_NAME "linqu_mem_service-installed-layout-v1.tar"
 #define MEM_SERVICE_NATIVE_DEB_NAME "linqu-mem-service_0.1.0-1_arm64.deb"
@@ -2928,6 +2928,14 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
+                                "pkgconfig_payload_provider_tcp_sources=${sourcedir}/mem_service_provider_tcp.c\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
+                                "pkgconfig_payload_provider_tcp_libs=-pthread\n") != 0 ||
+        append_wire_schema_line(manifest,
+                                manifest_len,
+                                &used,
                                 "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
@@ -3161,7 +3169,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=public_headers count=10\n") != 0 ||
+                                "file_class=public_headers count=11\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -3169,7 +3177,7 @@ static int render_package_manifest(char *manifest,
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
-                                "file_class=provider_sources count=1\n") != 0 ||
+                                "file_class=provider_sources count=2\n") != 0 ||
         append_wire_schema_line(manifest,
                                 manifest_len,
                                 &used,
@@ -4970,6 +4978,11 @@ static int run_package_fixture_check(void)
                "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs\n") ==
             NULL ||
         strstr(manifest,
+               "pkgconfig_payload_provider_tcp_sources=${sourcedir}/mem_service_provider_tcp.c\n") ==
+            NULL ||
+        strstr(manifest,
+               "pkgconfig_payload_provider_tcp_libs=-pthread\n") == NULL ||
+        strstr(manifest,
                "installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight\n") ==
             NULL ||
         strstr(manifest,
@@ -5241,6 +5254,8 @@ static int run_release_manifest(void)
     printf("pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c ${sourcedir}/mem_service_provider.c\n");
     printf("pkgconfig_payload_provider_roce_sources=${sourcedir}/mem_service_provider_roce.c\n");
     printf("pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs\n");
+    printf("pkgconfig_payload_provider_tcp_sources=${sourcedir}/mem_service_provider_tcp.c\n");
+    printf("pkgconfig_payload_provider_tcp_libs=-pthread\n");
     printf("compat_matrix=share/lingqu/mem_service/compat-matrix.txt\n");
     printf("compat_matrix_len=%u\n", MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN);
     printf("compat_matrix_checksum=0x%08x\n",
@@ -5378,6 +5393,7 @@ static int run_release_manifest(void)
     printf("public_header=include/lingqu/mem_service/mem_service_client.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_provider.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_provider_roce.h\n");
+    printf("public_header=include/lingqu/mem_service/mem_service_provider_tcp.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_wire.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_wire_client.h\n");
     printf("public_header=include/lingqu/mem_service/mem_service_wire_payload.h\n");
@@ -5387,6 +5403,7 @@ static int run_release_manifest(void)
     printf("client_source=src/lingqu/mem_service/mem_service_wire_client.c\n");
     printf("client_source=src/lingqu/mem_service/mem_service_provider.c\n");
     printf("provider_source=src/lingqu/mem_service/mem_service_provider_roce.c\n");
+    printf("provider_source=src/lingqu/mem_service/mem_service_provider_tcp.c\n");
     printf("example_source=share/lingqu/mem_service/examples/mem_service_serving_example.c\n");
     printf("example_source=share/lingqu/mem_service/examples/mem_service_pretraining_example.c\n");
     printf("operation=health:%u\n", MEM_SERVICE_WIRE_OP_HEALTH);
@@ -5499,7 +5516,7 @@ static int run_release_fixture_check(void)
     }
     if (MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN == 0U ||
         MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM == 0U ||
-        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 50U ||
+        MEM_SERVICE_PACKAGE_MANIFEST_INSTALLED_FILE_COUNT != 52U ||
         MEM_SERVICE_PACKAGE_MANIFEST_GATE_COUNT != 34U) {
         fprintf(stderr, "mem_service release-fixtures: package manifest fixture missing\n");
         failures -= 1;
@@ -5547,7 +5564,7 @@ static int run_release_fixture_check(void)
         return 1;
     }
     printf("mem_service release-fixtures: status=ok manifest_version=1 "
-           "public_headers=10 client_sources=3 provider_sources=1 "
+           "public_headers=11 client_sources=3 provider_sources=2 "
            "examples=2 config_artifacts=6 "
            "host_artifacts=1 "
            "package_artifacts=4 "

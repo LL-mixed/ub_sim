@@ -17,6 +17,7 @@ guest-linux/aarch64/apps/mem_service/linqu_mem_service
 guest-linux/aarch64/apps/mem_service/linqu_mem_service_core
 guest-linux/aarch64/apps/mem_service/linqu_mem_service_qwen3
 guest-linux/aarch64/apps/mem_service/linqu_mem_service_host
+guest-linux/aarch64/apps/mem_service/linqu_mem_service_provider_tcp
 guest-linux/aarch64/apps/mem_service/linqu_mem_service_host.dSYM/
 guest-linux/aarch64/apps/pretraining_client/linqu_pretraining_client
 guest-linux/aarch64/apps/serving_control/linqu_w5_serving_control

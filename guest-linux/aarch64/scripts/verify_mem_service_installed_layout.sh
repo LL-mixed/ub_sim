@@ -160,6 +160,8 @@ require_file "$(path_join "$DATA_DIR" "ops-certification-policy.txt")"
 require_file "$PKGCONFIG_FILE"
 require_file "$(path_join "$INSTALL_PREFIX" "include/lingqu/mem_service/mem_service_provider_roce.h")"
 require_file "$(path_join "$INSTALL_PREFIX" "src/lingqu/mem_service/mem_service_provider_roce.c")"
+require_file "$(path_join "$INSTALL_PREFIX" "include/lingqu/mem_service/mem_service_provider_tcp.h")"
+require_file "$(path_join "$INSTALL_PREFIX" "src/lingqu/mem_service/mem_service_provider_tcp.c")"
 require_file "$(path_join "$CONFIG_DIR" "mem_service.runtime.conf")"
 require_file "$(path_join "$CONFIG_DIR" "mem_service.host.runtime.conf")"
 require_file "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.conf")"
@@ -193,6 +195,8 @@ require_grep "$PKGCONFIG_FILE" '^Cflags: -I[$][{]includedir[}]$'
 require_grep "$PKGCONFIG_FILE" '^sdk_sources=[$][{]sourcedir[}]/mem_service_client[.]c [$][{]sourcedir[}]/mem_service_wire_client[.]c [$][{]sourcedir[}]/mem_service_provider[.]c$'
 require_grep "$PKGCONFIG_FILE" '^payload_provider_roce_sources=[$][{]sourcedir[}]/mem_service_provider_roce[.]c$'
 require_grep "$PKGCONFIG_FILE" '^payload_provider_roce_libs=-lrdmacm -libverbs$'
+require_grep "$PKGCONFIG_FILE" '^payload_provider_tcp_sources=[$][{]sourcedir[}]/mem_service_provider_tcp[.]c$'
+require_grep "$PKGCONFIG_FILE" '^payload_provider_tcp_libs=-pthread$'
 require_grep "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.conf")" '^backend=snapshot+journal$'
 require_grep "$(path_join "$SYSTEM_CONFIG_DIR" "mem_service.host.conf")" '^metrics_listen=tcp:127[.]0[.]0[.]1:9901$'
 

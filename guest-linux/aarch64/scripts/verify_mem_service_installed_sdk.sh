@@ -122,11 +122,16 @@ compile_example() {
   sdk_sources=$($PKG_CONFIG_CMD --define-prefix --variable=sdk_sources lingqu-mem-service)
   roce_sources=$($PKG_CONFIG_CMD --define-prefix --variable=payload_provider_roce_sources lingqu-mem-service)
   roce_libs=$($PKG_CONFIG_CMD --define-prefix --variable=payload_provider_roce_libs lingqu-mem-service)
+  tcp_sources=$($PKG_CONFIG_CMD --define-prefix --variable=payload_provider_tcp_sources lingqu-mem-service)
+  tcp_libs=$($PKG_CONFIG_CMD --define-prefix --variable=payload_provider_tcp_libs lingqu-mem-service)
   [ -n "$cflags" ] || fail "pkg-config returned empty Cflags"
   [ -n "$sdk_sources" ] || fail "pkg-config returned empty sdk_sources"
   [ -f "$roce_sources" ] || fail "pkg-config returned missing RoCE provider source"
   [ "$roce_libs" = "-lrdmacm -libverbs" ] ||
     fail "pkg-config returned unexpected RoCE provider libraries"
+  [ -f "$tcp_sources" ] || fail "pkg-config returned missing TCP provider source"
+  [ "$tcp_libs" = "-pthread" ] ||
+    fail "pkg-config returned unexpected TCP provider libraries"
   # shellcheck disable=SC2086
   $CC_CMD $cflags "$example_source" $sdk_sources -o "$output_binary"
 }
@@ -249,6 +254,8 @@ else
   printf 'PKG_CONFIG_PATH=%s %s --define-prefix --variable=sdk_sources lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
   printf 'PKG_CONFIG_PATH=%s %s --define-prefix --variable=payload_provider_roce_sources lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
   printf 'PKG_CONFIG_PATH=%s %s --define-prefix --variable=payload_provider_roce_libs lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
+  printf 'PKG_CONFIG_PATH=%s %s --define-prefix --variable=payload_provider_tcp_sources lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
+  printf 'PKG_CONFIG_PATH=%s %s --define-prefix --variable=payload_provider_tcp_libs lingqu-mem-service\n' "$PKGCONFIG_DIR" "$PKG_CONFIG_CMD"
 fi
 
 if [ "$PRE_FLIGHT" -eq 1 ]; then

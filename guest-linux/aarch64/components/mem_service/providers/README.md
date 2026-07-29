@@ -77,9 +77,38 @@ closed. The fields are:
 Every configured endpoint must complete a checked peer transfer before the
 daemon starts accepting SDK requests.
 
+## TCP Data-Plane Provider
+
+`linqu_mem_service_provider_tcp` is the persistent TCP implementation of the
+same neutral peer-transfer contract. It is an explicitly selected provider,
+never an automatic fallback for RoCE or another failed provider.
+
+The server and client canary commands are:
+
+```text
+linqu_mem_service_provider_tcp server-canary \
+  --local-ip <ip> --peer-ip <ip> --port <port>
+linqu_mem_service_provider_tcp client-canary \
+  --local-ip <ip> --peer-ip <ip> --port <port>
+```
+
+Both commands also accept `--bytes`, `--iterations`, and `--timeout-ms`.
+`protocol-fixtures` checks descriptor versioning and corruption rejection.
+The real canary registers process-owned memory, transfers payload bytes,
+waits for the receiver's checksum-bearing completion, and reports throughput.
+
+The connection uses `TCP_NODELAY` and stays open across transfers. The sender
+returns completion only after the receiver has copied the complete payload
+into the registered region and validated its checksum. The provider also
+advertises the neutral receive-fence capability: after an application sends
+control metadata, the receiver may wait on the target registered slice and
+continue as soon as that exact payload and checksum are ready. The sender's
+strict completion and ACK semantics remain unchanged, while the ACK return
+trip can overlap receiver work.
+
 Initial providers are expected to be:
 
 - a deterministic loopback provider for contract tests;
 - UB/URMA and shared-memory providers for QEMU eight-node PP;
 - a RoCE full-mesh provider for DGX PP;
-- a TCP diagnostic reference that is never an automatic fallback.
+- a TCP data-plane provider that is never an automatic fallback.

@@ -10,7 +10,8 @@
      MEM_SERVICE_PROVIDER_CAP_LOCAL_TRANSFER | \
      MEM_SERVICE_PROVIDER_CAP_PEER_TRANSFER | \
      MEM_SERVICE_PROVIDER_CAP_DURABLE_STORAGE | \
-     MEM_SERVICE_PROVIDER_CAP_ACCELERATOR_MEMORY)
+     MEM_SERVICE_PROVIDER_CAP_ACCELERATOR_MEMORY | \
+     MEM_SERVICE_PROVIDER_CAP_RECEIVE_FENCE)
 
 struct mem_service_provider_fixture_context {
     enum mem_service_provider_state state;
@@ -70,6 +71,12 @@ static bool mem_service_provider_ops_valid(
     }
     if ((capabilities & MEM_SERVICE_PROVIDER_CAP_ACCELERATOR_MEMORY) != 0 &&
         (capabilities & MEM_SERVICE_PROVIDER_CAP_REGION_REGISTRATION) == 0) {
+        return false;
+    }
+    if ((capabilities & MEM_SERVICE_PROVIDER_CAP_RECEIVE_FENCE) != 0 &&
+        ((capabilities &
+          MEM_SERVICE_PROVIDER_CAP_REGION_REGISTRATION) == 0 ||
+         registration->ops->wait_receive == NULL)) {
         return false;
     }
     return true;
@@ -483,7 +490,7 @@ int mem_service_provider_remote_region_decode(
     return 0;
 }
 
-int mem_service_provider_channel_transfer(
+int mem_service_provider_channel_submit_transfer(
     const struct mem_service_provider_channel *channel,
     const struct mem_service_provider_region_binding *source,
     uint64_t source_offset,
@@ -491,16 +498,15 @@ int mem_service_provider_channel_transfer(
     uint64_t destination_offset,
     uint64_t len,
     uint64_t expected_checksum,
-    struct mem_service_transfer_completion *completion_out)
+    uint64_t *completion_id_out)
 {
     struct mem_service_transfer_request request;
-    struct mem_service_transfer_completion completion;
     uint64_t completion_id = 0;
 
     if (!mem_service_provider_channel_ready(channel) || source == NULL ||
         !source->registered || source->owner != channel->provider ||
         destination == NULL ||
-        completion_out == NULL || len == 0 || expected_checksum == 0 ||
+        completion_id_out == NULL || len == 0 || expected_checksum == 0 ||
         strcmp(destination->provider_name,
                channel->provider->name) != 0 ||
         destination->descriptor.len == 0 ||
@@ -530,12 +536,101 @@ int mem_service_provider_channel_transfer(
             channel->provider->context,
             &request,
             &completion_id) != 0 ||
-        completion_id == 0 ||
+        completion_id == 0) {
+        return -1;
+    }
+    *completion_id_out = completion_id;
+    return 0;
+}
+
+int mem_service_provider_channel_poll_transfer(
+    const struct mem_service_provider_channel *channel,
+    uint64_t completion_id,
+    uint64_t len,
+    uint64_t expected_checksum,
+    struct mem_service_transfer_completion *completion_out)
+{
+    struct mem_service_transfer_completion completion;
+
+    if (!mem_service_provider_channel_ready(channel) ||
+        completion_id == 0 || len == 0 || expected_checksum == 0 ||
+        completion_out == NULL ||
+        channel->provider->ops->poll_completion == NULL ||
         channel->provider->ops->poll_completion(
             channel->provider->context,
             completion_id,
             &completion) != 0 ||
         completion.id != completion_id || completion.status != 0 ||
+        completion.transferred_bytes != len ||
+        completion.checksum != expected_checksum) {
+        return -1;
+    }
+    *completion_out = completion;
+    return 0;
+}
+
+int mem_service_provider_channel_transfer(
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_provider_region_binding *source,
+    uint64_t source_offset,
+    const struct mem_service_provider_remote_region *destination,
+    uint64_t destination_offset,
+    uint64_t len,
+    uint64_t expected_checksum,
+    struct mem_service_transfer_completion *completion_out)
+{
+    uint64_t completion_id = 0;
+
+    return mem_service_provider_channel_submit_transfer(
+               channel,
+               source,
+               source_offset,
+               destination,
+               destination_offset,
+               len,
+               expected_checksum,
+               &completion_id) != 0 ||
+                   mem_service_provider_channel_poll_transfer(
+                       channel,
+                       completion_id,
+                       len,
+                       expected_checksum,
+                       completion_out) != 0
+               ? -1
+               : 0;
+}
+
+int mem_service_provider_channel_wait_receive(
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_provider_region_binding *destination,
+    uint64_t destination_offset,
+    uint64_t len,
+    uint64_t expected_checksum,
+    struct mem_service_transfer_completion *completion_out)
+{
+    struct mem_service_receive_request request;
+    struct mem_service_transfer_completion completion;
+
+    if (!mem_service_provider_channel_ready(channel) ||
+        destination == NULL || !destination->registered ||
+        destination->owner != channel->provider ||
+        len == 0 || expected_checksum == 0 || completion_out == NULL ||
+        destination_offset > destination->region.len ||
+        len > destination->region.len - destination_offset ||
+        (channel->provider->capabilities &
+         MEM_SERVICE_PROVIDER_CAP_RECEIVE_FENCE) == 0 ||
+        channel->provider->ops->wait_receive == NULL) {
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    request.destination.region_handle = destination->region.handle;
+    request.destination.offset = destination_offset;
+    request.destination.len = len;
+    request.destination.descriptor = destination->region.descriptor;
+    request.expected_checksum = expected_checksum;
+    if (channel->provider->ops->wait_receive(
+            channel->provider->context, &request, &completion) != 0 ||
+        completion.id == 0 || completion.status != 0 ||
         completion.transferred_bytes != len ||
         completion.checksum != expected_checksum) {
         return -1;

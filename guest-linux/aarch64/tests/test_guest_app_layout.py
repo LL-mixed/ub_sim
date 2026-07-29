@@ -1772,7 +1772,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x073128f3$$" in app_makefile
+    assert "^package_manifest_checksum=0xcd341bd9$$" in app_makefile
     assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host checkpoint-retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host payload-gc-fixtures" in app_makefile
@@ -2047,8 +2047,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9579U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x073128f3U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9703U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcd341bd9U" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -2126,7 +2126,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x073128f3" in release_manifest
+    assert "package_manifest_checksum=0xcd341bd9" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -2349,8 +2349,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_schema_checksum=0xef4c77f8" in release_manifest
     assert "upgrade_rollback_policy_len=2143" in release_manifest
     assert "upgrade_rollback_policy_checksum=0x096e86d0" in release_manifest
-    assert "package_manifest_len=9579" in release_manifest
-    assert "package_manifest_checksum=0x073128f3" in release_manifest
+    assert "package_manifest_len=9703" in release_manifest
+    assert "package_manifest_checksum=0xcd341bd9" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2554,7 +2554,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "rpm_package_payload=rpm-cpio+metadata" in package_manifest
     assert "rpm_package_gate=package-rpm-smoke" in package_manifest
     assert "rpm_package_runtime=requires-linux-rpm-toolchain" in package_manifest
-    assert "installed_file_count=50" in package_manifest
+    assert "installed_file_count=52" in package_manifest
     assert "pkgconfig=lib/pkgconfig/lingqu-mem-service.pc" in package_manifest
     assert "pkgconfig_name=lingqu-mem-service" in package_manifest
     assert "pkgconfig_cflags=-I${includedir}" in package_manifest
@@ -2573,8 +2573,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs"
         in package_manifest
     )
-    assert "file_class=public_headers count=10" in package_manifest
-    assert "file_class=provider_sources count=1" in package_manifest
+    assert "file_class=public_headers count=11" in package_manifest
+    assert "file_class=provider_sources count=2" in package_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in package_manifest
     assert "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh" in package_manifest
     assert (

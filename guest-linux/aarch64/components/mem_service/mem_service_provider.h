@@ -20,6 +20,7 @@ enum mem_service_provider_capability {
     MEM_SERVICE_PROVIDER_CAP_PEER_TRANSFER = 1ULL << 2,
     MEM_SERVICE_PROVIDER_CAP_DURABLE_STORAGE = 1ULL << 3,
     MEM_SERVICE_PROVIDER_CAP_ACCELERATOR_MEMORY = 1ULL << 4,
+    MEM_SERVICE_PROVIDER_CAP_RECEIVE_FENCE = 1ULL << 5,
 };
 
 #define MEM_SERVICE_PROVIDER_CAP_TRANSFER_MASK \
@@ -73,6 +74,12 @@ struct mem_service_transfer_request {
     uint64_t flags;
 };
 
+struct mem_service_receive_request {
+    struct mem_service_provider_slice destination;
+    uint64_t expected_checksum;
+    uint64_t flags;
+};
+
 struct mem_service_transfer_completion {
     uint64_t id;
     int32_t status;
@@ -92,6 +99,9 @@ struct mem_service_provider_ops {
     int (*poll_completion)(void *context,
                            uint64_t completion_id,
                            struct mem_service_transfer_completion *completion_out);
+    int (*wait_receive)(void *context,
+                        const struct mem_service_receive_request *request,
+                        struct mem_service_transfer_completion *completion_out);
 };
 
 struct mem_service_provider_registration {
@@ -180,6 +190,28 @@ int mem_service_provider_channel_transfer(
     const struct mem_service_provider_region_binding *source,
     uint64_t source_offset,
     const struct mem_service_provider_remote_region *destination,
+    uint64_t destination_offset,
+    uint64_t len,
+    uint64_t expected_checksum,
+    struct mem_service_transfer_completion *completion_out);
+int mem_service_provider_channel_submit_transfer(
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_provider_region_binding *source,
+    uint64_t source_offset,
+    const struct mem_service_provider_remote_region *destination,
+    uint64_t destination_offset,
+    uint64_t len,
+    uint64_t expected_checksum,
+    uint64_t *completion_id_out);
+int mem_service_provider_channel_poll_transfer(
+    const struct mem_service_provider_channel *channel,
+    uint64_t completion_id,
+    uint64_t len,
+    uint64_t expected_checksum,
+    struct mem_service_transfer_completion *completion_out);
+int mem_service_provider_channel_wait_receive(
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_provider_region_binding *destination,
     uint64_t destination_offset,
     uint64_t len,
     uint64_t expected_checksum,

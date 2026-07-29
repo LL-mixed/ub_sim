@@ -41,6 +41,8 @@ pkgconfig_cflags=-I${includedir}
 pkgconfig_sdk_sources=${sourcedir}/mem_service_client.c ${sourcedir}/mem_service_wire_client.c ${sourcedir}/mem_service_provider.c
 pkgconfig_payload_provider_roce_sources=${sourcedir}/mem_service_provider_roce.c
 pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs
+pkgconfig_payload_provider_tcp_sources=${sourcedir}/mem_service_provider_tcp.c
+pkgconfig_payload_provider_tcp_libs=-pthread
 installed_sdk_preflight=scripts/verify_mem_service_installed_sdk.sh --preflight
 installed_sdk_preflight_scope=pkg-config-cflags+sdk-sources+examples+host-binary-no-compile
 installed_sdk_example_smoke=installed-sdk-example-smoke
@@ -96,12 +98,12 @@ release_script=share/lingqu/mem_service/scripts/verify_mem_service_remote_transp
 release_script=share/lingqu/mem_service/scripts/verify_mem_service_remote_transport_bundle.sh
 release_script=share/lingqu/mem_service/scripts/verify_mem_service_release_certification.sh
 release_script=share/lingqu/mem_service/scripts/run_mem_service_release_certification_ci.sh
-installed_file_count=50
+installed_file_count=52
 file_class=core_binary count=1
 file_class=host_binary count=1
-file_class=public_headers count=10
+file_class=public_headers count=11
 file_class=client_sources count=3
-file_class=provider_sources count=1
+file_class=provider_sources count=2
 file_class=pkgconfig count=1
 file_class=examples count=2
 file_class=contracts count=10
