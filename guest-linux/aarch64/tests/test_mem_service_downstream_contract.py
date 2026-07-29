@@ -10,6 +10,7 @@ FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
 EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
 SIM_UAPI_SOURCE = ROOT.parents[1] / "crates" / "sim-uapi" / "src" / "lib.rs"
 APP_BUILD_MATRIX = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
+INITRAMFS_BUILDER = ROOT / "scripts" / "build_initramfs.sh"
 SOURCE_VERIFIER = ROOT / "scripts" / "verify_mem_service_source.py"
 SOURCE_LOCK = ROOT / "mem_service.lock"
 MEM_SERVICE_ROOT = ROOT.parents[2] / "mem_service"
@@ -33,13 +34,15 @@ class MemServiceDownstreamContractTests(unittest.TestCase):
 
     def test_source_lock_accepts_pinned_clean_checkout(self):
         result = self._verify_source(SOURCE_LOCK)
+        revision = next(
+            line.split("=", 1)[1]
+            for line in SOURCE_LOCK.read_text().splitlines()
+            if line.startswith("revision=")
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("mem_service_source_check=ok version=0.1.0", result.stdout)
-        self.assertIn(
-            "revision=2054322662e5d85ad07ba0aa68d7d76e1d415cb4",
-            result.stdout,
-        )
+        self.assertIn(f"revision={revision}", result.stdout)
 
     def test_source_lock_rejects_incompatible_version_and_revision(self):
         with tempfile.TemporaryDirectory(prefix="ub-sim-mem-service-lock-") as tmp:
@@ -68,6 +71,35 @@ class MemServiceDownstreamContractTests(unittest.TestCase):
         )
         self.assertIn(
             'make -C "$app_dir" clean LLM_INFER_ROOT="$ROOT_DIR" || clean_rc=$?',
+            source,
+        )
+
+    def test_initramfs_signature_tracks_mem_service_revision_and_lock(self):
+        source = INITRAMFS_BUILDER.read_text()
+
+        self.assertIn("mem_service_head=", source)
+        self.assertIn(
+            'git -C "$MEM_SERVICE_ROOT" rev-parse HEAD',
+            source,
+        )
+        self.assertIn(
+            'write_signature_line "mem_service_lock" '
+            '"$ROOT_DIR/mem_service.lock"',
+            source,
+        )
+
+    def test_model_range_completion_acceptance_is_not_w5_only(self):
+        source = EIGHT_NODE_W4_RUNNER.read_text()
+
+        self.assertIn(
+            'if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; '
+            "then",
+            source,
+        )
+        self.assertNotIn(
+            'if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && '
+            'is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; '
+            "then",
             source,
         )
 

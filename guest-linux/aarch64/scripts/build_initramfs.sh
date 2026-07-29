@@ -211,8 +211,11 @@ current_kernel_signature() {
 current_initramfs_signature() {
   local applet=""
   printf 'kernel_head=%s\n' "$(current_kernel_signature)"
+  printf 'mem_service_head=%s\n' \
+    "$(git -C "$MEM_SERVICE_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
   printf 'cc=%s\n' "$AARCH64_LINUX_CC"
   write_signature_line "build_initramfs_script" "$SCRIPT_DIR/build_initramfs.sh"
+  write_signature_line "mem_service_lock" "$ROOT_DIR/mem_service.lock"
   write_signature_line "busybox" "$BUSYBOX"
   write_signature_line "probe_src" "$PROBE_SRC"
   write_signature_line "urma_dp_src" "$URMA_DP_SRC"

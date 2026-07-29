@@ -1734,7 +1734,7 @@ validate_node_log() {
     fi
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
-  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=[1-9][0-9]* retryable=[0-9]+ fatal=0" "$node_id completion status" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
