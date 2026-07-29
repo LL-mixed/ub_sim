@@ -1,0 +1,115 @@
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LLM_INFER_SOURCE = ROOT / "apps" / "llm_infer" / "llm_infer.c"
+FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
+EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
+SIM_UAPI_SOURCE = ROOT.parents[1] / "crates" / "sim-uapi" / "src" / "lib.rs"
+APP_BUILD_MATRIX = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
+SOURCE_VERIFIER = ROOT / "scripts" / "verify_mem_service_source.py"
+SOURCE_LOCK = ROOT / "mem_service.lock"
+MEM_SERVICE_ROOT = ROOT.parents[2] / "mem_service"
+
+
+class MemServiceDownstreamContractTests(unittest.TestCase):
+    def _verify_source(self, lock_file: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "python3",
+                str(SOURCE_VERIFIER),
+                "--mem-service-root",
+                str(MEM_SERVICE_ROOT),
+                "--lock-file",
+                str(lock_file),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_source_lock_accepts_pinned_clean_checkout(self):
+        result = self._verify_source(SOURCE_LOCK)
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("mem_service_source_check=ok version=0.1.0", result.stdout)
+        self.assertIn(
+            "revision=2054322662e5d85ad07ba0aa68d7d76e1d415cb4",
+            result.stdout,
+        )
+
+    def test_source_lock_rejects_incompatible_version_and_revision(self):
+        with tempfile.TemporaryDirectory(prefix="ub-sim-mem-service-lock-") as tmp:
+            lock_file = Path(tmp) / "mem_service.lock"
+            lock_file.write_text(
+                "lock_version=1\n"
+                "version=0.2.0\n"
+                "revision=0000000000000000000000000000000000000000\n"
+            )
+
+            result = self._verify_source(lock_file)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "incompatible mem_service source version",
+                result.stderr,
+            )
+
+    def test_app_build_matrix_builds_qwen3_adapter(self):
+        source = APP_BUILD_MATRIX.read_text()
+
+        self.assertIn("verify_mem_service_source.py", source)
+        self.assertIn(
+            'make -C "$app_dir" LLM_INFER_ROOT="$ROOT_DIR" || rc=$?',
+            source,
+        )
+        self.assertIn(
+            'make -C "$app_dir" clean LLM_INFER_ROOT="$ROOT_DIR" || clean_rc=$?',
+            source,
+        )
+
+    def test_llm_infer_internal_memory_symbols_are_not_w5_named(self):
+        source = LLM_INFER_SOURCE.read_text()
+
+        self.assertNotIn("W4_QWEN3_W5_", source)
+        self.assertNotIn("parse_qwen3_w5_", source)
+        self.assertNotIn("qwen3_read_w5_", source)
+        self.assertNotIn("qwen3_w5_memory_service_lookup_boundary", source)
+        self.assertIn("QWEN3_MEMORY_SHORTPATH_STREAM_MAX", source)
+        self.assertIn("parse_qwen3_memory_decision_config", source)
+        self.assertIn("qwen3_memory_service_lookup_boundary", source)
+
+    def test_qwen3_guest_runtime_kv_payload_grows_past_fixed_guard(self):
+        source = LLM_INFER_SOURCE.read_text()
+
+        self.assertNotIn("W4_QWEN3_MAX_KV_PAYLOAD_BYTES", source)
+        self.assertNotIn("qwen3 range kv payload too large", source)
+        self.assertIn("uint8_t *kv_payload;", source)
+        self.assertIn("kv_payload_capacity", source)
+        self.assertIn("qwen3_range_runtime_forward_reserve_kv", source)
+        self.assertIn("qwen3 range kv payload reserve failed", source)
+
+    def test_w4_guest_legacy_kvcache_payload_is_not_demo_named(self):
+        sim_uapi_source = SIM_UAPI_SOURCE.read_text()
+        combined = "\n".join(
+            [
+                LLM_INFER_SOURCE.read_text(),
+                FOUR_NODE_W4_RUNNER.read_text(),
+                EIGHT_NODE_W4_RUNNER.read_text(),
+                sim_uapi_source,
+            ]
+        )
+
+        self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", combined)
+        self.assertIn("W4_LEGACY_KVCACHE_PAYLOAD_BYTES", sim_uapi_source)
+        self.assertIn("legacy_kvcache_payload", combined)
+        self.assertNotIn("W4_DEMO_KVCACHE_PAYLOAD_BYTES", combined)
+        self.assertNotIn("invalid_demo_kvcache_payload_bytes", combined)
+        self.assertNotIn("legacy_demo_payload", combined)
+
+
+if __name__ == "__main__":
+    unittest.main()

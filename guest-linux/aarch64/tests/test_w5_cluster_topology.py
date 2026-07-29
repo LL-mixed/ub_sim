@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -16,9 +17,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
             self.repo / "guest-linux" / "aarch64" / "apps" / "llm_infer" / "llm_infer.c"
         )
         self.mem_service_cluster_runtime = (
-            self.repo
-            / "guest-linux"
-            / "aarch64"
+            Path(os.environ.get("MEM_SERVICE_ROOT", self.repo.parent / "mem_service"))
             / "components"
             / "mem_service"
             / "mem_service_cluster_runtime.c"

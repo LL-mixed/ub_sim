@@ -59,5 +59,10 @@ validation ledger.
 | `pretraining_client` | `scripts/run_ub_dual_node_apps.sh --app pretraining_client_mem_service` | n/a |
 
 `mem_service` is primarily a link-time component under `components/mem_service`.
-Its app entrypoint is a standalone smoke/inspect CLI for metadata and packaging
-validation; W5 end-to-end validation still uses `scripts/run_w5_cluster_config.sh`.
+The component and its CLI app live in the standalone `mem_service` repository,
+referenced through `MEM_SERVICE_ROOT` (default: the sibling `../mem_service`
+checkout). `../mem_service.lock` pins the accepted standalone version and Git
+revision; the app build matrix verifies it before building the core and Qwen3
+adapter binaries. Its app entrypoint is a standalone smoke/inspect CLI for
+metadata and packaging validation; W5 end-to-end validation still uses
+`scripts/run_w5_cluster_config.sh`.

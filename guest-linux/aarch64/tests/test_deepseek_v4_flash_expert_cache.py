@@ -11,11 +11,17 @@ test pattern. The cross-layer handoff interface is intentionally untouched.
 import shutil
 import subprocess
 import tempfile
+import os
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICE_DIR = ROOT / "components" / "mem_service"
+# mem_service sources live in the standalone mem_service repository (sibling
+# checkout by default). Override MEM_SERVICE_ROOT to point at another checkout.
+MEM_SERVICE_ROOT = Path(
+    os.environ.get("MEM_SERVICE_ROOT", Path(__file__).resolve().parents[4] / "mem_service")
+)
+SERVICE_DIR = MEM_SERVICE_ROOT / "components" / "mem_service"
 ROUTE_H = SERVICE_DIR / "mem_service_expert_route_flow.h"
 ROUTE_C = SERVICE_DIR / "mem_service_expert_route_flow.c"
 CACHE_H = SERVICE_DIR / "mem_service_expert_cache.h"

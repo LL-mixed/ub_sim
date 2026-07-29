@@ -3,8 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# mem_service lives in the standalone mem_service repository (sibling checkout
+# by default). Override MEM_SERVICE_ROOT to point at another checkout.
+MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../../mem_service}"
+if [[ -d "$MEM_SERVICE_ROOT" ]]; then
+  MEM_SERVICE_ROOT="$(cd "$MEM_SERVICE_ROOT" && pwd)"
+fi
+python3 "$SCRIPT_DIR/verify_mem_service_source.py" \
+  --mem-service-root "$MEM_SERVICE_ROOT" \
+  --lock-file "$ROOT_DIR/mem_service.lock" >&2
 OUT_DIR="$ROOT_DIR/out"
-MEM_SERVICE_APP_DIR="$ROOT_DIR/apps/mem_service"
+MEM_SERVICE_APP_DIR="$MEM_SERVICE_ROOT/apps/mem_service"
 MEM_SERVICE_HOST_BIN="$MEM_SERVICE_APP_DIR/linqu_mem_service_host"
 
 usage() {

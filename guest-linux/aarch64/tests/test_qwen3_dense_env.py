@@ -588,11 +588,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             / "llm_infer"
             / "llm_infer.c"
         ).read_text(encoding="utf-8")
-        db_service_dir = (
-            Path(__file__).resolve().parents[1]
-            / "components"
-            / "mem_service"
+        mem_service_root = Path(
+            os.environ.get(
+                "MEM_SERVICE_ROOT", Path(__file__).resolve().parents[4] / "mem_service"
+            )
         )
+        db_service_dir = mem_service_root / "components" / "mem_service"
         db_service_source = "\n".join(
             path.read_text(encoding="utf-8")
             for path in sorted(
@@ -604,10 +605,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
         )
         db_service_header = (
-            Path(__file__).resolve().parents[1]
-            / "components"
-            / "mem_service"
-            / "mem_service.h"
+            mem_service_root / "components" / "mem_service" / "mem_service.h"
         ).read_text(encoding="utf-8")
         cli_source = (
             Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"

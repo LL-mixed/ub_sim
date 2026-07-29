@@ -16,7 +16,8 @@ Qwen3 ownership:
 Build and validation entrypoints:
 
 - `scripts/build_initramfs.sh` links `llm_infer.c` into `/bin/linqu_llm_infer`.
-- `apps/llm_infer/Makefile` and `apps/mem_service/Makefile` link the same
+- `apps/llm_infer/Makefile` and `apps/mem_service/Makefile` (in the standalone
+  `mem_service` repository, via its `LLM_INFER_ROOT`) link the same
   component for app-local compile checks.
 - `tests/test_guest_app_layout.py` validates that the `llm_infer` app consumes the
   component instead of owning these helpers directly.
