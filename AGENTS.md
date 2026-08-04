@@ -27,6 +27,25 @@ Rust code uses edition 2021 and standard `rustfmt` style; run `cargo fmt --all` 
 
 Add focused tests with every behavior change. Prefer Rust unit tests beside the affected module and Python contract tests in `guest-linux/aarch64/tests/` for script, artifact, and layout behavior. Automation and CI-style guest validation must use headless scripts, not tmux launchers.
 
+### Local Development Machine Prohibition
+
+Unless the user explicitly requests it, **never run workload, integration, or
+full-suite validation on the local development machine**. This prohibition
+includes commands that load model weights, start inference servers, execute
+prefill/decode or long-context tests, launch QEMU guests, build CUDA artifacts,
+or otherwise consume substantial CPU, GPU, memory, disk I/O, or fan/thermal
+headroom. In particular, do not run `make test`, `ds4_test`, `ds4-server`, model
+benchmarks, or multi-node simulation locally when they can reach those paths.
+
+By default, run only lightweight static checks and focused unit/contract tests
+that are known not to load model weights on the local machine. Run model,
+accelerator, QEMU, multi-node, integration, and full-suite validation on the
+appropriate remote target environment (for example the DGX Spark cluster via
+`ssh dgx1` or `ssh rdgx1`). If a command's resource behavior is uncertain,
+inspect its implementation first and treat it as prohibited locally until
+proven lightweight. A repository instruction to run a full test suite does not
+override this rule; move that suite to the remote target instead.
+
 ## Commit & Pull Request Guidelines
 
 Git history uses short imperative subjects such as `Add TCP transport benchmark reporting` and `Split mem service Qwen3 runtime helpers`. Keep commits focused, in English, and avoid generated-output churn. Pull requests should describe the user-visible behavior change, list exact validation commands and results, link related docs/issues, and call out QEMU, guest artifact, or environment requirements.
