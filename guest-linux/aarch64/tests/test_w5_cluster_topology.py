@@ -17,7 +17,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
             self.repo / "guest-linux" / "aarch64" / "apps" / "llm_infer" / "llm_infer.c"
         )
         self.mem_service_cluster_runtime = (
-            Path(os.environ.get("MEM_SERVICE_ROOT", self.repo.parent / "mem_service"))
+            Path(os.environ.get("MEM_SERVICE_ROOT", self.repo / "mem_service"))
             / "components"
             / "mem_service"
             / "mem_service_cluster_runtime.c"

@@ -1,9 +1,9 @@
 CC = aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -static
 ROOT := ../..
-# mem_service lives in the standalone mem_service repository (sibling checkout
-# by default). Override MEM_SERVICE_ROOT to point at another checkout.
-MEM_SERVICE_ROOT ?= $(abspath $(ROOT)/../../../mem_service)
+# mem_service lives in the root-level Git submodule. Override MEM_SERVICE_ROOT
+# only when intentionally validating another standalone checkout.
+MEM_SERVICE_ROOT ?= $(abspath $(ROOT)/../../mem_service)
 MEM_SERVICE := $(MEM_SERVICE_ROOT)/components/mem_service/mem_service_module.c
 MEM_SERVICE_CLUSTER_UTILS := $(MEM_SERVICE_ROOT)/components/mem_service/mem_service_cluster_utils.c
 MEM_SERVICE_CLUSTER_PAYLOAD := $(MEM_SERVICE_ROOT)/components/mem_service/mem_service_cluster_payload.c

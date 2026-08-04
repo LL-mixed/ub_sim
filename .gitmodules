@@ -28,3 +28,7 @@
 	url = https://github.com/hw-native-sys/pypto-lib.git
 	branch = main
 	ignore = all
+[submodule "mem_service"]
+	path = mem_service
+	url = https://github.com/LL-mixed/mem_service
+	branch = master

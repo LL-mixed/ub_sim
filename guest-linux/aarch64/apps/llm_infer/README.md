@@ -4,9 +4,8 @@
 inference harnesses.
 
 The app owns the guest orchestration logic. Shared memory/object metadata lives
-in `components/mem_service/` in the standalone `mem_service` repository
-(referenced through `MEM_SERVICE_ROOT`, default: the sibling `../mem_service`
-checkout) and is linked into this app by
+in `components/mem_service/` in the root-level `mem_service/` submodule
+(referenced through `MEM_SERVICE_ROOT`) and is linked into this app by
 `scripts/build_initramfs.sh`. Shared LLM inference helpers live in
 `components/llm_infer/`.
 

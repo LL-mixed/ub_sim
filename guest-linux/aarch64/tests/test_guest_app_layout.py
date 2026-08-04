@@ -6,10 +6,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-# mem_service sources, CLI app, and release scripts live in the standalone
-# mem_service repository (sibling checkout by default).
+# mem_service sources, CLI app, and release scripts live in the root submodule.
 MEM_SERVICE_ROOT = Path(
-    os.environ.get("MEM_SERVICE_ROOT", Path(__file__).resolve().parents[4] / "mem_service")
+    os.environ.get("MEM_SERVICE_ROOT", Path(__file__).resolve().parents[3] / "mem_service")
 )
 # Apps whose Makefile lives outside this repository.
 EXTERNAL_APP_DIRS = {"mem_service": MEM_SERVICE_ROOT / "apps" / "mem_service"}

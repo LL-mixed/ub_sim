@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a UB data system simulator meta repo. Rust simulator code lives under `crates/`, one crate per subsystem. Current crates: `sim-core`, `sim-config`, `sim-report`, `sim-topology`, `sim-runtime`, `sim-services`, `sim-memory`, `sim-models`, `sim-qemu`, `sim-uapi`, `sim-workloads`, `sim-cli`, and `sim-chipbackend-simpler` (see `Cargo.toml` for the authoritative list). Guest-side Linux, QEMU launchers, apps, drivers, scripts, and Python regression tests live under `guest-linux/aarch64/`; shared guest code also lives under `guest-linux/aarch64/components/` (currently `llm_infer`) and `guest-linux/aarch64/apps/` (per-feature C programs). The `mem_service` component and its CLI app live in the standalone `mem_service` repository, consumed through the `MEM_SERVICE_ROOT` make/env variable (default: the sibling `../mem_service` checkout relative to the ub_sim checkout). `guest-linux/aarch64/mem_service.lock` pins its version and Git revision; update the lock only after the standalone repository has a clean, tested commit. Topology YAML files live in `scenarios/` and are named `mvp_<N>host_*.yaml`. QEMU/FM topology and third-party sources live under `vendor/`; note `vendor/qemu_8.2.0_ub` and `guest-linux/kernel_ub` are git submodules (see `.gitmodules`). Design notes, validation reports, and plans belong in `docs/`. Generated artifacts and logs should stay in `out/`, `logs/`, `target/`, or `build_output/`, not in source directories.
+This repository is a UB data system simulator meta repo. Rust simulator code lives under `crates/`, one crate per subsystem. Current crates: `sim-core`, `sim-config`, `sim-report`, `sim-topology`, `sim-runtime`, `sim-services`, `sim-memory`, `sim-models`, `sim-qemu`, `sim-uapi`, `sim-workloads`, `sim-cli`, and `sim-chipbackend-simpler` (see `Cargo.toml` for the authoritative list). Guest-side Linux, QEMU launchers, apps, drivers, scripts, and Python regression tests live under `guest-linux/aarch64/`; shared guest code also lives under `guest-linux/aarch64/components/` (currently `llm_infer`) and `guest-linux/aarch64/apps/` (per-feature C programs). The standalone `mem_service` repository is pinned as the root-level `mem_service/` Git submodule and consumed through `MEM_SERVICE_ROOT`, which defaults to that submodule. `guest-linux/aarch64/mem_service.lock` independently records its version and revision; the gitlink and lock must be updated together, and only after the standalone repository has a clean, tested, remotely fetchable commit. Topology YAML files live in `scenarios/` and are named `mvp_<N>host_*.yaml`. QEMU/FM topology and third-party sources live under `vendor/`; all submodules are declared in `.gitmodules`. Design notes, validation reports, and plans belong in `docs/`. Generated artifacts and logs should stay in `out/`, `logs/`, `target/`, or `build_output/`, not in source directories.
 
 `CLAUDE.md` holds additional local-environment and QEMU-build/run gotchas; read it before touching QEMU build or guest-launch scripts.
 
@@ -79,7 +79,7 @@ The service core must remain transport-neutral:
   completion, checksum, and fail-closed conformance suite.
 
 Provider-neutral contracts live in
-`components/mem_service/` in the standalone `mem_service` repository
+`components/mem_service/` in the root-level `mem_service/` submodule
 (referenced through `MEM_SERVICE_ROOT`). Concrete provider
 implementations live under
 `components/mem_service/providers/` in that repository and follow that

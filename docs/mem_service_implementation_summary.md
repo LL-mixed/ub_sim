@@ -2,9 +2,9 @@
 
 更新时间：2026-07-02
 
-> 2026-07-29 更新：`mem_service` 组件、CLI app、release 脚本与测试已迁移到独立的
-> `mem_service` 仓库；ub_sim 通过 `MEM_SERVICE_ROOT`（默认指向平级的
-> `../mem_service` checkout）引用其中的 `components/mem_service/` 与
+> 2026-08-04 更新：`mem_service` 组件、CLI app、release 脚本与测试位于独立的
+> `mem_service` 仓库；ub_sim 将其固定为根目录 `mem_service/` Git submodule，
+> 并通过 `MEM_SERVICE_ROOT` 引用其中的 `components/mem_service/` 与
 > `apps/mem_service/`。下文中 `guest-linux/aarch64/components/mem_service/` 和
 > `guest-linux/aarch64/apps/mem_service/` 等路径描述的是迁移前的仓库内布局。
 > 抽取前的 release certification evidence 未迁移，不能证明当前独立仓库

@@ -3,9 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# mem_service lives in the standalone mem_service repository (sibling checkout
-# by default). Override MEM_SERVICE_ROOT to point at another checkout.
-MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../../mem_service}"
+# mem_service lives in the repository's root-level Git submodule.
+# Override MEM_SERVICE_ROOT only to validate another standalone checkout.
+MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../mem_service}"
 if [[ -d "$MEM_SERVICE_ROOT" ]]; then
   MEM_SERVICE_ROOT="$(cd "$MEM_SERVICE_ROOT" && pwd)"
 fi

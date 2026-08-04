@@ -590,7 +590,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         mem_service_root = Path(
             os.environ.get(
-                "MEM_SERVICE_ROOT", Path(__file__).resolve().parents[4] / "mem_service"
+                "MEM_SERVICE_ROOT", Path(__file__).resolve().parents[3] / "mem_service"
             )
         )
         db_service_dir = mem_service_root / "components" / "mem_service"

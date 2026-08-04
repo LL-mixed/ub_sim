@@ -18,6 +18,9 @@
   QEMU submodule，脚本会按需构建 `qemu-system-aarch64`
 - `guest-linux/kernel_ub/`
   kernel submodule，guest `Image` 和 `.ko` 模块与它对应
+- `mem_service/`
+  独立 Memory Service submodule；版本必须与
+  `guest-linux/aarch64/mem_service.lock` 一致
 - `vendor/*.ini`
   双节点、4 节点、8 节点 topology 文件
 - `docs/`
@@ -37,11 +40,13 @@ git submodule update --init --recursive
 - `guest-linux/kernel_ub`
 - `vendor/simpler`
 - `vendor/pto-isa`
+- `mem_service`
 
 如果你只想单独刷新某个 submodule：
 
 ```bash
-git submodule update --init vendor/qemu_8.2.0_ub guest-linux/kernel_ub vendor/simpler vendor/pto-isa
+git submodule update --init mem_service vendor/qemu_8.2.0_ub \
+  guest-linux/kernel_ub vendor/simpler vendor/pto-isa
 ```
 
 ## 2. 环境要求

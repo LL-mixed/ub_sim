@@ -93,7 +93,7 @@ def verify_source(source_root: Path, lock_file: Path) -> tuple[str, str]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify ub_sim's pinned standalone mem_service source checkout."
+        description="Verify ub_sim's pinned mem_service submodule or override."
     )
     parser.add_argument("--mem-service-root", required=True, type=Path)
     parser.add_argument("--lock-file", required=True, type=Path)

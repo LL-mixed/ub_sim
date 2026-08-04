@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parents[1]
 LLM_INFER_SOURCE = ROOT / "apps" / "llm_infer" / "llm_infer.c"
 FOUR_NODE_W4_RUNNER = ROOT / "scripts" / "run_ub_four_node_w4_guest.sh"
 EIGHT_NODE_W4_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
@@ -13,7 +14,8 @@ APP_BUILD_MATRIX = ROOT / "scripts" / "run_ub_app_build_matrix.sh"
 INITRAMFS_BUILDER = ROOT / "scripts" / "build_initramfs.sh"
 SOURCE_VERIFIER = ROOT / "scripts" / "verify_mem_service_source.py"
 SOURCE_LOCK = ROOT / "mem_service.lock"
-MEM_SERVICE_ROOT = ROOT.parents[2] / "mem_service"
+MEM_SERVICE_ROOT = REPO_ROOT / "mem_service"
+GITMODULES = REPO_ROOT / ".gitmodules"
 
 
 class MemServiceDownstreamContractTests(unittest.TestCase):
@@ -43,6 +45,47 @@ class MemServiceDownstreamContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("mem_service_source_check=ok version=0.1.0", result.stdout)
         self.assertIn(f"revision={revision}", result.stdout)
+
+    def test_source_lock_matches_mem_service_submodule(self):
+        gitmodules = GITMODULES.read_text()
+        self.assertIn('[submodule "mem_service"]', gitmodules)
+        self.assertIn("path = mem_service", gitmodules)
+        self.assertIn(
+            "url = https://github.com/LL-mixed/mem_service",
+            gitmodules,
+        )
+
+        lock_revision = next(
+            line.split("=", 1)[1]
+            for line in SOURCE_LOCK.read_text().splitlines()
+            if line.startswith("revision=")
+        )
+        result = subprocess.run(
+            ["git", "ls-files", "--stage", "mem_service"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        mode, gitlink_revision, stage_and_path = result.stdout.split(maxsplit=2)
+        self.assertEqual(mode, "160000")
+        self.assertEqual(stage_and_path, "0\tmem_service\n")
+        self.assertEqual(gitlink_revision, lock_revision)
+
+    def test_build_entrypoints_default_to_mem_service_submodule(self):
+        paths = (
+            ROOT / "apps" / "llm_infer" / "Makefile",
+            ROOT / "apps" / "serving_control" / "Makefile",
+            ROOT / "apps" / "pretraining_client" / "Makefile",
+            APP_BUILD_MATRIX,
+            INITRAMFS_BUILDER,
+            ROOT / "scripts" / "run_w5_memory_service_bootstrap.sh",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                source = path.read_text()
+                self.assertIn("../../mem_service", source)
+                self.assertNotIn("../../../mem_service", source)
 
     def test_source_lock_rejects_incompatible_version_and_revision(self):
         with tempfile.TemporaryDirectory(prefix="ub-sim-mem-service-lock-") as tmp:

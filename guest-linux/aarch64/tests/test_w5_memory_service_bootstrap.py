@@ -17,7 +17,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
         self.headless_launcher = self.scripts / "launch_ub_eight_node_headless.sh"
         self.mem_service_app = (
             Path(
-                os.environ.get("MEM_SERVICE_ROOT", self.repo.parent / "mem_service")
+                os.environ.get("MEM_SERVICE_ROOT", self.repo / "mem_service")
             )
             / "apps"
             / "mem_service"

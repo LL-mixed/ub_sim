@@ -16,10 +16,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# mem_service sources live in the standalone mem_service repository (sibling
-# checkout by default). Override MEM_SERVICE_ROOT to point at another checkout.
+# mem_service sources live in the root submodule. Override MEM_SERVICE_ROOT
+# only when intentionally validating another standalone checkout.
 MEM_SERVICE_ROOT = Path(
-    os.environ.get("MEM_SERVICE_ROOT", Path(__file__).resolve().parents[4] / "mem_service")
+    os.environ.get("MEM_SERVICE_ROOT", Path(__file__).resolve().parents[3] / "mem_service")
 )
 SERVICE_DIR = MEM_SERVICE_ROOT / "components" / "mem_service"
 FLASH_H = SERVICE_DIR / "mem_service_deepseek_v4_flash.h"
