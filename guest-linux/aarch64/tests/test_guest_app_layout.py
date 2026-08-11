@@ -1406,6 +1406,38 @@ def test_obmm_coh_test_runner_uses_app_flag_entrypoint():
     assert 'obmm_coh_test_node_count=${COH_NODE_COUNT}' in four_runner
 
 
+def test_mem_service_obmm_provider_has_dual_guest_functional_conformance():
+    build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    apps_runner = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    runner = (
+        ROOT
+        / "scripts"
+        / "run_ub_dual_node_mem_service_obmm_provider_conformance.sh"
+    ).read_text()
+    conformance = (
+        MEM_SERVICE_ROOT / "tests" / "mem_service_obmm_provider_conformance.c"
+    ).read_text()
+
+    assert 'MEM_SERVICE_PROVIDER_OBMM_SRC="$MEM_SERVICE_ROOT/components/' in build_script
+    assert 'MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_SRC="$MEM_SERVICE_ROOT/tests/' in build_script
+    assert "linqu_mem_service_obmm_provider_conformance" in build_script
+    assert "run_mem_service_obmm_provider_conformance" in run_app
+    assert "linqu_mem_service_obmm_provider_conformance=1" in run_app
+    assert "mem_service_obmm_provider_conformance" in apps_runner
+    assert "stage=pre-canary readiness=degraded data_plane_ready=0" in apps_runner
+    assert "stage=post-canary readiness=ready data_plane_ready=1" in apps_runner
+    assert '"$SHARED_DIR"/obmm_bootstrap/node*.ini' in apps_runner
+    assert 'assert_log_has "$log_file" "GSVA_MAP: obmm bootstrap route"' in apps_runner
+    assert 'assert_log_has "$log_file" "SIM_DEC: MAP success"' in apps_runner
+    assert "--app mem_service_obmm_provider_conformance" in runner
+    assert "--use-qmp" in runner
+    assert "mem_service_provider_channel_map_remote_region" in conformance
+    assert "mem_service_provider_channel_publish_range" in conformance
+    assert "mem_service_provider_channel_wait_range_visible" in conformance
+    assert "fail-closed-corrupt-descriptor" in conformance
+
+
 def test_npu_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "npu_gsva_test"

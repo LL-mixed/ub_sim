@@ -65,8 +65,10 @@ The service core must remain transport-neutral:
 - Core headers, records, readiness, wire contracts, and placement policy must
   not name RoCE, RDMA verbs, URMA, UB shared memory, TCP, CUDA, or a device CNA.
 - Transport-specific code must implement the provider contract outside the
-  core. The QEMU eight-node environment selects UB/URMA and shared-memory
-  providers; DGX deployments select a RoCE full-mesh provider.
+  core. The QEMU eight-node environment selects an OBMM peer-mapping provider
+  and, where explicit transfer is required, a separate UB/URMA provider. OBMM
+  remote mapping uses SIM_DEC/GVA/GSVA and is not implemented by URMA. DGX
+  deployments select a RoCE full-mesh provider.
 - Serving engines call one Memory Service SDK. DS4 and W5 must not select,
   configure, or call a transport directly.
 - The control plane resolves object identity, placement, version, lease, and

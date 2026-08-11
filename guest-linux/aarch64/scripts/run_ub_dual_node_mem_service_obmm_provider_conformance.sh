@@ -1,0 +1,9 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+exec "$SCRIPT_DIR/run_ub_dual_node_apps.sh" \
+  --app mem_service_obmm_provider_conformance \
+  --use-qmp \
+  "$@"

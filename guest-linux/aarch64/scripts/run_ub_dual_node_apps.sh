@@ -34,6 +34,7 @@ COH_TEST_ITERS="${COH_TEST_ITERS:-1}"
 COH_TEST_TOKEN_VALUE="${COH_TEST_TOKEN_VALUE:-0}"
 COH_TEST_GENERATION="${COH_TEST_GENERATION:-1}"
 COH_TEST_VERBOSE="${COH_TEST_VERBOSE:-1}"
+MEM_SERVICE_OBMM_PROVIDER_GENERATION="${MEM_SERVICE_OBMM_PROVIDER_GENERATION:-101}"
 GVA_DIRECT_MODE="${GVA_DIRECT_MODE:-write-read}"
 GVA_DIRECT_LOCAL_VA="${GVA_DIRECT_LOCAL_VA:-0x710000000000}"
 GVA_DIRECT_HOME_VA="${GVA_DIRECT_HOME_VA:-0x720000000000}"
@@ -61,7 +62,8 @@ Options:
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
-                      ssd_gsva_test, mem_service, llm_infer,
+                      ssd_gsva_test, mem_service,
+                      mem_service_obmm_provider_conformance, llm_infer,
                       llm_infer_mem_service, pretraining_client_mem_service.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
@@ -105,6 +107,9 @@ append_app_selection() {
       ;;
     obmm_coh_test)
       flag="linqu_obmm_coh_test=1"
+      ;;
+    mem_service_obmm_provider_conformance)
+      flag="linqu_mem_service_obmm_provider_conformance=1"
       ;;
     gva_direct)
       flag="linqu_gva_direct=1"
@@ -553,6 +558,32 @@ validate_obmm_coh_test_log() {
     "${node_name} obmm coh test binary pass" || return 1
 }
 
+validate_mem_service_obmm_provider_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_absent "$log_file" \
+    "mem_service obmm-provider-conformance: status=fail" \
+    "${node_name} OBMM provider conformance failure" || return 1
+  assert_log_has "$log_file" \
+    "stage=pre-canary readiness=degraded data_plane_ready=0" \
+    "${node_name} OBMM provider fail-closed pre-canary readiness" || return 1
+  assert_log_has "$log_file" \
+    "stage=post-canary readiness=ready data_plane_ready=1" \
+    "${node_name} OBMM provider verified readiness" || return 1
+  assert_log_has "$log_file" \
+    "mem_service obmm-provider-conformance: status=ok node=[01].*mapping=sim-dec.*visibility=checksum-verified.*cleanup=verified" \
+    "${node_name} OBMM provider neutral contract conformance" || return 1
+}
+
+validate_mem_service_obmm_provider_qemu_log() {
+  local node_name="$1"
+  local log_file="$2"
+  assert_log_has "$log_file" "GSVA_MAP: obmm bootstrap route" \
+    "${node_name} OBMM provider GSVA route evidence" || return 1
+  assert_log_has "$log_file" "SIM_DEC: MAP success" \
+    "${node_name} OBMM provider remote import evidence" || return 1
+}
+
 validate_gva_direct_log() {
   local node_name="$1"
   local log_file="$2"
@@ -949,6 +980,7 @@ run_iteration() {
   local obmm_import_stress_enabled=0
   local obmm_gsva_enabled=0
   local obmm_coh_test_enabled=0
+  local mem_service_obmm_provider_enabled=0
   local gva_direct_enabled=0
   local gsva_query_enabled=0
   local npu_test_enabled=0
@@ -959,6 +991,8 @@ run_iteration() {
   local pretraining_client_mem_service_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
+  local nodea_mem_service_obmm_provider_append=""
+  local nodeb_mem_service_obmm_provider_append=""
   local nodea_ssd_gsva_test_append=""
   local nodeb_ssd_gsva_test_append=""
   local nodea_w4_guest_append=""
@@ -993,6 +1027,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_coh_test=1"* ]]; then
     obmm_coh_test_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_mem_service_obmm_provider_conformance=1"* ]]; then
+    mem_service_obmm_provider_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
     gva_direct_enabled=1
@@ -1040,6 +1077,13 @@ run_iteration() {
     nodea_obmm_coh_test_append="obmm_coh_test_node_id=0 obmm_coh_test_exporter=1"
     nodeb_obmm_coh_test_append="obmm_coh_test_node_id=1"
   fi
+  if [[ "$mem_service_obmm_provider_enabled" -eq 1 ]]; then
+    append_cmdline_if_missing "mem_service_obmm_provider_node_count=2"
+    append_cmdline_if_missing \
+      "mem_service_obmm_provider_generation=${MEM_SERVICE_OBMM_PROVIDER_GENERATION}"
+    nodea_mem_service_obmm_provider_append="mem_service_obmm_provider_node_id=0"
+    nodeb_mem_service_obmm_provider_append="mem_service_obmm_provider_node_id=1"
+  fi
   if [[ "$gva_direct_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "gva_direct_mode=${GVA_DIRECT_MODE}"
     append_cmdline_if_missing "gva_direct_size=${GVA_DIRECT_SIZE}"
@@ -1061,10 +1105,10 @@ run_iteration() {
     nodea_w4_guest_append="linqu_w4_role=nodeA linqu_w4_local_ip=10.0.0.1"
     nodeb_w4_guest_append="linqu_w4_role=nodeB linqu_w4_local_ip=10.0.0.2"
   fi
-  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append}"
+  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_mem_service_obmm_provider_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append}"
   nodea_app_append="${nodea_app_append#"${nodea_app_append%%[![:space:]]*}"}"
   nodea_app_append="${nodea_app_append%"${nodea_app_append##*[![:space:]]}"}"
-  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append}"
+  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_mem_service_obmm_provider_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append}"
   nodeb_app_append="${nodeb_app_append#"${nodeb_app_append%%[![:space:]]*}"}"
   nodeb_app_append="${nodeb_app_append%"${nodeb_app_append##*[![:space:]]}"}"
 
@@ -1079,7 +1123,12 @@ run_iteration() {
   if [[ "$USE_QMP" == "1" ]]; then
     mkdir -p "$QMP_DIR"
   fi
-  stale_files=("$SHARED_DIR"/*.ini "$SHARED_DIR"/*.kick "$SHARED_DIR"/*.lock)
+  stale_files=(
+    "$SHARED_DIR"/*.ini
+    "$SHARED_DIR"/*.kick
+    "$SHARED_DIR"/*.lock
+    "$SHARED_DIR"/obmm_bootstrap/node*.ini
+  )
   if (( ${#stale_files[@]} )); then
     rm -f "${stale_files[@]}"
   fi
@@ -1402,6 +1451,38 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$mem_service_obmm_provider_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" \
+      "mem_service obmm-provider-conformance: status=ok node=0" \
+      "mem_service obmm-provider-conformance: status=fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA OBMM provider conformance failed" >&2
+        return 30
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA OBMM provider conformance timed out" >&2
+        return 30
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" \
+      "mem_service obmm-provider-conformance: status=ok node=1" \
+      "mem_service obmm-provider-conformance: status=fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB OBMM provider conformance failed" >&2
+        return 30
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB OBMM provider conformance timed out" >&2
+        return 30
+        ;;
+    esac
+  fi
+
   if [[ "$gva_direct_enabled" -eq 1 ]]; then
     wait_for_log_pass_or_fail "$nodea_guest_log" "\\[gva_direct\\] result=done" \
       "\\[gva_direct\\] result=fail" "$RUN_SECS"
@@ -1694,6 +1775,16 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_coh_test=1"* ]]; then
     validate_obmm_coh_test_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_coh_test_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_mem_service_obmm_provider_conformance=1"* ]]; then
+    validate_mem_service_obmm_provider_log \
+      "nodeA" "$nodea_guest_log" || return 1
+    validate_mem_service_obmm_provider_log \
+      "nodeB" "$nodeb_guest_log" || return 1
+    validate_mem_service_obmm_provider_qemu_log \
+      "nodeA" "$nodea_qemu_log" || return 1
+    validate_mem_service_obmm_provider_qemu_log \
+      "nodeB" "$nodeb_qemu_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
     validate_gva_direct_log "nodeA" "$nodea_guest_log" || return 1
