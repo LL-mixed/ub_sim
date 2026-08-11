@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="990"
+     viewBox="0 0 1480 990" role="img" aria-labelledby="title desc">
+  <title id="title">P2B ordinary load with a dedicated scheduler core</title>
+  <desc id="desc">An ordinary unretired AArch64 load creates a pending-load
+  entry. The application core saves the coroutine into a Context Store, a
+  dedicated scheduler core chooses another ready context, and completion later
+  commits the value into the original target register before advancing PC.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fafbf7"/>
+      <stop offset="1" stop-color="#eef5f4"/>
+    </linearGradient>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#416f88"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#a66b2f"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#3f7866"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+             fill: #18332f; }
+      .kicker { font-size: 15px; font-weight: 760; letter-spacing: 2px; fill: #53736d; }
+      .title { font-size: 32px; font-weight: 780; }
+      .subtitle { font-size: 16px; fill: #5b706c; }
+      .section { font-size: 20px; font-weight: 770; }
+      .box-title { font-size: 17px; font-weight: 760; }
+      .copy { font-size: 14px; fill: #485f5b; }
+      .small { font-size: 12px; fill: #58706b; }
+      .step { font-size: 13px; font-weight: 800; }
+      .state { font-size: 13px; font-weight: 720; }
+      .note-title { font-size: 16px; font-weight: 760; }
+      .note { font-size: 13px; fill: #425b56; }
+    </style>
+  </defs>
+
+  <rect width="1480" height="990" fill="url(#bg)"/>
+  <text x="56" y="46" class="kicker">P2B · CORE-OWNED PRECISE LOAD SUSPENSION</text>
+  <text x="56" y="88" class="title">普通 LDR 不退休；scheduler core 选择 context，commit unit 完成原 load</text>
+  <text x="56" y="118" class="subtitle">data plane 无 submit/await，但硬件必须保存 Rt、MemOp、PC、ordering、fault 和完整 coroutine context。</text>
+
+  <g transform="translate(56 154)">
+    <rect width="1368" height="548" rx="22" fill="#ffffff" stroke="#d6e2df"/>
+
+    <rect x="20" y="20" width="370" height="508" rx="18" fill="#edf5f9" stroke="#b7cfdb"/>
+    <text x="40" y="55" class="section">Application core + RLA</text>
+
+    <g transform="translate(40 82)">
+      <rect width="330" height="86" rx="13" fill="#ffffff" stroke="#a9c6d4"/>
+      <circle cx="306" cy="18" r="14" fill="#c7ddea"/>
+      <text x="306" y="23" text-anchor="middle" class="step">1</text>
+      <text x="16" y="31" class="box-title">A: LDR X3, [remote]</text>
+      <text x="16" y="56" class="copy">普通指令；无 per-load API</text>
+      <text x="16" y="77" class="copy">translation/permission 先完成</text>
+    </g>
+    <g transform="translate(40 192)">
+      <rect width="330" height="112" rx="13" fill="#fff7eb" stroke="#d9bb91"/>
+      <circle cx="306" cy="18" r="14" fill="#efd5af"/>
+      <text x="306" y="23" text-anchor="middle" class="step">2</text>
+      <text x="16" y="31" class="box-title">remote miss → PLT PENDING</text>
+      <text x="16" y="56" class="copy">保存 PC / next PC / Rt=X3 / MemOp</text>
+      <text x="16" y="78" class="copy">X3 不变，PC 不前进，LDR 未退休</text>
+      <text x="16" y="100" class="copy">precise TB exit</text>
+    </g>
+    <g transform="translate(40 330)">
+      <rect width="330" height="104" rx="13" fill="#eaf5f0" stroke="#a9ccbd"/>
+      <circle cx="306" cy="18" r="14" fill="#c6e0d4"/>
+      <text x="306" y="23" text-anchor="middle" class="step">7</text>
+      <text x="16" y="31" class="box-title">restore A + commit LDR</text>
+      <text x="16" y="56" class="copy">value → X3；PC → next_pc</text>
+      <text x="16" y="78" class="copy">此刻 load 才退休，A 继续执行</text>
+    </g>
+    <text x="40" y="474" class="small">capacity full → synchronous stall fallback</text>
+    <text x="40" y="497" class="small">EL1 entry 时 quiesce；不在异常中切 context</text>
+
+    <rect x="422" y="20" width="284" height="508" rx="18" fill="#f7f8f5" stroke="#ccd7d2"/>
+    <text x="442" y="55" class="section">Core-owned state</text>
+    <g transform="translate(442 82)">
+      <rect width="244" height="142" rx="13" fill="#fff8ed" stroke="#d9be97"/>
+      <text x="16" y="30" class="box-title">Pending-load table · 64</text>
+      <text x="16" y="56" class="copy">context ID + generation</text>
+      <text x="16" y="78" class="copy">provider token + map epoch</text>
+      <text x="16" y="100" class="copy">PC + Rt + size/extend/endian</text>
+      <text x="16" y="122" class="copy">value | fault + commit state</text>
+    </g>
+    <g transform="translate(442 258)">
+      <rect width="244" height="166" rx="13" fill="#edf5f2" stroke="#b6cec4"/>
+      <circle cx="220" cy="18" r="14" fill="#c8e0d6"/>
+      <text x="220" y="23" text-anchor="middle" class="step">3</text>
+      <text x="16" y="30" class="box-title">Context Store · 64</text>
+      <text x="16" y="56" class="copy">x0..x30 / SP / PC / PSTATE</text>
+      <text x="16" y="78" class="copy">Q0..Q31 / FPCR / FPSR</text>
+      <text x="16" y="100" class="copy">TPIDR_EL0 / stack bounds</text>
+      <text x="16" y="128" class="copy">A: WAIT_REMOTE</text>
+      <text x="16" y="150" class="copy">B: READY / RUNNING</text>
+    </g>
+    <text x="442" y="466" class="small">state 按 generation 关联</text>
+    <text x="442" y="489" class="small">不复制 EL1/MMU/device state</text>
+
+    <rect x="738" y="20" width="292" height="508" rx="18" fill="#f0f7f4" stroke="#bcd4c9"/>
+    <text x="758" y="55" class="section">Dedicated scheduler core</text>
+    <g transform="translate(758 82)">
+      <rect width="252" height="112" rx="13" fill="#ffffff" stroke="#b1cdc1"/>
+      <circle cx="228" cy="18" r="14" fill="#c7e0d5"/>
+      <text x="228" y="23" text-anchor="middle" class="step">4</text>
+      <text x="16" y="31" class="box-title">consume PENDING(A)</text>
+      <text x="16" y="56" class="copy">A → WAIT_REMOTE</text>
+      <text x="16" y="78" class="copy">round-robin choose READY B</text>
+      <text x="16" y="100" class="copy">command app core restore B</text>
+    </g>
+    <g transform="translate(758 226)">
+      <rect width="252" height="112" rx="13" fill="#ffffff" stroke="#b1cdc1"/>
+      <circle cx="228" cy="18" r="14" fill="#c7e0d5"/>
+      <text x="228" y="23" text-anchor="middle" class="step">6</text>
+      <text x="16" y="31" class="box-title">COMPLETE(A) event</text>
+      <text x="16" y="56" class="copy">A: WAIT_REMOTE → READY</text>
+      <text x="16" y="78" class="copy">selected later: restore + commit</text>
+      <text x="16" y="100" class="copy">failure: schedule fault context</text>
+    </g>
+    <g transform="translate(758 370)">
+      <rect width="252" height="78" rx="13" fill="#e8f3ee" stroke="#afd0c1"/>
+      <text x="16" y="30" class="box-title">modeled hardware cost</text>
+      <text x="16" y="54" class="copy">save/schedule/restore/commit</text>
+    </g>
+    <text x="758" y="487" class="small">不是 EL0 handler，也不是 host thread</text>
+
+    <rect x="1062" y="20" width="286" height="508" rx="18" fill="#fff7ea" stroke="#ddc198"/>
+    <text x="1082" y="55" class="section">Remote provider</text>
+    <g transform="translate(1082 82)">
+      <rect width="246" height="112" rx="13" fill="#ffffff" stroke="#d6b98f"/>
+      <circle cx="222" cy="18" r="14" fill="#efd5ad"/>
+      <text x="222" y="23" text-anchor="middle" class="step">5</text>
+      <text x="16" y="31" class="box-title">read in flight</text>
+      <text x="16" y="56" class="copy">provider token only</text>
+      <text x="16" y="78" class="copy">latency / reorder / timeout</text>
+      <text x="16" y="100" class="copy">response(value | failure)</text>
+    </g>
+    <g transform="translate(1082 234)">
+      <rect width="246" height="128" rx="13" fill="#fffdf8" stroke="#d6b98f"/>
+      <text x="16" y="30" class="box-title">validate before submit</text>
+      <text x="16" y="56" class="copy">owner + GSVA policy range</text>
+      <text x="16" y="78" class="copy">token + permission + epoch</text>
+      <text x="16" y="100" class="copy">map retire / coherence acquire</text>
+    </g>
+    <text x="1082" y="410" class="small">provider 不直接写 GPR/PC</text>
+    <text x="1082" y="433" class="small">response 只更新 PLT + enqueue event</text>
+    <text x="1082" y="472" class="small">SIM_DEC/URMA 不进入 public ABI</text>
+
+    <path d="M370 249 H434" fill="none" stroke="#a66b2f" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+    <path d="M686 330 H750" fill="none" stroke="#416f88" stroke-width="2.5" marker-end="url(#arrowBlue)"/>
+    <path d="M1010 142 H1074" fill="none" stroke="#416f88" stroke-width="2.5" marker-end="url(#arrowBlue)"/>
+    <path d="M1082 186 H1018" fill="none" stroke="#3f7866" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+    <path d="M758 282 H694" fill="none" stroke="#3f7866" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+    <path d="M442 382 H378" fill="none" stroke="#3f7866" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+  </g>
+
+  <g transform="translate(56 736)">
+    <rect width="1368" height="198" rx="22" fill="#ffffff" stroke="#d6e2df"/>
+    <text x="24" y="36" class="note-title">原 load 的 precise state：pending 到 commit 之间不允许“看起来已经完成”</text>
+
+    <g transform="translate(28 62)">
+      <rect x="0" y="0" width="164" height="48" rx="12" fill="#e9f2f6" stroke="#b5ccd8"/>
+      <text x="82" y="21" text-anchor="middle" class="state">A executes LDR</text>
+      <text x="82" y="38" text-anchor="middle" class="small">PC=P, X3=old</text>
+      <path d="M164 24 H218" stroke="#416f88" stroke-width="2.4" marker-end="url(#arrowBlue)"/>
+      <rect x="226" y="0" width="188" height="48" rx="12" fill="#fff3e1" stroke="#dbbb8d"/>
+      <text x="320" y="21" text-anchor="middle" class="state">A WAIT_REMOTE</text>
+      <text x="320" y="38" text-anchor="middle" class="small">PC=P, X3=old, PLT owns load</text>
+      <path d="M414 24 H468" stroke="#416f88" stroke-width="2.4" marker-end="url(#arrowBlue)"/>
+      <rect x="476" y="0" width="148" height="48" rx="12" fill="#eaf5f0" stroke="#a9cdbd"/>
+      <text x="550" y="21" text-anchor="middle" class="state">B RUNNING</text>
+      <text x="550" y="38" text-anchor="middle" class="small">own PC/registers</text>
+      <path d="M624 24 H678" stroke="#3f7866" stroke-width="2.4" marker-end="url(#arrowGreen)"/>
+      <rect x="686" y="0" width="170" height="48" rx="12" fill="#eaf5f0" stroke="#a9cdbd"/>
+      <text x="771" y="21" text-anchor="middle" class="state">COMPLETE(A)</text>
+      <text x="771" y="38" text-anchor="middle" class="small">value only in PLT</text>
+      <path d="M856 24 H910" stroke="#3f7866" stroke-width="2.4" marker-end="url(#arrowGreen)"/>
+      <rect x="918" y="0" width="194" height="48" rx="12" fill="#e8f2ed" stroke="#a9cdbd"/>
+      <text x="1015" y="21" text-anchor="middle" class="state">COMMIT original LDR</text>
+      <text x="1015" y="38" text-anchor="middle" class="small">PC=P+4, X3=value</text>
+    </g>
+
+    <rect x="1164" y="56" width="176" height="112" rx="14" fill="#fff5e7" stroke="#d9bd94"/>
+    <text x="1182" y="82" class="note-title">失败</text>
+    <text x="1182" y="107" class="note">PC 保持 P</text>
+    <text x="1182" y="130" class="note">X3 保持 old</text>
+    <text x="1182" y="153" class="note">FAULTED → handler</text>
+
+    <text x="28" y="148" class="note">QEMU 的 TB exit 只是模拟 application core 停在 precise boundary；它不是 guest-visible upcall。</text>
+    <text x="28" y="173" class="note">P2B 默认 demand-pending，不能自动得到 P2A 在消费点之前 pre-submit 的 schedule-ahead 窗口。</text>
+  </g>
+</svg>

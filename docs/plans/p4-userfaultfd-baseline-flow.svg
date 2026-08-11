@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="900" viewBox="0 0 1480 900" role="img" aria-labelledby="title desc">
+  <title id="title">P4 userfaultfd 透明页访问时序</title>
+  <desc id="desc">展示 worker 访问 shadow mapping 后在内核阻塞，独立 handler 读取 OBMM source page 并 UFFDIO_COPY，随后 kernel 唤醒 worker；失败时 poison 或 fail-stop。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+    <marker id="redarrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#dc2626"/>
+    </marker>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .head { font: 650 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334155; }
+      .lane { stroke: #94a3b8; stroke-width: 1.5; }
+      .flow { stroke: #2563eb; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .error { stroke: #dc2626; stroke-width: 2.4; fill: none; marker-end: url(#redarrow); }
+      .wait { stroke: #d97706; stroke-width: 5; fill: none; }
+    </style>
+  </defs>
+  <rect width="1480" height="900" fill="#f8fafc"/>
+  <text x="60" y="56" class="title">P4：透明的是页访问，不是同一 kernel thread 的协程切换</text>
+  <text x="60" y="86" class="subtitle">标准 UFFD_USER_MODE_ONLY + MISSING + UFFDIO_COPY；私有 USWAP/DIRECT_MAP 不进入基线</text>
+
+  <rect x="60" y="124" width="300" height="632" class="lane" fill="#eff6ff"/>
+  <text x="210" y="160" text-anchor="middle" class="head">Worker · application vCPU</text>
+  <rect x="92" y="202" width="236" height="76" rx="10" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="210" y="232" text-anchor="middle" class="head">普通 pointer load</text>
+  <text x="210" y="258" text-anchor="middle" class="mono">shadow_base + offset</text>
+  <rect x="92" y="334" width="236" height="174" rx="10" fill="#fef3c7" stroke="#f59e0b"/>
+  <text x="210" y="370" text-anchor="middle" class="head">Kernel 内阻塞</text>
+  <text x="210" y="404" text-anchor="middle" class="body">faulting Linux thread</text>
+  <line x1="210" y1="424" x2="210" y2="478" class="wait"/>
+  <text x="224" y="456" class="body">不执行 EL0 coroutine</text>
+  <rect x="92" y="602" width="236" height="76" rx="10" fill="#dcfce7" stroke="#86efac"/>
+  <text x="210" y="632" text-anchor="middle" class="head">原 load 重试/退休</text>
+  <text x="210" y="658" text-anchor="middle" class="body">consume page + checksum</text>
+
+  <rect x="420" y="124" width="300" height="632" class="lane" fill="#f1f5f9"/>
+  <text x="570" y="160" text-anchor="middle" class="head">Linux userfaultfd</text>
+  <rect x="452" y="284" width="236" height="92" rx="10" fill="#e2e8f0" stroke="#94a3b8"/>
+  <text x="570" y="316" text-anchor="middle" class="head">MISSING page fault</text>
+  <text x="570" y="344" text-anchor="middle" class="body">publish UFFD_EVENT_PAGEFAULT</text>
+  <rect x="452" y="536" width="236" height="92" rx="10" fill="#dcfce7" stroke="#86efac"/>
+  <text x="570" y="568" text-anchor="middle" class="head">Install page + wake</text>
+  <text x="570" y="596" text-anchor="middle" class="body">all waiters on same page</text>
+
+  <rect x="780" y="124" width="300" height="632" class="lane" fill="#fff7ed"/>
+  <text x="930" y="160" text-anchor="middle" class="head">UFFD handler · extra vCPU</text>
+  <rect x="812" y="250" width="236" height="76" rx="10" fill="#ffedd5" stroke="#fdba74"/>
+  <text x="930" y="280" text-anchor="middle" class="head">poll/read event</text>
+  <text x="930" y="306" text-anchor="middle" class="body">validate page/generation</text>
+  <rect x="812" y="382" width="236" height="76" rx="10" fill="#ffedd5" stroke="#fdba74"/>
+  <text x="930" y="412" text-anchor="middle" class="head">Read source page</text>
+  <text x="930" y="438" text-anchor="middle" class="body">4 KiB → aligned staging</text>
+  <rect x="812" y="500" width="236" height="76" rx="10" fill="#ffedd5" stroke="#fdba74"/>
+  <text x="930" y="530" text-anchor="middle" class="head">UFFDIO_COPY</text>
+  <text x="930" y="556" text-anchor="middle" class="body">staging → shadow page</text>
+
+  <rect x="1140" y="124" width="280" height="632" class="lane" fill="#f0fdf4"/>
+  <text x="1280" y="160" text-anchor="middle" class="head">OBMM source range</text>
+  <rect x="1172" y="368" width="216" height="104" rx="10" fill="#dcfce7" stroke="#86efac"/>
+  <text x="1280" y="400" text-anchor="middle" class="head">Remote page read</text>
+  <text x="1280" y="428" text-anchor="middle" class="body">same P0 latency/fault</text>
+  <text x="1280" y="452" text-anchor="middle" class="body">same payload oracle</text>
+
+  <path d="M328 240 C410 240 400 316 444 326" class="flow"/>
+  <path d="M688 326 C760 326 754 288 804 288" class="flow"/>
+  <path d="M1048 420 H1164" class="flow"/>
+  <path d="M1172 448 H1056" class="flow"/>
+  <path d="M930 458 V492" class="flow"/>
+  <path d="M812 538 H696" class="flow"/>
+  <path d="M452 582 H336" class="flow"/>
+
+  <rect x="60" y="790" width="650" height="82" rx="10" fill="#fee2e2" stroke="#fca5a5"/>
+  <text x="385" y="820" text-anchor="middle" class="head">Remote failure</text>
+  <text x="385" y="850" text-anchor="middle" class="body">UFFDIO_POISON → SIGBUS；不支持时 fail-stop；绝不 ZEROPAGE</text>
+  <path d="M1280 472 C1280 820 900 830 720 830" class="error"/>
+  <rect x="770" y="790" width="650" height="82" rx="10" fill="#e2e8f0" stroke="#94a3b8"/>
+  <text x="1095" y="820" text-anchor="middle" class="head">测量必须计入</text>
+  <text x="1095" y="850" text-anchor="middle" class="body">kernel fault + remote read + staging copy + UFFDIO_COPY + handler vCPU</text>
+</svg>

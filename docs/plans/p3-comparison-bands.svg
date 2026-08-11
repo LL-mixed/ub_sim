@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="920" viewBox="0 0 1480 920" role="img" aria-labelledby="title desc">
+  <title id="title">P3 三个 canonical 比较带</title>
+  <desc id="desc">展示 scalar、range 和 transparency 三组实验，强调 P2A lookahead 与 demand 分开，以及 userfaultfd 和 P2B 不跨粒度直接比较。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .head { font: 650 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334155; }
+      .box { stroke: #94a3b8; stroke-width: 1.5; }
+      .flow { stroke: #2563eb; stroke-width: 2.3; fill: none; marker-end: url(#arrow); }
+      .compare { stroke: #64748b; stroke-width: 2; stroke-dasharray: 7 5; fill: none; }
+    </style>
+  </defs>
+  <rect width="1480" height="920" fill="#f8fafc"/>
+  <text x="60" y="56" class="title">P3：先按语义和粒度分带，再做公平对比</text>
+  <text x="60" y="86" class="subtitle">所有 case 共享 operation_key、payload、P0 fault sequence；不同带不做伪等价排名</text>
+
+  <rect x="60" y="126" width="1360" height="244" class="box" fill="#eff6ff"/>
+  <text x="88" y="162" class="head">Band S · 8-byte scalar</text>
+  <text x="88" y="188" class="body">回答 split/context-switch 与 schedule-ahead 的独立收益</text>
+
+  <rect x="88" y="218" width="270" height="112" class="box" fill="#e2e8f0"/>
+  <text x="223" y="250" text-anchor="middle" class="head">S0 · Sync LDR</text>
+  <text x="223" y="279" text-anchor="middle" class="body">demand issue · vCPU stall</text>
+  <text x="223" y="306" text-anchor="middle" class="mono">reference</text>
+  <rect x="402" y="218" width="270" height="112" class="box" fill="#dbeafe"/>
+  <text x="537" y="250" text-anchor="middle" class="head">S1 · P2A demand</text>
+  <text x="537" y="279" text-anchor="middle" class="body">lookahead = 0</text>
+  <text x="537" y="306" text-anchor="middle" class="mono">EL0 await switch</text>
+  <rect x="716" y="218" width="270" height="112" class="box" fill="#bfdbfe"/>
+  <text x="851" y="250" text-anchor="middle" class="head">S2 · P2A lookahead</text>
+  <text x="851" y="279" text-anchor="middle" class="body">pre-submit K ops</text>
+  <text x="851" y="306" text-anchor="middle" class="mono">schedule-ahead gain</text>
+  <rect x="1030" y="218" width="360" height="112" class="box" fill="#ede9fe"/>
+  <text x="1210" y="250" text-anchor="middle" class="head">S3 · P2B demand</text>
+  <text x="1210" y="279" text-anchor="middle" class="body">ordinary unretired LDR</text>
+  <text x="1210" y="306" text-anchor="middle" class="mono">scheduler-core switch</text>
+  <path d="M358 274 H394" class="flow"/>
+  <path d="M672 274 H708" class="flow"/>
+  <path d="M986 274 H1022" class="flow"/>
+
+  <rect x="60" y="402" width="1360" height="244" class="box" fill="#f0fdf4"/>
+  <text x="88" y="438" class="head">Band R · 4-KiB range/page</text>
+  <text x="88" y="464" class="body">回答显式异步 range 与标准 OS 透明 page-fault 的代价</text>
+  <rect x="88" y="494" width="380" height="112" class="box" fill="#e2e8f0"/>
+  <text x="278" y="526" text-anchor="middle" class="head">R0 · Sync remote range</text>
+  <text x="278" y="555" text-anchor="middle" class="body">4-KiB blocking read</text>
+  <text x="278" y="582" text-anchor="middle" class="mono">payload reference</text>
+  <rect x="550" y="494" width="380" height="112" class="box" fill="#dcfce7"/>
+  <text x="740" y="526" text-anchor="middle" class="head">R1 · P2A range</text>
+  <text x="740" y="555" text-anchor="middle" class="body">submit/await · registered buffer</text>
+  <text x="740" y="582" text-anchor="middle" class="mono">same 4-KiB payload</text>
+  <rect x="1012" y="494" width="378" height="112" class="box" fill="#fef3c7"/>
+  <text x="1201" y="526" text-anchor="middle" class="head">R2 · P4 userfaultfd</text>
+  <text x="1201" y="555" text-anchor="middle" class="body">missing page + handler vCPU</text>
+  <text x="1201" y="582" text-anchor="middle" class="mono">same 4-KiB payload</text>
+  <path d="M468 550 H542" class="flow"/>
+  <path d="M930 550 H1004" class="flow"/>
+
+  <rect x="60" y="678" width="1360" height="166" class="box" fill="#fff7ed"/>
+  <text x="88" y="714" class="head">Band T · 透明性与资源成本</text>
+  <text x="88" y="746" class="body">P2A：显式 API / 无额外 core 硬要求</text>
+  <text x="88" y="778" class="body">P2B：普通 scalar LDR / dedicated scheduler core / 自定义 precise state</text>
+  <text x="88" y="810" class="body">P4：普通 shadow-page load / dedicated handler vCPU / kernel fault + page copy</text>
+  <rect x="860" y="716" width="520" height="92" rx="10" fill="#ffedd5" stroke="#fb923c"/>
+  <text x="1120" y="747" text-anchor="middle" class="head">不压成一个“透明性分数”</text>
+  <text x="1120" y="776" text-anchor="middle" class="body">分别报告接口改造、额外 core、状态容量和失败语义</text>
+
+  <path d="M1210 370 V394" class="compare"/>
+  <text x="1240" y="389" class="body">不跨带比较</text>
+  <rect x="60" y="866" width="1360" height="34" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+  <text x="740" y="889" text-anchor="middle" class="head">禁止直接用 P2B 8 B 和 userfaultfd 4 KiB 的吞吐/延迟决定优劣</text>
+</svg>

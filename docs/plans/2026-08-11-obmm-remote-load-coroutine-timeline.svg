@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="690" viewBox="0 0 1440 690" role="img" aria-labelledby="title desc">
+  <title id="title">Synchronous remote load versus coroutine overlap</title>
+  <desc id="desc">A timing comparison showing synchronous remote load latency added to useful work, while asynchronous submission overlaps the remote wait with useful work and adds only scheduling and completion overhead.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbfa"/>
+      <stop offset="1" stop-color="#eef4f6"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="9" flood-color="#17322f" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#58716d"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #19312e; }
+      .kicker { font-size: 15px; font-weight: 720; letter-spacing: 2px; fill: #2c746b; }
+      .title { font-size: 32px; font-weight: 760; }
+      .subtitle { font-size: 16px; fill: #617572; }
+      .lane { font-size: 19px; font-weight: 760; }
+      .lane-sub { font-size: 14px; fill: #657873; }
+      .bar { font-size: 15px; font-weight: 720; fill: #173d39; }
+      .bar-dark { font-size: 15px; font-weight: 720; fill: #284a45; }
+      .formula { font-size: 20px; font-weight: 760; }
+      .copy { font-size: 14px; fill: #5e726e; }
+      .metric { font-size: 16px; font-weight: 720; fill: #7d4a19; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="690" fill="url(#bg)"/>
+  <text x="64" y="58" class="kicker">SCHEDULE-AHEAD COST MODEL</text>
+  <text x="64" y="102" class="title">只有等待与独立工作发生重叠，协程才产生收益</text>
+  <text x="64" y="132" class="subtitle">L = remote latency · W = independent useful work · S/C = submit-switch / completion-resume cost</text>
+
+  <g transform="translate(64 178)">
+    <rect width="1312" height="176" rx="22" fill="#ffffff" stroke="#d9e5e2" filter="url(#shadow)"/>
+    <text x="28" y="46" class="lane">同步 pointer load</text>
+    <text x="28" y="71" class="lane-sub">vCPU 在 MemoryRegion read 内等待</text>
+
+    <line x1="258" y1="106" x2="1240" y2="106" stroke="#a7b8b5" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="280" y="76" width="560" height="60" rx="12" fill="#e8b0a4"/>
+    <text x="560" y="113" text-anchor="middle" class="bar" fill="#4d2119">remote wait · L</text>
+    <rect x="840" y="76" width="330" height="60" rx="12" fill="#9fd1ca"/>
+    <text x="1005" y="113" text-anchor="middle" class="bar" fill="#163b36">useful work · W</text>
+
+    <text x="1200" y="51" text-anchor="end" class="formula">T_sync = L + W</text>
+    <text x="1200" y="73" text-anchor="end" class="copy">没有同核工作推进</text>
+  </g>
+
+  <g transform="translate(64 384)">
+    <rect width="1312" height="196" rx="22" fill="#ffffff" stroke="#b9d7d2" filter="url(#shadow)"/>
+    <text x="28" y="46" class="lane">异步 submit + coroutine</text>
+    <text x="28" y="71" class="lane-sub">Coroutine A 等待；B/C 在同一 guest vCPU 执行</text>
+
+    <line x1="258" y1="122" x2="1240" y2="122" stroke="#a7b8b5" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="280" y="92" width="78" height="60" rx="12" fill="#f1c27d"/>
+    <text x="319" y="129" text-anchor="middle" class="bar" fill="#4d3114">S</text>
+    <rect x="358" y="92" width="560" height="60" rx="12" fill="#dbe9e6" stroke="#8aaca6" stroke-dasharray="7 6"/>
+    <text x="803" y="129" text-anchor="middle" class="bar-dark">remote in flight · L</text>
+    <rect x="358" y="100" width="330" height="44" rx="9" fill="#9fd1ca"/>
+    <text x="523" y="128" text-anchor="middle" class="bar" fill="#163b36">B/C useful work · W</text>
+    <rect x="918" y="92" width="78" height="60" rx="12" fill="#f1c27d"/>
+    <text x="957" y="129" text-anchor="middle" class="bar" fill="#4d3114">C</text>
+
+    <text x="1200" y="51" text-anchor="end" class="formula">T_async = S + max(L,W) + C</text>
+    <text x="1200" y="73" text-anchor="end" class="copy">收益上限是 min(L,W)</text>
+    <text x="280" y="179" class="metric">gain = min(L,W) − S − C</text>
+    <text x="562" y="179" class="copy">若没有 runnable work，或 L 太短，async 只增加成本。</text>
+  </g>
+
+  <g transform="translate(64 614)">
+    <rect width="1312" height="46" rx="14" fill="#fff5e9" stroke="#e0b983"/>
+    <text x="22" y="29" class="metric">调度门槛：</text>
+    <text x="124" y="29" class="copy">仅当 min(remote_latency, useful_work) &gt; submit_switch + completion_resume 时 yield；local/cache hit 必须 inline complete。</text>
+  </g>
+</svg>

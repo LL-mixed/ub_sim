@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="680" viewBox="0 0 1480 680" role="img" aria-labelledby="title desc">
+  <title id="title">OBMM remote-load 验证阶段和门禁</title>
+  <desc id="desc">展示 P0 到 P4 的依赖关系：P0 建立模型，P1 建立异步底座，P2A 与 P2B 并行实现，P4 建立独立 OS 基线，最后 P3 做公平评估。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .head { font: 650 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .mono { font: 500 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334155; }
+      .box { stroke: #94a3b8; stroke-width: 1.5; }
+      .flow { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .gate { stroke: #16a34a; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1480" height="680" fill="#f8fafc"/>
+  <text x="60" y="56" class="title">OBMM remote-load：设计完成不等于阶段通过</text>
+  <text x="60" y="86" class="subtitle">每一阶段先实现、测试并形成 gate evidence；P3 只消费通过门禁的路径</text>
+
+  <rect x="60" y="144" width="260" height="150" class="box" fill="#e2e8f0"/>
+  <text x="190" y="180" text-anchor="middle" class="head">P0 · 坐标系</text>
+  <text x="190" y="212" text-anchor="middle" class="body">sync baselines</text>
+  <text x="190" y="238" text-anchor="middle" class="body">virtual-time model</text>
+  <text x="190" y="268" text-anchor="middle" class="mono">hash / clocks / reproducibility</text>
+
+  <rect x="402" y="144" width="300" height="150" class="box" fill="#fef3c7"/>
+  <text x="552" y="180" text-anchor="middle" class="head">P1 · 共同底座</text>
+  <text x="552" y="212" text-anchor="middle" class="body">64 pending + child aggregation</text>
+  <text x="552" y="238" text-anchor="middle" class="body">generation-safe sinks</text>
+  <text x="552" y="268" text-anchor="middle" class="mono">exactly-once terminal</text>
+  <path d="M320 219 H394" class="flow"/>
+
+  <rect x="802" y="112" width="300" height="150" class="box" fill="#dbeafe"/>
+  <text x="952" y="148" text-anchor="middle" class="head">P2A · 软件路径</text>
+  <text x="952" y="180" text-anchor="middle" class="body">submit / await / CQ</text>
+  <text x="952" y="206" text-anchor="middle" class="body">EL0 stackful coroutine</text>
+  <text x="952" y="236" text-anchor="middle" class="mono">A waits → B runs → A resumes</text>
+  <rect x="802" y="308" width="300" height="150" class="box" fill="#ede9fe"/>
+  <text x="952" y="344" text-anchor="middle" class="head">P2B · 硬件路径</text>
+  <text x="952" y="376" text-anchor="middle" class="body">unretired LDR / PLT / SCC</text>
+  <text x="952" y="402" text-anchor="middle" class="body">Context Store + precise commit</text>
+  <text x="952" y="432" text-anchor="middle" class="mono">PC/Rt advance exactly once</text>
+  <path d="M702 190 C752 190 752 187 794 187" class="flow"/>
+  <path d="M702 248 C752 270 752 383 794 383" class="flow"/>
+
+  <rect x="402" y="386" width="300" height="150" class="box" fill="#f0fdf4"/>
+  <text x="552" y="422" text-anchor="middle" class="head">P4 · OS 基线</text>
+  <text x="552" y="454" text-anchor="middle" class="body">standard userfaultfd MISSING</text>
+  <text x="552" y="480" text-anchor="middle" class="body">4-KiB page + handler vCPU</text>
+  <text x="552" y="510" text-anchor="middle" class="mono">fault / copy / wake breakdown</text>
+  <path d="M190 294 C190 470 300 461 394 461" class="flow"/>
+
+  <rect x="1202" y="210" width="218" height="236" class="box" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="1311" y="248" text-anchor="middle" class="head">P3 · 评估</text>
+  <text x="1311" y="286" text-anchor="middle" class="body">Band S · scalar</text>
+  <text x="1311" y="316" text-anchor="middle" class="body">Band R · 4-KiB</text>
+  <text x="1311" y="346" text-anchor="middle" class="body">Band T · cost</text>
+  <line x1="1230" y1="368" x2="1392" y2="368" stroke="#fdba74"/>
+  <text x="1311" y="396" text-anchor="middle" class="mono">only valid gates</text>
+  <text x="1311" y="423" text-anchor="middle" class="body">break-even evidence</text>
+  <path d="M1102 187 C1160 187 1158 263 1194 276" class="gate"/>
+  <path d="M1102 383 C1154 383 1154 348 1194 342" class="gate"/>
+  <path d="M702 461 C1000 560 1110 456 1194 405" class="gate"/>
+
+  <rect x="60" y="584" width="1360" height="60" rx="10" fill="#fee2e2" stroke="#fca5a5"/>
+  <text x="740" y="610" text-anchor="middle" class="head">门禁规则</text>
+  <text x="740" y="634" text-anchor="middle" class="body">未实现、checksum 不同、状态未 drain 或 precise invariant 未证明：保留证据，但不得进入性能聚合</text>
+</svg>

@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="940" viewBox="0 0 1440 940" role="img" aria-labelledby="title desc">
+  <title id="title">OBMM split-phase remote load and EL0 coroutine scheduling</title>
+  <desc id="desc">The recommended request and completion flow from an EL0 application through a guest queue, QEMU UBC, and a remote memory provider, with a separate warning for the non-standard direct EL0 upcall experiment.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7fbfa"/>
+      <stop offset="1" stop-color="#eef3f7"/>
+    </linearGradient>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#123f3a"/>
+      <stop offset="1" stop-color="#176d64"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#17322f" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#277a70"/>
+    </marker>
+    <marker id="arrowGold" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#b66a24"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #19312e; }
+      .eyebrow { font-size: 16px; font-weight: 700; letter-spacing: 2px; fill: #a7e2da; }
+      .title { font-size: 34px; font-weight: 760; fill: white; }
+      .subtitle { font-size: 17px; fill: #d8f1ed; }
+      .lane-title { font-size: 18px; font-weight: 740; fill: #173d39; }
+      .lane-sub { font-size: 13px; fill: #5d7471; }
+      .box-title { font-size: 17px; font-weight: 740; }
+      .box-copy { font-size: 14px; fill: #526966; }
+      .step { font-size: 13px; font-weight: 760; fill: white; }
+      .note-title { font-size: 17px; font-weight: 760; fill: #743b11; }
+      .note-copy { font-size: 14px; fill: #795637; }
+      .foot { font-size: 13px; fill: #62736f; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="940" fill="url(#bg)"/>
+  <rect x="54" y="42" width="1332" height="138" rx="26" fill="url(#hero)" filter="url(#shadow)"/>
+  <text x="92" y="80" class="eyebrow" fill="#a7e2da">RECOMMENDED ARCHITECTURE</text>
+  <text x="92" y="124" class="title" fill="#ffffff">OBMM 远端读：split-phase + EL0 协程</text>
+  <text x="92" y="154" class="subtitle" fill="#d8f1ed">submit 立即返回 token；数据到达后发布 CQE。普通 LDR 保持同步兼容语义。</text>
+
+  <g transform="translate(54 214)">
+    <rect width="1332" height="506" rx="24" fill="#ffffff" stroke="#d8e5e2" filter="url(#shadow)"/>
+
+    <rect x="0" y="0" width="238" height="506" rx="24" fill="#edf7f5"/>
+    <path d="M238 0 V506" stroke="#d4e4e1"/>
+    <text x="28" y="48" class="lane-title">Guest EL0</text>
+    <text x="28" y="72" class="lane-sub">application + coroutine runtime</text>
+
+    <rect x="238" y="0" width="256" height="506" fill="#f5f8f7"/>
+    <path d="M494 0 V506" stroke="#d4e4e1"/>
+    <text x="266" y="48" class="lane-title">Guest UAPI</text>
+    <text x="266" y="72" class="lane-sub">SQ / CQ + pollable IRQ</text>
+
+    <rect x="494" y="0" width="382" height="506" fill="#eef4f7"/>
+    <path d="M876 0 V506" stroke="#d4e4e1"/>
+    <text x="522" y="48" class="lane-title">QEMU UBC / OBMM adapter</text>
+    <text x="522" y="72" class="lane-sub">identity, token, epoch, coherence, pending table</text>
+
+    <rect x="876" y="0" width="456" height="506" rx="24" fill="#f7f3ed"/>
+    <text x="904" y="48" class="lane-title">Remote-memory provider</text>
+    <text x="904" y="72" class="lane-sub">SIM_DEC is one backend, not the public ABI</text>
+
+    <g transform="translate(26 104)">
+      <rect width="186" height="82" rx="14" fill="#ffffff" stroke="#93c8c1"/>
+      <text x="18" y="30" class="box-title">Coroutine A</text>
+      <text x="18" y="55" class="box-copy">load_submit() → token</text>
+      <circle cx="172" cy="14" r="14" fill="#277a70"/>
+      <text x="168" y="19" text-anchor="middle" class="step">1</text>
+    </g>
+
+    <g transform="translate(264 104)">
+      <rect width="204" height="82" rx="14" fill="#ffffff" stroke="#b7d7d2"/>
+      <text x="18" y="30" class="box-title">Submission Queue</text>
+      <text x="18" y="55" class="box-copy">map + offset + dst</text>
+      <circle cx="190" cy="14" r="14" fill="#277a70"/>
+      <text x="186" y="19" text-anchor="middle" class="step">2</text>
+    </g>
+
+    <g transform="translate(520 104)">
+      <rect width="330" height="82" rx="14" fill="#ffffff" stroke="#afc9d5"/>
+      <text x="18" y="30" class="box-title">Validate + allocate pending token</text>
+      <text x="18" y="55" class="box-copy">slot + generation; fast hit completes inline</text>
+      <circle cx="316" cy="14" r="14" fill="#277a70"/>
+      <text x="312" y="19" text-anchor="middle" class="step">3</text>
+    </g>
+
+    <g transform="translate(902 104)">
+      <rect width="402" height="82" rx="14" fill="#ffffff" stroke="#d8bc95"/>
+      <text x="18" y="30" class="box-title">REMOTE_LOAD request</text>
+      <text x="18" y="55" class="box-copy">read payload; latency / jitter / failure model</text>
+      <circle cx="388" cy="14" r="14" fill="#277a70"/>
+      <text x="384" y="19" text-anchor="middle" class="step">4</text>
+    </g>
+
+    <path d="M212 145 H264" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M468 145 H520" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M850 145 H902" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(26 238)">
+      <rect width="186" height="94" rx="14" fill="#173f3a"/>
+      <text x="18" y="31" class="box-title" font-size="15" fill="#ffffff">A: WAIT_REMOTE</text>
+      <text x="18" y="58" class="box-copy" fill="#d7eeea">run Coroutine B/C</text>
+      <text x="18" y="78" class="box-copy" fill="#d7eeea">on the same guest vCPU</text>
+      <circle cx="172" cy="14" r="14" fill="#de8a37"/>
+      <text x="168" y="19" text-anchor="middle" class="step">5</text>
+    </g>
+
+    <path d="M119 186 V238" stroke="#b66a24" stroke-width="3" marker-end="url(#arrowGold)"/>
+    <path d="M119 332 V388" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(902 278)">
+      <rect width="402" height="82" rx="14" fill="#fff7eb" stroke="#dbb47d"/>
+      <text x="18" y="30" class="box-title">REMOTE_LOAD completion</text>
+      <text x="18" y="55" class="box-copy">status + bytes + checksum; may finish out of order</text>
+      <circle cx="388" cy="14" r="14" fill="#277a70"/>
+      <text x="384" y="19" text-anchor="middle" class="step">6</text>
+    </g>
+
+    <g transform="translate(520 278)">
+      <rect width="330" height="82" rx="14" fill="#ffffff" stroke="#afc9d5"/>
+      <text x="18" y="30" class="box-title">Match token + DMA destination</text>
+      <text x="18" y="55" class="box-copy">reject stale/late; release-publish CQE</text>
+      <circle cx="316" cy="14" r="14" fill="#277a70"/>
+      <text x="312" y="19" text-anchor="middle" class="step">7</text>
+    </g>
+
+    <g transform="translate(264 278)">
+      <rect width="204" height="82" rx="14" fill="#ffffff" stroke="#b7d7d2"/>
+      <text x="18" y="30" class="box-title">Completion Queue</text>
+      <text x="18" y="55" class="box-copy">poll; IRQ only if idle</text>
+      <circle cx="190" cy="14" r="14" fill="#277a70"/>
+      <text x="186" y="19" text-anchor="middle" class="step">8</text>
+    </g>
+
+    <path d="M902 319 H850" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M520 319 H468" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M264 319 H212" stroke="#277a70" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g transform="translate(26 388)">
+      <rect width="186" height="82" rx="14" fill="#ffffff" stroke="#93c8c1"/>
+      <text x="18" y="30" class="box-title">A: READY</text>
+      <text x="18" y="55" class="box-copy">resume after await</text>
+      <circle cx="172" cy="14" r="14" fill="#277a70"/>
+      <text x="168" y="19" text-anchor="middle" class="step">9</text>
+    </g>
+
+    <rect x="264" y="406" width="1040" height="46" rx="12" fill="#edf5f3"/>
+    <text x="284" y="435" class="box-copy">No runnable coroutine: short spin → poll(/dev/linqu-ub).  Queue full: -EAGAIN.  Failure: explicit CQ status.</text>
+  </g>
+
+  <g transform="translate(54 754)">
+    <rect width="1332" height="132" rx="22" fill="#fff7ed" stroke="#e5bd88"/>
+    <path d="M28 28 H28 V104" stroke="#c67526" stroke-width="5" stroke-linecap="round"/>
+    <text x="54" y="52" class="note-title">对照路径：普通 LDR → hardware scheduler-core pending event</text>
+    <text x="54" y="80" class="note-copy">Application core 冻结未退休 load/context；dedicated scheduler core 通过 Context Store 保存 A、调度 B。</text>
+    <text x="54" y="106" class="note-copy">QEMU 需要模拟 pending-load table 与 context engine；它不是 Arm exception，也不是跳到 EL0 trampoline。</text>
+  </g>
+
+  <text x="54" y="922" class="foot">Design principle: identity and coherence remain OBMM/GSVA responsibilities; transport completion remains provider-neutral.</text>
+</svg>

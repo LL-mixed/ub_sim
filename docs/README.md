@@ -39,6 +39,22 @@ Current validation entry points:
   - W5 script surface inventory separating manual entry, internal runtime, validation, maintenance, and compatibility wrappers
 - [lingqu_db_object_service_design.md](lingqu_db_object_service_design.md)
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
+- [lingqu_datasystem_review.md](lingqu_datasystem_review.md)
+  - Chinese cross-repository review of Lingqu DataSystem, covering the original four-service model, current Object/Memory Service architecture, implementation map, maturity, gaps, and SVG diagrams
+- [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
+  - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with a QEMU-modeled hardware scheduler core, pending-load table, and Context Store
+- [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)
+  - implementation-level P0 design for four synchronous baselines, strong scenario configuration, deterministic QEMU virtual-time latency/failure injection, three-clock observation, CLI, and reproducibility gates
+- [plans/p1-split-phase-backend-detailed-design.md](plans/p1-split-phase-backend-detailed-design.md)
+  - implementation-level P1 design for 64 parent requests, SIM_DEC child aggregation, bounded result ownership, generation-safe test/P2A/P2B sinks, terminal races, conformance CLI, and tests
+- [plans/p2a-submit-await-detailed-design.md](plans/p2a-submit-await-detailed-design.md)
+  - implementation-level P2A design for the independent OBMM async endpoint, 64-byte SQ/CQ ABI, registered destination buffers, generation-safe futures, AArch64 EL0 stackful coroutines, CLI, and tests
+- [plans/p2b-scheduler-core-detailed-design.md](plans/p2b-scheduler-core-detailed-design.md)
+  - implementation-level P2B design for ordinary unretired AArch64 loads, Remote Load Assist, pending-load table, Context Store, dedicated scheduler core, precise TCG exit/commit, fault service, CLI, and tests
+- [plans/p3-comparative-evaluation-detailed-design.md](plans/p3-comparative-evaluation-detailed-design.md)
+  - implementation-level P3 design for scalar/range/transparency comparison bands, schedule-ahead isolation, fairness and statistics rules, invalidation gates, CLI, evidence artifacts, and break-even reporting
+- [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)
+  - implementation-level P4 design for the standard userfaultfd MISSING baseline, separate OBMM source and anonymous shadow ranges, handler-vCPU costs, page failure semantics, CLI, and tests
 - [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)
   - assessment of whether `mem_service` can be independently released/deployed, current component capabilities, blockers, and the service-productization plan for LLM serving and pretraining integration
 - [mem_service_implementation_summary.md](mem_service_implementation_summary.md)

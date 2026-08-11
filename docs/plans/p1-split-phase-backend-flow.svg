@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="900" viewBox="0 0 1480 900" role="img" aria-labelledby="title desc">
+  <title id="title">P1 split-phase backend 数据流</title>
+  <desc id="desc">展示三种 submit adapter 共享 validation、64 项 parent table、分块 SIM_DEC request、P1-owned result pool 和三种 generation-safe completion sink。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .head { font: 650 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334155; }
+      .box { stroke: #94a3b8; stroke-width: 1.5; }
+      .flow { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .late { stroke: #dc2626; stroke-width: 2; stroke-dasharray: 7 5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1480" height="900" fill="#f8fafc"/>
+  <text x="60" y="56" class="title">P1：一个 backend，三种 adapter；provider 不持有上层裸指针</text>
+  <text x="60" y="86" class="subtitle">wire req_id 已存在；P1 把单同步槽替换为多 parent / 多 child / exactly-once terminal</text>
+
+  <text x="60" y="132" class="head">Submit adapters</text>
+  <rect x="60" y="152" width="250" height="92" class="box" fill="#e2e8f0"/>
+  <text x="185" y="186" text-anchor="middle" class="head">Test sink submit</text>
+  <text x="185" y="215" text-anchor="middle" class="body">conformance / qtest</text>
+  <rect x="60" y="272" width="250" height="92" class="box" fill="#dbeafe"/>
+  <text x="185" y="306" text-anchor="middle" class="head">P2A endpoint</text>
+  <text x="185" y="335" text-anchor="middle" class="body">SQ + registered buffer</text>
+  <rect x="60" y="392" width="250" height="92" class="box" fill="#ede9fe"/>
+  <text x="185" y="426" text-anchor="middle" class="head">P2B RLA / PLT</text>
+  <text x="185" y="455" text-anchor="middle" class="body">ordinary scalar LDR</text>
+
+  <rect x="380" y="152" width="260" height="332" class="box" fill="#f1f5f9"/>
+  <text x="510" y="188" text-anchor="middle" class="head">Shared OBMM validation</text>
+  <text x="410" y="228" class="body">• map + generation</text>
+  <text x="410" y="260" class="body">• bounds + permission</text>
+  <text x="410" y="292" class="body">• token + epoch</text>
+  <text x="410" y="324" class="body">• coherence</text>
+  <line x1="410" y1="348" x2="610" y2="348" stroke="#cbd5e1"/>
+  <text x="410" y="382" class="body">local/cache hit</text>
+  <text x="410" y="410" class="mono">→ INLINE terminal</text>
+  <text x="410" y="450" class="body">remote miss</text>
+  <text x="410" y="478" class="mono">→ accept or CAPACITY</text>
+
+  <path d="M310 198 H372" class="flow"/>
+  <path d="M310 318 H372" class="flow"/>
+  <path d="M310 438 H372" class="flow"/>
+
+  <rect x="710" y="132" width="330" height="372" class="box" fill="#fef3c7" stroke="#d97706"/>
+  <text x="875" y="170" text-anchor="middle" class="head">P1 parent table · 64 slots</text>
+  <rect x="746" y="194" width="258" height="70" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="875" y="222" text-anchor="middle" class="mono">token = generation/owner/slot</text>
+  <text x="875" y="247" text-anchor="middle" class="body">state + map + sink + deadline</text>
+  <rect x="746" y="282" width="258" height="70" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="875" y="310" text-anchor="middle" class="head">P1 result pool</text>
+  <text x="875" y="336" text-anchor="middle" class="body">64 × 64 KiB · P1-owned</text>
+  <rect x="746" y="370" width="258" height="94" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="875" y="398" text-anchor="middle" class="head">Terminal arbiter</text>
+  <text x="875" y="424" text-anchor="middle" class="body">response / timeout / cancel / retire</text>
+  <text x="875" y="449" text-anchor="middle" class="mono">exactly one winner</text>
+  <path d="M640 318 H702" class="flow"/>
+
+  <rect x="1110" y="132" width="310" height="372" class="box" fill="#dcfce7"/>
+  <text x="1265" y="170" text-anchor="middle" class="head">SIM_DEC child adapter</text>
+  <text x="1140" y="210" class="body">Parent ≤ 64 KiB</text>
+  <text x="1140" y="240" class="body">→ N wire chunks</text>
+  <rect x="1142" y="266" width="246" height="62" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="1265" y="291" text-anchor="middle" class="mono">(peer_cna, req_id #17)</text>
+  <text x="1265" y="313" text-anchor="middle" class="body">offset 0 · terminal</text>
+  <rect x="1142" y="342" width="246" height="62" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="1265" y="367" text-anchor="middle" class="mono">(peer_cna, req_id #19)</text>
+  <text x="1265" y="389" text-anchor="middle" class="body">offset K · pending</text>
+  <text x="1265" y="442" text-anchor="middle" class="body">out-of-order aggregation</text>
+  <text x="1265" y="468" text-anchor="middle" class="body">no vCPU poll / sleep</text>
+  <path d="M1040 318 H1102" class="flow"/>
+  <path d="M1110 480 C1050 540 970 540 948 498" class="flow"/>
+
+  <text x="60" y="562" class="head">Generation-safe completion sinks</text>
+  <path d="M875 504 V588" class="flow"/>
+  <rect x="60" y="618" width="390" height="142" class="box" fill="#e2e8f0"/>
+  <text x="255" y="654" text-anchor="middle" class="head">Test sink</text>
+  <text x="255" y="688" text-anchor="middle" class="body">verify expected payload + status</text>
+  <text x="255" y="718" text-anchor="middle" class="mono">sink_id + sink_generation</text>
+  <text x="255" y="744" text-anchor="middle" class="body">exactly-once counter</text>
+
+  <rect x="545" y="618" width="390" height="142" class="box" fill="#dbeafe"/>
+  <text x="740" y="654" text-anchor="middle" class="head">P2A sink</text>
+  <text x="740" y="688" text-anchor="middle" class="body">copy result → registered destination</text>
+  <text x="740" y="718" text-anchor="middle" class="body">release-publish CQE / optional IRQ</text>
+  <text x="740" y="744" text-anchor="middle" class="mono">future becomes terminal</text>
+
+  <rect x="1030" y="618" width="390" height="142" class="box" fill="#ede9fe"/>
+  <text x="1225" y="654" text-anchor="middle" class="head">P2B sink</text>
+  <text x="1225" y="688" text-anchor="middle" class="body">copy scalar → PLT result field</text>
+  <text x="1225" y="718" text-anchor="middle" class="body">queue SCC COMPLETE / FAULT event</text>
+  <text x="1225" y="744" text-anchor="middle" class="mono">no direct CPUARMState write</text>
+
+  <path d="M875 588 C700 588 455 588 255 610" class="flow"/>
+  <path d="M875 588 C835 588 785 588 740 610" class="flow"/>
+  <path d="M875 588 C1015 588 1125 588 1225 610" class="flow"/>
+
+  <path d="M1265 504 C1390 560 1390 790 1225 806 H255 C120 806 100 786 100 766" class="late"/>
+  <text x="740" y="838" text-anchor="middle" class="body">duplicate / late / stale response：只计数，不再写 result、destination、PLT 或 CPU state</text>
+  <rect x="470" y="858" width="540" height="28" rx="7" fill="#fee2e2" stroke="#fca5a5"/>
+  <text x="740" y="878" text-anchor="middle" class="body">provider 永远不持有 guest pointer、registered buffer 指针或 PLT 裸指针</text>
+</svg>

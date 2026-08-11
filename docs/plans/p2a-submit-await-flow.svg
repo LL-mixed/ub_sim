@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="940"
+     viewBox="0 0 1480 940" role="img" aria-labelledby="title desc">
+  <title id="title">P2A submit await data plane and coroutine state</title>
+  <desc id="desc">The EL0 runtime submits an explicit remote read through a
+  registered SQ, switches coroutines at await, and resumes after the device
+  writes the registered destination and publishes a CQ entry.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbfd"/>
+      <stop offset="1" stop-color="#eef5f2"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#426f88"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#3f7967"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+             fill: #17342f; }
+      .kicker { font-size: 15px; font-weight: 760; letter-spacing: 2px; fill: #4d746d; }
+      .title { font-size: 32px; font-weight: 780; }
+      .subtitle { font-size: 16px; fill: #59716c; }
+      .lane { font-size: 20px; font-weight: 760; }
+      .box-title { font-size: 17px; font-weight: 760; }
+      .copy { font-size: 14px; fill: #4a625e; }
+      .small { font-size: 12px; fill: #58716c; }
+      .step { font-size: 13px; font-weight: 800; }
+      .state { font-size: 14px; font-weight: 720; }
+      .note-title { font-size: 16px; font-weight: 760; }
+      .note { font-size: 13px; fill: #415c57; }
+    </style>
+  </defs>
+
+  <rect width="1480" height="940" fill="url(#bg)"/>
+  <text x="56" y="46" class="kicker">P2A · SOFTWARE-VISIBLE SPLIT PHASE</text>
+  <text x="56" y="88" class="title">submit/await：队列拥有请求，EL0 runtime 拥有协程</text>
+  <text x="56" y="118" class="subtitle">load 已在软件边界拆开；await 是明确 suspension point，因此可以在消费前 schedule ahead。</text>
+
+  <g transform="translate(56 154)">
+    <rect width="1368" height="494" rx="22" fill="#ffffff" stroke="#d5e3df"/>
+
+    <rect x="20" y="20" width="318" height="454" rx="18" fill="#edf6fa" stroke="#b9d3df"/>
+    <text x="40" y="55" class="lane">EL0 application + runtime</text>
+
+    <g transform="translate(40 82)">
+      <rect width="278" height="78" rx="13" fill="#ffffff" stroke="#a9c8d6"/>
+      <circle cx="254" cy="18" r="14" fill="#c8dfeb"/>
+      <text x="254" y="23" text-anchor="middle" class="step">1</text>
+      <text x="16" y="31" class="box-title">A: submit(read request)</text>
+      <text x="16" y="56" class="copy">map/offset/dst → token；A 继续计算</text>
+    </g>
+    <g transform="translate(40 192)">
+      <rect width="278" height="92" rx="13" fill="#fff8ee" stroke="#dec39e"/>
+      <circle cx="254" cy="18" r="14" fill="#efd6b2"/>
+      <text x="254" y="23" text-anchor="middle" class="step">3</text>
+      <text x="16" y="31" class="box-title">A: await(token)</text>
+      <text x="16" y="56" class="copy">未完成：A → WAIT_REMOTE</text>
+      <text x="16" y="77" class="copy">runtime 保存 A，运行 READY 的 B</text>
+    </g>
+    <g transform="translate(40 316)">
+      <rect width="278" height="78" rx="13" fill="#edf7f2" stroke="#acd0c1"/>
+      <circle cx="254" cy="18" r="14" fill="#c7e2d6"/>
+      <text x="254" y="23" text-anchor="middle" class="step">7</text>
+      <text x="16" y="31" class="box-title">A: resume after await</text>
+      <text x="16" y="56" class="copy">检查 status，再消费 destination</text>
+    </g>
+    <text x="40" y="442" class="small">owner: future / waiter / ready queue / stacks</text>
+
+    <rect x="370" y="20" width="300" height="454" rx="18" fill="#f5f8fb" stroke="#c7d6df"/>
+    <text x="390" y="55" class="lane">Registered SQ / CQ</text>
+    <g transform="translate(390 84)">
+      <rect width="260" height="116" rx="13" fill="#e7f1f7" stroke="#adc9d8"/>
+      <text x="16" y="29" class="box-title">SQ · 64-byte entries</text>
+      <text x="16" y="55" class="copy">map_id + generation</text>
+      <text x="16" y="77" class="copy">buffer_id + offset</text>
+      <text x="16" y="99" class="copy">token + deadline + user_data</text>
+    </g>
+    <g transform="translate(390 244)">
+      <rect width="260" height="116" rx="13" fill="#e9f5ef" stroke="#a9cdbd"/>
+      <text x="16" y="29" class="box-title">CQ · 64-byte entries</text>
+      <text x="16" y="55" class="copy">status + bytes_done</text>
+      <text x="16" y="77" class="copy">token + map_generation</text>
+      <text x="16" y="99" class="copy">checksum + completion time</text>
+    </g>
+    <text x="390" y="408" class="small">release: slot → tail</text>
+    <text x="390" y="430" class="small">acquire: tail → slot → destination</text>
+    <text x="390" y="452" class="small">raw GPA / coroutine pointer 禁止进入 ABI</text>
+
+    <rect x="702" y="20" width="300" height="454" rx="18" fill="#f0f8f5" stroke="#bdd7cc"/>
+    <text x="722" y="55" class="lane">OBMM async endpoint</text>
+    <g transform="translate(722 84)">
+      <rect width="260" height="92" rx="13" fill="#ffffff" stroke="#b6d0c5"/>
+      <circle cx="236" cy="18" r="14" fill="#c9e3d8"/>
+      <text x="236" y="23" text-anchor="middle" class="step">2</text>
+      <text x="16" y="31" class="box-title">validate + accept</text>
+      <text x="16" y="56" class="copy">map/token/bounds/coherence</text>
+      <text x="16" y="77" class="copy">allocate pending provider token</text>
+    </g>
+    <g transform="translate(722 216)">
+      <rect width="260" height="116" rx="13" fill="#ffffff" stroke="#b6d0c5"/>
+      <circle cx="236" cy="18" r="14" fill="#c9e3d8"/>
+      <text x="236" y="23" text-anchor="middle" class="step">5</text>
+      <text x="16" y="31" class="box-title">commit completion</text>
+      <text x="16" y="56" class="copy">revalidate generations</text>
+      <text x="16" y="78" class="copy">write registered destination</text>
+      <text x="16" y="100" class="copy">release-publish CQE + optional IRQ</text>
+    </g>
+    <text x="722" y="386" class="small">owner: pending request / timeout / cancel</text>
+    <text x="722" y="410" class="small">CQ full → backpressure；不覆盖、不丢失</text>
+    <text x="722" y="434" class="small">SIM_DEC/URMA 仅属于 provider 实现</text>
+
+    <rect x="1034" y="20" width="314" height="454" rx="18" fill="#fff7eb" stroke="#dec39b"/>
+    <text x="1054" y="55" class="lane">Remote-memory provider</text>
+    <g transform="translate(1054 84)">
+      <rect width="274" height="92" rx="13" fill="#ffffff" stroke="#d7bd95"/>
+      <circle cx="250" cy="18" r="14" fill="#efd7b4"/>
+      <text x="250" y="23" text-anchor="middle" class="step">4</text>
+      <text x="16" y="31" class="box-title">remote read in flight</text>
+      <text x="16" y="56" class="copy">latency / jitter / reorder</text>
+      <text x="16" y="77" class="copy">timeout / error injection</text>
+    </g>
+    <g transform="translate(1054 216)">
+      <rect width="274" height="92" rx="13" fill="#ffffff" stroke="#d7bd95"/>
+      <circle cx="250" cy="18" r="14" fill="#efd7b4"/>
+      <text x="250" y="23" text-anchor="middle" class="step">6</text>
+      <text x="16" y="31" class="box-title">response(value | failure)</text>
+      <text x="16" y="56" class="copy">provider token 关联 pending entry</text>
+      <text x="16" y="77" class="copy">不感知 coroutine</text>
+    </g>
+    <text x="1054" y="386" class="small">payload 直接进入 registered buffer</text>
+    <text x="1054" y="410" class="small">control plane 不代理 payload</text>
+
+    <path d="M318 121 H382" fill="none" stroke="#426f88" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M650 143 H714" fill="none" stroke="#426f88" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M982 143 H1046" fill="none" stroke="#426f88" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M1054 270 H990" fill="none" stroke="#3f7967" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+    <path d="M722 290 H658" fill="none" stroke="#3f7967" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+    <path d="M390 314 H326" fill="none" stroke="#3f7967" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+  </g>
+
+  <g transform="translate(56 682)">
+    <rect width="1368" height="196" rx="22" fill="#ffffff" stroke="#d5e3df"/>
+    <text x="24" y="36" class="note-title">协程状态与 schedule-ahead</text>
+
+    <g transform="translate(28 64)">
+      <rect x="0" y="0" width="112" height="44" rx="12" fill="#e8f1f6" stroke="#b6cdd9"/>
+      <text x="56" y="28" text-anchor="middle" class="state">RUNNING A</text>
+      <path d="M112 22 H172" stroke="#426f88" stroke-width="2.4" marker-end="url(#arrow)"/>
+      <rect x="180" y="0" width="142" height="44" rx="12" fill="#fff3e2" stroke="#dfbf91"/>
+      <text x="251" y="28" text-anchor="middle" class="state">WAIT_REMOTE A</text>
+      <path d="M322 22 H382" stroke="#426f88" stroke-width="2.4" marker-end="url(#arrow)"/>
+      <rect x="390" y="0" width="112" height="44" rx="12" fill="#e9f5ef" stroke="#abd0c0"/>
+      <text x="446" y="28" text-anchor="middle" class="state">RUNNING B</text>
+      <path d="M502 22 H562" stroke="#3f7967" stroke-width="2.4" marker-end="url(#arrowGreen)"/>
+      <rect x="570" y="0" width="108" height="44" rx="12" fill="#e9f5ef" stroke="#abd0c0"/>
+      <text x="624" y="28" text-anchor="middle" class="state">READY A</text>
+      <path d="M678 22 H738" stroke="#3f7967" stroke-width="2.4" marker-end="url(#arrowGreen)"/>
+      <rect x="746" y="0" width="128" height="44" rx="12" fill="#e8f1f6" stroke="#b6cdd9"/>
+      <text x="810" y="28" text-anchor="middle" class="state">RESUMED A</text>
+    </g>
+
+    <rect x="938" y="56" width="402" height="112" rx="14" fill="#f5f8f7" stroke="#cbdad6"/>
+    <text x="958" y="82" class="note-title">关键边界</text>
+    <text x="958" y="107" class="note">• submit 已退休；系统里没有未退休的普通 LDR</text>
+    <text x="958" y="130" class="note">• context switch 只发生在显式 await/yield 调用边界</text>
+    <text x="958" y="153" class="note">• 可先 submit N 个请求，再在实际消费点 await</text>
+
+    <text x="28" y="144" class="note">若 completion 已到，await 直接返回；若没有 READY coroutine，则短轮询后 poll IRQ。</text>
+    <text x="28" y="169" class="note">结果落点是 registered destination buffer，失败落点是 CQ status，而不是某个原始 load 的目标寄存器。</text>
+  </g>
+</svg>

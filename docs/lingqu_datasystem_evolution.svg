@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="610" viewBox="0 0 1400 610" role="img" aria-labelledby="title desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="title">Lingqu DataSystem 2026 年架构演进</title>
+  <desc id="desc">从四服务概念设计开始，经过 UB/QEMU 基座、Object Service、Memory Service、模型解耦，最终抽取为独立 mem_service 仓库的时间线。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="135%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .page { fill: #f8fafc; }
+      .title { font: 700 31px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 16px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #475569; }
+      .axis { fill: none; stroke: #94a3b8; stroke-width: 3; marker-end: url(#arrow); }
+      .tick { stroke: #64748b; stroke-width: 2; }
+      .dot { stroke: #ffffff; stroke-width: 4; }
+      .card { filter: url(#shadow); stroke-width: 1.5; }
+      .concept { fill: #eef2ff; stroke: #818cf8; }
+      .platform { fill: #ecfeff; stroke: #22a6b3; }
+      .object { fill: #eff6ff; stroke: #3b82f6; }
+      .memory { fill: #ecfdf5; stroke: #22c55e; }
+      .product { fill: #fff7ed; stroke: #f59e0b; }
+      .repo { fill: #fdf4ff; stroke: #c084fc; }
+      .date { font: 700 15px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #334155; }
+      .card-title { font: 700 18px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #0f172a; }
+      .card-text { font: 400 14px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #334155; }
+      .result { font: 700 14px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #1e3a8a; }
+      .footer { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.2; }
+      .footer-title { font: 700 16px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #0f172a; }
+      .footer-text { font: 400 14px Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #475569; }
+    </style>
+  </defs>
+
+  <rect class="page" width="1400" height="610"/>
+  <text x="58" y="54" class="title">Lingqu DataSystem 演进：抽象保持，产品边界收敛</text>
+  <text x="58" y="82" class="subtitle">原始四类数据语义仍然存在，但实现从四套平行服务收敛成统一控制面和可插拔数据平面。</text>
+
+  <path d="M105,304 H1300" class="axis"/>
+
+  <line x1="150" y1="290" x2="150" y2="318" class="tick"/>
+  <circle cx="150" cy="304" r="10" fill="#6366f1" class="dot"/>
+  <rect x="48" y="120" width="205" height="145" rx="12" class="card concept"/>
+  <text x="68" y="147" class="date">2026-03</text>
+  <text x="68" y="177" class="card-title">四服务设计</text>
+  <text x="68" y="204" class="card-text">shmem / block / dfs / db</text>
+  <text x="68" y="226" class="card-text">建立 UB 数据平面抽象</text>
+  <text x="68" y="250" class="result">结果：定义“是什么”</text>
+
+  <line x1="370" y1="290" x2="370" y2="318" class="tick"/>
+  <circle cx="370" cy="304" r="10" fill="#0891b2" class="dot"/>
+  <rect x="268" y="344" width="205" height="145" rx="12" class="card platform"/>
+  <text x="288" y="371" class="date">2026-03～04</text>
+  <text x="288" y="401" class="card-title">UB/QEMU 基座</text>
+  <text x="288" y="428" class="card-text">device、driver、ring、IRQ</text>
+  <text x="288" y="450" class="card-text">OBMM 多节点共享池</text>
+  <text x="288" y="474" class="result">结果：证明“跑得通”</text>
+
+  <line x1="590" y1="290" x2="590" y2="318" class="tick"/>
+  <circle cx="590" cy="304" r="10" fill="#2563eb" class="dot"/>
+  <rect x="488" y="120" width="205" height="145" rx="12" class="card object"/>
+  <text x="508" y="147" class="date">2026-05 初</text>
+  <text x="508" y="177" class="card-title">Object Service</text>
+  <text x="508" y="204" class="card-text">统一 key、version、placement</text>
+  <text x="508" y="226" class="card-text">KV / hidden / weight / logits</text>
+  <text x="508" y="250" class="result">结果：统一对象语义</text>
+
+  <line x1="810" y1="290" x2="810" y2="318" class="tick"/>
+  <circle cx="810" cy="304" r="10" fill="#16a34a" class="dot"/>
+  <rect x="708" y="344" width="205" height="145" rx="12" class="card memory"/>
+  <text x="728" y="371" class="date">2026-05 中</text>
+  <text x="728" y="401" class="card-title">Memory Service</text>
+  <text x="728" y="428" class="card-text">语义记忆、检索、artifact</text>
+  <text x="728" y="450" class="card-text">shortpath / prefetch evidence</text>
+  <text x="728" y="474" class="result">结果：上层服务组合</text>
+
+  <line x1="1030" y1="290" x2="1030" y2="318" class="tick"/>
+  <circle cx="1030" cy="304" r="10" fill="#d97706" class="dot"/>
+  <rect x="928" y="120" width="205" height="145" rx="12" class="card product"/>
+  <text x="948" y="147" class="date">2026-06～07</text>
+  <text x="948" y="177" class="card-title">产品化拆分</text>
+  <text x="948" y="204" class="card-text">core / daemon / SDK / wire</text>
+  <text x="948" y="226" class="card-text">Qwen3 / DeepSeek adapter</text>
+  <text x="948" y="250" class="result">结果：模型与设备解耦</text>
+
+  <line x1="1250" y1="290" x2="1250" y2="318" class="tick"/>
+  <circle cx="1250" cy="304" r="10" fill="#a855f7" class="dot"/>
+  <rect x="1148" y="344" width="205" height="145" rx="12" class="card repo"/>
+  <text x="1168" y="371" class="date">2026-07～08</text>
+  <text x="1168" y="401" class="card-title">独立 mem_service</text>
+  <text x="1168" y="428" class="card-text">独立仓库与发布契约</text>
+  <text x="1168" y="450" class="card-text">ub_sim 通过 submodule 固定</text>
+  <text x="1168" y="474" class="result">结果：可独立交付</text>
+
+  <rect x="130" y="528" width="1140" height="56" rx="11" class="footer"/>
+  <text x="158" y="551" class="footer-title">架构主线</text>
+  <text x="158" y="574" class="footer-text">“四种存储抽象”没有消失；它们被重新组织为统一 ObjectRef 契约、明确控制/数据面边界和可替换 provider。</text>
+</svg>
