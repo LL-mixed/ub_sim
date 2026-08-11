@@ -103,7 +103,7 @@ struct obmm_scc;
 
 int obmm_scc_open(struct obmm_scc **out);
 int obmm_scc_register_map(struct obmm_scc *scc,
-                          int obmm_fd,
+                          int mapping_fd,
                           uint64_t mem_id,
                           void *gsva_base,
                           size_t length,
@@ -126,6 +126,11 @@ int obmm_scc_fault_resolve(struct obmm_scc *scc,
                            uint64_t fault_id,
                            uint32_t action);
 ```
+
+`mapping_fd` 必须是创建 `gsva_base` 这段 VMA 的
+`/dev/obmm_shmdev<mem_id>` fd，而不是 `/dev/obmm` 控制 fd。driver 用它同时校验
+VMA file、`mem_id` 和当前 process 的 mapping ownership；传控制 fd 必须返回
+`-EFAULT`，不能降级为只信任用户提供的地址。
 
 这些调用只出现在 setup、teardown 和 failure recovery；正常 read data plane 仍是：
 
