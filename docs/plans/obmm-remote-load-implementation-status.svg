@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="760" viewBox="0 0 1480 760" role="img" aria-labelledby="title desc">
+  <title id="title">OBMM remote-load P0 到 P4 实施与验收状态</title>
+  <desc id="desc">P0、P1、P2A、P2B 和 P4 的阶段门禁全部通过，并汇合到 P3 的四十九次正式验收。完整四千九百四十二 case 矩阵已完成 dry-run，尚未完成全因子性能执行。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 29px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .head { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .mono { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #166534; }
+      .pass { fill: #ecfdf5; stroke: #22c55e; stroke-width: 2; }
+      .accept { fill: #eff6ff; stroke: #3b82f6; stroke-width: 2.5; }
+      .pending { fill: #fff7ed; stroke: #fb923c; stroke-width: 2; }
+      .flow { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1480" height="760" fill="#f8fafc"/>
+  <text x="60" y="58" class="title">OBMM remote-load：P0–P4 实现闭环，正式验收 49 / 49</text>
+  <text x="60" y="89" class="subtitle">浅色背景配深色文字；状态来自 phase gate 和 raw evidence，不由“代码存在”推断</text>
+
+  <rect x="60" y="138" width="250" height="150" rx="12" class="pass"/>
+  <text x="185" y="178" text-anchor="middle" class="head">P0 · PASS</text>
+  <text x="185" y="211" text-anchor="middle" class="body">同步基线 + 延迟模型</text>
+  <text x="185" y="239" text-anchor="middle" class="body">scenario / model / payload hash</text>
+  <text x="185" y="267" text-anchor="middle" class="mono">gate evidence complete</text>
+
+  <rect x="380" y="138" width="270" height="150" rx="12" class="pass"/>
+  <text x="515" y="178" text-anchor="middle" class="head">P1 · PASS</text>
+  <text x="515" y="211" text-anchor="middle" class="body">provider-neutral split phase</text>
+  <text x="515" y="239" text-anchor="middle" class="body">3 sinks · 64 in-flight</text>
+  <text x="515" y="267" text-anchor="middle" class="mono">144 / 144 conformance</text>
+  <path d="M310 213 H372" class="flow"/>
+
+  <rect x="725" y="116" width="280" height="150" rx="12" class="pass"/>
+  <text x="865" y="156" text-anchor="middle" class="head">P2A · PASS</text>
+  <text x="865" y="189" text-anchor="middle" class="body">submit / await / CQ</text>
+  <text x="865" y="217" text-anchor="middle" class="body">A waits → B runs → A resumes</text>
+  <text x="865" y="245" text-anchor="middle" class="mono">2 / 4 / 8-node smoke</text>
+
+  <rect x="725" y="326" width="280" height="150" rx="12" class="pass"/>
+  <text x="865" y="366" text-anchor="middle" class="head">P2B · PASS</text>
+  <text x="865" y="399" text-anchor="middle" class="body">ordinary LDR + PLT / SCC</text>
+  <text x="865" y="427" text-anchor="middle" class="body">precise PC / Rt commit or fault</text>
+  <text x="865" y="455" text-anchor="middle" class="mono">2 / 4 / 8-node smoke</text>
+  <path d="M650 187 C685 187 685 191 717 191" class="flow"/>
+  <path d="M650 245 C690 268 681 401 717 401" class="flow"/>
+
+  <rect x="380" y="388" width="270" height="150" rx="12" class="pass"/>
+  <text x="515" y="428" text-anchor="middle" class="head">P4 · PASS</text>
+  <text x="515" y="461" text-anchor="middle" class="body">userfaultfd MISSING</text>
+  <text x="515" y="489" text-anchor="middle" class="body">4-KiB fault / read / copy / wake</text>
+  <text x="515" y="517" text-anchor="middle" class="mono">fail-stop · no zeropage success</text>
+  <path d="M185 288 C185 465 285 463 372 463" class="flow"/>
+
+  <rect x="1090" y="207" width="330" height="220" rx="14" class="accept"/>
+  <text x="1255" y="250" text-anchor="middle" class="head">P3 · ACCEPTANCE PASS</text>
+  <text x="1255" y="286" text-anchor="middle" class="body">Band S · scalar：S0 / S1 / S2 / S3</text>
+  <text x="1255" y="317" text-anchor="middle" class="body">Band R · 4 KiB：R0 / R1 / R2</text>
+  <text x="1255" y="348" text-anchor="middle" class="body">Band T · interface / extra-core cost</text>
+  <line x1="1130" y1="369" x2="1380" y2="369" stroke="#93c5fd"/>
+  <text x="1255" y="400" text-anchor="middle" class="mono">7 paths × 7 seeds = 49 / 49</text>
+  <path d="M1005 191 C1050 191 1042 263 1082 274" class="flow"/>
+  <path d="M1005 401 C1048 401 1048 350 1082 343" class="flow"/>
+  <path d="M650 463 C876 566 1018 451 1082 392" class="flow"/>
+
+  <rect x="60" y="606" width="1360" height="102" rx="12" class="pending"/>
+  <text x="740" y="645" text-anchor="middle" class="head">完整性能 campaign · 尚未执行</text>
+  <text x="740" y="676" text-anchor="middle" class="body">4,942-case full matrix 的 strict parse、deterministic expansion 与 dry-run gate 已通过</text>
+  <text x="740" y="701" text-anchor="middle" class="body">49-case 只证明实现和证据链；不能外推全部 latency / jitter / failure / concurrency 的 break-even</text>
+</svg>

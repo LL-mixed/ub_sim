@@ -1,6 +1,6 @@
 # P3：OBMM 远端 Load 路径对比评估详细设计
 
-> 状态：详细设计已冻结；实现尚未开始
+> 状态：评估器已实现；49-case 正式验收通过；全因子性能研究尚未执行
 >
 > 日期：2026-08-11
 >
@@ -9,6 +9,8 @@
 > [P2A](p2a-submit-await-detailed-design.md)、
 > [P2B](p2b-scheduler-core-detailed-design.md)、
 > [P4](p4-userfaultfd-baseline-detailed-design.md)
+>
+> 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
 ## 1. 目标和退出结论
 

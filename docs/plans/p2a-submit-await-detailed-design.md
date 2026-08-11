@@ -1,6 +1,6 @@
 # P2A：OBMM submit/await + EL0 协程详细设计
 
-> 状态：详细设计已冻结；实现尚未开始
+> 状态：已实现；P2A gate 通过
 >
 > 日期：2026-08-11
 >
@@ -9,6 +9,8 @@
 > 共同底座：[P1：provider-neutral split-phase backend](p1-split-phase-backend-detailed-design.md)
 >
 > 对照方案：[P2B：普通 LDR + scheduler core 详细设计](p2b-scheduler-core-detailed-design.md)
+>
+> 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
 ## 1. 结论
 

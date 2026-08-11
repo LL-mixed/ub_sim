@@ -55,6 +55,8 @@ Current validation entry points:
   - implementation-level P3 design for scalar/range/transparency comparison bands, schedule-ahead isolation, fairness and statistics rules, invalidation gates, CLI, evidence artifacts, and break-even reporting
 - [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)
   - implementation-level P4 design for the standard userfaultfd MISSING baseline, separate OBMM source and anonymous shadow ranges, handler-vCPU costs, page failure semantics, CLI, and tests
+- [plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md](plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
+  - implemented phase status, 49-case formal acceptance evidence, QEMU artifact identity, focused/full-suite validation audit, and remaining performance-study boundary
 - [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)
   - assessment of whether `mem_service` can be independently released/deployed, current component capabilities, blockers, and the service-productization plan for LLM serving and pretraining integration
 - [mem_service_implementation_summary.md](mem_service_implementation_summary.md)

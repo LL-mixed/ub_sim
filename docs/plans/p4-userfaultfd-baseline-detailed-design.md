@@ -1,12 +1,14 @@
 # P4：标准 userfaultfd 透明页访问基线详细设计
 
-> 状态：详细设计已冻结；实现尚未开始
+> 状态：已实现；P4 gate 通过
 >
 > 日期：2026-08-11
 >
 > 上位设计：[OBMM 远端 Load 协程可行性与验证设计](2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
 >
 > 对比阶段：[P3：对比评估](p3-comparative-evaluation-detailed-design.md)
+>
+> 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
 ## 1. 目标和退出结论
 

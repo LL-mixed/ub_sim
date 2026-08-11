@@ -1,8 +1,10 @@
 # OBMM 远端内存 Load 的 EL0 协程延迟隐藏：可行性分析与验证设计
 
-> 状态：可行性分析与 P0/P1/P2A/P2B/P3/P4 详细设计已完成；实现尚未开始
+> 状态：P0/P1/P2A/P2B/P3/P4 已实现；阶段门禁和 49-case 正式验收通过
 >
 > 日期：2026-08-11
+>
+> 实施与验证：[2026-08-12-obmm-remote-load-coroutine-implementation-validation.md](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 >
 > 范围：AArch64 guest EL0、QEMU TCG、OBMM/GSVA、UBC/SIM_DEC 远端读路径
 >
@@ -18,6 +20,7 @@
 - [P2B：普通 `LDR` + dedicated scheduler core 详细设计](p2b-scheduler-core-detailed-design.md)
 - [P3：OBMM 远端 Load 路径对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 - [P4：标准 userfaultfd 透明页访问基线详细设计](p4-userfaultfd-baseline-detailed-design.md)
+- [P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
 ## 1. 结论
 
@@ -743,12 +746,12 @@ DRAM、代码页、Context Store 或 scheduler core 自身访问被递归截获�
 
 | 阶段 | 当前状态 | Canonical 设计/产物 | 退出条件 |
 |---|---|---|---|
-| P0：基线与延迟模型 | **详细设计完成，未实现** | [p0-baseline-latency-model-detailed-design.md](p0-baseline-latency-model-detailed-design.md)：四类同步基线、strong scenario schema、virtual-time fault model、三种时钟、CLI/测试 | scenario→manifest→QEMU→report hash 一致；同 seed 可复现；0-delay 不改变 payload |
-| P1：split-phase backend | **详细设计完成，未实现** | [p1-split-phase-backend-detailed-design.md](p1-split-phase-backend-detailed-design.md)：64 parent、多 child 聚合、P1-owned result pool、generation-safe sink、terminal race、CLI/测试 | test/P2A/P2B 三种 sink 均通过 64 in-flight、乱序/重复/迟到响应、terminal race 和 capacity full |
-| P2A：显式软件路径 | **详细设计完成，未实现** | [p2a-submit-await-detailed-design.md](p2a-submit-await-detailed-design.md)：独立 endpoint、64-byte SQ/CQ、registered buffer、future、EL0 stackful coroutine、CLI/测试 | 一个 vCPU 上 A 等待时 B 推进；恢复 A；全部 completion/failure generation-safe |
-| P2B：scheduler-core 路径 | **详细设计完成，未实现** | [p2b-scheduler-core-detailed-design.md](p2b-scheduler-core-detailed-design.md)：RLA/PLT、Context Store、SCC、control ABI、TCG hook、precise commit/fault、CLI/测试 | 普通 `LDR` 只发出/提交一次；A 换出、B 运行、A 的 PC/Rt/context 精确恢复 |
-| P3：对比评估 | **详细设计完成，未实现** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 分离 demand mechanism、schedule-ahead 和资源成本；每个结论可追溯到 valid seeds/raw evidence |
-| P4：透明 OS 基线 | **详细设计完成，未实现** | [p4-userfaultfd-baseline-detailed-design.md](p4-userfaultfd-baseline-detailed-design.md)：标准 UFFD MISSING、shadow/source range、handler vCPU、failure/shutdown、CLI/测试 | 4-KiB payload 一致；fault/read/copy/wake 可分解；失败绝不 zeropage；明确线程阻塞边界 |
+| P0：基线与延迟模型 | **已实现；gate pass** | [p0-baseline-latency-model-detailed-design.md](p0-baseline-latency-model-detailed-design.md)：四类同步基线、strong scenario schema、virtual-time fault model、三种时钟、CLI/测试 | scenario/model hash 闭环通过；四类 canonical case 和 0-delay payload 语义通过 |
+| P1：split-phase backend | **已实现；gate pass** | [p1-split-phase-backend-detailed-design.md](p1-split-phase-backend-detailed-design.md)：64 parent、多 child 聚合、P1-owned result pool、generation-safe sink、terminal race、CLI/测试 | test/P2A/P2B 三种 sink 的 144 个 conformance case 通过 |
+| P2A：显式软件路径 | **已实现；gate pass** | [p2a-submit-await-detailed-design.md](p2a-submit-await-detailed-design.md)：独立 endpoint、64-byte SQ/CQ、registered buffer、future、EL0 stackful coroutine、CLI/测试 | 同一 guest vCPU 上 `A await → B 推进 → A 恢复`，completion/failure generation-safe |
+| P2B：scheduler-core 路径 | **已实现；gate pass** | [p2b-scheduler-core-detailed-design.md](p2b-scheduler-core-detailed-design.md)：RLA/PLT、Context Store、SCC、control ABI、TCG hook、precise commit/fault、CLI/测试 | 普通 `LDR` 单次发出/提交；PC/Rt/context 精确恢复；TCG 与 I/O 线程状态受 BQL 保护 |
+| P3：对比评估 | **已实现；acceptance pass** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 完整矩阵 4,942 case 可重复展开；7 条 canonical path × 7 seeds 的 49-case 正式验收通过 |
+| P4：透明 OS 基线 | **已实现；gate pass** | [p4-userfaultfd-baseline-detailed-design.md](p4-userfaultfd-baseline-detailed-design.md)：标准 UFFD MISSING、shadow/source range、handler vCPU、failure/shutdown、CLI/测试 | 4-KiB payload 一致；fault/read/copy/wake 可分解；失败不以 zeropage 伪装成功 |
 
 ![P0 到 P4 的实现依赖和验收门禁](obmm-remote-load-phase-gates.svg)
 
