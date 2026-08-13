@@ -2,8 +2,8 @@
 
 > 状态：ABI v2 的 2-node producer/consumer 功能目标已完成，并在 `n4-910c`
 > 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 P2B phase gate。
-> P3 性能对比评估是整体方案的下一必做阶段，其中包含 4/8-node scale-out；它不是
-> 本次 P2B 功能验收的未完成项
+> P3 ABI v2 的 2-node acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case
+> full matrix 尚待完成。P3 不是本次 P2B 功能验收的未完成项
 >
 > 日期：2026-08-12
 >
@@ -368,13 +368,13 @@ duplicate。它只为稳定制造可观察 overlap，不是性能模型。
 
 ## 8. 功能验收结论、下一阶段与旧证据
 
-2-node ABI v2 producer/consumer 功能验收已经完成。整体方案下一阶段必须执行 P3
-性能对比评估；故障硬化和额外指令/pattern 覆盖可单独扩展。它们不是当前 P2B
-完成条件：
+2-node ABI v2 producer/consumer 功能验收已经完成。P3 acceptance 与定向 scale-out
+也已生成新证据；故障硬化和额外指令/pattern 覆盖可单独扩展。它们不是当前 P2B
+完成条件。当前进度为：
 
-1. 使用新 run ID 完成 2-node、7-seed `S3-p2b-demand` 和完整 P3 acceptance；
-2. 扩展 4/8-node scale-out 并形成相应 P3 phase gate；
-3. 执行 4,942-case 性能 campaign 与 break-even 分析；
+1. 使用新 run ID 完成 2-node、7-seed `S3-p2b-demand` 和完整 P3 acceptance（完成）；
+2. 扩展 4/8-node 定向 scale-out，每个 topology 14/14 valid runs（完成）；
+3. 执行 4,942-case 性能 campaign 与 break-even 分析（待完成）；
 4. 另行执行 timeout、stale、duplicate、event overflow、invalid resume fault-injection
    gate。
 
@@ -385,9 +385,10 @@ duplicate。它只为稳定制造可观察 overlap，不是性能模型。
 ABI v2 2-node producer/consumer functional acceptance passed
 ```
 
-不得把“尚未执行 4/8-node 扩展或 P3 性能矩阵”写成 P2B 功能仍未完成；也不得因此
-把 P3 降级成可选工作。P3 应按其正式矩阵定义角色拓扑、退出条件和新证据，不能复用
-当前 2-node gate 代替。
+不得把“full matrix 尚未执行完毕”写成 P2B 功能仍未完成；也不得因此把 P3 降级成
+可选工作。当前结果见
+[2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)，它没有复用
+当前 2-node 功能 gate 代替性能数据。
 
 ## 9. 当前限制
 

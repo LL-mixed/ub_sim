@@ -2,9 +2,9 @@
 
 > 状态：P0/P1/P2A/P4 沿用既有结果；P2B 已按 direct-to-EL0 upcall + guest EL0
 > scheduler 的 ABI v2 重构，并在 `n4-910c` 通过 ARM64 Linux build、2-node 远端
-> QEMU guest E2E 和 phase gate，2-node producer/consumer 功能目标已完成。P3 性能
-> 对比评估是整体方案的下一必做阶段，其中包含 4/8-node scale-out；它不属于 P2B
-> 功能验收退出条件。旧 49-case P3 结果因 P2B ABI 变更作废
+> QEMU guest E2E 和 phase gate，2-node producer/consumer 功能目标已完成。P3 ABI v2
+> 的 2-node formal acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case full
+> sensitivity matrix 已启动、仍待完成。P3 不属于 P2B 功能验收退出条件
 >
 > 日期：2026-08-11
 >
@@ -756,7 +756,7 @@ DRAM、代码页、EL0 Context Store 或 scheduler stack 自身访问被递归�
 | P1：split-phase backend | **已实现；gate pass** | [p1-split-phase-backend-detailed-design.md](p1-split-phase-backend-detailed-design.md)：64 parent、多 child 聚合、P1-owned result pool、generation-safe sink、terminal race、CLI/测试 | test/P2A/P2B 三种 sink 的 144 个 conformance case 通过 |
 | P2A：显式软件路径 | **已实现；gate pass** | [p2a-submit-await-detailed-design.md](p2a-submit-await-detailed-design.md)：独立 endpoint、64-byte SQ/CQ、registered buffer、future、EL0 stackful coroutine、CLI/测试 | 同一 guest vCPU 上 `A await → B 推进 → A 恢复`，completion/failure generation-safe |
 | P2B：direct-upcall 路径 | **功能验收完成；ABI v2 2-node producer/consumer gate pass** | [p2b-scheduler-core-detailed-design.md](p2b-scheduler-core-detailed-design.md)：RLA/PLT、direct EL0 upcall、EL0 Context Store/scheduler、resume ABI、CLI/测试 | nodeA write/export、nodeB import、两个 coroutine 普通 `LDR`、逐事件 overlap/value 及 machine phase gate 均通过 |
-| P3：对比评估 | **框架已实现；下一必做阶段，正式性能 acceptance 待执行** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 使用 ABI v2 和新 run ID 完成 2-node correctness/acceptance、4/8-node scale-out、有效统计与 break-even 结论；旧 acceptance 作废 |
+| P3：对比评估 | **ABI v2 acceptance 与 4/8-node 定向 scale-out 已完成；full matrix 运行中** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)、[2026-08-13 性能结果](2026-08-13-obmm-p3-performance-evaluation.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 2-node 49/49、4/8-node 各 14/14 已通过；4,942-case latency/compute/jitter/failure matrix 已启动，等待完整 break-even 结论 |
 | P4：透明 OS 基线 | **已实现；gate pass** | [p4-userfaultfd-baseline-detailed-design.md](p4-userfaultfd-baseline-detailed-design.md)：标准 UFFD MISSING、shadow/source range、handler vCPU、failure/shutdown、CLI/测试 | 4-KiB payload 一致；fault/read/copy/wake 可分解；失败不以 zeropage 伪装成功 |
 
 ![P0 到 P4 的实现依赖和验收门禁](obmm-remote-load-phase-gates.svg)

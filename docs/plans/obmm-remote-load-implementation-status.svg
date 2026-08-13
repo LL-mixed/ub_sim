@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1480" height="760" viewBox="0 0 1480 760" role="img" aria-labelledby="title desc">
   <title id="title">OBMM remote-load P0 到 P4 当前实施与验收状态</title>
-  <desc id="desc">P0、P1、P2A 和 P4 的既有门禁有效。P2B ABI v2 的二节点 producer consumer 功能验收已经完成。P3 性能对比评估及其四节点和八节点扩展是下一必做阶段；旧 P2B 与 P3 四十九次验收结论已经作废。</desc>
+  <desc id="desc">P0、P1、P2A、P2B 和 P4 门禁有效。P3 ABI v2 二节点四十九次正式验收与四节点八节点定向扩展已完成，四千九百四十二次完整敏感性矩阵仍待完成。所有文字均为浅色背景上的深色字体。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
@@ -18,8 +18,8 @@
     </style>
   </defs>
   <rect width="1480" height="760" fill="#f8fafc"/>
-  <text x="60" y="58" class="title">OBMM remote-load：P2B ABI v2 的 2-node 功能验收已完成</text>
-  <text x="60" y="89" class="subtitle">下一步：用 ABI v2 重跑 P3 performance acceptance 与 4 / 8-node scale-out；旧 49 / 49 不能继承</text>
+  <text x="60" y="58" class="title">OBMM remote-load：P3 ABI v2 acceptance 与 4 / 8-node scale-out 已完成</text>
+  <text x="60" y="89" class="subtitle">下一步：执行 4,942-case full sensitivity matrix；旧 ABI v1 的 49 / 49 仍是 invalid legacy evidence</text>
 
   <rect x="60" y="138" width="250" height="150" rx="12" class="pass"/>
   <text x="185" y="178" text-anchor="middle" class="head">P0 · PASS</text>
@@ -55,19 +55,19 @@
   <text x="515" y="517" text-anchor="middle" class="mono">fail-stop · no zeropage success</text>
   <path d="M185 288 C185 465 285 463 372 463" class="flow"/>
 
-  <rect x="1090" y="207" width="330" height="220" rx="14" class="pending"/>
-  <text x="1255" y="250" text-anchor="middle" class="head">P3 · NEXT / REQUIRED</text>
-  <text x="1255" y="286" text-anchor="middle" class="body">Band S · scalar：S0 / S1 / S2 / S3</text>
-  <text x="1255" y="317" text-anchor="middle" class="body">Band R · 4 KiB：R0 / R1 / R2</text>
-  <text x="1255" y="348" text-anchor="middle" class="body">Band T · interface / extra-core cost</text>
+  <rect x="1090" y="207" width="330" height="220" rx="14" class="accept"/>
+  <text x="1255" y="250" text-anchor="middle" class="head">P3 · PARTIAL PASS</text>
+  <text x="1255" y="286" text-anchor="middle" class="body">2-node acceptance：49 / 49</text>
+  <text x="1255" y="317" text-anchor="middle" class="body">4-node / 8-node：14 / 14 each</text>
+  <text x="1255" y="348" text-anchor="middle" class="body">full matrix：4,942 runs pending</text>
   <line x1="1130" y1="369" x2="1380" y2="369" stroke="#93c5fd"/>
-  <text x="1255" y="400" text-anchor="middle" class="body">旧 49 / 49 = invalid legacy evidence</text>
+  <text x="1255" y="400" text-anchor="middle" class="body">新结果绑定 ABI v2 与当前 artifacts</text>
   <path d="M1005 191 C1050 191 1042 263 1082 274" class="flow"/>
   <path d="M1005 401 C1048 401 1048 350 1082 343" class="flow"/>
   <path d="M650 463 C876 566 1018 451 1082 392" class="flow"/>
 
   <rect x="60" y="606" width="1360" height="102" rx="12" class="pending"/>
-  <text x="740" y="645" text-anchor="middle" class="head">下一阶段 · P3 性能对比评估必须完成</text>
-  <text x="740" y="676" text-anchor="middle" class="body">先跑 ABI v2 2-node acceptance，再跑 4 / 8-node scale-out 与 full matrix；均不倒推 P2B 未完成</text>
+  <text x="740" y="645" text-anchor="middle" class="head">下一阶段 · 完成 P3 full sensitivity / break-even campaign</text>
+  <text x="740" y="676" text-anchor="middle" class="body">acceptance 与定向 scale-out 已完成；继续跑 latency / compute / concurrency / jitter / failure 全矩阵</text>
   <text x="740" y="701" text-anchor="middle" class="body">新证据必须绑定当前 QEMU binary、v2 model contract、scenario 与 operation-list hash</text>
 </svg>

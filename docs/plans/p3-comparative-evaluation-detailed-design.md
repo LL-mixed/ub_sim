@@ -1,9 +1,8 @@
 # P3：OBMM 远端 Load 路径对比评估详细设计
 
-> 状态：评估器已实现；P2B ABI v2 的 2-node producer/consumer 功能验收已通过。
-> 旧 49-case 性能结果因 P2B ABI 变更作废；正式性能评估是整体方案的下一必做阶段，
-> 必须使用 ABI v2 重新运行 2-node acceptance 和 4/8-node scale-out。它不影响 P2B
-> 功能完成状态
+> 状态：评估器已实现；P2B ABI v2 的 2-node producer/consumer 功能验收、P3
+> 2-node 49-case formal acceptance 与 4/8-node 定向 scale-out 均已通过。4,942-case
+> full sensitivity matrix 已在远端启动但尚未执行完毕，因此完整 break-even 结论仍待生成
 >
 > 日期：2026-08-11
 >
@@ -14,6 +13,8 @@
 > [P4](p4-userfaultfd-baseline-detailed-design.md)
 >
 > 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
+>
+> 性能结果：[2026-08-13 P3 ABI v2 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)
 
 ## 1. 目标和退出结论
 
@@ -44,10 +45,11 @@ P3 只在以下 gate 全部满足后运行正式矩阵：
 任一 gate 不满足时 CLI 仍可生成 `--dry-run` manifest，但正式结果标为 `invalid`，不能
 生成性能结论。
 
-截至 2026-08-12，P2B ABI v2 的 2-node producer/consumer 功能 gate 已通过。下一步
-必须针对目标 topology、scenario、model contract 和 artifact hash，使用新 run ID 从头
-执行 P3，形成新的性能结论。P3 独立于 P2B 功能 gate，但不是可选工作。旧
-`S3-p2b-demand` raw rows 不得追认或拼接。
+截至 2026-08-13，ABI v2 已使用新 run ID 完成 2-node 49-case formal acceptance，
+并完成 P2A demand 与 P2B demand 的 4/8-node、7-seed 定向 scale-out。旧 ABI v1
+`S3-p2b-demand` raw rows 没有追认或拼接。当前剩余项是 4,942-case full matrix，
+负责补齐 latency/compute/concurrency/jitter/failure sensitivity 与 break-even 区间；
+单一 acceptance 基准点不得替代该矩阵。
 
 ## 3. 三个 canonical 比较带
 
@@ -71,7 +73,7 @@ P2A demand case 必须令 `lookahead=0`；否则 P2A 同时获得提前发请求
 | `R1-p2a-range` | 4 KiB | submit/await | range | 显式异步 range 的 overlap |
 | `R2-userfaultfd` | 4 KiB | shadow mapping first touch | page | 标准 OS 透明路径代价 |
 
-P2B v1 不进入 Band R，因为其白名单只有 1/2/4/8-byte scalar load。`userfaultfd` 不进入
+P2B v2 不进入 Band R，因为其白名单只有 1/2/4/8-byte scalar load。`userfaultfd` 不进入
 Band S，因为 Linux userfaultfd 解决的是页缺失，不是单条 scalar load completion。
 
 ### 3.3 Band T：透明性与资源成本
@@ -264,3 +266,7 @@ P3 退出必须形成以下证据，而不是只产出曲线：
 3. Band T 显式计算 helper vCPU、EL0 scheduler、软件改造和自定义 core mechanism 成本；
 4. 每个结论能追溯到 hashes、raw rows、gate 和 valid seed；
 5. 对“何种 L/W/并发下收益转正”给出 break-even 区间，未跨 gate 的结果不外推。
+
+截至 2026-08-13，退出项 1–4 已在 acceptance 与定向 scale-out 基准点形成证据；
+第 5 项仍受 full matrix 尚在运行、未最终聚合阻塞。当前结果和边界见
+[P3 ABI v2 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。

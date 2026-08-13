@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="860" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
+  <title id="title">OBMM P3 ABI v2 two, four, and eight node performance comparison</title>
+  <desc id="desc">At one microsecond modeled remote latency, P2B scheduler-core has higher cluster throughput than P2A demand submit-await at two, four, and eight nodes. All text is dark on a light background.</desc>
+  <defs>
+    <style>
+      .title { font: 700 30px system-ui, -apple-system, sans-serif; fill: #172033; }
+      .subtitle { font: 16px system-ui, -apple-system, sans-serif; fill: #475569; }
+      .head { font: 700 19px system-ui, -apple-system, sans-serif; fill: #172033; }
+      .body { font: 15px system-ui, -apple-system, sans-serif; fill: #334155; }
+      .small { font: 13px system-ui, -apple-system, sans-serif; fill: #475569; }
+      .value { font: 700 14px system-ui, -apple-system, sans-serif; fill: #172033; }
+      .axis { stroke: #94a3b8; stroke-width: 1.5; }
+      .grid { stroke: #dbe3ee; stroke-width: 1; }
+      .p2a { stroke: #2563eb; fill: #2563eb; }
+      .p2b { stroke: #c2410c; fill: #c2410c; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="860" fill="#f8fafc"/>
+  <rect x="30" y="28" width="1380" height="804" rx="22" fill="#ffffff" stroke="#dbe3ee"/>
+  <text x="70" y="82" class="title">P3 ABI v2：P2A demand 与 P2B scheduler-core 的 scale-out 对比</text>
+  <text x="70" y="113" class="subtitle">30,000 ops/node · 8-byte sequential · 1 µs remote latency · 100 µs useful compute · 4 coroutines · 7 seeds</text>
+
+  <rect x="70" y="150" width="840" height="545" rx="16" fill="#fbfdff" stroke="#cbd5e1"/>
+  <text x="100" y="190" class="head">Cluster throughput median（ops/s）</text>
+  <text x="100" y="215" class="small">cluster throughput = 全节点完成操作数 ÷ 最慢节点 makespan</text>
+
+  <line x1="155" y1="630" x2="855" y2="630" class="axis"/>
+  <line x1="155" y1="260" x2="155" y2="630" class="axis"/>
+  <line x1="155" y1="630" x2="855" y2="630" class="grid"/>
+  <line x1="155" y1="506.7" x2="855" y2="506.7" class="grid"/>
+  <line x1="155" y1="383.3" x2="855" y2="383.3" class="grid"/>
+  <line x1="155" y1="260" x2="855" y2="260" class="grid"/>
+  <text x="140" y="635" text-anchor="end" class="small">0</text>
+  <text x="140" y="511" text-anchor="end" class="small">10k</text>
+  <text x="140" y="388" text-anchor="end" class="small">20k</text>
+  <text x="140" y="265" text-anchor="end" class="small">30k</text>
+
+  <text x="245" y="662" text-anchor="middle" class="body">2 nodes</text>
+  <text x="505" y="662" text-anchor="middle" class="body">4 nodes</text>
+  <text x="765" y="662" text-anchor="middle" class="body">8 nodes</text>
+
+  <polyline points="245,554.4 505,488.4 765,365.2" fill="none" class="p2a" stroke-width="4"/>
+  <polyline points="245,531.9 505,438.7 765,290.5" fill="none" class="p2b" stroke-width="4"/>
+  <circle cx="245" cy="554.4" r="7" class="p2a"/>
+  <circle cx="505" cy="488.4" r="7" class="p2a"/>
+  <circle cx="765" cy="365.2" r="7" class="p2a"/>
+  <circle cx="245" cy="531.9" r="7" class="p2b"/>
+  <circle cx="505" cy="438.7" r="7" class="p2b"/>
+  <circle cx="765" cy="290.5" r="7" class="p2b"/>
+
+  <text x="245" y="576" text-anchor="middle" class="value">6,128</text>
+  <text x="505" y="510" text-anchor="middle" class="value">11,477</text>
+  <text x="765" y="387" text-anchor="middle" class="value">21,471</text>
+  <text x="245" y="511" text-anchor="middle" class="value">7,953</text>
+  <text x="505" y="417" text-anchor="middle" class="value">15,509</text>
+  <text x="765" y="269" text-anchor="middle" class="value">27,528</text>
+
+  <line x1="595" y1="186" x2="635" y2="186" class="p2a" stroke-width="4"/>
+  <text x="645" y="191" class="body">P2A · submit/await demand</text>
+  <line x1="595" y1="215" x2="635" y2="215" class="p2b" stroke-width="4"/>
+  <text x="645" y="220" class="body">P2B · ordinary LDR + EL0 upcall</text>
+
+  <rect x="940" y="150" width="430" height="545" rx="16" fill="#fffaf5" stroke="#fed7aa"/>
+  <text x="970" y="190" class="head">P2B 相对 P2A demand</text>
+  <text x="970" y="222" class="small">同 seed、同 payload、同模型、同每节点操作数</text>
+
+  <rect x="970" y="255" width="370" height="105" rx="12" fill="#ffedd5" stroke="#fdba74"/>
+  <text x="992" y="285" class="body">2 nodes</text>
+  <text x="992" y="322" class="value">吞吐 +29.77%</text>
+  <text x="1175" y="322" class="value">makespan −22.94%</text>
+
+  <rect x="970" y="380" width="370" height="105" rx="12" fill="#ffedd5" stroke="#fdba74"/>
+  <text x="992" y="410" class="body">4 nodes</text>
+  <text x="992" y="447" class="value">吞吐 +35.13%</text>
+  <text x="1175" y="447" class="value">makespan −26.00%</text>
+
+  <rect x="970" y="505" width="370" height="105" rx="12" fill="#ffedd5" stroke="#fdba74"/>
+  <text x="992" y="535" class="body">8 nodes</text>
+  <text x="992" y="572" class="value">吞吐 +28.21%</text>
+  <text x="1175" y="572" class="value">makespan −22.00%</text>
+
+  <text x="970" y="650" class="small">注意：P2B 没有额外 vCPU，但 EL0 scheduler 消耗 CPU。</text>
+  <text x="970" y="674" class="small">总 CPU 成本必须与吞吐收益一起看，不能把调度当免费。</text>
+
+  <rect x="70" y="720" width="1300" height="82" rx="14" fill="#eef6ff" stroke="#bfdbfe"/>
+  <text x="95" y="753" class="body">结论边界：该图证明 1 µs / 100 µs / 4-coroutine 基准点和 2/4/8-node scale-out；</text>
+  <text x="95" y="780" class="body">它不替代 4,942-case latency/compute/jitter/failure full matrix，也不证明所有工作负载下 P2B 都更快。</text>
+</svg>

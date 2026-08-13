@@ -228,6 +228,7 @@ pub(crate) struct ObmmEvalCliArgs {
     pub gate_dir: PathBuf,
     pub remote_target: Option<String>,
     pub remote_repo: Option<PathBuf>,
+    pub local_repo: Option<PathBuf>,
     pub aggregate_only: bool,
     pub dry_run: bool,
 }
@@ -491,6 +492,7 @@ where
     let mut gate_dir = PathBuf::from("out/obmm-remote-load/gates");
     let mut remote_target = None;
     let mut remote_repo = None;
+    let mut local_repo = None;
     let mut aggregate_only = false;
     let mut dry_run = false;
     let mut pending = args.peekable();
@@ -524,6 +526,7 @@ where
             "--gate-dir" => gate_dir = PathBuf::from(value),
             "--remote-target" => remote_target = Some(value),
             "--remote-repo" => remote_repo = Some(PathBuf::from(value)),
+            "--local-repo" => local_repo = Some(PathBuf::from(value)),
             _ => anyhow::bail!("unknown obmm-remote-load-eval option: {name}"),
         }
     }
@@ -532,9 +535,16 @@ where
     if dry_run && aggregate_only {
         anyhow::bail!("--dry-run and --aggregate-only are mutually exclusive");
     }
-    if !dry_run && !aggregate_only && (remote_target.is_none() || remote_repo.is_none()) {
+    let remote_partial = remote_target.is_some() != remote_repo.is_some();
+    if remote_partial {
+        anyhow::bail!("--remote-target and --remote-repo must be provided together");
+    }
+    if local_repo.is_some() && remote_target.is_some() {
+        anyhow::bail!("--local-repo is mutually exclusive with remote execution options");
+    }
+    if !dry_run && !aggregate_only && local_repo.is_none() && remote_target.is_none() {
         anyhow::bail!(
-            "formal execution requires --remote-target and --remote-repo; \
+            "formal execution requires --local-repo or --remote-target with --remote-repo; \
              use --aggregate-only to process existing raw evidence"
         );
     }
@@ -547,6 +557,7 @@ where
         gate_dir,
         remote_target,
         remote_repo,
+        local_repo,
         aggregate_only,
         dry_run,
     }))
@@ -656,7 +667,7 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
         );
     }
     if !args.aggregate_only {
-        execute_remote_cases(args, &manifest)?;
+        execute_cases(args, &manifest)?;
     }
     validation.runs = aggregate_results(&args.output_dir, &manifest, &matrix, &bands)?;
     finalize_validation(&mut validation, manifest.cases.len());
@@ -1417,46 +1428,51 @@ fn validate_gates(
     Ok((all_pass, validations))
 }
 
-fn execute_remote_cases(args: &ObmmEvalCliArgs, manifest: &EvalRunManifest) -> anyhow::Result<()> {
-    let target = args
+fn execute_cases(args: &ObmmEvalCliArgs, manifest: &EvalRunManifest) -> anyhow::Result<()> {
+    let remote = args
         .remote_target
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--remote-target is required"))?;
-    let remote_repo = args
-        .remote_repo
+        .zip(args.remote_repo.as_deref());
+    let execution_repo = args
+        .local_repo
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--remote-repo is required"))?;
-
+        .or_else(|| args.remote_repo.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("formal execution target is absent"))?;
     if args.output_dir.is_absolute() {
-        anyhow::bail!("remote execution requires a repository-relative --output-dir");
+        anyhow::bail!("formal execution requires a repository-relative --output-dir");
     }
     ensure_raw_targets_are_new(&args.output_dir, manifest)?;
-    for model_path in manifest
-        .cases
-        .iter()
-        .map(|case| case.model_manifest_path.as_str())
-        .collect::<BTreeSet<_>>()
-    {
-        let local_path = Path::new(model_path);
-        if local_path.is_absolute() {
-            anyhow::bail!("model path {model_path} must be repository-relative");
+    if let Some((target, remote_repo)) = remote {
+        for model_path in manifest
+            .cases
+            .iter()
+            .map(|case| case.model_manifest_path.as_str())
+            .collect::<BTreeSet<_>>()
+        {
+            let local_path = Path::new(model_path);
+            if local_path.is_absolute() {
+                anyhow::bail!("model path {model_path} must be repository-relative");
+            }
+            stage_remote_file(target, &remote_repo.join(local_path), local_path)?;
         }
-        stage_remote_file(target, &remote_repo.join(local_path), local_path)?;
     }
     for (index, case) in manifest.cases.iter().enumerate() {
         println!(
             "{}",
             eval_progress_line(&case.run_id, index, manifest.cases.len(), "dispatch", None,)
         );
-        let host_before = collect_remote_host_evidence(target)?;
-        let command = remote_case_command(remote_repo, &case.command);
+        let host_before = if let Some((target, _)) = remote {
+            collect_remote_host_evidence(target)?
+        } else {
+            collect_local_host_evidence()?
+        };
         let started = Instant::now();
         let timeout = remote_case_timeout(&case.command)?;
-        let output = remote_command_with_connect_retry(target, &command, timeout)
-            .with_context(|| format!("dispatch {} to {target}", case.run_id))?
+        let output = execute_case_command(remote, execution_repo, &case.command, timeout)
+            .with_context(|| format!("dispatch {}", case.run_id))?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "remote case {} exceeded its {} second outer deadline",
+                    "case {} exceeded its {} second outer deadline",
                     case.run_id,
                     timeout.as_secs()
                 )
@@ -1477,20 +1493,21 @@ fn execute_remote_cases(args: &ObmmEvalCliArgs, manifest: &EvalRunManifest) -> a
         let mut diagnostic_stderr = String::new();
         if case.diagnostic_trace_required {
             let diagnostic_parts = diagnostic_trace_command(case);
-            let diagnostic_command = remote_case_command(remote_repo, &diagnostic_parts);
             let diagnostic_timeout = remote_case_timeout(&diagnostic_parts)?;
-            let diagnostic_output =
-                remote_command_with_connect_retry(target, &diagnostic_command, diagnostic_timeout)
-                    .with_context(|| {
-                        format!("dispatch diagnostic trace {} to {target}", case.run_id)
-                    })?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "diagnostic trace {} exceeded its {} second outer deadline",
-                            case.run_id,
-                            diagnostic_timeout.as_secs()
-                        )
-                    })?;
+            let diagnostic_output = execute_case_command(
+                remote,
+                execution_repo,
+                &diagnostic_parts,
+                diagnostic_timeout,
+            )
+            .with_context(|| format!("dispatch diagnostic trace {}", case.run_id))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "diagnostic trace {} exceeded its {} second outer deadline",
+                    case.run_id,
+                    diagnostic_timeout.as_secs()
+                )
+            })?;
             diagnostic_stdout = String::from_utf8_lossy(&diagnostic_output.stdout).into_owned();
             diagnostic_stderr = String::from_utf8_lossy(&diagnostic_output.stderr).into_owned();
             match parse_guest_summary(&diagnostic_stdout) {
@@ -1607,6 +1624,22 @@ fn remote_case_command(remote_repo: &Path, command: &[String]) -> String {
             .collect::<Vec<_>>()
             .join(" ")
     )
+}
+
+fn execute_case_command(
+    remote: Option<(&str, &Path)>,
+    execution_repo: &Path,
+    command: &[String],
+    timeout: Duration,
+) -> anyhow::Result<Option<TimedCommandOutput>> {
+    let shell_command = remote_case_command(execution_repo, command);
+    if let Some((target, _)) = remote {
+        remote_command_with_connect_retry(target, &shell_command, timeout)
+    } else {
+        let mut local = Command::new("zsh");
+        local.arg("-c").arg(shell_command);
+        command_full_output_with_timeout(&mut local, timeout)
+    }
 }
 
 fn needs_diagnostic_trace(case: &ExpandedEvalCase, first_seed: Option<u64>) -> bool {
@@ -1728,12 +1761,42 @@ fn collect_remote_host_evidence(target: &str) -> anyhow::Result<(Option<u64>, Op
     Ok((load1_milli, online_cpus))
 }
 
+fn collect_local_host_evidence() -> anyhow::Result<(Option<u64>, Option<u32>)> {
+    let mut command = Command::new("zsh");
+    command
+        .args(["-c", "getconf _NPROCESSORS_ONLN; cat /proc/loadavg"])
+        .stderr(Stdio::null());
+    let Some((status, stdout)) = command_output_with_timeout(&mut command, HOST_EVIDENCE_TIMEOUT)?
+    else {
+        eprintln!(
+            "OBMM_EVAL_HOST_EVIDENCE schema=1 target=local status=timeout timeout_ms={}",
+            HOST_EVIDENCE_TIMEOUT.as_millis()
+        );
+        return Ok((None, None));
+    };
+    if !status.success() {
+        return Ok((None, None));
+    }
+    let text = String::from_utf8_lossy(&stdout);
+    let mut lines = text.lines();
+    let online_cpus = lines.next().and_then(|line| line.trim().parse().ok());
+    let load1_milli = lines
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(parse_decimal_milli);
+    Ok((load1_milli, online_cpus))
+}
+
 fn ssh_command(target: &str) -> Command {
     let mut command = Command::new("ssh");
     command
         .args([
             "-o",
             "ConnectTimeout=15",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
             "-o",
             "ServerAliveInterval=15",
             "-o",
@@ -2452,8 +2515,48 @@ fn validate_raw_run(
     {
         reasons.push("scheduler-core drain evidence is absent".into());
     }
+    validate_mode_metrics(case, summary, &mut reasons);
     validate_artifact_evidence(case, manifest, evidence, &mut reasons);
     reasons
+}
+
+fn validate_mode_metrics(
+    case: &ExpandedEvalCase,
+    summary: &GuestEvalSummary,
+    reasons: &mut Vec<String>,
+) {
+    if case.mode != EvalMode::SchedulerCore {
+        return;
+    }
+
+    let phase = &summary.phase;
+    if phase.qemu_context_saves != 0
+        || phase.qemu_context_restores != 0
+        || phase.qemu_context_switches != 0
+        || phase.qemu_context_bytes != 0
+        || phase.scc_save_cycles != 0
+        || phase.scc_schedule_cycles != 0
+        || phase.scc_restore_cycles != 0
+        || phase.scc_commit_cycles != 0
+    {
+        reasons.push("P2B used forbidden QEMU-owned scheduler/context state".into());
+    }
+
+    if matches!(
+        case.outcome,
+        OutcomeProfile::Success | OutcomeProfile::DuplicateLate
+    ) && (phase.el0_upcalls_pending != summary.operations
+        || phase.el0_upcalls_complete != summary.operations
+        || phase.el0_upcalls_fault != 0
+        || phase.el0_context_saves == 0
+        || phase.el0_context_restores == 0
+        || phase.el0_context_switches == 0
+        || phase.el0_context_bytes == 0
+        || phase.el0_scheduler_ns == 0
+        || phase.direct_el0_upcalls != phase.el0_context_saves)
+    {
+        reasons.push("P2B does not prove ABI v2 guest-EL0 scheduler progress".into());
+    }
 }
 
 fn validate_artifact_evidence(
@@ -3540,6 +3643,29 @@ mod tests {
             parse_seeds(&args.seeds).expect("seeds"),
             (1..=7).collect::<Vec<_>>()
         );
+
+        let local = args_from([
+            "obmm-remote-load-eval",
+            "--matrix=matrix.yaml",
+            "--scenario=scenario.yaml",
+            "--output-dir=out/eval",
+            "--local-repo=/srv/ub_sim",
+        ])
+        .expect("local arguments")
+        .expect("local eval arguments");
+        assert_eq!(local.local_repo, Some(PathBuf::from("/srv/ub_sim")));
+        assert!(args_from([
+            "obmm-remote-load-eval",
+            "--matrix=matrix.yaml",
+            "--scenario=scenario.yaml",
+            "--output-dir=out/eval",
+            "--local-repo=/srv/ub_sim",
+            "--remote-target=host",
+            "--remote-repo=/srv/ub_sim",
+        ])
+        .expect_err("local and remote execution must be exclusive")
+        .to_string()
+        .contains("mutually exclusive"));
     }
 
     #[test]
@@ -3585,6 +3711,17 @@ mod tests {
                 .is_none()
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+
+        let local = execute_case_command(
+            None,
+            Path::new("/tmp"),
+            &["sh".into(), "-c".into(), "printf local-ready".into()],
+            Duration::from_secs(1),
+        )
+        .expect("local case command")
+        .expect("local case output");
+        assert!(local.status.success());
+        assert_eq!(local.stdout, b"local-ready");
     }
 
     #[test]
@@ -3599,6 +3736,10 @@ mod tests {
             [
                 "-o",
                 "ConnectTimeout=15",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
                 "-o",
                 "ServerAliveInterval=15",
                 "-o",
@@ -3880,6 +4021,36 @@ mod tests {
     }
 
     #[test]
+    fn p2b_validation_requires_guest_el0_progress_and_zero_qemu_context_state() {
+        let mut case = test_case();
+        case.case_id = "S3-p2b-demand".into();
+        case.mode = EvalMode::SchedulerCore;
+        let mut summary = test_summary(2_000_000_000);
+        summary.case_id = case.case_id.clone();
+        summary.mode = case.mode.as_str().into();
+        summary.phase.el0_upcalls_pending = summary.operations;
+        summary.phase.el0_upcalls_complete = summary.operations;
+        summary.phase.el0_context_saves = 15_000;
+        summary.phase.el0_context_restores = 15_008;
+        summary.phase.el0_context_switches = 12_000;
+        summary.phase.el0_context_bytes = 24_960_000;
+        summary.phase.el0_scheduler_ns = 500_000;
+        summary.phase.direct_el0_upcalls = summary.phase.el0_context_saves;
+
+        let mut reasons = Vec::new();
+        validate_mode_metrics(&case, &summary, &mut reasons);
+        assert!(reasons.is_empty(), "{reasons:?}");
+
+        summary.phase.qemu_context_saves = 1;
+        summary.phase.el0_context_switches = 0;
+        let mut reasons = Vec::new();
+        validate_mode_metrics(&case, &summary, &mut reasons);
+        assert_eq!(reasons.len(), 2, "{reasons:?}");
+        assert!(reasons[0].contains("QEMU-owned"));
+        assert!(reasons[1].contains("guest-EL0"));
+    }
+
+    #[test]
     fn duplicate_evidence_requires_a_positive_counter() {
         assert!(!evidence_counter_positive(
             "OBMM_ASYNC_SUMMARY duplicate=0 late=0",
@@ -4092,6 +4263,7 @@ mod tests {
             gate_dir: output.join("missing-gates"),
             remote_target: None,
             remote_repo: None,
+            local_repo: None,
             aggregate_only: false,
             dry_run: true,
         };

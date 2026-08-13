@@ -1,9 +1,8 @@
 # OBMM 远端 Load 协程 P0–P4 实施与验证报告（历史证据归档）
 
-> 状态：P0/P1/P2A/P4 证据仍有效；旧 P2B/P3 结论已作废；P2B ABI v2 已在
-> `n4-910c` 通过 2-node producer/consumer 远端 QEMU guest 端到端门禁，当前 P2B
-> 功能验收已完成。新 P3 性能对比评估是整体方案的下一必做阶段，其中包含 4/8-node
-> scale-out；它不是 P2B 未完成项
+> 状态：P0/P1/P2A/P4 证据仍有效；旧 P2B/P3 结论已作废；P2B ABI v2 功能验收、
+> 新 P3 2-node 49-case acceptance 和 4/8-node 定向 scale-out 已在 `n4-910c`
+> 完成。4,942-case full matrix 尚待完成；它不是 P2B 未完成项
 >
 > 日期：2026-08-12
 >
@@ -31,9 +30,9 @@ READY/WAIT 状态、调度策略、completion patch 和恢复。这里的 schedu
 - P4 能以标准 `userfaultfd` MISSING 路径提供 4-KiB 透明页访问对照；
 - P3 对 scalar、range 和 transparency 分带汇总，invalid evidence 不进入统计。
 
-旧 49-case 只能作为旧架构的历史记录，不能作为当前实现/证据链验收。完整矩阵仍可
-确定性展开为 4,942 个 case；已有 2-node ABI v2 P2B 功能门禁不能替代新的 7-seed
-acceptance 和性能证据。
+旧 49-case 只能作为旧架构的历史记录，不能作为当前实现/证据链验收。新的 ABI v2
+7-seed acceptance 和 4/8-node scale-out 已重新执行；完整矩阵仍可确定性展开为
+4,942 个 case，当前基准点结果不能替代 full sensitivity/break-even evidence。
 
 ![P0–P4 实施与验收状态](obmm-remote-load-implementation-status.svg)
 
@@ -45,7 +44,7 @@ acceptance 和性能证据。
 | P1 | 64 parent、child aggregation、bounded result ownership、generation-safe sink、timeout/cancel/retire/capacity | `obmm-remote-conformance`、QEMU unit model | 144/144 conformance pass；gate pass |
 | P2A | 独立 async endpoint、64-byte SQ/CQ、registered buffer、future、AArch64 EL0 stackful coroutine | `obmm_async_coroutine --mode async-poll` | 2/4/8-node gate smoke pass；正式 7 seeds pass |
 | P2B | QEMU RLA/PLT/direct upcall + guest EL0 Context Store/scheduler + atomic resume | `obmm_async_coroutine --mode scheduler-core` | 功能验收完成：ARM64 Linux build、2-node producer/consumer remote guest E2E 与 phase gate pass |
-| P3 | matrix expansion、远端 executor、raw evidence、fail-closed gate、统计与报告 | `obmm-remote-load-eval` | evaluator/dry-run 有效；正式性能 acceptance 是下一必做阶段、尚待执行；旧 49/49 因 P2B ABI 变更作废 |
+| P3 | matrix expansion、远端 executor、raw evidence、fail-closed gate、统计、scale aggregation 与报告 | `obmm-remote-load-eval`、`obmm-remote-load-scale-report` | ABI v2 2-node 49/49 pass；4/8-node 各 14/14 pass；4,942-case full matrix 待完成 |
 | P4 | UFFD MISSING、OBMM source/shadow range、handler vCPU、page 状态机与 phase metrics | `obmm_async_coroutine --mode userfaultfd` | 2/4/8-node gate smoke pass；正式 7 seeds pass |
 
 ## 3. 实现说明
@@ -106,10 +105,10 @@ invalid gate、bootstrap confidence interval 和 Band S/R/T 报告。
 重复、checksum/operation identity 不一致、case timeout 和非零退出都不能进入统计；
 已有 output directory 和 raw file 不会被静默覆盖。
 
-当前已有 ABI v2 的 2-node P2B gate，可作为相同 scenario/model/artifact 绑定下的新
-2-node 运行前置条件；它不能追认旧 `S3-p2b-demand` raw evidence。旧 case 仍不得拼接
-成新的“部分 49/49”。下一阶段正式 P3 性能评估必须使用新 run ID 和当前产物重新
-执行；这不影响 P2B 功能验收已经完成的结论。
+ABI v2 的 P0/P1/P2A/P2B/P4 gate 已作为相同 scenario/model/artifact 绑定下的新
+2-node formal acceptance 前置条件；它没有追认旧 `S3-p2b-demand` raw evidence。
+新 acceptance 与 4/8-node scale-out 均使用新 run ID 和当前产物。完整结果与边界见
+[2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。
 
 完整矩阵定义在 `scenarios/experiments/obmm_remote_load_eval_v1.yaml`；正式 acceptance
 子集定义在 `obmm_remote_load_eval_acceptance_v1.yaml`。后者保留 7 seeds、操作数、
@@ -146,19 +145,33 @@ thread/vCPU，不声称实现同一 kernel thread 内的 EL0 协程切换。
 追溯，不得改写原始 JSONL；新的远端验收必须使用新 run ID、当前 QEMU hash 和 v2
 model contract hash。
 
+### 4.1 当前 ABI v2 P3 证据
+
+| 证据 | 状态 | 目录 |
+|---|---|---|
+| 2-node formal acceptance | 49/49 pass | `out/obmm-remote-load/p3-acceptance-abi-v2-20260813-r1/` |
+| 4-node P2A/P2B scale | 14/14 pass | `out/obmm-remote-load/p3-scale-4node-abi-v2-20260813-r1/` |
+| 8-node P2A/P2B scale | 14/14 pass | `out/obmm-remote-load/p3-scale-8node-abi-v2-20260813-r1/` |
+| full matrix dry-run | 4,942 cases expanded；无 formal raw evidence | `out/obmm-remote-load/p3-full-abi-v2-dry-run-20260813-r1/` |
+
+这些目录是生成物，不提交 Git。可提交的结果、hash、比较口径和异常处理记录在
+[P3 性能结果文档](2026-08-13-obmm-p3-performance-evaluation.md)。
+
 ## 5. 测试与环境审计
 
 | 验证 | 结果 | 说明 |
 |---|---|---|
-| P3 Rust focused tests | 19 passed | parser、hash、gate、timeout、process group、SSH retry、aggregation |
+| local `cargo test -p sim-cli` | 261/261 pass | 含 evaluator、ABI v2 fail-closed validation、SSH 独立连接和 scale reporter 3 项测试 |
 | guest OBMM focused contracts | 27 passed | async、SCC、UFFD build/UAPI/script contracts |
 | ABI v2 QEMU OBMM tests（本地） | 20 passed | SCC 7、remote model 7、split-phase backend 6 |
 | ABI v2 QEMU OBMM tests（ARM64 Linux） | 20 passed | `n4-910c` 原生 QEMU build 后重复同一组测试 |
 | ARM64 Linux guest artifacts | pass | 当前 kernel Image、external driver、ABI v2 initramfs/workload 均成功构建 |
 | 2-node remote QEMU guest | pass | nodeA write/export；nodeB import；2 coroutine 各自普通 `LDR`，值与 producer 一致 |
 | ABI v2 P2B phase gate | pass | r15 `schema=1 phase=p2b status=pass`；逐事件 overlap 成立；final queues drained；`qemu_destroyed=1` |
-| 正式 P3 acceptance | 49 passed（已作废） | 含 7 个旧 P2B case，不能作为当前结论 |
-| remote `cargo test --workspace` | OBMM tests passed；full suite blocked | 远端只有 GCC 13；既有 Simpler native tests 明确要求真实 `g++-15` |
+| 旧正式 P3 acceptance | 49 passed（已作废） | 含 7 个旧 P2B case，不能作为当前结论 |
+| ABI v2 正式 P3 acceptance | 49/49 pass | 7 seeds；五个 phase gate pass；invalid reasons 为空 |
+| ABI v2 4/8-node scale-out | 14/14 + 14/14 pass | 每 topology 比较 P2A/P2B demand；所有节点 evidence 和 checksum 通过 |
+| remote `cargo test --workspace` | `sim-cli` 259 pass；2 initial failures | 一个并发 `ETXTBSY` 隔离复跑通过；Paper Engram/Simpler 测试因远端缺 `PTO_ISA_ROOT` 仍 blocked，与 OBMM 改动无关 |
 | remote Python discovery | OBMM focused tests passed；full suite blocked | 远端快照缺既有 W5 scripts、`/private/tmp` 与 zsh loadable modules |
 
 2-node gate 的原始日志位于远端隔离工作区：
@@ -191,8 +204,8 @@ pending 均为 0，trace 无丢失。
 overlap，现仅作为历史调试证据，不再作为 P2B 当前验收依据。
 
 受环境阻塞的 full-suite 结果不能记为通过。当前 ABI v2 的详细实现与 2-node 证据见
-[P2B 实现总结](p2b-implementation-summary.md)。P2B 可以标记为“2-node ABI v2 gate
-pass”，但 P3 必须等新的 acceptance 产物生成后才能恢复正式通过状态。
+[P2B 实现总结](p2b-implementation-summary.md)。P3 acceptance 和定向 scale-out 可以
+标记为通过，但 full matrix 仍必须单独标记为待完成。
 
 ## 6. 复现入口
 
@@ -201,20 +214,22 @@ pass”，但 P3 必须等新的 acceptance 产物生成后才能恢复正式通
 ```text
 cargo run -p sim-cli -- obmm-remote-load-eval \
   --matrix scenarios/experiments/obmm_remote_load_eval_v1.yaml \
-  --scenario scenarios/mvp_2host_single_domain.yaml \
+  --scenario scenarios/mvp_2host_p2b_remote_10ms.yaml \
   --seeds 1..7 \
   --output-dir out/obmm-remote-load/p3-dry-run \
   --dry-run
 ```
 
-下一阶段正式 P3 performance acceptance 必须在允许启动 QEMU 的远端环境运行：
+ABI v2 P3 performance acceptance 的复现入口如下，必须在允许启动 QEMU 的远端环境
+运行：
 
 ```text
 cargo run -p sim-cli -- obmm-remote-load-eval \
   --matrix scenarios/experiments/obmm_remote_load_eval_acceptance_v1.yaml \
-  --scenario scenarios/mvp_2host_single_domain.yaml \
+  --scenario scenarios/mvp_2host_p2b_remote_10ms.yaml \
   --seeds 1..7 \
-  --output-dir out/obmm-remote-load/p3-acceptance \
+  --gate-dir out/obmm-remote-load/gates-p3-abi-v2-10ms-20260813 \
+  --output-dir out/obmm-remote-load/p3-acceptance-abi-v2-20260813-r1 \
   --remote-target <host> \
   --remote-repo <repo>
 ```
@@ -225,12 +240,9 @@ cargo run -p sim-cli -- obmm-remote-load-eval \
 
 ## 7. 下一阶段工作
 
-以下项目不属于当前 2-node P2B producer/consumer 功能验收，但 P3 性能对比是整体
-方案的下一必做阶段：
+以下项目不属于当前 2-node P2B producer/consumer 功能验收。P3 acceptance 和定向
+scale-out 已完成，剩余必做项是：
 
-- 使用新的 run ID 重跑 P3 acceptance，旧 49-case 不得复用；
-- 按 P3 矩阵先完成 2-node correctness/acceptance，再扩展 4/8-node scale-out，并继续
-  确认 QEMU context/scheduler counters 始终为 0；
 - 执行 4,942-case 全因子性能 campaign，形成不同 latency/compute/concurrency 区间的
   break-even 结论；
 

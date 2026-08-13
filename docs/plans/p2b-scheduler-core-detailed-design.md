@@ -1,9 +1,9 @@
 # P2B：普通 `LDR` + 自定义 EL0 upcall + EL0 协程调度核心
 
 > 状态：ABI v2 的 2-node producer/consumer 功能目标已完成，并在 `n4-910c`
-> 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 phase gate。P3 性能
-> 对比评估是整体方案的下一必做阶段，其中包含 4/8-node scale-out；它不是本设计的
-> 功能退出条件。旧 QEMU-internal SCC
+> 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 phase gate。P3 ABI v2
+> 的 2-node acceptance 与 4/8-node 定向 scale-out 已完成，4,942-case full matrix
+> 尚待完成；P3 不是本设计的功能退出条件。旧 QEMU-internal SCC
 > 结果不计为本设计验收
 >
 > 日期：2026-08-12
@@ -723,15 +723,16 @@ contract `fnv1a64:e0b3f5ef7cc0da5c`。任何一个产物变化都不能直接继
 3. **failure real guest gate。** timeout、permission、stale map、duplicate/late、event
    overflow、owner mismatch 和 malformed context 目前只有 model/contract coverage，未跑
    ABI v2 guest fault-injection E2E；
-4. **扩展覆盖。** 当前 E2E 只覆盖验收所需的 8-byte、sequential、seed 29、2
-   coroutine、2-node；P3 必须按正式矩阵补齐更多 coroutines、seeds、latency/compute
-   组合和 4/8-node scale-out。1/2/4-byte 与更多 pattern 属于额外功能覆盖，不得用
-   当前 gate 冒充已经验证；
+4. **扩展覆盖。** 功能 gate 固定覆盖 8-byte、sequential、seed 29、2 coroutine、
+   2-node；P3 acceptance/scale-out 已增加 seeds 1..7、4 coroutines 和 4/8-node，
+   但更多 coroutines、latency/compute 组合仍依赖 full matrix。1/2/4-byte 与更多
+   pattern 属于额外功能覆盖，不得用当前 gate 冒充已经验证；
 5. **更一般的 overlap。** r15 已严格证明至少一个“c0 pending 期间 c1 发出 LDR”的
    窗口；它没有证明任意 coroutine 数、任意 latency 或连续工作负载下都能保持相同
    overlap，也不是 throughput/break-even 证据；
-6. **性能结论。** P3 的新 7-seed acceptance 与 4,942-case campaign 尚未执行；它们
-   是整体方案下一阶段形成性能结论所必需的工作，但不是 P2B 功能验收。
+6. **性能结论。** P3 的新 7-seed acceptance 和 4/8-node 定向 scale-out 已完成；
+   4,942-case campaign 尚未完成。因此可以发布当前基准点结果，但不能发布完整
+   latency/compute/jitter/failure break-even 结论。
 
 ### 9.6 远端 E2E 产生的实现约束
 
@@ -756,9 +757,10 @@ contract `fnv1a64:e0b3f5ef7cc0da5c`。任何一个产物变化都不能直接继
 - P2B 状态是 `ABI v2 2-node producer/consumer functional acceptance passed`；
 - 旧 `out/obmm-remote-load/gates/p2b.json` 不再代表目标 P2B；
 - 旧 `S3-p2b-demand` 性能数字标记为 `qemu-internal-scc legacy`；
-- P3 formal acceptance 不能继续声明目标 P2B 49/49 已通过；
-- 新的 2-node gate 必须使用 ABI v2、EL0 counters 和当前 QEMU binary hash；下一阶段
-  的 P3 及其 4/8-node scale-out 证据必须重新生成，不能拼接旧运行。
+- P3 formal acceptance 现已用 ABI v2 新证据达到 49/49；
+- 新 2-node gate、P3 acceptance 与 4/8-node scale-out 均使用 ABI v2、EL0 counters
+  和当前 QEMU binary hash，未拼接旧运行；
+- 4,942-case full matrix 仍是独立未完成项。
 
 ## 11. 实现顺序
 
@@ -771,6 +773,7 @@ contract `fnv1a64:e0b3f5ef7cc0da5c`。任何一个产物变化都不能直接继
 7. 更新 unit/contract tests；
 8. 在远端运行 2-node producer/consumer guest gate（已完成）。
 
-下一步进入 P3 正式性能评估：先以当前 ABI v2 运行新的 2-node correctness/acceptance，
-再扩展到 4/8-node scale-out 和完整性能矩阵。P3 是整体方案的必做阶段，但不作为
-P2B 2-node 功能验收的退出条件。
+P3 的 2-node correctness/acceptance 与 4/8-node 定向 scale-out 已完成，结果见
+[2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。下一步执行
+完整 4,942-case matrix。P3 是整体方案的必做阶段，但不作为 P2B 2-node 功能验收的
+退出条件。

@@ -124,9 +124,13 @@ use std::time::Instant;
 mod dataplane_microbench;
 mod obmm_eval;
 mod obmm_remote;
+mod obmm_scale;
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(args) = obmm_scale::args()? {
+        return obmm_scale::run(&args);
+    }
     if let Some(args) = obmm_eval::args()? {
         return obmm_eval::run(&args);
     }
