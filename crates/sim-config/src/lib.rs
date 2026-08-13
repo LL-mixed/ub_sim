@@ -7,6 +7,10 @@ use std::path::Path;
 pub struct ScenarioConfig {
     pub scenario: ScenarioMetaConfig,
     pub platform: PlatformConfig,
+    #[serde(default)]
+    pub remote_memory_model: RemoteMemoryModelConfig,
+    #[serde(default)]
+    pub scheduler_core_model: SchedulerCoreModelConfig,
     pub topology: TopologyConfig,
     pub ub_runtime: UbRuntimeConfig,
     pub pypto: PyptoConfig,
@@ -55,6 +59,9 @@ impl ScenarioConfig {
             ));
         }
 
+        self.remote_memory_model.validate()?;
+        self.scheduler_core_model.validate()?;
+
         for domain in &self.topology.ub_domains {
             if domain.hosts.is_empty() {
                 return Err(ConfigError::EmptyField("topology.ub_domains[].hosts"));
@@ -86,6 +93,255 @@ impl ScenarioConfig {
 
         Ok(())
     }
+}
+
+const REMOTE_MEMORY_MAX_LATENCY_NS: u64 = 10_000_000_000;
+const REMOTE_MEMORY_MAX_QUEUE_DEPTH: u32 = 65_535;
+const REMOTE_MEMORY_PPM_SCALE: u32 = 1_000_000;
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMemoryTimeSource {
+    QemuVirtual,
+}
+
+impl Default for RemoteMemoryTimeSource {
+    fn default() -> Self {
+        Self::QemuVirtual
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMemoryJitterMode {
+    None,
+    Uniform,
+}
+
+impl Default for RemoteMemoryJitterMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteMemoryJitterConfig {
+    pub mode: RemoteMemoryJitterMode,
+    pub max_abs_ns: u64,
+}
+
+impl Default for RemoteMemoryJitterConfig {
+    fn default() -> Self {
+        Self {
+            mode: RemoteMemoryJitterMode::None,
+            max_abs_ns: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteMemoryTailConfig {
+    pub probability_ppm: u32,
+    pub extra_latency_ns: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteMemoryModelConfig {
+    pub enabled: bool,
+    pub time_source: RemoteMemoryTimeSource,
+    pub fixed_latency_ns: u64,
+    pub jitter: RemoteMemoryJitterConfig,
+    pub tail: RemoteMemoryTailConfig,
+    pub queue_depth: u32,
+    pub reorder_window: u32,
+    pub drop_ppm: u32,
+    pub error_ppm: u32,
+    pub duplicate_ppm: u32,
+    pub duplicate_delay_ns: u64,
+    pub seed: u64,
+}
+
+impl Default for RemoteMemoryModelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            time_source: RemoteMemoryTimeSource::QemuVirtual,
+            fixed_latency_ns: 0,
+            jitter: RemoteMemoryJitterConfig::default(),
+            tail: RemoteMemoryTailConfig::default(),
+            queue_depth: 64,
+            reorder_window: 1,
+            drop_ppm: 0,
+            error_ppm: 0,
+            duplicate_ppm: 0,
+            duplicate_delay_ns: 1_000,
+            seed: 1,
+        }
+    }
+}
+
+impl RemoteMemoryModelConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        validate_max_u64(
+            "remote_memory_model.fixed_latency_ns",
+            self.fixed_latency_ns,
+            REMOTE_MEMORY_MAX_LATENCY_NS,
+        )?;
+        validate_max_u64(
+            "remote_memory_model.tail.extra_latency_ns",
+            self.tail.extra_latency_ns,
+            REMOTE_MEMORY_MAX_LATENCY_NS,
+        )?;
+        validate_max_u64(
+            "remote_memory_model.duplicate_delay_ns",
+            self.duplicate_delay_ns,
+            REMOTE_MEMORY_MAX_LATENCY_NS,
+        )?;
+        let jitter_max = self
+            .fixed_latency_ns
+            .checked_add(REMOTE_MEMORY_MAX_LATENCY_NS)
+            .expect("validated fixed latency addition cannot overflow");
+        validate_max_u64(
+            "remote_memory_model.jitter.max_abs_ns",
+            self.jitter.max_abs_ns,
+            jitter_max,
+        )?;
+        if self.jitter.mode == RemoteMemoryJitterMode::None && self.jitter.max_abs_ns != 0 {
+            return Err(ConfigError::InvalidCombination(
+                "remote_memory_model.jitter.max_abs_ns must be zero when mode is none",
+            ));
+        }
+        if self.queue_depth == 0 || self.queue_depth > REMOTE_MEMORY_MAX_QUEUE_DEPTH {
+            return Err(ConfigError::ValueOutOfRange {
+                field: "remote_memory_model.queue_depth",
+                value: u64::from(self.queue_depth),
+                min: 1,
+                max: u64::from(REMOTE_MEMORY_MAX_QUEUE_DEPTH),
+            });
+        }
+        if self.reorder_window == 0 || self.reorder_window > self.queue_depth {
+            return Err(ConfigError::ValueOutOfRange {
+                field: "remote_memory_model.reorder_window",
+                value: u64::from(self.reorder_window),
+                min: 1,
+                max: u64::from(self.queue_depth),
+            });
+        }
+        validate_ppm(
+            "remote_memory_model.tail.probability_ppm",
+            self.tail.probability_ppm,
+        )?;
+        validate_ppm("remote_memory_model.drop_ppm", self.drop_ppm)?;
+        validate_ppm("remote_memory_model.error_ppm", self.error_ppm)?;
+        validate_ppm("remote_memory_model.duplicate_ppm", self.duplicate_ppm)?;
+        if self.drop_ppm.saturating_add(self.error_ppm) > REMOTE_MEMORY_PPM_SCALE {
+            return Err(ConfigError::InvalidCombination(
+                "remote_memory_model.drop_ppm + error_ppm must not exceed 1000000",
+            ));
+        }
+        Ok(())
+    }
+}
+
+const SCHEDULER_CORE_MAX_CONTEXT_ENTRIES: u16 = 64;
+const SCHEDULER_CORE_MAX_PENDING_LOAD_ENTRIES: u16 = 64;
+const SCHEDULER_CORE_MAX_EVENT_QUEUE_DEPTH: u16 = 128;
+const SCHEDULER_CORE_MAX_CLOCK_MHZ: u32 = 100_000;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SchedulerCoreModelConfig {
+    pub enabled: bool,
+    pub context_entries: u16,
+    pub pending_load_entries: u16,
+    pub event_queue_depth: u16,
+    pub clock_mhz: u32,
+}
+
+impl Default for SchedulerCoreModelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            context_entries: 64,
+            pending_load_entries: 64,
+            event_queue_depth: 128,
+            clock_mhz: 2_000,
+        }
+    }
+}
+
+impl SchedulerCoreModelConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        validate_range_u32(
+            "scheduler_core_model.context_entries",
+            u32::from(self.context_entries),
+            1,
+            u32::from(SCHEDULER_CORE_MAX_CONTEXT_ENTRIES),
+        )?;
+        validate_range_u32(
+            "scheduler_core_model.pending_load_entries",
+            u32::from(self.pending_load_entries),
+            1,
+            u32::from(SCHEDULER_CORE_MAX_PENDING_LOAD_ENTRIES),
+        )?;
+        validate_range_u32(
+            "scheduler_core_model.event_queue_depth",
+            u32::from(self.event_queue_depth),
+            1,
+            u32::from(SCHEDULER_CORE_MAX_EVENT_QUEUE_DEPTH),
+        )?;
+        validate_range_u32(
+            "scheduler_core_model.clock_mhz",
+            self.clock_mhz,
+            1,
+            SCHEDULER_CORE_MAX_CLOCK_MHZ,
+        )?;
+        Ok(())
+    }
+}
+
+fn validate_range_u32(
+    field: &'static str,
+    value: u32,
+    min: u32,
+    max: u32,
+) -> Result<(), ConfigError> {
+    if value < min || value > max {
+        return Err(ConfigError::ValueOutOfRange {
+            field,
+            value: u64::from(value),
+            min: u64::from(min),
+            max: u64::from(max),
+        });
+    }
+    Ok(())
+}
+
+fn validate_max_u64(field: &'static str, value: u64, max: u64) -> Result<(), ConfigError> {
+    if value > max {
+        return Err(ConfigError::ValueOutOfRange {
+            field,
+            value,
+            min: 0,
+            max,
+        });
+    }
+    Ok(())
+}
+
+fn validate_ppm(field: &'static str, value: u32) -> Result<(), ConfigError> {
+    if value > REMOTE_MEMORY_PPM_SCALE {
+        return Err(ConfigError::ValueOutOfRange {
+            field,
+            value: u64::from(value),
+            min: 0,
+            max: u64::from(REMOTE_MEMORY_PPM_SCALE),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -443,6 +699,15 @@ pub enum ConfigError {
     WatermarkOrder(&'static str),
     #[error("domain host id {host_id} is out of range for topology.hosts={hosts}")]
     HostOutOfRange { host_id: u32, hosts: u32 },
+    #[error("field `{field}` value {value} is outside [{min}, {max}]")]
+    ValueOutOfRange {
+        field: &'static str,
+        value: u64,
+        min: u64,
+        max: u64,
+    },
+    #[error("invalid configuration: {0}")]
+    InvalidCombination(&'static str),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -457,7 +722,7 @@ pub enum ConfigLoadError {
 
 #[cfg(test)]
 mod tests {
-    use super::ScenarioConfig;
+    use super::{RemoteMemoryJitterMode, ScenarioConfig};
 
     const VALID_YAML: &str = r#"
 scenario:
@@ -565,5 +830,134 @@ outputs:
         let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("valid scenario yaml");
         assert_eq!(config.topology.hosts, 2);
         assert_eq!(config.topology.ub_domains.len(), 1);
+        assert!(!config.remote_memory_model.enabled);
+        assert_eq!(config.remote_memory_model.queue_depth, 64);
+        assert_eq!(config.remote_memory_model.reorder_window, 1);
+        assert!(!config.scheduler_core_model.enabled);
+        assert_eq!(config.scheduler_core_model.context_entries, 64);
+    }
+
+    #[test]
+    fn parses_canonical_remote_memory_model() {
+        let yaml = VALID_YAML.replace(
+            "topology:\n",
+            "remote_memory_model:\n  enabled: true\n  time_source: qemu_virtual\n  fixed_latency_ns: 100000\n  jitter:\n    mode: uniform\n    max_abs_ns: 20000\n  tail:\n    probability_ppm: 10000\n    extra_latency_ns: 900000\n  queue_depth: 64\n  reorder_window: 8\n  drop_ppm: 10\n  error_ppm: 20\n  duplicate_ppm: 30\n  duplicate_delay_ns: 1000\n  seed: 7\ntopology:\n",
+        );
+        let config = ScenarioConfig::from_yaml_str(&yaml).expect("canonical remote model");
+
+        assert!(config.remote_memory_model.enabled);
+        assert_eq!(config.remote_memory_model.fixed_latency_ns, 100_000);
+        assert_eq!(
+            config.remote_memory_model.jitter.mode,
+            RemoteMemoryJitterMode::Uniform
+        );
+        assert_eq!(config.remote_memory_model.reorder_window, 8);
+        assert_eq!(config.remote_memory_model.seed, 7);
+    }
+
+    #[test]
+    fn rejects_unknown_remote_memory_model_field() {
+        let yaml = VALID_YAML.replace(
+            "topology:\n",
+            "remote_memory_model:\n  enabled: true\n  fixed_latncy_ns: 1\ntopology:\n",
+        );
+        let error = ScenarioConfig::from_yaml_str(&yaml).expect_err("unknown field must fail");
+
+        assert!(error.to_string().contains("fixed_latncy_ns"));
+    }
+
+    #[test]
+    fn rejects_invalid_remote_memory_model_bounds() {
+        let queue_yaml = VALID_YAML.replace(
+            "topology:\n",
+            "remote_memory_model:\n  queue_depth: 4\n  reorder_window: 5\ntopology:\n",
+        );
+        let queue_error =
+            ScenarioConfig::from_yaml_str(&queue_yaml).expect_err("reorder beyond queue");
+        assert!(queue_error
+            .to_string()
+            .contains("remote_memory_model.reorder_window"));
+
+        let outcome_yaml = VALID_YAML.replace(
+            "topology:\n",
+            "remote_memory_model:\n  drop_ppm: 600000\n  error_ppm: 500000\ntopology:\n",
+        );
+        let outcome_error =
+            ScenarioConfig::from_yaml_str(&outcome_yaml).expect_err("outcomes exceed ppm scale");
+        assert!(outcome_error.to_string().contains("drop_ppm + error_ppm"));
+
+        let jitter_yaml = VALID_YAML.replace(
+            "topology:\n",
+            "remote_memory_model:\n  jitter:\n    mode: none\n    max_abs_ns: 1\ntopology:\n",
+        );
+        let jitter_error =
+            ScenarioConfig::from_yaml_str(&jitter_yaml).expect_err("none jitter must be zero");
+        assert!(jitter_error.to_string().contains("max_abs_ns must be zero"));
+    }
+
+    #[test]
+    fn parses_and_validates_scheduler_core_model() {
+        let yaml = VALID_YAML.replace(
+            "topology:\n",
+            "scheduler_core_model:\n  enabled: true\n  context_entries: 8\n  pending_load_entries: 4\n  event_queue_depth: 16\n  clock_mhz: 1800\ntopology:\n",
+        );
+        let config = ScenarioConfig::from_yaml_str(&yaml).expect("scheduler core model");
+
+        assert!(config.scheduler_core_model.enabled);
+        assert_eq!(config.scheduler_core_model.context_entries, 8);
+        assert_eq!(config.scheduler_core_model.pending_load_entries, 4);
+        assert_eq!(config.scheduler_core_model.event_queue_depth, 16);
+        assert_eq!(config.scheduler_core_model.clock_mhz, 1_800);
+    }
+
+    #[test]
+    fn rejects_invalid_or_unknown_scheduler_core_model_fields() {
+        let capacity_yaml = VALID_YAML.replace(
+            "topology:\n",
+            "scheduler_core_model:\n  context_entries: 65\ntopology:\n",
+        );
+        let capacity_error = ScenarioConfig::from_yaml_str(&capacity_yaml)
+            .expect_err("context capacity must be bounded");
+        assert!(capacity_error
+            .to_string()
+            .contains("scheduler_core_model.context_entries"));
+
+        let unknown_yaml = VALID_YAML.replace(
+            "topology:\n",
+            "scheduler_core_model:\n  save_cycle: 1\ntopology:\n",
+        );
+        let unknown_error = ScenarioConfig::from_yaml_str(&unknown_yaml)
+            .expect_err("unknown scheduler model field must fail");
+        assert!(unknown_error.to_string().contains("save_cycle"));
+    }
+
+    #[test]
+    fn checked_in_scenarios_have_valid_explicit_remote_memory_models() {
+        let scenario_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios");
+        for name in [
+            "mvp_2host_single_domain.yaml",
+            "mvp_3host_single_domain.yaml",
+            "mvp_4host_single_domain.yaml",
+            "mvp_8host_single_domain.yaml",
+        ] {
+            let config = ScenarioConfig::from_yaml_file(scenario_root.join(name))
+                .unwrap_or_else(|error| panic!("{name} must parse: {error}"));
+            assert!(config.remote_memory_model.enabled, "{name}");
+            assert_eq!(
+                config.remote_memory_model.time_source,
+                super::RemoteMemoryTimeSource::QemuVirtual
+            );
+            assert!(
+                config.remote_memory_model.queue_depth >= config.remote_memory_model.reorder_window
+            );
+            assert!(config.scheduler_core_model.enabled, "{name}");
+            assert_eq!(config.scheduler_core_model.context_entries, 64, "{name}");
+            assert_eq!(
+                config.scheduler_core_model.pending_load_entries, 64,
+                "{name}"
+            );
+            assert_eq!(config.scheduler_core_model.event_queue_depth, 128, "{name}");
+        }
     }
 }

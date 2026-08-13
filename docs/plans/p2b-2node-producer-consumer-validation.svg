@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1040" viewBox="0 0 1500 1040" role="img" aria-labelledby="title desc">
+  <title id="title">P2B two-node producer consumer validation timeline</title>
+  <desc id="desc">Node A exports and writes two values. Node B imports the same mapping. Coroutine zero blocks on an ordinary LDR, the EL0 scheduler switches to coroutine one, and coroutine one issues its LDR before coroutine zero completes. Both values are then completed and verified.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#344054"/>
+    </marker>
+    <style>
+      .title { font: 700 28px system-ui, sans-serif; fill: #172033; }
+      .subtitle { font: 16px system-ui, sans-serif; fill: #475467; }
+      .lane-title { font: 700 18px system-ui, sans-serif; fill: #172033; }
+      .label { font: 15px system-ui, sans-serif; fill: #172033; }
+      .small { font: 13px system-ui, sans-serif; fill: #344054; }
+      .mono { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #172033; }
+      .line { stroke: #98A2B3; stroke-width: 2; stroke-dasharray: 6 6; }
+      .arrow { stroke: #344054; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .local { fill: #EAF2FF; stroke: #2E6FBB; stroke-width: 2; }
+      .remote { fill: #FFF3E6; stroke: #B54708; stroke-width: 2; }
+      .sched { fill: #ECFDF3; stroke: #027A48; stroke-width: 2; }
+      .proof { fill: #F4EBFF; stroke: #7F56D9; stroke-width: 2; }
+      .pass { fill: #D1FADF; stroke: #027A48; stroke-width: 2; }
+      .callout { fill: #FFFAEB; stroke: #DC6803; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1500" height="1040" fill="#FCFCFD"/>
+  <text x="60" y="52" class="title">P2B 2-node 实际验收：producer 写值，consumer 的两个协程用普通 LDR 读取</text>
+  <text x="60" y="82" class="subtitle">通过条件：coroutine 1 的 LDR issue 必须发生在 coroutine 0 的 PENDING 与 COMPLETE 之间</text>
+
+  <rect x="55" y="110" width="300" height="62" rx="10" class="local"/>
+  <rect x="405" y="110" width="300" height="62" rx="10" class="remote"/>
+  <rect x="755" y="110" width="300" height="62" rx="10" class="sched"/>
+  <rect x="1105" y="110" width="330" height="62" rx="10" class="proof"/>
+  <text x="205" y="148" text-anchor="middle" class="lane-title">nodeA · test program A</text>
+  <text x="555" y="148" text-anchor="middle" class="lane-title">OBMM / SIM_DEC / QEMU</text>
+  <text x="905" y="148" text-anchor="middle" class="lane-title">nodeB · EL0 scheduler</text>
+  <text x="1270" y="148" text-anchor="middle" class="lane-title">nodeB · coroutine / evidence</text>
+
+  <line x1="205" y1="180" x2="205" y2="950" class="line"/>
+  <line x1="555" y1="180" x2="555" y2="950" class="line"/>
+  <line x1="905" y1="180" x2="905" y2="950" class="line"/>
+  <line x1="1270" y1="180" x2="1270" y2="950" class="line"/>
+
+  <rect x="75" y="205" width="260" height="78" rx="10" class="local"/>
+  <text x="205" y="232" text-anchor="middle" class="label">export 2 MiB region</text>
+  <text x="205" y="256" text-anchor="middle" class="mono">offset 0x1000 = 4d54…0e61</text>
+  <text x="205" y="276" text-anchor="middle" class="mono">offset 0x2000 = 4d54…0e60</text>
+  <path d="M335 244 H535" class="arrow"/>
+  <text x="435" y="232" text-anchor="middle" class="small">publish export_mem_id=1</text>
+
+  <path d="M575 315 H1095" class="arrow"/>
+  <text x="835" y="302" text-anchor="middle" class="small">nodeB lookup + import 同一个 export_mem_id=1</text>
+  <rect x="1115" y="292" width="310" height="55" rx="10" class="proof"/>
+  <text x="1270" y="316" text-anchor="middle" class="mono">OBMM_P2B_IMPORT … status=mapped</text>
+  <text x="1270" y="337" text-anchor="middle" class="small">两个 coroutine context 均 READY</text>
+
+  <rect x="1120" y="382" width="300" height="64" rx="10" class="proof"/>
+  <text x="1270" y="407" text-anchor="middle" class="label">coroutine 0</text>
+  <text x="1270" y="430" text-anchor="middle" class="mono">LDR [import + 0x1000] · issue</text>
+  <path d="M1120 414 H930" class="arrow"/>
+  <path d="M880 414 H580" class="arrow"/>
+  <text x="730" y="401" text-anchor="middle" class="small">普通 scalar load 到达 remote mapping</text>
+
+  <rect x="770" y="470" width="270" height="62" rx="10" class="sched"/>
+  <text x="905" y="495" text-anchor="middle" class="mono">UPCALL pending(c0, token0)</text>
+  <text x="905" y="517" text-anchor="middle" class="small">EL0 保存 c0 → WAIT_REMOTE</text>
+  <path d="M1040 501 H1110" class="arrow"/>
+  <rect x="1120" y="470" width="300" height="62" rx="10" class="proof"/>
+  <text x="1270" y="495" text-anchor="middle" class="mono">resume c1 · after_complete=0</text>
+  <text x="1270" y="517" text-anchor="middle" class="small">不是等 c0 完成后再运行</text>
+
+  <rect x="1120" y="562" width="300" height="64" rx="10" class="callout"/>
+  <text x="1270" y="587" text-anchor="middle" class="label">coroutine 1 在 c0 未完成时运行</text>
+  <text x="1270" y="610" text-anchor="middle" class="mono">LDR [import + 0x2000] · issue</text>
+  <path d="M1120 594 H580" class="arrow"/>
+  <text x="850" y="581" text-anchor="middle" class="small">这是“隐藏远端等待”的关键因果证据</text>
+
+  <rect x="770" y="652" width="270" height="62" rx="10" class="sched"/>
+  <text x="905" y="677" text-anchor="middle" class="mono">UPCALL pending(c1, token1)</text>
+  <text x="905" y="699" text-anchor="middle" class="small">无 READY 时 GET_EVENT(WAIT)</text>
+
+  <path d="M575 750 H765" class="arrow"/>
+  <text x="670" y="737" text-anchor="middle" class="small">COMPLETE token0 + value0</text>
+  <rect x="770" y="724" width="270" height="62" rx="10" class="sched"/>
+  <text x="905" y="749" text-anchor="middle" class="mono">patch c0.x0; PC += 4</text>
+  <text x="905" y="771" text-anchor="middle" class="small">atomic resume c0</text>
+  <path d="M1040 755 H1110" class="arrow"/>
+  <text x="1270" y="750" text-anchor="middle" class="mono">c0 retire · actual == value0</text>
+
+  <path d="M575 830 H765" class="arrow"/>
+  <text x="670" y="817" text-anchor="middle" class="small">COMPLETE token1 + value1</text>
+  <rect x="770" y="804" width="270" height="62" rx="10" class="sched"/>
+  <text x="905" y="829" text-anchor="middle" class="mono">patch c1.x0; PC += 4</text>
+  <text x="905" y="851" text-anchor="middle" class="small">atomic resume c1</text>
+  <path d="M1040 835 H1110" class="arrow"/>
+  <text x="1270" y="830" text-anchor="middle" class="mono">c1 retire · actual == value1</text>
+
+  <rect x="180" y="900" width="1140" height="92" rx="14" class="pass"/>
+  <text x="750" y="930" text-anchor="middle" class="lane-title">r15 PASS</text>
+  <text x="750" y="956" text-anchor="middle" class="mono">blocked_load_switches=1 · values_verified=2 · pending=2 · complete=2 · fault=0</text>
+  <text x="750" y="978" text-anchor="middle" class="mono">scc_pending_final=0 · backend_pending_final=0 · trace_dropped=0 · qemu_destroyed=1</text>
+</svg>

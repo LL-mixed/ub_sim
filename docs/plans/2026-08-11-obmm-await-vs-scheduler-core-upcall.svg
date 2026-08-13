@@ -1,856 +1,171 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<svg
-   width="1600"
-   height="1160"
-   viewBox="0 0 1600 1160"
-   role="img"
-   aria-labelledby="title desc"
-   version="1.1"
-   id="svg78"
-   sodipodi:docname="2026-08-11-obmm-await-vs-scheduler-core-upcall.svg"
-   inkscape:version="1.3 (0e150ed, 2023-07-21)"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
-  <sodipodi:namedview
-     id="namedview78"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="1.30875"
-     inkscape:cx="800"
-     inkscape:cy="580.32474"
-     inkscape:window-width="2576"
-     inkscape:window-height="1890"
-     inkscape:window-x="3946"
-     inkscape:window-y="904"
-     inkscape:window-maximized="0"
-     inkscape:current-layer="g77" />
-  <title
-     id="title">Explicit submit/await compared with a hardware scheduler-core upcall</title>
-  <desc
-     id="desc">Both designs suspend a coroutine waiting for remote memory and run another ready coroutine. The submit-await design exposes the split in software, while the scheduler-core upcall preserves an ordinary unretired load in hardware and delegates context scheduling to a dedicated core.</desc>
-  <defs
-     id="defs3">
-    <linearGradient
-       id="background"
-       x1="0"
-       y1="0"
-       x2="1"
-       y2="1">
-      <stop
-         offset="0"
-         stop-color="#f8fbfa"
-         id="stop1" />
-      <stop
-         offset="1"
-         stop-color="#eef3f6"
-         id="stop2" />
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="980"
+     viewBox="0 0 1500 980" role="img" aria-labelledby="title desc">
+  <title id="title">P2A submit await compared with P2B direct EL0 upcall</title>
+  <desc id="desc">Both mechanisms use a guest EL0 coroutine scheduler. P2A
+  exposes submit and await in the data plane. P2B preserves an ordinary
+  unretired load, uses a QEMU direct EL0 upcall, and lets EL0 save, select,
+  patch and resume contexts.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7faf8"/>
+      <stop offset="1" stop-color="#eaf2f2"/>
     </linearGradient>
-    <filter
-       id="shadow"
-       x="-0.00070422535"
-       y="-0.0056818182"
-       width="1.0014085"
-       height="1.0113636">
-      <feDropShadow
-         dx="0"
-         dy="6"
-         stdDeviation="9"
-         flood-color="#233c39"
-         flood-opacity="0.12" />
-    </filter>
-    <marker
-       id="arrowBlue"
-       markerWidth="10"
-       markerHeight="10"
-       refX="8"
-       refY="5"
-       orient="auto"
-       markerUnits="strokeWidth">
-      <path
-         d="M0,0 L10,5 L0,10 Z"
-         fill="#3e6f8d"
-         id="path2" />
+    <marker id="blue" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#356f8b"/>
     </marker>
-    <marker
-       id="arrowAmber"
-       markerWidth="10"
-       markerHeight="10"
-       refX="8"
-       refY="5"
-       orient="auto"
-       markerUnits="strokeWidth">
-      <path
-         d="M0,0 L10,5 L0,10 Z"
-         fill="#a76528"
-         id="path3" />
+    <marker id="green" markerWidth="10" markerHeight="10" refX="8" refY="5"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#34765f"/>
     </marker>
-    <style
-       id="style3">&#10;      text { font-family: Inter, &quot;Noto Sans CJK SC&quot;, &quot;PingFang SC&quot;, sans-serif; fill: #17332f; }&#10;      .kicker { font-size: 15px; font-weight: 760; letter-spacing: 2px; fill: #47736c; }&#10;      .title { font-size: 34px; font-weight: 780; }&#10;      .subtitle { font-size: 16px; fill: #607570; }&#10;      .shared-title { font-size: 18px; font-weight: 760; }&#10;      .shared-copy { font-size: 15px; fill: #4f6863; }&#10;      .column-title { font-size: 24px; font-weight: 780; }&#10;      .column-sub { font-size: 14px; fill: #58706c; }&#10;      .box-title { font-size: 17px; font-weight: 760; }&#10;      .box-copy { font-size: 13px; fill: #4d6661; }&#10;      .step { font-size: 13px; font-weight: 800; }&#10;      .split { font-size: 15px; font-weight: 780; }&#10;      .table-head { font-size: 16px; font-weight: 780; }&#10;      .table-cell { font-size: 13px; fill: #3e5752; }&#10;      .table-key { font-size: 13px; font-weight: 760; fill: #2b4b46; }&#10;      .foot { font-size: 13px; fill: #60736f; }&#10;    </style>
+    <style>
+      text { font-family: Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+             fill: #18332f; }
+      .kicker { font-size: 14px; font-weight: 750; letter-spacing: 2px; fill: #4d7169; }
+      .title { font-size: 31px; font-weight: 790; }
+      .subtitle { font-size: 16px; fill: #526c66; }
+      .lane { font-size: 21px; font-weight: 790; }
+      .lane-sub { font-size: 14px; fill: #526c66; }
+      .box-title { font-size: 15px; font-weight: 760; }
+      .copy { font-size: 13px; fill: #405b55; }
+      .step { font-size: 13px; font-weight: 800; }
+      .table-head { font-size: 14px; font-weight: 780; }
+      .table-copy { font-size: 13px; fill: #38534d; }
+      .strong { font-size: 14px; font-weight: 770; }
+    </style>
   </defs>
-  <rect
-     width="1600"
-     height="1160"
-     fill="url(#background)"
-     id="rect3" />
-  <text
-     x="60"
-     y="48"
-     class="kicker"
-     id="text3">SAME SCHEDULING IDEA · DIFFERENT ARCHITECTURAL CONTRACT</text>
-  <text
-     x="60"
-     y="91"
-     class="title"
-     id="text4">显式 submit/await 与硬件 scheduler-core upcall</text>
-  <text
-     x="60"
-     y="121"
-     class="subtitle"
-     id="text5">都“涉及切换上下文”，区别是 remote load 在哪一层被感知、谁感知 pending 状态、谁保证 load 语义。</text>
-  <g
-     transform="translate(60 154)"
-     id="g13">
-    <rect
-       width="1480"
-       height="88"
-       rx="20"
-       fill="#ffffff"
-       stroke="#d6e3e0"
-       filter="url(#shadow)"
-       id="rect5" />
-    <text
-       x="26"
-       y="34"
-       class="shared-title"
-       id="text6">两者共同机制</text>
-    <text
-       x="174"
-       y="34"
-       class="shared-copy"
-       id="text7">Coroutine A 等待远端数据</text>
-    <text
-       x="443"
-       y="34"
-       class="shared-copy"
-       id="text8">→ 保存 A 的执行上下文</text>
-    <text
-       x="690"
-       y="34"
-       class="shared-copy"
-       id="text9">→ 运行 ready 的 B</text>
-    <text
-       x="914"
-       y="34"
-       class="shared-copy"
-       id="text10">→ 远端完成</text>
-    <text
-       x="1080"
-       y="34"
-       class="shared-copy"
-       id="text11">→ A 变为 READY 并恢复</text>
-    <rect
-       x="26"
-       y="52"
-       width="1428"
-       height="16"
-       rx="8"
-       fill="#dceae7"
-       id="rect11" />
-    <rect
-       x="26"
-       y="52"
-       width="714"
-       height="16"
-       rx="8"
-       fill="#bcd7e5"
-       id="rect12" />
-    <rect
-       x="740"
-       y="52"
-       width="714"
-       height="16"
-       rx="8"
-       fill="#eed5b8"
-       id="rect13" />
+
+  <rect width="1500" height="980" fill="url(#bg)"/>
+  <text x="52" y="42" class="kicker">P2A vs P2B · SAME EL0 SCHEDULER, DIFFERENT SPLIT POINT</text>
+  <text x="52" y="84" class="title">关键区别不是“有没有协程”，而是 remote load 在哪里被拆分</text>
+  <text x="52" y="114" class="subtitle">两条路径的 context 保存和选择都在 guest EL0；P2B 额外要求 core 保持普通 LDR 未退休并直接 upcall。</text>
+
+  <g transform="translate(52 146)">
+    <rect width="678" height="500" rx="22" fill="#eef6fa" stroke="#a9c8d7"/>
+    <text x="24" y="40" class="lane">P2A · 显式 submit / await</text>
+    <text x="24" y="65" class="lane-sub">标准 Arm/Linux 软件路径；拆分点对 runtime/编译器可见</text>
+
+    <g transform="translate(24 92)">
+      <rect width="190" height="92" rx="13" fill="#ffffff" stroke="#a9c8d7"/>
+      <circle cx="166" cy="18" r="14" fill="#c6ddea"/>
+      <text x="166" y="23" text-anchor="middle" class="step">1</text>
+      <text x="14" y="31" class="box-title">A: submit(remote, dst)</text>
+      <text x="14" y="56" class="copy">请求先退休</text>
+      <text x="14" y="77" class="copy">future = IN_FLIGHT</text>
+    </g>
+    <g transform="translate(244 92)">
+      <rect width="190" height="92" rx="13" fill="#fff7eb" stroke="#d9bb8b"/>
+      <circle cx="166" cy="18" r="14" fill="#efd1a6"/>
+      <text x="166" y="23" text-anchor="middle" class="step">2</text>
+      <text x="14" y="31" class="box-title">A: await(token)</text>
+      <text x="14" y="56" class="copy">显式 suspension point</text>
+      <text x="14" y="77" class="copy">EL0 保存 A context</text>
+    </g>
+    <g transform="translate(464 92)">
+      <rect width="190" height="92" rx="13" fill="#e8f4ee" stroke="#9fc7b7"/>
+      <circle cx="166" cy="18" r="14" fill="#c1ded2"/>
+      <text x="166" y="23" text-anchor="middle" class="step">3</text>
+      <text x="14" y="31" class="box-title">EL0 scheduler</text>
+      <text x="14" y="56" class="copy">A → WAIT_REMOTE</text>
+      <text x="14" y="77" class="copy">选择并恢复 B</text>
+    </g>
+
+    <path d="M214 138 H236" fill="none" stroke="#356f8b" stroke-width="2.3" marker-end="url(#blue)"/>
+    <path d="M434 138 H456" fill="none" stroke="#356f8b" stroke-width="2.3" marker-end="url(#blue)"/>
+
+    <g transform="translate(24 228)">
+      <rect width="300" height="106" rx="13" fill="#ffffff" stroke="#a9c8d7"/>
+      <text x="14" y="31" class="box-title">P1 backend → destination + CQE</text>
+      <text x="14" y="57" class="copy">completion status 可表达 timeout/error</text>
+      <text x="14" y="80" class="copy">CQ release-publish；EL0 acquire-drain</text>
+    </g>
+    <g transform="translate(354 228)">
+      <rect width="300" height="106" rx="13" fill="#e8f4ee" stroke="#9fc7b7"/>
+      <text x="14" y="31" class="box-title">EL0: A READY → resume await</text>
+      <text x="14" y="57" class="copy">await 返回 status；软件读取 dst</text>
+      <text x="14" y="80" class="copy">没有未退休的普通 LDR</text>
+    </g>
+    <path d="M324 281 H346" fill="none" stroke="#34765f" stroke-width="2.3" marker-end="url(#green)"/>
+
+    <rect x="24" y="376" width="630" height="92" rx="14" fill="#ffffff" stroke="#b8ced6"/>
+    <text x="42" y="407" class="strong">Schedule-ahead</text>
+    <text x="42" y="433" class="copy">submit 可以早于真正消费点；A 可先继续计算/提交，到 await 才决定是否切换。</text>
+    <text x="42" y="456" class="copy">代价：数据面、编译器 lowering 或源码必须呈现 submit / await contract。</text>
   </g>
-  <g
-     transform="translate(60 276)"
-     id="g34">
-    <rect
-       width="710"
-       height="522"
-       rx="24"
-       fill="#edf6fa"
-       stroke="#b8d2e0"
-       filter="url(#shadow)"
-       id="rect14" />
-    <text
-       x="28"
-       y="44"
-       class="column-title"
-       id="text14">A. 软件可见的 split-phase</text>
-    <text
-       x="28"
-       y="69"
-       class="column-sub"
-       id="text15">接口/编译器/协程 runtime 协同；data plane 暴露 submit 与 completion</text>
-    <g
-       transform="translate(28 98)"
-       id="g18">
-      <rect
-         width="300"
-         height="78"
-         rx="14"
-         fill="#ffffff"
-         stroke="#a9c9d9"
-         id="rect15" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#bcd7e5"
-         id="circle15" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text16">1</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text17">A: submit(remote, dst)</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text18">返回 software token / future</text>
+
+  <g transform="translate(770 146)">
+    <rect width="678" height="500" rx="22" fill="#eef6f1" stroke="#a6cab9"/>
+    <text x="24" y="40" class="lane">P2B · 普通 LDR + direct EL0 upcall</text>
+    <text x="24" y="65" class="lane-sub">自定义 core ABI；数据面没有 submit/await，但 EL0 scheduler 仍显式存在</text>
+
+    <g transform="translate(24 92)">
+      <rect width="190" height="92" rx="13" fill="#ffffff" stroke="#a6cab9"/>
+      <circle cx="166" cy="18" r="14" fill="#c1ded2"/>
+      <text x="166" y="23" text-anchor="middle" class="step">1</text>
+      <text x="14" y="31" class="box-title">A: LDR X3, [remote]</text>
+      <text x="14" y="56" class="copy">程序无 submit / await</text>
+      <text x="14" y="77" class="copy">remote miss → PLT</text>
     </g>
-    <g
-       transform="translate(382 98)"
-       id="g21">
-      <rect
-         width="300"
-         height="78"
-         rx="14"
-         fill="#dcecf4"
-         stroke="#9dbed0"
-         id="rect18" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#bcd7e5"
-         id="circle18" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text19">2</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text20">SQ → remote provider</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text21">result 写入明确的 destination</text>
+    <g transform="translate(244 92)">
+      <rect width="190" height="92" rx="13" fill="#fff7eb" stroke="#d9bb8b"/>
+      <circle cx="166" cy="18" r="14" fill="#efd1a6"/>
+      <text x="166" y="23" text-anchor="middle" class="step">2</text>
+      <text x="14" y="31" class="box-title">QEMU/core</text>
+      <text x="14" y="56" class="copy">LDR 未退休</text>
+      <text x="14" y="77" class="copy">PC → EL0 upcall entry</text>
     </g>
-    <path
-       d="M328 137 H382"
-       stroke="#3e6f8d"
-       stroke-width="3"
-       marker-end="url(#arrowBlue)"
-       id="path21" />
-    <g
-       transform="translate(28 220)"
-       id="g24">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#ffffff"
-         stroke="#a9c9d9"
-         id="rect21" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#bcd7e5"
-         id="circle21" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text22">3</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text23">A: await(token)</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text24">pending 时进入显式 suspension point</text>
+    <g transform="translate(464 92)">
+      <rect width="190" height="92" rx="13" fill="#e8f4ee" stroke="#9fc7b7"/>
+      <circle cx="166" cy="18" r="14" fill="#c1ded2"/>
+      <text x="166" y="23" text-anchor="middle" class="step">3</text>
+      <text x="14" y="31" class="box-title">Guest EL0 scheduler</text>
+      <text x="14" y="56" class="copy">assembly 保存 A</text>
+      <text x="14" y="77" class="copy">A WAIT；选择 B</text>
     </g>
-    <path
-       d="M178 176 V220"
-       stroke="#3e6f8d"
-       stroke-width="3"
-       marker-end="url(#arrowBlue)"
-       id="path24" />
-    <g
-       transform="translate(382 220)"
-       id="g27">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#cfe3ed"
-         stroke="#90b5c8"
-         id="rect24" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#bcd7e5"
-         id="circle24" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text25">4</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text26">Coroutine runtime</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text27">保存 A 的 frame/stack；恢复 B</text>
+
+    <path d="M214 138 H236" fill="none" stroke="#356f8b" stroke-width="2.3" marker-end="url(#blue)"/>
+    <path d="M434 138 H456" fill="none" stroke="#356f8b" stroke-width="2.3" marker-end="url(#blue)"/>
+
+    <g transform="translate(24 228)">
+      <rect width="300" height="106" rx="13" fill="#ffffff" stroke="#a6cab9"/>
+      <text x="14" y="31" class="box-title">P1 completion → QEMU event</text>
+      <text x="14" y="57" class="copy">next EL0 boundary 再 direct upcall</text>
+      <text x="14" y="80" class="copy">QEMU 不写 GPR，不选择 context</text>
     </g>
-    <path
-       d="M328 262 H382"
-       stroke="#3e6f8d"
-       stroke-width="3"
-       marker-end="url(#arrowBlue)"
-       id="path27" />
-    <g
-       transform="translate(382 354)"
-       id="g30">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#dcecf4"
-         stroke="#9dbed0"
-         id="rect27" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#bcd7e5"
-         id="circle27" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text28">5</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text29">CQE(token, status)</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text30">runtime 将 A 放回 ready queue</text>
+    <g transform="translate(354 228)">
+      <rect width="300" height="106" rx="13" fill="#e8f4ee" stroke="#9fc7b7"/>
+      <text x="14" y="31" class="box-title">EL0 patch A.saved Rt / PC</text>
+      <text x="14" y="57" class="copy">x3=value；pc=fault_pc+4</text>
+      <text x="14" y="80" class="copy">HLT #0x5343 恢复 EL0 所选 context</text>
     </g>
-    <path
-       d="M532 304 V354"
-       stroke="#3e6f8d"
-       stroke-width="3"
-       marker-end="url(#arrowBlue)"
-       id="path30" />
-    <g
-       transform="translate(28 354)"
-       id="g33">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#ffffff"
-         stroke="#a9c9d9"
-         id="rect30" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#bcd7e5"
-         id="circle30" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text31">6</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text32">恢复 A: await 返回</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text33">读取 dst；错误是普通返回 status</text>
-    </g>
-    <path
-       d="M382 396 H328"
-       stroke="#3e6f8d"
-       stroke-width="3"
-       marker-end="url(#arrowBlue)"
-       id="path33" />
-    <rect
-       x="28"
-       y="464"
-       width="654"
-       height="38"
-       rx="11"
-       fill="#d7e9f2"
-       id="rect33" />
-    <text
-       x="355"
-       y="489"
-       text-anchor="middle"
-       class="split"
-       id="text34">拆分点：软件先 submit，稍后在 await 消费结果</text>
+    <path d="M324 281 H346" fill="none" stroke="#34765f" stroke-width="2.3" marker-end="url(#green)"/>
+
+    <rect x="24" y="376" width="630" height="92" rx="14" fill="#ffffff" stroke="#b8d2c5"/>
+    <text x="42" y="407" class="strong">Demand-pending</text>
+    <text x="42" y="433" class="copy">直到普通 LDR 真正执行才启动 remote latency；默认没有 pre-submit 窗口。</text>
+    <text x="42" y="456" class="copy">代价：core 必须提供 PLT、direct EL0 event 和原子 context-install mechanism。</text>
   </g>
-  <g
-     transform="translate(830 276)"
-     id="g55">
-    <rect
-       width="710"
-       height="522"
-       rx="24"
-       fill="#fbf3e9"
-       stroke="#e0c29f"
-       filter="url(#shadow)"
-       id="rect34" />
-    <text
-       x="28"
-       y="44"
-       class="column-title"
-       id="text35">B. 硬件可见的 pending load</text>
-    <text
-       x="28"
-       y="69"
-       class="column-sub"
-       id="text36">数据面仍是普通 LDR；application core + context store + scheduler core 协同</text>
-    <g
-       transform="translate(28 98)"
-       id="g39">
-      <rect
-         width="300"
-         height="78"
-         rx="14"
-         fill="#ffffff"
-         stroke="#d8b78f"
-         id="rect36" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#eed5b8"
-         id="circle36" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text37">1</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text38">A: ordinary LDR X0,[remote]</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text39">程序中没有 submit/await</text>
+
+  <g transform="translate(52 684)">
+    <rect width="1396" height="244" rx="22" fill="#ffffff" stroke="#cbdad6"/>
+    <text x="24" y="38" class="lane">差异矩阵</text>
+
+    <rect x="24" y="58" width="220" height="40" rx="8" fill="#edf2f0"/>
+    <rect x="244" y="58" width="548" height="40" fill="#eaf3f8"/>
+    <rect x="792" y="58" width="580" height="40" rx="8" fill="#eaf4ef"/>
+    <text x="40" y="83" class="table-head">维度</text>
+    <text x="264" y="83" class="table-head">P2A submit / await</text>
+    <text x="812" y="83" class="table-head">P2B direct EL0 upcall</text>
+
+    <g class="table-copy">
+      <text x="40" y="124">拆分点</text><text x="264" y="124">submit 已退休；await 是显式挂起点</text><text x="812" y="124">普通 LDR pending；load 保持未退休</text>
+      <text x="40" y="151">context owner</text><text x="264" y="151">guest EL0 runtime</text><text x="812" y="151">guest EL0 runtime（相同）</text>
+      <text x="40" y="178">QEMU/core 责任</text><text x="264" y="178">SQ/CQ endpoint + P1</text><text x="812" y="178">PLT + direct upcall + atomic install；无 policy</text>
+      <text x="40" y="205">completion</text><text x="264" y="205">CQ status + destination buffer</text><text x="812" y="205">EL0 patch 保存态 Rt / PC</text>
+      <text x="40" y="232">提前量</text><text x="264" y="232">可 schedule ahead</text><text x="812" y="232">v2 仅 demand pending</text>
     </g>
-    <g
-       transform="translate(382 98)"
-       id="g42">
-      <rect
-         width="300"
-         height="78"
-         rx="14"
-         fill="#f5e5d2"
-         stroke="#d3aa79"
-         id="rect39" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#eed5b8"
-         id="circle39" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text40">2</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text41">remote path: PENDING</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text42">LDR 不退休；分配 request token</text>
-    </g>
-    <path
-       d="M328 137 H382"
-       stroke="#a76528"
-       stroke-width="3"
-       marker-end="url(#arrowAmber)"
-       id="path42" />
-    <g
-       transform="translate(28 220)"
-       id="g45">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#f5e5d2"
-         stroke="#d3aa79"
-         id="rect42" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#eed5b8"
-         id="circle42" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text43">3</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text44">Application core hardware</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text45">冻结 A 的 precise load/context ID</text>
-    </g>
-    <path
-       d="m 532,176 c 0,26 -252.37631,5.77459 -359.34862,40.94365"
-       stroke="#a76528"
-       stroke-width="3"
-       fill="none"
-       marker-end="url(#arrowAmber)"
-       id="path45"
-       sodipodi:nodetypes="cc" />
-    <g
-       transform="translate(382 220)"
-       id="g48">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#edd5b9"
-         stroke="#c99965"
-         id="rect45" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#eed5b8"
-         id="circle45" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text46">4</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text47">Dedicated scheduler core</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text48">Context Store 保存 A；命令 app core 跑 B</text>
-    </g>
-    <path
-       d="M328 262 H382"
-       stroke="#a76528"
-       stroke-width="3"
-       marker-end="url(#arrowAmber)"
-       id="path48" />
-    <g
-       transform="translate(28 354)"
-       id="g51">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#f5e5d2"
-         stroke="#d3aa79"
-         id="rect48" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#eed5b8"
-         id="circle48" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text49">5</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text50">REMOTE_LOAD_COMPLETE</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text51">value/status → pending-load entry</text>
-    </g>
-    <path
-       d="M178 304 V354"
-       stroke="#a76528"
-       stroke-width="3"
-       marker-end="url(#arrowAmber)"
-       id="path51" />
-    <g
-       transform="translate(382 354)"
-       id="g54">
-      <rect
-         width="300"
-         height="84"
-         rx="14"
-         fill="#edd5b9"
-         stroke="#c99965"
-         id="rect51" />
-      <circle
-         cx="276"
-         cy="17"
-         r="14"
-         fill="#eed5b8"
-         id="circle51" />
-      <text
-         x="276"
-         y="22"
-         text-anchor="middle"
-         class="step"
-         id="text52">6</text>
-      <text
-         x="18"
-         y="30"
-         class="box-title"
-         id="text53">Scheduler core 恢复 A</text>
-      <text
-         x="18"
-         y="55"
-         class="box-copy"
-         id="text54">写 X0/建立 fault；LDR 此时才退休</text>
-    </g>
-    <path
-       d="M328 396 H382"
-       stroke="#a76528"
-       stroke-width="3"
-       marker-end="url(#arrowAmber)"
-       id="path54" />
-    <rect
-       x="28"
-       y="464"
-       width="654"
-       height="38"
-       rx="11"
-       fill="#f1dfca"
-       id="rect54" />
-    <text
-       x="355"
-       y="489"
-       text-anchor="middle"
-       class="split"
-       id="text55">拆分点：普通 LDR 已发出，硬件把未完成的 load 与 context 分离</text>
   </g>
-  <g
-     transform="translate(60 830)"
-     id="g77">
-    <rect
-       width="1480"
-       height="270"
-       rx="22"
-       fill="#ffffff"
-       stroke="#d4e1de"
-       filter="url(#shadow)"
-       id="rect55" />
-    <rect
-       width="1480"
-       height="42"
-       rx="22"
-       fill="#e5efed"
-       id="rect56" />
-    <rect
-       y="22"
-       width="1480"
-       height="20"
-       fill="#e5efed"
-       id="rect57" />
-    <text
-       x="24"
-       y="28"
-       class="table-head"
-       id="text57">比较维度</text>
-    <text
-       x="272"
-       y="28"
-       class="table-head"
-       id="text58">显式 submit/await</text>
-    <text
-       x="876"
-       y="28"
-       class="table-head"
-       id="text59">scheduler-core upcall</text>
-    <path
-       d="M 245.94696,0 V 270 M 785.86966,0 v 270"
-       stroke="#d6e2df"
-       id="path59"
-       style="stroke-width:0.945469" />
-    <path
-       d="M0 42 H1480 M0 80 H1480 M0 118 H1480 M0 156 H1480 M0 194 H1480 M0 232 H1480"
-       stroke="#e2ebe9"
-       id="path60" />
-    <text
-       x="24"
-       y="67"
-       class="table-key"
-       id="text60">编程模型</text>
-    <text
-       x="272"
-       y="67"
-       class="table-cell"
-       id="text61">data-plane API/编译器规范可见</text>
-    <text
-       x="876"
-       y="67"
-       class="table-cell"
-       id="text62">代码仍是普通 load；需要硬件控制面建立 context</text>
-    <text
-       x="24"
-       y="105"
-       class="table-key"
-       id="text63">pending 对象</text>
-    <text
-       x="272"
-       y="105"
-       class="table-cell"
-       id="text64">software future + CQE + destination buffer</text>
-    <text
-       x="876"
-       y="105"
-       class="table-cell"
-       id="text65">outstanding load + PC/dst-reg/memop/order + context ID</text>
-    <text
-       x="24"
-       y="143"
-       class="table-key"
-       id="text66">上下文所有者</text>
-    <text
-       x="272"
-       y="143"
-       class="table-cell"
-       id="text67">application core 上的 coroutine runtime/compiler frame</text>
-    <text
-       x="876"
-       y="143"
-       class="table-cell"
-       id="text68">core context-save engine + Context Store + scheduler core</text>
-    <text
-       x="24"
-       y="181"
-       class="table-key"
-       id="text69">schedule-ahead</text>
-    <text
-       x="272"
-       y="181"
-       class="table-cell"
-       id="text70">submit 可提前到真正消费之前</text>
-    <text
-       x="876"
-       y="181"
-       class="table-cell"
-       id="text71">默认在 demand load pending 后切换；提前需硬件 prefetch/predictor</text>
-    <text
-       x="24"
-       y="219"
-       class="table-key"
-       id="text72">load 语义负担</text>
-    <text
-       x="272"
-       y="219"
-       class="table-cell"
-       id="text73">API 定义 status/ordering；没有未退休的普通 LDR</text>
-    <text
-       x="876"
-       y="219"
-       class="table-cell"
-       id="text74">硬件必须保持 precise retirement、寄存器结果、ordering 与 fault</text>
-    <text
-       x="24"
-       y="257"
-       class="table-key"
-       id="text75">主要代价</text>
-    <text
-       x="272"
-       y="257"
-       class="table-cell"
-       id="text76">修改软件接口/编译器；可移植、容易观测</text>
-    <text
-       x="876"
-       y="257"
-       class="table-cell"
-       id="text77">软件透明；新增 core microarchitecture、context 容量和自定义事件 ABI</text>
-  </g>
-  <text
-     x="60"
-     y="1135"
-     class="foot"
-     id="text78">结论：两者的调度算法可以相同；不同的是 software future 与 architectural outstanding load 之间的系统边界。</text>
+
+  <text x="52" y="958" class="subtitle">共同点：A 等待时都由同一 guest vCPU 执行 ready 的 B；两者都不是 QEMU host coroutine。</text>
 </svg>

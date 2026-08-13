@@ -13,6 +13,31 @@ platform:
   memory_model: numa-sim
   device_model_mode: mixed
 
+remote_memory_model:
+  enabled: true
+  time_source: qemu_virtual
+  fixed_latency_ns: 100000
+  jitter:
+    mode: uniform
+    max_abs_ns: 20000
+  tail:
+    probability_ppm: 0
+    extra_latency_ns: 0
+  queue_depth: 64
+  reorder_window: 8
+  drop_ppm: 0
+  error_ppm: 0
+  duplicate_ppm: 0
+  duplicate_delay_ns: 1000
+  seed: 1
+
+scheduler_core_model:
+  enabled: true
+  context_entries: 64
+  pending_load_entries: 64
+  event_queue_depth: 128
+  clock_mhz: 2000
+
 topology:
   hosts: 2
   ubpus_per_host: 2

@@ -393,6 +393,63 @@ run_obmm_dataplane_microbench() {
   run_binary "linqu_ub_obmm_dataplane_microbench" /bin/linqu_ub_obmm_dataplane_microbench $args
 }
 
+run_obmm_async_coroutine() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_async_mode=*) args="$args --mode ${token#*=}" ;;
+      obmm_async_coroutines=*) args="$args --coroutines ${token#*=}" ;;
+      obmm_async_inflight=*) args="$args --inflight ${token#*=}" ;;
+      obmm_async_lookahead=*) args="$args --lookahead ${token#*=}" ;;
+      obmm_async_access_bytes=*) args="$args --access-bytes ${token#*=}" ;;
+      obmm_async_pattern=*) args="$args --pattern ${token#*=}" ;;
+      obmm_async_compute_us=*) args="$args --compute-us ${token#*=}" ;;
+      obmm_async_iterations=*) args="$args --iterations ${token#*=}" ;;
+      obmm_async_warmup=*) args="$args --warmup ${token#*=}" ;;
+      obmm_async_min_duration_ms=*) args="$args --min-duration-ms ${token#*=}" ;;
+      obmm_async_trace_sample_ppm=*) args="$args --trace-sample-ppm ${token#*=}" ;;
+      obmm_async_expected_outcome=*) args="$args --expected-outcome ${token#*=}" ;;
+      obmm_async_deadline_us=*) args="$args --deadline-us ${token#*=}" ;;
+      obmm_async_seed=*) args="$args --seed ${token#*=}" ;;
+      obmm_async_peer_index=*) args="$args --peer-index ${token#*=}" ;;
+      obmm_async_producer_index=*) args="$args --producer-index ${token#*=}" ;;
+      obmm_async_p2b_producer_consumer=1) args="$args --p2b-producer-consumer" ;;
+      obmm_uffd_case=*) args="$args --uffd-case ${token#*=}" ;;
+      obmm_uffd_worker_threads=*) args="$args --worker-threads ${token#*=}" ;;
+      obmm_uffd_handler_cpu=*) args="$args --handler-cpu ${token#*=}" ;;
+      obmm_uffd_pages=*) args="$args --pages ${token#*=}" ;;
+      obmm_baseline_case=*) args="$args --case ${token#*=}" ;;
+      obmm_eval_band=*) args="$args --eval-band ${token#*=}" ;;
+      obmm_eval_case=*) args="$args --eval-case ${token#*=}" ;;
+      obmm_async_verify=1) args="$args --verify" ;;
+    esac
+  done
+  args="$args --node-count $(cmdline_value linqu_node_count 2)"
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "obmm_async_coroutine" /bin/obmm_async_coroutine $args
+  local rc=$?
+  local expected_outcome="$(cmdline_value obmm_async_expected_outcome success)"
+  local mode="$(cmdline_value obmm_async_mode async-poll)"
+  local eval_case="$(cmdline_value obmm_eval_case '')"
+
+  if [ "$rc" -ne 0 ] && [ "$mode" = "userfaultfd" ] &&
+     [ -n "$eval_case" ] &&
+     { [ "$expected_outcome" = "error" ] ||
+       [ "$expected_outcome" = "drop-timeout" ]; }; then
+    local timeout_count=0
+
+    if [ "$expected_outcome" = "drop-timeout" ]; then
+      timeout_count=1
+    fi
+    echo "OBMM_EVAL_SUMMARY schema=1 band=$(cmdline_value obmm_eval_band range) mode=$mode case=$eval_case seed=$(cmdline_value obmm_async_seed 1) operations=0 checksum=0000000000000000 failures=1 timeouts=$timeout_count guest_ns_p50=0 guest_ns_p95=0 guest_ns_p99=0 guest_ns_max=0 makespan_ns=0 model_wait_ns=0 useful_work_ns=0 application_cpu_ns=0 helper_cpu_ns=0 extra_vcpus=1 trace_sample_ppm=$(cmdline_value obmm_async_trace_sample_ppm 0) trace_sampled=0 trace_dropped=0 ready_ns=0 wait_ns=0 idle_ns=0 no_ready=0 submit_ns_p50=0 submit_ns_total=0 switch_ns_p50=0 switch_ns_total=0 cq_drain_ns_p50=0 cq_drain_ns_total=0 configured_lookahead=0 backend_pending_high=0 backend_capacity=0 sink_copy_bytes=0 sink_copy_ns=0 backend_late=0 backend_duplicate=0 scc_save_cycles=0 scc_schedule_cycles=0 scc_restore_cycles=0 scc_commit_cycles=0 el0_upcalls_pending=0 el0_upcalls_complete=0 el0_upcalls_fault=0 el0_context_saves=0 el0_context_restores=0 el0_context_switches=0 el0_context_bytes=0 el0_scheduler_ns=0 el0_no_ready_waits=0 direct_el0_upcalls=0 qemu_context_saves=0 qemu_context_restores=0 qemu_context_switches=0 qemu_context_bytes=0 uffd_fault_ns_p50=0 uffd_fault_ns_p95=0 uffd_fault_ns_p99=0 uffd_fault_ns_max=0 uffd_remote_ns_p50=0 uffd_remote_ns_p95=0 uffd_remote_ns_p99=0 uffd_remote_ns_max=0 uffd_copy_ns_p50=0 uffd_copy_ns_p95=0 uffd_copy_ns_p99=0 uffd_copy_ns_max=0 uffd_wake_ns_p50=0 uffd_wake_ns_p95=0 uffd_wake_ns_p99=0 uffd_wake_ns_max=0 uffd_handler_cpu_ns=0 uffd_worker_cpu_ns=0 model_pending_final=1 backend_pending_final=1 scc_pending_final=0 counter_overflow=0 clock_regressions=0 fail_closed_process_exit=1 status=fail"
+  fi
+  return "$rc"
+}
+
 run_obmm_coh_test() {
   local args=""
   local token=""
@@ -834,6 +891,11 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_obmm_async_coroutine=1"; then
+    run_obmm_async_coroutine || rc=$?
+    ran_any="1"
+  fi
+
   if has_flag "linqu_obmm_import_stress=1"; then
     run_obmm_import_stress || rc=$?
     ran_any="1"
@@ -987,6 +1049,9 @@ run_single_action() {
       ;;
     obmm_dataplane_microbench)
       run_obmm_dataplane_microbench
+      ;;
+    obmm_async_coroutine)
+      run_obmm_async_coroutine
       ;;
     obmm_coh_test)
       run_obmm_coh_test

@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="880"
+     viewBox="0 0 1480 880" role="img" aria-labelledby="title desc">
+  <title id="title">P2B guest EL0 coroutine state machine</title>
+  <desc id="desc">The guest EL0 scheduler owns coroutine lifecycle state.
+  A direct upcall first saves the interrupted running context as ready. A
+  pending event then moves that context to wait remote. A completion patches
+  the saved target register and program counter before returning it to ready.
+  QEMU delivers events and installs the selected context but does not choose
+  state transitions.</desc>
+  <defs>
+    <linearGradient id="page-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef6f3"/>
+    </linearGradient>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9"
+            refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9"
+            refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#16805c"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="10" markerHeight="10" refX="9"
+            refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#b76a12"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9"
+            refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#c2413a"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+             fill: #17243d; }
+      .kicker { font-size: 14px; font-weight: 760; letter-spacing: 2px;
+                fill: #496860; }
+      .title { font-size: 31px; font-weight: 790; }
+      .subtitle { font-size: 16px; fill: #52627a; }
+      .state { font-size: 22px; font-weight: 800; }
+      .state-copy { font-size: 13px; fill: #43536b; }
+      .label { font-size: 14px; font-weight: 740; }
+      .label-copy { font-size: 12px; fill: #53637a; }
+      .note-title { font-size: 15px; font-weight: 780; }
+      .note-copy { font-size: 13px; fill: #3f5068; }
+      .blue { stroke: #2563eb; stroke-width: 2.7; fill: none;
+              marker-end: url(#arrow-blue); }
+      .green { stroke: #16805c; stroke-width: 2.7; fill: none;
+               marker-end: url(#arrow-green); }
+      .amber { stroke: #b76a12; stroke-width: 2.7; fill: none;
+               marker-end: url(#arrow-amber); }
+      .red { stroke: #c2413a; stroke-width: 2.7; fill: none;
+             marker-end: url(#arrow-red); }
+    </style>
+  </defs>
+
+  <rect width="1480" height="880" fill="url(#page-bg)"/>
+  <text x="58" y="45" class="kicker">P2B · GUEST EL0 SCHEDULER-OWNED STATE</text>
+  <text x="58" y="87" class="title">Coroutine 状态机：upcall 先保存，event 再改变目标状态</text>
+  <text x="58" y="118" class="subtitle">QEMU 负责 PENDING / COMPLETE / FAULT 交付和 context install；状态、队列与选择策略属于 guest EL0。</text>
+
+  <rect x="58" y="150" width="1364" height="540" rx="22"
+        fill="#ffffff" stroke="#ccd9d5"/>
+
+  <!-- State nodes -->
+  <g transform="translate(92 312)">
+    <rect width="190" height="112" rx="16" fill="#eef2f7" stroke="#91a0b7" stroke-width="2"/>
+    <text x="95" y="44" text-anchor="middle" class="state">FREE</text>
+    <text x="95" y="72" text-anchor="middle" class="state-copy">slot 尚未构造</text>
+    <text x="95" y="94" text-anchor="middle" class="state-copy">无可恢复 context</text>
+  </g>
+
+  <g transform="translate(382 312)">
+    <rect width="224" height="112" rx="16" fill="#e9f6ef" stroke="#50a982" stroke-width="2"/>
+    <text x="112" y="44" text-anchor="middle" class="state">READY</text>
+    <text x="112" y="72" text-anchor="middle" class="state-copy">完整 context 可恢复</text>
+    <text x="112" y="94" text-anchor="middle" class="state-copy">位于 EL0 ready set</text>
+  </g>
+
+  <g transform="translate(742 312)">
+    <rect width="234" height="112" rx="16" fill="#eaf2ff" stroke="#4a84df" stroke-width="2"/>
+    <text x="117" y="44" text-anchor="middle" class="state">RUNNING</text>
+    <text x="117" y="72" text-anchor="middle" class="state-copy">当前 home vCPU context</text>
+    <text x="117" y="94" text-anchor="middle" class="state-copy">执行 application 指令</text>
+  </g>
+
+  <g transform="translate(1165 184)">
+    <rect width="210" height="112" rx="16" fill="#f1f3f5" stroke="#798493" stroke-width="2"/>
+    <text x="105" y="44" text-anchor="middle" class="state">DONE</text>
+    <text x="105" y="72" text-anchor="middle" class="state-copy">entry 正常返回</text>
+    <text x="105" y="94" text-anchor="middle" class="state-copy">终态，不再入 ready set</text>
+  </g>
+
+  <g transform="translate(742 526)">
+    <rect width="234" height="120" rx="16" fill="#fff4df" stroke="#d8902f" stroke-width="2"/>
+    <text x="117" y="43" text-anchor="middle" class="state">WAIT_REMOTE</text>
+    <text x="117" y="72" text-anchor="middle" class="state-copy">保存 fault PC / Rt</text>
+    <text x="117" y="94" text-anchor="middle" class="state-copy">绑定 unresolved PLT token</text>
+  </g>
+
+  <g transform="translate(1165 530)">
+    <rect width="210" height="112" rx="16" fill="#fdeceb" stroke="#d9635c" stroke-width="2"/>
+    <text x="105" y="44" text-anchor="middle" class="state">FAULTED</text>
+    <text x="105" y="72" text-anchor="middle" class="state-copy">timeout / permission / stale</text>
+    <text x="105" y="94" text-anchor="middle" class="state-copy">终态或由 workload 处理</text>
+  </g>
+
+  <!-- Lifecycle and scheduler transitions -->
+  <path d="M282 368 H374" class="blue"/>
+  <text x="328" y="338" text-anchor="middle" class="label">create</text>
+  <text x="328" y="357" text-anchor="middle" class="label-copy">构造初始 PC / SP</text>
+
+  <path d="M606 368 H734" class="green"/>
+  <text x="670" y="333" text-anchor="middle" class="label">EL0 scheduler selects</text>
+  <text x="670" y="353" text-anchor="middle" class="label-copy">HLT resume 安装完整 context</text>
+
+  <path d="M976 335 C1044 282 1091 244 1157 241" class="blue"/>
+  <text x="1048" y="240" text-anchor="middle" class="label">function return</text>
+  <text x="1048" y="260" text-anchor="middle" class="label-copy">EL0 标记 DONE</text>
+
+  <!-- Direct upcall save: RUNNING becomes READY before event processing -->
+  <path d="M742 326 C682 214 560 194 503 304" class="blue"/>
+  <rect x="531" y="176" width="282" height="58" rx="11"
+        fill="#f1f6ff" stroke="#aac6ed"/>
+  <text x="672" y="199" text-anchor="middle" class="label">direct upcall：先保存当前 context</text>
+  <text x="672" y="220" text-anchor="middle" class="label-copy">RUNNING → READY；此时尚未处理 event</text>
+
+  <!-- Pending for the just interrupted context -->
+  <path d="M580 424 C630 475 667 572 734 581" class="amber"/>
+  <rect x="435" y="463" width="274" height="58" rx="11"
+        fill="#fff8ea" stroke="#e2ba7b"/>
+  <text x="572" y="486" text-anchor="middle" class="label">PENDING targets current</text>
+  <text x="572" y="507" text-anchor="middle" class="label-copy">保存 waiting token → WAIT_REMOTE</text>
+
+  <!-- Complete restores the waiting target to ready -->
+  <path d="M742 620 C637 674 487 612 492 432" class="green"/>
+  <rect x="391" y="600" width="286" height="62" rx="11"
+        fill="#eef9f3" stroke="#94cbb5"/>
+  <text x="534" y="624" text-anchor="middle" class="label">COMPLETE targets waiter</text>
+  <text x="534" y="646" text-anchor="middle" class="label-copy">patch saved Rt / PC=P+4 → READY</text>
+
+  <!-- Fault transition -->
+  <path d="M976 586 H1157" class="red"/>
+  <text x="1066" y="551" text-anchor="middle" class="label">FAULT</text>
+  <text x="1066" y="571" text-anchor="middle" class="label-copy">清 waiting token</text>
+
+  <!-- Clarifying scenarios -->
+  <g transform="translate(58 716)">
+    <rect width="662" height="120" rx="17" fill="#edf5ff" stroke="#a8c5eb"/>
+    <text x="22" y="31" class="note-title">场景 A · 当前 coroutine 自己触发 remote PENDING</text>
+    <text x="22" y="58" class="note-copy">A: RUNNING → READY（upcall 保存）→ WAIT_REMOTE（PENDING 绑定 token）</text>
+    <text x="22" y="84" class="note-copy">scheduler 随后从 READY 集合选择 B；QEMU 不扫描 ready context。</text>
+    <text x="22" y="106" class="note-copy">如果没有 READY context，scheduler 留在 event wait loop。</text>
+  </g>
+
+  <g transform="translate(742 716)">
+    <rect width="680" height="120" rx="17" fill="#eef9f3" stroke="#9acbb7"/>
+    <text x="22" y="31" class="note-title">场景 B · A 等待期间，completion upcall 中断 B</text>
+    <text x="22" y="58" class="note-copy">B: RUNNING → READY（保存 interrupted PC）；A: WAIT_REMOTE → READY（patch Rt / PC）。</text>
+    <text x="22" y="84" class="note-copy">此后 A 和 B 都可被选择；round-robin policy 决定下一个，而不是 QEMU。</text>
+    <text x="22" y="106" class="note-copy">协议错误、invalid resume 或 event mismatch 一律 fail-stop，不伪造成功。</text>
+  </g>
+</svg>

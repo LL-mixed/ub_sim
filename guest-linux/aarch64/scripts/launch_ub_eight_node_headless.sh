@@ -104,6 +104,8 @@ SIM_W5_TEST_MEMORY_GSVA_KV="${SIM_W5_TEST_MEMORY_GSVA_KV:-}"
 SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH="${SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH:-}"
 SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$DEFAULT_SCENARIO_CONFIG}"
+REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
+SCHEDULER_CORE_MODEL="${SCHEDULER_CORE_MODEL:-}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
@@ -230,6 +232,19 @@ start_node() {
   local qmp_socket="$8"
   local node_append_extra="$APPEND_EXTRA linqu_ipourma_ipv4=$local_ip"
   local qemu_pid
+  local remote_model_args=()
+  local scheduler_core_args=()
+
+  if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
+    remote_model_args=(
+      -global "ubc.remote-memory-model-manifest=$REMOTE_MEMORY_MODEL_MANIFEST"
+    )
+  fi
+  if [[ -n "$SCHEDULER_CORE_MODEL" ]]; then
+    scheduler_core_args=(
+      -global "ubc.scheduler-core-model=$SCHEDULER_CORE_MODEL"
+    )
+  fi
 
   nohup env \
     UB_FM_NODE_ID="$node_id" \
@@ -384,10 +399,12 @@ start_node() {
       -m "$QEMU_MEM" \
       -nodefaults \
       -display none \
+      "${remote_model_args[@]}" \
+      "${scheduler_core_args[@]}" \
       -qmp unix:"$qmp_socket",server=on,wait=off \
       -chardev socket,id=mon0,path="$mon_socket",server=on,wait=off \
       -mon chardev=mon0,mode=readline \
-      -chardev socket,id=ser0,path="$serial_socket",server=on,wait=off,logfile="$guest_log",logappend=on \
+      -chardev socket,id=ser0,path="$serial_socket",server=on,wait=off,logfile="$guest_log",logappend=off \
       -serial chardev:ser0 \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
@@ -459,6 +476,8 @@ log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
 log "cluster_node_count=$SIM_W5_CLUSTER_NODE_COUNT"
 log "append_extra=$APPEND_EXTRA"
+log "remote_memory_model_manifest=${REMOTE_MEMORY_MODEL_MANIFEST:-disabled}"
+log "scheduler_core_model=${SCHEDULER_CORE_MODEL:-disabled}"
 log "ub_sim_port_num=$PORT_NUM"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
   log "w5_profile=$SIM_UAPI_W5_PROFILE"
@@ -506,6 +525,9 @@ cat > "$ENV_FILE" <<EOF
 export RUN_ID='$RUN_ID'
 export RUN_DIR='$(dirname "$CONTROL_LOG")'
 export CLEANUP_SCRIPT='$CLEANUP_SCRIPT'
+export QEMU_BIN='$QEMU_BIN'
+export KERNEL_IMAGE='$KERNEL_IMAGE'
+export INITRAMFS_IMAGE='$INITRAMFS_IMAGE'
 export SIM_UAPI_W5_PROFILE='$SIM_UAPI_W5_PROFILE'
 export SIM_W5_CLUSTER_NODE_COUNT='$SIM_W5_CLUSTER_NODE_COUNT'
 export SIM_W5_MEMORY_SERVICE='${SIM_W5_MEMORY_SERVICE:-}'

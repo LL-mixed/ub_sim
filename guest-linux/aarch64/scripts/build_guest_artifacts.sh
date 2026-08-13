@@ -73,7 +73,9 @@ current_kernel_artifact_signature() {
       drivers/ub/ubus/ub_npu.c \
       drivers/ub/ubus/ub_ssd.c \
       drivers/ub/ubus/sim \
+      include/linux/obmm.h \
       include/uapi/asm-generic/mman-common.h \
+      include/uapi/ub/obmm_scc.h \
       include/uapi/ub/ub_npu.h \
       include/uapi/ub/ub_ssd.h \
       include/uapi/ub/obmm.h \
@@ -337,5 +339,6 @@ esac
 echo "[build_guest_artifacts] rebuilding initramfs" >&2
 (
   cd "$ROOT_DIR"
-  AARCH64_LINUX_CC="$CC" BUSYBOX="$BUSYBOX_BIN" ./scripts/build_initramfs.sh
+  AARCH64_LINUX_CC="$CC" BUSYBOX="$BUSYBOX_BIN" \
+    zsh ./scripts/build_initramfs.sh
 )

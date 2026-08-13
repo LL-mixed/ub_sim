@@ -17,6 +17,9 @@ LINK_WAIT_SECS="${LINK_WAIT_SECS:-45}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
 USE_QMP="${USE_QMP:-0}"
 APP_SELECTION="${APP_SELECTION:-}"
+REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
+SCHEDULER_CORE_MODEL="${SCHEDULER_CORE_MODEL:-}"
+OBMM_ASYNC_ARGS="${OBMM_ASYNC_ARGS:-}"
 APPEND_EXTRA_WAS_SET=0
 if [[ -n "${APPEND_EXTRA+x}" ]]; then
   APPEND_EXTRA_WAS_SET=1
@@ -60,7 +63,8 @@ Usage: run_ub_dual_node_apps.sh [options]
 Options:
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
-                      obmm_dataplane_microbench, obmm_import_stress, obmm_gsva,
+                      obmm_dataplane_microbench, obmm_async_coroutine,
+                      obmm_import_stress, obmm_gsva,
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
                       ssd_gsva_test, mem_service,
                       mem_service_obmm_provider_conformance, llm_infer,
@@ -71,6 +75,12 @@ Options:
   --iterations N     Number of dual-node iterations.
   --max-runtime SECS Global watchdog timeout.
   --append-extra STR Extra kernel cmdline tokens to append.
+  --remote-memory-model-manifest PATH
+                      Canonical QEMU remote-memory model manifest.
+  --scheduler-core-model SPEC
+                      Canonical v2 event/upcall capacity spec.
+  --obmm-async-args STR
+                      Arguments for obmm_async_coroutine.
   --use-qmp          Start guests paused and resume them through QMP.
   -h, --help         Show this help.
 USAGE
@@ -98,6 +108,9 @@ append_app_selection() {
       ;;
     obmm_dataplane_microbench)
       flag="linqu_obmm_dataplane_microbench=1"
+      ;;
+    obmm_async_coroutine)
+      flag="linqu_obmm_async_coroutine=1"
       ;;
     obmm_import_stress)
       flag="linqu_obmm_import_stress=1"
@@ -160,6 +173,54 @@ append_cmdline_if_missing() {
     [[ "$APPEND_EXTRA" != *" $token" ]]; then
     APPEND_EXTRA="${APPEND_EXTRA} ${token}"
   fi
+}
+
+append_obmm_async_args() {
+  local words=(${=OBMM_ASYNC_ARGS})
+  local index=1
+  local option=""
+  local value=""
+
+  while (( index <= ${#words[@]} )); do
+    option="${words[$index]}"
+    if [[ "$option" == "--verify" ]]; then
+      append_cmdline_if_missing "obmm_async_verify=1"
+      index=$((index + 1))
+      continue
+    fi
+    if (( index == ${#words[@]} )); then
+      echo "OBMM async option requires a value: $option" >&2
+      exit 2
+    fi
+    value="${words[$((index + 1))]}"
+    case "$option" in
+      --mode) append_cmdline_if_missing "obmm_async_mode=$value" ;;
+      --coroutines) append_cmdline_if_missing "obmm_async_coroutines=$value" ;;
+      --inflight) append_cmdline_if_missing "obmm_async_inflight=$value" ;;
+      --lookahead) append_cmdline_if_missing "obmm_async_lookahead=$value" ;;
+      --access-bytes) append_cmdline_if_missing "obmm_async_access_bytes=$value" ;;
+      --pattern) append_cmdline_if_missing "obmm_async_pattern=$value" ;;
+      --compute-us) append_cmdline_if_missing "obmm_async_compute_us=$value" ;;
+      --iterations) append_cmdline_if_missing "obmm_async_iterations=$value" ;;
+      --warmup) append_cmdline_if_missing "obmm_async_warmup=$value" ;;
+      --min-duration-ms) append_cmdline_if_missing "obmm_async_min_duration_ms=$value" ;;
+      --deadline-us) append_cmdline_if_missing "obmm_async_deadline_us=$value" ;;
+      --seed) append_cmdline_if_missing "obmm_async_seed=$value" ;;
+      --peer-index) append_cmdline_if_missing "obmm_async_peer_index=$value" ;;
+      --uffd-case) append_cmdline_if_missing "obmm_uffd_case=$value" ;;
+      --worker-threads) append_cmdline_if_missing "obmm_uffd_worker_threads=$value" ;;
+      --handler-cpu) append_cmdline_if_missing "obmm_uffd_handler_cpu=$value" ;;
+      --pages) append_cmdline_if_missing "obmm_uffd_pages=$value" ;;
+      --case) append_cmdline_if_missing "obmm_baseline_case=$value" ;;
+      --eval-band) append_cmdline_if_missing "obmm_eval_band=$value" ;;
+      --eval-case) append_cmdline_if_missing "obmm_eval_case=$value" ;;
+      *)
+        echo "unsupported OBMM async option: $option" >&2
+        exit 2
+        ;;
+    esac
+    index=$((index + 2))
+  done
 }
 
 apply_app_selection() {
@@ -238,6 +299,30 @@ while [[ $# -gt 0 ]]; do
       APPEND_EXTRA="${APPEND_EXTRA} $2"
       shift 2
       ;;
+    --remote-memory-model-manifest)
+      if [[ $# -lt 2 ]]; then
+        echo "--remote-memory-model-manifest requires a value" >&2
+        exit 2
+      fi
+      REMOTE_MEMORY_MODEL_MANIFEST="$2"
+      shift 2
+      ;;
+    --scheduler-core-model)
+      if [[ $# -lt 2 ]]; then
+        echo "--scheduler-core-model requires a value" >&2
+        exit 2
+      fi
+      SCHEDULER_CORE_MODEL="$2"
+      shift 2
+      ;;
+    --obmm-async-args)
+      if [[ $# -lt 2 ]]; then
+        echo "--obmm-async-args requires a value" >&2
+        exit 2
+      fi
+      OBMM_ASYNC_ARGS="$2"
+      shift 2
+      ;;
     --use-qmp)
       USE_QMP=1
       shift
@@ -255,6 +340,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 apply_app_selection "$APP_SELECTION"
+if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
+  append_cmdline_if_missing "linqu_node_count=2"
+  if [[ -z "$OBMM_ASYNC_ARGS" ]]; then
+    OBMM_ASYNC_ARGS="--mode async-poll --coroutines 8 --inflight 32 --lookahead 16 --access-bytes 64 --pattern sequential --compute-us 10 --iterations 1024 --deadline-us 1000000 --seed 1 --verify"
+  fi
+  if [[ "$OBMM_ASYNC_ARGS" == *"--mode scheduler-core"* &&
+        -z "$SCHEDULER_CORE_MODEL" ]]; then
+    echo "scheduler-core mode requires --scheduler-core-model from the scenario" >&2
+    exit 2
+  fi
+  append_obmm_async_args
+fi
+
+if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" &&
+      ! -f "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
+  echo "remote-memory model manifest does not exist: $REMOTE_MEMORY_MODEL_MANIFEST" >&2
+  exit 2
+fi
+if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
+  REMOTE_MEMORY_MODEL_MANIFEST="$(cd "$(dirname "$REMOTE_MEMORY_MODEL_MANIFEST")" && pwd)/$(basename "$REMOTE_MEMORY_MODEL_MANIFEST")"
+fi
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -529,6 +635,36 @@ validate_obmm_dataplane_microbench_log() {
     "${node_name} obmm dataplane microbench failure" || return 1
 }
 
+validate_obmm_async_coroutine_log() {
+  local node_name="$1"
+  local log_file="$2"
+
+  if [[ "$OBMM_ASYNC_ARGS" == *"--mode sync-mmio"* ]]; then
+    assert_log_has "$log_file" \
+      "OBMM_BASELINE_SUMMARY schema=1 .*status=pass .*failures=0" \
+      "${node_name} OBMM sync baseline summary" || return 1
+    assert_log_absent "$log_file" \
+      "OBMM_BASELINE_SUMMARY .*status=fail" \
+      "${node_name} OBMM sync baseline failure" || return 1
+    return 0
+  fi
+  if [[ "$OBMM_ASYNC_ARGS" == *"--mode userfaultfd"* ]]; then
+    assert_log_has "$log_file" \
+      "OBMM_UFFD_SUMMARY schema=1 .*failures=0 status=pass" \
+      "${node_name} OBMM userfaultfd summary" || return 1
+    assert_log_absent "$log_file" \
+      "OBMM_UFFD_(SUMMARY .*status=fail|FAIL_STOP)" \
+      "${node_name} OBMM userfaultfd failure" || return 1
+    return 0
+  fi
+  assert_log_has "$log_file" \
+    "OBMM_ASYNC_SUMMARY abi=1 mode=(async-(poll|irq)|scheduler-core) status=pass .*failures=0 .*stale=0" \
+    "${node_name} OBMM async summary" || return 1
+  assert_log_absent "$log_file" \
+    "OBMM_ASYNC_SUMMARY .*status=fail" \
+    "${node_name} OBMM async failure" || return 1
+}
+
 validate_obmm_import_stress_log() {
   local node_name="$1"
   local log_file="$2"
@@ -702,6 +838,8 @@ start_node() {
   local app_append_extra="${7-}"
   local qemu_extra=()
   local qemu_control_args=()
+  local remote_model_args=()
+  local scheduler_core_args=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
 
@@ -720,6 +858,16 @@ start_node() {
   if [[ "$USE_QMP" == "1" ]]; then
     mkdir -p "$(dirname "$qmp_socket")"
     qemu_control_args=(-S -qmp unix:"$qmp_socket",server=on,wait=off)
+  fi
+  if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
+    remote_model_args=(
+      -global "ubc.remote-memory-model-manifest=$REMOTE_MEMORY_MODEL_MANIFEST"
+    )
+  fi
+  if [[ -n "$SCHEDULER_CORE_MODEL" ]]; then
+    scheduler_core_args=(
+      -global "ubc.scheduler-core-model=$SCHEDULER_CORE_MODEL"
+    )
   fi
   mkdir -p "$(dirname "$guest_log")"
   mkdir -p "$(dirname "$qemu_log")"
@@ -741,6 +889,8 @@ start_node() {
       -m 8G \
       -nodefaults \
       -nographic \
+      "${remote_model_args[@]}" \
+      "${scheduler_core_args[@]}" \
       -serial file:"$guest_log" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
@@ -977,6 +1127,7 @@ run_iteration() {
   local udma_enabled=0
   local obmm_enabled=0
   local obmm_dataplane_microbench_enabled=0
+  local obmm_async_coroutine_enabled=0
   local obmm_import_stress_enabled=0
   local obmm_gsva_enabled=0
   local obmm_coh_test_enabled=0
@@ -1018,6 +1169,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_dataplane_microbench=1"* ]]; then
     obmm_dataplane_microbench_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
+    obmm_async_coroutine_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_import_stress=1"* ]]; then
     obmm_import_stress_enabled=1
@@ -1357,6 +1511,37 @@ run_iteration() {
       *)
         echo "iteration ${iter}: nodeB obmm dataplane microbench app did not finish within ${RUN_SECS}s" >&2
         return 18
+        ;;
+    esac
+  fi
+
+  if [[ "$obmm_async_coroutine_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" \
+      "OBMM_ASYNC_SUMMARY .*status=pass" \
+      "OBMM_ASYNC_SUMMARY .*status=fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA OBMM async app reported failure" >&2
+        return 31
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA OBMM async app timed out" >&2
+        return 31
+        ;;
+    esac
+    wait_for_log_pass_or_fail "$nodeb_guest_log" \
+      "OBMM_ASYNC_SUMMARY .*status=pass" \
+      "OBMM_ASYNC_SUMMARY .*status=fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB OBMM async app reported failure" >&2
+        return 31
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB OBMM async app timed out" >&2
+        return 31
         ;;
     esac
   fi
@@ -1763,6 +1948,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_dataplane_microbench=1"* ]]; then
     validate_obmm_dataplane_microbench_log "nodeA" "$nodea_guest_log" || return 1
     validate_obmm_dataplane_microbench_log "nodeB" "$nodeb_guest_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
+    validate_obmm_async_coroutine_log "nodeA" "$nodea_guest_log" || return 1
+    validate_obmm_async_coroutine_log "nodeB" "$nodeb_guest_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_obmm_import_stress=1"* ]]; then
     validate_obmm_import_stress_log "nodeA" "$nodea_guest_log" || return 1

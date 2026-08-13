@@ -17,6 +17,8 @@ SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-host_vector}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_4host_single_domain.yaml}"
+REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
+SCHEDULER_CORE_MODEL="${SCHEDULER_CORE_MODEL:-}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless4_${RANDOM}}"
@@ -85,6 +87,19 @@ start_node() {
   local pid_file="$7"
   local qmp_socket="$8"
   local node_append_extra="$APPEND_EXTRA linqu_ipourma_ipv4=$local_ip"
+  local remote_model_args=()
+  local scheduler_core_args=()
+
+  if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
+    remote_model_args=(
+      -global "ubc.remote-memory-model-manifest=$REMOTE_MEMORY_MODEL_MANIFEST"
+    )
+  fi
+  if [[ -n "$SCHEDULER_CORE_MODEL" ]]; then
+    scheduler_core_args=(
+      -global "ubc.scheduler-core-model=$SCHEDULER_CORE_MODEL"
+    )
+  fi
 
   (
     env \
@@ -106,10 +121,12 @@ start_node() {
         -m "$QEMU_MEM" \
         -nodefaults \
         -display none \
+        "${remote_model_args[@]}" \
+        "${scheduler_core_args[@]}" \
         -qmp unix:"$qmp_socket",server=on,wait=off \
         -chardev socket,id=mon0,host=127.0.0.1,port="$mon_port",server=on,wait=off,telnet=off \
         -mon chardev=mon0,mode=readline \
-        -chardev socket,id=ser0,host=127.0.0.1,port="$serial_port",server=on,wait=off,telnet=off,logfile="$guest_log",logappend=on \
+        -chardev socket,id=ser0,host=127.0.0.1,port="$serial_port",server=on,wait=off,telnet=off,logfile="$guest_log",logappend=off \
         -serial chardev:ser0 \
         -kernel "$KERNEL_IMAGE" \
         -initrd "$INITRAMFS_IMAGE" \
@@ -122,7 +139,7 @@ start_node() {
     rc=$?
     set -e
     echo "[headless4] qemu_exit node=${node_id} pid=${qemu_pid} rc=${rc}" >> "$CONTROL_LOG"
-  ) &!
+  ) >>"$CONTROL_LOG" 2>&1 &!
   while [[ ! -f "$pid_file" ]]; do
     sleep 0.01
   done
@@ -167,6 +184,9 @@ cat > "$ENV_FILE" <<EOF
 export RUN_ID='$RUN_ID'
 export RUN_DIR='$(dirname "$CONTROL_LOG")'
 export CLEANUP_SCRIPT='$CLEANUP_SCRIPT'
+export QEMU_BIN='$QEMU_BIN'
+export KERNEL_IMAGE='$KERNEL_IMAGE'
+export INITRAMFS_IMAGE='$INITRAMFS_IMAGE'
 export PORT_BASE='$PORT_BASE'
 export NODEA_MON_PORT='$((PORT_BASE + 0))'
 export NODEB_MON_PORT='$((PORT_BASE + 1))'
@@ -188,6 +208,8 @@ log "qemu_mem=$QEMU_MEM"
 log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
+log "remote_memory_model_manifest=${REMOTE_MEMORY_MODEL_MANIFEST:-disabled}"
+log "scheduler_core_model=${SCHEDULER_CORE_MODEL:-disabled}"
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 
 integer idx=0

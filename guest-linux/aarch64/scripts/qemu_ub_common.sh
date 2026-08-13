@@ -321,7 +321,7 @@ ensure_ub_guest_artifacts() {
       BUSYBOX="${BUSYBOX:-}" \
       LOCAL_KERNEL_IMAGE="${UB_LOCAL_KERNEL_IMAGE:-}" \
       LOCAL_MODULES_DIR="${UB_LOCAL_MODULES_DIR:-}" \
-      ./scripts/build_guest_artifacts.sh
+      zsh ./scripts/build_guest_artifacts.sh
     ); then
       echo "[ub_common] build_guest_artifacts.sh failed" >&2
       print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$(detect_aarch64_linux_cc)"
@@ -343,7 +343,8 @@ ensure_ub_guest_artifacts() {
     echo "[ub_common] rebuilding initramfs" >&2
     if ! (
       cd "$guest_root"
-      AARCH64_LINUX_CC="$cc" BUSYBOX="$busybox_bin" ./scripts/build_initramfs.sh >/dev/null
+      AARCH64_LINUX_CC="$cc" BUSYBOX="$busybox_bin" \
+        zsh ./scripts/build_initramfs.sh >/dev/null
     ); then
       echo "[ub_common] build_initramfs.sh failed" >&2
       print_guest_preflight_help "$guest_root" "$default_kernel" "$default_initramfs" "$modules_dir" "$cc"
@@ -382,7 +383,7 @@ ensure_qemu_ub_binary() {
   fi
   if ! (
     cd "$workspace_root/guest-linux/aarch64"
-    QEMU_BUILD_JOBS="$jobs" ./scripts/build_qemu_binary.sh >/dev/null
+    QEMU_BUILD_JOBS="$jobs" zsh ./scripts/build_qemu_binary.sh >/dev/null
   ); then
     echo "[ub_common] build_qemu_binary.sh failed" >&2
     print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"

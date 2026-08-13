@@ -1,6 +1,10 @@
 # OBMM 远端内存 Load 的 EL0 协程延迟隐藏：可行性分析与验证设计
 
-> 状态：P0/P1/P2A/P2B/P3/P4 已实现；阶段门禁和 49-case 正式验收通过
+> 状态：P0/P1/P2A/P4 沿用既有结果；P2B 已按 direct-to-EL0 upcall + guest EL0
+> scheduler 的 ABI v2 重构，并在 `n4-910c` 通过 ARM64 Linux build、2-node 远端
+> QEMU guest E2E 和 phase gate，2-node producer/consumer 功能目标已完成。P3 性能
+> 对比评估是整体方案的下一必做阶段，其中包含 4/8-node scale-out；它不属于 P2B
+> 功能验收退出条件。旧 49-case P3 结果因 P2B ABI 变更作废
 >
 > 日期：2026-08-11
 >
@@ -8,24 +12,25 @@
 >
 > 范围：AArch64 guest EL0、QEMU TCG、OBMM/GSVA、UBC/SIM_DEC 远端读路径
 >
-> 结论：同时验证“显式异步读 + EL0 协程”和“普通 `LDR` + 硬件
-> scheduler core”两条路径；前者是标准 Arm/Linux 软件基线，后者是需要新增
-> context-save/restore 与 pending-load 语义的自定义 core architecture。
+> 结论：同时验证“显式异步读 + EL0 协程”和“普通 `LDR` + 自定义 direct EL0
+> upcall + guest EL0 scheduler”两条路径；前者是标准 Arm/Linux 软件基线，后者
+> 故意新增非标准 core event/resume mechanism，但 context 保存与选择仍由 EL0 完成。
 
 详细实现设计：
 
 - [P0：同步基线、时钟与远端延迟模型详细设计](p0-baseline-latency-model-detailed-design.md)
 - [P1：provider-neutral split-phase backend 详细设计](p1-split-phase-backend-detailed-design.md)
 - [P2A：submit/await + EL0 协程详细设计](p2a-submit-await-detailed-design.md)
-- [P2B：普通 `LDR` + dedicated scheduler core 详细设计](p2b-scheduler-core-detailed-design.md)
+- [P2B：普通 `LDR` + direct EL0 upcall + EL0 scheduler 详细设计](p2b-scheduler-core-detailed-design.md)
 - [P3：OBMM 远端 Load 路径对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 - [P4：标准 userfaultfd 透明页访问基线详细设计](p4-userfaultfd-baseline-detailed-design.md)
 - [P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
 ## 1. 结论
 
-目标是可行的，但不能按“普通 AArch64 `LDR` 收到一个空响应，然后以同步异常
-直接跳到 EL0 调度器”的方式实现为标准 Arm/Linux 行为。
+目标是可行的。这里不把“普通 AArch64 `LDR` 收到 pending 后直接进入 EL0 调度器”
+伪称为标准 Arm/Linux 行为，而是明确把它定义为本实验要求 QEMU 模拟的自定义 core
+行为。
 
 核心判断如下：
 
@@ -43,17 +48,17 @@
    响应到达后写本地 SGE 并生成 CQE。伴随工作区的 Lingqu 设计也已定义“命令 ring
    非阻塞提交、completion queue、输出 tensor 从 `PENDING` 变为 `READY`”。两条
    路径都应复用 token 化的 pending/completion backend；区别是 completion 交给
-   software future，还是交给硬件 pending-load/context table。
+   software future，还是经 QEMU PLT/event 交给 guest EL0 Context Store。
 
 因此把目标拆成两条可对比路径：
 
 - **标准软件路径：** `obmm_load_submit()` + `obmm_await()`，请求和 completion
   通过队列关联，EL0 协程在 `await` 点主动切换；编译器后续可把带注解的远端访问
   降低成该 API。该路径符合 Arm/Linux，错误也能作为 completion status 返回。
-- **自定义硬件路径：** 程序仍执行普通 `LDR`；remote path 返回
-  `REMOTE_LOAD_PENDING(context_id, token)`，application core 的上下文机制冻结未
-  退休 load，独立 scheduler core 保存/选择/恢复 coroutine context。QEMU 应模拟
-  这套硬件契约，而不是临时把 PC/SP 改到一个 EL0 trampoline。
+- **自定义 P2B 路径：** 程序仍执行普通 `LDR`；QEMU 的 PLT 冻结未退休 load，core
+  在精确边界只把 EL0 PC 导向 registered upcall entry。EL0 assembly/runtime 保存
+  context、维护 ready/wait、选择 next，并以自定义 resume instruction 请求 core 原子
+  安装所选 context。QEMU 不拥有 Context Store 或调度策略。
 
 ![P2A 的 submit/CQ 软件架构](2026-08-11-obmm-remote-load-coroutine-architecture.svg)
 
@@ -82,11 +87,11 @@ DRAM/HBM 的短延迟扩大到微秒级，且可能出现长尾、超时或失�
 - 不用“读失败返回 0”替代错误传播；
 - 不把 QEMU host coroutine 等同于 guest EL0 coroutine。
 
-## 3. 当前实现证据
+## 3. 重构前同步基线证据
 
 ### 3.1 从 EL0 load 到远端响应
 
-当前关键路径为：
+P0/P1 实施前用于界定问题的关键路径为：
 
 ```text
 EL0 LDR
@@ -114,8 +119,9 @@ EL0 LDR
 
 QEMU 官方 Memory API 也把 MMIO 描述为“每次 read/write 调用 host callback”。因此，
 现有 `.read()` 边界只能同步返回一个值。显式软件路径应走独立 submit/CQ 通道；
-hardware scheduler-core 路径则必须在 TCG/memory dispatch 中新增 QEMU 内部的
-`PENDING` 结果和 core state，不能让现有 `.read()` 返回“空”或伪造数值。
+P2B 路径则必须在 TCG scalar-load path 中新增 `PENDING` 和精确 TB exit，不能让
+现有 `.read()` 返回“空”或伪造数值。pending 的 load metadata 属于 QEMU PLT；
+coroutine context 与 scheduling state 属于 guest EL0 runtime。
 
 ### 3.2 与 Lingqu runtime 设计的关系
 
@@ -138,7 +144,7 @@ future 的依赖者是挂起的 coroutine；对更高层 Lingqu DAG 而言，依
 |---|---|---|
 | `void-response` | `REMOTE_LOAD_SUBMITTED` 或本地 submit success | 请求被本地队列接受不需要一次远端往返，也不是 read response |
 | 第二次 `void-response with result` | `REMOTE_LOAD_COMPLETION` / CQE | completion 必须带 token、状态、长度和可选校验信息 |
-| EL0 同步事件 | core-internal `REMOTE_LOAD_PENDING` event | 事件交给 dedicated scheduler core；不伪装成 Arm exception |
+| EL0 同步事件 | custom `REMOTE_LOAD_PENDING` upcall event | core 直接转入 registered EL0 entry；不伪装成标准 Arm exception |
 | SIM_DEC async ABI | OBMM/GSVA remote-read ABI | SIM_DEC 是当前模拟后端，不应成为长期用户接口 |
 
 ## 4. 架构可行性边界
@@ -163,10 +169,11 @@ future 的依赖者是挂起的 coroutine；对更高层 Lingqu DAG 而言，依
 EL0 fault -> EL1 exception entry -> kernel/signal/scheduler -> EL0 resume
 ```
 
-如果目标 core 定义了 dedicated scheduler core、Context Store、pending-load table
-和 context save/restore 命令，那么它构成一套完整的自定义硬件线程调度架构，不需要
-伪装成 Arm exception。QEMU 的任务是模拟这套新硬件契约，而不是直接把 EL0 PC/SP
-改到软件 trampoline。该契约仍不属于现有 Arm/Linux architecture。
+本实验定义的是更窄的自定义 core mechanism：pending-load table 仍在 core/QEMU，
+但 event 直接把 EL0 PC 导向 registered upcall entry；EL0 assembly 保存 context，EL0
+runtime 维护 Context Store 和 policy。恢复时使用 custom resume instruction，避免普通
+branch 无法精确恢复全部 GPR。该契约不属于现有 Arm/Linux architecture，但正是本次
+要求 QEMU 模拟的行为。
 
 ### 4.2 方案对比
 
@@ -177,7 +184,7 @@ EL0 fault -> EL1 exception entry -> kernel/signal/scheduler -> EL0 resume
 | `userfaultfd` 缺页恢复 | 是 | 是，页粒度 | 否；faulting kernel thread 阻塞，需另一线程 | 页错误/handler status | 中 | 透明基线 |
 | EL1 page fault + signal trampoline | 是 | 是 | 理论可做但信号安全、重放和嵌套复杂 | signal/fault | 高 | 不推荐 |
 | QEMU host coroutine | 与 guest ISA 无关 | guest load 仍未退休 | 否，只可能让其他 vCPU/host task 运行 | host 内部 | 中 | 不能满足目标 |
-| hardware scheduler-core upcall（QEMU 模拟） | **自定义 core architecture** | 是 | 是 | 自定义 load fault/status | 极高 | 与软件路径对照验证 |
+| direct EL0 upcall + EL0 scheduler（QEMU 模拟） | **自定义 core architecture** | 是 | 是 | 自定义 event/status | 极高 | P2B 对照验证 |
 | 自定义 `LD_REMOTE_ASYNC` 指令 | 自定义 ISA | 否 | 是 | token/CQ | 高 | 比透明 upcall 更诚实的 ISA 实验 |
 
 `userfaultfd` 具备实际基线价值：当前 guest kernel 是 6.6，构建配置包含
@@ -193,25 +200,25 @@ EL0 fault -> EL1 exception entry -> kernel/signal/scheduler -> EL0 resume
 - `submit/await` 在软件层把一次读拆成“请求”和“消费结果”。`submit` 已经退休，
   `await` 是编译器/runtime 明确知道的 suspension point；系统里不存在一个尚未退休
   的普通 `LDR`。
-- scheduler-core upcall 在普通 `LDR` 已经发出之后才发现 remote pending。此时
+- P2B upcall 在普通 `LDR` 已经发出之后才发现 remote pending。此时
   `LDR` 必须保持未退休，pending table 必须保存 PC、目标寄存器、memop、ordering、
-  fault state 和 context ID；独立 scheduler core 再把整个 coroutine context 换走。
+  fault state 和 context ID；guest EL0 scheduler 再保存并换走 coroutine context。
 
 因此，关键问题不是“谁会不会修改 PC/SP”，而是：
 
 | 维度 | 显式 submit/await | scheduler-core upcall |
 |---|---|---|
 | data-plane 可见接口 | `submit/test/await`、future/CQE | 普通 `LDR`；pending/completion 只在 core 内可见 |
-| pending 状态所有者 | software runtime、destination buffer、CQ | hardware outstanding-load table、Context Store |
-| context switch 发起者 | application core 上的 coroutine runtime | dedicated scheduler core 向 application core 发命令 |
-| load 结果落点 | API 指定 buffer，`await` 返回 status | 原始目标寄存器，或形成架构定义的 load fault |
+| pending 状态所有者 | software runtime、destination buffer、CQ | QEMU PLT 保存 load；EL0 Context Store 保存 coroutine |
+| context switch 发起者 | application core 上的 coroutine runtime | direct upcall 后的 guest EL0 scheduler runtime |
+| load 结果落点 | API 指定 buffer，`await` 返回 status | 成功时由 EL0 patch 原始目标寄存器；失败时令 coroutine `FAULTED` 并 fail closed |
 | schedule-ahead | 软件/编译器可在真正消费前提前 submit | 默认只能在 demand load pending 后切换；提前需 hardware prefetch/predictor |
-| 主要负担 | 修改软件接口和编译器规范 | 新增 core microarchitecture，并保证 precise retirement/ordering/fault |
+| 主要负担 | 修改软件接口和编译器规范 | 新增 direct-upcall/resume core mechanism、PLT 与 EL0 ABI |
 
-硬件路径虽然不暴露每次访问的 data-plane API，但仍需要 control-plane contract：创建
-coroutine context、分配 context ID/stack、维护 ready policy、配置允许异步化的 OBMM
-映射，以及定义 context table 满时的 backpressure。它是软件透明的数据访问接口，
-不是完全没有软硬件 ABI。
+硬件路径虽然不暴露每次访问的 data-plane API，但仍需要 control-plane contract：
+注册 upcall entry、map、home CPU 和 logical context count。context ID、stack、Context
+Store 和 ready policy 是 EL0 runtime 状态。它是软件透明的数据访问接口，不是完全
+没有软硬件 ABI。
 
 ## 5. P1 共同底座：provider-neutral split-phase backend
 
@@ -230,13 +237,13 @@ timeout/cancel 和 completion generation 检查。
 | 边界 | P2A | P2B |
 |---|---|---|
 | 谁发起 backend request | EL0 写 SQ，async endpoint 验证后提交 | 普通 `LDR` remote miss，RLA/PLT 验证后提交 |
-| backend pending 的上层身份 | software token/future | PLT token + hardware context ID |
+| backend pending 的上层身份 | software token/future | PLT token + EL0 context ID |
 | payload completion 落点 | registered destination buffer | PLT 的 scalar result field |
 | completion 通知对象 | CQE，随后唤醒 EL0 waiter | SCC `COMPLETE/FAULT` event |
-| 最终消费 | `await` 返回后软件读取 buffer | commit unit 写原 `Rt` 并推进 PC |
+| 最终消费 | `await` 返回后软件读取 buffer | EL0 scheduler patch 保存态 `Rt/PC` |
 
 所以 P1 不能定义 SQ/CQ、`await`、Context Store 或目标寄存器；这些分别属于 P2A
-和 P2B。P1 只定义“一项通过 OBMM 检查的 read，如何非阻塞地进入 provider，并且
+和 P2B guest runtime。P1 只定义“一项通过 OBMM 检查的 read，如何非阻塞地进入 provider，并且
 恰好完成一次”。
 
 ### 5.2 Backend 内部契约
@@ -515,11 +522,11 @@ gain    = min(L, W) - S - C
 scheduler 侧 acquire consume。对外暴露的 ordering 至少要区分 relaxed read 和
 acquire read；普通 `LDR`、`LDAR`、barrier 的透明重放不纳入 MVP。
 
-## 7. P2B：普通 `LDR` + dedicated scheduler core 设计
+## 7. P2B：普通 `LDR` + direct EL0 upcall + EL0 scheduler 设计
 
-本节给出架构概要。Context Store/PLT 字段、control-plane ABI、AArch64 scalar-load
-白名单、TCG translation hook、TB precise exit、completion commit、fault-service 和
-容量降级的 canonical 定义见
+本节给出架构概要。EL0 Context Store、PLT 字段、control-plane ABI、AArch64
+scalar-load 白名单、TCG hook、TB precise exit、completion patch 和容量降级的
+canonical 定义见
 [P2B 详细设计](p2b-scheduler-core-detailed-design.md)。
 
 P2B 不经过 P2A 的 EL0 API、SQ/CQ、future 或 registered destination buffer。它只在
@@ -549,28 +556,29 @@ remote value 尚未返回时。application core 可以换出整个 context，但
 | commit 后 | `P + 4` | value | 已退休 | `RUNNING` |
 | provider failure | `P` | old | PLT fault record | `FAULTED` |
 
-这里的不可破坏条件是：**pending/complete 都不能提前修改 `Rt` 或推进 PC；只有恢复
-A 时的 commit unit 能同时写结果并退休原 load。** 这就是 P2B 相比 P2A 额外承担的
+这里的不可破坏条件是：**pending 不能修改 `Rt` 或推进 PC；只有 EL0 completion
+handler 校验 terminal event 后才能同时 patch 保存态 `Rt` 和 `PC`。** 这就是 P2B 相比 P2A 额外承担的
 精确架构状态责任。
 
 ### 7.2 数据面组件与 ownership
 
-这里按以下目标模型验证，不再采用“QEMU 跳到 EL0 trampoline”的假设：
+这里按以下目标模型验证。direct PC redirection 是明确的自定义 core ABI，不是误称为
+标准 Arm exception 的临时技巧：
 
 | 硬件组件 | 责任 |
 |---|---|
-| application core | 执行 EL0 coroutine；在 remote load pending 时形成 precise stop point；接受 context switch 命令 |
-| Remote Load Assist（RLA） | 识别白名单 load、建立 PLT、触发 precise TB/core exit、把 P1 completion 转成 SCC event |
+| application core | 执行 EL0 coroutine；在 remote load pending/completion 时直接转入 registered EL0 upcall entry |
+| Remote Load Assist（RLA） | 识别白名单 load、建立 PLT、触发 precise TB exit、把 P1 completion 转成 EL0 event |
 | pending-load table | 保存 `{request_token, context_id, PC, dst_reg, memop, address, ordering, state}` |
-| Context Store | 保存可被换出的完整 coroutine architectural context |
-| dedicated scheduler core | 消费 pending/completion event，维护 `RUNNING/WAIT_REMOTE/READY`，为 application core 选择下一个 context |
+| guest EL0 Context Store | 保存可被换出的完整 coroutine architectural context |
+| guest EL0 scheduler runtime | 消费 event，维护状态并选择 next；completion 时 patch `Rt/PC` |
+| custom resume mechanism | QEMU 原子安装 EL0 选中的 context，不包含 scheduling policy |
 | §5 P1 backend/provider | 执行 OBMM/GSVA validation 和 remote read，以 token 返回 value 或 failure status；不修改 GPR/PC |
 
-scheduler core 是上下文调度控制器，不是替 application core 执行用户 coroutine。它
-决定“application core 接下来恢复哪个 context”，并通过 core-defined save/restore
-命令完成切换。
+EL0 scheduler 运行在同一个 guest EL0 task 中，使用独立 scheduler stack。它决定
+“application core 接下来恢复哪个 context”；QEMU 只执行它提交的原子 resume 请求。
 
-![P2B 未退休 LDR、Context Store 与 scheduler core](p2b-scheduler-core-flow.svg)
+![P2B 未退休 LDR、EL0 Context Store 与 scheduler](p2b-scheduler-core-flow.svg)
 
 ### 7.3 Load 与 context 双状态机
 
@@ -586,7 +594,7 @@ ISSUED
        -> FAULTED
 ```
 
-coroutine context 由 SCC/Context Store 拥有：
+coroutine context 由 guest EL0 runtime/Context Store 拥有：
 
 ```text
 NEW -> READY -> RUNNING
@@ -607,21 +615,20 @@ WAIT_REMOTE      -> FAULTED
 3. remote miss 时，RLA 先把目标寄存器、PC、memop、ordering、fault metadata 和
    context generation 写入 PLT，再以该 PLT entry 作为 §5 P1 completion sink 提交；
 4. backend 返回 `PENDING` 后，application core 保持 `LDR` 未退休并精确退出 TB，
-   core context engine 把 A 的完整上下文保存到 Context Store；
-5. RLA 产生内部 `REMOTE_LOAD_PENDING(context_id, plt_token)`；dedicated scheduler
-   core 把 A 标为 `WAIT_REMOTE`，选择 ready 的 Coroutine B，
-   命令 application core 恢复 B；
+   只把 PC 导向 registered EL0 upcall entry；
+5. EL0 assembly 保存 A 的完整上下文并切到 scheduler stack；EL0 runtime 读取
+   `REMOTE_LOAD_PENDING(context_id, plt_token)`，把 A 标为 `WAIT_REMOTE`，选择
+   ready 的 Coroutine B，再用 `HLT #0x5343` 请求 core 原子恢复 B；
 6. provider 返回 value；§5 completion router 校验 request/map/PLT generations，
-   把 scalar result 写入 PLT；
-7. RLA 产生 `REMOTE_LOAD_COMPLETE(context_id, plt_token)`；
-8. scheduler core 把 A 标为 `READY`；A 被再次选中时先恢复上下文，commit unit
-   把 result 写入 `X3`、设置 `PC=next_pc`，原 load 此时才退休；A 从 `LDR` 的
+   把 scalar result 写入 terminal event；
+7. QEMU 在下一个精确 EL0 TB boundary 直接 upcall；EL0 保存当时运行的 B；
+8. EL0 scheduler 校验 `REMOTE_LOAD_COMPLETE(context_id, plt_token)`，patch
+   `A.x[3]=result` 和 `A.pc=next_pc`，把 A 标为 `READY`；A 被再次选中时从 `LDR`
    下一条指令继续。
 
-这里不需要每次访问调用 `submit/await`，也不需要 application coroutine 主动执行
-context switch。代价是 application core 必须原生支持“一个普通 load 尚未退休时，
-整个 context 可以被换出”。这更接近 fine-grained hardware multithreading，而不是
-传统 EL0 exception。
+这里不需要每次访问调用 `submit/await`。context switch 由 direct upcall 激活的 EL0
+scheduler 执行，而不是业务 coroutine 在数据面显式调用 `await`。代价是 core 必须
+支持精确 direct upcall 和原子 resume；它不是标准 Arm exception。
 
 ### 7.5 Failure、capacity 与 idle path
 
@@ -630,13 +637,13 @@ success path 不能代表完整的普通 `LDR` 语义。以下分支必须显式
 | 条件 | 原 load 状态 | A 的状态 | 系统动作 |
 |---|---|---|---|
 | translation/permission/token 在 P1 request 接受前失败 | 未发出 provider request，`PC=P`、`Rt=old` | 仍是当前 context | 走现有 precise Arm fault 到 EL1，不产生 SCC pending event |
-| provider timeout/I/O/checksum/retire | PLT `FAULTED`，`PC=P`、`Rt=old` | `FAULTED` | 调度已注册 fault-service context；选择 abort 或 retry，绝不注入 0 |
-| 未注册 fault-service 或 handler 再失败 | 未退休 | `FAULTED` | fail-stop SCC session，并向 Linux task 报错 |
-| 没有其他 `READY` context | PLT `PENDING` | `WAIT_REMOTE` | application core idle，completion 到达后恢复 A；不在 host 内 busy-poll |
-| PLT/Context Store/event queue 满 | 不创建可丢失的 pending state | A 保持 `RUNNING` | 退化为同步 stall path，并增加 `capacity_stall`；不丢 event |
+| provider timeout/I/O/checksum/retire | PLT `FAULTED`，`PC=P`、`Rt=old` | `FAULTED` | EL0 scheduler 记录 status 并终止该 coroutine；绝不注入 0 |
+| event/context/token invariant 破坏 | 未退休 | `FAULTED` | fail-stop SCC session，并向 Linux task 报错 |
+| 没有其他 `READY` context | PLT `PENDING` | `WAIT_REMOTE` | EL0 scheduler 留在 event wait loop；completion 到达后恢复 A |
+| PLT/event queue 满 | 不创建可丢失的 pending state | A 保持 `RUNNING` | 退化为同步 stall path，并增加 `capacity_stall`；不丢 event |
 | context/map destroy 时仍有 request | PLT generation 仍有效 | `WAIT_REMOTE/FAULTED` | teardown 返回 busy 或先 cancel/drain；不能先复用 slot |
-| duplicate/late/stale completion | 原 terminal state 不变 | 不变 | 只计数，不修改 PLT、Context Store、GPR 或 PC |
-| IRQ/syscall/page fault 进入 EL1 | 取决于进入前状态 | 锁定 active context | SCC quiesce，`ERET` 回同一 context 后才允许再次切换 |
+| duplicate/late/stale completion | 原 terminal state 不变 | 不变 | 只计数，不修改 PLT、EL0 Context Store、GPR 或 PC |
+| IRQ/syscall/page fault 进入 EL1 | 取决于进入前状态 | active context 不变 | direct delivery 只发生在 EL0 TB boundary；回到 EL0 后再检查 event |
 
 retry 必须复用 fault record 重新建立一个新 generation 的 provider request；不能简单
 把 PC 恢复为 `P` 后无条件重放，否则可能重复已经产生外部副作用的检查或请求。
@@ -647,8 +654,8 @@ retry 必须复用 fault record 重新建立一个新 generation 的 provider re
 
 - `L`：P1 provider 从 demand `LDR` 提交到 result ready 的延迟；
 - `W`：A 等待期间其他 context 实际完成的有用工作；
-- `S_out`：建立 PLT、保存 A、SCC 选择并恢复 B 的成本；
-- `S_in`：completion routing、SCC 选择、恢复 A 和 commit 原 load 的成本。
+- `S_out`：建立 PLT、direct upcall、EL0 保存 A、选择并恢复 B 的成本；
+- `S_in`：completion routing/upcall、EL0 patch/选择和恢复 A 的成本。
 
 provider request 发出后，`L` 与 `S_out + W` 可以重叠。理想模型为：
 
@@ -658,11 +665,11 @@ T_p2b  = max(L, S_out + W) + S_in
 gain   = T_sync - T_p2b
 ```
 
-若没有 ready context，`W=0`，P2B 只能增加状态管理成本。报告必须独立展示 PLT
-allocation、Context Store bytes、save/restore、SCC event/queue 和 commit cost，不能
-把 QEMU host 调度时间当成 scheduler-core 硬件成本。
+若没有 ready context，`W=0`，P2B 只能增加状态管理成本。报告必须独立展示 QEMU
+PLT/event 与 EL0 Context Store bytes、save/restore/switch/scheduler time，不能把
+QEMU host 调度时间或旧 QEMU scheduler-cycle 配置当成 EL0 调度成本。
 
-P2B v1 是 **demand-pending**：直到程序真正执行普通 `LDR` 才启动 `L`。P2A 可以在
+P2B v2 是 **demand-pending**：直到程序真正执行普通 `LDR` 才启动 `L`。P2A 可以在
 消费点之前 pre-submit，因此拥有额外的 schedule-ahead 窗口。未来若给 P2B 加硬件
 prefetch/predictor，必须作为 P3 的独立变量，不能计入 P2B baseline。
 
@@ -675,42 +682,41 @@ MMIO callback 中猜原指令。QEMU 必须从 scalar-load translation/execution
 
 1. `target/arm/tcg/translate-a64.c` 的 scalar-load lowering 在 SCC-active TB 中先走
    RLA helper；非目标地址直接回到原 `qemu_ld` fast path；
-2. helper 完成 §7.4 第 2/3 步；inline hit 返回 value，pending 则先写完整 PLT；
-3. pending helper 使用 `cpu_loop_exit_restore(cs, retaddr)` 精确退出 TB，恢复出的
-   guest PC 仍是 faulting `LDR`；
-4. CPU execution loop 根据专用 exit reason 保存 A、向 SCC 发 event、恢复 B；
-5. provider callback 只更新 PLT 并排 SCC event，不能并发修改正在运行的
-   `CPUARMState`；
-6. A 再次被选中时，commit unit 恢复 A，按 size/extend/endian 写 `Rt`，最后把 PC
-   设为 `next_pc`；不重新执行或重新发送该 load。
+2. helper 完成 §7.4 第 2/3 步；pending 时写 PLT/event，令
+   `env->pc=registered_upcall_entry` 并 `cpu_loop_exit_noexc()`；
+3. EL0 assembly 在调用 C 前保存完整 context，再切到独立 scheduler stack；
+4. provider callback 只更新 PLT/event，不能并发修改正在运行的 `CPUARMState`；
+5. active EL0 TB boundary 检到 completion 后，同样只把 PC 导向 upcall entry；
+6. EL0 scheduler patch `Rt/PC` 并选择 context，以 `HLT #0x5343` 请求 resume helper
+   原子安装所选 context。
 
-“退出 TB”只是 QEMU 对 application core 停在 precise load 边界的实现手段；它不是
-guest 可见接口。PC/SP 的保存与恢复属于被模拟的硬件 context engine，不应描述为
-QEMU 任意跳到某个 EL0 handler。
+“退出 TB”是 QEMU 形成 precise boundary 的实现手段；direct PC redirection、event ABI
+和 resume instruction 是本实验明确增加的 guest-visible core contract。QEMU 不保存
+coroutine SP/context，也不决定跳到哪个业务 coroutine。
 
 ### 7.8 Control-plane contract
 
 data plane 可以保持普通 `LDR`，但系统仍需一个独立的控制面来定义：
 
 ```text
-setup:    register owner/map -> create contexts -> set fault context -> SCC_START
-hot path: ordinary LDR -> RLA/PLT/P1/SCC；无 per-load ioctl、submit 或 await
-teardown: SCC_STOP -> cancel/drain -> destroy contexts/maps
+setup:    EL0 create local contexts -> register owner/map/upcall -> SCC_START
+hot path: ordinary LDR -> RLA/PLT/P1 -> direct upcall -> EL0 schedule/resume
+teardown: SCC_STOP -> cancel/drain -> EL0 destroy local contexts/maps
 ```
 
-控制面只负责建立和销毁硬件可解释的 context/map 身份，不能参与每个 payload 的
-搬运或 completion commit。具体需要定义：
+控制面只负责建立 core 可解释的 owner/map/upcall identity，不能参与每个 payload 的
+搬运或 completion patch。具体需要定义：
 
-- coroutine context 的创建、销毁、context ID、stack/TLS 和 affinity；
-- ready queue policy，以及 scheduler core 如何选择 application core；
+- EL0 coroutine context 的创建、销毁、context ID、stack/TLS 和 affinity；
+- EL0 ready queue policy、scheduler stack 和 resume ABI；
 - 允许硬件异步化的 OBMM map ID；QEMU 从 map metadata 推导 GSVA 地址范围；
-- pending-load/Context Store 容量、满载时 stall 还是 fail；
+- pending-load/event 容量、满载时 stall 还是 fail；
 - coroutine 被取消、map retire、process exit 时如何清理 outstanding load；
 - success、timeout、token denied、retired、transport failure 如何映射为 load result
-  或架构 fault。
+  或 EL0 FAULT event/fail-closed 状态。
 
 这个 map ID 列表不是新的 GSVA range 类型，只是硬件 interception policy，避免普通
-DRAM、代码页、Context Store 或 scheduler core 自身访问被递归截获。
+DRAM、代码页、EL0 Context Store 或 scheduler stack 自身访问被递归截获。
 
 ### 7.9 第一版指令边界
 
@@ -729,12 +735,12 @@ DRAM、代码页、Context Store 或 scheduler core 自身访问被递归截获�
 | 风险 | 后果 |
 |---|---|
 | pending-load metadata 不完整 | load 恢复后出现 silent data corruption |
-| Context Store 容量不足 | 高并发远端 miss 退化为 core stall，或产生不可恢复 backpressure |
+| EL0 Context Store/coroutine slot 不足 | runtime 拒绝创建更多 coroutine；不得让 QEMU 偷建 context |
 | completion 晚于 context/map 销毁 | value 写入已复用 context，必须依赖 generation 拒绝 |
 | nested fault、signal、debugger 交错 | precise state 与用户可观察行为不一致 |
 | ordering/atomic 语义不完整 | 多线程程序出现仅在远端 mapping 下发生的内存模型错误 |
-| scheduler core 成为瓶颈 | context event rate 上升后，调度延迟抵消 remote-latency overlap |
-| QEMU 模型直接改状态而未建模硬件成本 | 性能结论无法外推到目标 core |
+| EL0 scheduler 成为瓶颈 | event rate 上升后，保存/选择/恢复成本抵消 latency overlap |
+| QEMU 偷做 context/policy | 验证退化为 hardware-managed threading，不能回答目标问题 |
 
 如果最终硬件不希望让普通 `LDR` 承担这些语义，可以再比较显式
 `LD_REMOTE_ASYNC`/`WAIT_REMOTE` 指令；它仍是硬件路径，但会把 outstanding token
@@ -749,8 +755,8 @@ DRAM、代码页、Context Store 或 scheduler core 自身访问被递归截获�
 | P0：基线与延迟模型 | **已实现；gate pass** | [p0-baseline-latency-model-detailed-design.md](p0-baseline-latency-model-detailed-design.md)：四类同步基线、strong scenario schema、virtual-time fault model、三种时钟、CLI/测试 | scenario/model hash 闭环通过；四类 canonical case 和 0-delay payload 语义通过 |
 | P1：split-phase backend | **已实现；gate pass** | [p1-split-phase-backend-detailed-design.md](p1-split-phase-backend-detailed-design.md)：64 parent、多 child 聚合、P1-owned result pool、generation-safe sink、terminal race、CLI/测试 | test/P2A/P2B 三种 sink 的 144 个 conformance case 通过 |
 | P2A：显式软件路径 | **已实现；gate pass** | [p2a-submit-await-detailed-design.md](p2a-submit-await-detailed-design.md)：独立 endpoint、64-byte SQ/CQ、registered buffer、future、EL0 stackful coroutine、CLI/测试 | 同一 guest vCPU 上 `A await → B 推进 → A 恢复`，completion/failure generation-safe |
-| P2B：scheduler-core 路径 | **已实现；gate pass** | [p2b-scheduler-core-detailed-design.md](p2b-scheduler-core-detailed-design.md)：RLA/PLT、Context Store、SCC、control ABI、TCG hook、precise commit/fault、CLI/测试 | 普通 `LDR` 单次发出/提交；PC/Rt/context 精确恢复；TCG 与 I/O 线程状态受 BQL 保护 |
-| P3：对比评估 | **已实现；acceptance pass** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 完整矩阵 4,942 case 可重复展开；7 条 canonical path × 7 seeds 的 49-case 正式验收通过 |
+| P2B：direct-upcall 路径 | **功能验收完成；ABI v2 2-node producer/consumer gate pass** | [p2b-scheduler-core-detailed-design.md](p2b-scheduler-core-detailed-design.md)：RLA/PLT、direct EL0 upcall、EL0 Context Store/scheduler、resume ABI、CLI/测试 | nodeA write/export、nodeB import、两个 coroutine 普通 `LDR`、逐事件 overlap/value 及 machine phase gate 均通过 |
+| P3：对比评估 | **框架已实现；下一必做阶段，正式性能 acceptance 待执行** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 使用 ABI v2 和新 run ID 完成 2-node correctness/acceptance、4/8-node scale-out、有效统计与 break-even 结论；旧 acceptance 作废 |
 | P4：透明 OS 基线 | **已实现；gate pass** | [p4-userfaultfd-baseline-detailed-design.md](p4-userfaultfd-baseline-detailed-design.md)：标准 UFFD MISSING、shadow/source range、handler vCPU、failure/shutdown、CLI/测试 | 4-KiB payload 一致；fault/read/copy/wake 可分解；失败不以 zeropage 伪装成功 |
 
 ![P0 到 P4 的实现依赖和验收门禁](obmm-remote-load-phase-gates.svg)
@@ -783,7 +789,7 @@ guest-linux/aarch64/apps/obmm_async_coroutine/obmm_async_coroutine
 --verify
 ```
 
-其中 P2B `scheduler-core` v1 只接受 1/2/4/8-byte scalar load；P4 `userfaultfd` v1
+其中 P2B `scheduler-core` v2 只接受 1/2/4/8-byte scalar load；P4 `userfaultfd` v1
 只接受 4-KiB page；其他 range 只用于 P2A。CLI 必须按 mode fail closed，不能把大
 请求静默拆成多个“普通 `LDR`”，也不能把 scalar P4 访问伪装成一次远端 operation。
 
@@ -831,7 +837,7 @@ remote_memory_model:
 
 | 维度 | 取值 |
 |---|---|
-| topology | 先 2-node；正确后扩展 4/8-node |
+| topology | P2B 功能验收固定 2-node；P3 先跑 2-node correctness/acceptance，再跑 4/8-node scale-out |
 | mode | sync-mmio、async-poll、async-irq、userfaultfd、scheduler-core |
 | fixed latency | 0、1、5、10、50、100、1000 us |
 | jitter | 0、10%、100%、长尾脉冲 |
@@ -865,17 +871,20 @@ P2A contract tests：
 P2B contract/TCG tests：
 
 - PLT/context generation、capacity-full synchronous stall；
-- pending 时原 `Rt`/PC 不变，commit 时只写 `Rt` 且 PC 前进一次；
-- 完整 Context Store save/restore、SCC event 和 fault-service；
-- unsupported atomic/LDAR/vector/unaligned load fail closed；
+- pending 时原 `Rt`/PC 不变，EL0 completion patch 只写 `Rt` 且 PC 前进一次；
+- EL0 assembly 完整 context save、独立 scheduler stack、ready/wait policy；
+- QEMU model 不含 Context Store、ready queue 或 scheduler decision；
+- unsupported atomic/LDAR/vector load 不进入 P2B async hook，保持既有同步语义；
 - EL1 entry quiesce、late completion 不修改复用后的 context。
 
 远端 QEMU 验证：
 
 - P2A：A 在未完成 `await` 挂起后，B 在**同一 guest vCPU** 上推进，A 从 `await`
   后恢复；
-- P2B：A 的普通 `LDR` 未退休并换出后，B 在同一 application vCPU 上推进，A 经
-  PLT commit 从 `LDR` 下一条指令恢复；
+- P2B：nodeA program A 写入并 export；nodeB program B import 后，coroutine A 的普通
+  `LDR` 未退休并触发 direct upcall，EL0 保存 A 并选择 B；B 必须在 A completion 前
+  实际发出自己的普通 `LDR`；两次 completion 分别 patch 对应 `Rt/PC`，恢复后不重发
+  load，且实际值必须等于 nodeA 写入值；
 - 1/2/4/8/32 coroutine 的等待重叠与 queue depth 关系；
 - injected failure 后无值 0 的 silent success；
 - P2A/P2B 的 payload/checksum 与 sync baseline 相同；
@@ -895,9 +904,9 @@ P1 共同指标：
 - payload checksum 与 sync baseline 一致性。
 
 P2A 另外报告 submit、EL0 context switch、CQ drain/resume、CQ occupancy、
-ready/waiter 数、`lookahead` 和 useful work during wait。P2B 另外报告 PLT/Context
-Store occupancy、save/schedule/restore/commit cycles、SCC utilization/event queue、
-capacity stall 和 no-ready idle。
+ready/waiter 数、`lookahead` 和 useful work during wait。P2B 另外报告 PLT/event
+occupancy、direct-upcall 数、EL0 save/restore/switch/bytes/scheduler time、capacity
+stall 和 no-ready waits；QEMU context/scheduler-cycle counter 必须为 0。
 
 定义：
 
@@ -925,7 +934,7 @@ overlap_efficiency = (T_sync - T_async) / min(L, W)
 [P0 §11](p0-baseline-latency-model-detailed-design.md#11-实现落点)、
 [P1 §11](p1-split-phase-backend-detailed-design.md#11-实现落点)、
 [P2A §10](p2a-submit-await-detailed-design.md#10-实现落点)、
-[P2B §11](p2b-scheduler-core-detailed-design.md#11-实现落点)、
+[P2B §11](p2b-scheduler-core-detailed-design.md#11-实现顺序)、
 [P3 §10](p3-comparative-evaluation-detailed-design.md#10-实现落点)和
 [P4 §10](p4-userfaultfd-baseline-detailed-design.md#10-实现落点)。
 
@@ -935,8 +944,9 @@ overlap_efficiency = (T_sync - T_async) / min(L, W)
 | P1 | `vendor/qemu_8.2.0_ub/hw/ub/ub_obmm_remote.*`、`ub_ubc.c` | provider-neutral parent/child pending、result pool、completion sink；淘汰单同步槽作为 async 主路径 |
 | P2A | `guest-linux/aarch64/libs/obmm_async/` | C ABI、SQ/CQ、future、stackful coroutine scheduler |
 | P2A | `guest-linux/aarch64/common/`、`driver/linqu_ub_drv.c` | P2A UAPI/status、registered buffer、queue mmap、IRQ/poll；IRQ handler 不调度 coroutine |
-| P2B | QEMU `target/arm/tcg/`、`target/arm/cpu.h` | scalar-load hook、precise TB exit、context commit |
-| P2B | QEMU `hw/ub/ub_scc.*` | PLT、Context Store、scheduler-core state/cost model |
+| P2B | QEMU `target/arm/tcg/`、`target/arm/cpu.h` | scalar-load hook、PC-only direct upcall、atomic context-install mechanism |
+| P2B | QEMU `hw/ub/ub_scc.*` | PLT、event queue、backend adapter；不含 coroutine policy |
+| P2B | `guest-linux/aarch64/libs/obmm_scc/` | EL0 Context Store、assembly save、scheduler stack、ready/wait policy、completion patch |
 | P4 | guest app UFFD mode | standard MISSING handler、shadow/source ranges、page fault/copy metrics |
 | P3 | `crates/sim-cli`、`scenarios/experiments/` | matrix expansion、gate、aggregation、report evidence |
 | 共享 | `guest-linux/aarch64/apps/obmm_async_coroutine/` | P2A/P2B 使用同一 CLI/workload/checksum |
@@ -952,10 +962,12 @@ P1 不包含 guest-visible SQ/CQ 或 PLT layout；P2A/P2B adapter 分别拥有�
 
 ### 已确定
 
-- 不把 `REMOTE_LOAD_PENDING` 描述为标准 Arm exception；它是交给 dedicated
-  scheduler core 的自定义硬件事件；
+- 不把 `REMOTE_LOAD_PENDING` 描述为标准 Arm exception；它是 core 直接投递到已注册
+  guest EL0 coroutine scheduler core 的自定义 upcall event。scheduler core 是 EL0
+  软件组件和独立 scheduler stack，不是额外 vCPU，也不在 QEMU 内；
 - 不让现有 `MemoryRegionOps.read()` 返回伪造值来表示 pending；
-- 软件路径使用 submit/CQ/future；硬件路径使用 pending-load/context table；
+- 软件路径使用 submit/CQ/future；P2B 使用 QEMU pending-load table + guest EL0
+  Context Store；
 - error/timeout 使用 completion status，fail closed；
 - 先解决多 in-flight backend，再做 coroutine 和 schedule-ahead；
 - 保留 sync pointer load 作为兼容与基线，不在 P1/P2 改变其语义。

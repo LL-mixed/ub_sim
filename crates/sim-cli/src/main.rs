@@ -122,9 +122,23 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 mod dataplane_microbench;
+mod obmm_eval;
+mod obmm_remote;
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(args) = obmm_eval::args()? {
+        return obmm_eval::run(&args);
+    }
+    if let Some(args) = obmm_remote::phase_gate_args()? {
+        return obmm_remote::run_phase_gate_cli(&args);
+    }
+    if let Some(args) = obmm_remote::baseline_args()? {
+        return obmm_remote::run_baseline_cli(&args);
+    }
+    if let Some(args) = obmm_remote::conformance_args()? {
+        return obmm_remote::run_conformance_cli(&args);
+    }
     if let Some(args) = dataplane_microbench::args_from_env()? {
         return dataplane_microbench::run_cli(&args);
     }
@@ -29081,7 +29095,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         fs::write(
             &script_path,
             format!(
-                "#!/bin/zsh\nset -euo pipefail\ncat > \"$TRACE_FILE\" <<'TRACE'\n{}TRACE\n",
+                "#!/usr/bin/env zsh\nset -euo pipefail\ncat > \"$TRACE_FILE\" <<'TRACE'\n{}TRACE\n",
                 trace
             ),
         )

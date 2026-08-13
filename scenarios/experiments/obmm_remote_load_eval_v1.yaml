@@ -1,0 +1,125 @@
+schema: 1
+name: obmm-remote-load-eval-v1
+minimums:
+  scalar_operations: 30000
+  range_bytes: 1073741824
+  duration_ms: 2000
+  warmup_scalar_operations: 1000
+  warmup_range_pages: 64
+  formal_seed_count: 7
+  host_noise_threshold_milli: 250
+factors:
+  model_latency_us: [0, 1, 5, 10, 50, 100, 1000]
+  jitter_profiles: [none, uniform-10pct, tail-1pct-10x]
+  outcomes: [success, error, drop-timeout, duplicate-late]
+  coroutines: [1, 2, 4, 8, 32]
+  inflight: [1, 8, 16, 32, 64]
+  lookahead: [0, 1, 4, 16, 64]
+  compute_us: [0, 1, 5, 10, 50, 100, 1000]
+  patterns: [sequential, random, dependent, mixed]
+cases:
+  - id: S0-sync
+    band: scalar
+    mode: sync-mmio
+    access_bytes: 8
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+  - id: S1-p2a-demand
+    band: scalar
+    mode: async-poll
+    access_bytes: 8
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+  - id: S2-p2a-lookahead
+    band: scalar
+    mode: async-poll
+    access_bytes: 8
+    issue: lookahead
+    sweep_lookahead: true
+    extra_vcpus: 0
+  - id: S3-p2b-demand
+    band: scalar
+    mode: scheduler-core
+    access_bytes: 8
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+  - id: R0-sync-range
+    band: range
+    mode: sync-mmio
+    access_bytes: 4096
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+  - id: R1-p2a-range
+    band: range
+    mode: async-poll
+    access_bytes: 4096
+    issue: lookahead
+    sweep_lookahead: true
+    extra_vcpus: 0
+  - id: R2-userfaultfd
+    band: range
+    mode: userfaultfd
+    access_bytes: 4096
+    issue: fault
+    lookahead: 0
+    extra_vcpus: 1
+sweeps:
+  - id: correctness
+    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand,
+            R0-sync-range, R1-p2a-range, R2-userfaultfd]
+    model_latency_us: [0, 100, 1000]
+    jitter_profiles: [none]
+    outcomes: [success]
+    coroutines: [1, 8]
+    inflight: [1, 32]
+    lookahead: [1, 16]
+    compute_us: [0, 100]
+    patterns: [sequential, random, dependent, mixed]
+  - id: latency-compute
+    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand]
+    model_latency_us: [0, 1, 5, 10, 50, 100, 1000]
+    jitter_profiles: [none]
+    outcomes: [success]
+    coroutines: [8]
+    inflight: [32]
+    lookahead: [16]
+    compute_us: [0, 1, 5, 10, 50, 100, 1000]
+    patterns: [sequential]
+  - id: jitter-tail
+    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand,
+            R0-sync-range, R1-p2a-range, R2-userfaultfd]
+    model_latency_us: [100]
+    jitter_profiles: [none, uniform-10pct, tail-1pct-10x]
+    outcomes: [success]
+    coroutines: [8]
+    inflight: [32]
+    lookahead: [16]
+    compute_us: [10]
+    patterns: [sequential]
+  - id: failure-semantics
+    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand,
+            R0-sync-range, R1-p2a-range, R2-userfaultfd]
+    operations: 64
+    model_latency_us: [100]
+    jitter_profiles: [none]
+    outcomes: [error, drop-timeout]
+    coroutines: [8]
+    inflight: [32]
+    lookahead: [16]
+    compute_us: [10]
+    patterns: [sequential]
+  - id: duplicate-semantics
+    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand,
+            R0-sync-range, R1-p2a-range, R2-userfaultfd]
+    model_latency_us: [100]
+    jitter_profiles: [none]
+    outcomes: [duplicate-late]
+    coroutines: [8]
+    inflight: [32]
+    lookahead: [16]
+    compute_us: [10]
+    patterns: [sequential]

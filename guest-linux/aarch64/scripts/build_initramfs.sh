@@ -73,6 +73,15 @@ OBMM_IMPORT_STRESS_SRC="$ROOT_DIR/apps/obmm_import_stress/obmm_import_stress.c"
 OBMM_IMPORT_STRESS_BIN="$OUT_DIR/linqu_ub_obmm_import_stress"
 OBMM_DATAPLANE_MICROBENCH_SRC="$ROOT_DIR/apps/obmm_dataplane_microbench/obmm_dataplane_microbench.c"
 OBMM_DATAPLANE_MICROBENCH_BIN="$OUT_DIR/linqu_ub_obmm_dataplane_microbench"
+OBMM_ASYNC_COROUTINE_SRC="$ROOT_DIR/apps/obmm_async_coroutine/obmm_async_coroutine.c"
+OBMM_ASYNC_COROUTINE_UFFD_MODE_SRC="$ROOT_DIR/apps/obmm_async_coroutine/uffd_mode.c"
+OBMM_ASYNC_COROUTINE_UFFD_STATE_SRC="$ROOT_DIR/apps/obmm_async_coroutine/uffd_state.c"
+OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC="$ROOT_DIR/common/obmm_uffd.c"
+OBMM_ASYNC_COROUTINE_LIB_SRC="$ROOT_DIR/libs/obmm_async/obmm_async.c"
+OBMM_ASYNC_COROUTINE_ASM_SRC="$ROOT_DIR/libs/obmm_async/obmm_async_aarch64.S"
+OBMM_ASYNC_COROUTINE_SCC_SRC="$ROOT_DIR/libs/obmm_scc/obmm_scc.c"
+OBMM_ASYNC_COROUTINE_SCC_ASM_SRC="$ROOT_DIR/libs/obmm_scc/obmm_scc_aarch64.S"
+OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine"
 GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"
 GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"
 OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"
@@ -186,25 +195,25 @@ detect_make_jobs() {
 }
 
 hash_file() {
-  local path="$1"
+  local file_path="$1"
   if [[ -x /usr/bin/shasum ]]; then
-    /usr/bin/shasum -a 256 "$path" | /usr/bin/awk '{print $1}'
+    /usr/bin/shasum -a 256 "$file_path" | /usr/bin/awk '{print $1}'
     return 0
   fi
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$path" | awk '{print $1}'
+    shasum -a 256 "$file_path" | awk '{print $1}'
     return 0
   fi
-  sha256sum "$path" | awk '{print $1}'
+  sha256sum "$file_path" | awk '{print $1}'
 }
 
 write_signature_line() {
   local label="$1"
-  local path="$2"
-  if [[ -e "$path" ]]; then
-    printf '%s=%s:%s\n' "$label" "$path" "$(hash_file "$path")"
+  local file_path="$2"
+  if [[ -e "$file_path" ]]; then
+    printf '%s=%s:%s\n' "$label" "$file_path" "$(hash_file "$file_path")"
   else
-    printf '%s=%s:MISSING\n' "$label" "$path"
+    printf '%s=%s:MISSING\n' "$label" "$file_path"
   fi
 }
 
@@ -238,6 +247,16 @@ current_initramfs_signature() {
   write_signature_line "obmm_queue_src" "$OBMM_QUEUE_SRC"
   write_signature_line "obmm_import_stress_src" "$OBMM_IMPORT_STRESS_SRC"
   write_signature_line "obmm_dataplane_microbench_src" "$OBMM_DATAPLANE_MICROBENCH_SRC"
+  write_signature_line "obmm_async_coroutine_src" "$OBMM_ASYNC_COROUTINE_SRC"
+  write_signature_line "obmm_async_coroutine_uffd_mode_src" "$OBMM_ASYNC_COROUTINE_UFFD_MODE_SRC"
+  write_signature_line "obmm_async_coroutine_uffd_state_src" "$OBMM_ASYNC_COROUTINE_UFFD_STATE_SRC"
+  write_signature_line "obmm_async_coroutine_uffd_wrapper_src" "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC"
+  write_signature_line "obmm_async_coroutine_lib_src" "$OBMM_ASYNC_COROUTINE_LIB_SRC"
+  write_signature_line "obmm_async_coroutine_asm_src" "$OBMM_ASYNC_COROUTINE_ASM_SRC"
+  write_signature_line "obmm_async_coroutine_scc_src" "$OBMM_ASYNC_COROUTINE_SCC_SRC"
+  write_signature_line \
+    "obmm_async_coroutine_scc_asm_src" \
+    "$OBMM_ASYNC_COROUTINE_SCC_ASM_SRC"
   write_signature_line "gva_direct_src" "$GVA_DIRECT_SRC"
   write_signature_line "obmm_coh_test_src" "$OBMM_COH_TEST_SRC"
   write_signature_line "obmm_gsva_src" "$OBMM_GSVA_SRC"
@@ -604,6 +623,17 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$OBMM_QUEUE_SRC" -o "$OBMM_QUEUE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/apps/obmm_queue" ${=LIBOBMM_CFLAGS} "$OBMM_IMPORT_STRESS_SRC" ${=LIBOBMM_SRCS} -o "$OBMM_IMPORT_STRESS_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$OBMM_DATAPLANE_MICROBENCH_SRC" ${=LIBOBMM_SRCS} -o "$OBMM_DATAPLANE_MICROBENCH_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -Werror \
+  -I"$ROOT_DIR/libs/obmm_async" -I"$ROOT_DIR/libs/obmm_scc" \
+  -I"$ROOT_DIR/common" \
+  -idirafter "$ROOT_DIR/../kernel_ub/include/uapi" \
+  "$OBMM_ASYNC_COROUTINE_SRC" "$OBMM_ASYNC_COROUTINE_LIB_SRC" \
+  "$OBMM_ASYNC_COROUTINE_ASM_SRC" "$OBMM_ASYNC_COROUTINE_SCC_SRC" \
+  "$OBMM_ASYNC_COROUTINE_SCC_ASM_SRC" \
+  "$OBMM_ASYNC_COROUTINE_UFFD_MODE_SRC" \
+  "$OBMM_ASYNC_COROUTINE_UFFD_STATE_SRC" \
+  "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC" -pthread \
+  -o "$OBMM_ASYNC_COROUTINE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$GVA_DIRECT_SRC" ${=LIBOBMM_SRCS} -o "$GVA_DIRECT_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$OBMM_GSVA_SRC" ${=LIBOBMM_SRCS} -o "$OBMM_GSVA_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/libs/obmm_queue" ${=LIBOBMM_CFLAGS} "$GVA_MANAGER_SRC" ${=LIBOBMM_SRCS} -o "$GVA_MANAGER_BIN"
@@ -643,6 +673,7 @@ cp "$OBMM_POOL_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_pool"
 cp "$OBMM_QUEUE_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue"
 cp "$OBMM_IMPORT_STRESS_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_import_stress"
 cp "$OBMM_DATAPLANE_MICROBENCH_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench"
+cp "$OBMM_ASYNC_COROUTINE_BIN" "$INITRAMFS_DIR/bin/obmm_async_coroutine"
 cp "$GVA_DIRECT_BIN" "$INITRAMFS_DIR/bin/linqu_gva_direct"
 cp "$OBMM_GSVA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva"
 cp "$GVA_MANAGER_BIN" "$INITRAMFS_DIR/bin/linqu_gva_manager"
@@ -671,6 +702,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_pool" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench" \
+  "$INITRAMFS_DIR/bin/obmm_async_coroutine" \
   "$INITRAMFS_DIR/bin/linqu_gva_direct" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva" \
   "$INITRAMFS_DIR/bin/linqu_gva_manager" \

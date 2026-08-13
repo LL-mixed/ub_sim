@@ -5,11 +5,17 @@ mod device;
 mod ffi;
 mod memory;
 mod mmio;
+mod obmm_remote_model;
 mod types;
 
 pub use adapter::QemuBackendAdapter;
 pub use device::{LinquDeviceModel, MmioDevice};
 pub use mmio::QemuMmioHandler;
+pub use obmm_remote_model::{
+    decide as decide_obmm_remote_model, operation_key as obmm_operation_key,
+    sort_eligible as sort_obmm_eligible, ObmmOperationIdentity, ObmmRemoteCapacityError,
+    ObmmRemoteLatencyModel, ObmmRemoteModelDecision, ObmmRemoteOutcome,
+};
 pub use types::{
     DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite, EndpointId,
     GuestDescriptor, GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor,

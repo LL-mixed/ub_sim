@@ -1,6 +1,9 @@
 # P3：OBMM 远端 Load 路径对比评估详细设计
 
-> 状态：评估器已实现；49-case 正式验收通过；全因子性能研究尚未执行
+> 状态：评估器已实现；P2B ABI v2 的 2-node producer/consumer 功能验收已通过。
+> 旧 49-case 性能结果因 P2B ABI 变更作废；正式性能评估是整体方案的下一必做阶段，
+> 必须使用 ABI v2 重新运行 2-node acceptance 和 4/8-node scale-out。它不影响 P2B
+> 功能完成状态
 >
 > 日期：2026-08-11
 >
@@ -33,12 +36,18 @@ P3 只在以下 gate 全部满足后运行正式矩阵：
 - P0：scenario/manifest/QEMU/report hash 一致，三种时钟分列；
 - P1：三种 sink 通过 64 in-flight、乱序、迟到和 terminal-race conformance；
 - P2A：同一 vCPU 上 A await 时 B 推进，registered destination/CQ generation-safe；
-- P2B：普通 `LDR` 只发出一次，pending 时 PC/Rt 不变，恢复时精确 commit；
+- P2B：普通 `LDR` 只发出一次，pending 时原 load 不退休；QEMU direct upcall 到
+  guest EL0，由 EL0 保存/选择/patch context，resume 时精确安装；
 - P4：标准 userfaultfd feature probe、page fill、failure fail-closed 已通过；
 - 所有路径与 sync oracle 的 payload/checksum 一致。
 
 任一 gate 不满足时 CLI 仍可生成 `--dry-run` manifest，但正式结果标为 `invalid`，不能
 生成性能结论。
+
+截至 2026-08-12，P2B ABI v2 的 2-node producer/consumer 功能 gate 已通过。下一步
+必须针对目标 topology、scenario、model contract 和 artifact hash，使用新 run ID 从头
+执行 P3，形成新的性能结论。P3 独立于 P2B 功能 gate，但不是可选工作。旧
+`S3-p2b-demand` raw rows 不得追认或拼接。
 
 ## 3. 三个 canonical 比较带
 
@@ -73,8 +82,8 @@ Band T 不把不同粒度压成单一性能分数，而是报告：
 |---|---|---|---|
 | hot-path 源码接口 | submit/test/await | 普通 scalar load | 普通 shadow-range load |
 | machine-code suspension point | runtime `await` | 未退休 `LDR` | page fault / kernel block |
-| 调度执行者 | 同一 application core 的 EL0 runtime | dedicated scheduler core | dedicated userspace handler thread |
-| 额外 core/vCPU | 无硬要求 | 一个 modeled scheduler core | 一个 handler vCPU |
+| 调度执行者 | 同一 application core 的 EL0 runtime | guest EL0 coroutine scheduler core（独立 scheduler stack） | dedicated userspace handler thread |
+| 额外 core/vCPU | 无硬要求 | 无；不是 helper vCPU | 一个 handler vCPU |
 | completion 粒度 | 1 B–64 KiB | 1/2/4/8 B | 4 KiB v1 |
 | 软件/硬件改动面 | app/runtime/UAPI | 自定义 core/QEMU/控制面 | 标准 Linux UFFD + app handler |
 
@@ -144,9 +153,9 @@ scenarios/experiments/obmm_remote_load_eval_v1.yaml
 ```text
 T_issue       submit/RLA/fault setup
 L_model       P0 accept -> publish
-T_suspend     await switch / save+SCC+restore / kernel fault block
+T_suspend     await switch / direct upcall+EL0 save+choose+resume / kernel fault block
 W_useful      wait 窗口内退休的验证过的工作
-T_complete    sink copy + CQ drain / PLT event+commit / UFFDIO_COPY+wakeup
+T_complete    sink copy + CQ drain / PLT event+EL0 context patch / UFFDIO_COPY+wakeup
 T_e2e         logical op 可消费结果的 guest elapsed time
 T_makespan    全部 logical ops 完成时间
 ```
@@ -170,10 +179,11 @@ core_efficiency = useful_work_ns / sum(application_and_helper_cpu_ns)
 - model latency与 host wall elapsed 分列；
 - requests/s、bytes/s、checksum、success/error/timeout counts；
 - ready/wait/idle 时间和 no-ready 次数；
-- P2A submit/switch/CQ/lookahead；P2B PLT/save/SCC/restore/commit；P4 fault/poll/read/
+- P2A submit/switch/CQ/lookahead；P2B PLT/upcall、EL0 save/choose/patch/restore；P4 fault/poll/read/
   `UFFDIO_COPY`/wake 和 handler CPU；
 - P1 pending depth、capacity、sink-copy、late/duplicate；
-- application vCPU、scheduler core、UFFD handler vCPU 的资源占用。
+- application vCPU、EL0 scheduler runtime、UFFD handler vCPU 的资源占用；P2B 的 QEMU
+  context-save/restore/switch counters 必须为 0。
 
 ## 8. 统计设计与 invalidation
 
@@ -188,7 +198,8 @@ seed 间 min/max 和 bootstrap 95% CI，不把单次最好结果当结论。
 - pending/page/context 未 drain；
 - trace dropped、counter overflow、clock regression；
 - host elapsed 相对同组 median 偏离超过预先配置阈值且有 host-load 证据；
-- P2A/P2B/P4 使用了不属于该 canonical case 的 lookahead、batch、extra core 或 cache state。
+- P2A/P2B/P4 使用了不属于该 canonical case 的 lookahead、batch、helper vCPU 或 cache state；
+- P2B 的 EL0 upcall/save/restore 未形成一一对应，或出现非零 QEMU scheduler/context counter。
 
 invalid case 保留 raw evidence，但不参与聚合。重跑必须生成新 run ID，不能覆盖。
 
@@ -250,6 +261,6 @@ P3 退出必须形成以下证据，而不是只产出曲线：
 
 1. Band S 分离 demand mechanism gain 与 P2A schedule-ahead gain；
 2. Band R 在同一 4-KiB payload 上比较 P2A 与标准 userfaultfd；
-3. Band T 显式计算额外 core、软件改造和自定义硬件状态成本；
+3. Band T 显式计算 helper vCPU、EL0 scheduler、软件改造和自定义 core mechanism 成本；
 4. 每个结论能追溯到 hashes、raw rows、gate 和 valid seed；
 5. 对“何种 L/W/并发下收益转正”给出 break-even 区间，未跨 gate 的结果不外推。
