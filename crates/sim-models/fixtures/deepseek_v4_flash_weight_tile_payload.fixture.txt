@@ -1,0 +1,6 @@
+deepseek-v4-flash fixture weight tile payload
+model_key=deepseek-v4-flash
+layer=7
+expert=42
+quant=iq2_xxs
+role=file-backed-provider-readiness

@@ -269,6 +269,10 @@ pub enum DispatchBackendProfile {
     HostVector,
     TmrbVector,
     HostMatmul,
+    HostGemm,
+    HostQuantizedGemm,
+    HostFp8Gemm,
+    HostFp4Gemm,
     HostEngramContext,
 }
 

@@ -1,8 +1,50 @@
 #!/bin/zsh
 set -euo pipefail
 
+usage() {
+  cat >&2 <<'USAGE'
+usage: build_initramfs.sh [--w5-guest-link-only]
+
+Builds the guest initramfs by default.
+
+Options:
+  --w5-guest-link-only   Link W5 guest binaries and exit. This verifies the
+                         llm_infer / serving_control / mem_service_qwen3
+                         translation units without packing initramfs or
+                         launching QEMU.
+USAGE
+}
+
+W5_GUEST_LINK_ONLY=0
+while (( $# > 0 )); do
+  case "$1" in
+    --w5-guest-link-only)
+      W5_GUEST_LINK_ONLY=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      echo "[build_initramfs] unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# mem_service sources live in the repository's root-level Git submodule.
+# Override MEM_SERVICE_ROOT only to validate another standalone checkout.
+MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../mem_service}"
+if [[ -d "$MEM_SERVICE_ROOT" ]]; then
+  MEM_SERVICE_ROOT="$(cd "$MEM_SERVICE_ROOT" && pwd)"
+fi
+python3 "$SCRIPT_DIR/verify_mem_service_source.py" \
+  --mem-service-root "$MEM_SERVICE_ROOT" \
+  --lock-file "$ROOT_DIR/mem_service.lock"
 OUT_DIR="$ROOT_DIR/out"
 INITRAMFS_DIR="$OUT_DIR/initramfs"
 PROBE_SRC="$ROOT_DIR/probe.c"
@@ -53,39 +95,47 @@ NPU_GSVA_TEST_SRC="$ROOT_DIR/apps/npu_gsva_test/npu_gsva_test.c"
 NPU_GSVA_TEST_BIN="$OUT_DIR/npu_gsva_test"
 SSD_GSVA_TEST_SRC="$ROOT_DIR/apps/ssd_gsva_test/ssd_gsva_test.c"
 SSD_GSVA_TEST_BIN="$OUT_DIR/ssd_gsva_test"
-MEM_SERVICE_CLI_SRC="$ROOT_DIR/apps/mem_service/mem_service.c"
+MEM_SERVICE_CLI_SRC="$MEM_SERVICE_ROOT/apps/mem_service/mem_service.c"
 LLM_INFER_APP_SRC="$ROOT_DIR/apps/llm_infer/llm_infer.c"
 SERVING_CONTROL_APP_SRC="$ROOT_DIR/apps/serving_control/serving_control.c"
 PRETRAINING_CLIENT_APP_SRC="$ROOT_DIR/apps/pretraining_client/pretraining_client.c"
-MEM_SERVICE_SRC="$ROOT_DIR/components/mem_service/mem_service_module.c"
-MEM_SERVICE_CLUSTER_UTILS_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_utils.c"
-MEM_SERVICE_CLUSTER_PAYLOAD_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_payload.c"
-MEM_SERVICE_CLUSTER_READ_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_read.c"
-MEM_SERVICE_CLUSTER_RUNTIME_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_runtime.c"
-MEM_SERVICE_CLUSTER_QUEUE_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_queue.c"
-MEM_SERVICE_CLUSTER_OBSERVE_SRC="$ROOT_DIR/components/mem_service/mem_service_cluster_observe.c"
-MEM_SERVICE_OBMM_OBJECT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_object_flow.c"
-MEM_SERVICE_METADATA_SRC="$ROOT_DIR/components/mem_service/mem_service_metadata.c"
-MEM_SERVICE_DAEMON_SRC="$ROOT_DIR/components/mem_service/mem_service_daemon.c"
-MEM_SERVICE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_client.c"
-MEM_SERVICE_WIRE_CLIENT_SRC="$ROOT_DIR/components/mem_service/mem_service_wire_client.c"
-MEM_SERVICE_KEYS_SRC="$ROOT_DIR/components/mem_service/mem_service_keys.c"
-MEM_SERVICE_OBJECT_REFS_SRC="$ROOT_DIR/components/mem_service/mem_service_object_refs.c"
-MEM_SERVICE_OBMM_OBJECTS_SRC="$ROOT_DIR/components/mem_service/mem_service_obmm_objects.c"
-MEM_SERVICE_GSVA_ACCESS_HDR="$ROOT_DIR/components/mem_service/mem_service_gsva_access.h"
-MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_backend.c"
-MEM_SERVICE_UB_SSD_GSVA_IO_SRC="$ROOT_DIR/components/mem_service/mem_service_ub_ssd_gsva_io.c"
-MEM_SERVICE_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_records.c"
-MEM_SERVICE_QWEN3_RECORDS_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_records.c"
-MEM_SERVICE_QWEN3_RUNTIME_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_runtime.c"
-MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_decode_barrier.c"
-MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_kv_state_flow.c"
-MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_terminal_token_flow.c"
-MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_runtime_range_wait_flow.c"
-MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_runtime_range_publish_flow.c"
-MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_engram_publish_flow.c"
-MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3_engram_wait_flow.c"
-MEM_SERVICE_QWEN3_SRC="$ROOT_DIR/components/mem_service/mem_service_qwen3.c"
+MEM_SERVICE_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_module.c"
+MEM_SERVICE_CLUSTER_UTILS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_cluster_utils.c"
+MEM_SERVICE_CLUSTER_PAYLOAD_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_cluster_payload.c"
+MEM_SERVICE_CLUSTER_READ_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_cluster_read.c"
+MEM_SERVICE_CLUSTER_RUNTIME_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_cluster_runtime.c"
+MEM_SERVICE_CLUSTER_QUEUE_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_cluster_queue.c"
+MEM_SERVICE_CLUSTER_OBSERVE_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_cluster_observe.c"
+MEM_SERVICE_OBMM_OBJECT_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_obmm_object_flow.c"
+MEM_SERVICE_METADATA_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_metadata.c"
+MEM_SERVICE_PROVIDER_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_provider.c"
+MEM_SERVICE_PROVIDER_OBMM_SRC="$MEM_SERVICE_ROOT/components/mem_service/providers/mem_service_provider_obmm.c"
+MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_SRC="$MEM_SERVICE_ROOT/tests/mem_service_obmm_provider_conformance.c"
+MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_BIN="$OUT_DIR/linqu_mem_service_obmm_provider_conformance"
+MEM_SERVICE_DAEMON_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_daemon.c"
+MEM_SERVICE_CLIENT_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_client.c"
+MEM_SERVICE_WIRE_CLIENT_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_wire_client.c"
+MEM_SERVICE_KEYS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_keys.c"
+MEM_SERVICE_OBJECT_REFS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_object_refs.c"
+MEM_SERVICE_OBMM_OBJECTS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_obmm_objects.c"
+MEM_SERVICE_GSVA_ACCESS_HDR="$MEM_SERVICE_ROOT/components/mem_service/mem_service_gsva_access.h"
+MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_ub_ssd_gsva_backend.c"
+MEM_SERVICE_UB_SSD_GSVA_IO_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_ub_ssd_gsva_io.c"
+MEM_SERVICE_RECORDS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_records.c"
+MEM_SERVICE_PROFILE_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_profile.c"
+MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_deepseek_v4_flash.c"
+MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_expert_route_flow.c"
+MEM_SERVICE_EXPERT_CACHE_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_expert_cache.c"
+MEM_SERVICE_QWEN3_RECORDS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_records.c"
+MEM_SERVICE_QWEN3_RUNTIME_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_runtime.c"
+MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_decode_barrier.c"
+MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_kv_state_flow.c"
+MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_terminal_token_flow.c"
+MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_runtime_range_wait_flow.c"
+MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_runtime_range_publish_flow.c"
+MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_engram_publish_flow.c"
+MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_engram_wait_flow.c"
+MEM_SERVICE_QWEN3_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3.c"
 LLM_INFER_SRC="$ROOT_DIR/components/llm_infer/llm_infer.c"
 MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"
 MEM_SERVICE_QWEN3_CLI_BIN="$OUT_DIR/linqu_mem_service_qwen3"
@@ -164,8 +214,11 @@ current_kernel_signature() {
 current_initramfs_signature() {
   local applet=""
   printf 'kernel_head=%s\n' "$(current_kernel_signature)"
+  printf 'mem_service_head=%s\n' \
+    "$(git -C "$MEM_SERVICE_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
   printf 'cc=%s\n' "$AARCH64_LINUX_CC"
   write_signature_line "build_initramfs_script" "$SCRIPT_DIR/build_initramfs.sh"
+  write_signature_line "mem_service_lock" "$ROOT_DIR/mem_service.lock"
   write_signature_line "busybox" "$BUSYBOX"
   write_signature_line "probe_src" "$PROBE_SRC"
   write_signature_line "urma_dp_src" "$URMA_DP_SRC"
@@ -204,6 +257,9 @@ current_initramfs_signature() {
   write_signature_line "mem_service_cluster_observe_src" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC"
   write_signature_line "mem_service_obmm_object_flow_src" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC"
   write_signature_line "mem_service_metadata_src" "$MEM_SERVICE_METADATA_SRC"
+  write_signature_line "mem_service_provider_src" "$MEM_SERVICE_PROVIDER_SRC"
+  write_signature_line "mem_service_provider_obmm_src" "$MEM_SERVICE_PROVIDER_OBMM_SRC"
+  write_signature_line "mem_service_obmm_provider_conformance_src" "$MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_SRC"
   write_signature_line "mem_service_daemon_src" "$MEM_SERVICE_DAEMON_SRC"
   write_signature_line "mem_service_client_src" "$MEM_SERVICE_CLIENT_SRC"
   write_signature_line "mem_service_wire_client_src" "$MEM_SERVICE_WIRE_CLIENT_SRC"
@@ -214,6 +270,10 @@ current_initramfs_signature() {
   write_signature_line "mem_service_ub_ssd_gsva_backend_src" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC"
   write_signature_line "mem_service_ub_ssd_gsva_io_src" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC"
   write_signature_line "mem_service_records_src" "$MEM_SERVICE_RECORDS_SRC"
+  write_signature_line "mem_service_profile_src" "$MEM_SERVICE_PROFILE_SRC"
+  write_signature_line "mem_service_deepseek_v4_flash_src" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC"
+  write_signature_line "mem_service_expert_route_flow_src" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC"
+  write_signature_line "mem_service_expert_cache_src" "$MEM_SERVICE_EXPERT_CACHE_SRC"
   write_signature_line "mem_service_qwen3_records_src" "$MEM_SERVICE_QWEN3_RECORDS_SRC"
   write_signature_line "mem_service_qwen3_runtime_src" "$MEM_SERVICE_QWEN3_RUNTIME_SRC"
   write_signature_line "mem_service_qwen3_decode_barrier_src" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC"
@@ -356,6 +416,87 @@ ensure_busybox_binary() {
   return 1
 }
 
+build_w5_guest_link_check() {
+  local link_dir="$OUT_DIR/w5_guest_link_check"
+  local mem_service_qwen3_link_bin="$link_dir/linqu_mem_service_qwen3.linkcheck"
+  local llm_infer_link_bin="$link_dir/linqu_llm_infer.linkcheck"
+  local serving_control_link_bin="$link_dir/linqu_w5_serving_control.linkcheck"
+  local common_include_args=(
+    -I"$ROOT_DIR"
+    -I"$ROOT_DIR/.."
+    -I"$ROOT_DIR/libs/obmm_queue"
+    -I"$ROOT_DIR/apps/obmm_queue"
+    -I"$MEM_SERVICE_ROOT"
+    -I"$MEM_SERVICE_ROOT/libs/obmm_queue"
+  )
+  local common_mem_service_sources=(
+    "$MEM_SERVICE_SRC"
+    "$MEM_SERVICE_CLUSTER_UTILS_SRC"
+    "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC"
+    "$MEM_SERVICE_CLUSTER_READ_SRC"
+    "$MEM_SERVICE_CLUSTER_RUNTIME_SRC"
+    "$MEM_SERVICE_CLUSTER_QUEUE_SRC"
+    "$MEM_SERVICE_CLUSTER_OBSERVE_SRC"
+    "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC"
+    "$MEM_SERVICE_CLIENT_SRC"
+    "$MEM_SERVICE_WIRE_CLIENT_SRC"
+    "$MEM_SERVICE_METADATA_SRC"
+    "$MEM_SERVICE_PROVIDER_SRC"
+    "$MEM_SERVICE_KEYS_SRC"
+    "$MEM_SERVICE_OBJECT_REFS_SRC"
+    "$MEM_SERVICE_OBMM_OBJECTS_SRC"
+    "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC"
+    "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC"
+    "$MEM_SERVICE_RECORDS_SRC"
+    "$MEM_SERVICE_PROFILE_SRC"
+    "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC"
+    "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC"
+    "$MEM_SERVICE_EXPERT_CACHE_SRC"
+  )
+  local qwen3_flow_sources=(
+    "$MEM_SERVICE_QWEN3_RECORDS_SRC"
+    "$MEM_SERVICE_QWEN3_RUNTIME_SRC"
+    "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC"
+    "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC"
+    "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC"
+    "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC"
+    "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC"
+    "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC"
+    "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC"
+    "$MEM_SERVICE_QWEN3_SRC"
+  )
+
+  mkdir -p "$link_dir"
+  "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra \
+    -DMEM_SERVICE_ENABLE_QWEN3_INSPECT \
+    "${common_include_args[@]}" \
+    "$MEM_SERVICE_CLI_SRC" \
+    "${common_mem_service_sources[@]}" \
+    "$MEM_SERVICE_DAEMON_SRC" \
+    "${qwen3_flow_sources[@]}" \
+    "$LLM_INFER_SRC" \
+    -lm -o "$mem_service_qwen3_link_bin"
+  "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra \
+    "${common_include_args[@]}" \
+    "$LLM_INFER_APP_SRC" \
+    "${common_mem_service_sources[@]}" \
+    "${qwen3_flow_sources[@]}" \
+    "$LLM_INFER_SRC" \
+    -lm -o "$llm_infer_link_bin"
+  "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra \
+    "${common_include_args[@]}" \
+    "$SERVING_CONTROL_APP_SRC" \
+    "${common_mem_service_sources[@]}" \
+    "${qwen3_flow_sources[@]}" \
+    "$LLM_INFER_SRC" \
+    -lm -o "$serving_control_link_bin"
+
+  echo "[build_initramfs] W5 guest link check passed"
+  echo "[build_initramfs]   $mem_service_qwen3_link_bin"
+  echo "[build_initramfs]   $llm_infer_link_bin"
+  echo "[build_initramfs]   $serving_control_link_bin"
+}
+
 resolve_module_path() {
   local explicit_path="$1"
   local module_name="$2"
@@ -410,7 +551,19 @@ link_busybox_applet() {
   ln -sf busybox "$INITRAMFS_DIR/bin/$applet"
 }
 
+if [[ -z "$AARCH64_LINUX_CC" ]]; then
+  echo "AARCH64_LINUX_CC is required" >&2
+  echo "example: export AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc" >&2
+  exit 1
+fi
+
 mkdir -p "$OUT_DIR"
+
+if (( W5_GUEST_LINK_ONLY )); then
+  build_w5_guest_link_check
+  exit 0
+fi
+
 rm -rf "$INITRAMFS_DIR"
 mkdir -p \
   "$INITRAMFS_DIR/bin" \
@@ -419,12 +572,6 @@ mkdir -p \
   "$INITRAMFS_DIR/sys" \
   "$INITRAMFS_DIR/tmp" \
   "$INITRAMFS_DIR/lib/modules"
-
-if [[ -z "$AARCH64_LINUX_CC" ]]; then
-  echo "AARCH64_LINUX_CC is required" >&2
-  echo "example: export AARCH64_LINUX_CC=/path/to/aarch64-*-gnu-gcc" >&2
-  exit 1
-fi
 
 ensure_busybox_binary
 
@@ -458,11 +605,12 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$SSD_TEST_SRC" -o "$SSD_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$NPU_GSVA_TEST_SRC" -o "$NPU_GSVA_TEST_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" "$SSD_GSVA_TEST_SRC" -o "$SSD_GSVA_TEST_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -DMEM_SERVICE_ENABLE_QWEN3_INSPECT -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" "$SERVING_CONTROL_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$SERVING_CONTROL_APP_BIN"
-"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." "$PRETRAINING_CLIENT_APP_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$PRETRAINING_CLIENT_APP_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" -I"$MEM_SERVICE_ROOT" -I"$MEM_SERVICE_ROOT/libs/obmm_queue" "$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$MEM_SERVICE_ROOT" -I"$MEM_SERVICE_ROOT/components/mem_service" -I"$MEM_SERVICE_ROOT/components/mem_service/providers" "$MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_SRC" "$MEM_SERVICE_PROVIDER_OBMM_SRC" "$MEM_SERVICE_PROVIDER_SRC" -o "$MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -DMEM_SERVICE_ENABLE_QWEN3_INSPECT -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" -I"$MEM_SERVICE_ROOT" -I"$MEM_SERVICE_ROOT/libs/obmm_queue" "$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" -I"$MEM_SERVICE_ROOT" -I"$MEM_SERVICE_ROOT/libs/obmm_queue" "$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$ROOT_DIR/libs/obmm_queue" -I"$ROOT_DIR/apps/obmm_queue" -I"$MEM_SERVICE_ROOT" -I"$MEM_SERVICE_ROOT/libs/obmm_queue" "$SERVING_CONTROL_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$SERVING_CONTROL_APP_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR" -I"$ROOT_DIR/.." -I"$MEM_SERVICE_ROOT" -I"$MEM_SERVICE_ROOT/libs/obmm_queue" "$PRETRAINING_CLIENT_APP_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$PRETRAINING_CLIENT_APP_BIN"
 
 if [[ -f "$INIT_SCRIPT_SRC" ]]; then
   cp "$INIT_SCRIPT_SRC" "$INIT_SCRIPT_BIN"
@@ -497,6 +645,7 @@ cp "$SSD_TEST_BIN" "$INITRAMFS_DIR/bin/ssd_test"
 cp "$NPU_GSVA_TEST_BIN" "$INITRAMFS_DIR/bin/npu_gsva_test"
 cp "$SSD_GSVA_TEST_BIN" "$INITRAMFS_DIR/bin/ssd_gsva_test"
 cp "$MEM_SERVICE_CLI_BIN" "$INITRAMFS_DIR/bin/linqu_mem_service"
+cp "$MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_BIN" "$INITRAMFS_DIR/bin/linqu_mem_service_obmm_provider_conformance"
 cp "$MEM_SERVICE_QWEN3_CLI_BIN" "$INITRAMFS_DIR/bin/linqu_mem_service_qwen3"
 cp "$LLM_INFER_APP_BIN" "$INITRAMFS_DIR/bin/linqu_llm_infer"
 cp "$SERVING_CONTROL_APP_BIN" "$INITRAMFS_DIR/bin/linqu_w5_serving_control"
@@ -520,6 +669,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_gsva_coh_test" \
   "$INITRAMFS_DIR/bin/linqu_ub_gsva_lifecycle_test" \
   "$INITRAMFS_DIR/bin/linqu_mem_service" \
+  "$INITRAMFS_DIR/bin/linqu_mem_service_obmm_provider_conformance" \
   "$INITRAMFS_DIR/bin/linqu_mem_service_qwen3" \
   "$INITRAMFS_DIR/bin/linqu_llm_infer" \
   "$INITRAMFS_DIR/bin/linqu_w5_serving_control" \

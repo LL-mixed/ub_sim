@@ -8,10 +8,38 @@ WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 RDINIT="${RDINIT:-/bin/run_app}"
-TOPOLOGY_FILE="${TOPOLOGY_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_eight_node_full_mesh.ini}"
+SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
+case "$SIM_W5_CLUSTER_NODE_COUNT" in
+  2)
+    DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_two_node_v1_extended.ini"
+    DEFAULT_SCENARIO_CONFIG="$WORKSPACE_ROOT/scenarios/mvp_2host_single_domain.yaml"
+    DEFAULT_PORT_NUM=2
+    NODE_IDS=(nodeA nodeB)
+    NODE_IPS=(10.0.0.1 10.0.0.2)
+    ;;
+  3)
+    DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_three_node_full_mesh.ini"
+    DEFAULT_SCENARIO_CONFIG="$WORKSPACE_ROOT/scenarios/mvp_3host_single_domain.yaml"
+    DEFAULT_PORT_NUM=2
+    NODE_IDS=(nodeA nodeB nodeC)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3)
+    ;;
+  8)
+    DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_eight_node_full_mesh.ini"
+    DEFAULT_SCENARIO_CONFIG="$WORKSPACE_ROOT/scenarios/mvp_8host_single_domain.yaml"
+    DEFAULT_PORT_NUM=7
+    NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
+    ;;
+  *)
+    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
+    exit 2
+    ;;
+esac
+TOPOLOGY_FILE="${TOPOLOGY_FILE:-$DEFAULT_TOPOLOGY_FILE}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
-PORT_NUM="${UB_SIM_PORT_NUM:-7}"
+PORT_NUM="${UB_SIM_PORT_NUM:-$DEFAULT_PORT_NUM}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"
 QMP_DIR="${SHARED_DIR}/qmp"
 SERIAL_DIR="${SHARED_DIR}/serial"
@@ -68,7 +96,7 @@ SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH="${SIM_W5_TEST_MEMORY_PREFIX_CACH
 SIM_W5_TEST_MEMORY_GSVA_KV="${SIM_W5_TEST_MEMORY_GSVA_KV:-}"
 SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH="${SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH:-}"
 SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
-SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_8host_single_domain.yaml}"
+SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$DEFAULT_SCENARIO_CONFIG}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
@@ -80,9 +108,6 @@ QEMU_SMP="${QEMU_SMP:-2}"
 CONTROL_LOG="$LOG_DIR/${RUN_ID}_headless8/control.log"
 CLEANUP_SCRIPT="$OUT_DIR/headless_eight_node_cleanup.${RUN_ID}.sh"
 ENV_FILE="${ENV_FILE:-$OUT_DIR/headless_eight_node_env.${RUN_ID}.sh}"
-
-NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
-NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -201,6 +226,7 @@ start_node() {
 
   nohup env \
     UB_FM_NODE_ID="$node_id" \
+    LINQU_UB_NODE_COUNT="$SIM_W5_CLUSTER_NODE_COUNT" \
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
@@ -211,6 +237,7 @@ start_node() {
       SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="$SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST" \
       SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE" \
       SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_W5_FLASH_WEIGHT_CATALOG="${SIM_W5_FLASH_WEIGHT_CATALOG:-}" \
     SIM_W5_RUN_ID="${SIM_W5_RUN_ID:-$RUN_ID}" \
     SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}" \
     SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-}" \
@@ -285,6 +312,7 @@ start_node() {
     SIM_QWEN3_GUEST_ENGRAM_STATE_REF="${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" \
     SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}" \
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}" \
+    SIM_W5_FLASH_WEIGHT_CATALOG="${SIM_W5_FLASH_WEIGHT_CATALOG:-}" \
     SIM_W5_RUN_ID="${SIM_W5_RUN_ID:-$RUN_ID}" \
     SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}" \
     SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-}" \
@@ -387,7 +415,7 @@ fi
 cat > "$CLEANUP_SCRIPT" <<'EOC'
 #!/bin/zsh
 set -euo pipefail
-NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+NODE_IDS=(__NODE_IDS__)
 for node_id in "${NODE_IDS[@]}"; do
   pid_file="__OUT_DIR__/ub_${node_id}.headless.__RUN_ID__.pid"
   if [[ -f "$pid_file" ]]; then
@@ -407,7 +435,7 @@ rm -rf "__RUNTIME_DIR__"
 rmdir "__QMP_DIR__" "__SERIAL_DIR__" "__MON_DIR__" 2>/dev/null || true
 echo "cleaned run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g; s#__NODE_IDS__#'"${(j: :)NODE_IDS}"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 rm -rf "$UB_QEMU_RUNTIME_DIR"
@@ -422,6 +450,7 @@ log "qemu_bin=$QEMU_BIN"
 log "qemu_mem=$QEMU_MEM"
 log "qemu_smp=$QEMU_SMP"
 log "topology=$TOPOLOGY_FILE"
+log "cluster_node_count=$SIM_W5_CLUSTER_NODE_COUNT"
 log "append_extra=$APPEND_EXTRA"
 log "ub_sim_port_num=$PORT_NUM"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
@@ -471,6 +500,7 @@ export RUN_ID='$RUN_ID'
 export RUN_DIR='$(dirname "$CONTROL_LOG")'
 export CLEANUP_SCRIPT='$CLEANUP_SCRIPT'
 export SIM_UAPI_W5_PROFILE='$SIM_UAPI_W5_PROFILE'
+export SIM_W5_CLUSTER_NODE_COUNT='$SIM_W5_CLUSTER_NODE_COUNT'
 export SIM_W5_MEMORY_SERVICE='${SIM_W5_MEMORY_SERVICE:-}'
 export SIM_W5_TEST_MEMORY_DECISION_STORE='${SIM_W5_TEST_MEMORY_DECISION_STORE:-}'
 export SIM_W5_TEST_MEMORY_SHORTPATH_LOOKUP_MODE='${SIM_W5_TEST_MEMORY_SHORTPATH_LOOKUP_MODE:-}'
@@ -517,15 +547,11 @@ export SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH='${SIM_W5_TEST_MEMORY_PREF
 export SIM_W5_TEST_MEMORY_GSVA_KV='${SIM_W5_TEST_MEMORY_GSVA_KV:-}'
 export SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH='${SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH:-}'
 export SIM_W5_SERVING_QUEUE='${SIM_W5_SERVING_QUEUE:-0}'
-export NODEA_SERIAL_SOCKET='$SERIAL_DIR/nodeA.${SOCKET_SUFFIX}.sock'
-export NODEB_SERIAL_SOCKET='$SERIAL_DIR/nodeB.${SOCKET_SUFFIX}.sock'
-export NODEC_SERIAL_SOCKET='$SERIAL_DIR/nodeC.${SOCKET_SUFFIX}.sock'
-export NODED_SERIAL_SOCKET='$SERIAL_DIR/nodeD.${SOCKET_SUFFIX}.sock'
-export NODEE_SERIAL_SOCKET='$SERIAL_DIR/nodeE.${SOCKET_SUFFIX}.sock'
-export NODEF_SERIAL_SOCKET='$SERIAL_DIR/nodeF.${SOCKET_SUFFIX}.sock'
-export NODEG_SERIAL_SOCKET='$SERIAL_DIR/nodeG.${SOCKET_SUFFIX}.sock'
-export NODEH_SERIAL_SOCKET='$SERIAL_DIR/nodeH.${SOCKET_SUFFIX}.sock'
 EOF
+for node_id in "${NODE_IDS[@]}"; do
+  printf "export %s_SERIAL_SOCKET='%s/%s.%s.sock'\n" \
+    "${node_id:u}" "$SERIAL_DIR" "$node_id" "$SOCKET_SUFFIX" >> "$ENV_FILE"
+done
 
 log "env_file=$ENV_FILE"
 log "cleanup=$CLEANUP_SCRIPT"

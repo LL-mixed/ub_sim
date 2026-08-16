@@ -3,8 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# mem_service lives in the repository's root-level Git submodule.
+# Override MEM_SERVICE_ROOT only to validate another standalone checkout.
+MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../mem_service}"
+if [[ -d "$MEM_SERVICE_ROOT" ]]; then
+  MEM_SERVICE_ROOT="$(cd "$MEM_SERVICE_ROOT" && pwd)"
+fi
+python3 "$SCRIPT_DIR/verify_mem_service_source.py" \
+  --mem-service-root "$MEM_SERVICE_ROOT" \
+  --lock-file "$ROOT_DIR/mem_service.lock" >&2
 OUT_DIR="$ROOT_DIR/out"
-MEM_SERVICE_APP_DIR="$ROOT_DIR/apps/mem_service"
+MEM_SERVICE_APP_DIR="$MEM_SERVICE_ROOT/apps/mem_service"
 MEM_SERVICE_HOST_BIN="$MEM_SERVICE_APP_DIR/linqu_mem_service_host"
 
 usage() {
@@ -62,7 +71,7 @@ SIM_W5_MEMORY_PRODUCER_ENTITY="${SIM_W5_MEMORY_PRODUCER_ENTITY:-0}"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-lingqu_memory_service}"
 
 case "$SIM_UAPI_W5_PROFILE" in
-  qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+  qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode|deepseek_v4_flash_decode)
     ;;
   *)
     echo "unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE" >&2

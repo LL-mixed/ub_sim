@@ -7,12 +7,39 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-}"
+SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 TEE_BIN="${TEE_BIN:-/usr/bin/tee}"
+
+case "$SIM_W5_CLUSTER_NODE_COUNT" in
+  2)
+    NODE_IDS=(nodeA nodeB)
+    NODE_IPS=(10.0.0.1 10.0.0.2)
+    DEFAULT_PORT_NUM=2
+    ;;
+  3)
+    NODE_IDS=(nodeA nodeB nodeC)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3)
+    DEFAULT_PORT_NUM=2
+    ;;
+  8)
+    NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
+    DEFAULT_PORT_NUM=7
+    ;;
+  *)
+    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
+    exit 2
+    ;;
+esac
+SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="${SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0}"
 
 w5_profile_default_w4_backend() {
   case "$1" in
     ""|qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
       echo qwen3_dense
+      ;;
+    deepseek_v4_flash_decode)
+      echo deepseek-v4-flash
       ;;
     *)
       echo ""
@@ -68,20 +95,20 @@ if [[ -n "$SIM_UAPI_W5_PROFILE" && -n "${SIM_W5_PROGRESS_INTERVAL_SECS:-}" ]]; t
 fi
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
-PORT_NUM="${UB_SIM_PORT_NUM:-7}"
+PORT_NUM="${UB_SIM_PORT_NUM:-$DEFAULT_PORT_NUM}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-$(w5_profile_default_w4_backend "$SIM_UAPI_W5_PROFILE")}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
-SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
+SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}}"
 SIM_QWEN3_SAMPLER_TOP_K="${SIM_QWEN3_SAMPLER_TOP_K:-1}"
 SIM_QWEN3_SAMPLER_TOP_P_MILLI="${SIM_QWEN3_SAMPLER_TOP_P_MILLI:-1000}"
 SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="${SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI:-1000}"
 SIM_QWEN3_SAMPLER_SEED="${SIM_QWEN3_SAMPLER_SEED:-0}"
 SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-$(w5_profile_default_engram "$SIM_UAPI_W5_PROFILE")}"
 SIM_QWEN3_GUEST_ENGRAM_MODE="${SIM_QWEN3_GUEST_ENGRAM_MODE:-cpu}"
-SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE:-8}"
+SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE="${SIM_QWEN3_GUEST_ENGRAM_OWNER_NODE:-$SIM_W5_CLUSTER_NODE_COUNT}"
 SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE="${SIM_QWEN3_GUEST_ENGRAM_NO_REPEAT_NGRAM_SIZE:-3}"
 SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI="${SIM_QWEN3_GUEST_ENGRAM_REPETITION_PENALTY_MILLI:-1000}"
 SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW="${SIM_QWEN3_GUEST_ENGRAM_HISTORY_WINDOW:-0}"
@@ -97,6 +124,8 @@ SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF="${SIM_QWEN3_GUEST_ENGRAM_CONTEXT
 SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="${SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR:-}"
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="${SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT:-}"
 SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT"
+SIM_W5_FLASH_WEIGHT_CATALOG="${SIM_W5_FLASH_WEIGHT_CATALOG:-${SIM_W5_TEST_FLASH_WEIGHT_CATALOG:-}}"
+SIM_W5_FLASH_WEIGHT_CATALOG_GUEST="$SIM_W5_FLASH_WEIGHT_CATALOG"
 SIM_W5_MEMORY_SERVICE="${SIM_W5_MEMORY_SERVICE:-}"
 SIM_W5_SERVING_REQUEST_ID="${SIM_W5_SERVING_REQUEST_ID:-}"
 SIM_W5_SERVING_REQUESTS_FILE="${SIM_W5_SERVING_REQUESTS_FILE:-}"
@@ -170,11 +199,9 @@ SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="${SIM_QWEN3_DECODE_ROUND_BARRIER_TIME
 SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="${SIM_QWEN3_RUNTIME_RANGE_WAIT_MS:-}"
 SIM_W4_UAPI_COMPLETION_TIMEOUT_MS="${SIM_W4_UAPI_COMPLETION_TIMEOUT_MS:-900000}"
 SIM_W4_RESOURCE_ASSERTIONS="${SIM_W4_RESOURCE_ASSERTIONS:-0}"
-FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|\\[w4_guest\\] fail"
+FATAL_GUEST_PATTERN="rcu_preempt|RCU grace-period|self-detected stall|detected stalls on CPUs/tasks|rx msg plen invalid|poller rx msg failed, ret=-22|timeout waiting completions|qwen3 .*missing|qwen3 .*mismatch|dispatch payload mismatch|linqu_llm_infer failed|Kernel panic|\\[w4_guest\\] fail"
 FATAL_QEMU_PATTERN="SIM_DEC: cpu read failed|ub_link write failed|bounded write timed out|rx msg plen invalid|poller rx msg failed"
 
-NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
-NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
 ALL_IPS_CSV="${(j:,:)NODE_IPS}"
 
 stage_qwen3_object_service_snapshot() {
@@ -203,6 +230,24 @@ stage_qwen3_object_service_snapshot() {
   cp "$payload_index_src" "$payload_index_guest_bin"
   SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$payload_index_guest_json"
   trace "prepare: staged qwen3 Object Service payload index source=$payload_index_src guest=$payload_index_guest_bin"
+}
+
+stage_flash_weight_catalog() {
+  local catalog_path="$SIM_W5_FLASH_WEIGHT_CATALOG"
+  local catalog_guest_path="/tmp/deepseek_v4_flash_weight.catalog"
+  local catalog_guest_file="$RUN_INITRAMFS_DIR$catalog_guest_path"
+
+  if [[ -z "$catalog_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$catalog_path" ]]; then
+    trace "FAIL: DeepSeek V4 Flash weight catalog is missing path=$catalog_path"
+    return 1
+  fi
+  mkdir -p "$(dirname "$catalog_guest_file")"
+  cp "$catalog_path" "$catalog_guest_file"
+  SIM_W5_FLASH_WEIGHT_CATALOG_GUEST="$catalog_guest_path"
+  trace "prepare: staged DeepSeek V4 Flash weight catalog source=$catalog_path guest=$catalog_guest_path"
 }
 
 stage_w5_memory_shortpath_stream() {
@@ -310,7 +355,17 @@ append_kernel_arg_if_missing() {
 
 append_kernel_arg_if_missing "pmd_mapping=25%"
 append_kernel_arg_if_missing "obmm.skip_cache_maintain=1"
-append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"
+case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
+    # The synchronous simulator backend intentionally holds the only guest
+    # vCPU while a real simpler range executes. Operation deadlines still
+    # detect a hung dispatch; an RCU wall-clock warning is not actionable here.
+    append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_suppress=1"
+    ;;
+  *)
+    append_kernel_arg_if_missing "rcupdate.rcu_cpu_stall_timeout=300"
+    ;;
+esac
 
 trace() {
   local msg="$1"
@@ -320,6 +375,20 @@ trace() {
 is_qwen3_dense_profile() {
   local profile="$1"
   [[ "$profile" == "qwen3_dense_reference" || "$profile" == "qwen3_dense" ]]
+}
+
+is_deepseek_v4_flash_profile() {
+  local profile="$1"
+  [[ "$profile" == "deepseek-v4-flash" ||
+     "$profile" == "deepseek_v4_flash" ||
+     "$profile" == "deepseek-v4-flash-simpler" ||
+     "$profile" == "deepseek_v4_flash_simpler" ||
+     "$profile" == "deepseek-v4-flash-official" ||
+     "$profile" == "deepseek_v4_flash_official" ]]
+}
+
+is_model_range_profile() {
+  is_qwen3_dense_profile "$1" || is_deepseek_v4_flash_profile "$1"
 }
 
 validate_w5_profile_runtime() {
@@ -339,6 +408,12 @@ validate_w5_profile_runtime() {
         return 1
       fi
       ;;
+    deepseek_v4_flash_decode)
+      if ! is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+        trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires DeepSeek V4 Flash backend, got SIM_UAPI_W4_CHIPBACKEND_PROFILE=$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
+        return 1
+      fi
+      ;;
     *)
       trace "FAIL: unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE"
       return 1
@@ -352,7 +427,7 @@ validate_w5_profile_runtime() {
         return 1
       fi
       ;;
-    qwen3_0_6b_decode|qwen3_14b_decode)
+    qwen3_0_6b_decode|qwen3_14b_decode|deepseek_v4_flash_decode)
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then
         trace "FAIL: SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE requires SIM_QWEN3_GUEST_ENGRAM=0"
         return 1
@@ -702,10 +777,10 @@ fi
 export LINQU_UB_ROLE
 export LINQU_UB_LOCAL_IP
 export LINQU_UB_ALL_IPS="$ALL_IPS_CSV"
-export LINQU_UB_NODE_COUNT=8
+export LINQU_UB_NODE_COUNT=$SIM_W5_CLUSTER_NODE_COUNT
 export LINQU_MEM_SERVICE_CLUSTER=1
 export LINQU_W4_REQUIRE_UAPI_RESOURCE=1
-export SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="${SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0}"
+export SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="$SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION"
 export SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE"
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_W5_RUN_ID="$RUN_ID_BASE"
@@ -726,7 +801,7 @@ export SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES="${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTE
 export SIM_QWEN3_DENSE_KV_STATE_BYTES="${SIM_QWEN3_DENSE_KV_STATE_BYTES:-}"
 export SIM_QWEN3_GUEST_DECODE_STEP=0
 export SIM_QWEN3_GUEST_DECODE_STEPS="$SIM_QWEN3_GUEST_DECODE_STEPS"
-export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+export SIM_LLM_INFER_PROMPT_TOKEN_IDS="$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
 export SIM_QWEN3_SAMPLER_TOP_K="$SIM_QWEN3_SAMPLER_TOP_K"
 export SIM_QWEN3_SAMPLER_TOP_P_MILLI="$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
 export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
@@ -746,6 +821,7 @@ export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="$SIM_QWEN3_GUEST_ENGRAM_STATE_REF"
 export SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF="$SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF"
 export SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR"
 export SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST"
+export SIM_W5_FLASH_WEIGHT_CATALOG="$SIM_W5_FLASH_WEIGHT_CATALOG_GUEST"
 export SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE"
 export SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID"
 export SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE_GUEST"
@@ -809,7 +885,7 @@ export SIM_W4_RESOURCE_ASSERTIONS="$SIM_W4_RESOURCE_ASSERTIONS"
 
 DEFAULT_SIM_W5_RUN_ID="\$SIM_W5_RUN_ID"
 DEFAULT_SIM_QWEN3_GUEST_DECODE_STEPS="\$SIM_QWEN3_GUEST_DECODE_STEPS"
-DEFAULT_SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+DEFAULT_SIM_LLM_INFER_PROMPT_TOKEN_IDS="\$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
 DEFAULT_SIM_QWEN3_SAMPLER_TOP_K="\$SIM_QWEN3_SAMPLER_TOP_K"
 DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$SIM_QWEN3_SAMPLER_TOP_P_MILLI"
 DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
@@ -839,7 +915,7 @@ reset_serving_request_env() {
   SIM_W5_RUN_ID="\$DEFAULT_SIM_W5_RUN_ID"
   SIM_W5_SERVING_REQUEST_ID=""
   SIM_QWEN3_GUEST_DECODE_STEPS="\$DEFAULT_SIM_QWEN3_GUEST_DECODE_STEPS"
-  SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$DEFAULT_SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+  SIM_LLM_INFER_PROMPT_TOKEN_IDS="\$DEFAULT_SIM_LLM_INFER_PROMPT_TOKEN_IDS"
   SIM_QWEN3_SAMPLER_TOP_K="\$DEFAULT_SIM_QWEN3_SAMPLER_TOP_K"
   SIM_QWEN3_SAMPLER_TOP_P_MILLI="\$DEFAULT_SIM_QWEN3_SAMPLER_TOP_P_MILLI"
   SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI="\$DEFAULT_SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI"
@@ -871,7 +947,7 @@ apply_serving_request_line() {
         SIM_W5_SERVING_REQUEST_ID="\$value"
         ;;
       prompt_token_ids)
-        SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS="\$value"
+        SIM_LLM_INFER_PROMPT_TOKEN_IDS="\$value"
         ;;
       decode_steps)
         SIM_QWEN3_GUEST_DECODE_STEPS="\$value"
@@ -901,7 +977,7 @@ apply_serving_request_line() {
     log "FAIL: serving request missing request_id"
     return 1
   fi
-  if ! is_token_csv "\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"; then
+  if ! is_token_csv "\$SIM_LLM_INFER_PROMPT_TOKEN_IDS"; then
     log "FAIL: serving request has invalid prompt_token_ids request_id=\$SIM_W5_SERVING_REQUEST_ID"
     return 1
   fi
@@ -921,7 +997,7 @@ apply_serving_request_line() {
   export SIM_W5_RUN_ID
   export SIM_W5_SERVING_REQUEST_ID
   export SIM_QWEN3_GUEST_DECODE_STEPS
-  export SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS
+  export SIM_LLM_INFER_PROMPT_TOKEN_IDS
   export SIM_QWEN3_SAMPLER_TOP_K
   export SIM_QWEN3_SAMPLER_TOP_P_MILLI
   export SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI
@@ -996,7 +1072,7 @@ run_serving_requests_file() {
     if ! publish_serving_request_line_to_workers "\$line" "\$request_index"; then
       return 1
     fi
-    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
+    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_LLM_INFER_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
     run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
@@ -1037,7 +1113,7 @@ run_serving_stdin_queue() {
     if ! publish_serving_request_line_to_workers "\$line" "\$request_index"; then
       return 1
     fi
-    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
+    log "serving_entry request_start index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID entry=nodeA role=\$LINQU_UB_ROLE decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_LLM_INFER_PROMPT_TOKEN_IDS run_id=\$SIM_W5_RUN_ID"
     run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
@@ -1077,7 +1153,7 @@ run_serving_nodea_worker_queue() {
     if ! apply_serving_request_line "\$line"; then
       return 1
     fi
-    log "serving_entry worker_received index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS"
+    log "serving_entry worker_received index=\$request_index request_id=\$SIM_W5_SERVING_REQUEST_ID role=\$LINQU_UB_ROLE source=nodeA transport=obmm_spsc decode_steps=\$SIM_QWEN3_GUEST_DECODE_STEPS prompt_token_ids=\$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
     run_llm_infer_once "\$request_index" "\$request_step_base"
     rc=\$?
     if [ "\$rc" != "0" ]; then
@@ -1120,6 +1196,7 @@ build_w4_initramfs() {
     gzip -dc "$base_initramfs" | cpio -id --quiet
   )
   stage_qwen3_object_service_snapshot
+  stage_flash_weight_catalog
   stage_w5_memory_shortpath_stream
   stage_w5_memory_shortpath_kv_stream
   stage_w5_memory_prefix_cache_kv_stream
@@ -1240,6 +1317,9 @@ validate_w5_boundary_observation_summary() {
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
+  if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    return 0
+  fi
   if [[ ! -f "$RUN_SUMMARY_FILE" ]]; then
     trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
     return 1
@@ -1258,7 +1338,7 @@ validate_w5_boundary_observation_summary() {
         trace "FAIL: W5 shortpath timing record counts are incomplete expected_active=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_idle=${idle_expected} path=$RUN_SUMMARY_FILE"
         return 1
       fi
-      for node_id in nodeB nodeC nodeD nodeE nodeF nodeG nodeH; do
+      for node_id in "${NODE_IDS[@]:1}"; do
         if ! rg -q "timing_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
           trace "FAIL: W5 shortpath downstream timing is not idle-only node=$node_id path=$RUN_SUMMARY_FILE"
           return 1
@@ -1376,6 +1456,14 @@ validate_w5_artifact_sizes() {
   if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
     return 0
   fi
+  if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    validate_w5_artifact_file_size \
+      "${SIM_W5_FLASH_WEIGHT_CATALOG:-}" \
+      "flash_weight_catalog" \
+      67108864 \
+      1 || return 1
+    return 0
+  fi
   if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
     shortpath_required=0
   fi
@@ -1466,9 +1554,10 @@ run_w5_artifact_size_validation_cli() {
 validate_node_log() {
   local node_id="$1"
   local log_file="$2"
+  local qemu_log="$RUN_DIR/${node_id}_qemu.log"
   local expected_dispatch_word="0x41a0000041a00000"
-  local engram_candidates_owner_node="8"
-  local terminal_publish_node="8"
+  local engram_candidates_owner_node="$SIM_W5_CLUSTER_NODE_COUNT"
+  local terminal_publish_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local idx owner_role
   local remote_idx
 
@@ -1476,9 +1565,11 @@ validate_node_log() {
     expected_dispatch_word="0x3f8000003f800000"
   elif is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     expected_dispatch_word="0x[0-9a-f]+"
+  elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    expected_dispatch_word="0x0000000000000000"
   fi
   idx="$(node_index "$node_id")"
-  remote_idx=$((idx % 8 + 1))
+  remote_idx=$((idx % SIM_W5_CLUSTER_NODE_COUNT + 1))
 
   if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && w5_shortpath_execution_armed; then
     if (( idx > 1 )); then
@@ -1516,8 +1607,8 @@ validate_node_log() {
 
   assert_log_has "$log_file" "\\[w4_guest\\] stage obmm_kvcache_path=ready" "$node_id obmm kvcache backing" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage db_cluster_mode=resource_backed_uapi" "$node_id db cluster resource-backed mode" || return 1
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
-    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_cluster_runtime_bootstrap local=node${idx} nodes=8 backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id explicit obmm cluster runtime bootstrap" || return 1
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_cluster_runtime_bootstrap local=node${idx} nodes=$SIM_W5_CLUSTER_NODE_COUNT backing=obmm_pool metadata=lingqu_object_service queue=obmm_spsc status=ok" "$node_id explicit obmm cluster runtime bootstrap" || return 1
   fi
   if [[ "$SIM_W4_RESOURCE_ASSERTIONS" == "1" ]]; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage db_service_cluster=resource_backed_assertions_(ok|skipped) nodes=8 .*" "$node_id resource-backed db cluster assertions" || return 1
@@ -1550,7 +1641,7 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_db_descriptor key=block/w4-${node_id}-block-1 bytes=[1-9][0-9]* role=aux_block" "$node_id uapi kvcache aux db descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ writes=1 reads=1" "$node_id uapi kvcache block descriptor" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_block_descriptor block=w4-${node_id}-block-1 segment=[0-9]+ writes=1 reads=1 role=aux_block_boundary" "$node_id uapi kvcache aux block descriptor" || return 1
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_dispatch_descriptor node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) segment=[0-9]+ task_id=31 object_ref_table_offset=0x[0-9a-f]+ object_ref_count=[0-9]+ source=db_metadata status=ok" "$node_id qwen3 range dispatch descriptor" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_chipbackend_dispatch_descriptor block=w4-${node_id}-block-0 segment=[0-9]+ task_id=31" "$node_id uapi chipbackend descriptor" || return 1
@@ -1614,9 +1705,36 @@ validate_node_log() {
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 logits sampling table skipped" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id qwen3 token text table skipped" || return 1
     fi
+  elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    local expected_kv_restores=$((SIM_QWEN3_GUEST_DECODE_STEPS - 1))
+
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=43 hidden_bytes=[1-9][0-9]* source=dispatch_task output=completion status=ok" "$node_id DeepSeek range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=43 hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[1-9][0-9]* .*kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id DeepSeek range runtime forward" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek range forward per step" || return 1
+    if (( idx > 1 )); then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_runtime_input_loaded node=${idx} step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) producer=node$((idx - 1)) kind=[1-9][0-9]* bytes=[1-9][0-9]* checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref transport=gsva materialize=uapi_segment status=ok" "$node_id DeepSeek GSVA runtime input" || return 1
+    fi
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_runtime_output_publish local=node${idx} step=[0-9]+ .*layers=\\[[0-9]+,[0-9]+\\) .*status=ok" "$node_id DeepSeek runtime output publish" || return 1
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/deepseek-v4-flash(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ .*status=ok" "$node_id DeepSeek KV publish" || return 1
+    assert_log_count "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_kv_state_publish local=node${idx} .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek KV publish per step" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_layer_kv_restored node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ source=mem_service target=uapi_object_ref materialize=object_ref status=ok" "$expected_kv_restores" "$node_id DeepSeek KV restore per decode continuation" || return 1
+    if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek-v4-flash-simpler" ||
+          "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek_v4_flash_simpler" ||
+          "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek-v4-flash-official" ||
+          "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "deepseek_v4_flash_official" ]]; then
+      assert_log_count "$qemu_log" "deepseek-v4-flash-real-range-runtime: engine=simpler node=$((idx - 1)) nodes=$SIM_W5_CLUSTER_NODE_COUNT layers=\\[[0-9]+,[0-9]+\\) terminal_owner=[01] step=[0-9]+ history_tokens=[1-9][0-9]* executed_tokens=[1-9][0-9]* position=[0-9]+ hidden_bytes=[1-9][0-9]* kv_bytes=[1-9][0-9]* routed_layers=[1-9][0-9]* routed_expert_bytes=[1-9][0-9]* route_checksum=0x[0-9a-f]*[1-9a-f][0-9a-f]* .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek real GGUF MoE execution per step" || return 1
+    fi
+    if (( idx == terminal_publish_node )); then
+      assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} step=[0-9]+ .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek streamed token per step" || return 1
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=1 .*status=ok" "$node_id DeepSeek logits sampling table" || return 1
+    else
+      assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) terminal_owner=0 status=skipped" "$node_id DeepSeek logits sampling skipped" || return 1
+    fi
   fi
   assert_log_has "$log_file" "\\[w4_guest\\] completion_sources chipbackend=[1-9][0-9]* shmem=[2-9][0-9]* dfs=[2-9][0-9]* db=[2-9][0-9]* block=[2-9][0-9]* guest_uapi=[0-9]+" "$node_id completion source coverage" || return 1
-  if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=[1-9][0-9]* retryable=[0-9]+ fatal=0" "$node_id completion status" || return 1
   else
     assert_log_has "$log_file" "\\[w4_guest\\] completion_status success=15 retryable=0 fatal=0" "$node_id completion status" || return 1
@@ -1737,13 +1855,17 @@ prepare_environment() {
   validate_w5_profile_runtime || return 1
   resolve_w5_serving_requests_config || return 1
   validate_qwen3_engram_context_refs || return 1
-  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+  if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     if [[ -z "$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS" ]]; then
       SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS="$((APP_WAIT_SECS * 1000))"
     fi
     if [[ -z "$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS" ]]; then
       SIM_QWEN3_RUNTIME_RANGE_WAIT_MS="$((APP_WAIT_SECS * ${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS} * 1000))"
     fi
+    trace "prepare: model range decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
+    trace "prepare: model range runtime wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
+  fi
+  if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
     trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
     trace "prepare: qwen3 runtime range wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
@@ -1790,6 +1912,8 @@ prepare_environment() {
     SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR="$SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR" \
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT" \
     SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST="$SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT_GUEST" \
+    SIM_W5_FLASH_WEIGHT_CATALOG="$SIM_W5_FLASH_WEIGHT_CATALOG" \
+    SIM_W5_FLASH_WEIGHT_CATALOG_GUEST="$SIM_W5_FLASH_WEIGHT_CATALOG_GUEST" \
     SIM_W5_MEMORY_SERVICE="$SIM_W5_MEMORY_SERVICE" \
     SIM_W5_SERVING_REQUEST_ID="$SIM_W5_SERVING_REQUEST_ID" \
     SIM_W5_SERVING_REQUESTS_FILE="$SIM_W5_SERVING_REQUESTS_FILE" \
@@ -1890,9 +2014,9 @@ prepare_environment() {
     fi
   done
   if [[ "$SIM_W5_SERVING_QUEUE" == "1" ]]; then
-    trace "W5 serving entry ready for all eight nodes env_file=$env_file"
+    trace "W5 serving entry ready for all $SIM_W5_CLUSTER_NODE_COUNT nodes env_file=$env_file"
   else
-    trace "initramfs runner gate ok for all eight nodes"
+    trace "initramfs runner gate ok for all $SIM_W5_CLUSTER_NODE_COUNT nodes"
   fi
   return 0
 }
@@ -1957,9 +2081,9 @@ main() {
 
   if ! run_w4_app 0; then
     if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
-      trace "FAIL: eight-node w5 inference cluster validation failed profile=$SIM_UAPI_W5_PROFILE"
+      trace "FAIL: W5 inference cluster validation failed nodes=$SIM_W5_CLUSTER_NODE_COUNT profile=$SIM_UAPI_W5_PROFILE"
     else
-      trace "FAIL: eight-node w4 guest resource-backed uapi/chipbackend service coverage validation failed"
+      trace "FAIL: W4 guest resource-backed uapi/chipbackend service coverage validation failed nodes=$SIM_W5_CLUSTER_NODE_COUNT"
     fi
     [[ -n "${CLEANUP_SCRIPT:-}" ]] && cleanup_headless_env "$CLEANUP_SCRIPT"
     exit 1
@@ -1985,11 +2109,11 @@ main() {
       exit 1
     fi
     if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
-      trace "PASS: eight-node w5 inference cluster profile=$SIM_UAPI_W5_PROFILE"
-      echo "eight-node w5 inference cluster validation passed"
+      trace "PASS: W5 inference cluster nodes=$SIM_W5_CLUSTER_NODE_COUNT profile=$SIM_UAPI_W5_PROFILE"
+      echo "$SIM_W5_CLUSTER_NODE_COUNT-node W5 inference cluster validation passed"
     else
-      trace "PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated"
-      echo "eight-node w4 guest validation passed"
+      trace "PASS: W4 guest resource-backed uapi/chipbackend service coverage validated nodes=$SIM_W5_CLUSTER_NODE_COUNT"
+      echo "$SIM_W5_CLUSTER_NODE_COUNT-node W4 guest validation passed"
     fi
   fi
 

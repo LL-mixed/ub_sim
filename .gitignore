@@ -13,9 +13,7 @@ guest-linux/kernel_ub/
 guest-linux/aarch64/apps/obmm_coh_test/obmm_coh_test
 guest-linux/aarch64/apps/obmm_import_stress/obmm_import_stress
 guest-linux/aarch64/apps/llm_infer/linqu_llm_infer
-guest-linux/aarch64/apps/mem_service/linqu_mem_service
-guest-linux/aarch64/apps/mem_service/linqu_mem_service_qwen3
-guest-linux/aarch64/apps/mem_service/linqu_mem_service_host
-guest-linux/aarch64/apps/mem_service/linqu_mem_service_host.dSYM/
+guest-linux/aarch64/apps/pretraining_client/linqu_pretraining_client
+guest-linux/aarch64/apps/serving_control/linqu_w5_serving_control
 guest-linux/aarch64/tests/__pycache__/
 guest-linux/aarch64/scripts/__pycache__/

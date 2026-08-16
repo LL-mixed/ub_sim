@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--steps N] [--requests FILE] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|8] [--steps N] [--model PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -23,13 +23,17 @@ USAGE
 }
 
 PRINT_ENV=0
+READINESS_ONLY=0
 VALIDATE_ONLY=0
 SERVE_QUEUE=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
+NODES_OVERRIDE=""
 KEEP_LATEST_OVERRIDE=""
 REQUESTS_OVERRIDE=""
 SERVE_REQUESTS_OVERRIDE=""
+FLASH_PAYLOAD_DIR_OVERRIDE=""
+MODEL_OVERRIDE=""
 NODEA_INGRESS_OVERRIDE=0
 GSVA_KV_OVERRIDE=0
 REQUIRE_PREFIX_CACHE_OVERRIDE=0
@@ -40,6 +44,10 @@ while (( $# > 0 )); do
   case "$1" in
     --print-env)
       PRINT_ENV=1
+      shift
+      ;;
+    --readiness-only)
+      READINESS_ONLY=1
       shift
       ;;
     --validate-only)
@@ -117,6 +125,32 @@ while (( $# > 0 )); do
       STEPS_OVERRIDE="${1#--steps=}"
       shift
       ;;
+    --nodes)
+      if (( $# < 2 )); then
+        echo "--nodes requires a value" >&2
+        usage
+        exit 2
+      fi
+      NODES_OVERRIDE="$2"
+      shift 2
+      ;;
+    --nodes=*)
+      NODES_OVERRIDE="${1#--nodes=}"
+      shift
+      ;;
+    --model)
+      if (( $# < 2 )); then
+        echo "--model requires a value" >&2
+        usage
+        exit 2
+      fi
+      MODEL_OVERRIDE="$2"
+      shift 2
+      ;;
+    --model=*)
+      MODEL_OVERRIDE="${1#--model=}"
+      shift
+      ;;
     --requests)
       if (( $# < 2 )); then
         echo "--requests requires a value" >&2
@@ -128,6 +162,19 @@ while (( $# > 0 )); do
       ;;
     --requests=*)
       REQUESTS_OVERRIDE="${1#--requests=}"
+      shift
+      ;;
+    --flash-payload-dir)
+      if (( $# < 2 )); then
+        echo "--flash-payload-dir requires a value" >&2
+        usage
+        exit 2
+      fi
+      FLASH_PAYLOAD_DIR_OVERRIDE="$2"
+      shift 2
+      ;;
+    --flash-payload-dir=*)
+      FLASH_PAYLOAD_DIR_OVERRIDE="${1#--flash-payload-dir=}"
       shift
       ;;
     -h|--help)
@@ -176,6 +223,16 @@ fi
 set -a
 source "$CONFIG_PATH"
 set +a
+
+if [[ -n "$MODEL_OVERRIDE" ]]; then
+  if [[ "$MODEL_OVERRIDE" != /* ]]; then
+    MODEL_OVERRIDE="$PWD/$MODEL_OVERRIDE"
+  fi
+  export SIM_DEEPSEEK_V4_FLASH="$MODEL_OVERRIDE"
+elif [[ -n "${SIM_DEEPSEEK_V4_FLASH:-}" && "$SIM_DEEPSEEK_V4_FLASH" != /* ]]; then
+  config_dir="$(cd "$(dirname "$CONFIG_PATH")" && pwd)"
+  export SIM_DEEPSEEK_V4_FLASH="$config_dir/$SIM_DEEPSEEK_V4_FLASH"
+fi
 
 reject_deprecated_w5_env_var() {
   local old_name="$1"
@@ -227,6 +284,18 @@ if [[ -n "$STEPS_OVERRIDE" ]]; then
   fi
   export SIM_QWEN3_GUEST_DECODE_STEPS="$STEPS_OVERRIDE"
 fi
+if [[ -n "$NODES_OVERRIDE" ]]; then
+  case "$NODES_OVERRIDE" in
+    2|3|8)
+      export SIM_W5_CLUSTER_NODE_COUNT="$NODES_OVERRIDE"
+      ;;
+    *)
+      echo "--nodes must be 2, 3, or 8: $NODES_OVERRIDE" >&2
+      exit 2
+      ;;
+  esac
+fi
+export SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 if [[ -n "$KEEP_LATEST_OVERRIDE" ]]; then
   if [[ ! "$KEEP_LATEST_OVERRIDE" =~ '^[0-9]+$' ]]; then
     echo "--keep-latest must be a non-negative integer: $KEEP_LATEST_OVERRIDE" >&2
@@ -295,6 +364,31 @@ context_guard_requires() {
   esac
 }
 
+is_deepseek_v4_flash_w5_profile() {
+  [[ "${1:-}" == "deepseek_v4_flash_decode" ]]
+}
+
+detect_w5_aarch64_linux_cc() {
+  emulate -L zsh
+  setopt null_glob
+  local cc
+  if [[ -n "${AARCH64_LINUX_CC:-}" ]]; then
+    echo "$AARCH64_LINUX_CC"
+    return 0
+  fi
+  for cc in aarch64-*-gnu-gcc /usr/bin/aarch64-*-gnu-gcc /opt/homebrew/bin/aarch64-*-gnu-gcc /opt/local/bin/aarch64-*-gnu-gcc; do
+    if command -v "$cc" >/dev/null 2>&1; then
+      command -v "$cc"
+      return 0
+    fi
+    if [[ -x "$cc" ]]; then
+      echo "$cc"
+      return 0
+    fi
+  done
+  echo ""
+}
+
 print_env_section() {
   printf '# %s\n' "$1"
 }
@@ -309,6 +403,7 @@ print_w5_effective_env() {
   print_env_section "runtime"
   print_env_value RUN_ID "${RUN_ID:-}"
   print_env_value SIM_UAPI_W5_PROFILE "${SIM_UAPI_W5_PROFILE:-}"
+  print_env_value SIM_W5_CLUSTER_NODE_COUNT "${SIM_W5_CLUSTER_NODE_COUNT:-8}"
   print_env_value SIM_QWEN3_GUEST_DECODE_STEPS "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   print_env_value SIM_QWEN3_DENSE_WEIGHTS_PATH "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   print_env_value SIM_QWEN3_GUEST_ENGRAM "${SIM_QWEN3_GUEST_ENGRAM:-}"
@@ -318,7 +413,14 @@ print_w5_effective_env() {
   print_env_value SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE "${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-}"
   print_env_value SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"
 
+  print_env_section "model"
+  print_env_value SIM_UAPI_W4_CHIPBACKEND_PROFILE "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
+  print_env_value SIM_DEEPSEEK_V4_FLASH "${SIM_DEEPSEEK_V4_FLASH:-}"
+  print_env_value SIM_W5_FLASH_WEIGHT_CATALOG "${SIM_W5_FLASH_WEIGHT_CATALOG:-}"
+
   print_env_section "serving"
+  print_env_value SIM_LLM_INFER_PROMPT "${SIM_LLM_INFER_PROMPT:-}"
+  print_env_value SIM_LLM_INFER_PROMPT_TOKEN_IDS "${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-}"
   print_env_value SIM_W5_SERVING_REQUESTS_FILE "${SIM_W5_SERVING_REQUESTS_FILE:-}"
   print_env_value SIM_W5_SERVING_QUEUE "${SIM_W5_SERVING_QUEUE:-0}"
   print_env_value SIM_W5_SERVING_INGRESS "${SIM_W5_SERVING_INGRESS:-cluster}"
@@ -369,12 +471,21 @@ validate_w5_cluster_config() {
   local keep_latest="${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
   local max_prune_candidates="${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
+  local cluster_node_count="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 
   case "$profile" in
-    qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+    qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode|deepseek_v4_flash_decode)
       ;;
     *)
       echo "unsupported SIM_UAPI_W5_PROFILE=$profile" >&2
+      return 2
+      ;;
+  esac
+  case "$cluster_node_count" in
+    2|3|8)
+      ;;
+    *)
+      echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $cluster_node_count" >&2
       return 2
       ;;
   esac
@@ -403,9 +514,24 @@ validate_w5_cluster_config() {
     echo "hint: remove RUN_ID from $CONFIG_PATH, or set SIM_W5_ALLOW_FIXED_RUN_ID=1 after manually cleaning the run directory" >&2
     return 2
   fi
-  if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
+  if ! is_deepseek_v4_flash_w5_profile "$profile" && [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
     echo "W5 cluster config requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     return 2
+  fi
+  if is_deepseek_v4_flash_w5_profile "$profile" &&
+     [[ -n "${SIM_DEEPSEEK_V4_FLASH:-}" ]] &&
+     [[ ! -f "$SIM_DEEPSEEK_V4_FLASH" && ! -d "$SIM_DEEPSEEK_V4_FLASH" ]]; then
+    echo "SIM_DEEPSEEK_V4_FLASH model source is missing: $SIM_DEEPSEEK_V4_FLASH" >&2
+    return 2
+  fi
+  if [[ "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek-v4-flash-official" ||
+        "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek_v4_flash_official" ]]; then
+    if [[ ! -d "${SIM_DEEPSEEK_V4_FLASH:-}" ||
+          ! -f "${SIM_DEEPSEEK_V4_FLASH:-}/config.json" ||
+          ! -f "${SIM_DEEPSEEK_V4_FLASH:-}/model.safetensors.index.json" ]]; then
+      echo "official DeepSeek profile requires a checkpoint directory with config.json and model.safetensors.index.json: ${SIM_DEEPSEEK_V4_FLASH:-unset}" >&2
+      return 2
+    fi
   fi
   if bool_enabled "${SIM_W5_SERVING_QUEUE:-0}" &&
      { bool_enabled "${SIM_W5_TEST_POST_RUN_PRUNE:-0}" || bool_enabled "${SIM_W5_TEST_POST_RUN_HEALTH:-0}"; }; then
@@ -458,7 +584,7 @@ validate_w5_cluster_config() {
       return 2
     fi
   fi
-  if [[ ! -d "$SIM_QWEN3_DENSE_WEIGHTS_PATH" ]]; then
+  if ! is_deepseek_v4_flash_w5_profile "$profile" && [[ ! -d "$SIM_QWEN3_DENSE_WEIGHTS_PATH" ]]; then
     echo "W5 cluster config weights path is missing: $SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
     return 2
   fi
@@ -553,6 +679,102 @@ validate_w5_cluster_config() {
   return 0
 }
 
+run_w5_readiness_checks() {
+  local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
+  local steps="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
+
+  if is_deepseek_v4_flash_w5_profile "$profile"; then
+    local guest_link_cc
+    local flash_route_trace="crates/sim-models/fixtures/deepseek_v4_flash_route_trace.ds4.txt"
+    local default_flash_route_manifest="crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt"
+    local flash_route_manifest="${SIM_W5_TEST_FLASH_ROUTE_TRACE_MANIFEST:-$default_flash_route_manifest}"
+    local flash_weight_provider="crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.fixture.txt"
+    local default_flash_file_weight_provider="crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.file.fixture.txt"
+    local flash_file_weight_provider="${SIM_W5_TEST_FLASH_WEIGHT_PROVIDER:-$default_flash_file_weight_provider}"
+    local flash_weight_catalog="${SIM_W5_FLASH_WEIGHT_CATALOG:-${SIM_W5_TEST_FLASH_WEIGHT_CATALOG:-}}"
+    local generated_flash_weight_catalog=""
+    local flash_weight_catalog_tmpdir=""
+    local flash_payload_dir=""
+    local flash_route_source_kind="fixture"
+    if [[ -n "${SIM_W5_TEST_FLASH_ROUTE_TRACE_MANIFEST:-}" ]]; then
+      flash_route_source_kind="ds4-measured"
+    fi
+    if [[ -n "$FLASH_PAYLOAD_DIR_OVERRIDE" && -n "$flash_weight_catalog" ]]; then
+      echo "--flash-payload-dir cannot be combined with SIM_W5_FLASH_WEIGHT_CATALOG or SIM_W5_TEST_FLASH_WEIGHT_CATALOG" >&2
+      return 2
+    fi
+    if [[ -n "$FLASH_PAYLOAD_DIR_OVERRIDE" && ! -d "$FLASH_PAYLOAD_DIR_OVERRIDE" ]]; then
+      echo "DeepSeek V4 Flash payload dir is missing: $FLASH_PAYLOAD_DIR_OVERRIDE" >&2
+      return 2
+    fi
+    if [[ -n "$FLASH_PAYLOAD_DIR_OVERRIDE" ]]; then
+      flash_payload_dir="$(cd "$FLASH_PAYLOAD_DIR_OVERRIDE" && pwd)"
+    fi
+    guest_link_cc="$(detect_w5_aarch64_linux_cc)"
+    if [[ -z "$guest_link_cc" ]]; then
+      echo "DeepSeek V4 Flash readiness requires AARCH64_LINUX_CC or aarch64-*-gnu-gcc on PATH for guest link verification" >&2
+      return 2
+    fi
+    (
+      cd "$ROOT_DIR"
+      AARCH64_LINUX_CC="$guest_link_cc" "$SCRIPT_DIR/build_initramfs.sh" --w5-guest-link-only
+    )
+    if [[ "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek-v4-flash-official" ||
+          "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek_v4_flash_official" ]]; then
+      (
+        cd "$ROOT_DIR/../.."
+        cargo run --release -p sim-models --bin deepseek_v4_flash_checkpoint -- \
+          validate --model "$SIM_DEEPSEEK_V4_FLASH" >/dev/null
+      )
+      return 0
+    fi
+    if [[ -z "$flash_weight_catalog" ]]; then
+      flash_weight_catalog_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/w5_flash_weight_catalog.XXXXXX")"
+      generated_flash_weight_catalog="$flash_weight_catalog_tmpdir/weight.catalog"
+      flash_weight_catalog="$generated_flash_weight_catalog"
+      if [[ -n "$flash_payload_dir" ]]; then
+        local layer_id
+        for layer_id in {0..42}; do
+          ln -s "$flash_payload_dir/layer$layer_id" "$flash_weight_catalog_tmpdir/layer$layer_id"
+        done
+      fi
+    fi
+    if ! (
+      cd "$ROOT_DIR/../.."
+      if [[ -n "$generated_flash_weight_catalog" ]]; then
+        if [[ -n "$flash_payload_dir" ]]; then
+          cargo run --release -p sim-cli -- deepseek-v4-flash-weight-catalog \
+            --payload-dir "$flash_payload_dir" \
+            --source-kind "$flash_route_source_kind" \
+            --output "$generated_flash_weight_catalog" >/dev/null
+        else
+          cargo run --release -p sim-cli -- deepseek-v4-flash-weight-catalog \
+            --from-provider "$flash_file_weight_provider" \
+            --source-kind "$flash_route_source_kind" \
+            --output "$generated_flash_weight_catalog" >/dev/null
+        fi
+      fi
+      cargo run --release -p sim-cli -- qwen3-decode-loop \
+        --scenario=8host \
+        --steps="$steps" \
+        --profile=deepseek-v4-flash >/dev/null
+      cargo run --release -p sim-cli -- deepseek-v4-flash-moe-report \
+        --steps="$steps" >/dev/null
+      cargo run --release -p sim-cli -- deepseek-v4-flash-moe-report \
+        --route-trace "$flash_route_trace" \
+        --weight-provider "$flash_weight_provider" >/dev/null
+      cargo run --release -p sim-cli -- deepseek-v4-flash-moe-report \
+        --route-trace-manifest "$flash_route_manifest" \
+        --require-route-source-kind "$flash_route_source_kind" \
+        --weight-catalog "$flash_weight_catalog" >/dev/null
+    ); then
+      [[ -n "$flash_weight_catalog_tmpdir" ]] && rm -rf "$flash_weight_catalog_tmpdir"
+      return 1
+    fi
+    [[ -n "$flash_weight_catalog_tmpdir" ]] && rm -rf "$flash_weight_catalog_tmpdir"
+  fi
+}
+
 run_post_run_maintenance() {
   local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
   local keep_latest="${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
@@ -635,6 +857,12 @@ validate_w5_cluster_config_status=0
 validate_w5_cluster_config || validate_w5_cluster_config_status=$?
 if (( validate_w5_cluster_config_status != 0 )); then
   exit "$validate_w5_cluster_config_status"
+fi
+
+if (( READINESS_ONLY )); then
+  run_w5_readiness_checks
+  echo "[w5_cluster_config] config=$CONFIG_PATH profile=${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode} readiness_only=1"
+  exit 0
 fi
 
 bootstrap_w5_memory_service_infra_status=0

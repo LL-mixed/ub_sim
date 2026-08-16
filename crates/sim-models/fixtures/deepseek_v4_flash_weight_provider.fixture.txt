@@ -1,0 +1,8 @@
+# DeepSeek V4 Flash deterministic weight provider fixture.
+#
+# Offline W5 readiness uses this provider spec to validate that routed experts
+# resolve to stable weight-tile object refs with auditable payload accounting.
+model_key=deepseek-v4-flash
+quant=iq2_xxs
+payload_bytes=2097152
+checksum_algorithm=deterministic-v1

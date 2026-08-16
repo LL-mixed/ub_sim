@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# mem_service lives in the repository's root-level Git submodule.
+# Override MEM_SERVICE_ROOT only to validate another standalone checkout.
+MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../mem_service}"
+if [[ -d "$MEM_SERVICE_ROOT" ]]; then
+  MEM_SERVICE_ROOT="$(cd "$MEM_SERVICE_ROOT" && pwd)"
+fi
 
 APP_NAMES=(
   ub_chat
@@ -89,6 +95,13 @@ run_make_step() {
   local rc=0
   local clean_rc=0
 
+  if [[ "$app" == "mem_service" ]]; then
+    app_dir="$MEM_SERVICE_ROOT/apps/mem_service"
+    python3 "$SCRIPT_DIR/verify_mem_service_source.py" \
+      --mem-service-root "$MEM_SERVICE_ROOT" \
+      --lock-file "$ROOT_DIR/mem_service.lock"
+  fi
+
   if [[ ! -f "$app_dir/Makefile" ]]; then
     echo "[app-build-matrix] FAIL: missing Makefile for $app: apps/$app/Makefile" >&2
     return 127
@@ -102,9 +115,17 @@ run_make_step() {
     return 0
   fi
 
-  make -C "$app_dir" || rc=$?
+  if [[ "$app" == "mem_service" ]]; then
+    make -C "$app_dir" LLM_INFER_ROOT="$ROOT_DIR" || rc=$?
+  else
+    make -C "$app_dir" || rc=$?
+  fi
   if [[ "$KEEP_ARTIFACTS" != "1" ]]; then
-    make -C "$app_dir" clean || clean_rc=$?
+    if [[ "$app" == "mem_service" ]]; then
+      make -C "$app_dir" clean LLM_INFER_ROOT="$ROOT_DIR" || clean_rc=$?
+    else
+      make -C "$app_dir" clean || clean_rc=$?
+    fi
   fi
   if [[ "$rc" -ne 0 ]]; then
     return "$rc"

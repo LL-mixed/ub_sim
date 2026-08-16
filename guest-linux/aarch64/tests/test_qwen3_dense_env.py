@@ -588,11 +588,12 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             / "llm_infer"
             / "llm_infer.c"
         ).read_text(encoding="utf-8")
-        db_service_dir = (
-            Path(__file__).resolve().parents[1]
-            / "components"
-            / "mem_service"
+        mem_service_root = Path(
+            os.environ.get(
+                "MEM_SERVICE_ROOT", Path(__file__).resolve().parents[3] / "mem_service"
+            )
         )
+        db_service_dir = mem_service_root / "components" / "mem_service"
         db_service_source = "\n".join(
             path.read_text(encoding="utf-8")
             for path in sorted(
@@ -604,10 +605,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             )
         )
         db_service_header = (
-            Path(__file__).resolve().parents[1]
-            / "components"
-            / "mem_service"
-            / "mem_service.h"
+            mem_service_root / "components" / "mem_service" / "mem_service.h"
         ).read_text(encoding="utf-8")
         cli_source = (
             Path(__file__).resolve().parents[3] / "crates" / "sim-cli" / "src" / "main.rs"
@@ -668,14 +666,19 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         )
         self.assertNotIn("local_decode_node == 0U ||", guest_source)
         self.assertNotIn("local_decode_node + 1U == cluster_node_count ||", guest_source)
-        self.assertIn("mem_service_take_pending_qwen3_object_desc", db_service_source)
-        self.assertIn("mem_service_take_pending_qwen3_object_kind_len_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_object_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_object_kind_len_desc", db_service_source)
         self.assertIn("qwen3_w5_memory_terminal_logits_loaded", guest_source)
         self.assertIn(
             "mem_service_obmm_service_v0_publish_shortpath_terminal_token_result",
             guest_source,
         )
-        self.assertIn("entry->target_node == local_node + 1U", guest_source)
+        self.assertIn("uint32_t creator_node;", guest_source)
+        self.assertIn("shortpath_kv_stream_creator_node", guest_source)
+        self.assertIn("prefix_cache_kv_stream_creator_node", guest_source)
+        self.assertNotIn("creator_node == local_node + 1U", guest_source)
+        self.assertIn("entry->target_layer_start == layer_start", guest_source)
+        self.assertIn("candidate->target_layer_start == layer_start", guest_source)
         self.assertIn("runtime_kv_checksum = w4_qwen3_hidden_payload_checksum", guest_source)
         self.assertIn("runtime_checksum=0x%016", guest_source)
         self.assertIn("object_checksum =\n            qwen3_lingqu_object_payload_checksum", guest_source)
@@ -736,7 +739,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("dispatch=skipped status=no_dispatch", guest_source)
         self.assertIn("qwen3_work_item_scheduler_wait", guest_source)
         self.assertIn("qwen3_work_item_scheduler_dispatch", guest_source)
-        self.assertIn("mem_service_obmm_service_v0_wait_scheduler_work_item", guest_source)
+        self.assertIn("mem_service_range_flow_wait_scheduler_work_item", guest_source)
+        self.assertIn("w4_runtime_init_obmm_range_flow_request", guest_source)
         self.assertIn("struct mem_service_scheduler_work_item", db_service_header)
         self.assertIn("MEM_SERVICE_SCHEDULER_WORK_ITEM_RANGE_FORWARD", db_service_header)
         self.assertIn("MEM_SERVICE_SCHEDULER_WORK_ITEM_NO_DISPATCH", db_service_header)
@@ -777,7 +781,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             db_service_source,
         )
         self.assertIn("broadcast_targets=%u", db_service_source)
-        self.assertIn("mem_service_take_pending_qwen3_token_result_desc", db_service_source)
+        self.assertIn("mem_service_take_pending_token_result_desc", db_service_source)
         self.assertIn("receive=descriptor", db_service_source)
         self.assertIn("target=decode_round_scheduler receive=descriptor", db_service_source)
         self.assertIn(
@@ -930,6 +934,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"', runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh" "$@"', w4_compat_runner_text)
         self.assertIn("source \"$CONFIG_PATH\"", config_runner_text)
+        self.assertIn("--readiness-only", config_runner_text)
+        self.assertIn("deepseek_v4_flash_decode", config_runner_text)
+        self.assertIn("is_deepseek_v4_flash_w5_profile", config_runner_text)
+        self.assertIn("--profile=deepseek-v4-flash", config_runner_text)
+        self.assertIn("deepseek-v4-flash-moe-report", config_runner_text)
         self.assertIn("--steps N", config_runner_text)
         self.assertIn("--requests FILE", config_runner_text)
         self.assertIn("--serve-queue", config_runner_text)
@@ -938,6 +947,21 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("W5 cluster config file is required", config_runner_text)
         self.assertIn("run_w5_cluster_qwen3_0_6b_2step.sh", config_runner_text)
         self.assertNotIn("DEFAULT_CONFIG=", config_runner_text)
+        self.assertIn("deepseek_v4_flash_decode)", runner_text)
+        self.assertIn("deepseek-v4-flash", runner_text)
+        self.assertIn("deepseek_v4_flash_decode)", legacy_runner_text)
+        self.assertIn("echo deepseek-v4-flash", legacy_runner_text)
+        self.assertIn("deepseek-v4-flash-simpler", legacy_runner_text)
+        self.assertIn(
+            'is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"',
+            legacy_runner_text,
+        )
+        self.assertIn(
+            "deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official",
+            runner_text,
+        )
+        self.assertIn('--model "$SIM_DEEPSEEK_V4_FLASH"', runner_text)
+        self.assertNotIn('--model "$deepseek_runtime_dir/ds4flash.gguf"', runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
         self.assertIn("--no-memory-reuse", config_runner_text)
@@ -988,7 +1012,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--expect-prefix-cache-suffix-replay-tokens", serving_matrix_runner_text)
         self.assertIn("multi-token suffixes", serving_matrix_runner_text)
         self.assertIn("expect_fail_closed=true", serving_matrix_runner_text)
-        self.assertIn("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
+        self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS", serving_matrix_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_REUSE_OUT_DIR", serving_matrix_runner_text)
         self.assertIn("SIM_W5_TEST_MEMORY_SHORTPATH_EXECUTE", serving_matrix_runner_text)
         self.assertIn('write_case_config shared-prefix-seed "$SHARED_PREFIX_TOKEN_IDS"', serving_matrix_runner_text)
@@ -1087,6 +1111,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "# runtime",
                 "RUN_ID=test-run",
                 "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
+                "SIM_W5_CLUSTER_NODE_COUNT=8",
                 "SIM_QWEN3_GUEST_DECODE_STEPS=3",
                 "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                 "SIM_QWEN3_GUEST_ENGRAM=0",
@@ -1095,7 +1120,13 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_PROGRESS_INTERVAL_SECS=",
                 "SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE=",
                 "SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=0",
+                "# model",
+                "SIM_UAPI_W4_CHIPBACKEND_PROFILE=",
+                "SIM_DEEPSEEK_V4_FLASH=",
+                "SIM_W5_FLASH_WEIGHT_CATALOG=",
                 "# serving",
+                "SIM_LLM_INFER_PROMPT=",
+                "SIM_LLM_INFER_PROMPT_TOKEN_IDS=",
                 "SIM_W5_SERVING_REQUESTS_FILE=",
                 "SIM_W5_SERVING_QUEUE=0",
                 "SIM_W5_SERVING_INGRESS=cluster",
@@ -1271,7 +1302,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "\n".join(
                     [
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
-                        "SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=81378,37585,374",
+                        "SIM_LLM_INFER_PROMPT_TOKEN_IDS=81378,37585,374",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=1",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                     ]
@@ -1312,7 +1343,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "\n".join(
                     [
                         "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode",
-                        "SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS=81378,37585,374",
+                        "SIM_LLM_INFER_PROMPT_TOKEN_IDS=81378,37585,374",
                         "SIM_QWEN3_GUEST_DECODE_STEPS=1",
                         "SIM_QWEN3_DENSE_WEIGHTS_PATH=/tmp/qwen3",
                     ]

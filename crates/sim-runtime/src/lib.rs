@@ -419,9 +419,26 @@ struct SimplerDeviceAlloc {
 #[derive(Debug, Default)]
 struct SimplerCapiBackendState {
     runtime_library: Option<SimplerLoadedRuntimeLibrary>,
-    device_context: Option<simpler_capi::DeviceContext<'static>>,
-    device_context_device_id: Option<i32>,
     device_allocs: HashMap<(NodeId, sim_core::SegmentHandle), SimplerDeviceAlloc>,
+}
+
+impl Drop for SimplerCapiBackendState {
+    fn drop(&mut self) {
+        if self.runtime_library.is_none() || self.device_allocs.is_empty() {
+            return;
+        }
+        let allocations = self
+            .device_allocs
+            .drain()
+            .map(|(_, allocation)| allocation.ptr)
+            .collect::<Vec<_>>();
+        let _ = with_simpler_device_context(self, 0, |api, worker| {
+            for allocation in allocations {
+                api.free_device(&worker.context, allocation);
+            }
+            Ok(())
+        });
+    }
 }
 
 #[derive(Debug, Default)]
@@ -510,6 +527,16 @@ struct SimplerLoadedRuntimeLibrary {
 static SIMPLER_RUNTIME_LIBRARY_CACHE: OnceLock<
     Mutex<HashMap<PathBuf, &'static simpler_capi::RuntimeLibrary>>,
 > = OnceLock::new();
+static SIMPLER_DEVICE_CONTEXT_CACHE: OnceLock<
+    Mutex<HashMap<(usize, i32), SharedSimplerDeviceContext>>,
+> = OnceLock::new();
+
+struct SharedSimplerDeviceContext {
+    context: simpler_capi::DeviceContext<'static>,
+    runtime_buffer: Option<simpler_capi::RuntimeBuffer>,
+    callable_ids: HashMap<String, i32>,
+    next_callable_id: i32,
+}
 
 struct EnvGuard {
     saved: Vec<(OsString, Option<OsString>)>,
@@ -656,6 +683,15 @@ fn load_binary_artifact(artifact: &BinaryArtifactRef) -> Result<Vec<u8>, String>
         .map_err(|err| format!("artifact_read_failed:{}:{err}", artifact.source))
 }
 
+fn simpler_binary_fingerprint(binary: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in binary {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^ binary.len() as u64
+}
+
 fn ensure_simpler_runtime_library(
     state: &mut SimplerCapiBackendState,
     artifact: &BinaryArtifactRef,
@@ -666,8 +702,6 @@ fn ensure_simpler_runtime_library(
         None => false,
     };
     if path_changed {
-        state.device_context = None;
-        state.device_context_device_id = None;
         state.device_allocs.clear();
         state.runtime_library = None;
     }
@@ -698,23 +732,41 @@ fn cached_simpler_runtime_library(
     Ok(api)
 }
 
-fn ensure_simpler_device_context(
+fn with_simpler_device_context<T>(
     state: &mut SimplerCapiBackendState,
     device_id: i32,
-) -> Result<&simpler_capi::DeviceContext<'static>, String> {
+    operation: impl FnOnce(
+        &'static simpler_capi::RuntimeLibrary,
+        &mut SharedSimplerDeviceContext,
+    ) -> Result<T, String>,
+) -> Result<T, String> {
     let api = state
         .runtime_library
         .as_ref()
         .ok_or_else(|| "simpler_capi_missing_runtime_library".to_string())?
         .api;
-    if state.device_context.is_none() || state.device_context_device_id != Some(device_id) {
-        state.device_context = Some(
-            api.create_context()
-                .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?,
+    let key = (
+        api as *const simpler_capi::RuntimeLibrary as usize,
+        device_id,
+    );
+    let cache = SIMPLER_DEVICE_CONTEXT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "simpler_capi_device_context_cache_poisoned".to_string())?;
+    if !cache.contains_key(&key) {
+        cache.insert(
+            key,
+            SharedSimplerDeviceContext {
+                context: api
+                    .create_context()
+                    .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?,
+                runtime_buffer: None,
+                callable_ids: HashMap::new(),
+                next_callable_id: 0,
+            },
         );
-        state.device_context_device_id = Some(device_id);
     }
-    Ok(state.device_context.as_ref().expect("device context"))
+    operation(api, cache.get_mut(&key).expect("device context"))
 }
 
 #[derive(Debug)]
@@ -774,7 +826,7 @@ fn prepare_simpler_capi_args(
                 let start = endpoint.offset as usize;
                 let end = start.saturating_add(*bytes as usize);
                 tensors.push(
-                    simpler_capi::ContinuousTensor::new(
+                    simpler_capi::Tensor::new(
                         payload[start..end].as_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
@@ -792,7 +844,7 @@ fn prepare_simpler_capi_args(
                 let start = endpoint.offset as usize;
                 let end = start.saturating_add(*bytes as usize);
                 tensors.push(
-                    simpler_capi::ContinuousTensor::new(
+                    simpler_capi::Tensor::new(
                         payload[start..end].as_mut_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
@@ -810,7 +862,7 @@ fn prepare_simpler_capi_args(
                 let start = endpoint.offset as usize;
                 let end = start.saturating_add(*bytes as usize);
                 tensors.push(
-                    simpler_capi::ContinuousTensor::new(
+                    simpler_capi::Tensor::new(
                         payload[start..end].as_mut_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
@@ -838,6 +890,27 @@ fn simpler_tensor_dtype(
         DispatchBackendProfile::HostMatmul => {
             if tensor_index < 3 {
                 simpler_capi::DataType::Float16
+            } else {
+                simpler_capi::DataType::Float32
+            }
+        }
+        DispatchBackendProfile::HostGemm => {
+            if tensor_index < 2 {
+                simpler_capi::DataType::Bfloat16
+            } else {
+                simpler_capi::DataType::Float32
+            }
+        }
+        DispatchBackendProfile::HostQuantizedGemm => {
+            if tensor_index < 2 {
+                simpler_capi::DataType::Int8
+            } else {
+                simpler_capi::DataType::Int32
+            }
+        }
+        DispatchBackendProfile::HostFp8Gemm | DispatchBackendProfile::HostFp4Gemm => {
+            if tensor_index < 4 {
+                simpler_capi::DataType::Uint8
             } else {
                 simpler_capi::DataType::Float32
             }
@@ -1484,6 +1557,10 @@ fn backend_profile_name(profile: DispatchBackendProfile) -> &'static str {
         DispatchBackendProfile::HostVector => "host_vector",
         DispatchBackendProfile::TmrbVector => "tmrb_vector",
         DispatchBackendProfile::HostMatmul => "host_matmul",
+        DispatchBackendProfile::HostGemm => "host_gemm",
+        DispatchBackendProfile::HostQuantizedGemm => "host_quantized_gemm",
+        DispatchBackendProfile::HostFp8Gemm => "host_fp8_gemm",
+        DispatchBackendProfile::HostFp4Gemm => "host_fp4_gemm",
         DispatchBackendProfile::HostEngramContext => "host_engram_context",
     }
 }
@@ -1499,7 +1576,7 @@ fn validate_simpler_dispatch_spec(
     backend_spec: Option<&DispatchBackendSpec>,
 ) -> Result<(), String> {
     if let Some(spec) = backend_spec {
-        if spec.platform != "a2a3sim" {
+        if spec.platform != "a2a3sim" && spec.platform != "a5sim" {
             return Err(format!("unsupported_platform:{}", spec.platform));
         }
     }
@@ -1511,6 +1588,10 @@ fn validate_simpler_dispatch_spec(
                 DispatchRuntimeVariant::TensormapAndRingbuffer,
             )
             | (DispatchBackendProfile::HostMatmul, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostGemm, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostQuantizedGemm, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostFp8Gemm, DispatchRuntimeVariant::HostBuildGraph)
+            | (DispatchBackendProfile::HostFp4Gemm, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostEngramContext, DispatchRuntimeVariant::HostBuildGraph)
             | (DispatchBackendProfile::HostVector, DispatchRuntimeVariant::HostBuildGraph) => {}
             (profile, runtime_variant) => {
@@ -1978,15 +2059,10 @@ impl LocalRuntimeEngine {
             }
             return Ok(existing);
         }
-        let api = simpler_capi
-            .runtime_library
-            .as_ref()
-            .ok_or_else(|| "simpler_capi_missing_runtime_library".to_string())?;
-        let api = api.api;
-        let ctx = ensure_simpler_device_context(simpler_capi, 0)?;
-        let ptr = api
-            .alloc_device(ctx, bytes as usize)
-            .map_err(|err| format!("simpler_capi_alloc_failed:{err}"))?;
+        let ptr = with_simpler_device_context(simpler_capi, 0, |api, worker| {
+            api.alloc_device(&worker.context, bytes as usize)
+                .map_err(|err| format!("simpler_capi_alloc_failed:{err}"))
+        })?;
         let alloc = SimplerDeviceAlloc { ptr, bytes };
         simpler_capi.device_allocs.insert(key, alloc);
         Ok(alloc)
@@ -2028,32 +2104,6 @@ impl LocalRuntimeEngine {
                         }
                     }
                 };
-                let api = match simpler_capi.runtime_library.as_ref() {
-                    Some(api) => api.api,
-                    None => {
-                        return CompletionEvent {
-                            op_id: op.op_id,
-                            task: Some(op.task.clone()),
-                            source: CompletionSource::ChipBackend,
-                            status: CompletionStatus::FatalFailure {
-                                code: "simpler_capi_missing_runtime_library".to_string(),
-                            },
-                            finished_at: now,
-                        }
-                    }
-                };
-                let ctx = match ensure_simpler_device_context(simpler_capi, 0) {
-                    Ok(ctx) => ctx,
-                    Err(code) => {
-                        return CompletionEvent {
-                            op_id: op.op_id,
-                            task: Some(op.task.clone()),
-                            source: CompletionSource::ChipBackend,
-                            status: CompletionStatus::FatalFailure { code },
-                            finished_at: now,
-                        }
-                    }
-                };
                 let key = (copy_req.src.node, copy_req.src.segment);
                 match host_payloads.segments.get(&key) {
                     None => Err("simpler_capi_missing_host_payload".to_string()),
@@ -2063,13 +2113,15 @@ impl LocalRuntimeEngine {
                         if end > payload.len() {
                             Err("simpler_capi_host_payload_too_short".to_string())
                         } else {
-                            api.host_to_device(
-                                ctx,
-                                alloc.ptr,
-                                payload[start..end].as_ptr() as *const _,
-                                copy_req.bytes as usize,
-                            )
-                            .map_err(|err| format!("simpler_capi_h2d_failed:{err}"))
+                            with_simpler_device_context(simpler_capi, 0, |api, worker| {
+                                api.host_to_device(
+                                    &worker.context,
+                                    alloc.ptr,
+                                    payload[start..end].as_ptr() as *const _,
+                                    copy_req.bytes as usize,
+                                )
+                                .map_err(|err| format!("simpler_capi_h2d_failed:{err}"))
+                            })
                         }
                     }
                 }
@@ -2087,32 +2139,6 @@ impl LocalRuntimeEngine {
                         finished_at: now,
                     };
                 };
-                let api = match simpler_capi.runtime_library.as_ref() {
-                    Some(api) => api.api,
-                    None => {
-                        return CompletionEvent {
-                            op_id: op.op_id,
-                            task: Some(op.task.clone()),
-                            source: CompletionSource::ChipBackend,
-                            status: CompletionStatus::FatalFailure {
-                                code: "simpler_capi_missing_runtime_library".to_string(),
-                            },
-                            finished_at: now,
-                        }
-                    }
-                };
-                let ctx = match ensure_simpler_device_context(simpler_capi, 0) {
-                    Ok(ctx) => ctx,
-                    Err(code) => {
-                        return CompletionEvent {
-                            op_id: op.op_id,
-                            task: Some(op.task.clone()),
-                            source: CompletionSource::ChipBackend,
-                            status: CompletionStatus::FatalFailure { code },
-                            finished_at: now,
-                        }
-                    }
-                };
                 let dst_key = (copy_req.dst.node, copy_req.dst.segment);
                 let payload = host_payloads
                     .segments
@@ -2123,13 +2149,15 @@ impl LocalRuntimeEngine {
                 if end > payload.len() {
                     payload.resize(end, 0);
                 }
-                api.device_to_host(
-                    ctx,
-                    payload[start..end].as_mut_ptr() as *mut _,
-                    alloc.ptr,
-                    copy_req.bytes as usize,
-                )
-                .map_err(|err| format!("simpler_capi_d2h_failed:{err}"))
+                with_simpler_device_context(simpler_capi, 0, |api, worker| {
+                    api.device_to_host(
+                        &worker.context,
+                        payload[start..end].as_mut_ptr() as *mut _,
+                        alloc.ptr,
+                        copy_req.bytes as usize,
+                    )
+                    .map_err(|err| format!("simpler_capi_d2h_failed:{err}"))
+                })
             }
         };
 
@@ -2190,7 +2218,7 @@ impl LocalRuntimeEngine {
         let detail_total_started = Instant::now();
         let mut detail_env_ms = 0u128;
         let mut detail_load_runtime_ms = 0u128;
-        let mut detail_create_context_ms = 0u128;
+        let detail_create_context_ms = 0u128;
         let mut detail_runtime_alloc_ms = 0u128;
         let mut detail_load_binary_ms = 0u128;
         let mut detail_prepare_args_ms = 0u128;
@@ -2203,25 +2231,8 @@ impl LocalRuntimeEngine {
             detail_env_ms = detail_started.elapsed().as_millis();
 
             let detail_started = Instant::now();
-            let api = ensure_simpler_runtime_library(
-                simpler_capi,
-                &runtime_artifacts.host_runtime_library,
-            )?;
+            ensure_simpler_runtime_library(simpler_capi, &runtime_artifacts.host_runtime_library)?;
             detail_load_runtime_ms = detail_started.elapsed().as_millis();
-            // Dispatch gets a fresh context because HostBuildGraph DeviceRunner
-            // state is not reusable without the currently-unsafe device
-            // finalization path. Copy operations keep their own cached context.
-            let detail_started = Instant::now();
-            let ctx = api
-                .create_context()
-                .map_err(|err| format!("simpler_capi_create_device_context_failed:{err}"))?;
-            detail_create_context_ms = detail_started.elapsed().as_millis();
-            let detail_started = Instant::now();
-            let runtime = simpler_capi::RuntimeBuffer::allocate(api)
-                .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?;
-            let runtime_handle = runtime.handle();
-            detail_runtime_alloc_ms = detail_started.elapsed().as_millis();
-
             let detail_started = Instant::now();
             let orch_binary = load_binary_artifact(&runtime_artifacts.orch_shared_object)?;
             let aicpu_binary = match runtime_artifacts.aicpu_binary.as_ref() {
@@ -2263,30 +2274,82 @@ impl LocalRuntimeEngine {
             )
             .map_err(|err| format!("simpler_capi_make_callable_failed:{err}"))?;
             detail_make_callable_ms = detail_started.elapsed().as_millis();
+            let mut callable_key = runtime_artifacts.orch_shared_object.source.clone();
+            callable_key.push('|');
+            callable_key.push_str(&runtime_artifacts.orch_function_name);
+            callable_key.push_str(&format!(
+                ":{}:{:016x}",
+                orch_binary.len(),
+                simpler_binary_fingerprint(&orch_binary)
+            ));
+            for (kernel, binary) in runtime_artifacts.kernels.iter().zip(&kernel_binaries) {
+                callable_key.push('|');
+                callable_key.push_str(&kernel.func_id.to_string());
+                callable_key.push(':');
+                callable_key.push_str(&kernel.binary.source);
+                callable_key.push_str(&format!(
+                    ":{}:{:016x}",
+                    binary.len(),
+                    simpler_binary_fingerprint(binary)
+                ));
+            }
 
             let detail_started = Instant::now();
-            api.run_prepared(
-                &ctx,
-                runtime_handle,
-                &callable,
-                &prepared.task_args,
-                runtime_artifacts.launch.block_dim as i32,
-                runtime_artifacts.launch.aicpu_thread_num as i32,
-                runtime_artifacts.launch.device_id as i32,
-                if aicpu_binary.is_empty() {
-                    std::ptr::null()
-                } else {
-                    aicpu_binary.as_ptr()
-                },
-                aicpu_binary.len(),
-                if aicore_binary.is_empty() {
-                    std::ptr::null()
-                } else {
-                    aicore_binary.as_ptr()
-                },
-                aicore_binary.len(),
-            )
-            .map_err(|err| format!("simpler_capi_run_prepared_failed:{err}"))?;
+            with_simpler_device_context(simpler_capi, 0, |api, worker| {
+                let runtime_started = Instant::now();
+                if worker.runtime_buffer.is_none() {
+                    worker.runtime_buffer = Some(
+                        simpler_capi::RuntimeBuffer::allocate(api)
+                            .map_err(|err| format!("simpler_capi_runtime_alloc_failed:{err}"))?,
+                    );
+                }
+                let runtime_handle = worker
+                    .runtime_buffer
+                    .as_ref()
+                    .expect("runtime buffer")
+                    .handle();
+                detail_runtime_alloc_ms = runtime_started.elapsed().as_millis();
+                let (callable_id, prepare) = match worker.callable_ids.get(&callable_key) {
+                    Some(callable_id) => (*callable_id, false),
+                    None => {
+                        if worker.next_callable_id >= 64 {
+                            return Err("simpler_capi_callable_cache_full".to_string());
+                        }
+                        (worker.next_callable_id, true)
+                    }
+                };
+                api.run_prepared_callable(
+                    &worker.context,
+                    runtime_handle,
+                    &callable,
+                    &prepared.task_args,
+                    callable_id,
+                    prepare,
+                    runtime_artifacts.launch.block_dim as i32,
+                    runtime_artifacts.launch.aicpu_thread_num as i32,
+                    runtime_artifacts.launch.device_id as i32,
+                    if aicpu_binary.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        aicpu_binary.as_ptr()
+                    },
+                    aicpu_binary.len(),
+                    if aicore_binary.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        aicore_binary.as_ptr()
+                    },
+                    aicore_binary.len(),
+                )
+                .map_err(|err| format!("simpler_capi_run_callable_failed:{err}"))?;
+                if prepare {
+                    worker
+                        .callable_ids
+                        .insert(callable_key.clone(), callable_id);
+                    worker.next_callable_id += 1;
+                }
+                Ok(())
+            })?;
             detail_run_runtime_ms = detail_started.elapsed().as_millis();
 
             Ok(())
@@ -2833,9 +2896,10 @@ impl SimBlockStore for InMemoryBlockStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextState, EvictionPlan, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan,
-        RecursiveRoutePlanner, RoutePlanner, RouteRequest, RuntimeCompletionTracker, RuntimeOpKind,
-        RuntimeOpState, SharedRuntimeQueue, SimBlockStore, VecEventSink,
+        simpler_binary_fingerprint, ContextState, EvictionPlan, InMemoryBlockStore,
+        LocalRuntimeEngine, PromotionPlan, RecursiveRoutePlanner, RoutePlanner, RouteRequest,
+        RuntimeCompletionTracker, RuntimeOpKind, RuntimeOpState, SharedRuntimeQueue, SimBlockStore,
+        VecEventSink,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -2948,6 +3012,14 @@ outputs:
   emit_data_service_trace: true
   emit_qemu_platform_trace: true
 "#;
+
+    #[test]
+    fn simpler_binary_fingerprint_changes_with_artifact_content() {
+        assert_ne!(
+            simpler_binary_fingerprint(b"same-path-geometry-a"),
+            simpler_binary_fingerprint(b"same-path-geometry-b")
+        );
+    }
 
     fn test_task() -> TaskKey {
         TaskKey {

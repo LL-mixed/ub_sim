@@ -2,6 +2,14 @@
 
 更新时间：2026-07-02
 
+> 2026-08-04 更新：`mem_service` 组件、CLI app、release 脚本与测试位于独立的
+> `mem_service` 仓库；ub_sim 将其固定为根目录 `mem_service/` Git submodule，
+> 并通过 `MEM_SERVICE_ROOT` 引用其中的 `components/mem_service/` 与
+> `apps/mem_service/`。下文中 `guest-linux/aarch64/components/mem_service/` 和
+> `guest-linux/aarch64/apps/mem_service/` 等路径描述的是迁移前的仓库内布局。
+> 抽取前的 release certification evidence 未迁移，不能证明当前独立仓库
+> revision 已认证；新发布必须重新生成 Linux ops 与 cross-host evidence。
+
 ## 1. 结论
 
 `mem_service` 当前已经不是嵌在 `llm_infer` 里的辅助函数，而是一个具备独立二进制、Unix-socket daemon、C client SDK、安装布局、打包门禁、release readiness 自描述、serving/pretraining 消费样例和 W5/Qwen3 runtime adapter 的 Memory Service。
@@ -14,7 +22,8 @@
 - **可以生成发布包并做本地包内复验**：tar/deb smoke、installed SDK smoke、installed layout selfcheck、release/package manifest 都已经具备。
 - **生产部署认证已经完成**：2026-07-01 在 `hw-910c:/home/ll/ub_sim` 的 Docker test bed 中完成 Linux ops certification、remote transport certification 和最终 release certification verify，`release-readiness` 达到 `certified`。
 
-所以更准确的状态是：**`mem_service` 已经达到独立服务 release-certified 状态；W5 主线接下来的重点从补 service productization 转为把 certified service 纳入 W5 端到端门禁和性能收益闭环。**
+所以更准确的状态是：**独立构建、安装、打包和下游契约已经成立；当前独立
+仓库 revision 必须重新生成认证 evidence 后才能宣称 release-certified。**
 
 ## 2. 代码边界
 
@@ -618,7 +627,9 @@ residual_qemu_processes=0
 
 ### 15.1 W5 端到端门禁
 
-`mem_service` 独立服务认证已经完成，最新 Qwen3-0.6B W5 4-step smoke 和 GSVA-backed prefix/KV reuse 两阶段验证也已经通过。W5 主线剩余门禁集中在“负例和收益归因是否足够硬”：
+抽取前 revision 的独立服务认证、Qwen3-0.6B W5 4-step smoke 和
+GSVA-backed prefix/KV reuse 两阶段验证均已通过；当前独立仓库 revision
+仍需重新认证。W5 主线剩余门禁集中在“负例和收益归因是否足够硬”：
 
 - stale/checksum/model/session mismatch 对 W5 入口的 fail-closed 回归。
 - 认证过的 release bundles 与 W5 run summary 的关联记录。
@@ -688,4 +699,7 @@ mem_service 已能管理 GVA/GSVA 相关 object/ref 元数据，但性能收益�
 
 ## 17. 一句话状态
 
-`mem_service` 当前已经实现为可本地独立运行、可被 serving/pretraining 客户端消费、可打包、可自描述 release readiness，并已通过 Docker test bed 的 Linux ops、remote transport 和 release certification；最新 W5 Qwen3-0.6B 4-step smoke 已通过，GSVA-backed prefix/KV reuse 两阶段验证也已通过，主线下一步是把这条路径固化成 CI gate，并补齐负例矩阵与性能收益归因。
+`mem_service` 当前已经实现为可本地独立运行、可被 serving/pretraining 客户端
+消费、可打包、可自描述 release readiness。抽取前 revision 曾通过 Docker
+test bed 的认证，当前独立仓库 revision 尚需重新生成可复验 evidence。历史
+W5 smoke 与 GSVA-backed reuse 结果保留为迁移基线，后续由固定下游门禁复验。

@@ -1,12 +1,97 @@
 //! Guest-visible UAPI surface placeholders.
 
+mod deepseek_v4_flash_gguf_runtime;
+mod deepseek_v4_flash_official_expert_runtime;
+mod deepseek_v4_flash_official_layer_runtime;
+mod deepseek_v4_flash_official_model_runtime;
+mod deepseek_v4_flash_official_range_runtime;
+mod deepseek_v4_flash_official_runtime;
+mod deepseek_v4_flash_official_vector_runtime;
+mod deepseek_v4_flash_runtime;
+
+pub use deepseek_v4_flash_gguf_runtime::{
+    deepseek_v4_flash_embedding_hc, execute_deepseek_gguf_layer_through_simpler,
+    execute_deepseek_gguf_output_head_through_simpler, execute_deepseek_gguf_range_through_simpler,
+    execute_deepseek_gguf_range_with_progress_through_simpler,
+    execute_deepseek_gguf_sequence_range_through_simpler, DeepseekV4FlashGgufLayerExecution,
+    DeepseekV4FlashGgufRangeExecution, DeepseekV4FlashGgufRangeProgress,
+    DeepseekV4FlashGgufSequenceExecution,
+};
+
+pub use deepseek_v4_flash_official_runtime::{
+    ensure_simpler_host_fp8_gemm_manifest, execute_deepseek_official_bf16_rows_through_simpler,
+    execute_deepseek_official_f32_rows_through_simpler,
+    execute_deepseek_official_fp8_rows_through_simpler, execute_fp8_rows_through_simpler,
+    DeepseekV4LinearOutputDType, DeepseekV4OfficialBf16Execution, DeepseekV4OfficialF32Execution,
+    DeepseekV4OfficialFp8Execution,
+};
+
+pub use deepseek_v4_flash_official_vector_runtime::{
+    ensure_simpler_host_deepseek_vector_manifest, execute_add_through_simpler,
+    execute_compressor_pool_through_simpler, execute_hc_head_weights_through_simpler,
+    execute_hc_post_through_simpler, execute_hc_split_through_simpler,
+    execute_hc_weighted_sum_through_simpler, execute_indexer_qat_through_simpler,
+    execute_kv_fp8_roundtrip_through_simpler, execute_rms_norm_through_simpler,
+    execute_rope_through_simpler, execute_router_through_simpler, execute_scale_through_simpler,
+    execute_sink_attention_through_simpler, execute_swiglu_through_simpler,
+    execute_top_k_through_simpler, DeepseekV4OfficialVectorExecution,
+};
+
+pub use deepseek_v4_flash_official_expert_runtime::{
+    ensure_simpler_host_fp4_gemm_manifest, execute_deepseek_official_fp4_rows_through_simpler,
+    execute_deepseek_official_fp8_rows_full_k_through_simpler,
+    execute_deepseek_official_routed_expert_through_simpler,
+    execute_deepseek_official_routed_experts_through_simpler,
+    execute_deepseek_official_router_through_simpler, execute_fp4_rows_through_simpler,
+    execute_fp8_rows_full_k_through_simpler, DeepseekV4OfficialFp4Execution,
+    DeepseekV4OfficialRoutedExpertExecution, DeepseekV4OfficialRoutedExpertsExecution,
+    DeepseekV4OfficialRouterExecution,
+};
+
+pub use deepseek_v4_flash_official_layer_runtime::{
+    execute_deepseek_official_layer_through_simpler,
+    execute_deepseek_official_stateful_layer_through_simpler, DeepseekV4OfficialLayerExecution,
+    DeepseekV4OfficialLayerKvSummary,
+};
+
+pub use deepseek_v4_flash_official_model_runtime::{
+    execute_deepseek_official_first_token_with_progress_through_simpler,
+    execute_deepseek_official_output_head_through_simpler,
+    validate_deepseek_official_first_token_alignment, DeepseekV4OfficialFirstTokenExecution,
+    DeepseekV4OfficialHeadExecution, DeepseekV4OfficialLayerAlignment,
+    DEEPSEEK_V4_FIRST_TOKEN_ATTENTION_TOLERANCE, DEEPSEEK_V4_FIRST_TOKEN_HIDDEN_TOLERANCE,
+    DEEPSEEK_V4_FIRST_TOKEN_KV_TOLERANCE, DEEPSEEK_V4_FIRST_TOKEN_LOGIT_TOLERANCE,
+    DEEPSEEK_V4_FIRST_TOKEN_ROUTE_WEIGHT_TOLERANCE,
+};
+
+pub use deepseek_v4_flash_official_range_runtime::{
+    execute_deepseek_official_range_with_progress_through_simpler,
+    execute_deepseek_official_sequence_range_through_simpler, DeepseekV4OfficialRangeExecution,
+    DeepseekV4OfficialRangeProgress, DeepseekV4OfficialSequenceExecution,
+};
+
+pub use deepseek_v4_flash_runtime::{
+    execute_deepseek_dense_layer_through_simpler,
+    execute_deepseek_ratio128_attention_through_simpler,
+    execute_deepseek_ratio128_layer_through_simpler,
+    execute_deepseek_ratio4_attention_through_simpler,
+    execute_deepseek_ratio4_layer_through_simpler, DeepseekV4FlashDenseAttentionState,
+    DeepseekV4FlashDenseLayerExecution, DeepseekV4FlashDenseLayerWeights,
+    DeepseekV4FlashLayerState, DeepseekV4FlashModelState,
+    DeepseekV4FlashRatio128AttentionExecution, DeepseekV4FlashRatio128AttentionState,
+    DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerExecution,
+    DeepseekV4FlashRatio128LayerWeights, DeepseekV4FlashRatio4AttentionExecution,
+    DeepseekV4FlashRatio4AttentionState, DeepseekV4FlashRatio4AttentionWeights,
+    DeepseekV4FlashRatio4LayerExecution, DeepseekV4FlashRatio4LayerWeights,
+};
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 #[cfg(unix)]
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::ops::Range;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -25,6 +110,14 @@ use sim_core::{
     SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
 };
 use sim_memory::PaperEngramTableRowPrefetchPlan;
+use sim_models::deepseek_v4_flash;
+use sim_models::deepseek_v4_flash_adapter::{ds4_eval_layer_slice_in_memory, Ds4SliceMemoryConfig};
+use sim_models::deepseek_v4_flash_checkpoint::{DeepseekV4CacheLimits, DeepseekV4Checkpoint};
+use sim_models::deepseek_v4_flash_gguf::{
+    lower_f16_matrix_to_f32_kxn_padded, lower_iq2_xxs_expert_for_block_dot,
+    lower_q2_k_expert_for_block_dot, q8_0_weight_block_kxn, quantize_q8_0_activation, GgufCatalog,
+};
+use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashGemmPlan;
 use sim_models::engram_context::{
     run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
     EngramContextReport, PaperEngramContextLookupRef, PaperEngramContextOp,
@@ -580,6 +673,44 @@ pub struct Qwen3DenseReferenceRangeForwardWorkerReport {
     pub aggregate_checksum: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeepseekV4FlashGeometrySmokeReport {
+    pub ready: bool,
+    pub node_count: u64,
+    pub layer_count: u64,
+    pub hidden_range_bytes: u64,
+    pub decode_hidden_bytes: u64,
+    pub total_kv_state_bytes: u64,
+    pub weight_object_count: u64,
+    pub kv_object_count: u64,
+    pub hidden_object_count: u64,
+    pub object_desc_put_count: u64,
+    pub object_desc_get_count: u64,
+    pub barrier_count: u64,
+    pub handoff_count: u64,
+    pub aggregate_checksum: u64,
+    pub nodes: Vec<DeepseekV4FlashGeometrySmokeNodeReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeepseekV4FlashGeometrySmokeNodeReport {
+    pub node_id: u64,
+    pub layer_start: u64,
+    pub layer_end: u64,
+    pub layer_count: u64,
+    pub next_node: u64,
+    pub terminal: bool,
+    pub hidden_input_bytes: u64,
+    pub hidden_output_bytes: u64,
+    pub kv_state_bytes: u64,
+    pub object_count: u64,
+    pub object_desc_put_count: u64,
+    pub object_desc_get_count: u64,
+    pub barrier_count: u64,
+    pub handoff_ready: bool,
+    pub node_checksum: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Qwen3DenseReferenceObjectServiceReport {
     pub ready: bool,
@@ -767,7 +898,29 @@ struct UapiRuntimeFailure {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SimplerRuntimeManifestEnvelope {
+    #[serde(default)]
+    platform: Option<String>,
     simpler_runtime: SimplerRuntimeManifest,
+    #[serde(default)]
+    host_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_quantized_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_fp8_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_fp4_gemm: Option<GemmManifest>,
+    #[serde(default)]
+    host_q8_block_dot: Option<GemmManifest>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct GemmManifest {
+    m: u64,
+    k: u64,
+    n: u64,
+    input_dtype: String,
+    output_dtype: String,
+    tile: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1557,6 +1710,15 @@ impl LocalGuestUapiSurface {
         let mut validate_refs_ms = 0u128;
         let mut backend_ms = 0u128;
         let mut writeback_ms = 0u128;
+        let deepseek_v4_flash = matches!(
+            std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE").as_deref(),
+            Ok("deepseek-v4-flash")
+                | Ok("deepseek_v4_flash")
+                | Ok("deepseek-v4-flash-simpler")
+                | Ok("deepseek_v4_flash_simpler")
+                | Ok("deepseek-v4-flash-official")
+                | Ok("deepseek_v4_flash_official")
+        );
         let result = (|| {
             let started = Instant::now();
             let input = self
@@ -1566,11 +1728,17 @@ impl LocalGuestUapiSurface {
             payload_lookup_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
-            let operands = resolve_qwen3_range_dispatch_operands(&req, input, self)?;
+            let operands = if deepseek_v4_flash {
+                resolve_deepseek_v4_flash_range_dispatch_operands(&req, input, self)?
+            } else {
+                resolve_qwen3_range_dispatch_operands(&req, input, self)?
+            };
             resolve_operands_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
-            validate_qwen3_range_dispatch_object_refs(&req, input)?;
+            if !deepseek_v4_flash {
+                validate_qwen3_range_dispatch_object_refs(&req, input)?;
+            }
             validate_refs_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
@@ -1697,9 +1865,41 @@ fn run_w4_chipbackend(
         }
         "qwen3_dense" => run_qwen3_dense_profile_runtime(topology, task, guest_input, None),
         "host_matmul" => run_host_matmul_smoke(topology, task),
+        "deepseek-v4-flash"
+        | "deepseek_v4_flash"
+        | "deepseek-v4-flash-simpler"
+        | "deepseek_v4_flash_simpler"
+        | "deepseek-v4-flash-official"
+        | "deepseek_v4_flash_official"
+        | "deepseek-v4-flash-geometry-smoke" => {
+            run_deepseek_v4_flash_chipbackend(topology, task, guest_input)
+        }
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
     }
+}
+
+fn run_deepseek_v4_flash_chipbackend(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+) -> Result<Vec<u8>, String> {
+    const DISPATCH_RESULT_WORD: u64 = 0;
+
+    if topology.ubpus.is_empty() {
+        return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
+    }
+    if task.scope_depth > 8 {
+        return Err(format!(
+            "deepseek_v4_flash_invalid_scope_depth:{}",
+            task.scope_depth
+        ));
+    }
+    if guest_input.is_empty() {
+        return Err("deepseek_v4_flash_guest_input_empty".to_string());
+    }
+
+    Ok(DISPATCH_RESULT_WORD.to_le_bytes().to_vec())
 }
 
 fn run_qwen3_range_chipbackend(
@@ -1721,6 +1921,29 @@ fn run_qwen3_range_chipbackend(
             }
             run_qwen3_dense_reference_prefill_runtime(topology, task, guest_input, None)
         }
+        "deepseek-v4-flash" | "deepseek_v4_flash" => {
+            run_deepseek_v4_flash_real_range_runtime(topology, task, guest_input, operands)
+        }
+        "deepseek-v4-flash-simpler" | "deepseek_v4_flash_simpler" => {
+            run_deepseek_v4_flash_simpler_range_runtime(topology, task, guest_input, operands)
+        }
+        "deepseek-v4-flash-official" | "deepseek_v4_flash_official" => {
+            let source = deepseek_v4_flash_model_source()?;
+            if source.format != DeepseekV4FlashModelFormat::OfficialSafetensors {
+                return Err(format!(
+                    "deepseek_v4_flash_official_profile_requires_safetensors:path={}:format={}",
+                    source.path.display(),
+                    source.format.label()
+                ));
+            }
+            run_deepseek_v4_flash_simpler_range_runtime(topology, task, guest_input, operands)
+        }
+        "deepseek-v4-flash-geometry-smoke" => run_deepseek_v4_flash_geometry_smoke_range_runtime(
+            topology,
+            task,
+            guest_input,
+            operands,
+        ),
         "host_matmul" => run_host_matmul_smoke(topology, task),
         "host_vector" | "" => run_host_vector_chipbackend(topology, task, guest_input),
         other => Err(format!("unsupported_w4_chipbackend_profile:{other}")),
@@ -2210,6 +2433,44 @@ fn resolve_qwen3_range_dispatch_operands(
         }
     }
 
+    Ok(Some(operands))
+}
+
+fn resolve_deepseek_v4_flash_range_dispatch_operands(
+    req: &Qwen3RangeDispatchReq,
+    segment_payload: &[u8],
+    surface: &LocalGuestUapiSurface,
+) -> Result<Option<Qwen3RangeDispatchOperands>, String> {
+    if req.object_ref_count == 0 {
+        return Ok(None);
+    }
+    let refs = qwen3_range_dispatch_object_refs(req, segment_payload)?;
+    let mut operands = Qwen3RangeDispatchOperands::default();
+
+    for object_ref in refs {
+        operands.object_refs.push(object_ref);
+        match object_ref.object_kind {
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
+            | QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT => {}
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
+                let expected_len = usize::try_from(object_ref.payload_bytes)
+                    .map_err(|_| "deepseek_v4_flash_kv_operand_bytes_too_large".to_string())?;
+                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                if !operand.is_object_backed() || operand.bytes().len() != expected_len {
+                    return Err(format!(
+                        "deepseek_v4_flash_kv_operand_invalid:got={}:expected={expected_len}",
+                        operand.bytes().len()
+                    ));
+                }
+                operands.previous_kv = Some(operand);
+            }
+            kind => {
+                return Err(format!(
+                    "deepseek_v4_flash_object_ref_kind_unsupported:{kind}"
+                ));
+            }
+        }
+    }
     Ok(Some(operands))
 }
 
@@ -4295,8 +4556,10 @@ fn qwen3_dense_runtime_model_key() -> String {
 }
 
 fn qwen3_guest_prompt_base_token_count() -> u64 {
-    std::env::var("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS")
+    std::env::var("SIM_LLM_INFER_PROMPT_TOKEN_IDS")
         .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS").ok())
         .filter(|value| !value.is_empty())
         .map(|value| {
             value
@@ -4831,6 +5094,15 @@ fn qwen3_enqueue_w5_memory_runtime_commit(
     Ok(())
 }
 
+fn qwen3_w5_kv_artifact_id(
+    run_id: &str,
+    decode_step: u64,
+    layer_start: u32,
+    layer_end: u32,
+) -> String {
+    format!("artifact/kv/{run_id}/step{decode_step}/layers-{layer_start}-{layer_end}")
+}
+
 fn qwen3_commit_w5_memory_runtime_artifacts(
     store_path: PathBuf,
     object_store_path: PathBuf,
@@ -4963,17 +5235,20 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
     } else {
         None
     };
-    let kv_artifact_id = format!(
-        "artifact/kv/{}/step{}/{}",
-        run_id, refs.decode_step, producer_node
+    let kv_artifact_id = qwen3_w5_kv_artifact_id(
+        &run_id,
+        refs.decode_step,
+        contract.layer_start,
+        contract.layer_end,
     );
     let kv_checksum = qwen3_lingqu_object_payload_checksum(
         format!(
-            "{}:{}:{}:{}:{}:{:x}",
+            "{}:{}:{}:{}:{}:{}:{:x}",
             kv_artifact_id,
             run_id,
             refs.decode_step,
-            producer_node,
+            refs.position,
+            contract.layer_start,
             contract.layer_end,
             refs.kv_ref.payload_checksum
         )
@@ -5360,15 +5635,50 @@ fn qwen3_guest_range_compute_contract(
         total_layers: task.coord.levels[6],
         hidden_bytes: task.coord.levels[7],
     };
-    if contract.pipeline_nodes != qwen3_dense_runtime_tp_nodes() as u32
-        || contract.total_layers != qwen3_dense_runtime_total_layers() as u32
+    let active_profile = std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE")
+        .unwrap_or_else(|_| "host_vector".to_string());
+    let geometry_valid = match active_profile.as_str() {
+        "deepseek-v4-flash"
+        | "deepseek_v4_flash"
+        | "deepseek-v4-flash-simpler"
+        | "deepseek_v4_flash_simpler"
+        | "deepseek-v4-flash-official"
+        | "deepseek_v4_flash_official" => {
+            const DS4_HIDDEN_F32_VALUES: u64 = 16_384;
+            const MAX_REAL_PROMPT_TOKENS: u64 = 32;
+
+            let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+            contract.pipeline_nodes > 0
+                && u64::from(contract.pipeline_nodes) <= profile.num_hidden_layers
+                && u64::from(contract.total_layers) == profile.num_hidden_layers
+                && u64::from(contract.hidden_bytes) % (DS4_HIDDEN_F32_VALUES * 4) == 0
+                && u64::from(contract.hidden_bytes)
+                    <= DS4_HIDDEN_F32_VALUES * 4 * MAX_REAL_PROMPT_TOKENS
+        }
+        "deepseek-v4-flash-geometry-smoke" => {
+            let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+            let prefill_hidden_bytes = profile.hidden_size * profile.prefill_tokens * 2;
+            let decode_hidden_bytes = profile.hidden_size * profile.decode_tokens * 2;
+            contract.pipeline_nodes > 0
+                && u64::from(contract.pipeline_nodes) <= profile.num_hidden_layers
+                && u64::from(contract.total_layers) == profile.num_hidden_layers
+                && (u64::from(contract.hidden_bytes) == prefill_hidden_bytes
+                    || u64::from(contract.hidden_bytes) == decode_hidden_bytes)
+        }
+        _ => {
+            contract.pipeline_nodes == qwen3_dense_runtime_tp_nodes() as u32
+                && contract.total_layers == qwen3_dense_runtime_total_layers() as u32
+                && (u64::from(contract.hidden_bytes) == qwen3_dense_runtime_hidden_range_bytes()
+                    || u64::from(contract.hidden_bytes)
+                        == qwen3_dense_runtime_decode_hidden_bytes())
+        }
+    };
+    if !geometry_valid
         || contract.node >= contract.pipeline_nodes
         || contract.next_node >= contract.pipeline_nodes
         || contract.layer_start >= contract.layer_end
         || contract.layer_end > contract.total_layers
         || contract.hidden_bytes == 0
-        || (u64::from(contract.hidden_bytes) != qwen3_dense_runtime_hidden_range_bytes()
-            && u64::from(contract.hidden_bytes) != qwen3_dense_runtime_decode_hidden_bytes())
     {
         return Err(format!(
             "qwen3_guest_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
@@ -5870,6 +6180,1315 @@ fn run_qwen3_dense_profile_runtime(
             full_vocab_checked
         );
     }
+    Ok(output)
+}
+
+const DS4_FLASH_HIDDEN_F32_VALUES: usize = 16_384;
+
+#[derive(Clone, Copy)]
+enum DeepseekRangeEngine {
+    Ds4,
+    Simpler,
+}
+
+struct DeepseekRangeEngineOutput {
+    hidden: Vec<f32>,
+    kv_payload: Vec<u8>,
+    logits: Vec<f32>,
+    candidates: Vec<DeepseekRangeCandidate>,
+    selected_text_bytes: Option<Vec<u8>>,
+    routed_layer_count: u64,
+    routed_expert_bytes: u64,
+    route_checksum: u64,
+}
+
+struct DeepseekRangeCandidate {
+    id: i32,
+    text_bytes: Vec<u8>,
+    logit: f32,
+}
+
+impl DeepseekRangeEngine {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ds4 => "ds4",
+            Self::Simpler => "simpler",
+        }
+    }
+}
+
+fn deepseek_v4_flash_f32_payload(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+fn deepseek_v4_flash_f32_values(payload: &[u8]) -> Result<Vec<f32>, String> {
+    if payload.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(format!(
+            "deepseek_v4_flash_hidden_payload_unaligned:bytes={}",
+            payload.len()
+        ));
+    }
+    Ok(payload
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+const SIM_DEEPSEEK_V4_FLASH: &str = "SIM_DEEPSEEK_V4_FLASH";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeepseekV4FlashModelFormat {
+    Gguf,
+    OfficialSafetensors,
+}
+
+impl DeepseekV4FlashModelFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Gguf => "gguf",
+            Self::OfficialSafetensors => "official-safetensors",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeepseekV4FlashModelSource {
+    path: PathBuf,
+    format: DeepseekV4FlashModelFormat,
+}
+
+fn inspect_deepseek_v4_flash_model_source(
+    path: &Path,
+) -> Result<DeepseekV4FlashModelSource, String> {
+    let resolved = fs::canonicalize(path).map_err(|err| {
+        format!(
+            "deepseek_v4_flash_model_source_missing:{}:{err}",
+            path.display()
+        )
+    })?;
+    if resolved.is_dir() {
+        if resolved.join("model.safetensors.index.json").is_file()
+            || resolved.join("model.safetensors").is_file()
+        {
+            return Ok(DeepseekV4FlashModelSource {
+                path: resolved,
+                format: DeepseekV4FlashModelFormat::OfficialSafetensors,
+            });
+        }
+        return Err(format!(
+            "deepseek_v4_flash_model_source_directory_invalid:{}",
+            resolved.display()
+        ));
+    }
+    if !resolved.is_file() {
+        return Err(format!(
+            "deepseek_v4_flash_model_source_not_file_or_directory:{}",
+            resolved.display()
+        ));
+    }
+    let file_name = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if file_name == "model.safetensors"
+        || file_name.ends_with(".safetensors.index.json")
+        || file_name.ends_with(".safetensors")
+    {
+        return Ok(DeepseekV4FlashModelSource {
+            path: resolved,
+            format: DeepseekV4FlashModelFormat::OfficialSafetensors,
+        });
+    }
+    let mut magic = [0u8; 4];
+    fs::File::open(&resolved)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|err| {
+            format!(
+                "deepseek_v4_flash_model_source_header_read_failed:{}:{err}",
+                resolved.display()
+            )
+        })?;
+    if &magic != b"GGUF" {
+        return Err(format!(
+            "deepseek_v4_flash_model_source_format_unsupported:{}",
+            resolved.display()
+        ));
+    }
+    Ok(DeepseekV4FlashModelSource {
+        path: resolved,
+        format: DeepseekV4FlashModelFormat::Gguf,
+    })
+}
+
+fn resolve_deepseek_v4_flash_model_source(
+    configured: Option<PathBuf>,
+    search_roots: Vec<PathBuf>,
+) -> Result<DeepseekV4FlashModelSource, String> {
+    if let Some(path) = configured {
+        return inspect_deepseek_v4_flash_model_source(&path);
+    }
+    for candidate in search_roots.into_iter().flat_map(|root| {
+        let ds4 = root.join("../ds4");
+        [
+            ds4.join("ds4flash.gguf"),
+            ds4.join(
+                "gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+            ),
+        ]
+    }) {
+        if let Ok(source) = inspect_deepseek_v4_flash_model_source(&candidate) {
+            return Ok(source);
+        }
+    }
+    Err("deepseek_v4_flash_model_source_not_found:set_SIM_DEEPSEEK_V4_FLASH".to_string())
+}
+
+fn deepseek_v4_flash_model_source() -> Result<DeepseekV4FlashModelSource, String> {
+    let configured = std::env::var_os(SIM_DEEPSEEK_V4_FLASH)
+        .map(|value| {
+            if value.is_empty() {
+                Err("deepseek_v4_flash_model_source_empty:SIM_DEEPSEEK_V4_FLASH".to_string())
+            } else {
+                Ok(PathBuf::from(value))
+            }
+        })
+        .transpose()?;
+    let mut search_roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        search_roots.extend(current_exe.ancestors().map(Path::to_path_buf));
+    }
+    search_roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    resolve_deepseek_v4_flash_model_source(configured, search_roots)
+}
+
+fn deepseek_v4_flash_gguf_path() -> Result<PathBuf, String> {
+    let source = deepseek_v4_flash_model_source()?;
+    if source.format != DeepseekV4FlashModelFormat::Gguf {
+        return Err(format!(
+            "deepseek_v4_flash_runtime_format_unsupported:format={}:path={}:official_FP4_FP8_runtime_not_implemented",
+            source.format.label(),
+            source.path.display()
+        ));
+    }
+    Ok(source.path)
+}
+
+fn deepseek_v4_flash_runtime_paths() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let model_path = deepseek_v4_flash_gguf_path()?;
+    let mut search_roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        search_roots.extend(current_dir.ancestors().map(Path::to_path_buf));
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        search_roots.extend(current_exe.ancestors().map(Path::to_path_buf));
+    }
+    search_roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let runtime_dir = search_roots
+        .into_iter()
+        .map(|root| root.join("../ds4"))
+        .find(|candidate| candidate.join("ds4.c").is_file())
+        .ok_or_else(|| "deepseek_v4_flash_sibling_runtime_not_found".to_string())?;
+    let library_path = runtime_dir.join("build/libds4_w5.dylib");
+    if !library_path.is_file() {
+        return Err(format!(
+            "deepseek_v4_flash_library_missing:{}",
+            library_path.display()
+        ));
+    }
+    Ok((runtime_dir, library_path, model_path))
+}
+
+fn run_deepseek_v4_flash_real_range_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    run_deepseek_v4_flash_range_runtime_with_engine(
+        topology,
+        task,
+        guest_input,
+        operands,
+        DeepseekRangeEngine::Ds4,
+    )
+}
+
+fn run_deepseek_v4_flash_simpler_range_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    run_deepseek_v4_flash_range_runtime_with_engine(
+        topology,
+        task,
+        guest_input,
+        operands,
+        DeepseekRangeEngine::Simpler,
+    )
+}
+
+fn run_deepseek_v4_flash_range_runtime_with_engine(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+    engine: DeepseekRangeEngine,
+) -> Result<Vec<u8>, String> {
+    let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    if topology.ubpus.is_empty() {
+        return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
+    }
+    let contract = qwen3_guest_range_compute_contract(task)?
+        .ok_or_else(|| "deepseek_v4_flash_range_contract_missing".to_string())?;
+    let all_token_ids = qwen3_dense_reference_guest_input_token_ids(guest_input);
+    if all_token_ids.is_empty() {
+        return Err("deepseek_v4_flash_prompt_tokens_missing".to_string());
+    }
+    let all_token_ids: Vec<i32> = all_token_ids
+        .iter()
+        .copied()
+        .map(|token| {
+            i32::try_from(token)
+                .map_err(|_| format!("deepseek_v4_flash_token_out_of_range:{token}"))
+        })
+        .collect::<Result<_, _>>()?;
+    let decode_step = qwen3_dense_runtime_decode_step_from_guest_input(guest_input);
+    let (token_ids, previous_token_ids, previous_kv, position) =
+        deepseek_v4_flash_decode_slice_inputs(
+            profile.vocab_size,
+            contract.layer_start,
+            decode_step,
+            &all_token_ids,
+            guest_input,
+            operands,
+        )?;
+    let executed_token_count = token_ids.len();
+    let expected_hidden_len = token_ids
+        .len()
+        .checked_mul(DS4_FLASH_HIDDEN_F32_VALUES)
+        .and_then(|values| values.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| "deepseek_v4_flash_hidden_bytes_overflow".to_string())?;
+    if contract.hidden_bytes as usize != expected_hidden_len {
+        return Err(format!(
+            "deepseek_v4_flash_hidden_bytes_mismatch:contract={}:tokens={}:expected={expected_hidden_len}",
+            contract.hidden_bytes,
+            token_ids.len()
+        ));
+    }
+    let input_hidden = if contract.layer_start == 0 {
+        None
+    } else {
+        let payload = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "deepseek_v4_flash_hidden_input_missing:offset={QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={expected_hidden_len}"
+                )
+            })?;
+        if payload.len() != expected_hidden_len {
+            return Err(format!(
+                "deepseek_v4_flash_hidden_input_size_mismatch:actual={}:expected={expected_hidden_len}",
+                payload.len()
+            ));
+        }
+        let hidden_ref = deepseek_v4_flash_materialized_object_ref(
+            guest_input,
+            0,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+        )?;
+        let payload_checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+        if hidden_ref.payload_bytes != payload.len() as u64
+            || hidden_ref.payload_checksum != payload_checksum
+        {
+            return Err(format!(
+                "deepseek_v4_flash_hidden_materialization_mismatch:bytes={}:ref_bytes={}:checksum={payload_checksum:#x}:ref_checksum={:#x}",
+                payload.len(),
+                hidden_ref.payload_bytes,
+                hidden_ref.payload_checksum
+            ));
+        }
+        Some(deepseek_v4_flash_f32_values(payload)?)
+    };
+    let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let engine_output = match engine {
+        DeepseekRangeEngine::Ds4 => {
+            let (runtime_dir, library_path, model_path) = deepseek_v4_flash_runtime_paths()?;
+            let slice = ds4_eval_layer_slice_in_memory(&Ds4SliceMemoryConfig {
+                library_path,
+                runtime_dir,
+                model_path,
+                context: 1024,
+                layer_start: contract.layer_start,
+                layer_end: contract.layer_end,
+                position,
+                token_ids,
+                input_hidden,
+                previous_token_ids,
+                previous_kv,
+                output_logits: terminal_owner,
+            })?;
+            let selected_text_bytes = slice
+                .report
+                .selected_token
+                .as_ref()
+                .map(|candidate| candidate.text.as_bytes().to_vec());
+            DeepseekRangeEngineOutput {
+                hidden: slice.hidden,
+                kv_payload: slice.kv_payload,
+                logits: slice.logits,
+                candidates: slice
+                    .report
+                    .candidates
+                    .into_iter()
+                    .map(|candidate| DeepseekRangeCandidate {
+                        id: candidate.id,
+                        text_bytes: candidate.text.into_bytes(),
+                        logit: candidate.logit,
+                    })
+                    .collect(),
+                selected_text_bytes,
+                routed_layer_count: 0,
+                routed_expert_bytes: 0,
+                route_checksum: 0,
+            }
+        }
+        DeepseekRangeEngine::Simpler => {
+            let model_source = deepseek_v4_flash_model_source()?;
+            let mut state = DeepseekV4FlashModelState::new()?;
+            if let Some(payload) = previous_kv.as_deref() {
+                state.restore_range_state(
+                    u64::from(contract.layer_start),
+                    u64::from(contract.layer_end),
+                    payload,
+                )?;
+            }
+            let token_ids = token_ids
+                .into_iter()
+                .map(|token| {
+                    usize::try_from(token)
+                        .map_err(|_| format!("deepseek_v4_flash_token_invalid:{token}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let artifact_dir = std::env::temp_dir().join("ub-sim-deepseek-v4-flash-simpler");
+            let segment_base = 1_000_000_000u64
+                .saturating_add(u64::from(contract.node).saturating_mul(100_000_000))
+                .saturating_add(decode_step.saturating_mul(20_000_000));
+            match model_source.format {
+                DeepseekV4FlashModelFormat::Gguf => {
+                    let catalog = GgufCatalog::open(&model_source.path)?;
+                    catalog.validate_deepseek_v4_flash()?;
+                    let execution = execute_deepseek_gguf_sequence_range_through_simpler(
+                        topology,
+                        task,
+                        &artifact_dir,
+                        segment_base,
+                        &catalog,
+                        &mut state,
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                        &token_ids,
+                        position,
+                        input_hidden.as_deref(),
+                        terminal_owner,
+                    )?;
+                    let (routed_layer_count, route_checksum) =
+                        deepseek_v4_flash_route_execution_summary(&execution.token_layer_routes);
+                    let kv_payload = state.encode_range_state(
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                    )?;
+                    let logits = execution.logits.unwrap_or_default();
+                    let candidates = if terminal_owner {
+                        deepseek_v4_flash_candidates_from_logits(&catalog, &logits)?
+                    } else {
+                        Vec::new()
+                    };
+                    let selected_text_bytes = candidates
+                        .first()
+                        .map(|candidate| candidate.text_bytes.clone());
+                    DeepseekRangeEngineOutput {
+                        hidden: execution.hidden_hc,
+                        kv_payload,
+                        logits,
+                        candidates,
+                        selected_text_bytes,
+                        routed_layer_count,
+                        routed_expert_bytes: execution.loaded_routed_expert_bytes as u64,
+                        route_checksum,
+                    }
+                }
+                DeepseekV4FlashModelFormat::OfficialSafetensors => {
+                    let checkpoint = DeepseekV4Checkpoint::open(
+                        &model_source.path,
+                        DeepseekV4CacheLimits::default(),
+                    )?;
+                    let execution = execute_deepseek_official_sequence_range_through_simpler(
+                        &checkpoint,
+                        topology,
+                        task,
+                        &artifact_dir,
+                        segment_base,
+                        &mut state,
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                        &token_ids,
+                        position,
+                        input_hidden.as_deref(),
+                        terminal_owner,
+                    )?;
+                    let (routed_layer_count, route_checksum) =
+                        deepseek_v4_flash_route_execution_summary(&execution.token_layer_routes);
+                    let kv_payload = state.encode_range_state(
+                        u64::from(contract.layer_start),
+                        u64::from(contract.layer_end),
+                    )?;
+                    let logits = execution.logits.unwrap_or_default();
+                    let candidates = if terminal_owner {
+                        deepseek_v4_flash_official_candidates_from_logits(
+                            &model_source.path,
+                            &logits,
+                        )?
+                    } else {
+                        Vec::new()
+                    };
+                    let selected_text_bytes = candidates
+                        .first()
+                        .map(|candidate| candidate.text_bytes.clone());
+                    DeepseekRangeEngineOutput {
+                        hidden: execution.hidden_hc,
+                        kv_payload,
+                        logits,
+                        candidates,
+                        selected_text_bytes,
+                        routed_layer_count,
+                        routed_expert_bytes: execution.routed_expert_bytes,
+                        route_checksum,
+                    }
+                }
+            }
+        }
+    };
+    let output_tensor_payload = deepseek_v4_flash_f32_payload(&engine_output.hidden);
+    if output_tensor_payload.len() != expected_hidden_len {
+        return Err(format!(
+            "deepseek_v4_flash_hidden_output_size_mismatch:actual={}:expected={expected_hidden_len}",
+            output_tensor_payload.len()
+        ));
+    }
+    let input_checksum = if contract.layer_start > 0 {
+        let payload = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
+            )
+            .ok_or_else(|| "deepseek_v4_flash_hidden_input_checksum_missing".to_string())?;
+        qwen3_dense_reference_range_object_payload_checksum(payload)
+    } else {
+        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?
+    };
+    let output_tensor_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
+    let selected_text = engine_output
+        .selected_text_bytes
+        .as_deref()
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_else(|| "unmapped".to_string());
+    let kv_state_payload = engine_output.kv_payload;
+    let kv_state_bytes = kv_state_payload.len() as u64;
+    let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
+    let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let range_layer_checksum = checksum_words(&[
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.next_node),
+        u64::from(contract.pipeline_nodes),
+        u64::from(contract.total_layers),
+        u64::from(contract.hidden_bytes),
+        input_checksum,
+        output_tensor_checksum,
+        kv_state_checksum,
+        profile.num_experts,
+        profile.num_experts_used,
+    ]);
+    let range_forward_summary = Qwen3DenseReferenceRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start: u64::from(contract.layer_start),
+        layer_end: u64::from(contract.layer_end),
+        layer_count,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes: u64::from(contract.hidden_bytes),
+        input_tensor_checksum: input_checksum,
+        output_tensor_checksum,
+        range_layer_checksum,
+        real_layer_execution_count: layer_count,
+        first_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_start),
+        ]),
+        final_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_end - 1),
+        ]),
+        input_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_payload,
+        kv_state_bytes,
+        kv_state_checksum,
+        kv_state_payload,
+        engram_context_report: None,
+    };
+    let logits_descriptors = if terminal_owner {
+        vec![deepseek_v4_flash_real_logits_descriptor(
+            &engine_output.logits,
+            &engine_output.candidates,
+            decode_step,
+            range_layer_checksum,
+            output_tensor_checksum,
+            u64::from(contract.total_layers),
+        )?]
+    } else {
+        Vec::new()
+    };
+    let output_len = qwen3_dense_reference_service_flow_output_len(
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    let mut output = vec![0u8; output_len];
+    qwen3_dense_reference_write_service_flow_markers(
+        &mut output,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    if let (Some(descriptor), Some(text_bytes)) = (
+        logits_descriptors.first(),
+        engine_output.selected_text_bytes.as_deref(),
+    ) {
+        if !text_bytes.is_empty() {
+            deepseek_v4_flash_patch_real_text_output(&mut output, descriptor, text_bytes)?;
+        }
+    }
+    eprintln!(
+        "deepseek-v4-flash-real-range-runtime: engine={} node={} nodes={} layers=[{},{}) terminal_owner={} step={} history_tokens={} executed_tokens={} position={} hidden_bytes={} kv_bytes={} routed_layers={} routed_expert_bytes={} route_checksum=0x{:016x} input_checksum=0x{:016x} output_checksum=0x{:016x} token={} text={} status=ok",
+        engine.name(),
+        contract.node,
+        contract.pipeline_nodes,
+        contract.layer_start,
+        contract.layer_end,
+        terminal_owner as u8,
+        decode_step,
+        all_token_ids.len(),
+        executed_token_count,
+        position,
+        contract.hidden_bytes,
+        kv_state_bytes,
+        engine_output.routed_layer_count,
+        engine_output.routed_expert_bytes,
+        engine_output.route_checksum,
+        input_checksum,
+        output_tensor_checksum,
+        logits_descriptors.first().map(|value| value.sampled_token).unwrap_or(0),
+        selected_text,
+    );
+    Ok(output)
+}
+
+fn deepseek_v4_flash_route_execution_summary(routes: &[Vec<Vec<usize>>]) -> (u64, u64) {
+    let mut words = Vec::new();
+    let mut layer_count = 0u64;
+
+    for (token_index, token_routes) in routes.iter().enumerate() {
+        for (layer_index, experts) in token_routes.iter().enumerate() {
+            layer_count = layer_count.saturating_add(1);
+            words.push(token_index as u64);
+            words.push(layer_index as u64);
+            words.push(experts.len() as u64);
+            words.extend(experts.iter().map(|expert| *expert as u64));
+        }
+    }
+    (layer_count, checksum_words(&words))
+}
+
+fn deepseek_v4_flash_decode_slice_inputs(
+    vocab_size: u64,
+    layer_start: u32,
+    decode_step: u64,
+    all_token_ids: &[i32],
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<(Vec<i32>, Vec<i32>, Option<Vec<u8>>, u32), String> {
+    if decode_step == 0 {
+        if all_token_ids.is_empty() {
+            return Err("deepseek_v4_flash_prompt_tokens_missing".to_string());
+        }
+        return Ok((all_token_ids.to_vec(), Vec::new(), None, 0));
+    }
+
+    let history_token = all_token_ids
+        .last()
+        .copied()
+        .ok_or_else(|| format!("deepseek_v4_flash_decode_history_missing:step={decode_step}"))?;
+    let input_token = if layer_start == 0 {
+        let input_token_ref = deepseek_v4_flash_materialized_object_ref(
+            guest_input,
+            0,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+        )?;
+        let payload = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64,
+            )
+            .ok_or_else(|| {
+                format!("deepseek_v4_flash_decode_input_token_materialization_missing:step={decode_step}")
+            })?;
+        let payload_checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
+        if input_token_ref.payload_bytes != payload.len() as u64
+            || input_token_ref.payload_checksum != payload_checksum
+        {
+            return Err(format!(
+                "deepseek_v4_flash_decode_input_token_materialization_mismatch:step={decode_step}:checksum={payload_checksum:#x}:ref_checksum={:#x}",
+                input_token_ref.payload_checksum
+            ));
+        }
+        let producer_step = read_u64_le_at(payload, 0);
+        if producer_step + 1 != decode_step {
+            return Err(format!(
+                "deepseek_v4_flash_decode_input_token_step_mismatch:producer={producer_step}:consumer={decode_step}"
+            ));
+        }
+        read_u64_le_at(payload, 8)
+    } else {
+        u64::try_from(history_token)
+            .map_err(|_| "deepseek_v4_flash_decode_history_token_negative".to_string())?
+    };
+    if input_token >= vocab_size {
+        return Err(format!(
+            "deepseek_v4_flash_decode_input_token_out_of_range:token={input_token}:vocab={}",
+            vocab_size
+        ));
+    }
+    let input_token = i32::try_from(input_token)
+        .map_err(|_| "deepseek_v4_flash_decode_input_token_i32_overflow".to_string())?;
+    if history_token != input_token {
+        return Err(format!(
+            "deepseek_v4_flash_decode_history_token_mismatch:history={history_token}:input={input_token}:step={decode_step}"
+        ));
+    }
+    let previous_token_ids = all_token_ids[..all_token_ids.len() - 1].to_vec();
+    if previous_token_ids.is_empty() {
+        return Err(format!(
+            "deepseek_v4_flash_decode_previous_tokens_missing:step={decode_step}"
+        ));
+    }
+    let previous_kv_operand = operands
+        .and_then(|value| value.previous_kv.as_ref())
+        .ok_or_else(|| {
+            format!("deepseek_v4_flash_decode_previous_kv_operand_missing:step={decode_step}")
+        })?;
+    let previous_kv_ref = previous_kv_operand.object_ref();
+    let previous_kv_header = guest_input
+        .get(
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+        )
+        .ok_or_else(|| {
+            format!("deepseek_v4_flash_decode_previous_kv_header_missing:step={decode_step}")
+        })?;
+    let marker = read_u64_le_at(previous_kv_header, 0);
+    let previous_kv_len = usize::try_from(read_u64_le_at(previous_kv_header, 8))
+        .map_err(|_| "deepseek_v4_flash_decode_previous_kv_size_overflow".to_string())?;
+    let previous_kv_checksum = read_u64_le_at(previous_kv_header, 16);
+    let previous_kv_step = read_u64_le_at(previous_kv_header, 24);
+    if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
+        || previous_kv_step + 1 != decode_step
+        || previous_kv_len == 0
+    {
+        return Err(format!(
+            "deepseek_v4_flash_decode_previous_kv_header_invalid:step={decode_step}:marker={marker:#x}:producer={previous_kv_step}:bytes={previous_kv_len}"
+        ));
+    }
+    let previous_kv = previous_kv_operand.bytes();
+    let object_checksum = qwen3_dense_reference_range_object_payload_checksum(previous_kv);
+    if previous_kv_ref.payload_bytes != previous_kv_len as u64
+        || previous_kv_ref.payload_checksum != previous_kv_checksum
+        || previous_kv.len() != previous_kv_len
+        || object_checksum != previous_kv_checksum
+    {
+        return Err(format!(
+            "deepseek_v4_flash_decode_previous_kv_operand_mismatch:step={decode_step}:bytes={previous_kv_len}:operand_bytes={}:ref_bytes={}:checksum={object_checksum:#x}:expected={previous_kv_checksum:#x}:ref_checksum={:#x}",
+            previous_kv.len(),
+            previous_kv_ref.payload_bytes,
+            previous_kv_ref.payload_checksum
+        ));
+    }
+    let position = u32::try_from(previous_token_ids.len()).map_err(|_| {
+        format!(
+            "deepseek_v4_flash_decode_position_overflow:tokens={}",
+            previous_token_ids.len()
+        )
+    })?;
+    Ok((
+        vec![input_token],
+        previous_token_ids,
+        Some(previous_kv.to_vec()),
+        position,
+    ))
+}
+
+fn deepseek_v4_flash_materialized_object_ref(
+    guest_input: &[u8],
+    index: usize,
+    expected_kind: u16,
+) -> Result<LingquObmmObjectRefWire, String> {
+    let start = QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+        .checked_add(
+            index
+                .checked_mul(LingquObmmObjectRefWire::BYTE_LEN)
+                .ok_or_else(|| "deepseek_v4_flash_object_ref_index_overflow".to_string())?,
+        )
+        .ok_or_else(|| "deepseek_v4_flash_object_ref_offset_overflow".to_string())?;
+    let end = start
+        .checked_add(LingquObmmObjectRefWire::BYTE_LEN)
+        .ok_or_else(|| "deepseek_v4_flash_object_ref_end_overflow".to_string())?;
+    let bytes = guest_input.get(start..end).ok_or_else(|| {
+        format!("deepseek_v4_flash_object_ref_missing:index={index}:kind={expected_kind}")
+    })?;
+    let object_ref = LingquObmmObjectRefWire::from_le_bytes(bytes)
+        .map_err(|err| format!("deepseek_v4_flash_object_ref_parse:index={index}:{err}"))?;
+    object_ref
+        .validate()
+        .map_err(|err| format!("deepseek_v4_flash_object_ref_invalid:index={index}:{err}"))?;
+    if object_ref.object_kind != expected_kind {
+        return Err(format!(
+            "deepseek_v4_flash_object_ref_kind_mismatch:index={index}:actual={}:expected={expected_kind}",
+            object_ref.object_kind
+        ));
+    }
+    Ok(object_ref)
+}
+
+fn deepseek_v4_flash_patch_real_text_output(
+    output: &mut [u8],
+    descriptor: &Qwen3DenseReferenceLogitsDescriptor,
+    piece_bytes: &[u8],
+) -> Result<(), String> {
+    const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+    const TOKEN_TEXT_TABLE_MARKER: u64 = 0x7133773474787430;
+    const TEXT_OUTPUT_TABLE_MARKER: u64 = 0x71337734746f7430;
+    const TEXT_OUTPUT_BYTES_TABLE_MARKER: u64 = 0x71337734746f6230;
+
+    if piece_bytes.is_empty() || piece_bytes.len() > 16 {
+        return Err(format!(
+            "deepseek_v4_flash_token_piece_size_invalid:{}",
+            piece_bytes.len()
+        ));
+    }
+    let piece = qwen3_dense_reference_token_piece_from_bytes(descriptor.sampled_token, piece_bytes);
+    let logits_table = find_u64_marker(output, LOGITS_TABLE_MARKER)
+        .ok_or_else(|| "deepseek_v4_flash_logits_table_missing".to_string())?;
+    let logits_table_bytes = read_u64_le_at(output, logits_table + 24) as usize;
+    let token_text_table = logits_table + 64 + logits_table_bytes;
+    if read_u64_le_at(output, token_text_table) != TOKEN_TEXT_TABLE_MARKER {
+        return Err("deepseek_v4_flash_token_text_table_missing".to_string());
+    }
+    let token_text_table_bytes = read_u64_le_at(output, token_text_table + 24) as usize;
+    let token_text_entry = token_text_table + 64;
+    write_u64_le_at(output, token_text_table + 32, piece.byte_len);
+    write_u64_le_at(output, token_text_entry + 24, piece.byte_len);
+    write_u64_le_at(output, token_text_entry + 32, piece.word0);
+    write_u64_le_at(output, token_text_entry + 40, piece.word1);
+
+    let token_words = [
+        descriptor.step_index,
+        descriptor.sampled_token,
+        descriptor.runner_up_token,
+        piece.checksum,
+    ];
+    let text_words = [
+        descriptor.step_index,
+        descriptor.text_byte_offset,
+        piece.byte_len,
+        piece.word0,
+        piece.word1,
+    ];
+    let logits_words = [
+        descriptor.step_index,
+        descriptor.logits_checksum,
+        descriptor.margin_milli,
+        descriptor.logits_count,
+        descriptor.real_path_digest,
+    ];
+    let mut sequence_words = vec![
+        descriptor.step_index,
+        descriptor.sampled_token,
+        descriptor.runner_up_token,
+        descriptor.text_byte_offset,
+        piece.byte_len,
+        piece.checksum,
+        descriptor.text_checksum,
+        descriptor.logits_checksum,
+        descriptor.real_path_digest,
+    ];
+    sequence_words.push(piece.byte_len);
+    let sequence_checksum = checksum_words(&sequence_words);
+    let text_output_table = token_text_table + 64 + token_text_table_bytes;
+    if read_u64_le_at(output, text_output_table) != TEXT_OUTPUT_TABLE_MARKER {
+        return Err("deepseek_v4_flash_text_output_table_missing".to_string());
+    }
+    write_u64_le_at(output, text_output_table + 16, piece.byte_len);
+    write_u64_le_at(output, text_output_table + 24, sequence_checksum);
+    write_u64_le_at(output, text_output_table + 32, checksum_words(&token_words));
+    write_u64_le_at(output, text_output_table + 40, checksum_words(&text_words));
+    write_u64_le_at(
+        output,
+        text_output_table + 48,
+        checksum_words(&logits_words),
+    );
+
+    let text_bytes_table = text_output_table + 64;
+    if read_u64_le_at(output, text_bytes_table) != TEXT_OUTPUT_BYTES_TABLE_MARKER {
+        return Err("deepseek_v4_flash_text_output_bytes_table_missing".to_string());
+    }
+    let allocated_bytes = read_u64_le_at(output, text_bytes_table + 24) as usize;
+    let text_bytes_base = text_bytes_table + 64;
+    if allocated_bytes < piece_bytes.len() || text_bytes_base + allocated_bytes > output.len() {
+        return Err(format!(
+            "deepseek_v4_flash_text_output_bytes_too_small:allocated={allocated_bytes}:needed={}",
+            piece_bytes.len()
+        ));
+    }
+    write_u64_le_at(output, text_bytes_table + 8, piece.byte_len);
+    write_u64_le_at(
+        output,
+        text_bytes_table + 32,
+        qwen3_dense_reference_text_output_bytes_checksum(piece_bytes),
+    );
+    write_u64_le_at(output, text_bytes_table + 40, sequence_checksum);
+    output[text_bytes_base..text_bytes_base + allocated_bytes].fill(0);
+    output[text_bytes_base..text_bytes_base + piece_bytes.len()].copy_from_slice(piece_bytes);
+    Ok(())
+}
+
+fn deepseek_v4_flash_candidates_from_logits(
+    catalog: &GgufCatalog,
+    logits: &[f32],
+) -> Result<Vec<DeepseekRangeCandidate>, String> {
+    deepseek_v4_flash_top_logits(logits)?
+        .into_iter()
+        .map(|(token, logit)| {
+            Ok(DeepseekRangeCandidate {
+                id: i32::try_from(token)
+                    .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
+                text_bytes: catalog.tokenizer_token_text(token)?.into_bytes(),
+                logit,
+            })
+        })
+        .collect()
+}
+
+fn deepseek_v4_flash_official_candidates_from_logits(
+    tokenizer_path: &Path,
+    logits: &[f32],
+) -> Result<Vec<DeepseekRangeCandidate>, String> {
+    deepseek_v4_flash_top_logits(logits)?
+        .into_iter()
+        .map(|(token, logit)| {
+            let encoded = token_piece_bytes_from_tokenizer_path(tokenizer_path, token as u64)
+                .map_err(|err| {
+                    format!("deepseek_v4_flash_official_tokenizer_piece_failed:{token}:{err}")
+                })?;
+            let text_bytes = token_piece_decode_bytes(&encoded);
+            if text_bytes.is_empty() {
+                return Err(format!(
+                    "deepseek_v4_flash_official_tokenizer_piece_empty:{token}"
+                ));
+            }
+            Ok(DeepseekRangeCandidate {
+                id: i32::try_from(token)
+                    .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{token}"))?,
+                text_bytes,
+                logit,
+            })
+        })
+        .collect()
+}
+
+fn deepseek_v4_flash_top_logits(logits: &[f32]) -> Result<Vec<(usize, f32)>, String> {
+    let expected = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize;
+    if logits.len() != expected {
+        return Err(format!(
+            "deepseek_v4_flash_logits_size_mismatch:actual={}:expected={expected}",
+            logits.len()
+        ));
+    }
+    let mut top = Vec::<(usize, f32)>::with_capacity(4);
+    for (token, logit) in logits.iter().copied().enumerate() {
+        if !logit.is_finite() {
+            return Err(format!(
+                "deepseek_v4_flash_logit_not_finite:token={token}:value={logit}"
+            ));
+        }
+        let insertion = top
+            .iter()
+            .position(|(existing_token, existing_logit)| {
+                logit > *existing_logit || (logit == *existing_logit && token < *existing_token)
+            })
+            .unwrap_or(top.len());
+        if insertion < 4 {
+            top.insert(insertion, (token, logit));
+            top.truncate(4);
+        } else if top.len() < 4 {
+            top.push((token, logit));
+        }
+    }
+    Ok(top)
+}
+
+fn deepseek_v4_flash_real_logits_descriptor(
+    logits: &[f32],
+    candidates: &[DeepseekRangeCandidate],
+    decode_step: u64,
+    range_layer_checksum: u64,
+    output_tensor_checksum: u64,
+    layer_count: u64,
+) -> Result<Qwen3DenseReferenceLogitsDescriptor, String> {
+    if logits.len() != deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize {
+        return Err(format!(
+            "deepseek_v4_flash_logits_size_mismatch:actual={}:expected={}",
+            logits.len(),
+            deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size
+        ));
+    }
+    if candidates.len() < 2 || candidates.len() > 4 {
+        return Err(format!(
+            "deepseek_v4_flash_candidate_count_invalid:{}",
+            candidates.len()
+        ));
+    }
+    let mut candidate_tokens = [0u64; 4];
+    let mut candidate_logit_bits = [0u64; 4];
+    let mut candidate_text_checksums = [0u64; 4];
+    let mut candidate_piece_bytes = [0u64; 4];
+    let mut candidate_piece_word0 = [0u64; 4];
+    let mut candidate_piece_word1 = [0u64; 4];
+    for (index, candidate) in candidates.iter().enumerate() {
+        let token = u64::try_from(candidate.id)
+            .map_err(|_| format!("deepseek_v4_flash_candidate_token_invalid:{}", candidate.id))?;
+        let piece = qwen3_dense_reference_token_piece_from_bytes(token, &candidate.text_bytes);
+        candidate_tokens[index] = token;
+        candidate_logit_bits[index] = u64::from(candidate.logit.to_bits());
+        candidate_text_checksums[index] = piece.checksum;
+        candidate_piece_bytes[index] = piece.byte_len;
+        candidate_piece_word0[index] = piece.word0;
+        candidate_piece_word1[index] = piece.word1;
+    }
+    let sampled_token = candidate_tokens[0];
+    let runner_up_token = candidate_tokens[1];
+    let margin_milli =
+        ((candidates[0].logit - candidates[1].logit).max(0.0) * 1000.0).round() as u64;
+    let logits_payload = deepseek_v4_flash_f32_payload(logits);
+    let full_vocab_logits_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&logits_payload);
+    let logits_checksum = qwen3_dense_reference_logits_checksum(
+        0,
+        0,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        full_vocab_logits_checksum,
+        u64::from(candidates[0].logit.to_bits()),
+        0,
+        range_layer_checksum,
+        output_tensor_checksum,
+    );
+    Ok(Qwen3DenseReferenceLogitsDescriptor {
+        shard_id: 0,
+        tile_id: 0,
+        segment: 1_000_000,
+        logits_count: logits.len() as u64,
+        sampled_token,
+        runner_up_token,
+        margin_milli,
+        logits_checksum,
+        full_vocab_checked_token_count: logits.len() as u64,
+        full_vocab_logits_checksum,
+        top_logit_bits: u64::from(candidates[0].logit.to_bits()),
+        runner_up_logit_bits: u64::from(candidates[1].logit.to_bits()),
+        candidate_count: candidates.len() as u64,
+        candidate_tokens,
+        candidate_logit_bits,
+        candidate_text_checksums,
+        candidate_piece_bytes,
+        candidate_piece_word0,
+        candidate_piece_word1,
+        runtime_forward_layer_count: layer_count,
+        runtime_forward_final_hidden_checksum: output_tensor_checksum,
+        runtime_forward_checksum: range_layer_checksum,
+        kvcache_read_digest: 0,
+        qkv_reference_digest: range_layer_checksum,
+        real_path_digest: output_tensor_checksum,
+        text_checksum: candidate_text_checksums[0],
+        text_byte_offset: 0,
+        step_index: decode_step,
+    })
+}
+
+fn run_deepseek_v4_flash_geometry_smoke_range_runtime(
+    topology: &SimTopology,
+    task: &TaskKey,
+    guest_input: &[u8],
+    operands: Option<&Qwen3RangeDispatchOperands>,
+) -> Result<Vec<u8>, String> {
+    let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    if topology.ubpus.is_empty() {
+        return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
+    }
+    let contract = qwen3_guest_range_compute_contract(task)?
+        .ok_or_else(|| "deepseek_v4_flash_range_contract_missing".to_string())?;
+    let hidden_len = usize::try_from(contract.hidden_bytes)
+        .map_err(|_| "deepseek_v4_flash_hidden_bytes_too_large".to_string())?;
+    let kv_state_bytes = deepseek_v4_flash::deepseek_v4_flash_range_kv_state_bytes(
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+    )
+    .ok_or_else(|| "deepseek_v4_flash_kv_geometry_invalid".to_string())?;
+    let kv_state_len = usize::try_from(kv_state_bytes)
+        .map_err(|_| "deepseek_v4_flash_kv_bytes_too_large".to_string())?;
+    let input_checksum =
+        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?;
+    let output_tensor_payload =
+        qwen3_dense_profile_deterministic_payload(hidden_len, input_checksum, contract);
+    let output_tensor_checksum =
+        qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
+    let kv_state_payload =
+        qwen3_dense_profile_deterministic_payload(kv_state_len, output_tensor_checksum, contract);
+    let kv_state_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload);
+    let layer_count = u64::from(contract.layer_end - contract.layer_start);
+    let range_layer_checksum = checksum_words(&[
+        u64::from(contract.node),
+        u64::from(contract.layer_start),
+        u64::from(contract.layer_end),
+        u64::from(contract.next_node),
+        u64::from(contract.pipeline_nodes),
+        u64::from(contract.total_layers),
+        u64::from(contract.hidden_bytes),
+        input_checksum,
+        output_tensor_checksum,
+        kv_state_checksum,
+        profile.num_experts,
+        profile.num_experts_used,
+    ]);
+    let range_forward_summary = Qwen3DenseReferenceRangeForwardSummary {
+        node: u64::from(contract.node),
+        layer_start: u64::from(contract.layer_start),
+        layer_end: u64::from(contract.layer_end),
+        layer_count,
+        next_node: u64::from(contract.next_node),
+        pipeline_nodes: u64::from(contract.pipeline_nodes),
+        total_layers: u64::from(contract.total_layers),
+        hidden_bytes: u64::from(contract.hidden_bytes),
+        input_tensor_checksum: input_checksum,
+        output_tensor_checksum,
+        range_layer_checksum,
+        real_layer_execution_count: layer_count,
+        first_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_start),
+        ]),
+        final_layer_output_checksum: checksum_words(&[
+            output_tensor_checksum,
+            u64::from(contract.layer_end - 1),
+        ]),
+        input_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_payload,
+        kv_state_bytes,
+        kv_state_checksum,
+        kv_state_payload,
+        engram_context_report: None,
+    };
+    let decode_step = qwen3_range_forward_registry_decode_step(
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+        contract,
+    );
+    let terminal_owner = contract.node + 1 == contract.pipeline_nodes;
+    let logits_descriptors = if terminal_owner {
+        let qkv_reference_digest = range_layer_checksum;
+        let real_path_digest = output_tensor_checksum;
+        let fallback_seed = qkv_reference_digest.rotate_left(19) ^ real_path_digest.rotate_left(23);
+        let sampled_token =
+            qwen3_dense_reference_sampled_token(fallback_seed, 0, profile.vocab_size);
+        let runner_up_token = (sampled_token
+            + 17
+            + ((qkv_reference_digest >> 4) & 0x0f)
+            + ((real_path_digest >> 8) & 0x0f))
+            % profile.vocab_size;
+        let margin_milli = 1_000;
+        let logits_checksum = qwen3_dense_reference_logits_checksum(
+            0,
+            0,
+            sampled_token,
+            runner_up_token,
+            margin_milli,
+            0,
+            0,
+            0,
+            qkv_reference_digest,
+            real_path_digest,
+        );
+        let mut candidate_tokens = [0u64; 4];
+        let mut candidate_logit_bits = [0u64; 4];
+        let mut candidate_text_checksums = [0u64; 4];
+        let mut candidate_piece_bytes = [0u64; 4];
+        let mut candidate_piece_word0 = [0u64; 4];
+        let mut candidate_piece_word1 = [0u64; 4];
+        candidate_tokens[0] = sampled_token;
+        candidate_tokens[1] = runner_up_token;
+        candidate_tokens[2] = (runner_up_token + 1) % profile.vocab_size;
+        candidate_tokens[3] = (runner_up_token + 2) % profile.vocab_size;
+        for index in 0..candidate_tokens.len() {
+            let token = candidate_tokens[index];
+            let piece = qwen3_dense_reference_token_piece(token, None)?;
+            candidate_logit_bits[index] = f32::to_bits(4.0 - index as f32) as u64;
+            candidate_text_checksums[index] =
+                qwen3_dense_reference_sample_text_checksum(decode_step, token, 0, None)?;
+            candidate_piece_bytes[index] = piece.byte_len;
+            candidate_piece_word0[index] = piece.word0;
+            candidate_piece_word1[index] = piece.word1;
+        }
+        vec![Qwen3DenseReferenceLogitsDescriptor {
+            shard_id: 0,
+            tile_id: 0,
+            segment: 1_000_000,
+            logits_count: profile.vocab_size,
+            sampled_token,
+            runner_up_token,
+            margin_milli,
+            logits_checksum,
+            full_vocab_checked_token_count: 0,
+            full_vocab_logits_checksum: 0,
+            top_logit_bits: 0,
+            runner_up_logit_bits: 0,
+            candidate_count: candidate_tokens.len() as u64,
+            candidate_tokens,
+            candidate_logit_bits,
+            candidate_text_checksums,
+            candidate_piece_bytes,
+            candidate_piece_word0,
+            candidate_piece_word1,
+            runtime_forward_layer_count: 0,
+            runtime_forward_final_hidden_checksum: 0,
+            runtime_forward_checksum: 0,
+            kvcache_read_digest: 0,
+            qkv_reference_digest,
+            real_path_digest,
+            text_checksum: candidate_text_checksums[0],
+            text_byte_offset: 0,
+            step_index: decode_step,
+        }]
+    } else {
+        Vec::new()
+    };
+    let output_len = qwen3_dense_reference_service_flow_output_len(
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    let mut output = vec![0u8; output_len];
+    qwen3_dense_reference_write_service_flow_markers(
+        &mut output,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &logits_descriptors,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        Some(&range_forward_summary),
+    )?;
+    eprintln!(
+        "deepseek-v4-flash-range-runtime: node={} nodes={} layers=[{},{}) terminal_owner={} step={} hidden_bytes={} kv_bytes={} input_checksum=0x{:016x} output_checksum=0x{:016x} logits={} status=ok",
+        contract.node,
+        contract.pipeline_nodes,
+        contract.layer_start,
+        contract.layer_end,
+        terminal_owner as u8,
+        decode_step,
+        contract.hidden_bytes,
+        kv_state_bytes,
+        input_checksum,
+        output_tensor_checksum,
+        logits_descriptors.len(),
+    );
     Ok(output)
 }
 
@@ -6909,6 +8528,713 @@ pub fn qwen3_dense_reference_decode_loop_report_with_prompt(
     )
 }
 
+/// Model-profile-aware decode loop entry point.
+///
+/// Stage 1: dispatches by `profile`. "qwen3" (or any unknown name) runs the
+/// existing dense Qwen3 decode loop unchanged. "deepseek-v4-flash" runs the
+/// Flash geometry smoke (43-layer / 8-node sharding, hidden/KV sizing, object
+/// service profile) — NOT real Flash inference (that needs stage 2 MoE).
+fn is_deepseek_v4_flash_profile_name(profile: &str) -> bool {
+    matches!(profile, "deepseek-v4-flash" | "deepseek_v4_flash")
+}
+
+pub fn model_decode_loop_report(
+    topology: &SimTopology,
+    step_count: usize,
+    profile: &str,
+    prompt: Option<&str>,
+) -> Result<Qwen3DenseReferenceDecodeLoopReport, String> {
+    if is_deepseek_v4_flash_profile_name(profile) {
+        // Validate Flash geometry before running the structural decode path.
+        deepseek_v4_flash_geometry_smoke_check(topology)?;
+    }
+    match prompt {
+        Some(prompt) => {
+            qwen3_dense_reference_decode_loop_report_with_prompt(topology, step_count, prompt)
+        }
+        None => qwen3_dense_reference_decode_loop_report(topology, step_count),
+    }
+}
+
+/// DeepSeek V4 Flash geometry smoke check (stage 1).
+///
+/// Validates the pipeline-parallel geometry for Flash over the given topology:
+/// 43 layers sharded across 8 nodes with a balanced spread (max diff 1), and
+/// that the topology has enough hosts. This is the verified stage-1 output;
+/// real per-layer MoE forward is stage 2.
+pub fn deepseek_v4_flash_geometry_smoke_report(
+    topology: &SimTopology,
+) -> Result<DeepseekV4FlashGeometrySmokeReport, String> {
+    use deepseek_v4_flash::{
+        deepseek_v4_flash_layer_range_for_node, deepseek_v4_flash_layers_per_node,
+        deepseek_v4_flash_range_kv_state_bytes, DEEPSEEK_V4_FLASH_PROFILE,
+    };
+
+    let tp_nodes = DEEPSEEK_V4_FLASH_PROFILE.tp_nodes as usize;
+    if topology.hosts.len() < tp_nodes {
+        return Err(format!(
+            "flash geometry smoke requires at least {} topology hosts, found {}",
+            tp_nodes,
+            topology.hosts.len()
+        ));
+    }
+    let layers_per_node = deepseek_v4_flash_layers_per_node();
+    let total: u64 = layers_per_node.iter().sum();
+    if total != DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "flash geometry smoke: layer assignment sums to {}, expected {}",
+            total, DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+        ));
+    }
+    let min_layers = *layers_per_node.iter().min().unwrap_or(&0);
+    let max_layers = *layers_per_node.iter().max().unwrap_or(&0);
+    if max_layers.saturating_sub(min_layers) > 1 {
+        return Err(format!(
+            "flash geometry smoke: layer spread unbalanced (min={} max={})",
+            min_layers, max_layers
+        ));
+    }
+    let hidden_range_bytes =
+        DEEPSEEK_V4_FLASH_PROFILE.hidden_size * DEEPSEEK_V4_FLASH_PROFILE.prefill_tokens * 2;
+    let decode_hidden_bytes =
+        DEEPSEEK_V4_FLASH_PROFILE.hidden_size * DEEPSEEK_V4_FLASH_PROFILE.decode_tokens * 2;
+    let mut nodes = Vec::with_capacity(tp_nodes);
+    let mut expected_start = 0u64;
+    for node_id in 0..DEEPSEEK_V4_FLASH_PROFILE.tp_nodes {
+        let (layer_start, layer_end) = deepseek_v4_flash_layer_range_for_node(node_id)
+            .ok_or_else(|| format!("flash geometry smoke: node range missing node={node_id}"))?;
+        if layer_start != expected_start {
+            return Err(format!(
+                "flash geometry smoke: non-contiguous range node={node_id} start={layer_start} expected={expected_start}"
+            ));
+        }
+        expected_start = layer_end;
+        let layer_count = layer_end - layer_start;
+        let next_node = (node_id + 1) % DEEPSEEK_V4_FLASH_PROFILE.tp_nodes;
+        let terminal = next_node == 0;
+        let kv_state_bytes = deepseek_v4_flash_range_kv_state_bytes(layer_start, layer_end)
+            .ok_or_else(|| {
+                format!(
+                    "flash geometry smoke: kv range invalid node={node_id} layers=[{layer_start},{layer_end})"
+                )
+            })?;
+        let object_count = 4;
+        let object_desc_put_count = 4;
+        let object_desc_get_count = 4;
+        let barrier_count = 1;
+        let handoff_ready = !terminal;
+        let node_checksum = checksum_words(&[
+            node_id,
+            layer_start,
+            layer_end,
+            layer_count,
+            next_node,
+            u64::from(terminal),
+            hidden_range_bytes,
+            kv_state_bytes,
+            object_count,
+            object_desc_put_count,
+            object_desc_get_count,
+            barrier_count,
+            u64::from(handoff_ready),
+        ]);
+        nodes.push(DeepseekV4FlashGeometrySmokeNodeReport {
+            node_id,
+            layer_start,
+            layer_end,
+            layer_count,
+            next_node,
+            terminal,
+            hidden_input_bytes: hidden_range_bytes,
+            hidden_output_bytes: hidden_range_bytes,
+            kv_state_bytes,
+            object_count,
+            object_desc_put_count,
+            object_desc_get_count,
+            barrier_count,
+            handoff_ready,
+            node_checksum,
+        });
+    }
+    if expected_start != DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers {
+        return Err(format!(
+            "flash geometry smoke: last range ends at {expected_start}, expected {}",
+            DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+        ));
+    }
+    let total_kv_state_bytes = nodes.iter().map(|node| node.kv_state_bytes).sum();
+    let weight_object_count = nodes.len() as u64;
+    let kv_object_count = nodes.len() as u64;
+    let hidden_object_count = nodes.len() as u64 * 2;
+    let object_desc_put_count = nodes
+        .iter()
+        .map(|node| node.object_desc_put_count)
+        .sum::<u64>();
+    let object_desc_get_count = nodes
+        .iter()
+        .map(|node| node.object_desc_get_count)
+        .sum::<u64>();
+    let barrier_count = nodes.iter().map(|node| node.barrier_count).sum::<u64>();
+    let handoff_count = nodes.iter().filter(|node| node.handoff_ready).count() as u64;
+    let mut checksum_words_buf = vec![
+        DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        DEEPSEEK_V4_FLASH_PROFILE.tp_nodes,
+        hidden_range_bytes,
+        decode_hidden_bytes,
+        total_kv_state_bytes,
+        weight_object_count,
+        kv_object_count,
+        hidden_object_count,
+        object_desc_put_count,
+        object_desc_get_count,
+        barrier_count,
+        handoff_count,
+    ];
+    checksum_words_buf.extend(nodes.iter().map(|node| node.node_checksum));
+    let aggregate_checksum = checksum_words(&checksum_words_buf);
+    let ready = nodes.len() == tp_nodes
+        && expected_start == DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers
+        && handoff_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes.saturating_sub(1)
+        && barrier_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes
+        && weight_object_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes
+        && kv_object_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes
+        && hidden_object_count == DEEPSEEK_V4_FLASH_PROFILE.tp_nodes * 2;
+    Ok(DeepseekV4FlashGeometrySmokeReport {
+        ready,
+        node_count: nodes.len() as u64,
+        layer_count: DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        hidden_range_bytes,
+        decode_hidden_bytes,
+        total_kv_state_bytes,
+        weight_object_count,
+        kv_object_count,
+        hidden_object_count,
+        object_desc_put_count,
+        object_desc_get_count,
+        barrier_count,
+        handoff_count,
+        aggregate_checksum,
+        nodes,
+    })
+}
+
+pub fn deepseek_v4_flash_geometry_smoke_check(topology: &SimTopology) -> Result<(), String> {
+    let report = deepseek_v4_flash_geometry_smoke_report(topology)?;
+    if !report.ready {
+        return Err("flash geometry smoke: report not ready".to_string());
+    }
+    Ok(())
+}
+
+/// Per-layer MoE forward model for DeepSeek V4 Flash (stage 2).
+///
+/// This is the layer-internal MoE forward modeling: for each decode step it
+/// generates a synthetic per-token routing trace over all 43 layers, replays
+/// it through the node-side LRU expert cache simulator, and records the
+/// hit/miss/eviction/pread statistics that feed the latency model
+/// `max(compute_time, miss_load_time)` (plan section 5, stage 2.3). Real
+/// routing (indexer + sinkhorn) lives in the inference engine (ds4); this is
+/// the simulator's modeling input (plan section 7.2 synthetic fallback).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashMoeDecodeReport {
+    pub route_source: String,
+    pub route_source_kind: String,
+    pub weight_provider_source: String,
+    pub weight_provider_model_key: String,
+    pub weight_provider_quant: String,
+    pub step_count: usize,
+    pub total_layers: u64,
+    pub tokens_per_step: u64,
+    pub top_k: u64,
+    pub expert_bytes: u64,
+    pub cache_capacity_slots: u32,
+    pub route_decision_count: u64,
+    pub weight_tile_resolve_count: u64,
+    pub unique_weight_tile_count: u64,
+    pub weight_tile_payload_bytes: u64,
+    pub weight_tile_payload_checksum: u64,
+    /// Cumulative stats across all steps.
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub pread_bytes: u64,
+    pub hit_rate_milli: u64,
+    pub compute_time_us: u64,
+    pub miss_load_time_us: u64,
+    pub estimated_latency_us: u64,
+    pub latency_compute_us_per_touch: u64,
+    pub latency_load_bytes_per_us: u64,
+}
+
+/// Run the Flash MoE decode forward model for `step_count` decode steps.
+///
+/// Each step generates `tokens_per_step` routing decisions per layer (default
+/// 1 decode token) and replays them through a single node-side expert cache
+/// sized by `cache_capacity_slots`. The cache is persistent across steps so
+/// the hit rate reflects a streaming decode stream.
+pub fn deepseek_v4_flash_moe_decode_report(
+    step_count: usize,
+    tokens_per_step: u64,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::{
+        synthetic_route_trace_for_step, ExpertWeightProviderSpec,
+    };
+
+    if step_count == 0 {
+        return Err("flash moe decode report requires step_count > 0".to_string());
+    }
+    let total_layers = DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers;
+    let mut trace = Vec::new();
+    for step in 0..step_count {
+        trace.extend(synthetic_route_trace_for_step(
+            tokens_per_step,
+            total_layers,
+            step as u64,
+            step as u64,
+        ));
+    }
+    let provider = ExpertWeightProviderSpec::deterministic(
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+        "iq2_xxs",
+        expert_bytes,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        "synthetic",
+        "synthetic",
+        &trace,
+        "deterministic://deepseek-v4-flash",
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_with_provider(
+    step_count: usize,
+    tokens_per_step: u64,
+    cache_capacity_slots: u32,
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::synthetic_route_trace_for_step;
+
+    if step_count == 0 {
+        return Err("flash moe decode report requires step_count > 0".to_string());
+    }
+    let total_layers = DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers;
+    let mut trace = Vec::new();
+    for step in 0..step_count {
+        trace.extend(synthetic_route_trace_for_step(
+            tokens_per_step,
+            total_layers,
+            step as u64,
+            step as u64,
+        ));
+    }
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        "synthetic",
+        "synthetic",
+        &trace,
+        weight_provider_source,
+        provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_text(
+    route_source: &str,
+    trace_text: &str,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace = sim_models::deepseek_v4_flash_moe::parse_expert_route_trace(trace_text)?;
+    deepseek_v4_flash_moe_decode_report_from_trace(
+        route_source,
+        &trace,
+        cache_capacity_slots,
+        expert_bytes,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_text_with_provider(
+    route_source: &str,
+    trace_text: &str,
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace = sim_models::deepseek_v4_flash_moe::parse_expert_route_trace(trace_text)?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider(
+        route_source,
+        &trace,
+        weight_provider_source,
+        provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_file(
+    trace_path: &Path,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace_text = fs::read_to_string(trace_path).map_err(|err| {
+        format!(
+            "failed to read flash route trace {}: {err}",
+            trace_path.display()
+        )
+    })?;
+    deepseek_v4_flash_moe_decode_report_from_trace_text(
+        &trace_path.display().to_string(),
+        &trace_text,
+        cache_capacity_slots,
+        expert_bytes,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_file_with_provider_file(
+    trace_path: &Path,
+    provider_path: &Path,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let trace_text = fs::read_to_string(trace_path).map_err(|err| {
+        format!(
+            "failed to read flash route trace {}: {err}",
+            trace_path.display()
+        )
+    })?;
+    let provider = sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec_from_file(
+        provider_path,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_text_with_provider(
+        &trace_path.display().to_string(),
+        &trace_text,
+        &provider_path.display().to_string(),
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_manifest_file(
+    manifest_path: &Path,
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let (manifest, trace) =
+        sim_models::deepseek_v4_flash_moe::parse_expert_route_trace_from_manifest_file(
+            manifest_path,
+        )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        &manifest_path.display().to_string(),
+        &manifest.source_kind,
+        &trace,
+        "deterministic://deepseek-v4-flash",
+        &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec::deterministic(
+            deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+            "iq2_xxs",
+            expert_bytes,
+        )?,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_provider_file(
+    manifest_path: &Path,
+    provider_path: &Path,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let (manifest, trace) =
+        sim_models::deepseek_v4_flash_moe::parse_expert_route_trace_from_manifest_file(
+            manifest_path,
+        )?;
+    let provider = sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec_from_file(
+        provider_path,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        &manifest_path.display().to_string(),
+        &manifest.source_kind,
+        &trace,
+        &provider_path.display().to_string(),
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file(
+    manifest_path: &Path,
+    catalog_path: &Path,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    let (manifest, trace) =
+        sim_models::deepseek_v4_flash_moe::parse_expert_route_trace_from_manifest_file(
+            manifest_path,
+        )?;
+    let catalog =
+        sim_models::deepseek_v4_flash_moe::parse_expert_weight_catalog_from_file(catalog_path)?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_catalog_kind(
+        &manifest_path.display().to_string(),
+        &manifest.source_kind,
+        &trace,
+        &catalog_path.display().to_string(),
+        &catalog,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace(
+    route_source: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    cache_capacity_slots: u32,
+    expert_bytes: u64,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec;
+
+    let provider = ExpertWeightProviderSpec::deterministic(
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_MODEL_KEY,
+        "iq2_xxs",
+        expert_bytes,
+    )?;
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        route_source,
+        "direct-trace",
+        trace,
+        "deterministic://deepseek-v4-flash",
+        &provider,
+        cache_capacity_slots,
+    )
+}
+
+pub fn deepseek_v4_flash_moe_decode_report_from_trace_with_provider(
+    route_source: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+        route_source,
+        "direct-trace",
+        trace,
+        weight_provider_source,
+        provider,
+        cache_capacity_slots,
+    )
+}
+
+fn deepseek_v4_flash_moe_decode_report_from_trace_with_provider_kind(
+    route_source: &str,
+    route_source_kind: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    weight_provider_source: &str,
+    provider: &sim_models::deepseek_v4_flash_moe::ExpertWeightProviderSpec,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::{
+        expert_weight_tile_ref_from_provider, validate_expert_route_decision,
+        validate_expert_weight_provider_spec, ExpertCacheSimulator,
+    };
+
+    if trace.is_empty() {
+        return Err("flash moe decode report requires a non-empty route trace".to_string());
+    }
+    if cache_capacity_slots == 0 {
+        return Err("flash moe decode report requires cache_capacity_slots > 0".to_string());
+    }
+    validate_expert_weight_provider_spec(provider)?;
+    let expert_bytes = provider.payload_bytes;
+    let step_count = trace
+        .iter()
+        .map(|decision| decision.step_index)
+        .max()
+        .and_then(|max_step| usize::try_from(max_step + 1).ok())
+        .ok_or_else(|| "flash moe decode report step_count overflow".to_string())?;
+    let tokens_per_step = trace
+        .iter()
+        .map(|decision| decision.token_index)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let top_k = DEEPSEEK_V4_FLASH_PROFILE.num_experts_used;
+    let mut cache = ExpertCacheSimulator::new(cache_capacity_slots as usize, expert_bytes);
+    let mut unique_tiles = BTreeSet::new();
+    let mut checksum_input = vec![
+        step_count as u64,
+        tokens_per_step,
+        DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        top_k,
+        expert_bytes,
+        u64::from(cache_capacity_slots),
+    ];
+    for decision in trace {
+        validate_expert_route_decision(decision)?;
+        for &expert_id in &decision.active_experts {
+            let tile =
+                expert_weight_tile_ref_from_provider(provider, decision.layer_id, expert_id)?;
+            checksum_input.push(tile.payload_checksum);
+            unique_tiles.insert(tile.object_key);
+        }
+    }
+    cache.replay(trace);
+    let hits = cache.hits;
+    let misses = cache.misses;
+    let evictions = cache.evictions;
+    let pread_bytes = cache.pread_bytes;
+    let total = hits + misses;
+    let hit_rate_milli = if total == 0 { 0 } else { (hits * 1000) / total };
+    let latency = cache.latency_estimate();
+    let unique_weight_tile_count = unique_tiles.len() as u64;
+    let weight_tile_resolve_count = trace
+        .iter()
+        .map(|decision| decision.active_experts.len() as u64)
+        .sum::<u64>();
+    let weight_tile_payload_bytes = unique_weight_tile_count * expert_bytes;
+    checksum_input.push(weight_tile_resolve_count);
+    checksum_input.push(unique_weight_tile_count);
+    checksum_input.push(weight_tile_payload_bytes);
+    checksum_input.push(latency.compute_time_us);
+    checksum_input.push(latency.miss_load_time_us);
+    checksum_input.push(latency.estimated_latency_us);
+    checksum_input.push(latency.compute_us_per_touch);
+    checksum_input.push(latency.load_bytes_per_us);
+    Ok(DeepseekV4FlashMoeDecodeReport {
+        route_source: route_source.to_string(),
+        route_source_kind: route_source_kind.to_string(),
+        weight_provider_source: weight_provider_source.to_string(),
+        weight_provider_model_key: provider.model_key.clone(),
+        weight_provider_quant: provider.quant.clone(),
+        step_count,
+        total_layers: DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        tokens_per_step,
+        top_k,
+        expert_bytes,
+        cache_capacity_slots,
+        route_decision_count: trace.len() as u64,
+        weight_tile_resolve_count,
+        unique_weight_tile_count,
+        weight_tile_payload_bytes,
+        weight_tile_payload_checksum: checksum_words(&checksum_input),
+        hits,
+        misses,
+        evictions,
+        pread_bytes,
+        hit_rate_milli,
+        compute_time_us: latency.compute_time_us,
+        miss_load_time_us: latency.miss_load_time_us,
+        estimated_latency_us: latency.estimated_latency_us,
+        latency_compute_us_per_touch: latency.compute_us_per_touch,
+        latency_load_bytes_per_us: latency.load_bytes_per_us,
+    })
+}
+
+fn deepseek_v4_flash_moe_decode_report_from_trace_with_catalog_kind(
+    route_source: &str,
+    route_source_kind: &str,
+    trace: &[sim_models::deepseek_v4_flash_moe::ExpertRouteDecision],
+    weight_provider_source: &str,
+    catalog: &sim_models::deepseek_v4_flash_moe::ExpertWeightCatalog,
+    cache_capacity_slots: u32,
+) -> Result<DeepseekV4FlashMoeDecodeReport, String> {
+    use sim_models::deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
+    use sim_models::deepseek_v4_flash_moe::{
+        expert_weight_catalog_common_payload_bytes, expert_weight_tile_ref_from_catalog,
+        validate_expert_route_decision, validate_expert_weight_catalog, ExpertCacheSimulator,
+    };
+
+    if trace.is_empty() {
+        return Err("flash moe decode report requires a non-empty route trace".to_string());
+    }
+    if cache_capacity_slots == 0 {
+        return Err("flash moe decode report requires cache_capacity_slots > 0".to_string());
+    }
+    validate_expert_weight_catalog(catalog)?;
+    let expert_bytes = expert_weight_catalog_common_payload_bytes(catalog)?;
+    let step_count = trace
+        .iter()
+        .map(|decision| decision.step_index)
+        .max()
+        .and_then(|max_step| usize::try_from(max_step + 1).ok())
+        .ok_or_else(|| "flash moe decode report step_count overflow".to_string())?;
+    let tokens_per_step = trace
+        .iter()
+        .map(|decision| decision.token_index)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let top_k = DEEPSEEK_V4_FLASH_PROFILE.num_experts_used;
+    let mut cache = ExpertCacheSimulator::new(cache_capacity_slots as usize, expert_bytes);
+    let mut unique_tiles = BTreeSet::new();
+    let mut checksum_input = vec![
+        step_count as u64,
+        tokens_per_step,
+        DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        top_k,
+        expert_bytes,
+        u64::from(cache_capacity_slots),
+    ];
+    for decision in trace {
+        validate_expert_route_decision(decision)?;
+        for &expert_id in &decision.active_experts {
+            let tile = expert_weight_tile_ref_from_catalog(catalog, decision.layer_id, expert_id)?;
+            checksum_input.push(tile.payload_checksum);
+            unique_tiles.insert(tile.object_key);
+        }
+    }
+    cache.replay(trace);
+    let hits = cache.hits;
+    let misses = cache.misses;
+    let evictions = cache.evictions;
+    let pread_bytes = cache.pread_bytes;
+    let total = hits + misses;
+    let hit_rate_milli = if total == 0 { 0 } else { (hits * 1000) / total };
+    let latency = cache.latency_estimate();
+    let unique_weight_tile_count = unique_tiles.len() as u64;
+    let weight_tile_resolve_count = trace
+        .iter()
+        .map(|decision| decision.active_experts.len() as u64)
+        .sum::<u64>();
+    let weight_tile_payload_bytes = unique_weight_tile_count * expert_bytes;
+    checksum_input.push(weight_tile_resolve_count);
+    checksum_input.push(unique_weight_tile_count);
+    checksum_input.push(weight_tile_payload_bytes);
+    checksum_input.push(latency.compute_time_us);
+    checksum_input.push(latency.miss_load_time_us);
+    checksum_input.push(latency.estimated_latency_us);
+    checksum_input.push(latency.compute_us_per_touch);
+    checksum_input.push(latency.load_bytes_per_us);
+    Ok(DeepseekV4FlashMoeDecodeReport {
+        route_source: route_source.to_string(),
+        route_source_kind: route_source_kind.to_string(),
+        weight_provider_source: weight_provider_source.to_string(),
+        weight_provider_model_key: catalog.model_key.clone(),
+        weight_provider_quant: "catalog".to_string(),
+        step_count,
+        total_layers: DEEPSEEK_V4_FLASH_PROFILE.num_hidden_layers,
+        tokens_per_step,
+        top_k,
+        expert_bytes,
+        cache_capacity_slots,
+        route_decision_count: trace.len() as u64,
+        weight_tile_resolve_count,
+        unique_weight_tile_count,
+        weight_tile_payload_bytes,
+        weight_tile_payload_checksum: checksum_words(&checksum_input),
+        hits,
+        misses,
+        evictions,
+        pread_bytes,
+        hit_rate_milli,
+        compute_time_us: latency.compute_time_us,
+        miss_load_time_us: latency.miss_load_time_us,
+        estimated_latency_us: latency.estimated_latency_us,
+        latency_compute_us_per_touch: latency.compute_us_per_touch,
+        latency_load_bytes_per_us: latency.load_bytes_per_us,
+    })
+}
+
 pub fn qwen3_dense_reference_range_forward_report_with_prompt(
     topology: &SimTopology,
     prompt: &str,
@@ -7453,11 +9779,30 @@ fn qwen3_dense_reference_decode_duration_label(duration: Duration) -> String {
 }
 
 fn qwen3_dense_reference_object_service_profile() -> LingquObjectServiceProfile {
-    let mut profile = LingquObjectServiceProfile::default();
-    profile.queue_depth = 512;
-    profile.obmm_pool.queue_depth = 4096;
-    profile.obmm_pool.pool_bytes = 1400 * 1024 * 1024;
-    profile
+    object_service_profile_for("qwen3")
+}
+
+/// Model-profile-aware object service sizing.
+///
+/// Stage 1 generalization of `qwen3_dense_reference_object_service_profile`:
+/// dispatch by model profile name. Dense Qwen3 keeps the existing 1.4 GiB
+/// pool; DeepSeek V4 Flash has 256 routed experts per layer fetched on
+/// demand (plan section 3.3), so its pool is sized larger to hold a working
+/// set of expert weight tiles. Unknown names fall back to the qwen3 baseline
+/// so existing callers behave unchanged.
+fn object_service_profile_for(profile: &str) -> LingquObjectServiceProfile {
+    let mut p = LingquObjectServiceProfile::default();
+    p.queue_depth = 512;
+    p.obmm_pool.queue_depth = 4096;
+    p.obmm_pool.pool_bytes = if is_deepseek_v4_flash_profile_name(profile) {
+        // Flash has 256 routed experts per layer fetched on demand; give
+        // the pool headroom for a working set of expert weight tiles in
+        // addition to the hidden/KV handoff objects.
+        4096 * 1024 * 1024
+    } else {
+        1400 * 1024 * 1024
+    };
+    p
 }
 
 fn qwen3_upgrade_object_service_snapshot_profile(snapshot: &mut LingquObjectServiceSnapshot) {
@@ -13920,6 +16265,9 @@ fn with_suppressed_stdio<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, 
 
 #[cfg(all(unix, not(test)))]
 fn simpler_dispatch_log_enabled() -> bool {
+    if SIMPLER_DISPATCH_LOG_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
     std::env::var("SIM_SIMPLER_DISPATCH_LOG")
         .map(|value| {
             matches!(
@@ -13928,6 +16276,18 @@ fn simpler_dispatch_log_enabled() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(all(unix, not(test)))]
+static SIMPLER_DISPATCH_LOG_OVERRIDE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable or disable simpler's native dispatch log for CLI-driven diagnostics.
+pub fn set_simpler_dispatch_log_enabled(enabled: bool) {
+    #[cfg(all(unix, not(test)))]
+    SIMPLER_DISPATCH_LOG_OVERRIDE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(any(not(unix), test))]
+    let _ = enabled;
 }
 
 #[cfg(all(unix, not(test)))]
@@ -14003,7 +16363,7 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
         "/tmp/simpler-host-vector-artifacts/host_vector_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
-    if !path.exists() {
+    if !simpler_manifest_has_current_capi_abi(&path) {
         ensure_simpler_host_vector_manifest(&path)?;
     }
     if !path.exists() {
@@ -14016,6 +16376,9 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
 }
 
 fn ensure_simpler_host_vector_manifest(manifest_path: &Path) -> Result<(), String> {
+    if simpler_manifest_has_current_capi_abi(manifest_path) {
+        return Ok(());
+    }
     let output_dir = manifest_path.parent().ok_or_else(|| {
         format!(
             "host_vector_manifest_has_no_parent:{}",
@@ -14062,13 +16425,98 @@ fn simpler_matmul_manifest_path() -> Result<PathBuf, String> {
         "/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
-    if !path.exists() {
-        return Err(format!(
-            "missing_simpler_host_matmul_manifest:{}",
-            path.display()
-        ));
+    if !simpler_manifest_has_current_capi_abi(&path) {
+        ensure_simpler_host_matmul_manifest(&path)?;
     }
     Ok(path)
+}
+
+fn ensure_simpler_host_matmul_manifest(manifest_path: &Path) -> Result<(), String> {
+    if simpler_manifest_has_current_capi_abi(manifest_path) {
+        return Ok(());
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_matmul_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_matmul")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .status()
+        .map_err(|err| format!("run_simpler_host_matmul_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_matmul_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
+fn simpler_manifest_has_current_capi_abi(manifest_path: &Path) -> bool {
+    let Some(manifest) = std::fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return false;
+    };
+    manifest["simpler_capi_abi_version"].as_u64() == Some(2)
+        && simpler_manifest_runtime_matches_current_build(&manifest)
+}
+
+fn simpler_manifest_runtime_matches_current_build(manifest: &serde_json::Value) -> bool {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let build_lib = repo_root.join("vendor/simpler/build/lib");
+    if !build_lib.is_dir() {
+        return true;
+    }
+    simpler_manifest_runtime_matches_build_lib(manifest, &build_lib)
+}
+
+fn simpler_manifest_runtime_matches_build_lib(
+    manifest: &serde_json::Value,
+    build_lib: &Path,
+) -> bool {
+    let runtime_dir = build_lib.join("a2a3/sim/host_build_graph");
+    let artifacts = [
+        (
+            &manifest["simpler_runtime"]["host_runtime_library"]["source"],
+            runtime_dir.join("libhost_runtime.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["aicpu_binary"]["source"],
+            runtime_dir.join("libaicpu_kernel.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["aicore_binary"]["source"],
+            runtime_dir.join("libaicore_kernel.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["runtime_env"]["SIMPLER_LOG_LIBRARY"],
+            build_lib.join("libsimpler_log.so"),
+        ),
+        (
+            &manifest["simpler_runtime"]["runtime_env"]["SIMPLER_SIM_CONTEXT_LIBRARY"],
+            build_lib.join("libcpu_sim_context.so"),
+        ),
+    ];
+    artifacts.iter().all(|(cached_source, current)| {
+        cached_source
+            .as_str()
+            .and_then(|cached| std::fs::read(cached).ok())
+            .zip(std::fs::read(current).ok())
+            .is_some_and(|(cached, current)| cached == current)
+    })
 }
 
 fn simpler_engram_context_manifest_path() -> Result<PathBuf, String> {
@@ -14101,7 +16549,7 @@ fn simpler_host_engram_context_manifest_current(manifest_path: &Path) -> bool {
     value
         .get("host_engram_context_manifest_version")
         .and_then(|version| version.as_u64())
-        == Some(5)
+        == Some(6)
         && value
             .get("simpler_runtime")
             .and_then(|runtime| runtime.get("runtime_env"))
@@ -14179,6 +16627,321 @@ fn simpler_host_artifact_producer_path() -> PathBuf {
         .join("aarch64")
         .join("scripts")
         .join("prepare_simpler_host_artifacts.py")
+}
+
+pub fn ensure_simpler_host_gemm_manifest(
+    manifest_path: &Path,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<(), String> {
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    ensure_simpler_host_matmul_manifest(&base_manifest)?;
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_gemm_manifest_version"].as_u64() == Some(3)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest.host_gemm.as_ref().is_some_and(|geometry| {
+                    geometry.m == m
+                        && geometry.k == k
+                        && geometry.n == n
+                        && geometry.input_dtype == "bf16"
+                        && geometry.output_dtype == "fp32"
+                        && geometry.tile == 128
+                })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_gemm_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_gemm")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(m.to_string())
+        .arg("--gemm-k")
+        .arg(k.to_string())
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_gemm_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_gemm_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
+pub fn ensure_simpler_host_fp32_gemm_manifest(
+    manifest_path: &Path,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<(), String> {
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    ensure_simpler_host_matmul_manifest(&base_manifest)?;
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_fp32_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_fp32_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_gemm_manifest_version"].as_u64() == Some(4)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest.host_gemm.as_ref().is_some_and(|geometry| {
+                    geometry.m == m
+                        && geometry.k == k
+                        && geometry.n == n
+                        && geometry.input_dtype == "fp32"
+                        && geometry.output_dtype == "fp32"
+                        && geometry.tile == 128
+                })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_fp32_gemm_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_fp32_gemm")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(m.to_string())
+        .arg("--gemm-k")
+        .arg(k.to_string())
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_fp32_gemm_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_fp32_gemm_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
+pub fn ensure_simpler_host_quantized_gemm_manifest(
+    manifest_path: &Path,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<(), String> {
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    ensure_simpler_host_matmul_manifest(&base_manifest)?;
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_quantized_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_quantized_gemm_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_quantized_gemm_manifest_version"].as_u64() == Some(2)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest
+                    .host_quantized_gemm
+                    .as_ref()
+                    .is_some_and(|geometry| {
+                        geometry.m == m
+                            && geometry.k == k
+                            && geometry.n == n
+                            && geometry.input_dtype == "int8"
+                            && geometry.output_dtype == "int32"
+                            && geometry.tile == 128
+                    })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_quantized_gemm_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_quantized_gemm")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(m.to_string())
+        .arg("--gemm-k")
+        .arg(k.to_string())
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_quantized_gemm_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_quantized_gemm_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
+}
+
+pub fn ensure_simpler_host_q8_block_dot_manifest(
+    manifest_path: &Path,
+    blocks: u64,
+    n: u64,
+) -> Result<(), String> {
+    if blocks == 0 || n == 0 || n % 128 != 0 {
+        return Err(format!(
+            "host_q8_block_dot_shape_invalid:blocks={blocks}:n={n}"
+        ));
+    }
+    let base_manifest = std::env::var_os("SIMPLER_HOST_MATMUL_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
+        });
+    ensure_simpler_host_matmul_manifest(&base_manifest)?;
+    let base_text = std::fs::read_to_string(&base_manifest).map_err(|err| {
+        format!(
+            "read_host_q8_block_dot_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_value: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        format!(
+            "parse_host_q8_block_dot_base_runtime_manifest_failed:{}:{err}",
+            base_manifest.display()
+        )
+    })?;
+    let base_runtime_library = &base_value["simpler_runtime"]["host_runtime_library"];
+    if let Ok(text) = std::fs::read_to_string(manifest_path) {
+        if let (Ok(manifest), Ok(value)) = (
+            serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
+            serde_json::from_str::<serde_json::Value>(&text),
+        ) {
+            if value["host_q8_block_dot_manifest_version"].as_u64() == Some(3)
+                && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
+                && manifest.host_q8_block_dot.as_ref().is_some_and(|geometry| {
+                    geometry.m == blocks
+                        && geometry.k == 32
+                        && geometry.n == n
+                        && geometry.input_dtype == "int8"
+                        && geometry.output_dtype == "int32"
+                        && geometry.tile == 128
+                })
+            {
+                return Ok(());
+            }
+        }
+    }
+    let output_dir = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_q8_block_dot_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    let script = simpler_host_artifact_producer_path();
+    let status = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--profile")
+        .arg("host_q8_block_dot")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--gemm-m")
+        .arg(blocks.to_string())
+        .arg("--gemm-k")
+        .arg("32")
+        .arg("--gemm-n")
+        .arg(n.to_string())
+        .arg("--reuse-runtime-manifest")
+        .arg(&base_manifest)
+        .status()
+        .map_err(|err| format!("run_simpler_host_q8_block_dot_artifact_producer_failed:{err}"))?;
+    if !status.success() || !manifest_path.exists() {
+        return Err(format!(
+            "simpler_host_q8_block_dot_artifact_producer_failed:{}:status={status}",
+            script.display()
+        ));
+    }
+    Ok(())
 }
 
 fn simpler_matmul_batch_manifest_path(
@@ -14468,6 +17231,352 @@ fn host_matmul_batched_backend_spec_from_manifest(
         simpler_runtime: Some(runtime),
         context: None,
     })
+}
+
+fn host_gemm_backend_spec_from_manifest_with_dtype(
+    manifest_path: &Path,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+    m: u64,
+    k: u64,
+    n: u64,
+    input_dtype: &str,
+    input_element_bytes: u64,
+    callable_hint: &str,
+) -> Result<DispatchBackendSpec, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_gemm_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SimplerRuntimeManifestEnvelope =
+        serde_json::from_str(&manifest_text).map_err(|err| {
+            format!(
+                "parse_simpler_gemm_manifest_failed:{}:{err}",
+                manifest_path.display()
+            )
+        })?;
+    let geometry = manifest
+        .host_gemm
+        .ok_or_else(|| "simpler_gemm_manifest_missing_geometry".to_string())?;
+    if geometry.m != m
+        || geometry.k != k
+        || geometry.n != n
+        || geometry.input_dtype != input_dtype
+        || geometry.output_dtype != "fp32"
+        || geometry.tile != 128
+    {
+        return Err(format!(
+            "simpler_gemm_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={m}x{k}x{n}:{input_dtype}/fp32:tile128",
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.input_dtype,
+            geometry.output_dtype,
+            geometry.tile
+        ));
+    }
+    let input_a_bytes = m
+        .checked_mul(k)
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
+        .ok_or_else(|| "simpler_gemm_input_a_size_overflow".to_string())?;
+    let input_b_bytes = k
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
+        .ok_or_else(|| "simpler_gemm_input_b_size_overflow".to_string())?;
+    let output_c_bytes = m
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(4))
+        .ok_or_else(|| "simpler_gemm_output_size_overflow".to_string())?;
+    let runtime = SimplerRuntimeArtifacts {
+        host_runtime_library: manifest.simpler_runtime.host_runtime_library,
+        orch_shared_object: manifest.simpler_runtime.orch_shared_object,
+        orch_function_name: manifest.simpler_runtime.orch_function_name,
+        aicpu_binary: manifest.simpler_runtime.aicpu_binary,
+        aicore_binary: manifest.simpler_runtime.aicore_binary,
+        kernels: manifest.simpler_runtime.kernels,
+        launch: manifest.simpler_runtime.launch,
+        runtime_env: manifest.simpler_runtime.runtime_env,
+        args: vec![
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_a,
+                bytes: input_a_bytes,
+            },
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_b,
+                bytes: input_b_bytes,
+            },
+            SimplerRuntimeArg::OutputSegment {
+                endpoint: output_c,
+                bytes: output_c_bytes,
+            },
+            SimplerRuntimeArg::ScalarU64(m),
+            SimplerRuntimeArg::ScalarU64(k),
+            SimplerRuntimeArg::ScalarU64(n),
+        ],
+    };
+    Ok(DispatchBackendSpec {
+        profile: DispatchBackendProfile::HostGemm,
+        platform: "a2a3sim".to_string(),
+        runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
+        callable_hint: Some(callable_hint.to_string()),
+        simpler_runtime: Some(runtime),
+        context: None,
+    })
+}
+
+fn host_gemm_backend_spec_from_manifest(
+    manifest_path: &Path,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<DispatchBackendSpec, String> {
+    host_gemm_backend_spec_from_manifest_with_dtype(
+        manifest_path,
+        input_a,
+        input_b,
+        output_c,
+        m,
+        k,
+        n,
+        "bf16",
+        2,
+        "host_gemm",
+    )
+}
+
+fn host_quantized_gemm_backend_spec_from_manifest(
+    manifest_path: &Path,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+    m: u64,
+    k: u64,
+    n: u64,
+) -> Result<DispatchBackendSpec, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_quantized_gemm_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SimplerRuntimeManifestEnvelope =
+        serde_json::from_str(&manifest_text).map_err(|err| {
+            format!(
+                "parse_simpler_quantized_gemm_manifest_failed:{}:{err}",
+                manifest_path.display()
+            )
+        })?;
+    let geometry = manifest
+        .host_quantized_gemm
+        .ok_or_else(|| "simpler_quantized_gemm_manifest_missing_geometry".to_string())?;
+    if geometry.m != m
+        || geometry.k != k
+        || geometry.n != n
+        || geometry.input_dtype != "int8"
+        || geometry.output_dtype != "int32"
+        || geometry.tile != 128
+    {
+        return Err(format!(
+            "simpler_quantized_gemm_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={m}x{k}x{n}:int8/int32:tile128",
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.input_dtype,
+            geometry.output_dtype,
+            geometry.tile
+        ));
+    }
+    let input_a_bytes = m
+        .checked_mul(k)
+        .ok_or_else(|| "simpler_quantized_gemm_input_a_size_overflow".to_string())?;
+    let input_b_bytes = k
+        .checked_mul(n)
+        .ok_or_else(|| "simpler_quantized_gemm_input_b_size_overflow".to_string())?;
+    let output_c_bytes = m
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(4))
+        .ok_or_else(|| "simpler_quantized_gemm_output_size_overflow".to_string())?;
+    let runtime = SimplerRuntimeArtifacts {
+        host_runtime_library: manifest.simpler_runtime.host_runtime_library,
+        orch_shared_object: manifest.simpler_runtime.orch_shared_object,
+        orch_function_name: manifest.simpler_runtime.orch_function_name,
+        aicpu_binary: manifest.simpler_runtime.aicpu_binary,
+        aicore_binary: manifest.simpler_runtime.aicore_binary,
+        kernels: manifest.simpler_runtime.kernels,
+        launch: manifest.simpler_runtime.launch,
+        runtime_env: manifest.simpler_runtime.runtime_env,
+        args: vec![
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_a,
+                bytes: input_a_bytes,
+            },
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_b,
+                bytes: input_b_bytes,
+            },
+            SimplerRuntimeArg::OutputSegment {
+                endpoint: output_c,
+                bytes: output_c_bytes,
+            },
+            SimplerRuntimeArg::ScalarU64(m),
+            SimplerRuntimeArg::ScalarU64(k),
+            SimplerRuntimeArg::ScalarU64(n),
+        ],
+    };
+    Ok(DispatchBackendSpec {
+        profile: DispatchBackendProfile::HostQuantizedGemm,
+        platform: "a2a3sim".to_string(),
+        runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
+        callable_hint: Some("host_quantized_gemm".to_string()),
+        simpler_runtime: Some(runtime),
+        context: None,
+    })
+}
+
+fn host_q8_block_dot_backend_spec_from_manifest(
+    manifest_path: &Path,
+    input_activation: MemoryEndpoint,
+    input_weight: MemoryEndpoint,
+    output_dot: MemoryEndpoint,
+    blocks: u64,
+    n: u64,
+) -> Result<DispatchBackendSpec, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_q8_block_dot_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SimplerRuntimeManifestEnvelope =
+        serde_json::from_str(&manifest_text).map_err(|err| {
+            format!(
+                "parse_simpler_q8_block_dot_manifest_failed:{}:{err}",
+                manifest_path.display()
+            )
+        })?;
+    let geometry = manifest
+        .host_q8_block_dot
+        .ok_or_else(|| "simpler_q8_block_dot_manifest_missing_geometry".to_string())?;
+    if geometry.m != blocks
+        || geometry.k != 32
+        || geometry.n != n
+        || geometry.input_dtype != "int8"
+        || geometry.output_dtype != "int32"
+        || geometry.tile != 128
+    {
+        return Err(format!(
+            "simpler_q8_block_dot_manifest_geometry_mismatch:got={}x{}x{}:{}/{}:tile{} expected={blocks}x32x{n}:int8/int32:tile128",
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.input_dtype,
+            geometry.output_dtype,
+            geometry.tile
+        ));
+    }
+    let activation_bytes = blocks
+        .checked_mul(32)
+        .ok_or_else(|| "simpler_q8_block_dot_activation_size_overflow".to_string())?;
+    let weight_bytes = activation_bytes
+        .checked_mul(n)
+        .ok_or_else(|| "simpler_q8_block_dot_weight_size_overflow".to_string())?;
+    let output_bytes = blocks
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(4))
+        .ok_or_else(|| "simpler_q8_block_dot_output_size_overflow".to_string())?;
+    let runtime = SimplerRuntimeArtifacts {
+        host_runtime_library: manifest.simpler_runtime.host_runtime_library,
+        orch_shared_object: manifest.simpler_runtime.orch_shared_object,
+        orch_function_name: manifest.simpler_runtime.orch_function_name,
+        aicpu_binary: manifest.simpler_runtime.aicpu_binary,
+        aicore_binary: manifest.simpler_runtime.aicore_binary,
+        kernels: manifest.simpler_runtime.kernels,
+        launch: manifest.simpler_runtime.launch,
+        runtime_env: manifest.simpler_runtime.runtime_env,
+        args: vec![
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_activation,
+                bytes: activation_bytes,
+            },
+            SimplerRuntimeArg::InputSegment {
+                endpoint: input_weight,
+                bytes: weight_bytes,
+            },
+            SimplerRuntimeArg::OutputSegment {
+                endpoint: output_dot,
+                bytes: output_bytes,
+            },
+            SimplerRuntimeArg::ScalarU64(blocks),
+            SimplerRuntimeArg::ScalarU64(32),
+            SimplerRuntimeArg::ScalarU64(n),
+        ],
+    };
+    Ok(DispatchBackendSpec {
+        profile: DispatchBackendProfile::HostQuantizedGemm,
+        platform: "a2a3sim".to_string(),
+        runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
+        callable_hint: Some("host_q8_block_dot".to_string()),
+        simpler_runtime: Some(runtime),
+        context: None,
+    })
+}
+
+pub fn deepseek_v4_flash_gemm_backend_spec_from_manifest(
+    manifest_path: &Path,
+    plan: &DeepseekV4FlashGemmPlan,
+    input_a: MemoryEndpoint,
+    input_b: MemoryEndpoint,
+    output_c: MemoryEndpoint,
+) -> Result<DispatchBackendSpec, String> {
+    let m = u64::from(plan.artifact_m);
+    let k = u64::from(plan.k);
+    let n = u64::from(plan.n);
+    if plan.supports_host_bf16_gemm() {
+        return host_gemm_backend_spec_from_manifest(
+            manifest_path,
+            input_a,
+            input_b,
+            output_c,
+            m,
+            k,
+            n,
+        );
+    }
+    if plan.supports_host_fp32_gemm() {
+        return host_gemm_backend_spec_from_manifest_with_dtype(
+            manifest_path,
+            input_a,
+            input_b,
+            output_c,
+            m,
+            k,
+            n,
+            "fp32",
+            4,
+            "host_fp32_gemm",
+        );
+    }
+    if plan.supports_host_quantized_gemm() {
+        return host_quantized_gemm_backend_spec_from_manifest(
+            manifest_path,
+            input_a,
+            input_b,
+            output_c,
+            m,
+            k,
+            n,
+        );
+    }
+    Err(format!(
+        "deepseek_gemm_unsupported_dtype_contract:{:?}:{:?}x{:?}->{:?}",
+        plan.kind, plan.input_dtype, plan.weight_dtype, plan.output_dtype
+    ))
 }
 
 fn host_engram_context_backend_spec_from_manifest(
@@ -14865,6 +17974,1918 @@ fn run_host_matmul_smoke(topology: &SimTopology, task: &TaskKey) -> Result<Vec<u
         ));
     }
     Ok(produced.to_vec())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_host_gemm(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    input_a_payload: Vec<u8>,
+    input_b_payload: Vec<u8>,
+    m: usize,
+    k: usize,
+    n: usize,
+    input_dtype: &str,
+    input_element_bytes: usize,
+    callable_hint: &str,
+) -> Result<Vec<f32>, String> {
+    let scenario_config = scenario_config_for_chipbackend()?;
+    let segment_base = 60_000 + task.task_id.saturating_mul(10);
+    let input_a = SegmentHandle(segment_base + 1);
+    let input_b = SegmentHandle(segment_base + 2);
+    let output_c = SegmentHandle(segment_base + 3);
+    let input_a_bytes = m
+        .checked_mul(k)
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
+        .ok_or_else(|| "host_gemm_input_a_size_overflow".to_string())?;
+    let input_b_bytes = k
+        .checked_mul(n)
+        .and_then(|elements| elements.checked_mul(input_element_bytes))
+        .ok_or_else(|| "host_gemm_input_b_size_overflow".to_string())?;
+    let output_elements = m
+        .checked_mul(n)
+        .ok_or_else(|| "host_gemm_output_elements_overflow".to_string())?;
+    let output_bytes = output_elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "host_gemm_output_size_overflow".to_string())?;
+    if input_a_payload.len() != input_a_bytes || input_b_payload.len() != input_b_bytes {
+        return Err(format!(
+            "host_gemm_input_size_mismatch:a={}:expected_a={input_a_bytes}:b={}:expected_b={input_b_bytes}",
+            input_a_payload.len(),
+            input_b_payload.len()
+        ));
+    }
+    let host_node = topology
+        .hosts
+        .first()
+        .map(|host| host.node_id)
+        .ok_or_else(|| "missing_host_node".to_string())?;
+    let ubpu_node = topology
+        .ubpus
+        .first()
+        .map(|ubpu| ubpu.node_id)
+        .ok_or_else(|| "missing_ubpu_node".to_string())?;
+
+    let _dispatch_lock = host_vector_dispatch_lock_guard()?;
+    let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
+    runtime.seed_host_segment(host_node, input_a, input_a_payload);
+    runtime.seed_host_segment(host_node, input_b, input_b_payload);
+    runtime.seed_host_segment(host_node, output_c, vec![0u8; output_bytes]);
+
+    let backend_spec = host_gemm_backend_spec_from_manifest_with_dtype(
+        manifest_path,
+        MemoryEndpoint {
+            node: host_node,
+            segment: input_a,
+            offset: 0,
+        },
+        MemoryEndpoint {
+            node: host_node,
+            segment: input_b,
+            offset: 0,
+        },
+        MemoryEndpoint {
+            node: host_node,
+            segment: output_c,
+            offset: 0,
+        },
+        m as u64,
+        k as u64,
+        n as u64,
+        input_dtype,
+        input_element_bytes as u64,
+        callable_hint,
+    )?;
+    let request = kvcache_host_matmul_request(
+        task.task_id,
+        vec![
+            opaque_binding(
+                "gemm_a",
+                BufferUsage::Input,
+                MemoryEndpoint {
+                    node: host_node,
+                    segment: input_a,
+                    offset: 0,
+                },
+                input_a_bytes as u64,
+            ),
+            opaque_binding(
+                "gemm_b",
+                BufferUsage::Input,
+                MemoryEndpoint {
+                    node: host_node,
+                    segment: input_b,
+                    offset: 0,
+                },
+                input_b_bytes as u64,
+            ),
+            dense_f32_binding(
+                "gemm_c_f32",
+                BufferUsage::Output,
+                MemoryEndpoint {
+                    node: host_node,
+                    segment: output_c,
+                    offset: 0,
+                },
+                output_elements as u64,
+            ),
+        ],
+    );
+    let dispatch = BackendDispatchOperation {
+        task: task.clone(),
+        function: FunctionLabel {
+            name: callable_hint.into(),
+            level: PlLevel::L2,
+        },
+        backend_spec,
+        request,
+        target_level: PlLevel::L2,
+        target_node: ubpu_node,
+        legacy_input_segments: vec![input_a, input_b],
+    };
+    let mut sink = VecEventSink::default();
+    let complete_at = scenario_config
+        .pypto
+        .simpler_boundary
+        .dispatch_latency_us
+        .unwrap_or(15);
+    let completion = with_suppressed_stdio(|| {
+        runtime
+            .submit_backend_dispatch(dispatch, &mut sink)
+            .map_err(|err| err.to_string())?;
+        runtime.advance_to(complete_at, &mut sink);
+        runtime
+            .poll_completions(complete_at, &mut sink)
+            .into_iter()
+            .next()
+            .ok_or_else(|| "simpler_capi_gemm_dispatch_did_not_complete".to_string())
+    })?;
+    if completion.status != CompletionStatus::Success {
+        return Err(format!(
+            "simpler_capi_gemm_dispatch_failed:{:?}",
+            completion.status
+        ));
+    }
+    let produced = runtime
+        .host_segment_payload(host_node, output_c)
+        .ok_or_else(|| "missing_host_gemm_output_payload".to_string())?;
+    let values = bytes_to_f32s(produced);
+    if values.len() != output_elements || values.iter().any(|value| !value.is_finite()) {
+        return Err(format!(
+            "simpler_capi_gemm_output_invalid:len={} first={:?}",
+            values.len(),
+            values.first()
+        ));
+    }
+    Ok(values)
+}
+
+#[cfg(test)]
+fn run_host_gemm_128(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    input_a_payload: Vec<u8>,
+    input_b_payload: Vec<u8>,
+) -> Result<Vec<f32>, String> {
+    run_host_gemm(
+        topology,
+        task,
+        manifest_path,
+        input_a_payload,
+        input_b_payload,
+        128,
+        128,
+        128,
+        "bf16",
+        2,
+        "host_gemm",
+    )
+}
+
+#[cfg(test)]
+fn run_host_gemm_smoke(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+) -> Result<Vec<f32>, String> {
+    const DIM: usize = 128;
+    const ELEMENTS: usize = DIM * DIM;
+    const BF16_ONE: u16 = 0x3f80;
+
+    let mut identity = vec![0u8; ELEMENTS * std::mem::size_of::<u16>()];
+    for diagonal in 0..DIM {
+        let byte_offset = (diagonal * DIM + diagonal) * std::mem::size_of::<u16>();
+        identity[byte_offset..byte_offset + 2].copy_from_slice(&BF16_ONE.to_le_bytes());
+    }
+    let output = run_host_gemm_128(
+        topology,
+        task,
+        manifest_path,
+        repeated_u16_le_bytes(BF16_ONE, ELEMENTS),
+        identity,
+    )?;
+    if output.iter().any(|value| (*value - 1.0).abs() > 1.0e-5) {
+        return Err(format!(
+            "simpler_capi_gemm_output_mismatch:first={:?}",
+            output.first()
+        ));
+    }
+    Ok(output)
+}
+
+struct HostQuantizedGemmRunner {
+    _dispatch_lock: HostVectorDispatchLock,
+    scenario_config: ScenarioConfig,
+    runtime: LocalRuntimeEngine,
+    sink: VecEventSink,
+    host_node: u64,
+    ubpu_node: u64,
+    input_a: SegmentHandle,
+    input_b: SegmentHandle,
+    output_c: SegmentHandle,
+    manifest_path: PathBuf,
+    m: usize,
+    k: usize,
+    n: usize,
+    input_a_bytes: usize,
+    input_b_bytes: usize,
+    output_elements: usize,
+    output_bytes: usize,
+    now_us: u64,
+    q8_block_dot: bool,
+}
+
+impl HostQuantizedGemmRunner {
+    #[cfg(test)]
+    fn new(
+        topology: &SimTopology,
+        manifest_path: &Path,
+        m: usize,
+        k: usize,
+        n: usize,
+        segment_base: u64,
+    ) -> Result<Self, String> {
+        Self::new_with_mode(topology, manifest_path, m, k, n, segment_base, false)
+    }
+
+    fn new_q8_block_dot(
+        topology: &SimTopology,
+        manifest_path: &Path,
+        blocks: usize,
+        n: usize,
+        segment_base: u64,
+    ) -> Result<Self, String> {
+        Self::new_with_mode(topology, manifest_path, blocks, 32, n, segment_base, true)
+    }
+
+    fn new_with_mode(
+        topology: &SimTopology,
+        manifest_path: &Path,
+        m: usize,
+        k: usize,
+        n: usize,
+        segment_base: u64,
+        q8_block_dot: bool,
+    ) -> Result<Self, String> {
+        let scenario_config = scenario_config_for_chipbackend()?;
+        let input_a_bytes = m
+            .checked_mul(k)
+            .ok_or_else(|| "host_quantized_gemm_input_a_size_overflow".to_string())?;
+        let input_b_rows = if q8_block_dot {
+            m.checked_mul(k)
+                .ok_or_else(|| "host_q8_block_dot_weight_rows_overflow".to_string())?
+        } else {
+            k
+        };
+        let input_b_bytes = input_b_rows
+            .checked_mul(n)
+            .ok_or_else(|| "host_quantized_gemm_input_b_size_overflow".to_string())?;
+        let output_elements = m
+            .checked_mul(n)
+            .ok_or_else(|| "host_quantized_gemm_output_elements_overflow".to_string())?;
+        let output_bytes = output_elements
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| "host_quantized_gemm_output_size_overflow".to_string())?;
+        let host_node = topology
+            .hosts
+            .first()
+            .map(|host| host.node_id)
+            .ok_or_else(|| "missing_host_node".to_string())?;
+        let ubpu_node = topology
+            .ubpus
+            .first()
+            .map(|ubpu| ubpu.node_id)
+            .ok_or_else(|| "missing_ubpu_node".to_string())?;
+        let dispatch_lock = host_vector_dispatch_lock_guard()?;
+        let runtime = LocalRuntimeEngine::from_config(&scenario_config);
+        Ok(Self {
+            _dispatch_lock: dispatch_lock,
+            scenario_config,
+            runtime,
+            sink: VecEventSink::default(),
+            host_node,
+            ubpu_node,
+            input_a: SegmentHandle(segment_base + 1),
+            input_b: SegmentHandle(segment_base + 2),
+            output_c: SegmentHandle(segment_base + 3),
+            manifest_path: manifest_path.to_path_buf(),
+            m,
+            k,
+            n,
+            input_a_bytes,
+            input_b_bytes,
+            output_elements,
+            output_bytes,
+            now_us: 0,
+            q8_block_dot,
+        })
+    }
+
+    fn run(
+        &mut self,
+        task: &TaskKey,
+        input_a_payload: Vec<u8>,
+        input_b_payload: Vec<u8>,
+    ) -> Result<Vec<i32>, String> {
+        if input_a_payload.len() != self.input_a_bytes
+            || input_b_payload.len() != self.input_b_bytes
+        {
+            return Err(format!(
+                "host_quantized_gemm_input_size_mismatch:a={}:b={}:expected_a={}:expected_b={}",
+                input_a_payload.len(),
+                input_b_payload.len(),
+                self.input_a_bytes,
+                self.input_b_bytes
+            ));
+        }
+        self.runtime
+            .seed_host_segment(self.host_node, self.input_a, input_a_payload);
+        self.runtime
+            .seed_host_segment(self.host_node, self.input_b, input_b_payload);
+        self.runtime
+            .seed_host_segment(self.host_node, self.output_c, vec![0u8; self.output_bytes]);
+        let endpoint = |segment| MemoryEndpoint {
+            node: self.host_node,
+            segment,
+            offset: 0,
+        };
+        let backend_spec = if self.q8_block_dot {
+            host_q8_block_dot_backend_spec_from_manifest(
+                &self.manifest_path,
+                endpoint(self.input_a),
+                endpoint(self.input_b),
+                endpoint(self.output_c),
+                self.m as u64,
+                self.n as u64,
+            )?
+        } else {
+            host_quantized_gemm_backend_spec_from_manifest(
+                &self.manifest_path,
+                endpoint(self.input_a),
+                endpoint(self.input_b),
+                endpoint(self.output_c),
+                self.m as u64,
+                self.k as u64,
+                self.n as u64,
+            )?
+        };
+        let request = kvcache_host_matmul_request(
+            task.task_id,
+            vec![
+                opaque_binding(
+                    "quantized_gemm_a_int8",
+                    BufferUsage::Input,
+                    endpoint(self.input_a),
+                    self.input_a_bytes as u64,
+                ),
+                opaque_binding(
+                    "quantized_gemm_b_int8",
+                    BufferUsage::Input,
+                    endpoint(self.input_b),
+                    self.input_b_bytes as u64,
+                ),
+                opaque_binding(
+                    "quantized_gemm_c_int32",
+                    BufferUsage::Output,
+                    endpoint(self.output_c),
+                    self.output_bytes as u64,
+                ),
+            ],
+        );
+        let dispatch = BackendDispatchOperation {
+            task: task.clone(),
+            function: FunctionLabel {
+                name: "host_quantized_gemm".into(),
+                level: PlLevel::L2,
+            },
+            backend_spec,
+            request,
+            target_level: PlLevel::L2,
+            target_node: self.ubpu_node,
+            legacy_input_segments: vec![self.input_a, self.input_b],
+        };
+        let dispatch_latency = self
+            .scenario_config
+            .pypto
+            .simpler_boundary
+            .dispatch_latency_us
+            .unwrap_or(15);
+        self.now_us = self
+            .now_us
+            .checked_add(dispatch_latency)
+            .ok_or_else(|| "simpler_capi_quantized_gemm_time_overflow".to_string())?;
+        let completion = with_suppressed_stdio(|| {
+            self.runtime
+                .submit_backend_dispatch(dispatch, &mut self.sink)
+                .map_err(|err| err.to_string())?;
+            self.runtime.advance_to(self.now_us, &mut self.sink);
+            self.runtime
+                .poll_completions(self.now_us, &mut self.sink)
+                .into_iter()
+                .next()
+                .ok_or_else(|| "simpler_capi_quantized_gemm_dispatch_did_not_complete".to_string())
+        })?;
+        if completion.status != CompletionStatus::Success {
+            return Err(format!(
+                "simpler_capi_quantized_gemm_dispatch_failed:{:?}",
+                completion.status
+            ));
+        }
+        let produced = self
+            .runtime
+            .host_segment_payload(self.host_node, self.output_c)
+            .ok_or_else(|| "missing_host_quantized_gemm_output_payload".to_string())?;
+        let values = bytes_to_i32s(produced);
+        if values.len() != self.output_elements {
+            return Err(format!(
+                "simpler_capi_quantized_gemm_output_size_mismatch:len={} expected={} first={:?}",
+                values.len(),
+                self.output_elements,
+                values.first()
+            ));
+        }
+        Ok(values)
+    }
+}
+
+/// Execute one DeepSeek Q8_0 matrix projection through the simulator's
+/// production simpler C API path.
+pub fn execute_deepseek_q8_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    q8_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    if dimensions.len() != 2 {
+        return Err(format!(
+            "unsupported simpler Q8 projection dimensions:{dimensions:?}"
+        ));
+    }
+    let k = usize::try_from(dimensions[0]).map_err(|_| "Q8 projection K too large".to_string())?;
+    let n = usize::try_from(dimensions[1]).map_err(|_| "Q8 projection N too large".to_string())?;
+    if k == 0 || k % 32 != 0 || n == 0 || n % 128 != 0 || input.len() != k {
+        return Err(format!(
+            "unsupported simpler Q8 projection shape:dimensions={dimensions:?}:input={}",
+            input.len()
+        ));
+    }
+
+    ensure_simpler_host_q8_block_dot_manifest(manifest_path, (k / 32) as u64, n as u64)?;
+    let activation = quantize_q8_0_activation(input)?;
+    let blocks = k / 32;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        blocks,
+        n,
+        segment_base,
+    )?;
+    let mut weight_blocks = Vec::with_capacity(blocks * 32 * n);
+    let mut weight_scales = Vec::with_capacity(blocks * n);
+    for block in 0..blocks {
+        let (weight_block, block_scales) = q8_0_weight_block_kxn(q8_weight, dimensions, block)?;
+        weight_blocks.extend_from_slice(&weight_block);
+        weight_scales.extend_from_slice(&block_scales);
+    }
+    let dots = runner.run(
+        task,
+        activation.values.iter().map(|value| *value as u8).collect(),
+        weight_blocks,
+    )?;
+    let mut output = vec![0.0f32; n];
+    for block in 0..blocks {
+        for output_index in 0..n {
+            let partial = block * n + output_index;
+            output[output_index] +=
+                activation.scales[block] * weight_scales[partial] * dots[partial] as f32;
+        }
+    }
+    Ok(output)
+}
+
+/// Execute one selected DeepSeek Q2_K expert matrix through simpler's PTO
+/// int8 block-dot callable, then apply the GGUF Q2_K scale/min correction.
+pub fn execute_deepseek_q2_k_expert_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    q2_weight: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let plan = lower_q2_k_expert_for_block_dot(q2_weight, dimensions, expert, input)?;
+    if plan.output_size % 128 != 0 {
+        return Err(format!(
+            "simpler Q2_K output must be 128-aligned:output={}",
+            plan.output_size
+        ));
+    }
+    ensure_simpler_host_q8_block_dot_manifest(
+        manifest_path,
+        plan.dot_blocks as u64,
+        plan.output_size as u64,
+    )?;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        plan.dot_blocks,
+        plan.output_size,
+        segment_base,
+    )?;
+    let dots = runner.run(
+        task,
+        plan.activation_values
+            .iter()
+            .map(|value| *value as u8)
+            .collect(),
+        plan.weight_values_kxn.clone(),
+    )?;
+    plan.finish(&dots)
+}
+
+/// Execute one selected DeepSeek IQ2_XXS expert matrix through simpler's PTO
+/// int8 block-dot callable and apply the IQ2 block/local scales.
+pub fn execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    iq2_weight: &[u8],
+    dimensions: &[u64],
+    expert: usize,
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let plan = lower_iq2_xxs_expert_for_block_dot(iq2_weight, dimensions, expert, input)?;
+    if plan.output_size % 128 != 0 {
+        return Err(format!(
+            "simpler IQ2_XXS output must be 128-aligned:output={}",
+            plan.output_size
+        ));
+    }
+    ensure_simpler_host_q8_block_dot_manifest(
+        manifest_path,
+        plan.dot_blocks as u64,
+        plan.output_size as u64,
+    )?;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        plan.dot_blocks,
+        plan.output_size,
+        segment_base,
+    )?;
+    let dots = runner.run(
+        task,
+        plan.activation_values
+            .iter()
+            .map(|value| *value as u8)
+            .collect(),
+        plan.weight_values_kxn.clone(),
+    )?;
+    plan.finish(&dots)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_routed_expert_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    gate_weight: &[u8],
+    gate_dimensions: &[u64],
+    up_weight: &[u8],
+    up_dimensions: &[u64],
+    down_weight: &[u8],
+    down_dimensions: &[u64],
+    expert: usize,
+    expert_weight: f32,
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if gate_dimensions != up_dimensions {
+        return Err(format!(
+            "deepseek routed expert gate/up shape mismatch:gate={gate_dimensions:?}:up={up_dimensions:?}"
+        ));
+    }
+    let [input_size, intermediate_size, experts] = gate_dimensions else {
+        return Err(format!(
+            "unsupported deepseek routed expert gate shape:{gate_dimensions:?}"
+        ));
+    };
+    if down_dimensions != [*intermediate_size, *input_size, *experts] {
+        return Err(format!(
+            "deepseek routed expert down shape mismatch:down={down_dimensions:?}:expected=[{intermediate_size},{input_size},{experts}]"
+        ));
+    }
+    if !expert_weight.is_finite() {
+        return Err("deepseek routed expert weight non-finite".to_string());
+    }
+    let gate_manifest = artifact_dir
+        .join(format!("iq2_{}x{}", input_size, intermediate_size))
+        .join("host_q8_block_dot_manifest.json");
+    let down_manifest = artifact_dir
+        .join(format!("q2_{}x{}", intermediate_size, input_size))
+        .join("host_q8_block_dot_manifest.json");
+    let gate = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+        topology,
+        task,
+        &gate_manifest,
+        segment_base,
+        gate_weight,
+        gate_dimensions,
+        expert,
+        input,
+    )?;
+    let mut up_task = task.clone();
+    up_task.task_id = task.task_id.saturating_add(1);
+    let up = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+        topology,
+        &up_task,
+        &gate_manifest,
+        segment_base.saturating_add(10),
+        up_weight,
+        up_dimensions,
+        expert,
+        input,
+    )?;
+    let mut activated = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_swiglu_reference(
+        &gate, &up, clamp,
+    )?;
+    for value in &mut activated {
+        *value *= expert_weight;
+    }
+    let mut down_task = task.clone();
+    down_task.task_id = task.task_id.saturating_add(2);
+    execute_deepseek_q2_k_expert_projection_through_simpler(
+        topology,
+        &down_task,
+        &down_manifest,
+        segment_base.saturating_add(20),
+        down_weight,
+        down_dimensions,
+        expert,
+        &activated,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_routed_experts_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    gate_weight: &[u8],
+    gate_dimensions: &[u64],
+    up_weight: &[u8],
+    up_dimensions: &[u64],
+    down_weight: &[u8],
+    down_dimensions: &[u64],
+    selected_experts: &[usize],
+    expert_weights: &[f32],
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if selected_experts.is_empty() || selected_experts.len() != expert_weights.len() {
+        return Err(format!(
+            "deepseek routed expert selection mismatch:experts={}:weights={}",
+            selected_experts.len(),
+            expert_weights.len()
+        ));
+    }
+    let output_size = usize::try_from(
+        *gate_dimensions
+            .first()
+            .ok_or_else(|| "deepseek routed expert gate dimensions missing".to_string())?,
+    )
+    .map_err(|_| "deepseek routed expert output size too large".to_string())?;
+    let mut output = vec![0.0f32; output_size];
+    for (slot, (&expert, &expert_weight)) in selected_experts.iter().zip(expert_weights).enumerate()
+    {
+        let mut expert_task = task.clone();
+        expert_task.task_id = task.task_id.saturating_add((slot as u64).saturating_mul(3));
+        let expert_output = execute_deepseek_routed_expert_through_simpler(
+            topology,
+            &expert_task,
+            artifact_dir,
+            segment_base.saturating_add((slot as u64).saturating_mul(100)),
+            gate_weight,
+            gate_dimensions,
+            up_weight,
+            up_dimensions,
+            down_weight,
+            down_dimensions,
+            expert,
+            expert_weight,
+            input,
+            clamp,
+        )?;
+        if expert_output.len() != output.len() {
+            return Err(format!(
+                "deepseek routed expert output size mismatch:slot={slot}:actual={}:expected={}",
+                expert_output.len(),
+                output.len()
+            ));
+        }
+        for (accumulator, value) in output.iter_mut().zip(expert_output) {
+            *accumulator += value;
+        }
+    }
+    Ok(output)
+}
+
+pub struct DeepseekV4FlashExpertSliceWeights<'a> {
+    pub logical_expert: usize,
+    pub gate: &'a [u8],
+    pub gate_dimensions: &'a [u64],
+    pub up: &'a [u8],
+    pub up_dimensions: &'a [u64],
+    pub down: &'a [u8],
+    pub down_dimensions: &'a [u64],
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_expert_slices_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    experts: &[DeepseekV4FlashExpertSliceWeights<'_>],
+    selected_experts: &[usize],
+    expert_weights: &[f32],
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if experts.is_empty()
+        || experts.len() != selected_experts.len()
+        || experts.len() != expert_weights.len()
+    {
+        return Err(format!(
+            "deepseek expert slice selection mismatch:slices={}:experts={}:weights={}",
+            experts.len(),
+            selected_experts.len(),
+            expert_weights.len()
+        ));
+    }
+    let output_size = input.len();
+    let mut output = vec![0.0f32; output_size];
+    for (slot, ((weights, &logical_expert), &expert_weight)) in experts
+        .iter()
+        .zip(selected_experts)
+        .zip(expert_weights)
+        .enumerate()
+    {
+        if weights.logical_expert != logical_expert {
+            return Err(format!(
+                "deepseek expert slice id mismatch:slot={slot}:slice={}:selected={logical_expert}",
+                weights.logical_expert
+            ));
+        }
+        let mut expert_task = task.clone();
+        expert_task.task_id = task.task_id.saturating_add((slot as u64).saturating_mul(3));
+        let expert_output = execute_deepseek_routed_expert_through_simpler(
+            topology,
+            &expert_task,
+            artifact_dir,
+            segment_base.saturating_add((slot as u64).saturating_mul(100)),
+            weights.gate,
+            weights.gate_dimensions,
+            weights.up,
+            weights.up_dimensions,
+            weights.down,
+            weights.down_dimensions,
+            0,
+            expert_weight,
+            input,
+            clamp,
+        )?;
+        if expert_output.len() != output_size {
+            return Err(format!(
+                "deepseek expert slice output size mismatch:slot={slot}:actual={}:expected={output_size}",
+                expert_output.len()
+            ));
+        }
+        for (accumulator, value) in output.iter_mut().zip(expert_output) {
+            *accumulator += value;
+        }
+    }
+    Ok(output)
+}
+
+pub struct DeepseekV4FlashMoeWeights<'a> {
+    pub router: &'a [u8],
+    pub router_dimensions: &'a [u64],
+    pub routed_gate: &'a [u8],
+    pub routed_gate_dimensions: &'a [u64],
+    pub routed_up: &'a [u8],
+    pub routed_up_dimensions: &'a [u64],
+    pub routed_down: &'a [u8],
+    pub routed_down_dimensions: &'a [u64],
+    pub shared_gate: &'a [u8],
+    pub shared_gate_dimensions: &'a [u64],
+    pub shared_up: &'a [u8],
+    pub shared_up_dimensions: &'a [u64],
+    pub shared_down: &'a [u8],
+    pub shared_down_dimensions: &'a [u64],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashMoeExecution {
+    pub router: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput,
+    pub output: Vec<f32>,
+}
+
+pub struct DeepseekV4FlashFfnWeights<'a> {
+    pub hc_function: &'a [u8],
+    pub hc_function_dimensions: &'a [u64],
+    pub hc_scale: &'a [f32],
+    pub hc_base: &'a [f32],
+    pub ffn_norm: &'a [f32],
+    pub moe: DeepseekV4FlashMoeWeights<'a>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashFfnExecution {
+    pub router: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput,
+    pub normalized_hidden: Vec<f32>,
+    pub moe_output: Vec<f32>,
+    pub output_hc: Vec<f32>,
+}
+
+pub struct DeepseekV4FlashFfnStaticWeights<'a> {
+    pub hc_function: &'a [u8],
+    pub hc_function_dimensions: &'a [u64],
+    pub hc_scale: &'a [f32],
+    pub hc_base: &'a [f32],
+    pub ffn_norm: &'a [f32],
+    pub router: &'a [u8],
+    pub router_dimensions: &'a [u64],
+    pub shared_gate: &'a [u8],
+    pub shared_gate_dimensions: &'a [u64],
+    pub shared_up: &'a [u8],
+    pub shared_up_dimensions: &'a [u64],
+    pub shared_down: &'a [u8],
+    pub shared_down_dimensions: &'a [u64],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashPreparedFfn {
+    pub router: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput,
+    pub normalized_hidden: Vec<f32>,
+    residual_hc: Vec<f32>,
+    split: sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashHcSplit,
+}
+
+pub struct DeepseekV4FlashAttentionWeights<'a> {
+    pub hc_function: &'a [u8],
+    pub hc_function_dimensions: &'a [u64],
+    pub hc_scale: &'a [f32],
+    pub hc_base: &'a [f32],
+    pub attention_norm: &'a [f32],
+    pub q_a: &'a [u8],
+    pub q_a_dimensions: &'a [u64],
+    pub q_a_norm: &'a [f32],
+    pub q_b: &'a [u8],
+    pub q_b_dimensions: &'a [u64],
+    pub kv: &'a [u8],
+    pub kv_dimensions: &'a [u64],
+    pub kv_norm: &'a [f32],
+    pub sinks: &'a [f32],
+    pub output_a: &'a [u8],
+    pub output_a_dimensions: &'a [u64],
+    pub output_b: &'a [u8],
+    pub output_b_dimensions: &'a [u64],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4FlashAttentionExecution {
+    pub current_kv: Vec<f32>,
+    pub attention_output: Vec<f32>,
+    pub output_hc: Vec<f32>,
+}
+
+pub struct DeepseekV4FlashCompressorWeights<'a> {
+    pub kv: &'a [u8],
+    pub kv_dimensions: &'a [u64],
+    pub gate: &'a [u8],
+    pub gate_dimensions: &'a [u64],
+    pub ape: &'a [f32],
+    pub norm: &'a [f32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepseekV4FlashProjectionFormat {
+    F16,
+    Q8_0,
+}
+
+pub struct DeepseekV4FlashIndexerWeights<'a> {
+    pub query: &'a [u8],
+    pub query_dimensions: &'a [u64],
+    pub query_format: DeepseekV4FlashProjectionFormat,
+    pub head_weights: &'a [u8],
+    pub head_weight_dimensions: &'a [u64],
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_moe_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashMoeWeights<'_>,
+    input: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    clamp: f32,
+) -> Result<DeepseekV4FlashMoeExecution, String> {
+    let router_manifest = artifact_dir
+        .join("router")
+        .join("host_fp32_gemm_manifest.json");
+    let router = execute_deepseek_router_through_simpler(
+        topology,
+        task,
+        &router_manifest,
+        weights.router,
+        weights.router_dimensions,
+        input,
+        selection_bias,
+        hash_selected_experts,
+    )?;
+    let mut routed_task = task.clone();
+    routed_task.task_id = task.task_id.saturating_add(1);
+    let routed = execute_deepseek_routed_experts_through_simpler(
+        topology,
+        &routed_task,
+        &artifact_dir.join("routed"),
+        segment_base.saturating_add(100),
+        weights.routed_gate,
+        weights.routed_gate_dimensions,
+        weights.routed_up,
+        weights.routed_up_dimensions,
+        weights.routed_down,
+        weights.routed_down_dimensions,
+        &router.expert_indices,
+        &router.expert_weights,
+        input,
+        clamp,
+    )?;
+    let mut shared_task = task.clone();
+    shared_task.task_id = task
+        .task_id
+        .saturating_add(1)
+        .saturating_add((router.expert_indices.len() as u64).saturating_mul(3));
+    let shared = execute_deepseek_shared_expert_through_simpler(
+        topology,
+        &shared_task,
+        &artifact_dir.join("shared"),
+        segment_base.saturating_add(1_000),
+        weights.shared_gate,
+        weights.shared_gate_dimensions,
+        weights.shared_up,
+        weights.shared_up_dimensions,
+        weights.shared_down,
+        weights.shared_down_dimensions,
+        input,
+        clamp,
+    )?;
+    if routed.len() != shared.len() {
+        return Err(format!(
+            "deepseek MoE routed/shared output mismatch:routed={}:shared={}",
+            routed.len(),
+            shared.len()
+        ));
+    }
+    let output = routed
+        .into_iter()
+        .zip(shared)
+        .map(|(routed, shared)| routed + shared)
+        .collect();
+    Ok(DeepseekV4FlashMoeExecution { router, output })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_ffn_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashFfnWeights<'_>,
+    residual_hc: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    eps: f32,
+    clamp: f32,
+) -> Result<DeepseekV4FlashFfnExecution, String> {
+    let hidden_size = weights.ffn_norm.len();
+    let hc_size = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek FFN HC size overflow".to_string())?;
+    let mix_size = hc_mult
+        .checked_mul(hc_mult.saturating_add(2))
+        .ok_or_else(|| "deepseek FFN HC mix size overflow".to_string())?;
+    if hidden_size == 0
+        || hc_mult == 0
+        || residual_hc.len() != hc_size
+        || weights.hc_function_dimensions != [hc_size as u64, mix_size as u64]
+    {
+        return Err(format!(
+            "deepseek FFN HC shape mismatch:residual={}:norm={hidden_size}:hc_mult={hc_mult}:function={:?}",
+            residual_hc.len(), weights.hc_function_dimensions
+        ));
+    }
+    let control_input =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_control_input_reference(
+            residual_hc,
+            hidden_size,
+            hc_mult,
+            eps,
+        )?;
+    let control = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("hc").join("host_fp32_gemm_manifest.json"),
+        weights.hc_function,
+        weights.hc_function_dimensions,
+        &control_input,
+    )?;
+    let split = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+        &control,
+        weights.hc_scale,
+        weights.hc_base,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+    )?;
+    let mixed_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+            residual_hc,
+            &split.pre,
+            hidden_size,
+        )?;
+    let normalized_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &mixed_hidden,
+            Some(weights.ffn_norm),
+            eps,
+        )?;
+    let mut moe_task = task.clone();
+    moe_task.task_id = task.task_id.saturating_add(1);
+    let moe = execute_deepseek_moe_through_simpler(
+        topology,
+        &moe_task,
+        &artifact_dir.join("moe"),
+        segment_base.saturating_add(100),
+        &weights.moe,
+        &normalized_hidden,
+        selection_bias,
+        hash_selected_experts,
+        clamp,
+    )?;
+    let output_hc = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+        &moe.output,
+        residual_hc,
+        &split.post,
+        &split.combine,
+    )?;
+    Ok(DeepseekV4FlashFfnExecution {
+        router: moe.router,
+        normalized_hidden,
+        moe_output: moe.output,
+        output_hc,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_deepseek_ffn_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    weights: &DeepseekV4FlashFfnStaticWeights<'_>,
+    residual_hc: &[f32],
+    selection_bias: Option<&[f32]>,
+    hash_selected_experts: Option<&[usize]>,
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    eps: f32,
+) -> Result<DeepseekV4FlashPreparedFfn, String> {
+    let hidden_size = weights.ffn_norm.len();
+    let hc_size = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek prepared FFN HC size overflow".to_string())?;
+    let mix_size = hc_mult
+        .checked_mul(hc_mult.saturating_add(2))
+        .ok_or_else(|| "deepseek prepared FFN HC mix size overflow".to_string())?;
+    if hidden_size == 0
+        || hc_mult == 0
+        || residual_hc.len() != hc_size
+        || weights.hc_function_dimensions != [hc_size as u64, mix_size as u64]
+    {
+        return Err(format!(
+            "deepseek prepared FFN HC shape mismatch:residual={}:norm={hidden_size}:hc_mult={hc_mult}:function={:?}",
+            residual_hc.len(), weights.hc_function_dimensions
+        ));
+    }
+    let control_input =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_control_input_reference(
+            residual_hc,
+            hidden_size,
+            hc_mult,
+            eps,
+        )?;
+    let control = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("hc").join("host_fp32_gemm_manifest.json"),
+        weights.hc_function,
+        weights.hc_function_dimensions,
+        &control_input,
+    )?;
+    let split = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+        &control,
+        weights.hc_scale,
+        weights.hc_base,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+    )?;
+    let mixed_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+            residual_hc,
+            &split.pre,
+            hidden_size,
+        )?;
+    let normalized_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &mixed_hidden,
+            Some(weights.ffn_norm),
+            eps,
+        )?;
+    let mut router_task = task.clone();
+    router_task.task_id = task.task_id.saturating_add(1);
+    let router = execute_deepseek_router_through_simpler(
+        topology,
+        &router_task,
+        &artifact_dir
+            .join("moe/router")
+            .join("host_fp32_gemm_manifest.json"),
+        weights.router,
+        weights.router_dimensions,
+        &normalized_hidden,
+        selection_bias,
+        hash_selected_experts,
+    )?;
+    Ok(DeepseekV4FlashPreparedFfn {
+        router,
+        normalized_hidden,
+        residual_hc: residual_hc.to_vec(),
+        split,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn finish_deepseek_ffn_with_expert_slices_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashFfnStaticWeights<'_>,
+    prepared: DeepseekV4FlashPreparedFfn,
+    experts: &[DeepseekV4FlashExpertSliceWeights<'_>],
+    clamp: f32,
+) -> Result<DeepseekV4FlashFfnExecution, String> {
+    let mut routed_task = task.clone();
+    routed_task.task_id = task.task_id.saturating_add(2);
+    let routed = execute_deepseek_expert_slices_through_simpler(
+        topology,
+        &routed_task,
+        &artifact_dir.join("moe/routed"),
+        segment_base.saturating_add(100),
+        experts,
+        &prepared.router.expert_indices,
+        &prepared.router.expert_weights,
+        &prepared.normalized_hidden,
+        clamp,
+    )?;
+    let mut shared_task = task.clone();
+    shared_task.task_id = task
+        .task_id
+        .saturating_add(2)
+        .saturating_add((experts.len() as u64).saturating_mul(3));
+    let shared = execute_deepseek_shared_expert_through_simpler(
+        topology,
+        &shared_task,
+        &artifact_dir.join("moe/shared"),
+        segment_base.saturating_add(1_000),
+        weights.shared_gate,
+        weights.shared_gate_dimensions,
+        weights.shared_up,
+        weights.shared_up_dimensions,
+        weights.shared_down,
+        weights.shared_down_dimensions,
+        &prepared.normalized_hidden,
+        clamp,
+    )?;
+    if routed.len() != shared.len() {
+        return Err(format!(
+            "deepseek sliced MoE routed/shared output mismatch:routed={}:shared={}",
+            routed.len(),
+            shared.len()
+        ));
+    }
+    let moe_output = routed
+        .into_iter()
+        .zip(shared)
+        .map(|(routed, shared)| routed + shared)
+        .collect::<Vec<_>>();
+    let output_hc = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+        &moe_output,
+        &prepared.residual_hc,
+        &prepared.split.post,
+        &prepared.split.combine,
+    )?;
+    Ok(DeepseekV4FlashFfnExecution {
+        router: prepared.router,
+        normalized_hidden: prepared.normalized_hidden,
+        moe_output,
+        output_hc,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_dense_attention_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashAttentionWeights<'_>,
+    residual_hc: &[f32],
+    previous_kv_rows: &[f32],
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+    hc_mult: usize,
+    sinkhorn_iters: usize,
+    num_heads: usize,
+    head_dim: usize,
+    rope_dim: usize,
+    output_groups: usize,
+    eps: f32,
+) -> Result<DeepseekV4FlashAttentionExecution, String> {
+    let hidden_size = weights.attention_norm.len();
+    let hc_size = hidden_size
+        .checked_mul(hc_mult)
+        .ok_or_else(|| "deepseek attention HC size overflow".to_string())?;
+    let mix_size = hc_mult
+        .checked_mul(hc_mult.saturating_add(2))
+        .ok_or_else(|| "deepseek attention HC mix size overflow".to_string())?;
+    let q_size = num_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| "deepseek attention Q size overflow".to_string())?;
+    if hidden_size == 0
+        || hc_mult == 0
+        || num_heads == 0
+        || head_dim == 0
+        || rope_dim > head_dim
+        || residual_hc.len() != hc_size
+        || previous_kv_rows.len() % head_dim != 0
+        || weights.hc_function_dimensions != [hc_size as u64, mix_size as u64]
+        || weights.q_a_dimensions.first().copied() != Some(hidden_size as u64)
+        || weights.q_b_dimensions.get(1).copied() != Some(q_size as u64)
+        || weights.kv_dimensions != [hidden_size as u64, head_dim as u64]
+        || weights.sinks.len() != num_heads
+    {
+        return Err(format!(
+            "deepseek dense attention shape mismatch:hidden={hidden_size}:hc={hc_mult}:heads={num_heads}:head_dim={head_dim}:residual={}:previous_kv={}",
+            residual_hc.len(), previous_kv_rows.len()
+        ));
+    }
+    let control_input =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_control_input_reference(
+            residual_hc,
+            hidden_size,
+            hc_mult,
+            eps,
+        )?;
+    let control = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &artifact_dir.join("hc").join("host_fp32_gemm_manifest.json"),
+        weights.hc_function,
+        weights.hc_function_dimensions,
+        &control_input,
+    )?;
+    let split = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+        &control,
+        weights.hc_scale,
+        weights.hc_base,
+        hc_mult,
+        sinkhorn_iters,
+        eps,
+    )?;
+    let mixed_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+            residual_hc,
+            &split.pre,
+            hidden_size,
+        )?;
+    let normalized_hidden =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &mixed_hidden,
+            Some(weights.attention_norm),
+            eps,
+        )?;
+    let projection_manifest = |name: &str| {
+        artifact_dir
+            .join(name)
+            .join("host_q8_block_dot_manifest.json")
+    };
+    let mut q_a_task = task.clone();
+    q_a_task.task_id = task.task_id.saturating_add(1);
+    let q_a = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &q_a_task,
+        &projection_manifest("q-a"),
+        segment_base.saturating_add(100),
+        weights.q_a,
+        weights.q_a_dimensions,
+        &normalized_hidden,
+    )?;
+    let q_a = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+        &q_a,
+        Some(weights.q_a_norm),
+        eps,
+    )?;
+    let mut q_b_task = task.clone();
+    q_b_task.task_id = task.task_id.saturating_add(2);
+    let q = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &q_b_task,
+        &projection_manifest("q-b"),
+        segment_base.saturating_add(200),
+        weights.q_b,
+        weights.q_b_dimensions,
+        &q_a,
+    )?;
+    let mut q = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_head_rms_norm_reference(
+        &q, num_heads, head_dim, None, eps,
+    )?;
+    let mut kv_task = task.clone();
+    kv_task.task_id = task.task_id.saturating_add(3);
+    let kv = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &kv_task,
+        &projection_manifest("kv"),
+        segment_base.saturating_add(300),
+        weights.kv,
+        weights.kv_dimensions,
+        &normalized_hidden,
+    )?;
+    let mut current_kv =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+            &kv,
+            Some(weights.kv_norm),
+            eps,
+        )?;
+    q = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &q, num_heads, head_dim, rope_dim, rope_cos, rope_sin, false,
+    )?;
+    current_kv = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &current_kv,
+        1,
+        head_dim,
+        rope_dim,
+        rope_cos,
+        rope_sin,
+        false,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_fp8_kv_roundtrip_reference(
+        &mut current_kv,
+        rope_dim,
+    )?;
+    for value in &mut current_kv {
+        *value = f16_bits_to_f32(f32_to_f16_bits(*value));
+    }
+    let mut kv_rows = Vec::with_capacity(previous_kv_rows.len().saturating_add(head_dim));
+    kv_rows.extend_from_slice(previous_kv_rows);
+    kv_rows.extend_from_slice(&current_kv);
+    let mut heads =
+        sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_sink_attention_reference(
+            &q,
+            &kv_rows,
+            weights.sinks,
+            num_heads,
+            head_dim,
+        )?;
+    heads = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &heads, num_heads, head_dim, rope_dim, rope_cos, rope_sin, true,
+    )?;
+    let mut output_a_task = task.clone();
+    output_a_task.task_id = task.task_id.saturating_add(4);
+    let output_a = execute_deepseek_grouped_q8_projection_through_simpler(
+        topology,
+        &output_a_task,
+        &projection_manifest("output-a"),
+        segment_base.saturating_add(400),
+        weights.output_a,
+        weights.output_a_dimensions,
+        &heads,
+        output_groups,
+    )?;
+    let mut output_b_task = task.clone();
+    output_b_task.task_id = task.task_id.saturating_add(4 + output_groups as u64);
+    let attention_output = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &output_b_task,
+        &projection_manifest("output-b"),
+        segment_base.saturating_add(500),
+        weights.output_b,
+        weights.output_b_dimensions,
+        &output_a,
+    )?;
+    let output_hc = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+        &attention_output,
+        residual_hc,
+        &split.post,
+        &split.combine,
+    )?;
+    Ok(DeepseekV4FlashAttentionExecution {
+        current_kv,
+        attention_output,
+        output_hc,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_compressor_update_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    state: &mut sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashCompressorState,
+    weights: &DeepseekV4FlashCompressorWeights<'_>,
+    position: u32,
+    input: &[f32],
+    rope_dim: usize,
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+) -> Result<Option<Vec<f32>>, String> {
+    let width = state.width();
+    let [input_size, output_size] = weights.kv_dimensions else {
+        return Err(format!(
+            "deepseek compressor KV dimensions invalid:{:?}",
+            weights.kv_dimensions
+        ));
+    };
+    if weights.gate_dimensions != weights.kv_dimensions
+        || usize::try_from(*input_size).ok() != Some(input.len())
+        || usize::try_from(*output_size).ok() != Some(width)
+        || weights.ape.len() % width != 0
+        || weights.norm.len() != state.head_dim()
+    {
+        return Err(format!(
+            "deepseek compressor projection shape mismatch:kv={:?}:gate={:?}:input={}:width={width}:ape={}:norm={}",
+            weights.kv_dimensions,
+            weights.gate_dimensions,
+            input.len(),
+            weights.ape.len(),
+            weights.norm.len()
+        ));
+    }
+    let ratio = weights.ape.len() / width;
+    if !matches!(ratio, 4 | 128) {
+        return Err(format!("deepseek compressor APE ratio invalid:{ratio}"));
+    }
+    if ratio != state.compress_ratio() {
+        return Err(format!(
+            "deepseek compressor ratio mismatch:weights={ratio}:state={}",
+            state.compress_ratio()
+        ));
+    }
+    let manifest = artifact_dir.join("host_fp32_gemm_manifest.json");
+    let projected_kv = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        &manifest,
+        weights.kv,
+        weights.kv_dimensions,
+        input,
+    )?;
+    let mut gate_task = task.clone();
+    gate_task.task_id = task.task_id.saturating_add(1);
+    let projected_gate = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        &gate_task,
+        &manifest,
+        weights.gate,
+        weights.gate_dimensions,
+        input,
+    )?;
+    let ape_row = position as usize % ratio;
+    state.update_projected(
+        position,
+        &projected_kv,
+        &projected_gate,
+        &weights.ape[ape_row * width..(ape_row + 1) * width],
+        weights.norm,
+        rope_dim,
+        rope_cos,
+        rope_sin,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_deepseek_indexer_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    weights: &DeepseekV4FlashIndexerWeights<'_>,
+    normalized_query_lora: &[f32],
+    normalized_hidden: &[f32],
+    compressed_kv: &[f32],
+    rope_dim: usize,
+    rope_cos: &[f32],
+    rope_sin: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+    top_k: usize,
+) -> Result<Vec<usize>, String> {
+    let query_manifest = artifact_dir.join(match weights.query_format {
+        DeepseekV4FlashProjectionFormat::F16 => "query-f16/host_fp32_gemm_manifest.json",
+        DeepseekV4FlashProjectionFormat::Q8_0 => "query-q8/host_q8_block_dot_manifest.json",
+    });
+    let query = match weights.query_format {
+        DeepseekV4FlashProjectionFormat::F16 => execute_deepseek_f16_projection_through_simpler(
+            topology,
+            task,
+            &query_manifest,
+            weights.query,
+            weights.query_dimensions,
+            normalized_query_lora,
+        )?,
+        DeepseekV4FlashProjectionFormat::Q8_0 => execute_deepseek_q8_projection_through_simpler(
+            topology,
+            task,
+            &query_manifest,
+            segment_base,
+            weights.query,
+            weights.query_dimensions,
+            normalized_query_lora,
+        )?,
+    };
+    let mut query = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rope_tail_reference(
+        &query, num_heads, head_dim, rope_dim, rope_cos, rope_sin, false,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_indexer_qat_reference(&mut query)?;
+    let mut weight_task = task.clone();
+    weight_task.task_id = task.task_id.saturating_add(1);
+    let head_weights = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        &weight_task,
+        &artifact_dir.join("head-weights/host_fp32_gemm_manifest.json"),
+        weights.head_weights,
+        weights.head_weight_dimensions,
+        normalized_hidden,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_sparse_indexer_reference(
+        &query,
+        compressed_kv,
+        &head_weights,
+        num_heads,
+        head_dim,
+        top_k,
+    )
+}
+
+/// Execute one DeepSeek F16 matrix projection through the simulator's
+/// production simpler FP32 GEMM path.
+pub fn execute_deepseek_f16_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    f16_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+) -> Result<Vec<f32>, String> {
+    let [k, n] = dimensions else {
+        return Err(format!(
+            "unsupported simpler F16 projection dimensions:{dimensions:?}"
+        ));
+    };
+    let k = usize::try_from(*k).map_err(|_| "F16 projection K too large".to_string())?;
+    let n = usize::try_from(*n).map_err(|_| "F16 projection N too large".to_string())?;
+    const ARTIFACT_M: usize = 128;
+    if k == 0 || k % 128 != 0 || n == 0 || input.len() != k {
+        return Err(format!(
+            "unsupported simpler F16 projection shape:dimensions={dimensions:?}:input={}",
+            input.len()
+        ));
+    }
+    let padded_n = n.next_multiple_of(128);
+    ensure_simpler_host_fp32_gemm_manifest(
+        manifest_path,
+        ARTIFACT_M as u64,
+        k as u64,
+        padded_n as u64,
+    )?;
+    let mut padded_input = vec![0.0f32; ARTIFACT_M * k];
+    padded_input[..k].copy_from_slice(input);
+    let weight = lower_f16_matrix_to_f32_kxn_padded(f16_weight, dimensions, padded_n)?;
+    let output = run_host_gemm(
+        topology,
+        task,
+        manifest_path,
+        f32s_to_bytes(&padded_input),
+        f32s_to_bytes(&weight),
+        ARTIFACT_M,
+        k,
+        padded_n,
+        "fp32",
+        4,
+        "host_fp32_gemm",
+    )?;
+    Ok(output[..n].to_vec())
+}
+
+pub fn execute_deepseek_router_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    f16_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+    selection_bias: Option<&[f32]>,
+    selected_experts: Option<&[usize]>,
+) -> Result<sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashRouterOutput, String> {
+    let logits = execute_deepseek_f16_projection_through_simpler(
+        topology,
+        task,
+        manifest_path,
+        f16_weight,
+        dimensions,
+        input,
+    )?;
+    sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_router_reference(
+        &logits,
+        selection_bias,
+        selected_experts,
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.num_experts_used as usize,
+        deepseek_v4_flash::DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE,
+    )
+}
+
+/// Execute a DS4-style grouped Q8_0 projection. Each group consumes its own
+/// input slice and the matching contiguous range of output rows.
+pub fn execute_deepseek_grouped_q8_projection_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    segment_base: u64,
+    q8_weight: &[u8],
+    dimensions: &[u64],
+    input: &[f32],
+    groups: usize,
+) -> Result<Vec<f32>, String> {
+    let [group_input, output_size] = dimensions else {
+        return Err(format!(
+            "unsupported grouped Q8 projection dimensions:{dimensions:?}"
+        ));
+    };
+    let group_input = usize::try_from(*group_input)
+        .map_err(|_| "grouped Q8 input dimension too large".to_string())?;
+    let output_size = usize::try_from(*output_size)
+        .map_err(|_| "grouped Q8 output dimension too large".to_string())?;
+    let expected_input_values = group_input
+        .checked_mul(groups)
+        .ok_or_else(|| "grouped Q8 input size overflow".to_string())?;
+    if groups == 0
+        || group_input == 0
+        || group_input % 32 != 0
+        || output_size == 0
+        || output_size % groups != 0
+        || input.len() != expected_input_values
+    {
+        return Err(format!(
+            "unsupported grouped Q8 projection shape:dimensions={dimensions:?}:input={}:groups={groups}",
+            input.len()
+        ));
+    }
+    let group_output = output_size / groups;
+    if group_output % 128 != 0 {
+        return Err(format!(
+            "grouped Q8 output must be 128-aligned:output={group_output}"
+        ));
+    }
+    let row_bytes = (group_input / 32)
+        .checked_mul(34)
+        .ok_or_else(|| "grouped Q8 row size overflow".to_string())?;
+    let expected_weight_bytes = output_size
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "grouped Q8 weight size overflow".to_string())?;
+    if q8_weight.len() != expected_weight_bytes {
+        return Err(format!(
+            "grouped Q8 weight size mismatch:actual={}:expected={expected_weight_bytes}",
+            q8_weight.len()
+        ));
+    }
+
+    let mut output = Vec::with_capacity(output_size);
+    ensure_simpler_host_q8_block_dot_manifest(
+        manifest_path,
+        (group_input / 32) as u64,
+        group_output as u64,
+    )?;
+    let blocks = group_input / 32;
+    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+        topology,
+        manifest_path,
+        blocks,
+        group_output,
+        segment_base,
+    )?;
+    for group in 0..groups {
+        let input_start = group * group_input;
+        let weight_start = group * group_output * row_bytes;
+        let weight_end = weight_start + group_output * row_bytes;
+        let mut group_task = task.clone();
+        group_task.task_id = task.task_id.saturating_add(group as u64);
+        let activation = quantize_q8_0_activation(&input[input_start..input_start + group_input])?;
+        let dimensions = [group_input as u64, group_output as u64];
+        let mut weight_blocks = Vec::with_capacity(blocks * 32 * group_output);
+        let mut weight_scales = Vec::with_capacity(blocks * group_output);
+        for block in 0..blocks {
+            let (weight_block, block_scales) =
+                q8_0_weight_block_kxn(&q8_weight[weight_start..weight_end], &dimensions, block)?;
+            weight_blocks.extend_from_slice(&weight_block);
+            weight_scales.extend_from_slice(&block_scales);
+        }
+        let dots = runner.run(
+            &group_task,
+            activation.values.iter().map(|value| *value as u8).collect(),
+            weight_blocks,
+        )?;
+        for output_index in 0..group_output {
+            let mut value = 0.0f32;
+            for block in 0..blocks {
+                let partial = block * group_output + output_index;
+                value += activation.scales[block] * weight_scales[partial] * dots[partial] as f32;
+            }
+            output.push(value);
+        }
+    }
+    Ok(output)
+}
+
+/// Execute the always-active DeepSeek shared expert through simpler Q8_0
+/// projections with DS4-compatible SwiGLU semantics between the projections.
+pub fn execute_deepseek_shared_expert_through_simpler(
+    topology: &SimTopology,
+    task: &TaskKey,
+    artifact_dir: &Path,
+    segment_base: u64,
+    gate_weight: &[u8],
+    gate_dimensions: &[u64],
+    up_weight: &[u8],
+    up_dimensions: &[u64],
+    down_weight: &[u8],
+    down_dimensions: &[u64],
+    input: &[f32],
+    clamp: f32,
+) -> Result<Vec<f32>, String> {
+    if gate_dimensions != up_dimensions {
+        return Err(format!(
+            "deepseek shared expert gate/up shape mismatch:gate={gate_dimensions:?}:up={up_dimensions:?}"
+        ));
+    }
+    let [input_size, intermediate_size] = gate_dimensions else {
+        return Err(format!(
+            "unsupported deepseek shared expert gate shape:{gate_dimensions:?}"
+        ));
+    };
+    if down_dimensions != [*intermediate_size, *input_size] {
+        return Err(format!(
+            "deepseek shared expert down shape mismatch:down={down_dimensions:?}:expected=[{intermediate_size},{input_size}]"
+        ));
+    }
+    let gate_manifest = artifact_dir
+        .join(format!("q8_{}x{}", input_size, intermediate_size))
+        .join("host_q8_block_dot_manifest.json");
+    let down_manifest = artifact_dir
+        .join(format!("q8_{}x{}", intermediate_size, input_size))
+        .join("host_q8_block_dot_manifest.json");
+    let gate = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        task,
+        &gate_manifest,
+        segment_base,
+        gate_weight,
+        gate_dimensions,
+        input,
+    )?;
+    let mut up_task = task.clone();
+    up_task.task_id = task.task_id.saturating_add(1);
+    let up = execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &up_task,
+        &gate_manifest,
+        segment_base.saturating_add(10),
+        up_weight,
+        up_dimensions,
+        input,
+    )?;
+    let activated = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_swiglu_reference(
+        &gate, &up, clamp,
+    )?;
+    let mut down_task = task.clone();
+    down_task.task_id = task.task_id.saturating_add(2);
+    execute_deepseek_q8_projection_through_simpler(
+        topology,
+        &down_task,
+        &down_manifest,
+        segment_base.saturating_add(20),
+        down_weight,
+        down_dimensions,
+        &activated,
+    )
+}
+
+#[cfg(test)]
+fn run_host_quantized_gemm_payload(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+    m: usize,
+    k: usize,
+    n: usize,
+    input_a_payload: Vec<u8>,
+    input_b_payload: Vec<u8>,
+) -> Result<Vec<i32>, String> {
+    let segment_base = 70_000 + task.task_id.saturating_mul(10);
+    HostQuantizedGemmRunner::new(topology, manifest_path, m, k, n, segment_base)?.run(
+        task,
+        input_a_payload,
+        input_b_payload,
+    )
+}
+
+#[cfg(test)]
+fn run_host_quantized_gemm_smoke(
+    topology: &SimTopology,
+    task: &TaskKey,
+    manifest_path: &Path,
+) -> Result<Vec<i32>, String> {
+    const DIM: usize = 128;
+    const ELEMENTS: usize = DIM * DIM;
+    const INPUT_VALUE: i8 = -3;
+
+    let mut identity = vec![0u8; ELEMENTS];
+    for diagonal in 0..DIM {
+        identity[diagonal * DIM + diagonal] = 1;
+    }
+    let output = run_host_quantized_gemm_payload(
+        topology,
+        task,
+        manifest_path,
+        DIM,
+        DIM,
+        DIM,
+        vec![INPUT_VALUE as u8; ELEMENTS],
+        identity,
+    )?;
+    if output.iter().any(|value| *value != i32::from(INPUT_VALUE)) {
+        return Err(format!(
+            "simpler_capi_quantized_gemm_output_mismatch:first={:?}",
+            output.first()
+        ));
+    }
+    Ok(output)
 }
 
 fn run_simpler_host_engram_context(
@@ -23942,6 +28963,13 @@ fn bytes_to_f32s(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn bytes_to_i32s(bytes: &[u8]) -> Vec<i32> {
+    bytes
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|chunk| i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
 fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
     match desc {
         UapiDescriptor::Io(_) => RuntimeWorkKind::GuestIo,
@@ -23980,7 +29008,45 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bytes_to_f32s, f32s_to_bytes, find_u64_marker, kvcache_input_b_payload,
+        bytes_to_f32s, deepseek_v4_flash_decode_slice_inputs,
+        deepseek_v4_flash_gemm_backend_spec_from_manifest, deepseek_v4_flash_runtime_paths,
+        ensure_simpler_host_deepseek_vector_manifest, ensure_simpler_host_fp32_gemm_manifest,
+        ensure_simpler_host_fp4_gemm_manifest, ensure_simpler_host_fp8_gemm_manifest,
+        ensure_simpler_host_gemm_manifest, ensure_simpler_host_q8_block_dot_manifest,
+        ensure_simpler_host_quantized_gemm_manifest, execute_add_through_simpler,
+        execute_compressor_pool_through_simpler,
+        execute_deepseek_compressor_update_through_simpler,
+        execute_deepseek_dense_attention_through_simpler,
+        execute_deepseek_f16_projection_through_simpler, execute_deepseek_ffn_through_simpler,
+        execute_deepseek_grouped_q8_projection_through_simpler,
+        execute_deepseek_indexer_through_simpler,
+        execute_deepseek_iq2_xxs_expert_projection_through_simpler,
+        execute_deepseek_moe_through_simpler, execute_deepseek_official_bf16_rows_through_simpler,
+        execute_deepseek_official_f32_rows_through_simpler,
+        execute_deepseek_official_fp4_rows_through_simpler,
+        execute_deepseek_official_fp8_rows_full_k_through_simpler,
+        execute_deepseek_official_fp8_rows_through_simpler,
+        execute_deepseek_official_layer_through_simpler,
+        execute_deepseek_official_output_head_through_simpler,
+        execute_deepseek_official_routed_expert_through_simpler,
+        execute_deepseek_official_router_through_simpler,
+        execute_deepseek_q2_k_expert_projection_through_simpler,
+        execute_deepseek_q8_projection_through_simpler,
+        execute_deepseek_ratio128_attention_through_simpler,
+        execute_deepseek_ratio128_layer_through_simpler,
+        execute_deepseek_ratio4_attention_through_simpler,
+        execute_deepseek_routed_expert_through_simpler,
+        execute_deepseek_routed_experts_through_simpler, execute_deepseek_router_through_simpler,
+        execute_deepseek_shared_expert_through_simpler, execute_fp4_rows_through_simpler,
+        execute_fp8_rows_through_simpler, execute_hc_post_through_simpler,
+        execute_hc_split_through_simpler, execute_hc_weighted_sum_through_simpler,
+        execute_indexer_qat_through_simpler, execute_kv_fp8_roundtrip_through_simpler,
+        execute_rms_norm_through_simpler, execute_rope_through_simpler,
+        execute_router_through_simpler, execute_scale_through_simpler,
+        execute_sink_attention_through_simpler, execute_swiglu_through_simpler,
+        execute_top_k_through_simpler, f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes,
+        find_u64_marker, finish_deepseek_ffn_with_expert_slices_through_simpler,
+        kvcache_input_b_payload, prepare_deepseek_ffn_through_simpler,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -24053,16 +29119,25 @@ mod tests {
         qwen3_paper_engram_state_manifest_from_payload, qwen3_paper_engram_state_manifest_payload,
         qwen3_register_range_forward_objects, qwen3_runtime_object_payload_view,
         qwen3_validate_engram_state_object_service_payload,
-        qwen3_validate_engram_state_registry_payload, read_u64_le_at,
-        resolve_qwen3_range_dispatch_operands, run_host_matmul_batched_smoke,
-        run_host_matmul_smoke, run_qwen3_dense_reference_prefill_runtime,
-        validate_qwen3_range_dispatch_object_refs, GuestUapiSurface, KvCachePayloadLayout,
-        LocalGuestUapiSurface, Qwen3DenseReferenceEngramContextReport,
-        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
-        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
-        Qwen3DenseReferenceShard, Qwen3GuestRangeComputeContract, Qwen3PaperEngramStateGateRef,
-        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchReq, UapiCommand,
-        UapiDescriptor, UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
+        qwen3_validate_engram_state_registry_payload, read_u64_le_at, repeated_u16_le_bytes,
+        resolve_qwen3_range_dispatch_operands, run_host_gemm, run_host_gemm_128,
+        run_host_gemm_smoke, run_host_matmul_batched_smoke, run_host_matmul_smoke,
+        run_host_quantized_gemm_smoke, run_qwen3_dense_reference_prefill_runtime,
+        validate_qwen3_range_dispatch_object_refs, write_u64_le_at,
+        DeepseekV4FlashAttentionWeights, DeepseekV4FlashCompressorWeights,
+        DeepseekV4FlashExpertSliceWeights, DeepseekV4FlashFfnStaticWeights,
+        DeepseekV4FlashFfnWeights, DeepseekV4FlashIndexerWeights, DeepseekV4FlashMoeWeights,
+        DeepseekV4FlashProjectionFormat, DeepseekV4FlashRatio128AttentionState,
+        DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerWeights,
+        DeepseekV4FlashRatio4AttentionState, DeepseekV4FlashRatio4AttentionWeights,
+        DeepseekV4LinearOutputDType, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
+        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
+        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
+        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
+        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
+        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
+        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
+        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
         QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
@@ -24070,29 +29145,51 @@ mod tests {
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_ROW_PREFETCH_PLAN,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
-        QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER, QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
-        QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET, QWEN3_DENSE_REFERENCE_PROFILE,
-        QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND, QWEN3_LOGITS_REFERENCE_ENTRY_WORDS,
-        QWEN3_MLP_REFERENCE_ENTRY_WORDS, QWEN3_SYNTHETIC_ATTENTION_CONTEXT,
-        QWEN3_SYNTHETIC_ATTENTION_SCORE, QWEN3_SYNTHETIC_GUEST_INPUT,
-        QWEN3_SYNTHETIC_LOGITS_CANDIDATES, QWEN3_SYNTHETIC_MLP_ACTIVATION,
-        QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE, QWEN3_SYNTHETIC_TOKEN_TEXT,
-        QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS, QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF,
-        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF, SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF,
-        SIM_QWEN3_GUEST_ENGRAM_STATE_REF, SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION,
-        SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR, SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT,
-        SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM, SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH,
-        W4_KVCACHE_BLOCKS, W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+        QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES, QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER,
+        QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET, QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET,
+        QWEN3_DENSE_REFERENCE_PROFILE, QWEN3_DENSE_REFERENCE_TOKENIZER_POLICY_KIND,
+        QWEN3_LOGITS_REFERENCE_ENTRY_WORDS, QWEN3_MLP_REFERENCE_ENTRY_WORDS,
+        QWEN3_SYNTHETIC_ATTENTION_CONTEXT, QWEN3_SYNTHETIC_ATTENTION_SCORE,
+        QWEN3_SYNTHETIC_GUEST_INPUT, QWEN3_SYNTHETIC_LOGITS_CANDIDATES,
+        QWEN3_SYNTHETIC_MLP_ACTIVATION, QWEN3_SYNTHETIC_MLP_OUTPUT, QWEN3_SYNTHETIC_QKV_BASE_TILE,
+        QWEN3_SYNTHETIC_TOKEN_TEXT, QWEN3_WEIGHT_REFERENCE_ENTRY_WORDS,
+        QWEN3_WEIGHT_STAGE_LINK_ENTRY_WORDS, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_GATE_WEIGHT_REF,
+        SIM_QWEN3_GUEST_ENGRAM_CONTEXT_INDICES_REF, SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_ROW_PREFETCH_REF, SIM_QWEN3_GUEST_ENGRAM_STATE_REF,
+        SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION, SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR,
+        SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM,
+        SIM_W5_TEST_MEMORY_PREFIX_CACHE_KV_STREAM_PATH, W4_KVCACHE_BLOCKS,
+        W4_KVCACHE_PREFIX_GROUPS, W4_LEGACY_KVCACHE_PAYLOAD_BYTES,
         W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES, W5_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_MAGIC, W5_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES,
         W5_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
-        BlockHash, CompletionStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId,
-        SegmentHandle, SimError, TaskKey,
+        BlockHash, CompletionStatus, DispatchBackendProfile, HierarchyCoord, IoOpcode, IoSubmitReq,
+        LogicalSystemId, MemoryEndpoint, SegmentHandle, SimError, TaskKey,
+    };
+    use sim_models::deepseek_v4_flash;
+    use sim_models::deepseek_v4_flash_checkpoint_reference::{
+        checksum_f32, deterministic_hidden_fixture, fp4_matvec_rows_reference,
+        fp8_matvec_rows_reference, round_to_bf16,
+    };
+    use sim_models::deepseek_v4_flash_gguf::{
+        decode_f32_tensor, lower_f16_matrix_to_f32_kxn_padded, lower_q8_0_matrix_to_bf16_kxn,
+        project_f16_matrix, project_iq2_xxs_expert_matrix, project_q2_k_expert_matrix,
+        project_q8_0_matrix, GgufCatalog,
+    };
+    use sim_models::deepseek_v4_flash_lowering::{
+        deepseek_v4_flash_fp8_kv_roundtrip_reference,
+        deepseek_v4_flash_hc_attention_input_from_mix_reference,
+        deepseek_v4_flash_hc_control_input_reference, deepseek_v4_flash_hc_post_reference,
+        deepseek_v4_flash_head_rms_norm_reference, deepseek_v4_flash_rms_norm_reference,
+        deepseek_v4_flash_rope_tail_reference, deepseek_v4_flash_router_reference,
+        deepseek_v4_flash_sink_attention_reference, deepseek_v4_flash_swiglu_reference,
+        DeepseekV4FlashCompressorState, DeepseekV4FlashDtype, DeepseekV4FlashGemmKind,
+        DeepseekV4FlashGemmPlan,
     };
     use sim_models::engram_context::{
         run_engram_context_reference, run_paper_engram_context_reference, EngramContextOp,
@@ -24131,6 +29228,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use std::time::Duration;
     #[cfg(unix)]
     use std::{fs::Permissions, os::unix::fs::PermissionsExt};
@@ -24346,6 +29444,380 @@ mod tests {
             record.bytes,
             record.checksum,
         )
+    }
+
+    fn eight_host_topology() -> SimTopology {
+        // Load the checked-in 8-host scenario so all schema fields are correct.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/mvp_8host_single_domain.yaml");
+        let config =
+            ScenarioConfig::from_yaml_file(&path).expect("8-host scenario file must parse");
+        SimTopology::from_config(&config).expect("8-host topology")
+    }
+
+    fn complete_flash_weight_catalog_fixture(payload_bytes: u64) -> String {
+        let mut text = String::from(
+            "source_kind=fixture model_key=deepseek-v4-flash total_layers=43 experts_per_layer=256 checksum_algorithm=deterministic-v1\n",
+        );
+        for layer_id in 0..43u64 {
+            for expert_id in 0..256u32 {
+                let tile = sim_models::deepseek_v4_flash_moe::deterministic_expert_weight_tile_ref(
+                    "deepseek-v4-flash",
+                    layer_id,
+                    expert_id,
+                    "iq2_xxs",
+                    payload_bytes,
+                )
+                .expect("catalog tile");
+                text.push_str(&format!(
+                    "tile layer={} expert={} quant={} payload_bytes={} payload_checksum=0x{:016x}\n",
+                    layer_id, expert_id, tile.quant, tile.payload_bytes, tile.payload_checksum
+                ));
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn simpler_manifest_cache_rejects_stale_runtime_binaries() {
+        let root = std::env::temp_dir().join(format!(
+            "sim-uapi-simpler-runtime-cache-test-{}",
+            std::process::id()
+        ));
+        let cached = root.join("cached");
+        let build_lib = root.join("build/lib");
+        let runtime_dir = build_lib.join("a2a3/sim/host_build_graph");
+        std::fs::create_dir_all(&cached).expect("create cached runtime dir");
+        std::fs::create_dir_all(&runtime_dir).expect("create current runtime dir");
+        let artifacts = [
+            ("runtime_host.bin", runtime_dir.join("libhost_runtime.so")),
+            ("runtime_aicpu.bin", runtime_dir.join("libaicpu_kernel.so")),
+            (
+                "runtime_aicore.bin",
+                runtime_dir.join("libaicore_kernel.so"),
+            ),
+            ("libsimpler_log.so", build_lib.join("libsimpler_log.so")),
+            (
+                "libcpu_sim_context.so",
+                build_lib.join("libcpu_sim_context.so"),
+            ),
+        ];
+        for (index, (cached_name, current_path)) in artifacts.iter().enumerate() {
+            let bytes = vec![index as u8 + 1; 8];
+            std::fs::write(cached.join(cached_name), &bytes).expect("write cached runtime");
+            if let Some(parent) = current_path.parent() {
+                std::fs::create_dir_all(parent).expect("create current runtime parent");
+            }
+            std::fs::write(current_path, bytes).expect("write current runtime");
+        }
+        let manifest = serde_json::json!({
+            "simpler_runtime": {
+                "host_runtime_library": {"source": cached.join("runtime_host.bin")},
+                "aicpu_binary": {"source": cached.join("runtime_aicpu.bin")},
+                "aicore_binary": {"source": cached.join("runtime_aicore.bin")},
+                "runtime_env": {
+                    "SIMPLER_LOG_LIBRARY": cached.join("libsimpler_log.so"),
+                    "SIMPLER_SIM_CONTEXT_LIBRARY": cached.join("libcpu_sim_context.so"),
+                }
+            }
+        });
+
+        assert!(super::simpler_manifest_runtime_matches_build_lib(
+            &manifest, &build_lib
+        ));
+        std::fs::write(runtime_dir.join("libaicore_kernel.so"), b"new-aicore")
+            .expect("replace current AICore runtime");
+        assert!(!super::simpler_manifest_runtime_matches_build_lib(
+            &manifest, &build_lib
+        ));
+        std::fs::remove_dir_all(root).expect("remove runtime cache test dir");
+    }
+
+    #[test]
+    fn flash_geometry_smoke_check_passes_on_eight_host_topology() {
+        let topology = eight_host_topology();
+        super::deepseek_v4_flash_geometry_smoke_check(&topology)
+            .expect("flash geometry smoke must pass with >=8 hosts");
+    }
+
+    #[test]
+    fn flash_geometry_smoke_report_covers_w5_range_flow_contract() {
+        let topology = eight_host_topology();
+        let report = super::deepseek_v4_flash_geometry_smoke_report(&topology)
+            .expect("flash geometry smoke report");
+        let ranges: Vec<(u64, u64, u64)> = report
+            .nodes
+            .iter()
+            .map(|node| (node.layer_start, node.layer_end, node.layer_count))
+            .collect();
+
+        assert!(report.ready);
+        assert_eq!(report.node_count, 8);
+        assert_eq!(report.layer_count, 43);
+        assert_eq!(
+            ranges,
+            vec![
+                (0, 6, 6),
+                (6, 12, 6),
+                (12, 18, 6),
+                (18, 23, 5),
+                (23, 28, 5),
+                (28, 33, 5),
+                (33, 38, 5),
+                (38, 43, 5),
+            ]
+        );
+        assert_eq!(report.handoff_count, 7);
+        assert_eq!(report.barrier_count, 8);
+        assert_eq!(report.weight_object_count, 8);
+        assert_eq!(report.kv_object_count, 8);
+        assert_eq!(report.hidden_object_count, 16);
+        assert_eq!(report.object_desc_put_count, 32);
+        assert_eq!(report.object_desc_get_count, 32);
+        assert!(report.total_kv_state_bytes > 0);
+        assert!(report.aggregate_checksum != 0);
+        assert!(report.nodes[7].terminal);
+        assert!(!report.nodes[7].handoff_ready);
+    }
+
+    #[test]
+    fn flash_geometry_smoke_check_rejects_too_few_hosts() {
+        let topology = test_topology(); // 2-host
+        let err = super::deepseek_v4_flash_geometry_smoke_check(&topology)
+            .expect_err("flash geometry smoke must reject <8 hosts");
+        assert!(
+            err.contains("flash geometry smoke requires at least 8"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn flash_object_service_profile_is_larger_than_qwen3() {
+        let flash = super::object_service_profile_for("deepseek-v4-flash");
+        let qwen3 = super::object_service_profile_for("qwen3");
+        assert!(flash.obmm_pool.pool_bytes > qwen3.obmm_pool.pool_bytes);
+        assert_eq!(flash.queue_depth, qwen3.queue_depth);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_records_cache_stats_across_steps() {
+        // 8 decode steps, 1 token each, small cache to force misses/evictions.
+        let report = super::deepseek_v4_flash_moe_decode_report(8, 1, 16, 2048 * 1024)
+            .expect("moe decode report");
+        assert_eq!(report.step_count, 8);
+        assert_eq!(report.route_source, "synthetic");
+        assert_eq!(report.route_source_kind, "synthetic");
+        assert_eq!(report.total_layers, 43);
+        assert_eq!(report.tokens_per_step, 1);
+        assert_eq!(report.top_k, 6);
+        // Each step = 43 layers * 1 token * 6 experts = 258 touches.
+        assert_eq!(report.hits + report.misses, 8 * 43 * 6);
+        assert_eq!(report.route_decision_count, 8 * 43);
+        assert_eq!(report.weight_tile_resolve_count, 8 * 43 * 6);
+        assert!(report.unique_weight_tile_count > 0);
+        assert_eq!(
+            report.weight_tile_payload_bytes,
+            report.unique_weight_tile_count * 2048 * 1024
+        );
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+        assert_eq!(report.pread_bytes, report.misses * 2048 * 1024);
+        assert!(report.hit_rate_milli <= 1000);
+        assert_eq!(report.latency_compute_us_per_touch, 2);
+        assert_eq!(report.latency_load_bytes_per_us, 4096);
+        assert_eq!(report.compute_time_us, (report.hits + report.misses) * 2);
+        assert_eq!(report.miss_load_time_us, (report.pread_bytes + 4095) / 4096);
+        assert_eq!(
+            report.estimated_latency_us,
+            report.compute_time_us.max(report.miss_load_time_us)
+        );
+    }
+
+    #[test]
+    fn flash_moe_decode_report_rejects_zero_steps() {
+        let err = super::deepseek_v4_flash_moe_decode_report(0, 1, 16, 1024)
+            .expect_err("zero steps must be rejected");
+        assert!(err.contains("step_count > 0"), "{err}");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_route_trace_text() {
+        let trace = "\
+            step=0 token=0 layer=0 experts=1,2,3,4,5,6\n\
+            step=0 token=0 layer=1 experts=1,2,3,4,5,6\n\
+            step=1 token=0 layer=0 experts=7,8,9,10,11,12\n";
+        let report = super::deepseek_v4_flash_moe_decode_report_from_trace_text(
+            "fixture://flash-route",
+            trace,
+            16,
+            1024,
+        )
+        .expect("trace report");
+        assert_eq!(report.route_source, "fixture://flash-route");
+        assert_eq!(report.route_source_kind, "direct-trace");
+        assert_eq!(
+            report.weight_provider_source,
+            "deterministic://deepseek-v4-flash"
+        );
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.step_count, 2);
+        assert_eq!(report.tokens_per_step, 1);
+        assert_eq!(report.route_decision_count, 3);
+        assert_eq!(report.weight_tile_resolve_count, 18);
+        assert_eq!(report.unique_weight_tile_count, 18);
+        assert_eq!(report.weight_tile_payload_bytes, 18 * 1024);
+        assert_eq!(report.hits + report.misses, 18);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_checked_in_ds4_trace_fixture() {
+        let trace = include_str!("../../sim-models/fixtures/deepseek_v4_flash_route_trace.ds4.txt");
+        let provider_text =
+            include_str!("../../sim-models/fixtures/deepseek_v4_flash_weight_provider.fixture.txt");
+        let provider =
+            sim_models::deepseek_v4_flash_moe::parse_expert_weight_provider_spec(provider_text)
+                .expect("provider fixture");
+        let report = super::deepseek_v4_flash_moe_decode_report_from_trace_text_with_provider(
+            "fixture://deepseek-v4-flash-route-trace",
+            trace,
+            "fixture://deepseek-v4-flash-weight-provider",
+            &provider,
+            64,
+        )
+        .expect("fixture trace report");
+        assert_eq!(
+            report.route_source,
+            "fixture://deepseek-v4-flash-route-trace"
+        );
+        assert_eq!(report.route_source_kind, "direct-trace");
+        assert_eq!(
+            report.weight_provider_source,
+            "fixture://deepseek-v4-flash-weight-provider"
+        );
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.step_count, 2);
+        assert_eq!(report.total_layers, 43);
+        assert_eq!(report.tokens_per_step, 1);
+        assert_eq!(report.route_decision_count, 2 * 43);
+        assert_eq!(report.weight_tile_resolve_count, 2 * 43 * 6);
+        assert_eq!(report.unique_weight_tile_count, 2 * 43 * 6);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 2048 * 1024);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_file_backed_provider_fixture() {
+        let report = super::deepseek_v4_flash_moe_decode_report_from_trace_file_with_provider_file(
+            Path::new("../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.ds4.txt"),
+            Path::new(
+                "../../crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.file.fixture.txt",
+            ),
+            64,
+        )
+        .expect("file-backed provider fixture report");
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.expert_bytes, 142);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 142);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_route_manifest_file_backed_provider_fixture() {
+        let report =
+            super::deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_provider_file(
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt",
+                ),
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_weight_provider.file.fixture.txt",
+                ),
+                64,
+            )
+            .expect("manifest file-backed provider fixture report");
+        assert_eq!(report.route_source_kind, "fixture");
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "iq2_xxs");
+        assert_eq!(report.expert_bytes, 142);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 142);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+    }
+
+    #[test]
+    fn flash_moe_decode_report_accepts_complete_weight_catalog() {
+        let dir = std::env::temp_dir().join(format!(
+            "ub_sim_flash_weight_catalog_report_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let catalog_path = dir.join("weight.catalog");
+        std::fs::write(&catalog_path, complete_flash_weight_catalog_fixture(4096))
+            .expect("write catalog");
+        let report =
+            super::deepseek_v4_flash_moe_decode_report_from_trace_manifest_file_with_catalog_file(
+                Path::new(
+                    "../../crates/sim-models/fixtures/deepseek_v4_flash_route_trace.manifest.txt",
+                ),
+                &catalog_path,
+                64,
+            )
+            .expect("catalog-backed report");
+        assert_eq!(report.route_source_kind, "fixture");
+        assert_eq!(report.weight_provider_model_key, "deepseek-v4-flash");
+        assert_eq!(report.weight_provider_quant, "catalog");
+        assert_eq!(report.expert_bytes, 4096);
+        assert_eq!(report.weight_tile_payload_bytes, 2 * 43 * 6 * 4096);
+        assert_eq!(report.hits + report.misses, 2 * 43 * 6);
+        assert_ne!(report.weight_tile_payload_checksum, 0);
+        std::fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_rejects_bad_route_trace_text() {
+        let err = super::deepseek_v4_flash_moe_decode_report_from_trace_text(
+            "fixture://bad-route",
+            "step=0 token=0 layer=0 experts=1,2,3",
+            16,
+            1024,
+        )
+        .expect_err("bad trace must fail");
+        assert!(err.contains("expert count mismatch"), "{err}");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_rejects_bad_typed_route_trace() {
+        let trace = vec![sim_models::deepseek_v4_flash_moe::ExpertRouteDecision {
+            step_index: 0,
+            token_index: 0,
+            layer_id: 0,
+            active_experts: vec![1, 2, 3],
+        }];
+        let err = super::deepseek_v4_flash_moe_decode_report_from_trace(
+            "fixture://bad-typed-route",
+            &trace,
+            16,
+            1024,
+        )
+        .expect_err("bad typed trace must fail");
+        assert!(err.contains("expert count mismatch"), "{err}");
+    }
+
+    #[test]
+    fn flash_moe_decode_report_larger_cache_improves_hit_rate() {
+        let small = super::deepseek_v4_flash_moe_decode_report(16, 1, 8, 1024).unwrap();
+        let large = super::deepseek_v4_flash_moe_decode_report(16, 1, 128, 1024).unwrap();
+        assert!(
+            large.hit_rate_milli >= small.hit_rate_milli,
+            "larger cache ({}mil) should not be worse than small ({}mil)",
+            large.hit_rate_milli,
+            small.hit_rate_milli
+        );
     }
 
     #[test]
@@ -26922,6 +32394,3599 @@ mod tests {
     }
 
     #[test]
+    fn host_gemm_dispatch_executes_pure_bf16_matrix_product() {
+        run_simpler_native_test_isolated(
+            "host_gemm_dispatch_executes_pure_bf16_matrix_product",
+            || {
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-gemm-test-artifacts")
+                    .join("host_gemm_manifest.json");
+                ensure_simpler_host_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host GEMM artifact");
+                let output = run_host_gemm_smoke(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 109,
+                    },
+                    &manifest,
+                )
+                .expect("host GEMM dispatch");
+                assert_eq!(output.len(), 128 * 128);
+                assert!(output.iter().all(|value| (*value - 1.0).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    #[test]
+    fn host_fp32_gemm_dispatch_executes_pure_float_matrix_product() {
+        run_simpler_native_test_isolated(
+            "host_fp32_gemm_dispatch_executes_pure_float_matrix_product",
+            || {
+                const DIM: usize = 128;
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-fp32-gemm-test-artifacts")
+                    .join("host_fp32_gemm_manifest.json");
+                ensure_simpler_host_fp32_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host FP32 GEMM artifact");
+                let mut identity = vec![0.0f32; DIM * DIM];
+                for diagonal in 0..DIM {
+                    identity[diagonal * DIM + diagonal] = 1.0;
+                }
+                let output = run_host_gemm(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 119,
+                    },
+                    &manifest,
+                    f32s_to_bytes(&vec![1.0; DIM * DIM]),
+                    f32s_to_bytes(&identity),
+                    DIM,
+                    DIM,
+                    DIM,
+                    "fp32",
+                    4,
+                    "host_fp32_gemm",
+                )
+                .expect("execute host FP32 GEMM");
+                assert!(output.iter().all(|value| (*value - 1.0).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_q8_0_lowered_weight_executes_through_simpler_gemm() {
+        run_simpler_native_test_isolated(
+            "deepseek_q8_0_lowered_weight_executes_through_simpler_gemm",
+            || {
+                const DIM: usize = 128;
+                const BF16_ONE: u16 = 0x3f80;
+                const F16_HALF: u16 = 0x3800;
+                let mut q8_weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                for column in 0..DIM {
+                    for block in 0..DIM / 32 {
+                        q8_weight.extend_from_slice(&F16_HALF.to_le_bytes());
+                        for lane in 0..32 {
+                            let input = block * 32 + lane;
+                            let quantized = if input == column { -3i8 } else { 0i8 };
+                            q8_weight.push(quantized as u8);
+                        }
+                    }
+                }
+                let lowered = lower_q8_0_matrix_to_bf16_kxn(&q8_weight, &[DIM as u64, DIM as u64])
+                    .expect("lower DeepSeek Q8_0 weight");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-gemm-test-artifacts")
+                    .join("host_gemm_manifest.json");
+                ensure_simpler_host_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host GEMM artifact");
+                let output = run_host_gemm_128(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 111,
+                    },
+                    &manifest,
+                    repeated_u16_le_bytes(BF16_ONE, DIM * DIM),
+                    lowered,
+                )
+                .expect("execute lowered Q8_0 weight through simpler GEMM");
+                assert!(output.iter().all(|value| (*value + 1.5).abs() < 1.0e-5));
+            },
+        );
+    }
+
+    fn execute_q8_0_projection_through_simpler(
+        q8_weight: &[u8],
+        dimensions: &[u64],
+        input: &[f32],
+        task_id_base: u64,
+    ) -> Result<Vec<f32>, String> {
+        let [k, n] = dimensions else {
+            return Err(format!(
+                "unsupported simpler Q8 projection dimensions:{dimensions:?}"
+            ));
+        };
+        let k = usize::try_from(*k).map_err(|_| "Q8 projection K too large".to_string())?;
+        let n = usize::try_from(*n).map_err(|_| "Q8 projection N too large".to_string())?;
+        let manifest = std::env::temp_dir()
+            .join(format!("simpler-host-q8-block-dot-{n}-test-artifacts"))
+            .join("host_q8_block_dot_manifest.json");
+        let blocks = k / 32;
+        ensure_simpler_host_q8_block_dot_manifest(&manifest, blocks as u64, n as u64)?;
+        let topology = test_topology();
+        let task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord { levels: [0; 8] },
+            scope_depth: 0,
+            task_id: task_id_base,
+        };
+        execute_deepseek_q8_projection_through_simpler(
+            &topology,
+            &task,
+            &manifest,
+            90_000 + task_id_base.saturating_mul(10),
+            q8_weight,
+            dimensions,
+            input,
+        )
+    }
+
+    #[test]
+    fn deepseek_q8_0_exact_projection_executes_block_dots_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_q8_0_exact_projection_executes_block_dots_through_simpler",
+            || {
+                const K: usize = 128;
+                const N: usize = 128;
+                const BLOCKS: usize = K / 32;
+                let input: Vec<f32> = (0..K)
+                    .map(|index| ((index as i32 % 23) - 11) as f32 / 3.0)
+                    .collect();
+                let mut q8_weight = Vec::with_capacity(N * BLOCKS * 34);
+                for output in 0..N {
+                    for block in 0..BLOCKS {
+                        let scale = if block % 2 == 0 { 0x3800u16 } else { 0x3c00u16 };
+                        q8_weight.extend_from_slice(&scale.to_le_bytes());
+                        q8_weight.extend(
+                            (0..32).map(|lane| (((output + block + lane) % 7) as i8 - 3) as u8),
+                        );
+                    }
+                }
+                let reference = project_q8_0_matrix(&q8_weight, &[K as u64, N as u64], &input)
+                    .expect("compute exact Q8_0 reference");
+                let actual = execute_q8_0_projection_through_simpler(
+                    &q8_weight,
+                    &[K as u64, N as u64],
+                    &input,
+                    120,
+                )
+                .expect("execute exact Q8 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_q2_k_expert_projection_executes_block_dots_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_q2_k_expert_projection_executes_block_dots_through_simpler",
+            || {
+                const K: usize = 256;
+                const N: usize = 128;
+                const EXPERTS: usize = 2;
+                let input: Vec<f32> = (0..K)
+                    .map(|index| ((index as i32 % 31) - 15) as f32 / 7.0)
+                    .collect();
+                let mut weight = Vec::with_capacity(EXPERTS * N * 84);
+                for expert in 0..EXPERTS {
+                    for row in 0..N {
+                        weight.extend((0..16).map(|group| {
+                            let scale = ((expert + row + group) % 4 + 1) as u8;
+                            let minimum = ((expert * 2 + row + group) % 3) as u8;
+                            scale | (minimum << 4)
+                        }));
+                        weight
+                            .extend((0..64).map(|index| (expert * 17 + row * 5 + index * 3) as u8));
+                        weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                        weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                    }
+                }
+                let dimensions = [K as u64, N as u64, EXPERTS as u64];
+                let reference = project_q2_k_expert_matrix(&weight, &dimensions, 1, &input)
+                    .expect("compute Q2_K expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-q2-k-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_q2_k_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 126,
+                    },
+                    &manifest,
+                    96_000,
+                    &weight,
+                    &dimensions,
+                    1,
+                    &input,
+                )
+                .expect("execute Q2_K expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_q2_k_expert_rows_match_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_q2_k_expert_rows_match_gguf_reference_when_available",
+            || {
+                const EXPERT: usize = 194;
+                const OUTPUT_ROWS: usize = 128;
+                const Q2_K_BLOCK_BYTES: usize = 84;
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                let tensor = catalog
+                    .tensor("blk.0.ffn_down_exps.weight")
+                    .expect("locate real routed down tensor");
+                assert_eq!(tensor.tensor_type.name, "q2_k");
+                let k = tensor.dimensions[0] as usize;
+                let n = tensor.dimensions[1] as usize;
+                let row_bytes = (k / 256) * Q2_K_BLOCK_BYTES;
+                let expert_bytes = n * row_bytes;
+                let start = EXPERT * expert_bytes;
+                let weight = catalog
+                    .read_tensor_byte_range(
+                        &tensor.name,
+                        start as u64,
+                        (OUTPUT_ROWS * row_bytes) as u64,
+                    )
+                    .expect("read selected real routed down rows");
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding")[..k]
+                    .to_vec();
+                let dimensions = [k as u64, OUTPUT_ROWS as u64, 1];
+                let reference = project_q2_k_expert_matrix(&weight, &dimensions, 0, &input)
+                    .expect("compute real Q2_K expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-q2-k-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_q2_k_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 127,
+                    },
+                    &manifest,
+                    97_000,
+                    &weight,
+                    &dimensions,
+                    0,
+                    &input,
+                )
+                .expect("execute real Q2_K expert rows through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_iq2_xxs_expert_projection_executes_block_dots_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_iq2_xxs_expert_projection_executes_block_dots_through_simpler",
+            || {
+                const K: usize = 256;
+                const N: usize = 128;
+                const EXPERTS: usize = 2;
+                let input: Vec<f32> = (0..K)
+                    .map(|index| ((index as i32 % 37) - 18) as f32 / 9.0)
+                    .collect();
+                let mut weight = Vec::with_capacity(EXPERTS * N * 66);
+                for expert in 0..EXPERTS {
+                    for row in 0..N {
+                        weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                        for group in 0..8 {
+                            weight.extend(
+                                (0..4).map(|pair| (expert * 29 + row * 7 + group * 5 + pair) as u8),
+                            );
+                            let sign_and_scale = (((expert + row + group) % 16) as u32) << 28
+                                | ((expert * 11 + row + group) % 128) as u32;
+                            weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let dimensions = [K as u64, N as u64, EXPERTS as u64];
+                let reference = project_iq2_xxs_expert_matrix(&weight, &dimensions, 1, &input)
+                    .expect("compute IQ2_XXS expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-iq2-xxs-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 128,
+                    },
+                    &manifest,
+                    98_000,
+                    &weight,
+                    &dimensions,
+                    1,
+                    &input,
+                )
+                .expect("execute IQ2_XXS expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_iq2_xxs_expert_rows_match_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_iq2_xxs_expert_rows_match_gguf_reference_when_available",
+            || {
+                const EXPERT: usize = 194;
+                const OUTPUT_ROWS: usize = 128;
+                const IQ2_XXS_BLOCK_BYTES: usize = 66;
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                let tensor = catalog
+                    .tensor("blk.0.ffn_gate_exps.weight")
+                    .expect("locate real routed gate tensor");
+                assert_eq!(tensor.tensor_type.name, "iq2_xxs");
+                let k = tensor.dimensions[0] as usize;
+                let n = tensor.dimensions[1] as usize;
+                let row_bytes = (k / 256) * IQ2_XXS_BLOCK_BYTES;
+                let expert_bytes = n * row_bytes;
+                let start = EXPERT * expert_bytes;
+                let weight = catalog
+                    .read_tensor_byte_range(
+                        &tensor.name,
+                        start as u64,
+                        (OUTPUT_ROWS * row_bytes) as u64,
+                    )
+                    .expect("read selected real routed gate rows");
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                let dimensions = [k as u64, OUTPUT_ROWS as u64, 1];
+                let reference = project_iq2_xxs_expert_matrix(&weight, &dimensions, 0, &input)
+                    .expect("compute real IQ2_XXS expert reference");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-iq2-xxs-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_iq2_xxs_expert_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 129,
+                    },
+                    &manifest,
+                    99_000,
+                    &weight,
+                    &dimensions,
+                    0,
+                    &input,
+                )
+                .expect("execute real IQ2_XXS expert rows through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_routed_expert_executes_gate_up_and_down_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_routed_expert_executes_gate_up_and_down_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 2;
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 41) - 20) as f32 / 11.0)
+                    .collect();
+                let iq2_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(EXPERTS * DIM * 66);
+                    for expert in 0..EXPERTS {
+                        for row in 0..DIM {
+                            weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                            for group in 0..8 {
+                                weight.extend((0..4).map(|pair| {
+                                    (seed + expert * 31 + row * 3 + group * 7 + pair) as u8
+                                }));
+                                let sign_and_scale =
+                                    ((((seed + expert + row + group) % 16) as u32) << 28)
+                                        | ((seed + expert * 13 + row + group) % 128) as u32;
+                                weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                            }
+                        }
+                    }
+                    weight
+                };
+                let gate_weight = iq2_weight(3);
+                let up_weight = iq2_weight(17);
+                let mut down_weight = Vec::with_capacity(EXPERTS * DIM * 84);
+                for expert in 0..EXPERTS {
+                    for row in 0..DIM {
+                        down_weight.extend((0..16).map(|group| {
+                            (((expert + row + group) % 4 + 1) as u8)
+                                | ((((expert + row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        down_weight
+                            .extend((0..64).map(|index| (expert * 19 + row * 5 + index * 3) as u8));
+                        down_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        down_weight.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let gate = project_iq2_xxs_expert_matrix(&gate_weight, &dimensions, 1, &input)
+                    .expect("project routed gate reference");
+                let up = project_iq2_xxs_expert_matrix(&up_weight, &dimensions, 1, &input)
+                    .expect("project routed up reference");
+                let mut activated = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                    .expect("activate routed expert reference");
+                for value in &mut activated {
+                    *value *= 0.25;
+                }
+                let reference =
+                    project_q2_k_expert_matrix(&down_weight, &dimensions, 1, &activated)
+                        .expect("project routed down reference");
+                let actual = execute_deepseek_routed_expert_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 140,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-routed-expert-test-artifacts"),
+                    101_000,
+                    &gate_weight,
+                    &dimensions,
+                    &up_weight,
+                    &dimensions,
+                    &down_weight,
+                    &dimensions,
+                    1,
+                    0.25,
+                    &input,
+                    10.0,
+                )
+                .expect("execute routed expert through simpler");
+                assert_eq!(actual, reference);
+
+                let gate0 = project_iq2_xxs_expert_matrix(&gate_weight, &dimensions, 0, &input)
+                    .expect("project second routed gate reference");
+                let up0 = project_iq2_xxs_expert_matrix(&up_weight, &dimensions, 0, &input)
+                    .expect("project second routed up reference");
+                let mut activated0 = deepseek_v4_flash_swiglu_reference(&gate0, &up0, 10.0)
+                    .expect("activate second routed expert reference");
+                for value in &mut activated0 {
+                    *value *= 0.125;
+                }
+                let reference0 =
+                    project_q2_k_expert_matrix(&down_weight, &dimensions, 0, &activated0)
+                        .expect("project second routed down reference");
+                let combined_reference: Vec<f32> = reference
+                    .iter()
+                    .zip(reference0)
+                    .map(|(left, right)| left + right)
+                    .collect();
+                let combined = execute_deepseek_routed_experts_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 150,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-routed-expert-test-artifacts"),
+                    102_000,
+                    &gate_weight,
+                    &dimensions,
+                    &up_weight,
+                    &dimensions,
+                    &down_weight,
+                    &dimensions,
+                    &[1, 0],
+                    &[0.25, 0.125],
+                    &input,
+                    10.0,
+                )
+                .expect("execute selected routed experts through simpler");
+                assert_eq!(combined, combined_reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_complete_moe_executes_router_routed_and_shared_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_complete_moe_executes_router_routed_and_shared_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 128;
+                const SELECTED: [usize; 6] = [0, 1, 2, 3, 4, 5];
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 43) - 21) as f32 / 13.0)
+                    .collect();
+                let router_weight = vec![0u8; DIM * EXPERTS * 2];
+                let mut iq2_weight = Vec::with_capacity(EXPERTS * DIM * 66);
+                for _expert in 0..EXPERTS {
+                    for row in 0..DIM {
+                        iq2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        for group in 0..8 {
+                            iq2_weight
+                                .extend((0..4).map(|pair| (row * 3 + group * 7 + pair) as u8));
+                            let sign_and_scale =
+                                (((row + group) % 16) as u32) << 28 | ((row + group) % 128) as u32;
+                            iq2_weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let mut q2_weight = Vec::with_capacity(EXPERTS * DIM * 84);
+                for _expert in 0..EXPERTS {
+                    for row in 0..DIM {
+                        q2_weight.extend((0..16).map(|group| {
+                            (((row + group) % 4 + 1) as u8) | ((((row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        q2_weight.extend((0..64).map(|index| (row * 5 + index * 3) as u8));
+                        q2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        q2_weight.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let shared_gate = q8_weight(1);
+                let shared_up = q8_weight(5);
+                let shared_down = q8_weight(9);
+                let routed_dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let shared_dimensions = [DIM as u64, DIM as u64];
+                let router_dimensions = [DIM as u64, EXPERTS as u64];
+
+                let gate =
+                    project_iq2_xxs_expert_matrix(&iq2_weight, &routed_dimensions, 0, &input)
+                        .expect("project complete MoE routed gate reference");
+                let up = project_iq2_xxs_expert_matrix(&iq2_weight, &routed_dimensions, 0, &input)
+                    .expect("project complete MoE routed up reference");
+                let mut activated = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                    .expect("activate complete MoE routed reference");
+                for value in &mut activated {
+                    *value *= 0.25;
+                }
+                let routed_one =
+                    project_q2_k_expert_matrix(&q2_weight, &routed_dimensions, 0, &activated)
+                        .expect("project complete MoE routed down reference");
+                let shared_gate_ref = project_q8_0_matrix(&shared_gate, &shared_dimensions, &input)
+                    .expect("project complete MoE shared gate reference");
+                let shared_up_ref = project_q8_0_matrix(&shared_up, &shared_dimensions, &input)
+                    .expect("project complete MoE shared up reference");
+                let shared_mid =
+                    deepseek_v4_flash_swiglu_reference(&shared_gate_ref, &shared_up_ref, 10.0)
+                        .expect("activate complete MoE shared reference");
+                let shared_ref = project_q8_0_matrix(&shared_down, &shared_dimensions, &shared_mid)
+                    .expect("project complete MoE shared down reference");
+                let mut routed_sum = vec![0.0f32; DIM];
+                for _ in 0..SELECTED.len() {
+                    for (sum, value) in routed_sum.iter_mut().zip(&routed_one) {
+                        *sum += value;
+                    }
+                }
+                let reference: Vec<f32> = routed_sum
+                    .into_iter()
+                    .zip(shared_ref)
+                    .map(|(routed, shared)| routed + shared)
+                    .collect();
+                let execution = execute_deepseek_moe_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 160,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-complete-moe-test-artifacts"),
+                    110_000,
+                    &DeepseekV4FlashMoeWeights {
+                        router: &router_weight,
+                        router_dimensions: &router_dimensions,
+                        routed_gate: &iq2_weight,
+                        routed_gate_dimensions: &routed_dimensions,
+                        routed_up: &iq2_weight,
+                        routed_up_dimensions: &routed_dimensions,
+                        routed_down: &q2_weight,
+                        routed_down_dimensions: &routed_dimensions,
+                        shared_gate: &shared_gate,
+                        shared_gate_dimensions: &shared_dimensions,
+                        shared_up: &shared_up,
+                        shared_up_dimensions: &shared_dimensions,
+                        shared_down: &shared_down,
+                        shared_down_dimensions: &shared_dimensions,
+                    },
+                    &input,
+                    None,
+                    Some(&SELECTED),
+                    10.0,
+                )
+                .expect("execute complete MoE through simpler");
+                assert_eq!(execution.router.expert_indices, SELECTED);
+                assert!(execution
+                    .router
+                    .expert_weights
+                    .iter()
+                    .all(|weight| (*weight - 0.25).abs() < 1.0e-6));
+                let max_error = execution
+                    .output
+                    .iter()
+                    .zip(&reference)
+                    .map(|(actual, expected)| (actual - expected).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    execution
+                        .output
+                        .iter()
+                        .zip(&reference)
+                        .all(|(actual, expected)| (actual - expected).abs()
+                            <= (expected.abs() * 1.0e-6).max(1.0e-4)),
+                    "complete MoE output mismatch:max_error={max_error}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_complete_ffn_executes_hc_norm_and_moe_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_complete_ffn_executes_hc_norm_and_moe_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 128;
+                const SELECTED: [usize; 6] = [0, 1, 2, 3, 4, 5];
+                let residual_hc: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 43) - 21) as f32 / 13.0)
+                    .collect();
+                let router_weight = vec![0u8; DIM * EXPERTS * 2];
+                let hc_function = vec![0u8; DIM * 3 * 2];
+                let mut iq2_weight = Vec::with_capacity(EXPERTS * DIM * 66);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        iq2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        for group in 0..8 {
+                            iq2_weight
+                                .extend((0..4).map(|pair| (row * 3 + group * 7 + pair) as u8));
+                            let sign_and_scale =
+                                (((row + group) % 16) as u32) << 28 | ((row + group) % 128) as u32;
+                            iq2_weight.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let mut q2_weight = Vec::with_capacity(EXPERTS * DIM * 84);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        q2_weight.extend((0..16).map(|group| {
+                            (((row + group) % 4 + 1) as u8) | ((((row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        q2_weight.extend((0..64).map(|index| (row * 5 + index * 3) as u8));
+                        q2_weight.extend_from_slice(&0x3400u16.to_le_bytes());
+                        q2_weight.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let shared_gate = q8_weight(1);
+                let shared_up = q8_weight(5);
+                let shared_down = q8_weight(9);
+                let routed_dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let shared_dimensions = [DIM as u64, DIM as u64];
+                let router_dimensions = [DIM as u64, EXPERTS as u64];
+                let hc_dimensions = [DIM as u64, 3];
+                let execution = execute_deepseek_ffn_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 170,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-complete-ffn-test-artifacts"),
+                    120_000,
+                    &DeepseekV4FlashFfnWeights {
+                        hc_function: &hc_function,
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        ffn_norm: &[1.0; DIM],
+                        moe: DeepseekV4FlashMoeWeights {
+                            router: &router_weight,
+                            router_dimensions: &router_dimensions,
+                            routed_gate: &iq2_weight,
+                            routed_gate_dimensions: &routed_dimensions,
+                            routed_up: &iq2_weight,
+                            routed_up_dimensions: &routed_dimensions,
+                            routed_down: &q2_weight,
+                            routed_down_dimensions: &routed_dimensions,
+                            shared_gate: &shared_gate,
+                            shared_gate_dimensions: &shared_dimensions,
+                            shared_up: &shared_up,
+                            shared_up_dimensions: &shared_dimensions,
+                            shared_down: &shared_down,
+                            shared_down_dimensions: &shared_dimensions,
+                        },
+                    },
+                    &residual_hc,
+                    None,
+                    Some(&SELECTED),
+                    1,
+                    20,
+                    1.0e-6,
+                    10.0,
+                )
+                .expect("execute complete FFN through simpler");
+                let iq2_expert_bytes = iq2_weight.len() / EXPERTS;
+                let q2_expert_bytes = q2_weight.len() / EXPERTS;
+                let iq2_slices = SELECTED
+                    .iter()
+                    .map(|expert| {
+                        iq2_weight[*expert * iq2_expert_bytes..(*expert + 1) * iq2_expert_bytes]
+                            .to_vec()
+                    })
+                    .collect::<Vec<_>>();
+                let q2_slices = SELECTED
+                    .iter()
+                    .map(|expert| {
+                        q2_weight[*expert * q2_expert_bytes..(*expert + 1) * q2_expert_bytes]
+                            .to_vec()
+                    })
+                    .collect::<Vec<_>>();
+                let sliced_dimensions = [DIM as u64, DIM as u64, 1];
+                let expert_slices = SELECTED
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, expert)| DeepseekV4FlashExpertSliceWeights {
+                        logical_expert: *expert,
+                        gate: &iq2_slices[slot],
+                        gate_dimensions: &sliced_dimensions,
+                        up: &iq2_slices[slot],
+                        up_dimensions: &sliced_dimensions,
+                        down: &q2_slices[slot],
+                        down_dimensions: &sliced_dimensions,
+                    })
+                    .collect::<Vec<_>>();
+                let static_weights = DeepseekV4FlashFfnStaticWeights {
+                    hc_function: &hc_function,
+                    hc_function_dimensions: &hc_dimensions,
+                    hc_scale: &[1.0; 3],
+                    hc_base: &[0.0; 3],
+                    ffn_norm: &[1.0; DIM],
+                    router: &router_weight,
+                    router_dimensions: &router_dimensions,
+                    shared_gate: &shared_gate,
+                    shared_gate_dimensions: &shared_dimensions,
+                    shared_up: &shared_up,
+                    shared_up_dimensions: &shared_dimensions,
+                    shared_down: &shared_down,
+                    shared_down_dimensions: &shared_dimensions,
+                };
+                let sliced_task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 270,
+                };
+                let sliced_artifacts =
+                    std::env::temp_dir().join("simpler-deepseek-sliced-ffn-test-artifacts");
+                let prepared = prepare_deepseek_ffn_through_simpler(
+                    &test_topology(),
+                    &sliced_task,
+                    &sliced_artifacts,
+                    &static_weights,
+                    &residual_hc,
+                    None,
+                    Some(&SELECTED),
+                    1,
+                    20,
+                    1.0e-6,
+                )
+                .expect("prepare sliced FFN");
+                let sliced = finish_deepseek_ffn_with_expert_slices_through_simpler(
+                    &test_topology(),
+                    &sliced_task,
+                    &sliced_artifacts,
+                    220_000,
+                    &static_weights,
+                    prepared,
+                    &expert_slices,
+                    10.0,
+                )
+                .expect("finish sliced FFN");
+                assert_eq!(sliced, execution);
+                assert_eq!(execution.router.expert_indices, SELECTED);
+                assert_eq!(execution.output_hc.len(), DIM);
+                assert_eq!(execution.moe_output.len(), DIM);
+                assert!(execution.output_hc.iter().all(|value| value.is_finite()));
+                assert!(execution
+                    .output_hc
+                    .iter()
+                    .zip(&residual_hc)
+                    .zip(&execution.moe_output)
+                    .all(|((actual, residual), moe)| *actual == residual + moe));
+                let mixed: Vec<f32> = residual_hc
+                    .iter()
+                    .map(|value| value * (0.5 + 1.0e-6))
+                    .collect();
+                let expected_normalized =
+                    deepseek_v4_flash_rms_norm_reference(&mixed, Some(&[1.0; DIM]), 1.0e-6)
+                        .expect("compute FFN normalized reference");
+                assert_eq!(execution.normalized_hidden, expected_normalized);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_dense_attention_executes_projections_and_kv_reuse_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_dense_attention_executes_projections_and_kv_reuse_through_simpler",
+            || {
+                const DIM: usize = 256;
+                const ROPE_DIM: usize = 64;
+                let residual_hc: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 31) - 15) as f32 / 11.0)
+                    .collect();
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let dimensions = [DIM as u64, DIM as u64];
+                let hc_dimensions = [DIM as u64, 3];
+                let execution = execute_deepseek_dense_attention_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 180,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-dense-attention-test-artifacts"),
+                    130_000,
+                    &DeepseekV4FlashAttentionWeights {
+                        hc_function: &vec![0u8; DIM * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        attention_norm: &[1.0; DIM],
+                        q_a: &q_a,
+                        q_a_dimensions: &dimensions,
+                        q_a_norm: &[1.0; DIM],
+                        q_b: &q_b,
+                        q_b_dimensions: &dimensions,
+                        kv: &kv,
+                        kv_dimensions: &dimensions,
+                        kv_norm: &[1.0; DIM],
+                        sinks: &[0.0],
+                        output_a: &output_a,
+                        output_a_dimensions: &dimensions,
+                        output_b: &output_b,
+                        output_b_dimensions: &dimensions,
+                    },
+                    &residual_hc,
+                    &vec![0.0; DIM],
+                    &[1.0; ROPE_DIM / 2],
+                    &[0.0; ROPE_DIM / 2],
+                    1,
+                    20,
+                    1,
+                    DIM,
+                    ROPE_DIM,
+                    1,
+                    1.0e-6,
+                )
+                .expect("execute dense attention through simpler");
+                assert_eq!(execution.current_kv.len(), DIM);
+                assert_eq!(execution.attention_output.len(), DIM);
+                assert_eq!(execution.output_hc.len(), DIM);
+                assert!(execution.current_kv.iter().all(|value| value.is_finite()));
+                assert!(execution
+                    .attention_output
+                    .iter()
+                    .all(|value| value.is_finite()));
+                assert!(execution
+                    .output_hc
+                    .iter()
+                    .zip(&residual_hc)
+                    .zip(&execution.attention_output)
+                    .all(|((actual, residual), attention)| {
+                        let expected = residual + attention;
+                        (actual - expected).abs() <= expected.abs().max(1.0) * 4.0e-6
+                    }));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio4_compressor_projects_each_token_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio4_compressor_projects_each_token_through_simpler",
+            || {
+                const INPUT: usize = 256;
+                const HEAD_DIM: usize = 128;
+                const WIDTH: usize = HEAD_DIM * 2;
+                const RATIO: usize = 4;
+                let dimensions = [INPUT as u64, WIDTH as u64];
+                let kv_weight = vec![0x00, 0x3c]
+                    .into_iter()
+                    .cycle()
+                    .take(INPUT * WIDTH * 2)
+                    .collect::<Vec<_>>();
+                let gate_weight = vec![0u8; INPUT * WIDTH * 2];
+                let input: Vec<f32> = (0..INPUT)
+                    .map(|index| ((index as i32 % 17) - 8) as f32 / 9.0)
+                    .collect();
+                let mut state =
+                    DeepseekV4FlashCompressorState::new(HEAD_DIM, RATIO).expect("ratio-4 state");
+                let weights = DeepseekV4FlashCompressorWeights {
+                    kv: &kv_weight,
+                    kv_dimensions: &dimensions,
+                    gate: &gate_weight,
+                    gate_dimensions: &dimensions,
+                    ape: &[0.0; RATIO * WIDTH],
+                    norm: &[1.0; HEAD_DIM],
+                };
+                for position in 0..RATIO {
+                    let task = TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 190 + (position as u64) * 2,
+                    };
+                    let output = execute_deepseek_compressor_update_through_simpler(
+                        &test_topology(),
+                        &task,
+                        &std::env::temp_dir()
+                            .join("simpler-deepseek-ratio4-compressor-test-artifacts"),
+                        &mut state,
+                        &weights,
+                        position as u32,
+                        &input,
+                        64,
+                        &[1.0; 32],
+                        &[0.0; 32],
+                    )
+                    .expect("execute ratio-4 compressor update through simpler");
+                    if position + 1 < RATIO {
+                        assert!(output.is_none());
+                    } else {
+                        let output = output.expect("emit ratio-4 boundary row");
+                        assert_eq!(output.len(), HEAD_DIM);
+                        assert!(output.iter().all(|value| value.is_finite()));
+                        assert!(output.iter().any(|value| *value != 0.0));
+                    }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio4_indexer_projects_and_selects_compressed_rows_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio4_indexer_projects_and_selects_compressed_rows_through_simpler",
+            || {
+                const INPUT: usize = 256;
+                const HEADS: usize = 2;
+                const HEAD_DIM: usize = 128;
+                let query_dimensions = [INPUT as u64, (HEADS * HEAD_DIM) as u64];
+                let head_weight_dimensions = [INPUT as u64, HEADS as u64];
+                let one = [0x00u8, 0x3c];
+                let query_weight = one
+                    .into_iter()
+                    .cycle()
+                    .take(INPUT * HEADS * HEAD_DIM * 2)
+                    .collect::<Vec<_>>();
+                let head_weight = one
+                    .into_iter()
+                    .cycle()
+                    .take(INPUT * HEADS * 2)
+                    .collect::<Vec<_>>();
+                let input = vec![1.0f32; INPUT];
+                let compressed_kv: Vec<f32> = (0..4)
+                    .flat_map(|row| std::iter::repeat_n((row + 1) as f32, HEAD_DIM))
+                    .collect();
+                let selected = execute_deepseek_indexer_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 200,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-ratio4-indexer-test-artifacts"),
+                    140_000,
+                    &DeepseekV4FlashIndexerWeights {
+                        query: &query_weight,
+                        query_dimensions: &query_dimensions,
+                        query_format: DeepseekV4FlashProjectionFormat::F16,
+                        head_weights: &head_weight,
+                        head_weight_dimensions: &head_weight_dimensions,
+                    },
+                    &input,
+                    &input,
+                    &compressed_kv,
+                    64,
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    HEADS,
+                    HEAD_DIM,
+                    2,
+                )
+                .expect("execute ratio-4 indexer through simpler");
+                assert_eq!(selected, vec![3, 2]);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio4_attention_runs_four_token_stateful_orchestration() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio4_attention_runs_four_token_stateful_orchestration",
+            || {
+                const HIDDEN: usize = 256;
+                const HEAD_DIM: usize = 256;
+                const INDEXER_HEAD_DIM: usize = 128;
+                const INDEXER_HEADS: usize = 2;
+                const RATIO: usize = 4;
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(HIDDEN * (HIDDEN / 32) * 34);
+                    for row in 0..HIDDEN {
+                        for block in 0..HIDDEN / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let f16_weight = |k: usize, n: usize, bits: u16| {
+                    bits.to_le_bytes()
+                        .into_iter()
+                        .cycle()
+                        .take(k * n * 2)
+                        .collect::<Vec<_>>()
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let matrix_dimensions = [HIDDEN as u64, HIDDEN as u64];
+                let hc_dimensions = [HIDDEN as u64, 3];
+                let attention_compressor_dimensions = [HIDDEN as u64, (HEAD_DIM * 2) as u64];
+                let indexer_compressor_dimensions = [HIDDEN as u64, (INDEXER_HEAD_DIM * 2) as u64];
+                let indexer_query_dimensions =
+                    [HIDDEN as u64, (INDEXER_HEADS * INDEXER_HEAD_DIM) as u64];
+                let indexer_head_weight_dimensions = [HIDDEN as u64, INDEXER_HEADS as u64];
+                let attention_compressor_kv = f16_weight(HIDDEN, HEAD_DIM * 2, 0x3000);
+                let attention_compressor_gate = f16_weight(HIDDEN, HEAD_DIM * 2, 0x0000);
+                let indexer_compressor_kv = f16_weight(HIDDEN, INDEXER_HEAD_DIM * 2, 0x3000);
+                let indexer_compressor_gate = f16_weight(HIDDEN, INDEXER_HEAD_DIM * 2, 0x0000);
+                let indexer_query = f16_weight(HIDDEN, INDEXER_HEADS * INDEXER_HEAD_DIM, 0x3000);
+                let indexer_head_weight = f16_weight(HIDDEN, INDEXER_HEADS, 0x3000);
+                let weights = DeepseekV4FlashRatio4AttentionWeights {
+                    attention: DeepseekV4FlashAttentionWeights {
+                        hc_function: &vec![0u8; HIDDEN * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        attention_norm: &[1.0; HIDDEN],
+                        q_a: &q_a,
+                        q_a_dimensions: &matrix_dimensions,
+                        q_a_norm: &[1.0; HIDDEN],
+                        q_b: &q_b,
+                        q_b_dimensions: &matrix_dimensions,
+                        kv: &kv,
+                        kv_dimensions: &matrix_dimensions,
+                        kv_norm: &[1.0; HEAD_DIM],
+                        sinks: &[0.0],
+                        output_a: &output_a,
+                        output_a_dimensions: &matrix_dimensions,
+                        output_b: &output_b,
+                        output_b_dimensions: &matrix_dimensions,
+                    },
+                    attention_compressor: DeepseekV4FlashCompressorWeights {
+                        kv: &attention_compressor_kv,
+                        kv_dimensions: &attention_compressor_dimensions,
+                        gate: &attention_compressor_gate,
+                        gate_dimensions: &attention_compressor_dimensions,
+                        ape: &[0.0; RATIO * HEAD_DIM * 2],
+                        norm: &[1.0; HEAD_DIM],
+                    },
+                    indexer_compressor: DeepseekV4FlashCompressorWeights {
+                        kv: &indexer_compressor_kv,
+                        kv_dimensions: &indexer_compressor_dimensions,
+                        gate: &indexer_compressor_gate,
+                        gate_dimensions: &indexer_compressor_dimensions,
+                        ape: &[0.0; RATIO * INDEXER_HEAD_DIM * 2],
+                        norm: &[1.0; INDEXER_HEAD_DIM],
+                    },
+                    indexer: DeepseekV4FlashIndexerWeights {
+                        query: &indexer_query,
+                        query_dimensions: &indexer_query_dimensions,
+                        query_format: DeepseekV4FlashProjectionFormat::F16,
+                        head_weights: &indexer_head_weight,
+                        head_weight_dimensions: &indexer_head_weight_dimensions,
+                    },
+                };
+                let residual_hc: Vec<f32> = (0..HIDDEN)
+                    .map(|index| ((index as i32 % 29) - 14) as f32 / 17.0)
+                    .collect();
+                let mut state =
+                    DeepseekV4FlashRatio4AttentionState::new(HEAD_DIM, INDEXER_HEAD_DIM, 3, 4)
+                        .expect("create ratio-4 attention state");
+                for position in 0..RATIO {
+                    let execution = execute_deepseek_ratio4_attention_through_simpler(
+                        &test_topology(),
+                        &TaskKey {
+                            logical_system: LogicalSystemId(1),
+                            coord: HierarchyCoord { levels: [0; 8] },
+                            scope_depth: 0,
+                            task_id: 220 + (position as u64) * 100,
+                        },
+                        &std::env::temp_dir()
+                            .join("simpler-deepseek-ratio4-attention-test-artifacts"),
+                        150_000 + (position as u64) * 10_000,
+                        &mut state,
+                        &weights,
+                        &residual_hc,
+                        position as u32,
+                        &[1.0; 32],
+                        &[0.0; 32],
+                        &[1.0; 32],
+                        &[0.0; 32],
+                        1,
+                        20,
+                        1,
+                        HEAD_DIM,
+                        64,
+                        1,
+                        INDEXER_HEADS,
+                        INDEXER_HEAD_DIM,
+                        1,
+                        1.0e-6,
+                    )
+                    .expect("execute ratio-4 attention token");
+                    assert_eq!(execution.current_kv.len(), HEAD_DIM);
+                    assert!(execution.output_hc.iter().all(|value| value.is_finite()));
+                    if position + 1 < RATIO {
+                        assert!(execution.emitted_compressed_kv.is_none());
+                        assert!(execution.emitted_indexer_kv.is_none());
+                        assert!(execution.selected_compressed_rows.is_empty());
+                    } else {
+                        assert!(execution.emitted_compressed_kv.is_some());
+                        assert!(execution.emitted_indexer_kv.is_some());
+                        assert_eq!(execution.selected_compressed_rows, vec![0]);
+                    }
+                }
+                assert_eq!(state.raw_rows(), 3);
+                assert_eq!(state.compressed_rows(), 1);
+                assert_eq!(state.indexer_compressed_rows(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio128_attention_runs_stateful_orchestration() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio128_attention_runs_stateful_orchestration",
+            || {
+                const HIDDEN: usize = 256;
+                const HEAD_DIM: usize = 256;
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(HIDDEN * (HIDDEN / 32) * 34);
+                    for row in 0..HIDDEN {
+                        for block in 0..HIDDEN / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let f16_weight = |k: usize, n: usize, bits: u16| {
+                    bits.to_le_bytes()
+                        .into_iter()
+                        .cycle()
+                        .take(k * n * 2)
+                        .collect::<Vec<_>>()
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let matrix_dimensions = [HIDDEN as u64, HIDDEN as u64];
+                let hc_dimensions = [HIDDEN as u64, 3];
+                let compressor_dimensions = [HIDDEN as u64, HEAD_DIM as u64];
+                let compressor_kv = f16_weight(HIDDEN, HEAD_DIM, 0x3000);
+                let compressor_gate = f16_weight(HIDDEN, HEAD_DIM, 0x0000);
+                let weights = DeepseekV4FlashRatio128AttentionWeights {
+                    attention: DeepseekV4FlashAttentionWeights {
+                        hc_function: &vec![0u8; HIDDEN * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        attention_norm: &[1.0; HIDDEN],
+                        q_a: &q_a,
+                        q_a_dimensions: &matrix_dimensions,
+                        q_a_norm: &[1.0; HIDDEN],
+                        q_b: &q_b,
+                        q_b_dimensions: &matrix_dimensions,
+                        kv: &kv,
+                        kv_dimensions: &matrix_dimensions,
+                        kv_norm: &[1.0; HEAD_DIM],
+                        sinks: &[0.0],
+                        output_a: &output_a,
+                        output_a_dimensions: &matrix_dimensions,
+                        output_b: &output_b,
+                        output_b_dimensions: &matrix_dimensions,
+                    },
+                    attention_compressor: DeepseekV4FlashCompressorWeights {
+                        kv: &compressor_kv,
+                        kv_dimensions: &compressor_dimensions,
+                        gate: &compressor_gate,
+                        gate_dimensions: &compressor_dimensions,
+                        ape: &[0.0; 128 * HEAD_DIM],
+                        norm: &[1.0; HEAD_DIM],
+                    },
+                };
+                let residual_hc: Vec<f32> = (0..HIDDEN)
+                    .map(|index| ((index as i32 % 29) - 14) as f32 / 17.0)
+                    .collect();
+                let mut state = DeepseekV4FlashRatio128AttentionState::new(HEAD_DIM, 3, 4)
+                    .expect("create ratio-128 attention state");
+                let execution = execute_deepseek_ratio128_attention_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 320,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-ratio128-attention-test-artifacts"),
+                    180_000,
+                    &mut state,
+                    &weights,
+                    &residual_hc,
+                    0,
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    1,
+                    20,
+                    1,
+                    HEAD_DIM,
+                    64,
+                    1,
+                    1.0e-6,
+                )
+                .expect("execute ratio-128 attention token");
+                assert_eq!(execution.current_kv.len(), HEAD_DIM);
+                assert!(execution.emitted_compressed_kv.is_none());
+                assert_eq!(state.raw_rows(), 1);
+                assert_eq!(state.compressed_rows(), 0);
+                assert!(execution.output_hc.iter().all(|value| value.is_finite()));
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_ratio128_complete_layer_executes_attention_and_ffn() {
+        run_simpler_native_test_isolated(
+            "deepseek_ratio128_complete_layer_executes_attention_and_ffn",
+            || {
+                const DIM: usize = 256;
+                const EXPERTS: usize = 6;
+                const SELECTED: [usize; 6] = [0, 1, 2, 3, 4, 5];
+                let q8_weight = |seed: usize| {
+                    let mut weight = Vec::with_capacity(DIM * (DIM / 32) * 34);
+                    for row in 0..DIM {
+                        for block in 0..DIM / 32 {
+                            weight.extend_from_slice(&0x3800u16.to_le_bytes());
+                            weight.extend((0..32).map(|lane| {
+                                (((seed + row * 3 + block * 5 + lane) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    weight
+                };
+                let f16_weight = |k: usize, n: usize, bits: u16| {
+                    bits.to_le_bytes()
+                        .into_iter()
+                        .cycle()
+                        .take(k * n * 2)
+                        .collect::<Vec<_>>()
+                };
+                let q_a = q8_weight(1);
+                let q_b = q8_weight(3);
+                let kv = q8_weight(5);
+                let output_a = q8_weight(7);
+                let output_b = q8_weight(9);
+                let shared_gate = q8_weight(11);
+                let shared_up = q8_weight(13);
+                let shared_down = q8_weight(15);
+                let matrix_dimensions = [DIM as u64, DIM as u64];
+                let hc_dimensions = [DIM as u64, 3];
+                let compressor_dimensions = [DIM as u64, DIM as u64];
+                let compressor_kv = f16_weight(DIM, DIM, 0x3000);
+                let compressor_gate = f16_weight(DIM, DIM, 0x0000);
+                let router_dimensions = [DIM as u64, EXPERTS as u64];
+                let router = vec![0u8; DIM * EXPERTS * 2];
+                let routed_dimensions = [DIM as u64, DIM as u64, EXPERTS as u64];
+                let mut routed_gate_up = Vec::with_capacity(EXPERTS * DIM * 66);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        routed_gate_up.extend_from_slice(&0x3400u16.to_le_bytes());
+                        for group in 0..8 {
+                            routed_gate_up
+                                .extend((0..4).map(|pair| (row * 3 + group * 7 + pair) as u8));
+                            let sign_and_scale =
+                                (((row + group) % 16) as u32) << 28 | ((row + group) % 128) as u32;
+                            routed_gate_up.extend_from_slice(&sign_and_scale.to_le_bytes());
+                        }
+                    }
+                }
+                let mut routed_down = Vec::with_capacity(EXPERTS * DIM * 84);
+                for _ in 0..EXPERTS {
+                    for row in 0..DIM {
+                        routed_down.extend((0..16).map(|group| {
+                            (((row + group) % 4 + 1) as u8) | ((((row * 2 + group) % 3) as u8) << 4)
+                        }));
+                        routed_down.extend((0..64).map(|index| (row * 5 + index * 3) as u8));
+                        routed_down.extend_from_slice(&0x3400u16.to_le_bytes());
+                        routed_down.extend_from_slice(&0x3000u16.to_le_bytes());
+                    }
+                }
+                let residual_hc: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 43) - 21) as f32 / 13.0)
+                    .collect();
+                let weights = DeepseekV4FlashRatio128LayerWeights {
+                    attention: DeepseekV4FlashRatio128AttentionWeights {
+                        attention: DeepseekV4FlashAttentionWeights {
+                            hc_function: &vec![0u8; DIM * 3 * 2],
+                            hc_function_dimensions: &hc_dimensions,
+                            hc_scale: &[1.0; 3],
+                            hc_base: &[0.0; 3],
+                            attention_norm: &[1.0; DIM],
+                            q_a: &q_a,
+                            q_a_dimensions: &matrix_dimensions,
+                            q_a_norm: &[1.0; DIM],
+                            q_b: &q_b,
+                            q_b_dimensions: &matrix_dimensions,
+                            kv: &kv,
+                            kv_dimensions: &matrix_dimensions,
+                            kv_norm: &[1.0; DIM],
+                            sinks: &[0.0],
+                            output_a: &output_a,
+                            output_a_dimensions: &matrix_dimensions,
+                            output_b: &output_b,
+                            output_b_dimensions: &matrix_dimensions,
+                        },
+                        attention_compressor: DeepseekV4FlashCompressorWeights {
+                            kv: &compressor_kv,
+                            kv_dimensions: &compressor_dimensions,
+                            gate: &compressor_gate,
+                            gate_dimensions: &compressor_dimensions,
+                            ape: &[0.0; 128 * DIM],
+                            norm: &[1.0; DIM],
+                        },
+                    },
+                    ffn: DeepseekV4FlashFfnWeights {
+                        hc_function: &vec![0u8; DIM * 3 * 2],
+                        hc_function_dimensions: &hc_dimensions,
+                        hc_scale: &[1.0; 3],
+                        hc_base: &[0.0; 3],
+                        ffn_norm: &[1.0; DIM],
+                        moe: DeepseekV4FlashMoeWeights {
+                            router: &router,
+                            router_dimensions: &router_dimensions,
+                            routed_gate: &routed_gate_up,
+                            routed_gate_dimensions: &routed_dimensions,
+                            routed_up: &routed_gate_up,
+                            routed_up_dimensions: &routed_dimensions,
+                            routed_down: &routed_down,
+                            routed_down_dimensions: &routed_dimensions,
+                            shared_gate: &shared_gate,
+                            shared_gate_dimensions: &matrix_dimensions,
+                            shared_up: &shared_up,
+                            shared_up_dimensions: &matrix_dimensions,
+                            shared_down: &shared_down,
+                            shared_down_dimensions: &matrix_dimensions,
+                        },
+                    },
+                };
+                let mut state = DeepseekV4FlashRatio128AttentionState::new(DIM, 3, 4)
+                    .expect("create complete layer state");
+                let execution = execute_deepseek_ratio128_layer_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 420,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-complete-layer-test-artifacts"),
+                    220_000,
+                    &mut state,
+                    &weights,
+                    &residual_hc,
+                    0,
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    &[1.0; 32],
+                    &[0.0; 32],
+                    None,
+                    Some(&SELECTED),
+                    1,
+                    20,
+                    1,
+                    DIM,
+                    64,
+                    1,
+                    1.0e-6,
+                    10.0,
+                )
+                .expect("execute complete ratio-128 layer");
+                assert_eq!(execution.attention.output_hc.len(), DIM);
+                assert_eq!(execution.ffn.router.expert_indices, SELECTED);
+                assert_eq!(execution.ffn.output_hc.len(), DIM);
+                assert!(execution
+                    .ffn
+                    .output_hc
+                    .iter()
+                    .all(|value| value.is_finite()));
+                assert_ne!(execution.ffn.output_hc, execution.attention.output_hc);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_grouped_q8_projection_uses_matching_input_and_output_slices() {
+        run_simpler_native_test_isolated(
+            "deepseek_grouped_q8_projection_uses_matching_input_and_output_slices",
+            || {
+                const GROUP_INPUT: usize = 128;
+                const GROUP_OUTPUT: usize = 128;
+                const GROUPS: usize = 2;
+                const BLOCKS: usize = GROUP_INPUT / 32;
+                const ROW_BYTES: usize = BLOCKS * 34;
+                let input: Vec<f32> = (0..GROUP_INPUT * GROUPS)
+                    .map(|index| {
+                        let group = index / GROUP_INPUT;
+                        ((index as i32 % 19) - 9) as f32 / (group + 2) as f32
+                    })
+                    .collect();
+                let mut weight = Vec::with_capacity(GROUP_OUTPUT * GROUPS * ROW_BYTES);
+                for output in 0..GROUP_OUTPUT * GROUPS {
+                    for block in 0..BLOCKS {
+                        let scale = if output < GROUP_OUTPUT {
+                            0x3800u16
+                        } else {
+                            0x3c00u16
+                        };
+                        weight.extend_from_slice(&scale.to_le_bytes());
+                        weight.extend(
+                            (0..32).map(|lane| {
+                                (((output * 3 + block * 5 + lane) % 11) as i8 - 5) as u8
+                            }),
+                        );
+                    }
+                }
+
+                let mut reference = Vec::with_capacity(GROUP_OUTPUT * GROUPS);
+                for group in 0..GROUPS {
+                    let weight_start = group * GROUP_OUTPUT * ROW_BYTES;
+                    reference.extend(
+                        project_q8_0_matrix(
+                            &weight[weight_start..weight_start + GROUP_OUTPUT * ROW_BYTES],
+                            &[GROUP_INPUT as u64, GROUP_OUTPUT as u64],
+                            &input[group * GROUP_INPUT..(group + 1) * GROUP_INPUT],
+                        )
+                        .expect("compute grouped Q8 reference slice"),
+                    );
+                }
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-grouped-q8-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let actual = execute_deepseek_grouped_q8_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 122,
+                    },
+                    &manifest,
+                    92_000,
+                    &weight,
+                    &[GROUP_INPUT as u64, (GROUP_OUTPUT * GROUPS) as u64],
+                    &input,
+                    GROUPS,
+                )
+                .expect("execute grouped Q8 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_shared_expert_executes_three_q8_projections_through_simpler() {
+        run_simpler_native_test_isolated(
+            "deepseek_shared_expert_executes_three_q8_projections_through_simpler",
+            || {
+                const DIM: usize = 128;
+                const BLOCKS: usize = DIM / 32;
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 29) - 14) as f32 / 5.0)
+                    .collect();
+                let weight = |seed: usize| {
+                    let mut payload = Vec::with_capacity(DIM * BLOCKS * 34);
+                    for output in 0..DIM {
+                        for block in 0..BLOCKS {
+                            payload.extend_from_slice(&0x3800u16.to_le_bytes());
+                            payload.extend((0..32).map(|lane| {
+                                (((output + block * 3 + lane + seed) % 13) as i8 - 6) as u8
+                            }));
+                        }
+                    }
+                    payload
+                };
+                let gate_weight = weight(1);
+                let up_weight = weight(5);
+                let down_weight = weight(9);
+                let dimensions = [DIM as u64, DIM as u64];
+                let gate = project_q8_0_matrix(&gate_weight, &dimensions, &input)
+                    .expect("project shared gate reference");
+                let up = project_q8_0_matrix(&up_weight, &dimensions, &input)
+                    .expect("project shared up reference");
+                let activated = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                    .expect("activate shared expert reference");
+                let reference = project_q8_0_matrix(&down_weight, &dimensions, &activated)
+                    .expect("project shared down reference");
+                let actual = execute_deepseek_shared_expert_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 130,
+                    },
+                    &std::env::temp_dir().join("simpler-deepseek-shared-expert-test-artifacts"),
+                    95_000,
+                    &gate_weight,
+                    &dimensions,
+                    &up_weight,
+                    &dimensions,
+                    &down_weight,
+                    &dimensions,
+                    &input,
+                    10.0,
+                )
+                .expect("execute shared expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_shared_expert_matches_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_shared_expert_matches_gguf_reference_when_available",
+            || {
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                let gate = catalog
+                    .tensor("blk.0.ffn_gate_shexp.weight")
+                    .expect("locate real shared gate");
+                let up = catalog
+                    .tensor("blk.0.ffn_up_shexp.weight")
+                    .expect("locate real shared up");
+                let down = catalog
+                    .tensor("blk.0.ffn_down_shexp.weight")
+                    .expect("locate real shared down");
+                let gate_weight = catalog
+                    .read_tensor(&gate.name)
+                    .expect("read real shared gate");
+                let up_weight = catalog.read_tensor(&up.name).expect("read real shared up");
+                let down_weight = catalog
+                    .read_tensor(&down.name)
+                    .expect("read real shared down");
+                let gate_reference = project_q8_0_matrix(&gate_weight, &gate.dimensions, &input)
+                    .expect("project real shared gate reference");
+                let up_reference = project_q8_0_matrix(&up_weight, &up.dimensions, &input)
+                    .expect("project real shared up reference");
+                let activated = deepseek_v4_flash_swiglu_reference(
+                    &gate_reference,
+                    &up_reference,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
+                )
+                .expect("activate real shared expert reference");
+                let reference = project_q8_0_matrix(&down_weight, &down.dimensions, &activated)
+                    .expect("project real shared down reference");
+                let actual = execute_deepseek_shared_expert_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_300,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-real-shared-expert-test-artifacts"),
+                    160_000,
+                    &gate_weight,
+                    &gate.dimensions,
+                    &up_weight,
+                    &up.dimensions,
+                    &down_weight,
+                    &down.dimensions,
+                    &input,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
+                )
+                .expect("execute real shared expert through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_f16_projection_executes_through_production_simpler_gemm() {
+        run_simpler_native_test_isolated(
+            "deepseek_f16_projection_executes_through_production_simpler_gemm",
+            || {
+                const DIM: usize = 128;
+                let input: Vec<f32> = (0..DIM)
+                    .map(|index| ((index as i32 % 17) - 8) as f32 / 4.0)
+                    .collect();
+                let mut weight = Vec::with_capacity(DIM * DIM * 2);
+                for output in 0..DIM {
+                    for column in 0..DIM {
+                        let value = if output == column { 0x3800u16 } else { 0u16 };
+                        weight.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                let dimensions = [DIM as u64, DIM as u64];
+                let reference = project_f16_matrix(&weight, &dimensions, &input)
+                    .expect("project F16 reference");
+                let actual = execute_deepseek_f16_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_400,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-f16-projection-test-artifacts")
+                        .join("host_fp32_gemm_manifest.json"),
+                    &weight,
+                    &dimensions,
+                    &input,
+                )
+                .expect("execute F16 projection through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_topk_router_matches_gguf_reference_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_topk_router_matches_gguf_reference_when_available",
+            || {
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                let input = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                let tensor = catalog
+                    .tensor("blk.3.ffn_gate_inp.weight")
+                    .expect("locate real layer-3 router");
+                let weight = catalog
+                    .read_tensor(&tensor.name)
+                    .expect("read real layer-3 router");
+                let logits = project_f16_matrix(&weight, &tensor.dimensions, &input)
+                    .expect("project real router reference");
+                let reference = deepseek_v4_flash_router_reference(
+                    &logits,
+                    None,
+                    None,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.num_experts_used as usize,
+                    deepseek_v4_flash::DEEPSEEK_V4_FLASH_EXPERT_WEIGHT_SCALE,
+                )
+                .expect("select real top-k router reference");
+                let actual = execute_deepseek_router_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_410,
+                    },
+                    &std::env::temp_dir()
+                        .join("simpler-deepseek-real-router-test-artifacts")
+                        .join("host_fp32_gemm_manifest.json"),
+                    &weight,
+                    &tensor.dimensions,
+                    &input,
+                    None,
+                    None,
+                )
+                .expect("execute real top-k router through simpler");
+                assert_eq!(actual.expert_indices, reference.expert_indices);
+                for (index, (actual, expected)) in actual
+                    .probabilities
+                    .iter()
+                    .zip(&reference.probabilities)
+                    .enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() <= 1.0e-6,
+                        "router probability mismatch index={index} actual={actual} expected={expected}"
+                    );
+                }
+                for (index, (actual, expected)) in actual
+                    .expert_weights
+                    .iter()
+                    .zip(&reference.expert_weights)
+                    .enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() <= 1.0e-6,
+                        "router weight mismatch index={index} actual={actual} expected={expected}"
+                    );
+                }
+                assert_eq!(actual.expert_indices.len(), 6);
+                assert!((actual.expert_weights.iter().sum::<f32>() - 1.5).abs() < 1.0e-5);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_q_a_exact_projection_executes_through_simpler_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_q_a_exact_projection_executes_through_simpler_when_available",
+            || {
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let tensor = catalog
+                    .tensor("blk.0.attn_q_a.weight")
+                    .expect("locate real Q A tensor");
+                assert_eq!(tensor.tensor_type.name, "q8_0");
+                let payload = catalog
+                    .read_tensor(&tensor.name)
+                    .expect("read real Q A payload");
+                let k = usize::try_from(tensor.dimensions[0]).expect("Q A K fits usize");
+                let input: Vec<f32> = (0..k)
+                    .map(|index| ((index as i32 % 37) - 18) as f32 / 7.0)
+                    .collect();
+                let reference = project_q8_0_matrix(&payload, &tensor.dimensions, &input)
+                    .expect("compute real Q A reference");
+                let actual = execute_q8_0_projection_through_simpler(
+                    &payload,
+                    &tensor.dimensions,
+                    &input,
+                    1_000,
+                )
+                .expect("execute real Q A through simpler");
+                assert_eq!(actual, reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_attention_output_projections_execute_through_simpler_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_attention_output_projections_execute_through_simpler_when_available",
+            || {
+                const GROUPS: usize = 8;
+                const GROUP_INPUT: usize = 4_096;
+                const GROUP_OUTPUT: usize = 1_024;
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let input: Vec<f32> = (0..GROUP_INPUT * GROUPS)
+                    .map(|index| {
+                        let head_group = index / GROUP_INPUT;
+                        ((index as i32 % 41) - 20) as f32 / (head_group + 5) as f32
+                    })
+                    .collect();
+
+                let output_a_tensor = catalog
+                    .tensor("blk.0.attn_output_a.weight")
+                    .expect("locate real attention output A tensor");
+                assert_eq!(
+                    output_a_tensor.dimensions,
+                    vec![GROUP_INPUT as u64, (GROUP_OUTPUT * GROUPS) as u64]
+                );
+                let output_a_weight = catalog
+                    .read_tensor(&output_a_tensor.name)
+                    .expect("read real attention output A tensor");
+                let row_bytes = (GROUP_INPUT / 32) * 34;
+                let mut output_a_reference = Vec::with_capacity(GROUP_OUTPUT * GROUPS);
+                for group in 0..GROUPS {
+                    let weight_start = group * GROUP_OUTPUT * row_bytes;
+                    output_a_reference.extend(
+                        project_q8_0_matrix(
+                            &output_a_weight[weight_start..weight_start + GROUP_OUTPUT * row_bytes],
+                            &[GROUP_INPUT as u64, GROUP_OUTPUT as u64],
+                            &input[group * GROUP_INPUT..(group + 1) * GROUP_INPUT],
+                        )
+                        .expect("compute real grouped attention output A reference"),
+                    );
+                }
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-attention-output-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let topology = test_topology();
+                let task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 1_100,
+                };
+                let output_a = execute_deepseek_grouped_q8_projection_through_simpler(
+                    &topology,
+                    &task,
+                    &manifest,
+                    110_000,
+                    &output_a_weight,
+                    &output_a_tensor.dimensions,
+                    &input,
+                    GROUPS,
+                )
+                .expect("execute real grouped attention output A through simpler");
+                assert_eq!(output_a, output_a_reference);
+                drop(output_a_weight);
+
+                let output_b_tensor = catalog
+                    .tensor("blk.0.attn_output_b.weight")
+                    .expect("locate real attention output B tensor");
+                assert_eq!(
+                    output_b_tensor.dimensions,
+                    vec![(GROUP_OUTPUT * GROUPS) as u64, GROUP_INPUT as u64]
+                );
+                let output_b_weight = catalog
+                    .read_tensor(&output_b_tensor.name)
+                    .expect("read real attention output B tensor");
+                let output_b_reference =
+                    project_q8_0_matrix(&output_b_weight, &output_b_tensor.dimensions, &output_a)
+                        .expect("compute real attention output B reference");
+                let output_b = execute_deepseek_q8_projection_through_simpler(
+                    &topology,
+                    &TaskKey {
+                        task_id: 1_200,
+                        ..task
+                    },
+                    &manifest,
+                    120_000,
+                    &output_b_weight,
+                    &output_b_tensor.dimensions,
+                    &output_a,
+                )
+                .expect("execute real attention output B through simpler");
+                assert_eq!(output_b, output_b_reference);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_real_hc_attention_input_executes_projection_through_simpler_when_available() {
+        if deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        run_simpler_native_test_isolated(
+            "deepseek_real_hc_attention_input_executes_projection_through_simpler_when_available",
+            || {
+                const HIDDEN: usize = 4_096;
+                const HC: usize = 4;
+                const HC_DIM: usize = HIDDEN * HC;
+                const MIX: usize = 24;
+                const ARTIFACT_M: usize = 128;
+                const ARTIFACT_N: usize = 128;
+
+                let (_, _, model_path) = deepseek_v4_flash_runtime_paths()
+                    .expect("locate sibling DeepSeek runtime assets");
+                let catalog = GgufCatalog::open(&model_path).expect("open real DeepSeek GGUF");
+                catalog
+                    .validate_deepseek_v4_flash()
+                    .expect("validate real DeepSeek GGUF");
+                let fn_tensor = catalog
+                    .tensor("blk.0.hc_attn_fn.weight")
+                    .expect("locate real HC attention function");
+                assert_eq!(fn_tensor.dimensions, vec![HC_DIM as u64, MIX as u64]);
+                assert_eq!(fn_tensor.tensor_type.name, "f16");
+
+                let token_embedding = catalog
+                    .read_f16_matrix_row("token_embd.weight", 108_149)
+                    .expect("read real token embedding");
+                assert_eq!(token_embedding.len(), HIDDEN);
+                let mut residual = Vec::with_capacity(HC_DIM);
+                for _ in 0..HC {
+                    residual.extend_from_slice(&token_embedding);
+                }
+                let control_input =
+                    deepseek_v4_flash_hc_control_input_reference(&residual, HIDDEN, HC, 1.0e-6)
+                        .expect("normalize HC control input");
+                let fn_payload = catalog
+                    .read_tensor(&fn_tensor.name)
+                    .expect("read real HC attention function");
+                let reference_mix =
+                    project_f16_matrix(&fn_payload, &fn_tensor.dimensions, &control_input)
+                        .expect("project HC control reference");
+
+                let mut padded_input = vec![0.0f32; ARTIFACT_M * HC_DIM];
+                padded_input[..HC_DIM].copy_from_slice(&control_input);
+                let padded_weight = lower_f16_matrix_to_f32_kxn_padded(
+                    &fn_payload,
+                    &fn_tensor.dimensions,
+                    ARTIFACT_N,
+                )
+                .expect("lower HC function to simpler layout");
+                let manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-hc-fp32-gemm-test-artifacts")
+                    .join("host_fp32_gemm_manifest.json");
+                ensure_simpler_host_fp32_gemm_manifest(
+                    &manifest,
+                    ARTIFACT_M as u64,
+                    HC_DIM as u64,
+                    ARTIFACT_N as u64,
+                )
+                .expect("build real HC FP32 GEMM artifact");
+                let projected = run_host_gemm(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_100,
+                    },
+                    &manifest,
+                    f32s_to_bytes(&padded_input),
+                    f32s_to_bytes(&padded_weight),
+                    ARTIFACT_M,
+                    HC_DIM,
+                    ARTIFACT_N,
+                    "fp32",
+                    4,
+                    "host_fp32_gemm",
+                )
+                .expect("execute real HC projection through simpler");
+                let actual_mix = &projected[..MIX];
+                for (index, (actual, expected)) in actual_mix.iter().zip(&reference_mix).enumerate()
+                {
+                    let tolerance = 1.0e-4 * expected.abs().max(1.0);
+                    assert!(
+                        (actual - expected).abs() <= tolerance,
+                        "HC mix mismatch index={index} actual={actual} expected={expected} tolerance={tolerance}"
+                    );
+                }
+
+                let read_f32 = |name: &str| {
+                    let tensor = catalog.tensor(name).expect("locate real F32 HC tensor");
+                    assert_eq!(tensor.tensor_type.name, "f32");
+                    decode_f32_tensor(
+                        &catalog.read_tensor(name).expect("read real F32 HC tensor"),
+                        &tensor.dimensions,
+                    )
+                    .expect("decode real F32 HC tensor")
+                };
+                let scale = read_f32("blk.0.hc_attn_scale.weight");
+                let base = read_f32("blk.0.hc_attn_base.weight");
+                let attention_norm = read_f32("blk.0.attn_norm.weight");
+                let output = deepseek_v4_flash_hc_attention_input_from_mix_reference(
+                    &residual,
+                    actual_mix,
+                    &scale,
+                    &base,
+                    &attention_norm,
+                    HIDDEN,
+                    HC,
+                    20,
+                    1.0e-6,
+                )
+                .expect("finish real HC attention input semantics");
+                assert_eq!(output.normalized_hidden.len(), HIDDEN);
+                assert_eq!(output.post.len(), HC);
+                assert_eq!(output.combine.len(), HC * HC);
+                assert!(output
+                    .normalized_hidden
+                    .iter()
+                    .all(|value| value.is_finite()));
+
+                let q_a_tensor = catalog
+                    .tensor("blk.0.attn_q_a.weight")
+                    .expect("locate real Q A tensor");
+                assert_eq!(q_a_tensor.tensor_type.name, "q8_0");
+                let q_a_payload = catalog
+                    .read_tensor(&q_a_tensor.name)
+                    .expect("read real Q A tensor");
+                let q_a_reference = project_q8_0_matrix(
+                    &q_a_payload,
+                    &q_a_tensor.dimensions,
+                    &output.normalized_hidden,
+                )
+                .expect("project real Q A reference from HC output");
+                let q_a_actual = execute_q8_0_projection_through_simpler(
+                    &q_a_payload,
+                    &q_a_tensor.dimensions,
+                    &output.normalized_hidden,
+                    1_110,
+                )
+                .expect("execute real Q A from HC output through simpler");
+                assert_eq!(q_a_actual, q_a_reference);
+
+                let q_a_norm_weight = read_f32("blk.0.attn_q_a_norm.weight");
+                let q_lora_norm = deepseek_v4_flash_rms_norm_reference(
+                    &q_a_actual,
+                    Some(&q_a_norm_weight),
+                    1.0e-6,
+                )
+                .expect("normalize real Q LoRA output");
+                let q_b_tensor = catalog
+                    .tensor("blk.0.attn_q_b.weight")
+                    .expect("locate real Q B tensor");
+                assert_eq!(q_b_tensor.dimensions, vec![1_024, 32_768]);
+                assert_eq!(q_b_tensor.tensor_type.name, "q8_0");
+                let q_b_payload = catalog
+                    .read_tensor(&q_b_tensor.name)
+                    .expect("read real Q B tensor");
+                let q_b_reference =
+                    project_q8_0_matrix(&q_b_payload, &q_b_tensor.dimensions, &q_lora_norm)
+                        .expect("project real Q B reference");
+                let q_b_actual = execute_q8_0_projection_through_simpler(
+                    &q_b_payload,
+                    &q_b_tensor.dimensions,
+                    &q_lora_norm,
+                    1_120,
+                )
+                .expect("execute real Q B through simpler");
+                assert_eq!(q_b_actual, q_b_reference);
+
+                let mut q_heads =
+                    deepseek_v4_flash_head_rms_norm_reference(&q_b_actual, 64, 512, None, 1.0e-6)
+                        .expect("normalize real query heads");
+                assert_eq!(q_heads.len(), 32_768);
+                for (head, (input, values)) in q_b_actual
+                    .chunks_exact(512)
+                    .zip(q_heads.chunks_exact(512))
+                    .enumerate()
+                {
+                    let input_mean_square =
+                        input.iter().map(|value| value * value).sum::<f32>() / 512.0;
+                    let output_mean_square =
+                        values.iter().map(|value| value * value).sum::<f32>() / 512.0;
+                    let expected_mean_square = input_mean_square / (input_mean_square + 1.0e-6);
+                    assert!(
+                        (output_mean_square - expected_mean_square).abs() < 1.0e-5,
+                        "query head RMS mismatch head={head} actual={output_mean_square} expected={expected_mean_square}"
+                    );
+                }
+
+                let kv_tensor = catalog
+                    .tensor("blk.0.attn_kv.weight")
+                    .expect("locate real KV tensor");
+                assert_eq!(kv_tensor.dimensions, vec![4_096, 512]);
+                assert_eq!(kv_tensor.tensor_type.name, "q8_0");
+                let kv_payload = catalog
+                    .read_tensor(&kv_tensor.name)
+                    .expect("read real KV tensor");
+                let kv_reference = project_q8_0_matrix(
+                    &kv_payload,
+                    &kv_tensor.dimensions,
+                    &output.normalized_hidden,
+                )
+                .expect("project real KV reference");
+                let kv_actual = execute_q8_0_projection_through_simpler(
+                    &kv_payload,
+                    &kv_tensor.dimensions,
+                    &output.normalized_hidden,
+                    1_130,
+                )
+                .expect("execute real KV through simpler");
+                assert_eq!(kv_actual, kv_reference);
+                let kv_norm_weight = read_f32("blk.0.attn_kv_a_norm.weight");
+                let mut kv_normalized =
+                    deepseek_v4_flash_rms_norm_reference(&kv_actual, Some(&kv_norm_weight), 1.0e-6)
+                        .expect("normalize real KV output");
+                assert_eq!(kv_normalized.len(), 512);
+                assert!(kv_normalized.iter().all(|value| value.is_finite()));
+
+                let rope_cos = vec![1.0f32; 32];
+                let rope_sin = vec![0.0f32; 32];
+                q_heads = deepseek_v4_flash_rope_tail_reference(
+                    &q_heads, 64, 512, 64, &rope_cos, &rope_sin, false,
+                )
+                .expect("apply position-zero query RoPE");
+                kv_normalized = deepseek_v4_flash_rope_tail_reference(
+                    &kv_normalized,
+                    1,
+                    512,
+                    64,
+                    &rope_cos,
+                    &rope_sin,
+                    false,
+                )
+                .expect("apply position-zero KV RoPE");
+                deepseek_v4_flash_fp8_kv_roundtrip_reference(&mut kv_normalized, 64)
+                    .expect("apply real KV FP8 roundtrip");
+                for value in &mut kv_normalized {
+                    *value = f16_bits_to_f32(f32_to_f16_bits(*value));
+                }
+
+                let sinks = read_f32("blk.0.attn_sinks.weight");
+                let mut attention_heads = deepseek_v4_flash_sink_attention_reference(
+                    &q_heads,
+                    &kv_normalized,
+                    &sinks,
+                    64,
+                    512,
+                )
+                .expect("execute real position-zero sink attention");
+                attention_heads = deepseek_v4_flash_rope_tail_reference(
+                    &attention_heads,
+                    64,
+                    512,
+                    64,
+                    &rope_cos,
+                    &rope_sin,
+                    true,
+                )
+                .expect("apply inverse position-zero attention RoPE");
+
+                let output_a_tensor = catalog
+                    .tensor("blk.0.attn_output_a.weight")
+                    .expect("locate real attention output A tensor");
+                let output_a_payload = catalog
+                    .read_tensor(&output_a_tensor.name)
+                    .expect("read real attention output A tensor");
+                let output_manifest = std::env::temp_dir()
+                    .join("simpler-deepseek-real-layer0-attention-test-artifacts")
+                    .join("host_q8_block_dot_manifest.json");
+                let output_a = execute_deepseek_grouped_q8_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_140,
+                    },
+                    &output_manifest,
+                    140_000,
+                    &output_a_payload,
+                    &output_a_tensor.dimensions,
+                    &attention_heads,
+                    8,
+                )
+                .expect("execute real attention output A through simpler");
+                let output_b_tensor = catalog
+                    .tensor("blk.0.attn_output_b.weight")
+                    .expect("locate real attention output B tensor");
+                let output_b_payload = catalog
+                    .read_tensor(&output_b_tensor.name)
+                    .expect("read real attention output B tensor");
+                let attention_output = execute_deepseek_q8_projection_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 1_150,
+                    },
+                    &output_manifest,
+                    150_000,
+                    &output_b_payload,
+                    &output_b_tensor.dimensions,
+                    &output_a,
+                )
+                .expect("execute real attention output B through simpler");
+                let after_attention = deepseek_v4_flash_hc_post_reference(
+                    &attention_output,
+                    &residual,
+                    &output.post,
+                    &output.combine,
+                )
+                .expect("complete real layer-0 attention HC post");
+                assert_eq!(after_attention.len(), HC_DIM);
+                assert!(after_attention.iter().all(|value| value.is_finite()));
+                assert_ne!(after_attention, residual);
+            },
+        );
+    }
+
+    #[test]
+    fn host_deepseek_vector_dispatch_executes_on_a5() {
+        run_simpler_native_test_isolated("host_deepseek_vector_dispatch_executes_on_a5", || {
+            let manifest = std::env::temp_dir()
+                .join("simpler-host-deepseek-vector-test-artifacts")
+                .join("host_deepseek_vector_manifest.json");
+            ensure_simpler_host_deepseek_vector_manifest(&manifest)
+                .expect("build DeepSeek vector artifact");
+            let topology = test_topology();
+            let task = TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 109,
+            };
+            let add = execute_add_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_000,
+                &[1.0, 2.0, -4.0],
+                &[3.0, -2.0, 1.0],
+                false,
+            )
+            .expect("execute A5 vector add");
+            assert_eq!(add.output, vec![4.0, 0.0, -3.0]);
+            let scale = execute_scale_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_100,
+                &add.output,
+                0.5,
+                true,
+            )
+            .expect("execute A5 vector scale");
+            assert_eq!(scale.output, vec![2.0, 0.0, -1.5]);
+            let nontrivial_scale = (128.0f32).sqrt().recip() * (64.0f32).sqrt().recip();
+            let scale_input = [2.7617188, 0.024658203, -1.9111328, -0.018676758];
+            let scale_reference = scale_input
+                .iter()
+                .map(|value| {
+                    sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16(
+                        value * nontrivial_scale,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let scale_nontrivial = execute_scale_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_150,
+                &scale_input,
+                nontrivial_scale,
+                true,
+            )
+            .expect("execute nontrivial A5 vector scale");
+            assert_eq!(scale_nontrivial.output, scale_reference);
+            let rms = execute_rms_norm_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_200,
+                &[2.0, 2.0, -3.0, -3.0],
+                None,
+                2,
+                2,
+                0.0,
+                false,
+            )
+            .expect("execute A5 vector RMSNorm");
+            assert_eq!(rms.output, vec![1.0, 1.0, -1.0, -1.0]);
+            let rms_input = [0.3, -1.2, 2.7, 0.04];
+            let rms_weight = [1.25, 0.75, -0.5, 2.0];
+            let rms_reference =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_rms_norm_reference(
+                    &rms_input,
+                    Some(&rms_weight),
+                    1.0e-6,
+                )
+                .expect("execute RMSNorm reference");
+            let rms_nontrivial = execute_rms_norm_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_250,
+                &rms_input,
+                Some(&rms_weight),
+                1,
+                rms_input.len(),
+                1.0e-6,
+                false,
+            )
+            .expect("execute nontrivial A5 vector RMSNorm");
+            assert_eq!(rms_nontrivial.output, rms_reference);
+            let swiglu = execute_swiglu_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_300,
+                &[0.0, 0.0],
+                &[4.0, -7.0],
+                10.0,
+                true,
+            )
+            .expect("execute A5 vector SwiGLU");
+            assert_eq!(swiglu.output, vec![0.0, -0.0]);
+            let gate = [-3.75, -0.125, 0.75, 7.5];
+            let up = [1.25, -6.0, 2.5, 12.0];
+            let mut swiglu_reference = deepseek_v4_flash_swiglu_reference(&gate, &up, 10.0)
+                .expect("execute nontrivial SwiGLU reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut swiglu_reference,
+            )
+            .expect("round nontrivial SwiGLU reference");
+            let swiglu_nontrivial = execute_swiglu_through_simpler(
+                &topology, &task, &manifest, 169_350, &gate, &up, 10.0, true,
+            )
+            .expect("execute nontrivial A5 vector SwiGLU");
+            assert_eq!(swiglu_nontrivial.output, swiglu_reference);
+            let rope_input = [0.25, -0.5, 1.25, -2.0, 3.5, -4.25];
+            let rope_cos = [0.73168886, -0.41614684];
+            let rope_sin = [0.6816388, 0.9092974];
+            let mut rope_reference = deepseek_v4_flash_rope_tail_reference(
+                &rope_input,
+                1,
+                6,
+                4,
+                &rope_cos,
+                &rope_sin,
+                false,
+            )
+            .expect("execute nonzero-position RoPE reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut rope_reference,
+            )
+            .expect("round nonzero-position RoPE reference");
+            let rope = execute_rope_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_360,
+                &rope_input,
+                &rope_cos,
+                &rope_sin,
+                1,
+                6,
+                4,
+                false,
+            )
+            .expect("execute nonzero-position A5 RoPE");
+            assert_eq!(rope.output, rope_reference);
+            let kv_input = (0..68)
+                .map(|index| (index as f32 - 31.0) * 0.073)
+                .collect::<Vec<_>>();
+            let mut kv_reference = kv_input.clone();
+            deepseek_v4_flash_fp8_kv_roundtrip_reference(&mut kv_reference, 4)
+                .expect("execute FP8 KV reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut kv_reference,
+            )
+            .expect("round FP8 KV reference");
+            let kv = execute_kv_fp8_roundtrip_through_simpler(
+                &topology, &task, &manifest, 169_370, &kv_input, 64, 64,
+            )
+            .expect("execute A5 FP8 KV roundtrip");
+            assert_eq!(kv.output, kv_reference);
+            let attention_q = [0.25, -0.75, 1.5, -2.0, 0.125, 0.5, -1.25, 2.25];
+            let attention_rows = [
+                0.5, -1.0, 0.25, 1.5, -0.75, 0.125, 2.0, -0.5, 1.25, 0.75, -1.5, 0.25,
+            ];
+            let sinks = [-0.375, 0.625];
+            let mut attention_reference = deepseek_v4_flash_sink_attention_reference(
+                &attention_q,
+                &attention_rows,
+                &sinks,
+                2,
+                4,
+            )
+            .expect("execute multi-row sink attention reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut attention_reference,
+            )
+            .expect("round sink attention reference");
+            let attention = execute_sink_attention_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_380,
+                &attention_q,
+                &attention_rows,
+                &sinks,
+                2,
+                4,
+            )
+            .expect("execute multi-row A5 sink attention");
+            assert_eq!(attention.output, attention_reference);
+            let indexer_input = (0..128)
+                .map(|index| (index as f32 - 63.0) * 0.019)
+                .collect::<Vec<_>>();
+            let mut indexer_reference = indexer_input.clone();
+            sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_indexer_qat_reference(
+                &mut indexer_reference,
+            )
+            .expect("execute indexer QAT reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut indexer_reference,
+            )
+            .expect("round indexer QAT reference");
+            let indexer = execute_indexer_qat_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_390,
+                &indexer_input,
+            )
+            .expect("execute A5 indexer QAT");
+            assert_eq!(indexer.output, indexer_reference);
+            let mut compressor_reference =
+                sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashCompressorState::new(2, 4)
+                    .expect("create reference compressor");
+            let mut compressor_production = compressor_reference.clone();
+            let mut compressor = None;
+            for position in 0..4u32 {
+                let projected = [1.0 + position as f32, 2.0, 5.0 + position as f32, 7.0];
+                let expected = compressor_reference
+                    .update_projected(
+                        position,
+                        &projected,
+                        &[0.0; 4],
+                        &[0.0; 4],
+                        &[1.0; 2],
+                        2,
+                        &[1.0],
+                        &[0.0],
+                    )
+                    .expect("update reference compressor");
+                let actual = compressor_production
+                    .update_pre_scored_with_pool(
+                        position,
+                        &projected,
+                        &[0.0; 4],
+                        |kv_state, score_state, head_dim, ratio, width| {
+                            execute_compressor_pool_through_simpler(
+                                &topology,
+                                &task,
+                                &manifest,
+                                169_392,
+                                kv_state,
+                                score_state,
+                                &[1.0; 2],
+                                &[1.0],
+                                &[0.0],
+                                head_dim,
+                                ratio,
+                                width,
+                                2,
+                                1.0e-6,
+                            )
+                            .map(|execution| {
+                                compressor = Some(execution.clone());
+                                execution.output
+                            })
+                        },
+                    )
+                    .expect("update A5 compressor");
+                if let (Some(mut expected), Some(actual)) = (expected, actual) {
+                    sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                        &mut expected,
+                    )
+                    .expect("round compressor reference");
+                    assert_eq!(actual, expected);
+                }
+            }
+            let compressor = compressor.expect("A5 compressor boundary dispatch");
+            let logits_for_top_k = [1.0, 3.0, 3.0, -2.0, 4.5];
+            let top_k_reference = sim_models::deepseek_v4_flash_checkpoint_reference::top_k_logits(
+                &logits_for_top_k,
+                3,
+            )
+            .expect("execute top-k reference");
+            let (top_k, top_k_execution) = execute_top_k_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_395,
+                &logits_for_top_k,
+                3,
+            )
+            .expect("execute A5 top-k");
+            assert_eq!(top_k, top_k_reference);
+            let logits = [-3.25, -0.5, 0.0, 1.25, 7.0, 21.0];
+            let expected =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_router_reference(
+                    &logits,
+                    Some(&[0.0; 6]),
+                    None,
+                    3,
+                    2.5,
+                )
+                .expect("execute router reference");
+            let (router, router_execution) = execute_router_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_400,
+                &logits,
+                Some(&[0.0; 6]),
+                None,
+                3,
+                2.5,
+            )
+            .expect("execute A5 vector router");
+            assert_eq!(router, expected);
+            let hc_mix = (0..24)
+                .map(|index| (index as f32 - 11.0) * 0.137)
+                .collect::<Vec<_>>();
+            let hc_scale = [0.75, -1.25, 0.5];
+            let hc_base = (0..24)
+                .map(|index| (index as f32 % 5.0 - 2.0) * 0.031)
+                .collect::<Vec<_>>();
+            let hc_reference =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_split_reference(
+                    &hc_mix, &hc_scale, &hc_base, 4, 20, 1.0e-6,
+                )
+                .expect("execute HC split reference");
+            let (hc_split, hc_execution) = execute_hc_split_through_simpler(
+                &topology, &task, &manifest, 169_500, &hc_mix, &hc_scale, &hc_base, 4, 20, 1.0e-6,
+            )
+            .expect("execute A5 HC split");
+            assert_eq!(hc_split, hc_reference);
+            let hidden_hc = (0..16)
+                .map(|index| (index as f32 - 7.0) * 0.113)
+                .collect::<Vec<_>>();
+            let mut weighted_reference = sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_weighted_sum_reference(
+                &hidden_hc,
+                &hc_split.pre,
+                4,
+            )
+            .expect("execute HC weighted reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut weighted_reference,
+            )
+            .expect("round HC weighted reference");
+            let weighted = execute_hc_weighted_sum_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_600,
+                &hidden_hc,
+                &hc_split.pre,
+                4,
+                true,
+            )
+            .expect("execute A5 HC weighted sum");
+            assert_eq!(weighted.output, weighted_reference);
+            let mut post_reference =
+                sim_models::deepseek_v4_flash_lowering::deepseek_v4_flash_hc_post_reference(
+                    &weighted.output,
+                    &hidden_hc,
+                    &hc_split.post,
+                    &hc_split.combine,
+                )
+                .expect("execute HC post reference");
+            sim_models::deepseek_v4_flash_checkpoint_reference::round_slice_to_bf16(
+                &mut post_reference,
+            )
+            .expect("round HC post reference");
+            let post = execute_hc_post_through_simpler(
+                &topology,
+                &task,
+                &manifest,
+                169_700,
+                &weighted.output,
+                &hidden_hc,
+                &hc_split.post,
+                &hc_split.combine,
+                4,
+                true,
+            )
+            .expect("execute A5 HC post");
+            assert_eq!(post.output, post_reference);
+            assert_eq!(
+                add.dispatch_count
+                    + scale.dispatch_count
+                    + scale_nontrivial.dispatch_count
+                    + rms.dispatch_count
+                    + rms_nontrivial.dispatch_count
+                    + swiglu.dispatch_count
+                    + swiglu_nontrivial.dispatch_count
+                    + rope.dispatch_count
+                    + kv.dispatch_count
+                    + attention.dispatch_count
+                    + indexer.dispatch_count
+                    + compressor.dispatch_count
+                    + top_k_execution.dispatch_count
+                    + router_execution.dispatch_count
+                    + hc_execution.dispatch_count
+                    + weighted.dispatch_count
+                    + post.dispatch_count,
+                17
+            );
+        });
+    }
+
+    #[test]
+    fn host_quantized_gemm_dispatch_executes_signed_int8_matrix_product() {
+        run_simpler_native_test_isolated(
+            "host_quantized_gemm_dispatch_executes_signed_int8_matrix_product",
+            || {
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-quantized-gemm-test-artifacts")
+                    .join("host_quantized_gemm_manifest.json");
+                ensure_simpler_host_quantized_gemm_manifest(&manifest, 128, 128, 128)
+                    .expect("build host quantized GEMM artifact");
+                let output = run_host_quantized_gemm_smoke(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 110,
+                    },
+                    &manifest,
+                )
+                .expect("host quantized GEMM dispatch");
+                assert_eq!(output.len(), 128 * 128);
+                assert!(output.iter().all(|value| *value == -3));
+            },
+        );
+    }
+
+    #[test]
+    fn host_fp8_gemm_dispatch_executes_scaled_e4m3_asymmetric_permutation() {
+        run_simpler_native_test_isolated(
+            "host_fp8_gemm_dispatch_executes_scaled_e4m3_asymmetric_permutation",
+            || {
+                const DIM: usize = 128;
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-fp8-gemm-test-artifacts")
+                    .join("host_fp8_gemm_manifest.json");
+                ensure_simpler_host_fp8_gemm_manifest(&manifest)
+                    .expect("build host FP8 GEMM artifact");
+                let mut weight = vec![0u8; DIM * DIM];
+                for row in 0..DIM {
+                    weight[row * DIM + (row + 1) % DIM] = 0x38;
+                }
+                let input = deterministic_hidden_fixture(7, DIM);
+                let reference =
+                    fp8_matvec_rows_reference(&weight, &[127], DIM, DIM, 0, DIM, &input)
+                        .expect("FP8 permutation reference");
+                let execution = execute_fp8_rows_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 111,
+                    },
+                    &manifest,
+                    171_000,
+                    &weight,
+                    &[127],
+                    DIM,
+                    DIM,
+                    0,
+                    DIM,
+                    &input,
+                    DeepseekV4LinearOutputDType::Bf16,
+                )
+                .expect("execute scaled E4M3 asymmetric permutation through simpler");
+                assert_eq!(execution.dispatch_count, 1);
+                assert_eq!(execution.output, reference);
+
+                let f32_task = TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 112,
+                };
+                let f32_execution = execute_fp8_rows_through_simpler(
+                    &test_topology(),
+                    &f32_task,
+                    &manifest,
+                    171_100,
+                    &weight,
+                    &[127],
+                    DIM,
+                    DIM,
+                    0,
+                    DIM,
+                    &input,
+                    DeepseekV4LinearOutputDType::F32,
+                )
+                .expect("execute scaled E4M3 permutation with FP32 output");
+                assert!(f32_execution.output.iter().all(|value| value.is_finite()));
+                for (actual, expected) in f32_execution.output.iter().zip(&reference) {
+                    assert_eq!(
+                        sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16(*actual),
+                        *expected
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn host_fp4_gemm_dispatch_executes_packed_e2m1_asymmetric_permutation() {
+        run_simpler_native_test_isolated(
+            "host_fp4_gemm_dispatch_executes_packed_e2m1_asymmetric_permutation",
+            || {
+                const DIM: usize = 128;
+                let manifest = std::env::temp_dir()
+                    .join("simpler-host-fp4-gemm-test-artifacts")
+                    .join("host_fp4_gemm_manifest.json");
+                ensure_simpler_host_fp4_gemm_manifest(&manifest, DIM)
+                    .expect("build host FP4 GEMM artifact");
+                let mut packed_weight = vec![0u8; DIM * (DIM / 2)];
+                for row in 0..DIM {
+                    let k = (row + 1) % DIM;
+                    let byte = &mut packed_weight[row * (DIM / 2) + k / 2];
+                    if k % 2 == 0 {
+                        *byte = (*byte & 0xf0) | 0x02;
+                    } else {
+                        *byte = (*byte & 0x0f) | 0x20;
+                    }
+                }
+                let scales = vec![127u8; DIM * (DIM / 32)];
+                let input = deterministic_hidden_fixture(7, DIM);
+                let reference =
+                    fp4_matvec_rows_reference(&packed_weight, &scales, DIM, DIM, 0, DIM, &input)
+                        .expect("packed E2M1 permutation reference");
+                let execution = execute_fp4_rows_through_simpler(
+                    &test_topology(),
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord { levels: [0; 8] },
+                        scope_depth: 0,
+                        task_id: 113,
+                    },
+                    &manifest,
+                    171_200,
+                    &packed_weight,
+                    &scales,
+                    DIM,
+                    DIM,
+                    0,
+                    DIM,
+                    &input,
+                    DeepseekV4LinearOutputDType::Bf16,
+                )
+                .expect("execute packed E2M1 permutation through simpler");
+                assert_eq!(execution.dispatch_count, 1);
+                assert_eq!(execution.output, reference);
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_linear_production_matches_reference_across_fp8_roles_and_bf16_head() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let checkpoint = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+        )
+        .expect("open official checkpoint");
+        let input = deterministic_hidden_fixture(7, 4096);
+        let hc_input = deterministic_hidden_fixture(7, 16_384);
+        let hc_reference = checkpoint
+            .reference_matvec_rows("layers.0.hc_attn_fn", &hc_input, 0, 24)
+            .expect("official F32 mHC function reference");
+        let hc_production = execute_deepseek_official_f32_rows_through_simpler(
+            &checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 114,
+            },
+            &std::env::temp_dir()
+                .join("simpler-host-fp32-gemm-test-artifacts-k16384")
+                .join("host_fp32_gemm_manifest.json"),
+            "layers.0.hc_attn_fn",
+            0,
+            24,
+            &hc_input,
+            DeepseekV4LinearOutputDType::F32,
+        )
+        .expect("official F32 mHC production dispatch");
+        let hc_max_abs_diff = hc_production
+            .output
+            .iter()
+            .zip(&hc_reference)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            hc_max_abs_diff <= 5.0e-6,
+            "official F32 mHC max abs diff {hc_max_abs_diff} exceeds tolerance"
+        );
+
+        let manifest = std::env::temp_dir()
+            .join("simpler-host-fp8-gemm-test-artifacts")
+            .join("host_fp8_gemm_manifest.json");
+        let cases = [
+            ("layers.0.attn.wkv.weight", 0usize, 8usize),
+            ("layers.0.attn.wkv.weight", 127, 2),
+            ("layers.0.attn.wo_a.weight", 0, 2),
+            ("layers.0.ffn.shared_experts.w1.weight", 0, 2),
+        ];
+        for (case, (tensor_name, row_start, row_count)) in cases.into_iter().enumerate() {
+            let reference = checkpoint
+                .reference_matvec_rows(tensor_name, &input, row_start, row_count)
+                .expect("official FP8 reference");
+            let production = execute_deepseek_official_fp8_rows_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 120 + case as u64 * 100,
+                },
+                &manifest,
+                172_000 + case as u64 * 100,
+                tensor_name,
+                row_start,
+                row_count,
+                &input,
+                DeepseekV4LinearOutputDType::Bf16,
+            )
+            .expect("official FP8 production dispatch");
+            assert_eq!(production.output, reference);
+            let full_k_production = execute_deepseek_official_fp8_rows_full_k_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 420 + case as u64 * 100,
+                },
+                &std::env::temp_dir()
+                    .join(format!("simpler-host-mx-full-k{}-artifacts", input.len()))
+                    .join("host_fp4_gemm_manifest.json"),
+                172_500 + case as u64 * 100,
+                tensor_name,
+                row_start,
+                row_count,
+                &input,
+                DeepseekV4LinearOutputDType::Bf16,
+            )
+            .expect("official FP8 full-K production dispatch");
+            assert_eq!(full_k_production.output, reference);
+        }
+
+        let head_manifest = std::env::temp_dir()
+            .join("simpler-host-bf16-gemm-test-artifacts")
+            .join("host_gemm_manifest.json");
+        let head_input = input
+            .iter()
+            .map(|value| sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16(*value))
+            .collect::<Vec<_>>();
+        let head_reference = checkpoint
+            .reference_matvec_rows("head.weight", &head_input, 0, 2)
+            .expect("official BF16 output head reference")
+            .into_iter()
+            .map(sim_models::deepseek_v4_flash_checkpoint_reference::round_to_bf16)
+            .collect::<Vec<_>>();
+        let head_production = execute_deepseek_official_bf16_rows_through_simpler(
+            &checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 620,
+            },
+            &head_manifest,
+            "head.weight",
+            0,
+            2,
+            &head_input,
+            DeepseekV4LinearOutputDType::Bf16,
+        )
+        .expect("official BF16 output head production dispatch");
+        assert_eq!(head_production.output, head_reference);
+
+        let fp4_manifest = std::env::temp_dir()
+            .join("simpler-host-fp4-gemm-test-artifacts-k4096")
+            .join("host_fp4_gemm_manifest.json");
+        for (case, expert) in [17usize, 99].into_iter().enumerate() {
+            let tensor_name = format!("layers.0.ffn.experts.{expert}.w1.weight");
+            let reference = checkpoint
+                .reference_matvec_rows(&tensor_name, &input, 0, 8)
+                .expect("official FP4 expert reference");
+            let production = execute_deepseek_official_fp4_rows_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 720 + case as u64 * 10,
+                },
+                &fp4_manifest,
+                173_000 + case as u64 * 100,
+                &tensor_name,
+                0,
+                8,
+                &input,
+                DeepseekV4LinearOutputDType::Bf16,
+            )
+            .expect("official FP4 production dispatch");
+            assert_eq!(production.output, reference);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_layer_zero_production_matches_cpu_reference() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for reference");
+        let production_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for production");
+        let hidden = deterministic_hidden_fixture(
+            7,
+            (production_checkpoint.config.hidden_size * production_checkpoint.config.hc_mult)
+                as usize,
+        );
+        let reference = reference_checkpoint
+            .reference_layer_forward(0, 1, 0, &hidden)
+            .expect("official layer zero CPU reference");
+        let production = execute_deepseek_official_layer_through_simpler(
+            &production_checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 10_000,
+            },
+            &std::env::temp_dir().join("deepseek-v4-official-layer-artifacts"),
+            900_000,
+            0,
+            1,
+            0,
+            &hidden,
+        )
+        .expect("official layer zero production execution");
+        assert_eq!(
+            production.input_hidden_checksum,
+            reference.input_hidden_checksum
+        );
+        assert_eq!(production.selected_experts, reference.selected_experts);
+        let attention_max_abs_diff = production
+            .attention_output
+            .iter()
+            .zip(&reference.attention_output)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let q_lora_max_abs_diff = production
+            .q_lora
+            .iter()
+            .zip(&reference.q_lora)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let query_max_abs_diff = production
+            .query
+            .iter()
+            .zip(&reference.query)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let attended_max_abs_diff = production
+            .attended
+            .iter()
+            .zip(&reference.attended)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let low_rank_max_abs_diff = production
+            .low_rank_attention_output
+            .iter()
+            .zip(&reference.low_rank_attention_output)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let kv_max_abs_diff = production
+            .raw_kv
+            .iter()
+            .zip(&reference.raw_kv)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let route_weight_max_abs_diff = production
+            .route_weights
+            .iter()
+            .zip(&reference.route_weights)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let layer_output_max_abs_diff = production
+            .layer_output_hidden
+            .iter()
+            .zip(&reference.layer_output_hidden)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "q_lora_max_abs_diff={q_lora_max_abs_diff} query_max_abs_diff={query_max_abs_diff} attended_max_abs_diff={attended_max_abs_diff} low_rank_max_abs_diff={low_rank_max_abs_diff} attention_max_abs_diff={attention_max_abs_diff} kv_max_abs_diff={kv_max_abs_diff} route_weight_max_abs_diff={route_weight_max_abs_diff} layer_output_max_abs_diff={layer_output_max_abs_diff} attention_checksum_match={} kv_checksum_match={}",
+            production.attention_output_checksum == reference.attention_output_checksum,
+            production.kv.raw_row_checksum == reference.kv.raw_row_checksum
+        );
+        assert_eq!(production.q_lora, reference.q_lora);
+        assert_eq!(production.query, reference.query);
+        assert_eq!(production.attended, reference.attended);
+        assert_eq!(
+            production.low_rank_attention_output,
+            reference.low_rank_attention_output
+        );
+        assert_eq!(production.attention_output, reference.attention_output);
+        assert_eq!(production.raw_kv, reference.raw_kv);
+        assert_eq!(production.route_weights, reference.route_weights);
+        assert_eq!(
+            production.layer_output_hidden,
+            reference.layer_output_hidden
+        );
+        assert!(production.dispatch_count > 0);
+        assert!(production.tensor_disk_read_bytes > 0);
+        assert!(production.expert_disk_read_bytes > 0);
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_ratio4_layer_executes_compressor_and_indexer_through_production() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for reference");
+        let production_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for production");
+        let hidden = deterministic_hidden_fixture(
+            7,
+            (production_checkpoint.config.hidden_size * production_checkpoint.config.hc_mult)
+                as usize,
+        );
+        let reference = reference_checkpoint
+            .reference_layer_forward(2, 1, 0, &hidden)
+            .expect("official ratio-4 CPU reference");
+        let production = execute_deepseek_official_layer_through_simpler(
+            &production_checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 20_000,
+            },
+            &std::env::temp_dir().join("deepseek-v4-official-ratio4-layer-artifacts"),
+            2_000_000,
+            2,
+            1,
+            0,
+            &hidden,
+        )
+        .expect("official ratio-4 production execution");
+        assert_eq!(production.compress_ratio, 4);
+        assert_eq!(production.selected_experts, reference.selected_experts);
+        let indexer_query_max_abs_diff = production
+            .kv
+            .indexer_query
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(reference.kv.indexer_query.as_deref().unwrap())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let indexer_weights_max_abs_diff = production
+            .kv
+            .indexer_weights
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(reference.kv.indexer_weights.as_deref().unwrap())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "indexer_query_max_abs_diff={indexer_query_max_abs_diff} indexer_weights_max_abs_diff={indexer_weights_max_abs_diff}"
+        );
+        assert_eq!(production.kv.indexer_query, reference.kv.indexer_query);
+        assert_eq!(production.kv.indexer_weights, reference.kv.indexer_weights);
+        let attention_compressor_max_abs_diff = production
+            .kv
+            .attention_compressor_pending
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(
+                reference
+                    .kv
+                    .attention_compressor_pending
+                    .as_deref()
+                    .unwrap(),
+            )
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let indexer_compressor_max_abs_diff = production
+            .kv
+            .indexer_compressor_pending
+            .as_deref()
+            .unwrap()
+            .iter()
+            .zip(reference.kv.indexer_compressor_pending.as_deref().unwrap())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "attention_compressor_max_abs_diff={attention_compressor_max_abs_diff} indexer_compressor_max_abs_diff={indexer_compressor_max_abs_diff}"
+        );
+        assert_eq!(
+            production.kv.attention_compressor_pending,
+            reference.kv.attention_compressor_pending
+        );
+        assert_eq!(
+            production.kv.indexer_compressor_pending,
+            reference.kv.indexer_compressor_pending
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_output_head_production_matches_cpu_reference() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for reference");
+        let production_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open official checkpoint for production");
+        let hidden = deterministic_hidden_fixture(
+            13,
+            (production_checkpoint.config.hidden_size * production_checkpoint.config.hc_mult)
+                as usize,
+        );
+        let reference = reference_checkpoint
+            .reference_output_head(&hidden, 5)
+            .expect("official output head CPU reference");
+        let production = execute_deepseek_official_output_head_through_simpler(
+            &production_checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 30_000,
+            },
+            &std::env::temp_dir().join("deepseek-v4-official-output-head-artifacts"),
+            &hidden,
+            5,
+        )
+        .expect("official output head production execution");
+        assert_eq!(production.hc_head_checksum, reference.hc_head_checksum);
+        assert_eq!(
+            production.normalized_hidden_checksum,
+            reference.normalized_hidden_checksum
+        );
+        assert_eq!(production.logits, reference.logits);
+        assert_eq!(production.logits_checksum, reference.logits_checksum);
+        assert_eq!(production.top_k, reference.top_k);
+        assert!(production.dispatch_count > 0);
+        assert!(production.tensor_disk_read_bytes > 0);
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_router_production_matches_hash_and_learned_cpu_reference_without_expert_reads() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let checkpoint = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+        )
+        .expect("open official checkpoint");
+        let input = deterministic_hidden_fixture(7, checkpoint.config.hidden_size as usize);
+        let manifest = std::env::temp_dir()
+            .join("simpler-host-bf16-gemm-test-artifacts")
+            .join("host_gemm_manifest.json");
+        let (_, expert_cache_before) = checkpoint.cache_stats().expect("cache stats before route");
+
+        for (case, layer) in [2usize, 3].into_iter().enumerate() {
+            let production = execute_deepseek_official_router_through_simpler(
+                &checkpoint,
+                &test_topology(),
+                &TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord { levels: [0; 8] },
+                    scope_depth: 0,
+                    task_id: 700 + case as u64 * 10,
+                },
+                &manifest,
+                layer,
+                1,
+                &input,
+            )
+            .expect("official router production dispatch");
+            let logits = checkpoint
+                .reference_matvec_rows(
+                    &format!("layers.{layer}.ffn.gate.weight"),
+                    &input,
+                    0,
+                    checkpoint.config.n_routed_experts as usize,
+                )
+                .expect("official router CPU logits");
+            let hash_selected = if layer < checkpoint.config.num_hash_layers as usize {
+                let name = format!("layers.{layer}.ffn.gate.tid2eid");
+                let top_k = checkpoint.config.num_experts_per_tok as usize;
+                let bytes = checkpoint
+                    .read_tensor_slice(&name, top_k as u64 * 8, top_k as u64 * 8)
+                    .expect("official hash-selected experts");
+                Some(
+                    bytes
+                        .chunks_exact(8)
+                        .map(|chunk| {
+                            usize::try_from(i64::from_le_bytes(chunk.try_into().unwrap())).unwrap()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+            let selection_bias = if hash_selected.is_none() {
+                Some(
+                    checkpoint
+                        .reference_read_vector(&format!("layers.{layer}.ffn.gate.bias"))
+                        .expect("official learned-router selection bias"),
+                )
+            } else {
+                None
+            };
+            let reference = deepseek_v4_flash_router_reference(
+                &logits,
+                selection_bias.as_deref(),
+                hash_selected.as_deref(),
+                checkpoint.config.num_experts_per_tok as usize,
+                checkpoint.config.routed_scaling_factor as f32,
+            )
+            .expect("official router CPU reference");
+            assert_eq!(production.hash_routed, hash_selected.is_some());
+            assert_eq!(production.expert_indices, reference.expert_indices);
+            assert_eq!(production.probabilities, reference.probabilities);
+            assert_eq!(production.expert_weights, reference.expert_weights);
+            if let Some(bias) = selection_bias {
+                for (&expert, &weight) in production
+                    .expert_indices
+                    .iter()
+                    .zip(&production.expert_weights)
+                {
+                    let biased_sum = production
+                        .expert_indices
+                        .iter()
+                        .map(|selected| production.probabilities[*selected] + bias[*selected])
+                        .sum::<f32>();
+                    let wrong_biased_weight = (production.probabilities[expert] + bias[expert])
+                        / biased_sum
+                        * checkpoint.config.routed_scaling_factor as f32;
+                    assert!((weight - wrong_biased_weight).abs() > 1.0e-4);
+                }
+            }
+        }
+
+        let (_, expert_cache_after) = checkpoint.cache_stats().expect("cache stats after route");
+        assert_eq!(expert_cache_after, expert_cache_before);
+    }
+
+    #[test]
+    #[ignore = "requires the external official checkpoint and native A5sim simpler runtime"]
+    fn official_routed_expert_production_matches_cpu_reference_and_bounds_cache() {
+        let model = std::env::var("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH")
+            .expect("SIM_DEEPSEEK_V4_FLASH_WEIGHTS_PATH");
+        let checkpoint = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            &model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+        )
+        .expect("open official checkpoint");
+        let reference_checkpoint =
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+                &model,
+                sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits::default(),
+            )
+            .expect("open independent official CPU-reference checkpoint");
+        let input = deterministic_hidden_fixture(7, checkpoint.config.hidden_size as usize);
+        let layer = 0usize;
+        let expert = 17usize;
+        let route_weight = 0.25f32;
+        let prefix = format!("layers.{layer}.ffn.experts.{expert}");
+        let gate = reference_checkpoint
+            .reference_matvec_rows(
+                &format!("{prefix}.w1.weight"),
+                &input,
+                0,
+                checkpoint.config.moe_intermediate_size as usize,
+            )
+            .expect("official routed gate CPU reference");
+        let up = reference_checkpoint
+            .reference_matvec_rows(
+                &format!("{prefix}.w3.weight"),
+                &input,
+                0,
+                checkpoint.config.moe_intermediate_size as usize,
+            )
+            .expect("official routed up CPU reference");
+        let mut activated =
+            deepseek_v4_flash_swiglu_reference(&gate, &up, checkpoint.config.swiglu_limit as f32)
+                .expect("official clamped SwiGLU CPU reference");
+        for value in &mut activated {
+            *value = round_to_bf16(*value * route_weight);
+        }
+        let reference = reference_checkpoint
+            .reference_matvec_rows(
+                &format!("{prefix}.w2.weight"),
+                &activated,
+                0,
+                checkpoint.config.hidden_size as usize,
+            )
+            .expect("official routed down CPU reference");
+        let production = execute_deepseek_official_routed_expert_through_simpler(
+            &checkpoint,
+            &test_topology(),
+            &TaskKey {
+                logical_system: LogicalSystemId(1),
+                coord: HierarchyCoord { levels: [0; 8] },
+                scope_depth: 0,
+                task_id: 800,
+            },
+            &std::env::temp_dir().join("simpler-host-fp4-expert-test-artifacts"),
+            180_000,
+            layer,
+            expert,
+            route_weight,
+            &input,
+        )
+        .expect("official routed expert production dispatch");
+        assert_eq!(production.dispatch_count, 64);
+        assert_eq!(production.gate_checksum, checksum_f32(&gate));
+        assert_eq!(production.up_checksum, checksum_f32(&up));
+        assert_eq!(production.activated_checksum, checksum_f32(&activated));
+        assert_eq!(production.output, reference);
+        let expected_read_bytes = ["w1", "w3", "w2"]
+            .into_iter()
+            .map(|projection| {
+                let weight = checkpoint
+                    .tensor(&format!("{prefix}.{projection}.weight"))
+                    .unwrap();
+                let scale = checkpoint
+                    .tensor(weight.scale_tensor.as_deref().unwrap())
+                    .unwrap();
+                weight.payload_bytes() + scale.payload_bytes()
+            })
+            .sum::<u64>();
+        assert_eq!(production.expert_disk_read_bytes, expected_read_bytes);
+        assert_eq!(production.expert_cache_after.misses, 6);
+        assert_eq!(production.expert_cache_after.evictions, 0);
+
+        let bounded = sim_models::deepseek_v4_flash_checkpoint::DeepseekV4Checkpoint::open(
+            model,
+            sim_models::deepseek_v4_flash_checkpoint::DeepseekV4CacheLimits {
+                tensor_bytes: 1024 * 1024,
+                expert_bytes: 5 * 1024 * 1024,
+            },
+        )
+        .expect("open checkpoint with bounded expert cache");
+        for expert in [17usize, 99] {
+            for suffix in ["w1.weight", "w1.scale"] {
+                let name = format!("layers.0.ffn.experts.{expert}.{suffix}");
+                let bytes = bounded.tensor(&name).unwrap().payload_bytes();
+                bounded
+                    .read_expert_slice(&name, 0, bytes)
+                    .expect("read complete selected expert projection");
+            }
+        }
+        let (_, after_eviction) = bounded.cache_stats().expect("bounded cache stats");
+        assert!(after_eviction.evictions >= 1);
+        assert!(after_eviction.resident_bytes <= after_eviction.capacity_bytes);
+        for suffix in ["w1.weight", "w1.scale"] {
+            let name = format!("layers.0.ffn.experts.99.{suffix}");
+            let bytes = bounded.tensor(&name).unwrap().payload_bytes();
+            bounded
+                .read_expert_slice(&name, 0, bytes)
+                .expect("repeat resident expert slice");
+        }
+        let (_, after_hit) = bounded.cache_stats().expect("cache stats after hits");
+        assert_eq!(after_hit.hits, after_eviction.hits + 2);
+        let bad_name = "layers.0.ffn.experts.99.w1.weight";
+        let bad_bytes = bounded.tensor(bad_name).unwrap().payload_bytes();
+        assert!(bounded
+            .read_expert_slice(bad_name, bad_bytes - 1, 2)
+            .is_err());
+    }
+
+    #[test]
+    fn deepseek_gemm_binding_selects_backend_from_dtype_contract() {
+        let manifest = std::env::temp_dir()
+            .join("simpler-host-gemm-test-artifacts")
+            .join("host_gemm_manifest.json");
+        ensure_simpler_host_gemm_manifest(&manifest, 128, 128, 128)
+            .expect("build host GEMM artifact");
+        let endpoint = |segment| MemoryEndpoint {
+            node: 0,
+            segment: SegmentHandle(segment),
+            offset: 0,
+        };
+        let bf16_plan = DeepseekV4FlashGemmPlan {
+            kind: DeepseekV4FlashGemmKind::QueryLowRank,
+            logical_m: 1,
+            artifact_m: 128,
+            k: 128,
+            n: 128,
+            input_dtype: DeepseekV4FlashDtype::Bf16,
+            weight_dtype: DeepseekV4FlashDtype::Bf16,
+            output_dtype: DeepseekV4FlashDtype::F32,
+        };
+        let spec = deepseek_v4_flash_gemm_backend_spec_from_manifest(
+            &manifest,
+            &bf16_plan,
+            endpoint(1),
+            endpoint(2),
+            endpoint(3),
+        )
+        .expect("DeepSeek BF16 GEMM binding");
+        assert_eq!(spec.profile, DispatchBackendProfile::HostGemm);
+
+        let fp32_plan = DeepseekV4FlashGemmPlan {
+            kind: DeepseekV4FlashGemmKind::HyperConnectionControl,
+            input_dtype: DeepseekV4FlashDtype::F32,
+            weight_dtype: DeepseekV4FlashDtype::F32,
+            output_dtype: DeepseekV4FlashDtype::F32,
+            ..bf16_plan.clone()
+        };
+        let fp32_manifest = std::env::temp_dir()
+            .join("simpler-host-fp32-gemm-test-artifacts")
+            .join("host_fp32_gemm_manifest.json");
+        ensure_simpler_host_fp32_gemm_manifest(&fp32_manifest, 128, 128, 128)
+            .expect("build host FP32 GEMM artifact");
+        let spec = deepseek_v4_flash_gemm_backend_spec_from_manifest(
+            &fp32_manifest,
+            &fp32_plan,
+            endpoint(1),
+            endpoint(2),
+            endpoint(3),
+        )
+        .expect("DeepSeek FP32 GEMM binding");
+        assert_eq!(spec.profile, DispatchBackendProfile::HostGemm);
+        assert_eq!(spec.callable_hint.as_deref(), Some("host_fp32_gemm"));
+
+        let int8_plan = DeepseekV4FlashGemmPlan {
+            kind: DeepseekV4FlashGemmKind::QueryExpansion,
+            input_dtype: DeepseekV4FlashDtype::I8,
+            weight_dtype: DeepseekV4FlashDtype::I8,
+            output_dtype: DeepseekV4FlashDtype::I32,
+            ..bf16_plan
+        };
+        let quantized_manifest = std::env::temp_dir()
+            .join("simpler-host-quantized-gemm-test-artifacts")
+            .join("host_quantized_gemm_manifest.json");
+        ensure_simpler_host_quantized_gemm_manifest(&quantized_manifest, 128, 128, 128)
+            .expect("build host quantized GEMM artifact");
+        let spec = deepseek_v4_flash_gemm_backend_spec_from_manifest(
+            &quantized_manifest,
+            &int8_plan,
+            endpoint(1),
+            endpoint(2),
+            endpoint(3),
+        )
+        .expect("DeepSeek quantized GEMM binding");
+        assert_eq!(spec.profile, DispatchBackendProfile::HostQuantizedGemm);
+    }
+
+    #[test]
     fn qwen3_dense_profile_runtime_accepts_14b_range_contract() {
         run_simpler_native_test_isolated(
             "qwen3_dense_profile_runtime_accepts_14b_range_contract",
@@ -27028,6 +36093,729 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_range_runtime_accepts_two_and_three_node_topologies() {
+        run_simpler_native_test_isolated(
+            "deepseek_v4_flash_range_runtime_accepts_two_and_three_node_topologies",
+            || {
+                const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+                const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+                const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+                const DECODE_HIDDEN_BYTES: u32 = 4096 * 2;
+
+                with_env_var(
+                    "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+                    "deepseek-v4-flash-geometry-smoke",
+                    || {
+                        let topology = test_topology();
+                        let cases = [(1, 22, 43, 0, 2, true), (1, 15, 29, 2, 3, false)];
+
+                        for (node, layer_start, layer_end, next_node, nodes, terminal) in cases {
+                            let output = crate::run_qwen3_range_chipbackend(
+                                &topology,
+                                &TaskKey {
+                                    logical_system: LogicalSystemId(1),
+                                    coord: HierarchyCoord {
+                                        levels: [
+                                            RANGE_TASK_MAGIC,
+                                            node,
+                                            layer_start,
+                                            layer_end,
+                                            next_node,
+                                            nodes,
+                                            43,
+                                            DECODE_HIDDEN_BYTES,
+                                        ],
+                                    },
+                                    scope_depth: 8,
+                                    task_id: 43_000 + nodes as u64,
+                                },
+                                &[0; 1024],
+                                None,
+                            )
+                            .expect("DeepSeek Flash range runtime");
+                            let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                                .expect("range-forward table marker");
+                            let entry_base = range_table + 64;
+
+                            assert_eq!(read_u64_le_at(&output, entry_base), u64::from(node));
+                            assert_eq!(
+                                read_u64_le_at(&output, entry_base + 8),
+                                u64::from(layer_start)
+                            );
+                            assert_eq!(
+                                read_u64_le_at(&output, entry_base + 16),
+                                u64::from(layer_end)
+                            );
+                            let logits_table = find_u64_marker(&output, LOGITS_TABLE_MARKER)
+                                .expect("logits table marker");
+                            assert_eq!(
+                                read_u64_le_at(&output, logits_table + 8),
+                                u64::from(terminal)
+                            );
+                        }
+                    },
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_simpler_profile_accepts_real_range_geometry() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-simpler",
+            || {
+                let contract = crate::qwen3_guest_range_compute_contract(&TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 1, 22, 43, 0, 2, 43, 16_384 * 4],
+                    },
+                    scope_depth: 8,
+                    task_id: 43_102,
+                })
+                .expect("valid simpler profile range")
+                .expect("range contract");
+                assert_eq!(contract.layer_start, 22);
+                assert_eq!(contract.layer_end, 43);
+                assert_eq!(contract.pipeline_nodes, 2);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_official_profile_accepts_real_range_geometry() {
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-official",
+            || {
+                let contract = crate::qwen3_guest_range_compute_contract(&TaskKey {
+                    logical_system: LogicalSystemId(1),
+                    coord: HierarchyCoord {
+                        levels: [RANGE_TASK_MAGIC, 2, 29, 43, 0, 3, 43, 16_384 * 4],
+                    },
+                    scope_depth: 8,
+                    task_id: 43_103,
+                })
+                .expect("valid official profile range")
+                .expect("range contract");
+                assert_eq!(contract.layer_start, 29);
+                assert_eq!(contract.layer_end, 43);
+                assert_eq!(contract.pipeline_nodes, 3);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_candidates_select_top_four_deterministically() {
+        let mut logits =
+            vec![0.0; deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize];
+        logits[11] = 4.0;
+        logits[7] = 5.0;
+        logits[19] = 3.0;
+        logits[3] = 5.0;
+        let candidates = crate::deepseek_v4_flash_top_logits(&logits).expect("finite logits");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|(token, _)| *token)
+                .collect::<Vec<_>>(),
+            vec![3usize, 7, 11, 19]
+        );
+
+        logits[21] = f32::NAN;
+        let error = crate::deepseek_v4_flash_top_logits(&logits)
+            .expect_err("non-finite logits must fail closed");
+        assert!(error.contains("deepseek_v4_flash_logit_not_finite:token=21"));
+    }
+
+    #[test]
+    fn deepseek_v4_flash_official_candidates_carry_real_tokenizer_bytes() {
+        let tokenizer_dir = std::env::temp_dir().join(format!(
+            "ub_sim_deepseek_official_tokenizer_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tokenizer_dir);
+        std::fs::create_dir_all(&tokenizer_dir).expect("create tokenizer fixture");
+        std::fs::write(tokenizer_dir.join("tokenizer_config.json"), r#"{}"#)
+            .expect("write tokenizer config");
+        std::fs::write(
+            tokenizer_dir.join("tokenizer.json"),
+            r#"{"model":{"type":"BPE","vocab":{"Ġof":294,"ãĢ":298,"ings":1045,"ES":2048}}}"#,
+        )
+        .expect("write tokenizer json");
+
+        let mut logits =
+            vec![0.0; deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size as usize];
+        logits[294] = 5.0;
+        logits[298] = 4.0;
+        logits[1045] = 3.0;
+        logits[2048] = 2.0;
+        let candidates =
+            crate::deepseek_v4_flash_official_candidates_from_logits(&tokenizer_dir, &logits)
+                .expect("decode official candidates");
+        assert_eq!(candidates.len(), 4);
+        assert_eq!(candidates[0].id, 294);
+        assert_eq!(candidates[0].text_bytes, b" of");
+        assert!(candidates
+            .iter()
+            .all(|candidate| !candidate.text_bytes.is_empty()));
+
+        let descriptor =
+            crate::deepseek_v4_flash_real_logits_descriptor(&logits, &candidates, 0, 11, 22, 43)
+                .expect("build official logits descriptor");
+        assert_eq!(descriptor.sampled_token, 294);
+        assert_eq!(descriptor.candidate_piece_bytes[0], 3);
+        assert_eq!(
+            descriptor.candidate_piece_word0[0] & 0x00ff_ffff,
+            0x0066_6f20
+        );
+        assert_ne!(descriptor.candidate_text_checksums[0], 0);
+
+        std::fs::remove_dir_all(tokenizer_dir).expect("remove tokenizer fixture");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_route_execution_summary_binds_actual_routes() {
+        let routes = vec![
+            vec![vec![1, 3, 5, 7, 9, 11], vec![2, 4, 6, 8, 10, 12]],
+            vec![vec![13, 14, 15, 16, 17, 18]],
+        ];
+        let (layer_count, checksum) = crate::deepseek_v4_flash_route_execution_summary(&routes);
+        let (_, changed_checksum) = crate::deepseek_v4_flash_route_execution_summary(&[vec![
+            vec![1, 3, 5, 7, 9, 12],
+            vec![2, 4, 6, 8, 10, 11],
+        ]]);
+
+        assert_eq!(layer_count, 3);
+        assert_ne!(checksum, 0);
+        assert_ne!(checksum, changed_checksum);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_model_source_supports_explicit_gguf_and_official_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_deepseek_model_source_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("ub_sim");
+        let sibling = root.join("ds4");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&sibling).expect("create sibling model dir");
+        let fallback = sibling.join("ds4flash.gguf");
+        std::fs::write(&fallback, b"GGUFfallback").expect("write fallback GGUF");
+        let explicit = root.join("explicit.gguf");
+        std::fs::write(&explicit, b"GGUFexplicit").expect("write explicit GGUF");
+
+        let resolved = crate::resolve_deepseek_v4_flash_model_source(
+            Some(explicit.clone()),
+            vec![workspace.clone()],
+        )
+        .expect("resolve explicit GGUF");
+        assert_eq!(
+            resolved.path,
+            explicit.canonicalize().expect("canonical GGUF")
+        );
+        assert_eq!(resolved.format, crate::DeepseekV4FlashModelFormat::Gguf);
+
+        let fallback_resolved =
+            crate::resolve_deepseek_v4_flash_model_source(None, vec![workspace])
+                .expect("resolve sibling fallback");
+        assert_eq!(
+            fallback_resolved.path,
+            fallback.canonicalize().expect("canonical fallback")
+        );
+
+        let official = root.join("official");
+        std::fs::create_dir_all(&official).expect("create official model dir");
+        std::fs::write(official.join("model.safetensors.index.json"), b"{}")
+            .expect("write official index");
+        let official_resolved =
+            crate::resolve_deepseek_v4_flash_model_source(Some(official.clone()), Vec::new())
+                .expect("resolve official checkpoint");
+        assert_eq!(
+            official_resolved.format,
+            crate::DeepseekV4FlashModelFormat::OfficialSafetensors
+        );
+
+        let missing = root.join("missing.gguf");
+        let error = crate::resolve_deepseek_v4_flash_model_source(
+            Some(missing.clone()),
+            vec![root.clone()],
+        )
+        .expect_err("explicit missing path must not use fallback");
+        assert!(error.contains(&missing.display().to_string()));
+        std::fs::remove_dir_all(root).expect("remove model source fixture");
+    }
+
+    #[test]
+    #[ignore = "requires the sibling ds4 GGUF and native simpler runtime"]
+    fn deepseek_v4_flash_simpler_w5_two_ranges_handoff_hidden_and_export_kv() {
+        if crate::deepseek_v4_flash_gguf_path().is_err() {
+            return;
+        }
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+        const HIDDEN_BYTES: usize = 16_384 * 4;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-simpler",
+            || {
+                let topology = test_topology();
+                let mut guest_input =
+                    crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &[128_822]);
+                guest_input.resize(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                    0,
+                );
+                let first_output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 0, 0, 6, 1, 8, 43, HIDDEN_BYTES as u32],
+                        },
+                        scope_depth: 8,
+                        task_id: 43_200,
+                    },
+                    &guest_input,
+                    None,
+                )
+                .expect("simpler W5 first range");
+                let first_range_table = find_u64_marker(&first_output, RANGE_FORWARD_MARKER)
+                    .expect("range-forward table marker");
+                let first_entry = first_range_table + 64;
+                assert_eq!(
+                    read_u64_le_at(&first_output, first_entry + 112),
+                    HIDDEN_BYTES as u64
+                );
+                assert_eq!(
+                    read_u64_le_at(&first_output, first_entry + 120),
+                    HIDDEN_BYTES as u64
+                );
+                assert!(read_u64_le_at(&first_output, first_entry + 128) > 0);
+
+                let first_payload = first_entry + 18 * std::mem::size_of::<u64>();
+                let hidden = &first_output[first_payload..first_payload + HIDDEN_BYTES];
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    1,
+                    0,
+                    1,
+                    0x43_200,
+                    0,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(hidden),
+                );
+                let mut second_input =
+                    crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &[128_822]);
+                second_input.resize(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                    0,
+                );
+                second_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES]
+                    .copy_from_slice(hidden);
+                write_obmm_object_ref_wire(
+                    &mut second_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                        ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                            + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                let second_output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 1, 6, 12, 2, 8, 43, HIDDEN_BYTES as u32],
+                        },
+                        scope_depth: 8,
+                        task_id: 43_201,
+                    },
+                    &second_input,
+                    None,
+                )
+                .expect("simpler W5 second range");
+                let second_range_table = find_u64_marker(&second_output, RANGE_FORWARD_MARKER)
+                    .expect("second range-forward table marker");
+                let second_entry = second_range_table + 64;
+                assert_eq!(read_u64_le_at(&second_output, second_entry), 1);
+                assert_eq!(read_u64_le_at(&second_output, second_entry + 8), 6);
+                assert_eq!(read_u64_le_at(&second_output, second_entry + 16), 12);
+                assert_eq!(
+                    read_u64_le_at(&second_output, second_entry + 64),
+                    qwen3_dense_reference_range_object_payload_checksum(hidden)
+                );
+                assert!(read_u64_le_at(&second_output, second_entry + 128) > 0);
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the sibling ds4 GGUF and native simpler runtime"]
+    fn deepseek_v4_flash_simpler_w5_terminal_range_exports_logits_and_kv() {
+        if crate::deepseek_v4_flash_gguf_path().is_err() {
+            return;
+        }
+        const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+        const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+        const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+        const HIDDEN_BYTES: usize = 16_384 * 4;
+        with_env_var(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+            "deepseek-v4-flash-simpler",
+            || {
+                let topology = test_topology();
+                let hidden_values = (0..16_384)
+                    .map(|index| (index as f32 + 1.0) / 16_384.0)
+                    .collect::<Vec<_>>();
+                let hidden = crate::deepseek_v4_flash_f32_payload(&hidden_values);
+                let hidden_ref = LingquObmmObjectRefWire::committed(
+                    QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                    7,
+                    6,
+                    1,
+                    0x43_207,
+                    0,
+                    HIDDEN_BYTES as u64,
+                    qwen3_dense_reference_range_object_payload_checksum(&hidden),
+                );
+                let mut guest_input =
+                    crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &[128_822]);
+                guest_input.resize(
+                    QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                    0,
+                );
+                guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES]
+                    .copy_from_slice(&hidden);
+                write_obmm_object_ref_wire(
+                    &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                        ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                            + LingquObmmObjectRefWire::BYTE_LEN],
+                    hidden_ref,
+                );
+                let output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [RANGE_TASK_MAGIC, 7, 38, 43, 0, 8, 43, HIDDEN_BYTES as u32],
+                        },
+                        scope_depth: 8,
+                        task_id: 43_207,
+                    },
+                    &guest_input,
+                    None,
+                )
+                .expect("simpler W5 terminal range");
+                let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                    .expect("range-forward table marker");
+                let range_entry = range_table + 64;
+                assert!(read_u64_le_at(&output, range_entry + 128) > 0);
+                let logits_table =
+                    find_u64_marker(&output, LOGITS_TABLE_MARKER).expect("logits table marker");
+                assert_eq!(read_u64_le_at(&output, logits_table + 8), 1);
+                let logits_entry = logits_table + 64;
+                assert!(
+                    read_u64_le_at(&output, logits_entry + 32)
+                        < deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size
+                );
+                assert_eq!(read_u64_le_at(&output, logits_entry + 160), 4);
+                assert!(read_u64_le_at(&output, logits_entry + 192) > 0);
+            },
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_flash_decode_slice_inputs_restore_exact_previous_state() {
+        let token_payload = {
+            let mut payload = vec![0u8; 64];
+            write_u64_le_at(&mut payload, 0, 0);
+            write_u64_le_at(&mut payload, 8, 108_149);
+            payload
+        };
+        let kv_payload = vec![0x5au8; 6_108_720];
+        let token_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+            0,
+            7,
+            1,
+            0x1001,
+            0,
+            token_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&token_payload),
+        );
+        let kv_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            0,
+            0,
+            1,
+            0x1002,
+            0,
+            kv_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+        );
+        let operands = Qwen3RangeDispatchOperands {
+            input_token: Some(
+                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                        token_ref,
+                        token_payload,
+                        "deepseek_decode_token_test",
+                    )
+                    .expect("valid token payload"),
+                ))
+                .expect("token operand"),
+            ),
+            previous_kv: Some(
+                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                        kv_ref,
+                        kv_payload.clone(),
+                        "deepseek_decode_kv_test",
+                    )
+                    .expect("valid KV payload"),
+                ))
+                .expect("KV operand"),
+            ),
+            ..Qwen3RangeDispatchOperands::default()
+        };
+        let mut guest_input = vec![
+            0u8;
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES
+        ];
+        guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+            ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64]
+            .copy_from_slice(operands.input_token.as_ref().expect("token").bytes());
+        write_obmm_object_ref_wire(
+            &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            token_ref,
+        );
+        write_obmm_object_ref_wire(
+            &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                + LingquObmmObjectRefWire::BYTE_LEN
+                ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                    + LingquObmmObjectRefWire::BYTE_LEN * 2],
+            kv_ref,
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER,
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8,
+            kv_payload.len() as u64,
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 16,
+            qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
+        );
+        write_u64_le_at(
+            &mut guest_input,
+            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 24,
+            0,
+        );
+        let (tokens, previous_tokens, previous_kv, position) =
+            deepseek_v4_flash_decode_slice_inputs(
+                deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size,
+                0,
+                1,
+                &[0, 128_803, 128_822, 108_149],
+                &guest_input,
+                Some(&operands),
+            )
+            .expect("incremental decode inputs");
+        assert_eq!(tokens, vec![108_149]);
+        assert_eq!(previous_tokens, vec![0, 128_803, 128_822]);
+        assert_eq!(previous_kv, Some(kv_payload));
+        assert_eq!(position, 3);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_decode_slice_inputs_fail_closed_without_kv() {
+        let mut token_payload = vec![0u8; 64];
+        write_u64_le_at(&mut token_payload, 0, 0);
+        write_u64_le_at(&mut token_payload, 8, 108_149);
+        let token_ref = LingquObmmObjectRefWire::committed(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+            0,
+            7,
+            1,
+            0x2001,
+            0,
+            token_payload.len() as u64,
+            qwen3_dense_reference_range_object_payload_checksum(&token_payload),
+        );
+        let operands = Qwen3RangeDispatchOperands {
+            input_token: Some(
+                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                        token_ref,
+                        token_payload,
+                        "deepseek_decode_missing_kv_test",
+                    )
+                    .expect("valid token payload"),
+                ))
+                .expect("token operand"),
+            ),
+            ..Qwen3RangeDispatchOperands::default()
+        };
+        let mut guest_input = vec![0u8; QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64];
+        guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+            ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64]
+            .copy_from_slice(operands.input_token.as_ref().expect("token").bytes());
+        write_obmm_object_ref_wire(
+            &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
+            token_ref,
+        );
+        let error = deepseek_v4_flash_decode_slice_inputs(
+            deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE.vocab_size,
+            0,
+            1,
+            &[0, 128_803, 128_822, 108_149],
+            &guest_input,
+            Some(&operands),
+        )
+        .expect_err("decode without object-backed state must fail");
+        assert!(error.contains("previous_kv_operand_missing"));
+    }
+
+    #[test]
+    #[ignore = "requires the sibling ds4 repo, 81GB GGUF, and host Metal access"]
+    fn deepseek_v4_flash_real_eight_range_pipeline_matches_oracle_when_available() {
+        if crate::deepseek_v4_flash_runtime_paths().is_err() {
+            return;
+        }
+        {
+            const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
+            const RANGE_FORWARD_MARKER: u64 = 0x7133773472667430;
+            const LOGITS_TABLE_MARKER: u64 = 0x713377346c6f6730;
+            const PROMPT_TOKENS: [u64; 21] = [
+                0, 128803, 52, 278, 4908, 75, 295, 89034, 399, 3919, 123003, 28, 23442, 9861,
+                63030, 47121, 317, 805, 33, 128804, 128822,
+            ];
+            const HIDDEN_BYTES: usize = PROMPT_TOKENS.len() * 16_384 * 4;
+
+            std::env::set_var("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "deepseek-v4-flash");
+            std::env::set_var(
+                "SIM_LLM_INFER_PROMPT_TOKEN_IDS",
+                PROMPT_TOKENS
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            let topology = test_topology();
+            let mut guest_input =
+                crate::qwen3_dense_reference_tokenized_prompt_guest_input("", &PROMPT_TOKENS);
+            guest_input.resize(
+                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
+                0,
+            );
+            let mut terminal_output = Vec::new();
+            for node in 0..8u32 {
+                if node > 0 {
+                    let hidden_payload = &guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                        ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES];
+                    let hidden_ref = LingquObmmObjectRefWire::committed(
+                        QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+                        node,
+                        node - 1,
+                        1,
+                        0x4400 + u64::from(node),
+                        0,
+                        HIDDEN_BYTES as u64,
+                        qwen3_dense_reference_range_object_payload_checksum(hidden_payload),
+                    );
+                    write_obmm_object_ref_wire(
+                        &mut guest_input[QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                            ..QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET
+                                + LingquObmmObjectRefWire::BYTE_LEN],
+                        hidden_ref,
+                    );
+                }
+                let (layer_start, layer_end) =
+                    crate::deepseek_v4_flash::deepseek_v4_flash_layer_range_for_node_in_topology(
+                        u64::from(node),
+                        8,
+                    )
+                    .expect("DeepSeek layer range");
+                let output = crate::run_qwen3_range_chipbackend(
+                    &topology,
+                    &TaskKey {
+                        logical_system: LogicalSystemId(1),
+                        coord: HierarchyCoord {
+                            levels: [
+                                RANGE_TASK_MAGIC,
+                                node,
+                                layer_start as u32,
+                                layer_end as u32,
+                                (node + 1) % 8,
+                                8,
+                                43,
+                                HIDDEN_BYTES as u32,
+                            ],
+                        },
+                        scope_depth: 8,
+                        task_id: 44_000 + u64::from(node),
+                    },
+                    &guest_input,
+                    None,
+                )
+                .expect("real DeepSeek Flash range runtime");
+                let range_table = find_u64_marker(&output, RANGE_FORWARD_MARKER)
+                    .expect("range-forward table marker");
+                let entry_base = range_table + 64;
+                let payload_base = entry_base + 18 * std::mem::size_of::<u64>();
+                let kv_bytes = read_u64_le_at(&output, entry_base + 128);
+                assert!(kv_bytes > 0, "node {node} did not export ds4 KV");
+                guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
+                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES]
+                    .copy_from_slice(&output[payload_base..payload_base + HIDDEN_BYTES]);
+                if node == 7 {
+                    terminal_output = output;
+                }
+            }
+            let logits_table = find_u64_marker(&terminal_output, LOGITS_TABLE_MARKER)
+                .expect("real logits table marker");
+            let logits_base = logits_table + 64;
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 32), 108149);
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 40), 666);
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 136), 43);
+            assert_eq!(read_u64_le_at(&terminal_output, logits_base + 192), 3);
+            assert_eq!(
+                read_u64_le_at(&terminal_output, logits_base + 200),
+                0x0061_6441
+            );
+            let logits_table_bytes = read_u64_le_at(&terminal_output, logits_table + 24);
+            let token_text_table = logits_base + logits_table_bytes as usize;
+            let token_text_entry = token_text_table + 64;
+            assert_eq!(read_u64_le_at(&terminal_output, token_text_entry + 24), 3);
+            assert_eq!(
+                read_u64_le_at(&terminal_output, token_text_entry + 32),
+                0x0061_6441
+            );
+            let token_text_table_bytes = read_u64_le_at(&terminal_output, token_text_table + 24);
+            let text_output_table = token_text_entry + token_text_table_bytes as usize;
+            let text_output_bytes_table = text_output_table + 64;
+            let text_output_bytes = text_output_bytes_table + 64;
+            assert_eq!(
+                &terminal_output[text_output_bytes..text_output_bytes + 3],
+                b"Ada"
+            );
+        }
     }
 
     #[test]
@@ -33079,7 +42867,9 @@ mod tests {
                         && artifact.durable_payload_ref.is_none()
                 }));
                 assert!(artifacts.iter().any(|artifact| {
-                    artifact.artifact_id == "artifact/kv/runtime-memory-commit-test/step0/node8"
+                    artifact.artifact_id
+                        == "artifact/kv/runtime-memory-commit-test/step0/layers-24-28"
+                        && artifact.producer_boundary.node_index == 8
                         && artifact.hot_object_ref.is_some()
                         && artifact.durable_payload_ref.is_none()
                 }));
@@ -33896,6 +43686,74 @@ outputs:
             sim_core::CompletionSource::ChipBackend,
             "{:?}",
             events[0]
+        );
+    }
+
+    #[test]
+    fn local_guest_uapi_dispatch_accepts_deepseek_v4_flash_profile() {
+        run_simpler_native_test_isolated(
+            "local_guest_uapi_dispatch_accepts_deepseek_v4_flash_profile",
+            || {
+                with_env_var(
+                    "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
+                    "deepseek-v4-flash",
+                    || {
+                        let mut surface = test_surface();
+                        let cq = surface.register_cq().expect("register cq");
+                        let cmdq = match surface
+                            .execute(UapiCommand::CreateCmdQueue {
+                                cq,
+                                owner: 0,
+                                depth: 4,
+                            })
+                            .expect("create cmdq")
+                        {
+                            UapiResponse::CmdQueueCreated(cmdq) => cmdq,
+                            other => panic!("unexpected response: {other:?}"),
+                        };
+                        let segment = match surface
+                            .execute(UapiCommand::CreateSegment {
+                                bytes: DEFAULT_MAX_SEGMENT_BYTES,
+                            })
+                            .expect("create segment")
+                        {
+                            UapiResponse::SegmentCreated(segment) => segment,
+                            other => panic!("unexpected response: {other:?}"),
+                        };
+
+                        let _ = surface
+                            .execute(UapiCommand::EnqueueCmd {
+                                cmdq,
+                                owner: 0,
+                                desc: UapiDescriptor::Io(IoSubmitReq {
+                                    op_id: 31,
+                                    task: None,
+                                    entity: 0,
+                                    opcode: IoOpcode::Dispatch,
+                                    segment: Some(segment),
+                                    block: None,
+                                }),
+                            })
+                            .expect("enqueue dispatch");
+                        let _ = surface
+                            .execute(UapiCommand::RingDoorbell {
+                                cmdq,
+                                owner: 0,
+                                max_batch: Some(1),
+                            })
+                            .expect("doorbell");
+
+                        let events = surface.drain_cq(cq);
+                        assert_eq!(events.len(), 1);
+                        assert_eq!(events[0].source, sim_core::CompletionSource::ChipBackend);
+                        assert_eq!(events[0].status, CompletionStatus::Success);
+                        assert_eq!(
+                            &surface.segment_payloads.get(&segment).expect("segment")[..8],
+                            &0u64.to_le_bytes()
+                        );
+                    },
+                );
+            },
         );
     }
 

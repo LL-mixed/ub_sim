@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+SIMPLER_CAPI_ABI_VERSION = 2
+
 
 @dataclass(frozen=True)
 class KernelSpec:
@@ -79,6 +81,118 @@ PROFILE_SPECS = {
             {"kind": "scalar_elems", "name": "SIZE"},
         ),
     ),
+    "host_gemm": ProfileSpec(
+        profile="HostGemm",
+        example="generated_host_gemm",
+        manifest_name="host_gemm_manifest.json",
+        callable_hint="host_gemm",
+        orch_source="host_gemm_orch.cpp",
+        orch_function="build_gemm_graph",
+        kernels=(KernelSpec(0, "host_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "a"},
+            {"kind": "input", "name": "b"},
+            {"kind": "output", "name": "c"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
+    "host_fp32_gemm": ProfileSpec(
+        profile="HostGemm",
+        example="generated_host_fp32_gemm",
+        manifest_name="host_fp32_gemm_manifest.json",
+        callable_hint="host_fp32_gemm",
+        orch_source="host_fp32_gemm_orch.cpp",
+        orch_function="build_fp32_gemm_graph",
+        kernels=(KernelSpec(0, "host_fp32_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "a"},
+            {"kind": "input", "name": "b"},
+            {"kind": "output", "name": "c"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
+    "host_quantized_gemm": ProfileSpec(
+        profile="HostQuantizedGemm",
+        example="generated_host_quantized_gemm",
+        manifest_name="host_quantized_gemm_manifest.json",
+        callable_hint="host_quantized_gemm",
+        orch_source="host_quantized_gemm_orch.cpp",
+        orch_function="build_quantized_gemm_graph",
+        kernels=(KernelSpec(0, "host_quantized_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "a"},
+            {"kind": "input", "name": "b"},
+            {"kind": "output", "name": "c"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
+    "host_fp8_gemm": ProfileSpec(
+        profile="HostFp8Gemm",
+        example="generated_host_fp8_gemm",
+        manifest_name="host_fp8_gemm_manifest.json",
+        callable_hint="host_fp8_gemm",
+        orch_source="host_fp8_gemm_orch.cpp",
+        orch_function="build_fp8_gemm_graph",
+        kernels=(KernelSpec(0, "host_fp8_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "activation_fp8"},
+            {"kind": "input", "name": "weight_fp8"},
+            {"kind": "input", "name": "activation_scale_ue8m0"},
+            {"kind": "input", "name": "weight_scale_ue8m0"},
+            {"kind": "output", "name": "output_fp32"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
+    "host_fp4_gemm": ProfileSpec(
+        profile="HostFp4Gemm",
+        example="generated_host_fp4_gemm",
+        manifest_name="host_fp4_gemm_manifest.json",
+        callable_hint="host_fp4_gemm",
+        orch_source="host_fp4_gemm_orch.cpp",
+        orch_function="build_fp4_gemm_graph",
+        kernels=(KernelSpec(0, "host_fp4_gemm_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "activation_fp8"},
+            {"kind": "input", "name": "weight_fp4_lowered_fp8"},
+            {"kind": "input", "name": "activation_scale_ue8m0"},
+            {"kind": "input", "name": "weight_scale_ue8m0_per_32k"},
+            {"kind": "output", "name": "output_fp32"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
+    "host_q8_block_dot": ProfileSpec(
+        profile="HostQuantizedGemm",
+        example="generated_host_q8_block_dot",
+        manifest_name="host_q8_block_dot_manifest.json",
+        callable_hint="host_q8_block_dot",
+        orch_source="host_q8_block_dot_orch.cpp",
+        orch_function="build_q8_block_dot_graph",
+        kernels=(KernelSpec(0, "host_q8_block_dot_kernel.cpp", "aic"),),
+        args_template=(
+            {"kind": "input", "name": "activation_q8"},
+            {"kind": "input", "name": "weight_q8"},
+            {"kind": "output", "name": "dot_i32"},
+            {"kind": "scalar_u64", "name": "m"},
+            {"kind": "scalar_u64", "name": "k"},
+            {"kind": "scalar_u64", "name": "n"},
+        ),
+        generated=True,
+    ),
     "host_engram_context": ProfileSpec(
         profile="HostEngramContext",
         example="generated_host_engram_context",
@@ -100,6 +214,33 @@ PROFILE_SPECS = {
             {"kind": "scalar_u64", "name": "chunk_offset"},
             {"kind": "scalar_u64", "name": "chunk_elems"},
             {"kind": "scalar_f32_bits", "name": "bias"},
+        ),
+        generated=True,
+    ),
+    "host_deepseek_vector": ProfileSpec(
+        profile="HostVector",
+        example="generated_host_deepseek_vector",
+        manifest_name="host_deepseek_vector_manifest.json",
+        callable_hint="host_deepseek_vector",
+        orch_source="host_deepseek_vector_orch.cpp",
+        orch_function="build_deepseek_vector_graph",
+        kernels=(KernelSpec(0, "host_deepseek_vector_kernel.cpp", "aiv"),),
+        args_template=(
+            {"kind": "input", "name": "input0"},
+            {"kind": "input", "name": "input1"},
+            {"kind": "input", "name": "input2"},
+            {"kind": "output", "name": "output"},
+            {"kind": "scalar_u64", "name": "operation"},
+            {"kind": "scalar_u64", "name": "input0_elements"},
+            {"kind": "scalar_u64", "name": "input1_elements"},
+            {"kind": "scalar_u64", "name": "input2_elements"},
+            {"kind": "scalar_u64", "name": "output_elements"},
+            {"kind": "scalar_u64", "name": "parameter0"},
+            {"kind": "scalar_u64", "name": "parameter1"},
+            {"kind": "scalar_u64", "name": "parameter2"},
+            {"kind": "scalar_u64", "name": "parameter3"},
+            {"kind": "scalar_f32_bits", "name": "float_parameter0"},
+            {"kind": "scalar_f32_bits", "name": "float_parameter1"},
         ),
         generated=True,
     ),
@@ -568,6 +709,751 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_host_gemm_orchestration(
+    build_dir: Path,
+    m: int,
+    k: int,
+    n: int,
+    *,
+    quantized: bool = False,
+    fp32: bool = False,
+) -> Path:
+    if quantized and fp32:
+        raise ValueError("GEMM cannot be both quantized and FP32")
+    source_name = (
+        "host_quantized_gemm_orch.cpp"
+        if quantized
+        else "host_fp32_gemm_orch.cpp" if fp32 else "host_gemm_orch.cpp"
+    )
+    function_name = (
+        "build_quantized_gemm_graph"
+        if quantized
+        else "build_fp32_gemm_graph" if fp32 else "build_gemm_graph"
+    )
+    input_type = "int8_t" if quantized else "float" if fp32 else "uint16_t"
+    output_type = "int32_t" if quantized else "float"
+    source = build_dir / source_name
+    source.write_text(
+        f"""\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+extern "C" {{
+
+int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() < 3 || orch_args.scalar_count() < 3) {{
+        std::cerr << "{function_name}: expected 3 tensors and 3 scalars\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kM = {m};
+    constexpr uint64_t kK = {k};
+    constexpr uint64_t kN = {n};
+    constexpr uint64_t kTile = 128;
+    const uint64_t m = orch_args.scalar(0);
+    const uint64_t k = orch_args.scalar(1);
+    const uint64_t n = orch_args.scalar(2);
+    if (m != kM || k != kK || n != kN) {{
+        std::cerr << "{function_name}: artifact geometry mismatch got="
+                  << m << "x" << k << "x" << n << " expected="
+                  << kM << "x" << kK << "x" << kN << '\\n';
+        return -1;
+    }}
+    if ((m % kTile) != 0 || (k % kTile) != 0 || (n % kTile) != 0) {{
+        std::cerr << "{function_name}: dimensions must be 128-aligned\\n";
+        return -1;
+    }}
+
+    const uint64_t elements_a = m * k;
+    const uint64_t elements_b = k * n;
+    const uint64_t elements_c = m * n;
+    const size_t size_a = static_cast<size_t>(elements_a * sizeof({input_type}));
+    const size_t size_b = static_cast<size_t>(elements_b * sizeof({input_type}));
+    const size_t size_c = static_cast<size_t>(elements_c * sizeof({output_type}));
+    if (orch_args.tensor(0).shapes[0] < elements_a ||
+        orch_args.tensor(1).shapes[0] < elements_b ||
+        orch_args.tensor(2).shapes[0] < elements_c) {{
+        std::cerr << "{function_name}: tensor payload is shorter than geometry\\n";
+        return -1;
+    }}
+
+    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
+    auto* host_b = orch_args.tensor(1).data_as<uint8_t>();
+    auto* host_c = orch_args.tensor(2).data_as<uint8_t>();
+    void* dev_a = device_malloc(runtime, size_a);
+    void* dev_b = device_malloc(runtime, size_b);
+    void* dev_c = device_malloc(runtime, size_c);
+    if (!dev_a || !dev_b || !dev_c) {{
+        std::cerr << "{function_name}: device allocation failed\\n";
+        return -1;
+    }}
+    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
+        copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
+        std::cerr << "{function_name}: input copy failed\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, host_c, dev_c, size_c);
+
+    for (uint64_t tile_m = 0; tile_m < m / kTile; ++tile_m) {{
+        for (uint64_t tile_n = 0; tile_n < n / kTile; ++tile_n) {{
+            uint64_t task_args[5];
+            task_args[0] = reinterpret_cast<uint64_t>(dev_a);
+            task_args[1] = reinterpret_cast<uint64_t>(dev_b);
+            task_args[2] = reinterpret_cast<uint64_t>(dev_c);
+            task_args[3] = tile_m;
+            task_args[4] = tile_n;
+            add_task(runtime, task_args, 5, 0, CoreType::AIC);
+        }}
+    }}
+    return 0;
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_quantized_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_orchestration(build_dir, m, k, n, quantized=True)
+
+
+def write_host_fp32_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_orchestration(build_dir, m, k, n, fp32=True)
+
+
+def write_host_fp8_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    source = build_dir / "host_fp8_gemm_orch.cpp"
+    source.write_text(
+        f"""\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+extern "C" {{
+
+int build_fp8_gemm_graph(
+        OrchestrationRuntime* runtime,
+        const ChipStorageTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() < 5 || orch_args.scalar_count() < 3) {{
+        std::cerr << "build_fp8_gemm_graph: expected 5 tensors and 3 scalars\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kM = {m};
+    constexpr uint64_t kK = {k};
+    constexpr uint64_t kN = {n};
+    constexpr uint64_t kScaleGroup = 32;
+    if (orch_args.scalar(0) != kM || orch_args.scalar(1) != kK ||
+        orch_args.scalar(2) != kN || kM != 128 || kK != 128 || kN != 128) {{
+        std::cerr << "build_fp8_gemm_graph: artifact geometry must be 128x128x128\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kActivationElements = kM * kK;
+    constexpr uint64_t kWeightElements = kK * kN;
+    constexpr uint64_t kActivationScaleElements = kM * kK / kScaleGroup;
+    constexpr uint64_t kWeightScaleElements = kK * kN / kScaleGroup;
+    constexpr uint64_t kOutputElements = kM * kN;
+    if (orch_args.tensor(0).shapes[0] < kActivationElements ||
+        orch_args.tensor(1).shapes[0] < kWeightElements ||
+        orch_args.tensor(2).shapes[0] < kActivationScaleElements ||
+        orch_args.tensor(3).shapes[0] < kWeightScaleElements ||
+        orch_args.tensor(4).shapes[0] < kOutputElements) {{
+        std::cerr << "build_fp8_gemm_graph: tensor payload is shorter than geometry\\n";
+        return -1;
+    }}
+
+    void* dev_activation = device_malloc(runtime, kActivationElements);
+    void* dev_weight = device_malloc(runtime, kWeightElements);
+    void* dev_activation_scale = device_malloc(runtime, kActivationScaleElements);
+    void* dev_weight_scale = device_malloc(runtime, kWeightScaleElements);
+    void* dev_output = device_malloc(runtime, kOutputElements * sizeof(float));
+    if (!dev_activation || !dev_weight || !dev_activation_scale ||
+        !dev_weight_scale || !dev_output) {{
+        std::cerr << "build_fp8_gemm_graph: device allocation failed\\n";
+        return -1;
+    }}
+    if (copy_to_device(runtime, dev_activation, orch_args.tensor(0).data_as<uint8_t>(),
+                       kActivationElements) != 0 ||
+        copy_to_device(runtime, dev_weight, orch_args.tensor(1).data_as<uint8_t>(),
+                       kWeightElements) != 0 ||
+        copy_to_device(runtime, dev_activation_scale,
+                       orch_args.tensor(2).data_as<uint8_t>(),
+                       kActivationScaleElements) != 0 ||
+        copy_to_device(runtime, dev_weight_scale,
+                       orch_args.tensor(3).data_as<uint8_t>(),
+                       kWeightScaleElements) != 0) {{
+        std::cerr << "build_fp8_gemm_graph: input copy failed\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, orch_args.tensor(4).data_as<uint8_t>(),
+                       dev_output, kOutputElements * sizeof(float));
+
+    uint64_t task_args[5];
+    task_args[0] = reinterpret_cast<uint64_t>(dev_activation);
+    task_args[1] = reinterpret_cast<uint64_t>(dev_weight);
+    task_args[2] = reinterpret_cast<uint64_t>(dev_activation_scale);
+    task_args[3] = reinterpret_cast<uint64_t>(dev_weight_scale);
+    task_args[4] = reinterpret_cast<uint64_t>(dev_output);
+    add_task(runtime, task_args, 5, 0, CoreType::AIC);
+    return 0;
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_fp4_gemm_orchestration(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    source = write_host_fp8_gemm_orchestration(build_dir, m, k, n)
+    text = source.read_text()
+    text = text.replace("host_fp8_gemm_orch.cpp", "host_fp4_gemm_orch.cpp")
+    text = text.replace("build_fp8_gemm_graph", "build_fp4_gemm_graph")
+    text = text.replace(
+        " || kM != 128 || kK != 128 || kN != 128", ""
+    ).replace(
+        "artifact geometry must be 128x128x128",
+        "artifact geometry mismatch",
+    )
+    target = build_dir / "host_fp4_gemm_orch.cpp"
+    target.write_text(text)
+    source.unlink()
+    return target
+
+
+def write_host_gemm_kernel(
+    build_dir: Path,
+    m: int,
+    k: int,
+    n: int,
+    *,
+    quantized: bool = False,
+    fp32: bool = False,
+) -> Path:
+    if quantized and fp32:
+        raise ValueError("GEMM cannot be both quantized and FP32")
+    source_name = (
+        "host_quantized_gemm_kernel.cpp"
+        if quantized
+        else "host_fp32_gemm_kernel.cpp" if fp32 else "host_gemm_kernel.cpp"
+    )
+    input_type = "int8_t" if quantized else "float" if fp32 else "bfloat16_t"
+    output_type = "int32_t" if quantized else "float"
+    source = build_dir / source_name
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ {input_type}* a = reinterpret_cast<__gm__ {input_type}*>(args[0]);
+    __gm__ {input_type}* b = reinterpret_cast<__gm__ {input_type}*>(args[1]);
+    __gm__ {output_type}* c = reinterpret_cast<__gm__ {output_type}*>(args[2]);
+    const uint64_t tile_m = static_cast<uint64_t>(args[3]);
+    const uint64_t tile_n = static_cast<uint64_t>(args[4]);
+
+    constexpr int M = {m};
+    constexpr int K = {k};
+    constexpr int N = {n};
+    constexpr int TileM = 128;
+    constexpr int TileK = 128;
+    constexpr int TileN = 128;
+
+    using AValid = TileShape2D<{input_type}, TileM, TileK>;
+    using AWhole = BaseShape2D<{input_type}, M, K>;
+    using BValid = TileShape2D<{input_type}, TileK, TileN>;
+    using BWhole = BaseShape2D<{input_type}, K, N>;
+    using CValid = TileShape2D<{output_type}, TileM, TileN>;
+    using CWhole = BaseShape2D<{output_type}, M, N>;
+    using GlobalA = GlobalTensor<{input_type}, AValid, AWhole>;
+    using GlobalB = GlobalTensor<{input_type}, BValid, BWhole>;
+    using GlobalC = GlobalTensor<{output_type}, CValid, CWhole>;
+    using MatA = Tile<TileType::Mat, {input_type}, TileM, TileK,
+                      BLayout::ColMajor, TileM, TileK, SLayout::RowMajor, 512>;
+    using MatB = Tile<TileType::Mat, {input_type}, TileK, TileN,
+                      BLayout::ColMajor, TileK, TileN, SLayout::RowMajor, 512>;
+    using Left = TileLeft<{input_type}, TileM, TileK, TileM, TileK>;
+    using Right = TileRight<{input_type}, TileK, TileN, TileK, TileN>;
+    using Acc = TileAcc<{output_type}, TileM, TileN, TileM, TileN>;
+
+    MatA a_mat;
+    MatB b_mat;
+    Left a_tile;
+    Right b_tile;
+    Acc c_tile;
+    TASSIGN(a_mat, 0x0);
+    TASSIGN(b_mat, 0x20000);
+    TASSIGN(a_tile, 0x0);
+    TASSIGN(b_tile, 0x0);
+    TASSIGN(c_tile, 0x0);
+
+    for (int k0 = 0; k0 < K; k0 += TileK) {{
+        GlobalA a_global(a + tile_m * TileM * K + k0);
+        GlobalB b_global(b + k0 * N + tile_n * TileN);
+        TLOAD(a_mat, a_global);
+        TLOAD(b_mat, b_global);
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        TMOV(a_tile, a_mat);
+        TMOV(b_tile, b_mat);
+        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        if (k0 == 0) {{
+            TMATMUL(c_tile, a_tile, b_tile);
+        }} else {{
+            TMATMUL_ACC(c_tile, c_tile, a_tile, b_tile);
+        }}
+        set_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+        wait_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+    }}
+
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    GlobalC c_global(c + tile_m * TileM * N + tile_n * TileN);
+    TSTORE(c_global, c_tile);
+}}
+"""
+    )
+    return source
+
+
+def write_host_quantized_gemm_kernel(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_kernel(build_dir, m, k, n, quantized=True)
+
+
+def write_host_fp32_gemm_kernel(
+    build_dir: Path, m: int, k: int, n: int
+) -> Path:
+    return write_host_gemm_kernel(build_dir, m, k, n, fp32=True)
+
+
+def write_host_fp8_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
+    source = build_dir / "host_fp8_gemm_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ float8_e4m3_t* activation =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[0]);
+    __gm__ float8_e4m3_t* weight =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[1]);
+    __gm__ float8_e8m0_t* activation_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[2]);
+    __gm__ float8_e8m0_t* weight_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[3]);
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[4]);
+
+    constexpr int M = {m};
+    constexpr int K = {k};
+    constexpr int N = {n};
+    constexpr int ScaleK = K / 32;
+
+    using GlobalA = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, M, K, Layout::ND>,
+        BaseShape2D<float8_e4m3_t, M, K, Layout::ND>, Layout::ND>;
+    using GlobalB = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, K, N, Layout::DN>,
+        BaseShape2D<float8_e4m3_t, K, N, Layout::DN>, Layout::DN>;
+    using GlobalScaleA = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, M, ScaleK, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, M, ScaleK, Layout::ND>, Layout::ND>;
+    using GlobalScaleB = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, ScaleK, N, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, ScaleK, N, Layout::ND>, Layout::ND>;
+    using GlobalC = GlobalTensor<
+        float, TileShape2D<float, M, N, Layout::ND>,
+        BaseShape2D<float, M, N, Layout::ND>, Layout::ND>;
+
+    using MatA = Tile<TileType::Mat, float8_e4m3_t, M, K,
+                      BLayout::ColMajor, M, K, SLayout::RowMajor, 512>;
+    using MatB = Tile<TileType::Mat, float8_e4m3_t, K, N,
+                      BLayout::ColMajor, K, N, SLayout::RowMajor, 512>;
+    using MatScaleA = Tile<TileType::Mat, float8_e8m0_t, M, ScaleK,
+                           BLayout::RowMajor, M, ScaleK, SLayout::RowMajor, 32>;
+    using MatScaleB = Tile<TileType::Mat, float8_e8m0_t, K, N,
+                           BLayout::ColMajor, ScaleK, N, SLayout::ColMajor, 32>;
+    using Left = TileLeft<float8_e4m3_t, M, K, M, K>;
+    using Right = TileRight<float8_e4m3_t, K, N, K, N>;
+    using LeftScale = TileLeftScale<float8_e8m0_t, M, ScaleK, M, ScaleK>;
+    using RightScale = TileRightScale<float8_e8m0_t, K, N, ScaleK, N>;
+    using Acc = TileAcc<float, M, N, M, N>;
+
+    MatA a_mat;
+    MatB b_mat;
+    MatScaleA a_scale_mat;
+    MatScaleB b_scale_mat;
+    Left a_tile;
+    Right b_tile;
+    LeftScale a_scale_tile;
+    RightScale b_scale_tile;
+    Acc c_tile;
+    size_t addr = 0;
+    TASSIGN(a_mat, addr);
+    addr += MatA::Numel * sizeof(typename MatA::DType);
+    TASSIGN(b_mat, addr);
+    addr += MatB::Numel * sizeof(typename MatB::DType);
+    TASSIGN(a_scale_mat, addr);
+    addr += MatScaleA::Numel * sizeof(typename MatScaleA::DType);
+    TASSIGN(b_scale_mat, addr);
+    addr += MatScaleB::Numel * sizeof(typename MatScaleB::DType);
+    TASSIGN(a_tile, 0x0);
+    TASSIGN(b_tile, 0x0);
+    TASSIGN(c_tile, 0x0);
+    TASSIGN(a_scale_tile, addr);
+    addr += LeftScale::Numel * sizeof(typename LeftScale::DType);
+    TASSIGN(b_scale_tile, addr);
+
+    GlobalA global_a(activation);
+    GlobalB global_b(weight);
+    GlobalScaleA global_scale_a(activation_scale);
+    GlobalScaleB global_scale_b(weight_scale);
+    GlobalC global_c(output);
+    TLOAD(a_mat, global_a);
+    TLOAD(b_mat, global_b);
+    TLOAD(a_scale_mat, global_scale_a);
+    TLOAD(b_scale_mat, global_scale_b);
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    TMOV(a_tile, a_mat);
+    TMOV(b_tile, b_mat);
+    TMOV(a_scale_tile, a_scale_mat);
+    TMOV(b_scale_tile, b_scale_mat);
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    TMATMUL_MX(c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    TSTORE(global_c, c_tile);
+}}
+"""
+    )
+    return source
+
+
+def write_host_fp4_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
+    source = build_dir / "host_fp4_gemm_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ float8_e4m3_t* activation =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[0]);
+    __gm__ float8_e4m3_t* weight =
+        reinterpret_cast<__gm__ float8_e4m3_t*>(args[1]);
+    __gm__ float8_e8m0_t* activation_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[2]);
+    __gm__ float8_e8m0_t* weight_scale =
+        reinterpret_cast<__gm__ float8_e8m0_t*>(args[3]);
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[4]);
+
+    constexpr int M = {m};
+    constexpr int K = {k};
+    constexpr int N = {n};
+    constexpr int TileK = 128;
+    constexpr int ScaleK = TileK / 32;
+    constexpr int FullScaleK = K / 32;
+
+    using GlobalA = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, M, TileK, Layout::ND>,
+        BaseShape2D<float8_e4m3_t, M, K, Layout::ND>, Layout::ND>;
+    using GlobalB = GlobalTensor<
+        float8_e4m3_t,
+        TileShape2D<float8_e4m3_t, TileK, N, Layout::DN>,
+        BaseShape2D<float8_e4m3_t, K, N, Layout::DN>, Layout::DN>;
+    using GlobalScaleA = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, M, ScaleK, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, M, FullScaleK, Layout::ND>, Layout::ND>;
+    using GlobalScaleB = GlobalTensor<
+        float8_e8m0_t,
+        TileShape2D<float8_e8m0_t, ScaleK, N, Layout::ND>,
+        BaseShape2D<float8_e8m0_t, FullScaleK, N, Layout::ND>, Layout::ND>;
+    using GlobalC = GlobalTensor<
+        float, TileShape2D<float, M, N, Layout::ND>,
+        BaseShape2D<float, M, N, Layout::ND>, Layout::ND>;
+
+    using MatA = Tile<TileType::Mat, float8_e4m3_t, M, TileK,
+                      BLayout::ColMajor, M, TileK, SLayout::RowMajor, 512>;
+    using MatB = Tile<TileType::Mat, float8_e4m3_t, TileK, N,
+                      BLayout::ColMajor, TileK, N, SLayout::RowMajor, 512>;
+    using MatScaleA = Tile<TileType::Mat, float8_e8m0_t, M, ScaleK,
+                           BLayout::RowMajor, M, ScaleK, SLayout::RowMajor, 32>;
+    using MatScaleB = Tile<TileType::Mat, float8_e8m0_t, TileK, N,
+                           BLayout::ColMajor, ScaleK, N, SLayout::ColMajor, 32>;
+    using Left = TileLeft<float8_e4m3_t, M, TileK, M, TileK>;
+    using Right = TileRight<float8_e4m3_t, TileK, N, TileK, N>;
+    using LeftScale = TileLeftScale<float8_e8m0_t, M, ScaleK, M, ScaleK>;
+    using RightScale = TileRightScale<float8_e8m0_t, TileK, N, ScaleK, N>;
+    using Acc = TileAcc<float, M, N, M, N>;
+
+    MatA a_mat;
+    MatB b_mat;
+    MatScaleA a_scale_mat;
+    MatScaleB b_scale_mat;
+    Left a_tile;
+    Right b_tile;
+    LeftScale a_scale_tile;
+    RightScale b_scale_tile;
+    Acc c_tile;
+    size_t addr = 0;
+    TASSIGN(a_mat, addr);
+    addr += MatA::Numel * sizeof(typename MatA::DType);
+    TASSIGN(b_mat, addr);
+    addr += MatB::Numel * sizeof(typename MatB::DType);
+    TASSIGN(a_scale_mat, addr);
+    addr += MatScaleA::Numel * sizeof(typename MatScaleA::DType);
+    TASSIGN(b_scale_mat, addr);
+    addr += MatScaleB::Numel * sizeof(typename MatScaleB::DType);
+    TASSIGN(a_tile, 0x0);
+    TASSIGN(b_tile, 0x0);
+    TASSIGN(c_tile, 0x0);
+    TASSIGN(a_scale_tile, addr);
+    addr += LeftScale::Numel * sizeof(typename LeftScale::DType);
+    TASSIGN(b_scale_tile, addr);
+
+    GlobalC global_c(output);
+    for (int k0 = 0; k0 < K; k0 += TileK) {{
+        GlobalA global_a(activation + k0);
+        GlobalB global_b(weight + k0);
+        GlobalScaleA global_scale_a(activation_scale + k0 / 32);
+        GlobalScaleB global_scale_b(weight_scale + (k0 / 32) * N);
+        TLOAD(a_mat, global_a);
+        TLOAD(b_mat, global_b);
+        TLOAD(a_scale_mat, global_scale_a);
+        TLOAD(b_scale_mat, global_scale_b);
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+        TMOV(a_tile, a_mat);
+        TMOV(b_tile, b_mat);
+        TMOV(a_scale_tile, a_scale_mat);
+        TMOV(b_scale_tile, b_scale_mat);
+        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        if (k0 == 0) {{
+            TMATMUL_MX(c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+        }} else {{
+            TMATMUL_MX(c_tile, c_tile, a_tile, a_scale_tile, b_tile, b_scale_tile);
+        }}
+        set_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+        wait_flag(PIPE_M, PIPE_MTE2, EVENT_ID0);
+    }}
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    TSTORE(global_c, c_tile);
+}}
+"""
+    )
+    return source
+
+
+def write_host_q8_block_dot_orchestration(build_dir: Path, blocks: int, n: int) -> Path:
+    source = build_dir / "host_q8_block_dot_orch.cpp"
+    source.write_text(
+        f"""\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+extern "C" {{
+
+int build_q8_block_dot_graph(
+        OrchestrationRuntime* runtime,
+        const ChipStorageTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() < 3 || orch_args.scalar_count() < 3) {{
+        std::cerr << "build_q8_block_dot_graph: expected 3 tensors and 3 scalars\\n";
+        return -1;
+    }}
+
+    constexpr uint64_t kBlocks = {blocks};
+    constexpr uint64_t kK = 32;
+    constexpr uint64_t kN = {n};
+    constexpr uint64_t kTileN = 128;
+    if (orch_args.scalar(0) != kBlocks || orch_args.scalar(1) != kK ||
+        orch_args.scalar(2) != kN) {{
+        std::cerr << "build_q8_block_dot_graph: artifact geometry mismatch\\n";
+        return -1;
+    }}
+    if ((kN % kTileN) != 0) {{
+        std::cerr << "build_q8_block_dot_graph: N must be 128-aligned\\n";
+        return -1;
+    }}
+
+    const size_t size_a = static_cast<size_t>(kBlocks * 32 * sizeof(int8_t));
+    const size_t size_b = static_cast<size_t>(kBlocks * 32 * kN * sizeof(int8_t));
+    const size_t size_c = static_cast<size_t>(kBlocks * kN * sizeof(int32_t));
+    if (orch_args.tensor(0).shapes[0] < kBlocks * 32 ||
+        orch_args.tensor(1).shapes[0] < kBlocks * 32 * kN ||
+        orch_args.tensor(2).shapes[0] < kBlocks * kN) {{
+        std::cerr << "build_q8_block_dot_graph: tensor payload is too short\\n";
+        return -1;
+    }}
+
+    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
+    auto* host_b = orch_args.tensor(1).data_as<uint8_t>();
+    auto* host_c = orch_args.tensor(2).data_as<uint8_t>();
+    void* dev_a = device_malloc(runtime, size_a);
+    void* dev_b = device_malloc(runtime, size_b);
+    void* dev_c = device_malloc(runtime, size_c);
+    if (!dev_a || !dev_b || !dev_c) {{
+        std::cerr << "build_q8_block_dot_graph: device allocation failed\\n";
+        return -1;
+    }}
+    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
+        copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
+        std::cerr << "build_q8_block_dot_graph: input copy failed\\n";
+        return -1;
+    }}
+    record_tensor_pair(runtime, host_c, dev_c, size_c);
+
+    for (uint64_t block = 0; block < kBlocks; ++block) {{
+        for (uint64_t tile_n = 0; tile_n < kN / kTileN; ++tile_n) {{
+            uint64_t task_args[5];
+            task_args[0] = reinterpret_cast<uint64_t>(dev_a);
+            task_args[1] = reinterpret_cast<uint64_t>(dev_b);
+            task_args[2] = reinterpret_cast<uint64_t>(dev_c);
+            task_args[3] = block;
+            task_args[4] = tile_n;
+            add_task(runtime, task_args, 5, 0, CoreType::AIC);
+        }}
+    }}
+    return 0;
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_q8_block_dot_kernel(build_dir: Path, n: int) -> Path:
+    source = build_dir / "host_q8_block_dot_kernel.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+#include <pto/pto-inst.hpp>
+
+using namespace pto;
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(
+        __gm__ int64_t* args) {{
+    __gm__ int8_t* activation = reinterpret_cast<__gm__ int8_t*>(args[0]);
+    __gm__ int8_t* weight = reinterpret_cast<__gm__ int8_t*>(args[1]);
+    __gm__ int32_t* output = reinterpret_cast<__gm__ int32_t*>(args[2]);
+    const uint64_t block = static_cast<uint64_t>(args[3]);
+    const uint64_t tile_n = static_cast<uint64_t>(args[4]);
+
+    constexpr int K = 32;
+    constexpr int N = {n};
+    constexpr int TileN = 128;
+    using AValid = TileShape2D<int8_t, 1, K>;
+    using AWhole = BaseShape2D<int8_t, 1, K>;
+    using BValid = TileShape2D<int8_t, K, TileN>;
+    using BWhole = BaseShape2D<int8_t, K, N>;
+    using CValid = TileShape2D<int32_t, 1, TileN>;
+    using CWhole = BaseShape2D<int32_t, 1, N>;
+    using GlobalA = GlobalTensor<int8_t, AValid, AWhole>;
+    using GlobalB = GlobalTensor<int8_t, BValid, BWhole>;
+    using GlobalC = GlobalTensor<int32_t, CValid, CWhole>;
+    using MatA = Tile<TileType::Mat, int8_t, 1, K,
+                      BLayout::RowMajor, 1, K>;
+    using MatB = Tile<TileType::Mat, int8_t, K, TileN,
+                      BLayout::ColMajor, K, TileN, SLayout::RowMajor, 512>;
+    using Left = TileLeft<int8_t, 1, K, 1, K>;
+    using Right = TileRight<int8_t, K, TileN, K, TileN>;
+    using Acc = TileAcc<int32_t, 1, TileN, 1, TileN>;
+
+    GlobalA global_a(activation + block * K);
+    GlobalB global_b(weight + block * K * N + tile_n * TileN);
+    GlobalC global_c(output + block * N + tile_n * TileN);
+    MatA mat_a;
+    MatB mat_b;
+    Left tile_a;
+    Right tile_b;
+    Acc tile_c;
+    TASSIGN(mat_a, 0x0);
+    TASSIGN(mat_b, 0x20000);
+    TASSIGN(tile_a, 0x0);
+    TASSIGN(tile_b, 0x0);
+    TASSIGN(tile_c, 0x0);
+
+    TLOAD(mat_a, global_a);
+    TLOAD(mat_b, global_b);
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    TEXTRACT(tile_a, mat_a, 0, 0);
+    TMOV(tile_b, mat_b);
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    TGEMV(tile_c, tile_a, tile_b);
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    TSTORE(global_c, tile_c);
+}}
+"""
+    )
+    return source
+
+
 def write_host_engram_context_orchestration(build_dir: Path) -> Path:
     source = build_dir / "host_engram_context_orch.cpp"
     source.write_text(
@@ -578,51 +1464,33 @@ def write_host_engram_context_orchestration(build_dir: Path) -> Path:
 #include <cstring>
 #include <iostream>
 
-struct CompatContinuousTensor {
-    uint64_t data;
-    uint32_t shapes[5];
-    uint32_t ndims;
-    uint8_t dtype;
-    uint8_t child_memory;
-    uint8_t reserved[2];
-};
-
-struct CompatChipStorageTaskArgs {
-    CompatContinuousTensor tensors[128];
-    uint64_t scalars[128];
-    int32_t tensor_count;
-    int32_t scalar_count;
-};
-
 extern "C" {
 
 int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {
-    const CompatChipStorageTaskArgs* args =
-        reinterpret_cast<const CompatChipStorageTaskArgs*>(&orch_args);
-    if (args->tensor_count < 6) {
+    if (orch_args.tensor_count() < 6) {
         std::cerr << "build_engram_context_graph: Expected 6 tensor args, got "
-                  << args->tensor_count << '\\n';
+                  << orch_args.tensor_count() << '\\n';
         return -1;
     }
-    if (args->scalar_count < 6) {
+    if (orch_args.scalar_count() < 6) {
         std::cerr << "build_engram_context_graph: Expected 6 scalar args, got "
-                  << args->scalar_count << '\\n';
+                  << orch_args.scalar_count() << '\\n';
         return -1;
     }
 
-    const float* table = reinterpret_cast<const float*>(args->tensors[0].data);
-    const int32_t* indices = reinterpret_cast<const int32_t*>(args->tensors[1].data);
-    const float* hidden = reinterpret_cast<const float*>(args->tensors[2].data);
-    const float* gate_weight = reinterpret_cast<const float*>(args->tensors[3].data);
-    float* output = reinterpret_cast<float*>(args->tensors[4].data);
-    float* gate_state = reinterpret_cast<float*>(args->tensors[5].data);
+    const float* table = orch_args.tensor(0).data_as<float>();
+    const int32_t* indices = orch_args.tensor(1).data_as<int32_t>();
+    const float* hidden = orch_args.tensor(2).data_as<float>();
+    const float* gate_weight = orch_args.tensor(3).data_as<float>();
+    float* output = orch_args.tensor(4).data_as<float>();
+    float* gate_state = orch_args.tensor(5).data_as<float>();
 
-    const uint64_t batch = args->scalars[0];
-    const uint64_t table_rows = args->scalars[1];
-    const uint64_t hidden_size = args->scalars[2];
-    const uint64_t chunk_offset = args->scalars[3];
-    const uint64_t chunk_elems = args->scalars[4];
-    const uint32_t bias_bits = static_cast<uint32_t>(args->scalars[5]);
+    const uint64_t batch = orch_args.scalar(0);
+    const uint64_t table_rows = orch_args.scalar(1);
+    const uint64_t hidden_size = orch_args.scalar(2);
+    const uint64_t chunk_offset = orch_args.scalar(3);
+    const uint64_t chunk_elems = orch_args.scalar(4);
+    const uint32_t bias_bits = static_cast<uint32_t>(orch_args.scalar(5));
     float bias = 0.0f;
     std::memcpy(&bias, &bias_bits, sizeof(float));
 
@@ -639,12 +1507,12 @@ int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageT
         std::cerr << "build_engram_context_graph: invalid chunk range\\n";
         return -1;
     }
-    if (args->tensors[0].shapes[0] < table_rows * hidden_size ||
-        args->tensors[1].shapes[0] < batch * kIndicesPerBatch ||
-        args->tensors[2].shapes[0] < batch * hidden_size ||
-        args->tensors[3].shapes[0] < batch * hidden_size ||
-        args->tensors[4].shapes[0] < batch * hidden_size ||
-        args->tensors[5].shapes[0] < batch) {
+    if (orch_args.tensor(0).shapes[0] < table_rows * hidden_size ||
+        orch_args.tensor(1).shapes[0] < batch * kIndicesPerBatch ||
+        orch_args.tensor(2).shapes[0] < batch * hidden_size ||
+        orch_args.tensor(3).shapes[0] < batch * hidden_size ||
+        orch_args.tensor(4).shapes[0] < batch * hidden_size ||
+        orch_args.tensor(5).shapes[0] < batch) {
         std::cerr << "build_engram_context_graph: tensor bytes too short\\n";
         return -1;
     }
@@ -712,6 +1580,713 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_host_deepseek_vector_orchestration(build_dir: Path) -> Path:
+    source = build_dir / "host_deepseek_vector_orch.cpp"
+    source.write_text(
+        """\
+#include "orchestration_api.h"
+#include <cstdint>
+#include <iostream>
+
+extern "C" {
+
+int build_deepseek_vector_graph(
+        OrchestrationRuntime* runtime,
+        const ChipStorageTaskArgs& orch_args) {
+    if (orch_args.tensor_count() < 4 || orch_args.scalar_count() < 11) {
+        std::cerr << "build_deepseek_vector_graph: expected 4 tensors and 11 scalars\\n";
+        return -1;
+    }
+    const uint64_t len0 = orch_args.scalar(1);
+    const uint64_t len1 = orch_args.scalar(2);
+    const uint64_t len2 = orch_args.scalar(3);
+    const uint64_t out_len = orch_args.scalar(4);
+    if (out_len == 0 ||
+        orch_args.tensor(0).shapes[0] < (len0 == 0 ? 1 : len0) ||
+        orch_args.tensor(1).shapes[0] < (len1 == 0 ? 1 : len1) ||
+        orch_args.tensor(2).shapes[0] < (len2 == 0 ? 1 : len2) ||
+        orch_args.tensor(3).shapes[0] < out_len) {
+        std::cerr << "build_deepseek_vector_graph: tensor payload shorter than declared geometry\\n";
+        return -1;
+    }
+    const size_t bytes0 = static_cast<size_t>((len0 == 0 ? 1 : len0) * sizeof(float));
+    const size_t bytes1 = static_cast<size_t>((len1 == 0 ? 1 : len1) * sizeof(float));
+    const size_t bytes2 = static_cast<size_t>((len2 == 0 ? 1 : len2) * sizeof(float));
+    const size_t output_bytes = static_cast<size_t>(out_len * sizeof(float));
+    void* dev0 = device_malloc(runtime, bytes0);
+    void* dev1 = device_malloc(runtime, bytes1);
+    void* dev2 = device_malloc(runtime, bytes2);
+    void* dev_out = device_malloc(runtime, output_bytes);
+    if (!dev0 || !dev1 || !dev2 || !dev_out ||
+        copy_to_device(runtime, dev0, orch_args.tensor(0).data_as<uint8_t>(), bytes0) != 0 ||
+        copy_to_device(runtime, dev1, orch_args.tensor(1).data_as<uint8_t>(), bytes1) != 0 ||
+        copy_to_device(runtime, dev2, orch_args.tensor(2).data_as<uint8_t>(), bytes2) != 0) {
+        std::cerr << "build_deepseek_vector_graph: allocation or input copy failed\\n";
+        return -1;
+    }
+    record_tensor_pair(
+        runtime,
+        orch_args.tensor(3).data_as<uint8_t>(),
+        dev_out,
+        output_bytes);
+    uint64_t task_args[15];
+    task_args[0] = reinterpret_cast<uint64_t>(dev0);
+    task_args[1] = reinterpret_cast<uint64_t>(dev1);
+    task_args[2] = reinterpret_cast<uint64_t>(dev2);
+    task_args[3] = reinterpret_cast<uint64_t>(dev_out);
+    for (uint64_t index = 0; index < 11; ++index) {
+        task_args[4 + index] = orch_args.scalar(index);
+    }
+    add_task(runtime, task_args, 15, 0, CoreType::AIV);
+    return 0;
+}
+
+}  // extern "C"
+"""
+    )
+    return source
+
+
+def write_host_deepseek_vector_kernel(build_dir: Path) -> Path:
+    source = build_dir / "host_deepseek_vector_kernel.cpp"
+    source.write_text(
+        """\
+#include <cstdint>
+#include <cmath>
+#include <pto/pto-inst.hpp>
+
+#ifndef __gm__
+#define __gm__
+#endif
+
+#ifndef __aicore__
+#define __aicore__ [aicore]
+#endif
+
+namespace {
+
+enum Operation : uint64_t {
+    RMS_NORM = 1,
+    HC_SPLIT = 2,
+    HC_WEIGHTED_SUM = 3,
+    HC_POST = 4,
+    ROPE = 5,
+    KV_FP8_ROUNDTRIP = 6,
+    SINK_ATTENTION = 7,
+    INDEXER_QAT = 8,
+    SCALE = 9,
+    SWIGLU = 10,
+    ADD = 11,
+    ROUTER = 12,
+    TOP_K = 13,
+    HC_HEAD_WEIGHTS = 14,
+    COMPRESSOR_POOL = 15,
+};
+
+inline float from_bits(uint64_t value) {
+    union {
+        uint32_t bits;
+        float value;
+    } converted;
+    converted.bits = static_cast<uint32_t>(value);
+    return converted.value;
+}
+
+inline float round_bf16(float value) {
+    union {
+        uint32_t bits;
+        float value;
+    } converted;
+    converted.value = value;
+    const uint32_t exponent = converted.bits & 0x7f800000U;
+    if (exponent == 0x7f800000U) {
+        converted.bits &= 0xffff0000U;
+        return converted.value;
+    }
+    const uint32_t bias = 0x7fffU + ((converted.bits >> 16U) & 1U);
+    converted.bits = (converted.bits + bias) & 0xffff0000U;
+    return converted.value;
+}
+
+inline float accurate_exp_f32(float value) {
+    const float scaled = value * 1.4426950408889634f;
+    const int exponent = static_cast<int>(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    const float remainder = value - static_cast<float>(exponent) * 0.6931471805599453f;
+    float term = 1.0f;
+    float sum = 1.0f;
+    for (int order = 1; order <= 12; ++order) {
+        term *= remainder / static_cast<float>(order);
+        sum += term;
+    }
+    union {
+        uint32_t bits;
+        float value;
+    } power_of_two;
+    power_of_two.bits = static_cast<uint32_t>(exponent + 127) << 23U;
+    return sum * power_of_two.value;
+}
+
+inline float accurate_log1p_f32(float value) {
+    int exponent = 0;
+    double mantissa = frexp(1.0 + static_cast<double>(value), &exponent);
+    if (mantissa < 0.70710678118654752440) {
+        mantissa *= 2.0;
+        --exponent;
+    }
+    const double ratio = (mantissa - 1.0) / (mantissa + 1.0);
+    const double ratio_squared = ratio * ratio;
+    double power = ratio;
+    double sum = 0.0;
+    for (int order = 1; order <= 61; order += 2) {
+        sum += power / static_cast<double>(order);
+        power *= ratio_squared;
+    }
+    return static_cast<float>(2.0 * sum + static_cast<double>(exponent) * 0.69314718055994530942);
+}
+
+inline float accurate_sqrt_f32(float value) {
+    double estimate = static_cast<double>(value) >= 1.0 ? static_cast<double>(value) : 1.0;
+    for (int iteration = 0; iteration < 12; ++iteration) {
+        estimate = 0.5 * (estimate + static_cast<double>(value) / estimate);
+    }
+    return static_cast<float>(estimate);
+}
+
+inline float sigmoid(float value) {
+    return 1.0f / (1.0f + accurate_exp_f32(-value));
+}
+
+inline float separate_mul_add(float left, float right, float addend) {
+    volatile float product = left * right;
+    return product + addend;
+}
+
+inline float separate_add(float left, float right) {
+    volatile float value = left + right;
+    return value;
+}
+
+inline float fp8_positive(uint32_t index) {
+    const uint32_t exponent = index >> 3U;
+    const uint32_t mantissa = index & 7U;
+    if (exponent == 0) {
+        return static_cast<float>(mantissa) * 0.001953125f;
+    }
+    return (1.0f + static_cast<float>(mantissa) * 0.125f) * ldexpf(1.0f, static_cast<int>(exponent) - 7);
+}
+
+inline float fp8_round(float value) {
+    const float sign = value < 0.0f ? -1.0f : 1.0f;
+    const float magnitude = fminf(fabsf(value), 448.0f);
+    uint32_t low = 0;
+    uint32_t high = 126;
+    while (low < high) {
+        const uint32_t middle = (low + high + 1U) >> 1U;
+        if (fp8_positive(middle) <= magnitude) {
+            low = middle;
+        } else {
+            high = middle - 1U;
+        }
+    }
+    uint32_t best = low;
+    if (best < 126U) {
+        const float best_difference = fabsf(magnitude - fp8_positive(best));
+        const float next_difference = fabsf(magnitude - fp8_positive(best + 1U));
+        if (next_difference < best_difference ||
+            (next_difference == best_difference && ((best + 1U) & 1U) == 0 && (best & 1U) != 0)) {
+            ++best;
+        }
+    }
+    return sign * fp8_positive(best);
+}
+
+inline void rms_norm(
+        __gm__ const float* input,
+        __gm__ const float* weight,
+        __gm__ float* output,
+        uint64_t groups,
+        uint64_t width,
+        bool has_weight,
+        bool bf16,
+        float eps) {
+    for (uint64_t group = 0; group < groups; ++group) {
+        const uint64_t base = group * width;
+        float sum = 0.0f;
+        for (uint64_t index = 0; index < width; ++index) {
+            const float value = input[base + index];
+            sum += value * value;
+        }
+        const float inverse = 1.0f / accurate_sqrt_f32(sum / static_cast<float>(width) + eps);
+        for (uint64_t index = 0; index < width; ++index) {
+            float value = input[base + index] * inverse;
+            if (has_weight) {
+                value *= weight[index];
+            }
+            output[base + index] = bf16 ? round_bf16(value) : value;
+        }
+    }
+}
+
+}  // namespace
+
+extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {
+    __gm__ const float* input0 = reinterpret_cast<__gm__ const float*>(args[0]);
+    __gm__ const float* input1 = reinterpret_cast<__gm__ const float*>(args[1]);
+    __gm__ const float* input2 = reinterpret_cast<__gm__ const float*>(args[2]);
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[3]);
+    const uint64_t operation = static_cast<uint64_t>(args[4]);
+    const uint64_t len0 = static_cast<uint64_t>(args[5]);
+    const uint64_t len1 = static_cast<uint64_t>(args[6]);
+    const uint64_t len2 = static_cast<uint64_t>(args[7]);
+    const uint64_t out_len = static_cast<uint64_t>(args[8]);
+    const uint64_t p0 = static_cast<uint64_t>(args[9]);
+    const uint64_t p1 = static_cast<uint64_t>(args[10]);
+    const uint64_t p2 = static_cast<uint64_t>(args[11]);
+    const uint64_t p3 = static_cast<uint64_t>(args[12]);
+    const float f0 = from_bits(static_cast<uint64_t>(args[13]));
+    const float f1 = from_bits(static_cast<uint64_t>(args[14]));
+
+    if (operation == RMS_NORM) {
+        rms_norm(input0, input1, output, p0, p1, p2 != 0, p3 != 0, f0);
+        return;
+    }
+    if (operation == HC_SPLIT) {
+        const uint64_t hc = p0;
+        const uint64_t iterations = p1;
+        for (uint64_t index = 0; index < hc; ++index) {
+            output[index] = sigmoid(separate_mul_add(input0[index], input1[0], input2[index])) + f0;
+            output[hc + index] = 2.0f * sigmoid(separate_mul_add(input0[hc + index], input1[1], input2[hc + index]));
+        }
+        const uint64_t offset = 2 * hc;
+        for (uint64_t destination = 0; destination < hc; ++destination) {
+            float row_max = -INFINITY;
+            for (uint64_t source = 0; source < hc; ++source) {
+                const uint64_t index = destination * hc + source;
+                const float value = separate_mul_add(input0[offset + index], input1[2], input2[offset + index]);
+                output[offset + index] = value;
+                row_max = fmaxf(row_max, value);
+            }
+            float sum = 0.0f;
+            for (uint64_t source = 0; source < hc; ++source) {
+                const uint64_t index = offset + destination * hc + source;
+                output[index] = accurate_exp_f32(output[index] - row_max);
+                sum += output[index];
+            }
+            for (uint64_t source = 0; source < hc; ++source) {
+                const uint64_t index = offset + destination * hc + source;
+                output[index] = output[index] / sum + f0;
+            }
+        }
+        for (uint64_t iteration = 0; iteration < iterations; ++iteration) {
+            if (iteration != 0) {
+                for (uint64_t destination = 0; destination < hc; ++destination) {
+                    float sum = 0.0f;
+                    for (uint64_t source = 0; source < hc; ++source) {
+                        sum += output[offset + destination * hc + source];
+                    }
+                    const float inverse = 1.0f / (sum + f0);
+                    for (uint64_t source = 0; source < hc; ++source) {
+                        output[offset + destination * hc + source] *= inverse;
+                    }
+                }
+            }
+            for (uint64_t source = 0; source < hc; ++source) {
+                float sum = 0.0f;
+                for (uint64_t destination = 0; destination < hc; ++destination) {
+                    sum += output[offset + destination * hc + source];
+                }
+                const float inverse = 1.0f / (sum + f0);
+                for (uint64_t destination = 0; destination < hc; ++destination) {
+                    output[offset + destination * hc + source] *= inverse;
+                }
+            }
+        }
+        return;
+    }
+    if (operation == HC_WEIGHTED_SUM) {
+        const uint64_t hidden = p0;
+        const uint64_t hc = p1;
+        for (uint64_t dim = 0; dim < hidden; ++dim) {
+            float value = 0.0f;
+            for (uint64_t source = 0; source < hc; ++source) {
+                value = separate_mul_add(input0[source * hidden + dim], input1[source], value);
+            }
+            output[dim] = p2 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == HC_POST) {
+        const uint64_t hidden = p0;
+        const uint64_t hc = p1;
+        for (uint64_t destination = 0; destination < hc; ++destination) {
+            for (uint64_t dim = 0; dim < hidden; ++dim) {
+                float value = input0[dim] * input2[destination];
+                for (uint64_t source = 0; source < hc; ++source) {
+                    value = separate_mul_add(input1[source * hidden + dim], input2[hc + source * hc + destination], value);
+                }
+                output[destination * hidden + dim] = p2 != 0 ? round_bf16(value) : value;
+            }
+        }
+        return;
+    }
+    if (operation == ROPE) {
+        const uint64_t heads = p0;
+        const uint64_t head_dim = p1;
+        const uint64_t rope_dim = p2;
+        const bool inverse = p3 != 0;
+        const uint64_t tail = head_dim - rope_dim;
+        for (uint64_t index = 0; index < len0; ++index) {
+            output[index] = input0[index];
+        }
+        for (uint64_t head = 0; head < heads; ++head) {
+            for (uint64_t pair = 0; pair < rope_dim / 2; ++pair) {
+                const uint64_t index = head * head_dim + tail + pair * 2;
+                const float x0 = input0[index];
+                const float x1 = input0[index + 1];
+                const float sine = inverse ? -input2[pair] : input2[pair];
+                output[index] = round_bf16(separate_mul_add(-x1, sine, x0 * input1[pair]));
+                output[index + 1] = round_bf16(separate_mul_add(x1, input1[pair], x0 * sine));
+            }
+        }
+        for (uint64_t head = 0; head < heads; ++head) {
+            for (uint64_t index = 0; index < tail; ++index) {
+                const uint64_t offset = head * head_dim + index;
+                output[offset] = round_bf16(output[offset]);
+            }
+        }
+        return;
+    }
+    if (operation == KV_FP8_ROUNDTRIP) {
+        const uint64_t quantized_len = p0;
+        const uint64_t block_size = p1;
+        for (uint64_t block_start = 0; block_start < quantized_len; block_start += block_size) {
+            float absolute_max = 1.0e-4f;
+            for (uint64_t index = block_start; index < block_start + block_size; ++index) {
+                absolute_max = fmaxf(absolute_max, fabsf(input0[index]));
+            }
+            int exponent = static_cast<int>(ceilf(log2f(absolute_max / 448.0f)));
+            exponent = exponent < -127 ? -127 : (exponent > 127 ? 127 : exponent);
+            const float scale = ldexpf(1.0f, exponent);
+            for (uint64_t index = block_start; index < block_start + block_size; ++index) {
+                output[index] = round_bf16(fp8_round(fmaxf(-448.0f, fminf(448.0f, input0[index] / scale))) * scale);
+            }
+        }
+        for (uint64_t index = quantized_len; index < len0; ++index) {
+            output[index] = round_bf16(input0[index]);
+        }
+        return;
+    }
+    if (operation == SINK_ATTENTION) {
+        const uint64_t heads = p0;
+        const uint64_t head_dim = p1;
+        const uint64_t rows = len1 / head_dim;
+        const float scale = 1.0f / accurate_sqrt_f32(static_cast<float>(head_dim));
+        float scores[1024];
+        for (uint64_t head = 0; head < heads; ++head) {
+            float max_score = input2[head];
+            for (uint64_t row = 0; row < rows; ++row) {
+                float score = 0.0f;
+                for (uint64_t dim = 0; dim < head_dim; ++dim) {
+                    score = separate_mul_add(input0[head * head_dim + dim], input1[row * head_dim + dim], score);
+                }
+                scores[row] = score * scale;
+                max_score = fmaxf(max_score, scores[row]);
+            }
+            float denominator = accurate_exp_f32(input2[head] - max_score);
+            for (uint64_t dim = 0; dim < head_dim; ++dim) {
+                float value = 0.0f;
+                for (uint64_t row = 0; row < rows; ++row) {
+                    const float weight = accurate_exp_f32(scores[row] - max_score);
+                    if (dim == 0) {
+                        denominator += weight;
+                    }
+                    value = separate_mul_add(weight, input1[row * head_dim + dim], value);
+                }
+                const float inverse_denominator = 1.0f / denominator;
+                output[head * head_dim + dim] = round_bf16(value * inverse_denominator);
+            }
+        }
+        return;
+    }
+    if (operation == INDEXER_QAT) {
+        const float values[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+        for (uint64_t index = 0; index < len0; ++index) {
+            output[index] = input0[index];
+        }
+        for (uint64_t head = 0; head < len0; head += 128) {
+            for (uint64_t stride = 1; stride < 128; stride *= 2) {
+                for (uint64_t base = 0; base < 128; base += 2 * stride) {
+                    for (uint64_t index = 0; index < stride; ++index) {
+                        const float a = output[head + base + index];
+                        const float b = output[head + base + stride + index];
+                        output[head + base + index] = a + b;
+                        output[head + base + stride + index] = a - b;
+                    }
+                }
+            }
+            for (uint64_t index = 0; index < 128; ++index) {
+                output[head + index] *= 0.08838834764831845f;
+            }
+            for (uint64_t block = 0; block < 128; block += 32) {
+                float absolute_max = 7.052966104933725e-38f;
+                for (uint64_t index = 0; index < 32; ++index) {
+                    absolute_max = fmaxf(absolute_max, fabsf(output[head + block + index]));
+                }
+                const float scale = exp2f(ceilf(log2f(absolute_max / 6.0f)));
+                for (uint64_t index = 0; index < 32; ++index) {
+                    const uint64_t offset = head + block + index;
+                    const float sign = output[offset] < 0.0f ? -1.0f : 1.0f;
+                    const float magnitude = fminf(fabsf(output[offset] / scale), 6.0f);
+                    uint64_t best = 0;
+                    for (uint64_t candidate = 1; candidate < 8; ++candidate) {
+                        const float difference = fabsf(magnitude - values[candidate]);
+                        const float best_difference = fabsf(magnitude - values[best]);
+                        if (difference < best_difference ||
+                            (difference == best_difference && (candidate & 1U) == 0 && (best & 1U) != 0)) {
+                            best = candidate;
+                        }
+                    }
+                    output[offset] = round_bf16(sign * values[best] * scale);
+                }
+            }
+        }
+        return;
+    }
+    if (operation == COMPRESSOR_POOL) {
+        const uint64_t head_dim = p0;
+        const uint64_t ratio = p1;
+        const uint64_t width = p2;
+        const uint64_t rope_dim = p3;
+        for (uint64_t dim = 0; dim < head_dim; ++dim) {
+            float max_score = -INFINITY;
+            if (ratio == 4) {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    max_score = fmaxf(max_score, input1[row * width + dim]);
+                    max_score = fmaxf(
+                        max_score,
+                        input1[(ratio + row) * width + head_dim + dim]);
+                }
+            } else {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    max_score = fmaxf(max_score, input1[row * width + dim]);
+                }
+            }
+            float denominator = 0.0f;
+            float weighted_sum = 0.0f;
+            if (ratio == 4) {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    const uint64_t previous = row * width + dim;
+                    const uint64_t current = (ratio + row) * width + head_dim + dim;
+                    if (input1[previous] > -1.0e30f) {
+                        const float weight = accurate_exp_f32(input1[previous] - max_score);
+                        denominator += weight;
+                        weighted_sum = separate_mul_add(input0[previous], weight, weighted_sum);
+                    }
+                    if (input1[current] > -1.0e30f) {
+                        const float weight = accurate_exp_f32(input1[current] - max_score);
+                        denominator += weight;
+                        weighted_sum = separate_mul_add(input0[current], weight, weighted_sum);
+                    }
+                }
+            } else {
+                for (uint64_t row = 0; row < ratio; ++row) {
+                    const uint64_t index = row * width + dim;
+                    if (input1[index] > -1.0e30f) {
+                        const float weight = accurate_exp_f32(input1[index] - max_score);
+                        denominator += weight;
+                        weighted_sum = separate_mul_add(input0[index], weight, weighted_sum);
+                    }
+                }
+            }
+            output[dim] = denominator == 0.0f ? 0.0f : weighted_sum / denominator;
+        }
+        float square_sum = 0.0f;
+        for (uint64_t dim = 0; dim < head_dim; ++dim) {
+            square_sum += output[dim] * output[dim];
+        }
+        const float inverse = 1.0f /
+            accurate_sqrt_f32(square_sum / static_cast<float>(head_dim) + f0);
+        for (uint64_t dim = 0; dim < head_dim; ++dim) {
+            output[dim] *= inverse * input2[dim];
+        }
+        const uint64_t tail = head_dim - rope_dim;
+        const uint64_t cos_offset = head_dim;
+        const uint64_t sin_offset = head_dim + rope_dim / 2;
+        for (uint64_t pair = 0; pair < rope_dim / 2; ++pair) {
+            const uint64_t index = tail + pair * 2;
+            const float x0 = output[index];
+            const float x1 = output[index + 1];
+            output[index] = separate_mul_add(
+                -x1,
+                input2[sin_offset + pair],
+                x0 * input2[cos_offset + pair]);
+            output[index + 1] = separate_mul_add(
+                x1,
+                input2[cos_offset + pair],
+                x0 * input2[sin_offset + pair]);
+        }
+        if (head_dim == 128) {
+            for (uint64_t stride = 1; stride < 128; stride *= 2) {
+                for (uint64_t base = 0; base < 128; base += 2 * stride) {
+                    for (uint64_t index = 0; index < stride; ++index) {
+                        const float a = output[base + index];
+                        const float b = output[base + stride + index];
+                        output[base + index] = a + b;
+                        output[base + stride + index] = a - b;
+                    }
+                }
+            }
+            const float values[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+            for (uint64_t index = 0; index < 128; ++index) {
+                output[index] *= 0.08838834764831845f;
+            }
+            for (uint64_t block = 0; block < 128; block += 32) {
+                float absolute_max = 7.052966104933725e-38f;
+                for (uint64_t index = 0; index < 32; ++index) {
+                    absolute_max = fmaxf(absolute_max, fabsf(output[block + index]));
+                }
+                const float scale = exp2f(ceilf(log2f(absolute_max / 6.0f)));
+                for (uint64_t index = 0; index < 32; ++index) {
+                    const uint64_t offset = block + index;
+                    const float sign = output[offset] < 0.0f ? -1.0f : 1.0f;
+                    const float magnitude = fminf(fabsf(output[offset] / scale), 6.0f);
+                    uint64_t best = 0;
+                    for (uint64_t candidate = 1; candidate < 8; ++candidate) {
+                        const float difference = fabsf(magnitude - values[candidate]);
+                        const float best_difference = fabsf(magnitude - values[best]);
+                        if (difference < best_difference ||
+                            (difference == best_difference && (candidate & 1U) == 0 && (best & 1U) != 0)) {
+                            best = candidate;
+                        }
+                    }
+                    output[offset] = round_bf16(sign * values[best] * scale);
+                }
+            }
+        } else {
+            for (uint64_t block_start = 0; block_start < tail; block_start += 64) {
+                float absolute_max = 1.0e-4f;
+                for (uint64_t index = block_start; index < block_start + 64; ++index) {
+                    absolute_max = fmaxf(absolute_max, fabsf(output[index]));
+                }
+                const float scale = exp2f(ceilf(log2f(absolute_max / 448.0f)));
+                for (uint64_t index = block_start; index < block_start + 64; ++index) {
+                    output[index] = round_bf16(
+                        fp8_round(fmaxf(-448.0f, fminf(448.0f, output[index] / scale))) * scale);
+                }
+            }
+            for (uint64_t index = tail; index < head_dim; ++index) {
+                output[index] = round_bf16(output[index]);
+            }
+        }
+        return;
+    }
+    if (operation == SCALE) {
+        for (uint64_t index = 0; index < len0; ++index) {
+            volatile float value = input0[index] * f0;
+            output[index] = p0 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == SWIGLU) {
+        for (uint64_t index = 0; index < len0; ++index) {
+            const float gate = f0 > 1.0e-6f ? fminf(input0[index], f0) : input0[index];
+            const float up = f0 > 1.0e-6f ? fmaxf(-f0, fminf(input1[index], f0)) : input1[index];
+            const float value = gate * (1.0f / (1.0f + accurate_exp_f32(-gate))) * up;
+            output[index] = p0 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == ADD) {
+        for (uint64_t index = 0; index < out_len; ++index) {
+            const float value = input0[index] + input1[index];
+            output[index] = p0 != 0 ? round_bf16(value) : value;
+        }
+        return;
+    }
+    if (operation == ROUTER) {
+        const uint64_t experts = p0;
+        const uint64_t top_k = p1;
+        const bool hash = p2 != 0;
+        for (uint64_t expert = 0; expert < experts; ++expert) {
+            const float logit = input0[expert];
+            const float exponential = accurate_exp_f32(logit);
+            const float softplus = logit > 20.0f ? logit : (logit < -20.0f ? exponential : accurate_log1p_f32(exponential));
+            output[expert] = accurate_sqrt_f32(softplus);
+        }
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            output[experts + slot] = hash ? input2[slot] : -1.0f;
+        }
+        if (!hash) {
+            for (uint64_t expert = 0; expert < experts; ++expert) {
+                const float score = output[expert] + input1[expert];
+                uint64_t insertion = top_k;
+                for (uint64_t slot = 0; slot < top_k; ++slot) {
+                    const int64_t current = static_cast<int64_t>(output[experts + slot]);
+                    if (current < 0 || score > output[current] + input1[current]) {
+                        insertion = slot;
+                        break;
+                    }
+                }
+                if (insertion < top_k) {
+                    for (uint64_t slot = top_k - 1; slot > insertion; --slot) {
+                        output[experts + slot] = output[experts + slot - 1];
+                    }
+                    output[experts + insertion] = static_cast<float>(expert);
+                }
+            }
+        }
+        float sum = 0.0f;
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            sum = separate_add(sum, output[static_cast<uint64_t>(output[experts + slot])]);
+        }
+        sum = fmaxf(sum, 6.1035156e-5f);
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            const uint64_t expert = static_cast<uint64_t>(output[experts + slot]);
+            volatile float normalized = output[expert] / sum;
+            output[experts + top_k + slot] = normalized * f0;
+        }
+        return;
+    }
+    if (operation == TOP_K) {
+        const uint64_t top_k = p0;
+        for (uint64_t slot = 0; slot < top_k; ++slot) {
+            output[slot] = -1.0f;
+            output[top_k + slot] = -INFINITY;
+        }
+        for (uint64_t token = 0; token < len0; ++token) {
+            uint64_t insertion = top_k;
+            for (uint64_t slot = 0; slot < top_k; ++slot) {
+                if (input0[token] > output[top_k + slot]) {
+                    insertion = slot;
+                    break;
+                }
+            }
+            if (insertion < top_k) {
+                for (uint64_t slot = top_k - 1; slot > insertion; --slot) {
+                    output[slot] = output[slot - 1];
+                    output[top_k + slot] = output[top_k + slot - 1];
+                }
+                output[insertion] = static_cast<float>(token);
+                output[top_k + insertion] = input0[token];
+            }
+        }
+        return;
+    }
+    if (operation == HC_HEAD_WEIGHTS) {
+        for (uint64_t index = 0; index < len0; ++index) {
+            const float affine = separate_mul_add(input0[index], f0, input1[index]);
+            const float weight = affine >= 0.0f
+                ? 1.0f / (1.0f + accurate_exp_f32(-affine))
+                : accurate_exp_f32(affine) / (1.0f + accurate_exp_f32(affine));
+            output[index] = weight + f1;
+        }
+    }
+}
+"""
+    )
+    return source
+
+
 def write_wrapped_kernel(
     build_dir: Path,
     spec_key: str,
@@ -769,6 +2344,15 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             for kernel in spec.kernels
         ],
     }
+    if args.profile in (
+        "host_gemm",
+        "host_fp32_gemm",
+        "host_quantized_gemm",
+        "host_fp8_gemm",
+        "host_fp4_gemm",
+        "host_q8_block_dot",
+    ):
+        payload["gemm"] = {"m": args.gemm_m, "k": args.gemm_k, "n": args.gemm_n}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
@@ -783,6 +2367,36 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
+    if args.profile in (
+        "host_gemm",
+        "host_fp32_gemm",
+        "host_quantized_gemm",
+        "host_fp8_gemm",
+    ):
+        gemm_dims = (args.gemm_m, args.gemm_k, args.gemm_n)
+        if any(dim <= 0 or dim % 128 != 0 for dim in gemm_dims):
+            raise SystemExit("--gemm-m/--gemm-k/--gemm-n must be positive and 128-aligned")
+    if args.profile == "host_fp8_gemm" and (
+        args.platform != "a5sim" or (args.gemm_m, args.gemm_k, args.gemm_n) != (128, 128, 128)
+    ):
+        raise SystemExit("host_fp8_gemm requires --platform a5sim and 128x128x128 geometry")
+    if args.profile == "host_fp4_gemm" and (
+        args.platform != "a5sim"
+        or args.gemm_m != 128
+        or args.gemm_k <= 0
+        or args.gemm_k % 128 != 0
+        or args.gemm_n != 128
+    ):
+        raise SystemExit(
+            "host_fp4_gemm requires --platform a5sim, M=128, 128-aligned K and N=128"
+        )
+    if args.profile == "host_q8_block_dot":
+        if args.gemm_m <= 0 or args.gemm_k != 32 or args.gemm_n <= 0 or args.gemm_n % 128 != 0:
+            raise SystemExit(
+                "host_q8_block_dot requires positive --gemm-m, --gemm-k 32 and 128-aligned --gemm-n"
+            )
+    if args.profile == "host_deepseek_vector" and args.platform != "a5sim":
+        raise SystemExit("host_deepseek_vector requires --platform a5sim")
     reuse_runtime = None
     if args.reuse_runtime_manifest:
         reuse_manifest = json.loads(Path(args.reuse_runtime_manifest).read_text())
@@ -811,8 +2425,34 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         builder, api_kind, runtime_name, build_dir
     )
     orch_source = example_root / spec.orch_source
+    if args.profile == "host_gemm":
+        orch_source = write_host_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_fp32_gemm":
+        orch_source = write_host_fp32_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_quantized_gemm":
+        orch_source = write_host_quantized_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_fp8_gemm":
+        orch_source = write_host_fp8_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_fp4_gemm":
+        orch_source = write_host_fp4_gemm_orchestration(
+            build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+        )
+    if args.profile == "host_q8_block_dot":
+        orch_source = write_host_q8_block_dot_orchestration(
+            build_dir, args.gemm_m, args.gemm_n
+        )
     if args.profile == "host_engram_context":
         orch_source = write_host_engram_context_orchestration(build_dir)
+    if args.profile == "host_deepseek_vector":
+        orch_source = write_host_deepseek_vector_orchestration(build_dir)
     if args.profile == "host_matmul" and args.tile_batch > 1:
         orch_source = write_batched_matmul_orchestration(build_dir, args.tile_batch)
     orch_binary = kernel_compiler.compile_orchestration(
@@ -843,7 +2483,62 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             if args.profile == "host_engram_context"
             else None
         )
-        source = Path(vector_source or batched_source or engram_source or (example_root / kernel.source)).resolve()
+        deepseek_vector_source = (
+            write_host_deepseek_vector_kernel(build_dir)
+            if args.profile == "host_deepseek_vector"
+            else None
+        )
+        gemm_source = (
+            write_host_gemm_kernel(build_dir, args.gemm_m, args.gemm_k, args.gemm_n)
+            if args.profile == "host_gemm"
+            else None
+        )
+        fp32_gemm_source = (
+            write_host_fp32_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_fp32_gemm"
+            else None
+        )
+        quantized_gemm_source = (
+            write_host_quantized_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_quantized_gemm"
+            else None
+        )
+        fp8_gemm_source = (
+            write_host_fp8_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_fp8_gemm"
+            else None
+        )
+        fp4_gemm_source = (
+            write_host_fp4_gemm_kernel(
+                build_dir, args.gemm_m, args.gemm_k, args.gemm_n
+            )
+            if args.profile == "host_fp4_gemm"
+            else None
+        )
+        q8_block_dot_source = (
+            write_host_q8_block_dot_kernel(build_dir, args.gemm_n)
+            if args.profile == "host_q8_block_dot"
+            else None
+        )
+        source = Path(
+            vector_source
+            or batched_source
+            or engram_source
+            or deepseek_vector_source
+            or gemm_source
+            or fp32_gemm_source
+            or quantized_gemm_source
+            or fp8_gemm_source
+            or fp4_gemm_source
+            or q8_block_dot_source
+            or (example_root / kernel.source)
+        ).resolve()
         wrapped = write_wrapped_kernel(
             build_dir,
             args.profile,
@@ -859,7 +2554,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             core_type=kernel.core_type,
             pto_isa_root=str(pto_isa_root),
             extra_include_dirs=[
-                str((simpler_root / "src" / "a2a3" / "runtime" / runtime_name / "runtime").resolve())
+                str(
+                    (
+                        simpler_root
+                        / "src"
+                        / ("a5" if args.platform.startswith("a5") else "a2a3")
+                        / "runtime"
+                        / runtime_name
+                        / "runtime"
+                    ).resolve()
+                )
             ],
             build_dir=str(build_dir),
         )
@@ -901,7 +2605,9 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         args_template.append({"kind": "scalar_tile_batch", "name": "TILE_BATCH"})
 
     manifest = {
+        "simpler_capi_abi_version": SIMPLER_CAPI_ABI_VERSION,
         "profile": spec.profile,
+        "platform": args.platform,
         "runtime_variant": "HostBuildGraph",
         "callable_hint": spec.callable_hint,
         "simpler_runtime": {
@@ -945,8 +2651,70 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         },
         "note": "args_template is consumed by simulator-side helper to construct SimplerRuntimeArg entries",
     }
+    if args.profile == "host_gemm":
+        manifest["host_gemm_manifest_version"] = 3
+        manifest["host_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "bf16",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_fp32_gemm":
+        manifest["host_gemm_manifest_version"] = 4
+        manifest["host_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "fp32",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_quantized_gemm":
+        manifest["host_quantized_gemm_manifest_version"] = 2
+        manifest["host_quantized_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "int8",
+            "output_dtype": "int32",
+            "tile": 128,
+        }
+    if args.profile == "host_fp8_gemm":
+        manifest["host_fp8_gemm_manifest_version"] = 1
+        manifest["host_fp8_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "fp8_e4m3_ue8m0",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_fp4_gemm":
+        manifest["host_fp4_gemm_manifest_version"] = 2
+        manifest["host_fp4_gemm"] = {
+            "m": args.gemm_m,
+            "k": args.gemm_k,
+            "n": args.gemm_n,
+            "input_dtype": "fp8_e4m3+fp4_e2m1_lowered_fp8+ue8m0",
+            "output_dtype": "fp32",
+            "tile": 128,
+        }
+    if args.profile == "host_q8_block_dot":
+        manifest["host_q8_block_dot_manifest_version"] = 3
+        manifest["host_q8_block_dot"] = {
+            "m": args.gemm_m,
+            "k": 32,
+            "n": args.gemm_n,
+            "input_dtype": "int8",
+            "output_dtype": "int32",
+            "tile": 128,
+        }
     if args.profile == "host_engram_context":
-        manifest["host_engram_context_manifest_version"] = 5
+        manifest["host_engram_context_manifest_version"] = 6
+    if args.profile == "host_deepseek_vector":
+        manifest["host_deepseek_vector_manifest_version"] = 13
 
     manifest_path = output_dir / spec.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
@@ -966,6 +2734,9 @@ def main() -> int:
     parser.add_argument("--vector-tile-cols", type=int, default=32)
     parser.add_argument("--matmul-rows", type=int, default=128)
     parser.add_argument("--matmul-cols", type=int, default=128)
+    parser.add_argument("--gemm-m", type=int, default=128)
+    parser.add_argument("--gemm-k", type=int, default=128)
+    parser.add_argument("--gemm-n", type=int, default=128)
     parser.add_argument("--tile-batch", type=int, default=1)
     parser.add_argument("--reuse-runtime-manifest", default=None)
     parser.add_argument("--describe", action="store_true")

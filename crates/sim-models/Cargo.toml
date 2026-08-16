@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+libc = "0.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sim-config = { path = "../sim-config" }

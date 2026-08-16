@@ -434,6 +434,30 @@ run_obmm_coh_test() {
   run_binary "linqu_ub_obmm_coh_test" /bin/linqu_ub_obmm_coh_test $args
 }
 
+run_mem_service_obmm_provider_conformance() {
+  local args=""
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      mem_service_obmm_provider_node_id=*)
+        args="$args --node-id ${token#*=}"
+        ;;
+      mem_service_obmm_provider_node_count=*)
+        args="$args --node-count ${token#*=}"
+        ;;
+      mem_service_obmm_provider_generation=*)
+        args="$args --generation ${token#*=}"
+        ;;
+    esac
+  done
+
+  # Values come from kernel cmdline key=value tokens, so word splitting is intentional.
+  run_binary "linqu_mem_service_obmm_provider_conformance" \
+    /bin/linqu_mem_service_obmm_provider_conformance $args
+}
+
 run_gva_manager_bootstrap() {
   local args="--bootstrap"
   local token=""
@@ -817,6 +841,11 @@ run_default_actions() {
 
   if has_flag "linqu_obmm_coh_test=1"; then
     run_obmm_coh_test || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_mem_service_obmm_provider_conformance=1"; then
+    run_mem_service_obmm_provider_conformance || rc=$?
     ran_any="1"
   fi
 

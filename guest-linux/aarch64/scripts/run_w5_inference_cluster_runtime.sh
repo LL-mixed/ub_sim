@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
 
 case "$SIM_UAPI_W5_PROFILE" in
-  qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+  qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode|deepseek_v4_flash_decode)
     ;;
   *)
     echo "unsupported SIM_UAPI_W5_PROFILE=$SIM_UAPI_W5_PROFILE" >&2
@@ -32,8 +32,48 @@ esac
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w5_${SIM_UAPI_W5_PROFILE}_${RANDOM}}"
 TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w5_inference_cluster.trace.latest.txt}"
 RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_summary.${RUN_ID}.txt}"
-SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
-SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
+case "$SIM_UAPI_W5_PROFILE" in
+  deepseek_v4_flash_decode)
+    SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-deepseek-v4-flash}"
+    SIM_DEEPSEEK_V4_FLASH="${SIM_DEEPSEEK_V4_FLASH:-$REPO_DIR/../ds4/ds4flash.gguf}"
+    if [[ "$SIM_DEEPSEEK_V4_FLASH" != /* ]]; then
+      SIM_DEEPSEEK_V4_FLASH="$REPO_DIR/$SIM_DEEPSEEK_V4_FLASH"
+    fi
+    export SIM_DEEPSEEK_V4_FLASH
+    if [[ ! -f "$SIM_DEEPSEEK_V4_FLASH" && ! -d "$SIM_DEEPSEEK_V4_FLASH" ]]; then
+      echo "DeepSeek V4 Flash model source is missing: $SIM_DEEPSEEK_V4_FLASH" >&2
+      exit 2
+    fi
+    case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+      deepseek-v4-flash|deepseek_v4_flash)
+        deepseek_runtime_dir="$REPO_DIR/../ds4"
+        if [[ ! -d "$deepseek_runtime_dir" ]]; then
+          echo "DeepSeek V4 Flash DS4 runtime directory is missing: $deepseek_runtime_dir" >&2
+          exit 2
+        fi
+        deepseek_runtime_dir="$(cd "$deepseek_runtime_dir" && pwd)"
+        cargo run --manifest-path "$REPO_DIR/Cargo.toml" --release \
+          -p sim-models --bin deepseek_v4_flash_adapter -- \
+          build-library \
+          --ds4-dir "$deepseek_runtime_dir" \
+          --output "$deepseek_runtime_dir/build/libds4_w5.dylib"
+        ;;
+      deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
+        ;;
+    esac
+    ;;
+  *)
+    SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
+    ;;
+esac
+case "$SIM_UAPI_W5_PROFILE" in
+  deepseek_v4_flash_decode)
+    SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-0}"
+    ;;
+  *)
+    SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP="${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"
+    ;;
+esac
 SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE="${SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE:-0}"
 SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP="${SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP:-0}"
 SIM_W5_TEST_MEMORY_OBSERVATION_STORE="${SIM_W5_TEST_MEMORY_OBSERVATION_STORE:-}"
@@ -47,7 +87,14 @@ SIM_W5_TEST_MEMORY_BOUNDARY_OBSERVATION_RUN_ID="${SIM_W5_TEST_MEMORY_BOUNDARY_OB
 SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID="${SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_ID:-}"
 SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_IDS="${SIM_W5_TEST_MEMORY_SHORTPATH_DECISION_IDS:-}"
 SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID="${SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID:-}"
-SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP="${SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
+case "$SIM_UAPI_W5_PROFILE" in
+  deepseek_v4_flash_decode)
+    SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP="${SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-0}"
+    ;;
+  *)
+    SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP="${SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP:-1}"
+    ;;
+esac
 SIM_W5_TEST_REQUIRE_PREFIX_CACHE="${SIM_W5_TEST_REQUIRE_PREFIX_CACHE:-0}"
 SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID="${SIM_W5_TEST_MEMORY_PREFIX_CACHE_REUSE_PLAN_ID:-}"
 SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR="${SIM_W5_TEST_MEMORY_PREFIX_CACHE_SERVICE_ADDR:-}"
@@ -56,6 +103,7 @@ SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH="${SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH
 SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_W5_SERVING_INGRESS="${SIM_W5_SERVING_INGRESS:-cluster}"
 SIM_W5_SERVING_SUBMIT_REQUESTS_FILE="${SIM_W5_SERVING_SUBMIT_REQUESTS_FILE:-}"
+SIM_W5_FLASH_WEIGHT_CATALOG="${SIM_W5_FLASH_WEIGHT_CATALOG:-${SIM_W5_TEST_FLASH_WEIGHT_CATALOG:-}}"
 SIM_W5_MEMORY_STORE="${SIM_W5_MEMORY_STORE:-$OUT_DIR/w5_memory_object_store.${RUN_ID}.json}"
 SIM_W5_MEMORY_OBJECT_STORE="${SIM_W5_MEMORY_OBJECT_STORE:-$OUT_DIR/w5_object_service_store.${RUN_ID}.json}"
 SIM_W5_MEMORY_ENGRAM_STATE="${SIM_W5_MEMORY_ENGRAM_STATE:-$OUT_DIR/w5_memory_engram_state.${RUN_ID}.json}"
@@ -70,12 +118,83 @@ SIM_W5_TEST_MIN_TERMINAL_MARGIN_MILLI="${SIM_W5_TEST_MIN_TERMINAL_MARGIN_MILLI:-
 SIM_W5_TEST_MIN_SOURCE_CONFIDENCE_MILLI="${SIM_W5_TEST_MIN_SOURCE_CONFIDENCE_MILLI:-}"
 SIM_W5_TEST_APPROXIMATE_REQUIRES_VERIFY="${SIM_W5_TEST_APPROXIMATE_REQUIRES_VERIFY:-1}"
 SIM_W5_TEST_VALIDATE_ONLY="${SIM_W5_TEST_VALIDATE_ONLY:-0}"
+SIM_LLM_INFER_PROMPT="${SIM_LLM_INFER_PROMPT:-}"
+SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-}}"
+
+if [[ -n "$SIM_LLM_INFER_PROMPT" && -n "$SIM_LLM_INFER_PROMPT_TOKEN_IDS" ]]; then
+  echo "SIM_LLM_INFER_PROMPT and SIM_LLM_INFER_PROMPT_TOKEN_IDS are mutually exclusive" >&2
+  exit 2
+fi
+if [[ -n "$SIM_LLM_INFER_PROMPT" ]]; then
+  case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+    deepseek-v4-flash|deepseek_v4_flash|deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
+      tokenizer_bin="$REPO_DIR/target/release/deepseek_v4_flash_tokenizer"
+      cargo build --manifest-path "$REPO_DIR/Cargo.toml" --release --quiet \
+        -p sim-models --bin deepseek_v4_flash_tokenizer
+      SIM_LLM_INFER_PROMPT_TOKEN_IDS="$(
+        "$tokenizer_bin" \
+          --model "$SIM_DEEPSEEK_V4_FLASH" \
+          --prompt "$SIM_LLM_INFER_PROMPT" \
+          --no-think \
+          --token-ids-only
+      )"
+      if [[ ! "$SIM_LLM_INFER_PROMPT_TOKEN_IDS" =~ '^[0-9]+(,[0-9]+)*$' ]]; then
+        echo "DeepSeek tokenizer returned invalid token IDs" >&2
+        exit 2
+      fi
+      prompt_token_ids=("${(@s:,:)SIM_LLM_INFER_PROMPT_TOKEN_IDS}")
+      echo "[w5_inference_cluster] prompt_tokenized source=raw_prompt model=deepseek-v4-flash tokens=${#prompt_token_ids[@]}" >&2
+      ;;
+    *)
+      echo "raw prompt tokenization is not implemented for backend $SIM_UAPI_W4_CHIPBACKEND_PROFILE" >&2
+      exit 2
+      ;;
+  esac
+fi
+SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-81378,37585,374}"
+
+case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+  deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
+    prompt_token_ids=("${(@s:,:)SIM_LLM_INFER_PROMPT_TOKEN_IDS}")
+    cluster_nodes="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
+    if [[ ! "$cluster_nodes" =~ '^[1-9][0-9]*$' ]]; then
+      echo "invalid SIM_W5_CLUSTER_NODE_COUNT=$cluster_nodes" >&2
+      exit 2
+    fi
+    total_model_layers=43
+    case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+      deepseek-v4-flash-official|deepseek_v4_flash_official)
+        deadline_backend=official
+        layer_wait_secs=600
+        deadline_overhead_secs=900
+        ;;
+      *)
+        deadline_backend=simpler
+        layer_wait_secs=30
+        deadline_overhead_secs=300
+        ;;
+    esac
+    model_min_wait_secs=$((${#prompt_token_ids[@]} * total_model_layers * layer_wait_secs + deadline_overhead_secs))
+    APP_WAIT_SECS="${APP_WAIT_SECS:-600}"
+    if [[ ! "$APP_WAIT_SECS" =~ '^[1-9][0-9]*$' ]]; then
+      echo "invalid APP_WAIT_SECS=$APP_WAIT_SECS" >&2
+      exit 2
+    fi
+    if (( APP_WAIT_SECS < model_min_wait_secs )); then
+      APP_WAIT_SECS="$model_min_wait_secs"
+    fi
+    export APP_WAIT_SECS
+    echo "[w5_inference_cluster] compute_deadline backend=$deadline_backend tokens=${#prompt_token_ids[@]} nodes=$cluster_nodes total_layers=$total_model_layers layer_wait_secs=$layer_wait_secs overhead_secs=$deadline_overhead_secs app_wait_secs=$APP_WAIT_SECS" >&2
+    ;;
+esac
 
 export RUN_ID
 export TRACE_FILE
 export RUN_SUMMARY_FILE
 export SIM_UAPI_W5_PROFILE
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE
+export SIM_LLM_INFER_PROMPT
+export SIM_LLM_INFER_PROMPT_TOKEN_IDS
 export SIM_QWEN3_GUEST_ENGRAM
 export SIM_QWEN3_GUEST_ENGRAM_POOL
 export SIM_QWEN3_GUEST_ENGRAM_STATE_REF="${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}"
@@ -106,6 +225,7 @@ export SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH
 export SIM_W5_SERVING_QUEUE
 export SIM_W5_SERVING_INGRESS
 export SIM_W5_SERVING_SUBMIT_REQUESTS_FILE
+export SIM_W5_FLASH_WEIGHT_CATALOG
 export SIM_W5_MEMORY_STORE
 export SIM_W5_MEMORY_OBJECT_STORE
 export SIM_W5_MEMORY_ENGRAM_STATE
@@ -292,7 +412,7 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     --w5-profile "$SIM_UAPI_W5_PROFILE"
     --steps "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
     --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
-    --prompt-token-ids "${SIM_QWEN3_GUEST_PROMPT_TOKEN_IDS:-81378,37585,374}"
+    --prompt-token-ids "$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
   )
   case "$SIM_W5_TEST_VALIDATE_ONLY" in
     1|true|TRUE|yes|YES)

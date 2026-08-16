@@ -4,6 +4,16 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current validation entry points:
 
+- [2026-07-16-w5-deepseek-v4-flash-official-first-token-report.md](2026-07-16-w5-deepseek-v4-flash-official-first-token-report.md)
+  - stage-5 evidence for the official position-0 prompt `[1]`, all 43 transformer layers, A5 matrix/vector production dispatch, bounded checkpoint reads/caches, exact terminal logits and top-1 token 294
+- [2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md](2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md)
+  - stage-4 evidence for official packed E2M1/UE8M0 routed experts, hash and learned routing, clamped SwiGLU, top-6 combination, selected-only loading, and bounded expert-cache behavior
+- [2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md](2026-07-14-w5-deepseek-v4-flash-official-linear-production-report.md)
+  - stage-3 evidence for official FP8 E4M3/UE8M0 A5 MX execution, dynamic activation quantization, BF16/F32 output, representative attention/grouped/shared linears, and the checkpoint's BF16 output head
+- [2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md](2026-07-14-w5-deepseek-v4-flash-official-reference-oracle-report.md)
+  - stage-2 evidence for independent official FP8/FP4/UE8M0 scalar decoding, dynamic activation quantization, operator checksums, and complete position-0 layer reference forward
+- [2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md](2026-07-14-w5-deepseek-v4-flash-official-checkpoint-loader-report.md)
+  - stage-1 evidence for direct official config/index/46-shard schema validation, positioned tensor/expert slice reads, bounded caches, checksums, and fail-closed loader tests
 - [qwen3_simpler_build_output_validation.md](qwen3_simpler_build_output_validation.md)
   - validates Qwen3 0.6B/14B L2 and L3 generation on a simpler-backed device using the packaged `build_output/Qwen*` programs
 - [reports/2026-04-14-four-node-matrix-validation.md](2026-04-14-four-node-matrix-validation.md)
@@ -43,6 +53,8 @@ Current validation entry points:
   - plan for adding an opt-in approximate hidden-state match path to W5 shortpath while preserving exact-match correctness
 - [plans/2026-06-25-mem-service-independent-service-plan.md](plans/2026-06-25-mem-service-independent-service-plan.md)
   - implementation and evaluation plan for turning `mem_service` into an independently releasable/deployable service for LLM serving and pretraining integration
+- [plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md](plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md)
+  - active plan for direct official DeepSeek V4 Flash Safetensors; stages 1 through 5 are complete, and stage 6 now has stateful official range execution plus the fail-closed W5 profile/CLI; a 2-node step-0 run covered all 43 layers and selected token 294 but correctly failed because official candidates did not yet carry token text metadata, so the 2/3/8-node 4/8-step matrix and MTP remain incomplete; DS4 remains read-only and 1M context is explicitly not validated
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)
