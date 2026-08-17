@@ -550,7 +550,8 @@ if [[ "$RECONFIGURE" != "1" && -x "$BIN" ]] &&
    ! staticlib_newer_than_qemu_binary &&
    qemu_ub_supports_required_opts "$BIN" &&
    (( BUILD_OBMM_TESTS == 0 )) &&
-   (( TEST_TARGETS_READY == 1 )); then
+   (( TEST_TARGETS_READY == 1 )) &&
+   [[ -x "$BUILD_DIR/qemu-img" ]]; then
   echo "[build_qemu_binary] using existing QEMU binary: $BIN" >&2
   echo "$BIN"
   exit 0
@@ -601,6 +602,21 @@ fi
 if (( BUILD_OBMM_TESTS == 1 )) && ! obmm_tests_ready; then
   echo "[build_qemu_binary] error: missing OBMM unit test binaries" >&2
   exit 1
+fi
+
+# qemu-img is required by launch_ub_eight_node_headless.sh to create per-node
+# qcow2 overlays on top of the openEuler rootfs. Without it, all 8 nodes try
+# to grab the same base image write lock and only nodeA boots.
+QEMU_IMG_BIN="$BUILD_DIR/qemu-img"
+if [[ ! -x "$QEMU_IMG_BIN" ]]; then
+  echo "[build_qemu_binary] building qemu-img" >&2
+  (
+    cd "$BUILD_DIR"
+    ninja -j"$JOBS" qemu-img
+  ) || echo "[build_qemu_binary] warning: qemu-img build failed; per-node overlays will fall back" >&2
+fi
+if [[ ! -x "$QEMU_IMG_BIN" ]]; then
+  echo "[build_qemu_binary] warning: qemu-img missing at $QEMU_IMG_BIN; per-node overlays will fall back" >&2
 fi
 
 write_qemu_build_stamp

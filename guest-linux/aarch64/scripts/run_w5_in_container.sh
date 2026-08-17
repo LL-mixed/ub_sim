@@ -109,8 +109,45 @@ if [[ -d /home/ll/models ]]; then
   docker_args+=(-v /home/ll/models:/home/ll/models:ro)
   docker_args+=(-v /home/ll/models:/models:ro)
 fi
+if [[ -d /home/ll/.cache/modelscope ]]; then
+  docker_args+=(-v /home/ll/.cache/modelscope:/home/ll/.cache/modelscope:ro)
+fi
+if [[ -d /home/data/models ]]; then
+  docker_args+=(-v /home/data/models:/home/data/models:ro)
+fi
 if [[ -d /Volumes/repos/qwen3_mlx_run ]]; then
   docker_args+=(-v /Volumes/repos/qwen3_mlx_run:/Volumes/repos/qwen3_mlx_run:ro)
+fi
+
+if [[ -n "${AARCH64_LINUX_CC:-}" ]]; then
+  docker_args+=(-e "AARCH64_LINUX_CC=$AARCH64_LINUX_CC")
+fi
+if [[ -n "${SIM_SIMPLER_DISPATCH_LOG:-}" ]]; then
+  docker_args+=(-e "SIM_SIMPLER_DISPATCH_LOG=$SIM_SIMPLER_DISPATCH_LOG")
+fi
+if [[ -n "${SIM_W5_GUEST_BACKEND:-}" ]]; then
+  docker_args+=(-e "SIM_W5_GUEST_BACKEND=$SIM_W5_GUEST_BACKEND")
+fi
+if [[ -n "${SIM_W5_OPENEULER_GUEST_DIR:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_GUEST_DIR=$SIM_W5_OPENEULER_GUEST_DIR")
+fi
+if [[ -n "${SIM_W5_OPENEULER_ROOTFS:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_ROOTFS=$SIM_W5_OPENEULER_ROOTFS")
+fi
+if [[ -n "${SIM_W5_OPENEULER_ENV_DIR:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_ENV_DIR=$SIM_W5_OPENEULER_ENV_DIR")
+fi
+if [[ -n "${SIM_W5_OPENEULER_TOOLS_DIR:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_TOOLS_DIR=$SIM_W5_OPENEULER_TOOLS_DIR")
+fi
+if [[ -n "${SIM_W5_OPENEULER_MODULES_DIR:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_MODULES_DIR=$SIM_W5_OPENEULER_MODULES_DIR")
+fi
+if [[ -n "${SIM_W5_OPENEULER_OVERLAY_DIR:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_OVERLAY_DIR=$SIM_W5_OPENEULER_OVERLAY_DIR")
+fi
+if [[ -n "${SIM_W5_OPENEULER_INITRAMFS:-}" ]]; then
+  docker_args+=(-e "SIM_W5_OPENEULER_INITRAMFS=$SIM_W5_OPENEULER_INITRAMFS")
 fi
 
 container_script='
@@ -134,10 +171,27 @@ fi
 
 ./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
 
+# Host bind-mounts make git flag every repo as "dubious ownership" inside the
+# container, which breaks verify_mem_service_source.py and any git invocations
+# done by W5/Memory Service scripts. Mark the workspace tree as safe once.
 git config --global --add safe.directory /work
 git config --file /work/.gitmodules --get-regexp path |
 while read -r _ submodule_path; do
   git config --global --add safe.directory "/work/$submodule_path"
+done
+git config --global --add safe.directory \*
+
+# The container image was baked by another developer whose editable Python
+# installs (_simpler_editable.pth, _pypto_editable.pth in site-packages) point
+# at /home/sj/git/pypto/{runtime,python}. Those paths are missing here, and the
+# .pth entries shadow sys.path.insert(0, vendor/simpler) that
+# prepare_simpler_host_artifacts.py relies on. Remove them so the workspace
+# vendor/simpler submodule wins.
+for stale_pth in /usr/local/python3.11.14/lib/python3.11/site-packages/_simpler_editable.pth \
+                 /usr/local/python3.11.14/lib/python3.11/site-packages/_pypto_editable.pth; do
+  if [[ -f "$stale_pth" ]]; then
+    rm -f "$stale_pth"
+  fi
 done
 
 if [[ -f guest-linux/aarch64/out/Image && -f guest-linux/aarch64/out/initramfs.cpio.gz ]]; then

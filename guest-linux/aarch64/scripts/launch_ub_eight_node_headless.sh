@@ -11,6 +11,18 @@ SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 RDINIT="${RDINIT:-/bin/run_app}"
+# SIM_W5_GUEST_BACKEND controls the userspace the QEMU guest runs.
+#   busybox (default): -initrd cpio.gz with rdinit=/bin/run_app, initramfs
+#                      built by build_initramfs.sh.
+#   openeuler         : -drive rootfs.qcow2 (qcow2 + 9p env), rootfs built by
+#                      build_openeuler_guest.sh; tools/modules baked into the
+#                      image, per-run env injected via 9p (tag w5env).
+# Path defaults are wired in below (after SHARED_DIR is defined).
+SIM_W5_GUEST_BACKEND="${SIM_W5_GUEST_BACKEND:-busybox}"
+case "$SIM_W5_GUEST_BACKEND" in
+  busybox|openeuler) ;;
+  *) echo "unknown SIM_W5_GUEST_BACKEND=$SIM_W5_GUEST_BACKEND (use busybox|openeuler)" >&2; exit 2 ;;
+esac
 SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 case "$SIM_W5_CLUSTER_NODE_COUNT" in
   2)
@@ -61,6 +73,15 @@ QMP_DIR="${SHARED_DIR}/qmp"
 SERIAL_DIR="${SHARED_DIR}/serial"
 MON_DIR="${SHARED_DIR}/mon"
 UB_QEMU_RUNTIME_DIR="${UB_QEMU_RUNTIME_DIR:-${SHARED_DIR}/xdg_runtime}"
+
+# When SIM_W5_GUEST_BACKEND=openeuler, point at the artifacts produced by
+# build_openeuler_guest.sh. Override with env vars to use a different rootfs.
+OPENEULER_GUEST_DIR="${SIM_W5_OPENEULER_GUEST_DIR:-$ROOT_DIR/out/openeuler_guest}"
+OPENEULER_ROOTFS_BASE="${SIM_W5_OPENEULER_ROOTFS:-$OPENEULER_GUEST_DIR/rootfs.qcow2}"
+OPENEULER_ENV_DIR="${SIM_W5_OPENEULER_ENV_DIR:-$OPENEULER_GUEST_DIR/env}"
+OPENEULER_TOOLS_DIR="${SIM_W5_OPENEULER_TOOLS_DIR:-$OPENEULER_GUEST_DIR/tools}"
+OPENEULER_MODULES_DIR="${SIM_W5_OPENEULER_MODULES_DIR:-$OPENEULER_GUEST_DIR/modules}"
+OPENEULER_OVERLAY_DIR="${SIM_W5_OPENEULER_OVERLAY_DIR:-$SHARED_DIR/overlays}"
 SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
@@ -293,6 +314,74 @@ start_node() {
     )
   fi
 
+  # Build the QEMU argv array. The base args are shared between busybox and
+  # openeuler backends; the backend-specific args are appended at the end.
+  local -a guest_qemu_args=(
+    -S
+    -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on
+    -cpu cortex-a57
+    -smp "$QEMU_SMP"
+    -m "$QEMU_MEM"
+    -nodefaults
+    -display none
+    "${remote_model_args[@]}"
+    "${async_load_args[@]}"
+    "${void_response_args[@]}"
+    "${pto_ub_gm_args[@]}"
+    -qmp unix:"$qmp_socket",server=on,wait=off
+    -chardev socket,id=mon0,path="$mon_socket",server=on,wait=off
+    -mon chardev=mon0,mode=readline
+    -chardev socket,id=ser0,path="$serial_socket",server=on,wait=off,logfile="$guest_log",logappend=off
+    -serial chardev:ser0
+  )
+
+  if [[ "$SIM_W5_GUEST_BACKEND" == "openeuler" ]]; then
+    # Per-node overlay qcow2 (lazy-create if missing). Uses qemu-img from the
+    # same QEMU build the cluster uses; falls back to PATH lookup; if neither
+    # is available, makes a per-node full copy of the base image so each QEMU
+    # process still gets its own write lock.
+    mkdir -p "$OPENEULER_OVERLAY_DIR"
+    local overlay="$OPENEULER_OVERLAY_DIR/${node_id}.qcow2"
+    if [[ ! -f "$overlay" ]]; then
+      # Prefer the qemu-img built alongside QEMU; if absent, fall back to PATH.
+      local qemu_img_bin="${QEMU_IMG_BIN:-}"
+      if [[ -z "$qemu_img_bin" ]]; then
+        local qemu_dir
+        qemu_dir="$(dirname "$QEMU_BIN")"
+        [[ -x "$qemu_dir/qemu-img" ]] && qemu_img_bin="$qemu_dir/qemu-img"
+      fi
+      [[ -z "$qemu_img_bin" ]] && qemu_img_bin="$(command -v qemu-img 2>/dev/null || true)"
+      if [[ -n "$qemu_img_bin" ]]; then
+        "$qemu_img_bin" create -f qcow2 -F qcow2 -b "$OPENEULER_ROOTFS_BASE" "$overlay" >/dev/null
+      else
+        log "warning: qemu-img not found; making per-node copy of base image"
+        cp -a "$OPENEULER_ROOTFS_BASE" "$overlay"
+      fi
+    fi
+    # initramfs loads virtio modules (modular in openeuler_defconfig) then
+    # switch_roots to systemd on /dev/vda. Built by build_openeuler_guest.sh.
+    local openeuler_initramfs="${SIM_W5_OPENEULER_INITRAMFS:-$OPENEULER_GUEST_DIR/initramfs.cpio.gz}"
+    if [[ ! -f "$openeuler_initramfs" ]]; then
+      log "warning: openeuler initramfs missing at $openeuler_initramfs (kernel may fail to mount /dev/vda)"
+    fi
+    guest_qemu_args+=(
+      -drive "file=$overlay,format=qcow2,if=virtio"
+      -virtfs "local,path=$OPENEULER_ENV_DIR,mount_tag=w5env,security_model=none,fmode=0644,dmode=0755"
+      -virtfs "local,path=$OPENEULER_TOOLS_DIR,mount_tag=w5tools,security_model=none,fmode=0755,dmode=0755"
+      -virtfs "local,path=$OPENEULER_MODULES_DIR,mount_tag=w5modules,security_model=none,fmode=0644,dmode=0755"
+      -kernel "$KERNEL_IMAGE"
+      -initrd "$openeuler_initramfs"
+      -append "console=ttyAMA0 root=/dev/vda rw rootfstype=ext4 init=/init ${node_append_extra}"
+    )
+  else
+    guest_qemu_args+=(
+      -kernel "$KERNEL_IMAGE"
+      -initrd "$INITRAMFS_IMAGE"
+      "${oe_disk_args[@]}"
+      -append "$append_args"
+    )
+  fi
+
   nohup env \
     UB_FM_NODE_ID="$node_id" \
     LINQU_UB_NODE_COUNT="$SIM_W5_CLUSTER_NODE_COUNT" \
@@ -441,26 +530,7 @@ start_node() {
     SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
     XDG_RUNTIME_DIR="$UB_QEMU_RUNTIME_DIR" \
     "$QEMU_BIN" \
-      -S \
-      -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
-      -cpu cortex-a57 \
-      -smp "$QEMU_SMP" \
-      -m "$QEMU_MEM" \
-      -nodefaults \
-      -display none \
-      "${remote_model_args[@]}" \
-    "${async_load_args[@]}" \
-    "${void_response_args[@]}" \
-      "${pto_ub_gm_args[@]}" \
-      -qmp unix:"$qmp_socket",server=on,wait=off \
-      -chardev socket,id=mon0,path="$mon_socket",server=on,wait=off \
-      -mon chardev=mon0,mode=readline \
-      -chardev socket,id=ser0,path="$serial_socket",server=on,wait=off,logfile="$guest_log",logappend=off \
-      -serial chardev:ser0 \
-      -kernel "$KERNEL_IMAGE" \
-      -initrd "$INITRAMFS_IMAGE" \
-      "${oe_disk_args[@]}" \
-      -append "$append_args" \
+      "${guest_qemu_args[@]}" \
       >"$qemu_log" 2>&1 &
   qemu_pid=$!
   disown "$qemu_pid" >/dev/null 2>&1 || true
