@@ -195,6 +195,7 @@ append_obmm_async_args() {
     value="${words[$((index + 1))]}"
     case "$option" in
       --mode) append_cmdline_if_missing "obmm_async_mode=$value" ;;
+      --p2b-completion) append_cmdline_if_missing "obmm_async_p2b_completion=$value" ;;
       --coroutines) append_cmdline_if_missing "obmm_async_coroutines=$value" ;;
       --inflight) append_cmdline_if_missing "obmm_async_inflight=$value" ;;
       --lookahead) append_cmdline_if_missing "obmm_async_lookahead=$value" ;;

@@ -24,6 +24,10 @@ def test_scc_uapi_v2_layout_compiles_for_aarch64():
 #include <ub/obmm_scc.h>
 _Static_assert(OBMM_SCC_ABI_VERSION == 2, "ABI version");
 _Static_assert(OBMM_SCC_RESUME_HLT_IMM == 0x5343, "resume immediate");
+_Static_assert(OBMM_SCC_CAP_REPLAY_RETIRE == (1ULL << 8),
+               "replay capability");
+_Static_assert(OBMM_SCC_START_REPLAY_RETIRE == 1,
+               "replay start flag");
 _Static_assert(sizeof(struct obmm_scc_context_v2) == 832, "context size");
 _Static_assert(offsetof(struct obmm_scc_context_v2, x) == 16, "x offset");
 _Static_assert(offsetof(struct obmm_scc_context_v2, sp) == 264, "sp offset");
@@ -38,6 +42,8 @@ _Static_assert(sizeof(struct obmm_scc_event_v2) == 72, "event size");
 _Static_assert(sizeof(struct obmm_scc_stats_v2) == 152, "stats size");
 _Static_assert(sizeof(struct obmm_scc_observability_v2) == 144,
                "observability size");
+_Static_assert(sizeof(struct obmm_scc_replay_stats_v1) == 32,
+               "replay stats size");
 _Static_assert(offsetof(struct obmm_scc_start_v2, upcall_entry) == 24,
                "upcall entry offset");
 _Static_assert(offsetof(struct obmm_scc_event_v2, interrupted_pc) == 24,
@@ -134,9 +140,15 @@ def test_qemu_provides_mechanism_but_not_coroutine_policy():
     assert "obmm_scc_schedule_next" not in model_header
     assert "obmm_scc_context_create" not in model_header
     assert "obmm_scc_event_pop" in model
+    assert "obmm_scc_replay_consume" in model
+    assert "OBMM_SCC_PLT_REPLAY_READY" in model
     assert "ub_scc_cpu_take_upcall" in device
     assert "ub_scc_cpu_resume" in device
     assert "ub_scc_scheduler_command" in device
+    replay_expected = device.split(
+        "bool ub_scc_cpu_replay_expected", 1
+    )[1].split("bool ub_scc_cpu_take_upcall", 1)[0]
+    assert "!state->upcall_active" in replay_expected
     status_read = device.split("case SCC_REG_STATUS:", 1)[1].split(
         "case SCC_REG_LAST_ERROR:", 1
     )[0]
@@ -151,6 +163,8 @@ def test_qemu_provides_mechanism_but_not_coroutine_policy():
     assert "OBMM_SCC_RESUME_IMM" in translate
     assert "gen_helper_obmm_scc_resume" in translate
     assert "HELPER(obmm_scc_remote_load)" in helper
+    assert "UB_SCC_LOAD_REPLAYED" in helper
+    assert "obmm_scc_replay_valid = true" in helper
     assert "env->pc = upcall_entry" in helper
     assert "obmm_scc_probe_access_range" in helper
     assert "probe_access(env, address, OBMM_SCC_CONTEXT_BYTES" not in helper
@@ -174,8 +188,14 @@ def test_guest_el0_runtime_owns_save_state_and_selection():
     assert "OBMM_SCC_PROTOCOL_ERROR schema=1" in runtime
     assert "OBMM_SCC_CONTEXT_STATE schema=1" in runtime
     assert "if (runtime->first_error)" in runtime
-    assert "target->context.x[event->rt] = event->value" in runtime
-    assert "target->context.pc = event->fault_pc + 4" in runtime
+    complete = runtime.split("case OBMM_SCC_EVENT_COMPLETE:", 1)[1].split(
+        "case OBMM_SCC_EVENT_FAULT:", 1
+    )[0]
+    assert "OBMM_SCC_CONTEXT_READY_REPLAY" in complete
+    assert "target->context.x[event->rt] = event->value" in complete
+    assert "target->context.pc = event->fault_pc + 4" in complete
+    assert "runtime->replay_retire" in complete
+    assert "runtime->caps.capabilities & OBMM_SCC_CAP_REPLAY_RETIRE" in runtime
     assert "runtime->current->state != OBMM_SCC_CONTEXT_DONE" in dispatch
     assert "interrupted_was_running" in dispatch
     assert "OBMM_SCC_IOCTL_GET_EVENT" in runtime
@@ -226,6 +246,9 @@ def test_scheduler_enter_ioctl_is_part_of_guest_abi_v2():
     assert "OBMM_SCC_IOCTL_SCHEDULER_ENTER" in uapi
     assert "static long linqu_scc_scheduler_enter" in driver
     assert "case OBMM_SCC_IOCTL_SCHEDULER_ENTER:" in driver
+    assert "OBMM_SCC_IOCTL_GET_REPLAY_STATS" in uapi
+    assert "case OBMM_SCC_IOCTL_GET_REPLAY_STATS:" in driver
+    assert "ctx->capabilities & OBMM_SCC_CAP_REPLAY_RETIRE" in driver
 
 
 def test_p2b_producer_consumer_has_causal_upcall_evidence():
@@ -243,6 +266,8 @@ def test_p2b_producer_consumer_has_causal_upcall_evidence():
     ):
         assert event in runtime
     assert "--p2b-producer-consumer" in app
+    assert "--p2b-completion patch|replay" in app
+    assert "p2b_completion=%s replay_consumed=" in app
     assert "async_run_p2b_producer" in app
     assert "async_run_p2b_consumer" in app
     assert "OBMM_P2B_WRITE schema=1" in app

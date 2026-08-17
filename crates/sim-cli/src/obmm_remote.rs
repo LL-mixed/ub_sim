@@ -1302,6 +1302,34 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
     {
         anyhow::bail!("P2B EL0 context saves must match direct EL0 upcalls");
     }
+    match summary.get("p2b_completion").map(String::as_str) {
+        None | Some("patch") => {
+            if summary
+                .get("replay_consumed")
+                .map(|_| required_u64(&summary, "replay_consumed"))
+                .transpose()?
+                .unwrap_or(0)
+                != 0
+                || summary
+                    .get("replay_mismatch")
+                    .map(|_| required_u64(&summary, "replay_mismatch"))
+                    .transpose()?
+                    .unwrap_or(0)
+                    != 0
+            {
+                anyhow::bail!("P2B patch mode reported replay activity");
+            }
+        }
+        Some("replay") => {
+            if required_u64(&summary, "replay_consumed")? != coroutines
+                || required_u64(&summary, "replay_mismatch")? != 0
+                || required_u64(&summary, "replay_ready_high_water")? == 0
+            {
+                anyhow::bail!("P2B replay mode does not prove exact-once replay retirement");
+            }
+        }
+        Some(mode) => anyhow::bail!("unknown P2B completion mode: {mode}"),
+    }
     if required_u64(&export, "writes")? != coroutines {
         anyhow::bail!("P2B producer writes must match the coroutine count");
     }
@@ -1815,6 +1843,8 @@ mod tests {
                  qemu_context_saves=0 qemu_context_restores=0 \
                  qemu_context_switches=0 qemu_context_bytes=0 \
                  scc_pending_final=0 backend_pending_final=0 trace_dropped=0 \
+                 p2b_completion=patch replay_consumed=0 replay_mismatch=0 \
+                 replay_ready_high_water=0 \
                  status=pass\n\
                  OBMM_BACKEND_EVIDENCE node=nodeA duplicate=0 late=0 drained=1\n\
                  OBMM_BACKEND_EVIDENCE node=nodeB duplicate=0 late=0 drained=1\n"
@@ -2013,6 +2043,19 @@ mod tests {
         let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &invalid)
             .expect_err("QEMU-owned P2B context save must fail");
         assert!(error.to_string().contains("EL0 scheduler progress"));
+
+        let replay = phase_evidence(ObmmPhaseGate::P2b, hash).replace(
+            "p2b_completion=patch replay_consumed=0 replay_mismatch=0 \
+                 replay_ready_high_water=0",
+            "p2b_completion=replay replay_consumed=2 replay_mismatch=0 \
+                 replay_ready_high_water=2",
+        );
+        validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &replay)
+            .expect("exact-once replay evidence must pass P2B gate");
+        let invalid_replay = replay.replace("replay_consumed=2", "replay_consumed=1");
+        let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &invalid_replay)
+            .expect_err("incomplete replay retirement must fail P2B gate");
+        assert!(error.to_string().contains("exact-once replay"));
 
         let legacy_symmetric = phase_evidence(ObmmPhaseGate::P2a, hash)
             .replace("mode=async-poll", "mode=scheduler-core");

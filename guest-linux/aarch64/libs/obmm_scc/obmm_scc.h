@@ -15,6 +15,11 @@ extern "C" {
 
 struct obmm_scc;
 
+enum obmm_scc_completion_mode {
+    OBMM_SCC_COMPLETION_PATCH = 0,
+    OBMM_SCC_COMPLETION_REPLAY = 1,
+};
+
 enum obmm_scc_trace_kind {
     OBMM_SCC_TRACE_UPCALL_PENDING = 1,
     OBMM_SCC_TRACE_UPCALL_COMPLETE,
@@ -55,6 +60,7 @@ struct obmm_scc_options {
     uint64_t load_timeout_ns;
     obmm_scc_trace_fn trace;
     void *trace_opaque;
+    enum obmm_scc_completion_mode completion_mode;
 };
 
 struct obmm_scc_map {
@@ -66,6 +72,7 @@ struct obmm_scc_map {
 struct obmm_scc_metrics {
     struct obmm_scc_stats_v2 device;
     struct obmm_scc_observability_v2 observability;
+    struct obmm_scc_replay_stats_v1 replay;
     uint64_t el0_pending_upcalls;
     uint64_t el0_complete_upcalls;
     uint64_t el0_fault_upcalls;

@@ -255,7 +255,10 @@ def test_build_run_and_launcher_contracts():
     assert "obmm_async_expected_outcome" in eval_runner
     assert "obmm_async_expected_outcome" in run_app
     assert "obmm_async_p2b_producer_consumer" in run_app
+    assert "obmm_async_p2b_completion" in run_app
     assert "obmm_async_producer_index" in run_app
+    assert "--p2b-completion" in eval_runner
+    assert "P2B replay mode lacks exact-once retirement evidence" in eval_runner
     assert "OBMM_OPERATION_TRACE" in eval_runner
     assert "OBMM_P2B_NODE_EVIDENCE" in eval_runner
     assert "--p2b-producer-consumer" in eval_runner

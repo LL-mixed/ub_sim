@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1020"
+     viewBox="0 0 1600 1020" role="img"
+     aria-labelledby="title desc">
+  <title id="title">OBMM P2B patch 与 replay 模式对比</title>
+  <desc id="desc">比较远端 LDR 完成后由 EL0 patch saved context 与原 LDR replay 的路径、状态和责任边界。</desc>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#15803d"/>
+    </marker>
+    <style>
+      .title { font: 700 32px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#111827; }
+      .subtitle { font: 500 17px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#374151; }
+      .lane-title { font: 700 25px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#111827; }
+      .box-title { font: 700 18px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#111827; }
+      .text { font: 500 15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#1f2937; }
+      .small { font: 500 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#374151; }
+      .badge { font: 700 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#111827; }
+      .box { stroke-width:2; rx:14; ry:14; }
+      .arrow-patch { stroke:#2563eb; stroke-width:3; fill:none; marker-end:url(#arrow-blue); }
+      .arrow-replay { stroke:#15803d; stroke-width:3; fill:none; marker-end:url(#arrow-green); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1020" fill="#f8fafc"/>
+  <text x="800" y="52" text-anchor="middle" class="title">OBMM P2B：patch 与 replay 的关键差异</text>
+  <text x="800" y="84" text-anchor="middle" class="subtitle">两者共享 PENDING upcall、EL0 Context Store 与 EL0 scheduler；COMPLETE 后的 load 退休责任不同</text>
+
+  <rect x="38" y="112" width="744" height="826" rx="22" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+  <rect x="818" y="112" width="744" height="826" rx="22" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+  <text x="410" y="154" text-anchor="middle" class="lane-title">P2B-patch（默认）</text>
+  <text x="1190" y="154" text-anchor="middle" class="lane-title">P2B-replay（新增）</text>
+
+  <rect x="218" y="184" width="384" height="82" class="box" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="410" y="214" text-anchor="middle" class="box-title">① 原始普通 LDR</text>
+  <text x="410" y="240" text-anchor="middle" class="text">helper submit → PENDING → TB 退出</text>
+
+  <rect x="998" y="184" width="384" height="82" class="box" fill="#ffffff" stroke="#4ade80"/>
+  <text x="1190" y="214" text-anchor="middle" class="box-title">① 原始普通 LDR</text>
+  <text x="1190" y="240" text-anchor="middle" class="text">helper submit → PENDING → TB 退出</text>
+
+  <path d="M410 266 L410 310" class="arrow-patch"/>
+  <path d="M1190 266 L1190 310" class="arrow-replay"/>
+
+  <rect x="144" y="310" width="532" height="100" class="box" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="410" y="342" text-anchor="middle" class="box-title">② EL0 upcall 保存完整上下文</text>
+  <text x="410" y="369" text-anchor="middle" class="text">context.pc = fault_pc；coroutine → WAIT_REMOTE</text>
+  <text x="410" y="393" text-anchor="middle" class="small">EL0 scheduler 可选择其他 READY coroutine</text>
+
+  <rect x="924" y="310" width="532" height="100" class="box" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="1190" y="342" text-anchor="middle" class="box-title">② EL0 upcall 保存完整上下文</text>
+  <text x="1190" y="369" text-anchor="middle" class="text">context.pc = fault_pc；coroutine → WAIT_REMOTE</text>
+  <text x="1190" y="393" text-anchor="middle" class="small">EL0 scheduler 可选择其他 READY coroutine</text>
+
+  <path d="M410 410 L410 454" class="arrow-patch"/>
+  <path d="M1190 410 L1190 454" class="arrow-replay"/>
+
+  <rect x="144" y="454" width="532" height="124" class="box" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="410" y="486" text-anchor="middle" class="box-title">③ COMPLETE event：EL0 模拟退休</text>
+  <text x="410" y="516" text-anchor="middle" class="text">saved x[Rt] = event.value</text>
+  <text x="410" y="542" text-anchor="middle" class="text">saved pc = fault_pc + 4</text>
+  <text x="410" y="565" text-anchor="middle" class="small">event pop 时 PLT：COMPLETE → FREE</text>
+
+  <rect x="924" y="454" width="532" height="124" class="box" fill="#ffffff" stroke="#22c55e"/>
+  <text x="1190" y="486" text-anchor="middle" class="box-title">③ COMPLETE event：保留退休现场</text>
+  <text x="1190" y="516" text-anchor="middle" class="text">saved x[Rt] 不变；saved pc 不变</text>
+  <text x="1190" y="542" text-anchor="middle" class="text">coroutine → READY_REPLAY</text>
+  <text x="1190" y="565" text-anchor="middle" class="small">event pop：COMPLETE → REPLAY_READY</text>
+
+  <path d="M410 578 L410 622" class="arrow-patch"/>
+  <path d="M1190 578 L1190 622" class="arrow-replay"/>
+
+  <rect x="144" y="622" width="532" height="100" class="box" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="410" y="654" text-anchor="middle" class="box-title">④ HLT resume</text>
+  <text x="410" y="683" text-anchor="middle" class="text">安装 EL0 选择的 context</text>
+  <text x="410" y="707" text-anchor="middle" class="small">从 fault_pc + 4 开始，原 LDR 不再执行</text>
+
+  <rect x="924" y="622" width="532" height="100" class="box" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="1190" y="654" text-anchor="middle" class="box-title">④ HLT resume</text>
+  <text x="1190" y="683" text-anchor="middle" class="text">安装 EL0 选择的 context</text>
+  <text x="1190" y="707" text-anchor="middle" class="small">从 fault_pc 开始，原 LDR 重新译码执行</text>
+
+  <path d="M410 722 L410 766" class="arrow-patch"/>
+  <path d="M1190 722 L1190 766" class="arrow-replay"/>
+
+  <rect x="144" y="766" width="532" height="112" class="box" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="410" y="798" text-anchor="middle" class="box-title">⑤ 下一条 guest 指令</text>
+  <text x="410" y="828" text-anchor="middle" class="text">低固定开销；EL0 runtime 理解 Rt/width/PC</text>
+  <text x="410" y="854" text-anchor="middle" class="small">completion-time PTE/权限不再复查</text>
+
+  <rect x="924" y="766" width="532" height="112" class="box" fill="#ffffff" stroke="#22c55e"/>
+  <text x="1190" y="798" text-anchor="middle" class="box-title">⑤ 精确匹配并一次性消费</text>
+  <text x="1190" y="828" text-anchor="middle" class="text">重新 probe；匹配 PC/VA/map/Rt/width/MMU</text>
+  <text x="1190" y="854" text-anchor="middle" class="small">写 decoded Rt → LDR 退休 → PLT FREE</text>
+
+  <rect x="96" y="900" width="628" height="32" rx="16" fill="#bfdbfe"/>
+  <text x="410" y="921" text-anchor="middle" class="badge">退休责任：guest EL0 saved-context patch</text>
+  <rect x="876" y="900" width="628" height="32" rx="16" fill="#bbf7d0"/>
+  <text x="1190" y="921" text-anchor="middle" class="badge">退休责任：重试的原 LDR + core replay entry</text>
+
+  <text x="800" y="970" text-anchor="middle" class="subtitle">共同不变量：每个逻辑 load 仅一次 backend submit；上下文保存与调度策略由 guest EL0 runtime 拥有</text>
+</svg>

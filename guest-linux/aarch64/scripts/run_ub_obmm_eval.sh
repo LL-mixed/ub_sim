@@ -14,6 +14,7 @@ TIMEOUT_SEC=180
 EXPECTED_OUTCOME="success"
 P2B_PRODUCER_CONSUMER=0
 P2B_PRODUCER_INDEX=0
+P2B_COMPLETION=patch
 
 usage() {
   cat <<'EOF'
@@ -195,6 +196,17 @@ while (( async_index <= ${#async_words} )); do
   fi
   case "$option" in
     --mode) append_cmdline "obmm_async_mode=$value" ;;
+    --p2b-completion)
+      case "$value" in
+        patch|replay) ;;
+        *)
+          echo "--p2b-completion must be patch or replay" >&2
+          exit 2
+          ;;
+      esac
+      P2B_COMPLETION="$value"
+      append_cmdline "obmm_async_p2b_completion=$value"
+      ;;
     --coroutines) append_cmdline "obmm_async_coroutines=$value" ;;
     --inflight) append_cmdline "obmm_async_inflight=$value" ;;
     --lookahead) append_cmdline "obmm_async_lookahead=$value" ;;
@@ -371,6 +383,7 @@ if (( P2B_PRODUCER_CONSUMER )); then
   p2b_export_mem_id="$(summary_field "$p2b_export" export_mem_id)"
   p2b_source_mem_id="$(summary_field "$p2b_summary" source_export_mem_id)"
   if [[ "$p2b_coroutines" != <2-> || "$p2b_source_mem_id" != "$p2b_export_mem_id" ||
+        "$(summary_field "$p2b_summary" p2b_completion)" != "$P2B_COMPLETION" ||
         "$(summary_field "$p2b_export" writes)" != "$p2b_coroutines" ||
         "$(summary_field "$p2b_summary" completed)" != "$p2b_coroutines" ||
         "$(summary_field "$p2b_summary" values_verified)" != "$p2b_coroutines" ||
@@ -388,6 +401,23 @@ if (( P2B_PRODUCER_CONSUMER )); then
     echo "P2B producer/consumer terminal summary is inconsistent" >&2
     exit 1
   fi
+  case "$P2B_COMPLETION" in
+    patch)
+      if [[ "$(summary_field "$p2b_summary" replay_consumed)" != "0" ||
+            "$(summary_field "$p2b_summary" replay_mismatch)" != "0" ]]; then
+        echo "P2B patch mode reported replay activity" >&2
+        exit 1
+      fi
+      ;;
+    replay)
+      if [[ "$(summary_field "$p2b_summary" replay_consumed)" != "$p2b_coroutines" ||
+            "$(summary_field "$p2b_summary" replay_mismatch)" != "0" ||
+            "$(summary_field "$p2b_summary" replay_ready_high_water)" != <1-> ]]; then
+        echo "P2B replay mode lacks exact-once retirement evidence" >&2
+        exit 1
+      fi
+      ;;
+  esac
 
   blocked_load_switches=0
   for (( coroutine_id = 0; coroutine_id < p2b_coroutines; coroutine_id++ )); do

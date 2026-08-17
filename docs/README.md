@@ -59,6 +59,8 @@ Current validation entry points:
   - audited ABI v2 performance results for 2-node acceptance, 4/8-node scale-out, the completed 2,240-case coarse policy matrix, and the separately paused 4,942-case full matrix
 - [plans/2026-08-17-obmm-runtime-policy-selection.md](plans/2026-08-17-obmm-runtime-policy-selection.md)
   - formal 7-seed sync/P2A/P2B measured-bucket selection table, strict p99/CPU/gain gates, machine-readable policy outputs, evidence provenance, and boundary-refinement targets
+- [plans/2026-08-17-obmm-p2b-patch-replay-comparison-design.md](plans/2026-08-17-obmm-p2b-patch-replay-comparison-design.md)
+  - P2B patch/replay retirement semantics, replay ABI and implementation, exact-once rules, 2-node functional gates, and measured three-seed comparison
 - [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)
   - implementation-level P4 design for the standard userfaultfd MISSING baseline, separate OBMM source and anonymous shadow ranges, handler-vCPU costs, page failure semantics, CLI, and tests
 - [plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md](plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)

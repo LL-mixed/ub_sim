@@ -90,10 +90,13 @@
 #define OBMM_SCC_REG_EVENT_META 0x178
 #define OBMM_SCC_REG_EVENT_COMMAND 0x180
 #define OBMM_SCC_REG_SCHEDULER_COMMAND 0x188
+#define OBMM_SCC_REG_SESSION_FLAGS 0x190
+#define OBMM_SCC_REG_CAPABILITIES 0x198
 #define OBMM_SCC_REG_STATS_BASE 0x200
 #define OBMM_SCC_REG_OBSERVABILITY_BASE \
 	(OBMM_SCC_REG_STATS_BASE + 17 * 8)
 #define OBMM_SCC_OBSERVABILITY_VALUES 17
+#define OBMM_SCC_REG_REPLAY_STATS_BASE 0x400
 #define OBMM_SCC_MAX_LOAD_TIMEOUT_NS 10000000000ULL
 
 #define OBMM_SCC_STATUS_ACTIVE BIT(0)
@@ -143,6 +146,7 @@ struct linqu_scc_file {
 	u64 owner_generation;
 	u64 load_timeout_ns;
 	u64 next_map_generation;
+	u64 capabilities;
 	u16 context_entries;
 	u16 pending_load_entries;
 	u16 event_queue_depth;
@@ -737,6 +741,12 @@ static int linqu_scc_open(struct inode *inode, struct file *file)
 	}
 	ctx->owner_generation = readq(drv->obmm_scc_mmio +
 				      OBMM_SCC_REG_OWNER_GENERATION);
+	ctx->capabilities = OBMM_SCC_CAP_SCALAR_1 |
+		OBMM_SCC_CAP_SCALAR_2 | OBMM_SCC_CAP_SCALAR_4 |
+		OBMM_SCC_CAP_SCALAR_8 | OBMM_SCC_CAP_XZR |
+		OBMM_SCC_CAP_DIRECT_EL0_UPCALL | OBMM_SCC_CAP_EL0_RESUME |
+		OBMM_SCC_CAP_FULL_CONTEXT |
+		readq(drv->obmm_scc_mmio + OBMM_SCC_REG_CAPABILITIES);
 	drv->active_scc_file = ctx;
 	mutex_unlock(&drv->queue_lock);
 	file->private_data = ctx;
@@ -792,12 +802,7 @@ static long linqu_scc_query_caps(struct linqu_scc_file *ctx,
 		.pending_load_entries = (version >> 32) & 0xffff,
 		.event_queue_depth = (version >> 48) & 0xffff,
 		.context_state_bytes = OBMM_SCC_CONTEXT_STATE_BYTES,
-		.capabilities = OBMM_SCC_CAP_SCALAR_1 |
-			OBMM_SCC_CAP_SCALAR_2 | OBMM_SCC_CAP_SCALAR_4 |
-			OBMM_SCC_CAP_SCALAR_8 | OBMM_SCC_CAP_XZR |
-			OBMM_SCC_CAP_DIRECT_EL0_UPCALL |
-			OBMM_SCC_CAP_EL0_RESUME |
-			OBMM_SCC_CAP_FULL_CONTEXT,
+		.capabilities = ctx->capabilities,
 		.owner_generation = ctx->owner_generation,
 		.clock_mhz = readq(ctx->drv->obmm_scc_mmio +
 				  OBMM_SCC_REG_CLOCK_MHZ),
@@ -951,7 +956,11 @@ static long linqu_scc_start(struct linqu_scc_file *ctx,
 		return -EFAULT;
 	if (!linqu_scc_owner(ctx))
 		return -EPERM;
-	if (ctx->started || request.flags || request.owner_generation ||
+	if (ctx->started ||
+	    request.flags & ~OBMM_SCC_START_REPLAY_RETIRE ||
+	    (request.flags & OBMM_SCC_START_REPLAY_RETIRE &&
+	     !(ctx->capabilities & OBMM_SCC_CAP_REPLAY_RETIRE)) ||
+	    request.owner_generation ||
 	    request.reserved0 || !request.upcall_entry ||
 	    !IS_ALIGNED(request.upcall_entry, 4) ||
 	    !request.logical_contexts ||
@@ -972,6 +981,9 @@ static long linqu_scc_start(struct linqu_scc_file *ctx,
 	       drv->obmm_scc_mmio + OBMM_SCC_REG_UPCALL_ENTRY);
 	writeq(request.logical_contexts,
 	       drv->obmm_scc_mmio + OBMM_SCC_REG_LOGICAL_CONTEXTS);
+	if (ctx->capabilities & OBMM_SCC_CAP_REPLAY_RETIRE)
+		writeq(request.flags,
+		       drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_FLAGS);
 	/* Publish owner identity and deadline before enabling interception. */
 	wmb();
 	writeq(1, drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_COMMAND);
@@ -1040,6 +1052,23 @@ static long linqu_scc_get_observability(struct linqu_scc_file *ctx,
 				      index * 8);
 	return copy_to_user((void __user *)arg, &observability,
 			    sizeof(observability)) ? -EFAULT : 0;
+}
+
+static long linqu_scc_get_replay_stats(struct linqu_scc_file *ctx,
+				       unsigned long arg)
+{
+	struct obmm_scc_replay_stats_v1 stats = { 0 };
+	struct linqu_ub_drv *drv = ctx->drv;
+	u64 *values = (u64 *)&stats;
+	u32 index;
+
+	if (!linqu_scc_owner(ctx))
+		return -EPERM;
+	for (index = 0; index < 3; index++)
+		values[index] = readq(drv->obmm_scc_mmio +
+				      OBMM_SCC_REG_REPLAY_STATS_BASE + index * 8);
+	return copy_to_user((void __user *)arg, &stats, sizeof(stats)) ?
+		-EFAULT : 0;
 }
 
 static long linqu_scc_get_event(struct linqu_scc_file *ctx,
@@ -1195,6 +1224,9 @@ static long linqu_scc_ioctl(struct file *file, unsigned int cmd,
 		break;
 	case OBMM_SCC_IOCTL_SCHEDULER_ENTER:
 		ret = linqu_scc_scheduler_enter(ctx);
+		break;
+	case OBMM_SCC_IOCTL_GET_REPLAY_STATS:
+		ret = linqu_scc_get_replay_stats(ctx, arg);
 		break;
 	default:
 		ret = -ENOTTY;

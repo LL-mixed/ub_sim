@@ -22,6 +22,7 @@
 enum obmm_scc_context_state {
     OBMM_SCC_CONTEXT_FREE,
     OBMM_SCC_CONTEXT_READY,
+    OBMM_SCC_CONTEXT_READY_REPLAY,
     OBMM_SCC_CONTEXT_RUNNING,
     OBMM_SCC_CONTEXT_WAIT_REMOTE,
     OBMM_SCC_CONTEXT_FAULTED,
@@ -51,6 +52,7 @@ struct obmm_scc {
     void *trace_opaque;
     bool started;
     bool device_reset;
+    bool replay_retire;
     int first_error;
     uint16_t scheduler_cursor;
     uint16_t logical_contexts;
@@ -250,9 +252,22 @@ int obmm_scc_open(struct obmm_scc **runtime,
         scc->load_timeout_ns = options->load_timeout_ns;
         scc->trace = options->trace;
         scc->trace_opaque = options->trace_opaque;
+        if (options->completion_mode != OBMM_SCC_COMPLETION_PATCH &&
+            options->completion_mode != OBMM_SCC_COMPLETION_REPLAY) {
+            close(scc->fd);
+            free(scc);
+            return -EINVAL;
+        }
+        scc->replay_retire =
+            options->completion_mode == OBMM_SCC_COMPLETION_REPLAY;
     }
-    if (ioctl(scc->fd, OBMM_SCC_IOCTL_QUERY_CAPS, &scc->caps) != 0 ||
-        scc->caps.abi_version != OBMM_SCC_ABI_VERSION ||
+    if (ioctl(scc->fd, OBMM_SCC_IOCTL_QUERY_CAPS, &scc->caps) != 0) {
+        ret = obmm_scc_neg_errno();
+        close(scc->fd);
+        free(scc);
+        return ret;
+    }
+    if (scc->caps.abi_version != OBMM_SCC_ABI_VERSION ||
         !scc->caps.context_entries ||
         scc->caps.context_entries > OBMM_SCC_MAX_CONTEXTS ||
         !scc->caps.pending_load_entries ||
@@ -267,10 +282,15 @@ int obmm_scc_open(struct obmm_scc **runtime,
          (OBMM_SCC_CAP_DIRECT_EL0_UPCALL | OBMM_SCC_CAP_EL0_RESUME |
           OBMM_SCC_CAP_FULL_CONTEXT) ||
         !scc->caps.clock_mhz) {
-        ret = errno ? -errno : -EPROTO;
         close(scc->fd);
         free(scc);
-        return ret;
+        return -EPROTO;
+    }
+    if (scc->replay_retire &&
+        !(scc->caps.capabilities & OBMM_SCC_CAP_REPLAY_RETIRE)) {
+        close(scc->fd);
+        free(scc);
+        return -EOPNOTSUPP;
     }
     ret = obmm_scc_stack_allocate(
         OBMM_SCC_SCHEDULER_STACK_BYTES, &scc->scheduler_mapping,
@@ -525,7 +545,9 @@ static uint64_t obmm_scc_ready_count(const struct obmm_scc *runtime)
     uint16_t index;
 
     for (index = 0; index < runtime->logical_contexts; index++) {
-        if (runtime->contexts[index].state == OBMM_SCC_CONTEXT_READY) {
+        if (runtime->contexts[index].state == OBMM_SCC_CONTEXT_READY ||
+            runtime->contexts[index].state ==
+                OBMM_SCC_CONTEXT_READY_REPLAY) {
             count++;
         }
     }
@@ -554,7 +576,9 @@ static struct obmm_scc_context_local *obmm_scc_choose_ready(
         uint16_t slot = (runtime->scheduler_cursor + ordinal) %
             runtime->logical_contexts;
 
-        if (runtime->contexts[slot].state == OBMM_SCC_CONTEXT_READY) {
+        if (runtime->contexts[slot].state == OBMM_SCC_CONTEXT_READY ||
+            runtime->contexts[slot].state ==
+                OBMM_SCC_CONTEXT_READY_REPLAY) {
             runtime->scheduler_cursor = slot;
             return &runtime->contexts[slot];
         }
@@ -612,6 +636,7 @@ static int obmm_scc_process_event(struct obmm_scc *runtime,
         obmm_scc_find_context(runtime, event->context_id);
 
     if (!target || !event->sequence || !event->plt_token ||
+        event->flags & ~OBMM_SCC_EVENT_RETIRE_REPLAY ||
         event->rt > 31 ||
         (event->access_bytes != 1 && event->access_bytes != 2 &&
          event->access_bytes != 4 && event->access_bytes != 8)) {
@@ -642,12 +667,21 @@ static int obmm_scc_process_event(struct obmm_scc *runtime,
             return obmm_scc_protocol_error(
                 runtime, event, target, "complete-state");
         }
-        if (event->rt < 31) {
-            target->context.x[event->rt] = event->value;
+        if (!!(event->flags & OBMM_SCC_EVENT_RETIRE_REPLAY) !=
+            runtime->replay_retire) {
+            return obmm_scc_protocol_error(
+                runtime, event, target, "complete-retire-mode");
         }
-        target->context.pc = event->fault_pc + 4;
         target->waiting_token = 0;
-        target->state = OBMM_SCC_CONTEXT_READY;
+        if (runtime->replay_retire) {
+            target->state = OBMM_SCC_CONTEXT_READY_REPLAY;
+        } else {
+            if (event->rt < 31) {
+                target->context.x[event->rt] = event->value;
+            }
+            target->context.pc = event->fault_pc + 4;
+            target->state = OBMM_SCC_CONTEXT_READY;
+        }
         obmm_scc_trace(runtime, OBMM_SCC_TRACE_UPCALL_COMPLETE,
                        event, 0, event->context_id);
         return 0;
@@ -879,6 +913,11 @@ static int obmm_scc_collect_metrics(struct obmm_scc *runtime)
               &runtime->metrics.observability) != 0) {
         return obmm_scc_neg_errno();
     }
+    if (runtime->caps.capabilities & OBMM_SCC_CAP_REPLAY_RETIRE &&
+        ioctl(runtime->fd, OBMM_SCC_IOCTL_GET_REPLAY_STATS,
+              &runtime->metrics.replay) != 0) {
+        return obmm_scc_neg_errno();
+    }
     return 0;
 }
 
@@ -898,6 +937,8 @@ int obmm_scc_run(struct obmm_scc *runtime)
     }
     request = (struct obmm_scc_start_v2) {
         .home_cpu = home_cpu,
+        .flags = runtime->replay_retire ?
+            OBMM_SCC_START_REPLAY_RETIRE : 0,
         .load_timeout_ns = runtime->load_timeout_ns,
         .upcall_entry = (uintptr_t)obmm_scc_upcall_entry,
         .logical_contexts = runtime->logical_contexts,

@@ -401,6 +401,7 @@ run_obmm_async_coroutine() {
   for token in $cmdline; do
     case "$token" in
       obmm_async_mode=*) args="$args --mode ${token#*=}" ;;
+      obmm_async_p2b_completion=*) args="$args --p2b-completion ${token#*=}" ;;
       obmm_async_coroutines=*) args="$args --coroutines ${token#*=}" ;;
       obmm_async_inflight=*) args="$args --inflight ${token#*=}" ;;
       obmm_async_lookahead=*) args="$args --lookahead ${token#*=}" ;;

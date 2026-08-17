@@ -49,6 +49,11 @@ enum async_app_mode {
     ASYNC_APP_MODE_USERFAULTFD,
 };
 
+enum async_p2b_completion {
+    ASYNC_P2B_COMPLETION_PATCH,
+    ASYNC_P2B_COMPLETION_REPLAY,
+};
+
 enum async_baseline_case {
     ASYNC_BASELINE_LOCAL_DRAM,
     ASYNC_BASELINE_OBMM_LOCAL_HIT,
@@ -73,6 +78,7 @@ enum async_option_flag {
     ASYNC_OPTION_HANDLER_CPU = 1U << 6,
     ASYNC_OPTION_PAGES = 1U << 7,
     ASYNC_OPTION_BASELINE_CASE = 1U << 8,
+    ASYNC_OPTION_P2B_COMPLETION = 1U << 9,
 };
 
 struct async_config {
@@ -81,6 +87,7 @@ struct async_config {
     enum obmm_uffd_case uffd_case;
     enum async_baseline_case baseline_case;
     enum async_expected_outcome expected_outcome;
+    enum async_p2b_completion p2b_completion;
     uint32_t coroutines;
     uint32_t inflight;
     uint32_t lookahead;
@@ -414,6 +421,7 @@ static void async_usage(const char *program)
             "[--expected-outcome success|error|drop-timeout|duplicate-late] "
             "[--compute-us N] [--iterations N] [--deadline-us N] "
             "[--seed N] [--node-count N] [--peer-index N] "
+            "[--p2b-completion patch|replay] "
             "[--p2b-producer-consumer] [--producer-index N] [--verify]\n",
             program);
 }
@@ -449,6 +457,7 @@ static bool async_parse_args(int argc, char **argv,
         .uffd_case = OBMM_UFFD_CASE_MISSING_REMOTE,
         .baseline_case = ASYNC_BASELINE_SYNC_REMOTE_MODELED,
         .expected_outcome = ASYNC_OUTCOME_SUCCESS,
+        .p2b_completion = ASYNC_P2B_COMPLETION_PATCH,
         .coroutines = 8,
         .inflight = 32,
         .lookahead = 16,
@@ -535,6 +544,15 @@ static bool async_parse_args(int argc, char **argv,
             } else {
                 return false;
             }
+        } else if (strcmp(option, "--p2b-completion") == 0) {
+            if (strcmp(value, "patch") == 0) {
+                config->p2b_completion = ASYNC_P2B_COMPLETION_PATCH;
+            } else if (strcmp(value, "replay") == 0) {
+                config->p2b_completion = ASYNC_P2B_COMPLETION_REPLAY;
+            } else {
+                return false;
+            }
+            config->option_flags |= ASYNC_OPTION_P2B_COMPLETION;
         } else if (strcmp(option, "--coroutines") == 0) {
             if (!async_parse_u32(value, &config->coroutines)) {
                 return false;
@@ -683,6 +701,10 @@ static bool async_parse_args(int argc, char **argv,
         config->access_bytes > 8) {
         return false;
     }
+    if (config->mode != ASYNC_APP_MODE_SCHEDULER_CORE &&
+        config->option_flags & ASYNC_OPTION_P2B_COMPLETION) {
+        return false;
+    }
     if (config->access_bytes == 4096 &&
         config->mode != ASYNC_APP_MODE_USERFAULTFD &&
         (ASYNC_EXPORT_BYTES / 4096) % config->coroutines) {
@@ -749,6 +771,13 @@ static const char *async_mode_name(enum async_app_mode mode)
         return "scheduler-core";
     }
     return mode == ASYNC_APP_MODE_IRQ ? "async-irq" : "async-poll";
+}
+
+static const char *async_p2b_completion_name(
+    enum async_p2b_completion completion)
+{
+    return completion == ASYNC_P2B_COMPLETION_REPLAY ?
+        "replay" : "patch";
 }
 
 static const char *async_baseline_case_name(enum async_baseline_case test_case)
@@ -1788,7 +1817,10 @@ static void async_print_eval_summary(const struct async_app *app,
            "uffd_handler_cpu_ns=%llu uffd_worker_cpu_ns=%llu "
            "model_pending_final=%llu backend_pending_final=%llu "
            "scc_pending_final=%llu counter_overflow=%llu "
-           "clock_regressions=%llu fail_closed_process_exit=0 status=%s\n",
+           "clock_regressions=%llu fail_closed_process_exit=0 "
+           "p2b_completion=%s replay_consumed=%llu "
+           "replay_mismatch=%llu replay_ready_high_water=%llu "
+           "status=%s\n",
            app->config.eval_band, async_mode_name(app->config.mode),
            app->config.eval_case,
            (unsigned long long)app->config.seed,
@@ -1872,6 +1904,11 @@ static void async_print_eval_summary(const struct async_app *app,
            (unsigned long long)counter_overflow,
            (unsigned long long)atomic_load_explicit(
                &async_clock_regressions, memory_order_relaxed),
+           async_p2b_completion_name(app->config.p2b_completion),
+           (unsigned long long)app->scc_metrics.replay.replay_consumed,
+           (unsigned long long)app->scc_metrics.replay.replay_mismatch,
+           (unsigned long long)
+               app->scc_metrics.replay.replay_ready_high_water,
            status);
 }
 
@@ -2319,6 +2356,9 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
         .load_timeout_ns = (uint64_t)app->config.deadline_us * 1000,
         .trace = async_p2b_scc_trace,
         .trace_opaque = app,
+        .completion_mode = app->config.p2b_completion ==
+            ASYNC_P2B_COMPLETION_REPLAY ?
+            OBMM_SCC_COMPLETION_REPLAY : OBMM_SCC_COMPLETION_PATCH,
     };
     uint64_t import_mem_id = 0;
     uint32_t verified = 0;
@@ -2416,7 +2456,11 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
         app->scc_metrics.device.context_switches == 0 &&
         app->scc_metrics.device.context_bytes_moved == 0 &&
         app->scc_metrics.observability.scc_pending_current == 0 &&
-        app->scc_metrics.observability.backend_pending_current == 0;
+        app->scc_metrics.observability.backend_pending_current == 0 &&
+        app->scc_metrics.replay.replay_mismatch == 0 &&
+        app->scc_metrics.replay.replay_consumed ==
+            (app->config.p2b_completion == ASYNC_P2B_COMPLETION_REPLAY ?
+             app->config.coroutines : 0);
     printf("OBMM_P2B_SUMMARY schema=1 role=consumer "
            "producer_node=%d consumer_node=%d "
            "source_export_mem_id=%llu import_mem_id=%llu "
@@ -2427,7 +2471,10 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
            "direct_el0_upcalls=%llu qemu_context_saves=%llu "
            "qemu_context_restores=%llu qemu_context_switches=%llu "
            "qemu_context_bytes=%llu scc_pending_final=%llu "
-           "backend_pending_final=%llu trace_dropped=%u status=%s\n",
+           "backend_pending_final=%llu trace_dropped=%u "
+           "p2b_completion=%s replay_consumed=%llu "
+           "replay_mismatch=%llu replay_ready_high_water=%llu "
+           "status=%s\n",
            app->config.producer_index, local_index,
            (unsigned long long)producer_meta.export_mem_id,
            (unsigned long long)import_mem_id, app->config.coroutines,
@@ -2447,7 +2494,13 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
                app->scc_metrics.observability.scc_pending_current,
            (unsigned long long)
                app->scc_metrics.observability.backend_pending_current,
-           app->p2b_trace_dropped, pass ? "pass" : "fail");
+           app->p2b_trace_dropped,
+           async_p2b_completion_name(app->config.p2b_completion),
+           (unsigned long long)app->scc_metrics.replay.replay_consumed,
+           (unsigned long long)app->scc_metrics.replay.replay_mismatch,
+           (unsigned long long)
+               app->scc_metrics.replay.replay_ready_high_water,
+           pass ? "pass" : "fail");
     if (ret) {
         printf("OBMM_P2B_SCC_ERROR schema=1 rc=%d stage=%u\n",
                app->scc_metrics.first_error,
@@ -2627,6 +2680,9 @@ int main(int argc, char **argv)
     if (app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE) {
         scc_options.load_timeout_ns =
             (uint64_t)app.config.deadline_us * 1000;
+        scc_options.completion_mode = app.config.p2b_completion ==
+            ASYNC_P2B_COMPLETION_REPLAY ?
+            OBMM_SCC_COMPLETION_REPLAY : OBMM_SCC_COMPLETION_PATCH;
         failure_stage = "scc-workload";
         workload_start_ns = async_now_ns();
         workload_cpu_start_ns = async_process_now_ns();
@@ -2737,7 +2793,12 @@ int main(int argc, char **argv)
         status = "unsupported";
     } else if (run_status == 0 && barrier_ok && app.failures == 0 &&
         app.verify_failures == 0 &&
-        app.completed == app.config.iterations) {
+        app.completed == app.config.iterations &&
+        (app.config.mode != ASYNC_APP_MODE_SCHEDULER_CORE ||
+         (app.scc_metrics.replay.replay_mismatch == 0 &&
+          app.scc_metrics.replay.replay_consumed ==
+            (app.config.p2b_completion == ASYNC_P2B_COMPLETION_REPLAY ?
+             app.completed : 0)))) {
         status = "pass";
     }
 
@@ -2910,6 +2971,9 @@ cleanup:
            " qemu_context_restores=%" PRIu64
            " qemu_context_switches=%" PRIu64
            " qemu_context_bytes=%" PRIu64
+           " p2b_completion=%s replay_consumed=%" PRIu64
+           " replay_mismatch=%" PRIu64
+           " replay_ready_high_water=%" PRIu64
            "\n",
            OBMM_ASYNC_ABI_VERSION, async_mode_name(app.config.mode), status,
            app.config.coroutines,
@@ -2979,7 +3043,11 @@ cleanup:
            (uint64_t)app.scc_metrics.device.context_saves,
            (uint64_t)app.scc_metrics.device.context_restores,
            (uint64_t)app.scc_metrics.device.context_switches,
-           (uint64_t)app.scc_metrics.device.context_bytes_moved);
+           (uint64_t)app.scc_metrics.device.context_bytes_moved,
+           async_p2b_completion_name(app.config.p2b_completion),
+           (uint64_t)app.scc_metrics.replay.replay_consumed,
+           (uint64_t)app.scc_metrics.replay.replay_mismatch,
+           (uint64_t)app.scc_metrics.replay.replay_ready_high_water);
     async_print_eval_summary(
         &app, &metrics, status,
         async_elapsed_ns(workload_start_ns, workload_end_ns),
