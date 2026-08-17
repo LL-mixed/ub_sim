@@ -55,6 +55,10 @@ Current validation entry points:
   - implementation-level P2B design for ordinary unretired AArch64 loads, Remote Load Assist, pending-load table, Context Store, dedicated scheduler core, precise TCG exit/commit, fault service, CLI, and tests
 - [plans/p3-comparative-evaluation-detailed-design.md](plans/p3-comparative-evaluation-detailed-design.md)
   - implementation-level P3 design for scalar/range/transparency comparison bands, schedule-ahead isolation, fairness and statistics rules, invalidation gates, CLI, evidence artifacts, and break-even reporting
+- [plans/2026-08-13-obmm-p3-performance-evaluation.md](plans/2026-08-13-obmm-p3-performance-evaluation.md)
+  - audited ABI v2 performance results for 2-node acceptance, 4/8-node scale-out, the completed 2,240-case coarse policy matrix, and the separately paused 4,942-case full matrix
+- [plans/2026-08-17-obmm-runtime-policy-selection.md](plans/2026-08-17-obmm-runtime-policy-selection.md)
+  - formal 7-seed sync/P2A/P2B measured-bucket selection table, strict p99/CPU/gain gates, machine-readable policy outputs, evidence provenance, and boundary-refinement targets
 - [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)
   - implementation-level P4 design for the standard userfaultfd MISSING baseline, separate OBMM source and anonymous shadow ranges, handler-vCPU costs, page failure semantics, CLI, and tests
 - [plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md](plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)

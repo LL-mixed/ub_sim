@@ -2,23 +2,26 @@
 
 > 日期：2026-08-13
 >
-> 状态：**2-node formal acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case
-> full matrix 于 2026-08-14 按用户要求安全暂停，尚未形成最终结论**
+> 状态：**2-node formal acceptance、4/8-node 定向 scale-out 和 2,240-case
+> 7-seed coarse runtime policy 已完成；4,942-case full matrix 于 2026-08-14
+> 按用户要求安全暂停**
 >
 > 设计基线：[P3 对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 
 ## 1. 结论
 
-当前可以给出三条有证据边界的结论：
+当前可以给出四条有证据边界的结论：
 
 1. ABI v2 的 2-node formal acceptance 为 **49/49 pass**，P0、P1、P2A、P2B、P4
    五个 phase gate 全部通过；旧 ABI v1 的 49-case 结果没有复用。
 2. 在 `1 µs remote latency + 100 µs useful compute + 4 coroutines` 的 scalar
    基准点，P2B 相对 P2A demand 在 2/4/8-node 的 cluster throughput 分别高
    `29.77%`、`35.13%`、`28.21%`。
-3. 这还不是完整 P3 sensitivity 结论。完整矩阵共 4,942 个 run，负责回答 latency、
-   compute、concurrency、jitter、tail 和 failure 下的 break-even；当前只有 dry-run
-   manifest，不能把单一基准点外推成“P2B 总是更快”。
+3. 2-node coarse runtime policy 的 **2,240/2,240 canonical run 全部通过**。默认
+   p99/CPU/gain gate 只放行三个异步 bucket：`L=1000 µs, C=2, W=0/10 µs`
+   选择 P2B；`L=1000 µs, C=2, W=1000 µs` 的 explicit policy 选择 P2A。
+4. 完整 P3 sensitivity 仍未完成。4,942-case full matrix 负责覆盖 jitter、tail、
+   failure、range 和更完整的 crossing，当前保持暂停；coarse bucket 不向未测区域外推。
 
 ![P2A 与 P2B 在 2、4、8 节点上的 cluster throughput 和相对收益](2026-08-13-obmm-p3-performance-results.svg)
 
@@ -183,7 +186,33 @@ SSH executor 同时显式使用 `ControlMaster=no` 和 `ControlPath=none`，避�
 复用连接把一个失效 control socket 传播到后续 case。只有能证明发生在 dispatch 之前的
 banner/connect 失败才允许重试；已下发但状态不明的 case 不自动重跑。
 
-## 8. Full matrix 的真实状态
+## 8. 2-node 7-seed coarse runtime policy
+
+正式合并目录：
+
+```text
+out/obmm-remote-load/policy-coarse-7seed-20260817-r1/
+```
+
+四份 source campaign 分别覆盖 seed 1..3/4..7 和 coroutine 2/4/8/32。合并器验证
+source 完整性、paired seed universe、主机分工和唯一 artifact fingerprint 后，得到
+2,240/2,240 valid canonical run，`validation.status=pass`。13 份 source attempt 没有
+进入 merged raw，quarantine 为 0。
+
+默认严格策略的非 sync bucket 只有三项：
+
+| L | C | W | Transparent policy | Explicit policy | Makespan gain | p99 regression |
+|---:|---:|---:|---|---|---:|---:|
+| 1000 µs | 2 | 0 µs | P2B | P2B | 48.87% | 2.35% |
+| 1000 µs | 2 | 10 µs | P2B | P2B | 48.95% | 2.07% |
+| 1000 µs | 2 | 1000 µs | sync | P2A | 43.10% | 3.97% |
+
+其余 77 个 explicit-policy bucket 选择 sync；transparent-policy 有 78 个 sync 和 2 个
+P2B。完整选择表、makespan winner 对比、适用范围、机器可读文件和后续 boundary
+refinement 见
+[sync/P2A/P2B 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
+
+## 9. Full matrix 的真实状态
 
 完整矩阵 dry-run 目录：
 
@@ -215,12 +244,13 @@ P3 被明确恢复、`OBMM_EVAL_COMPLETE` 出现、4,942 个 canonical raw run �
 
 - **P3 ABI v2 acceptance：完成；**
 - **P3 2/4/8-node 基准点 scale-out：完成；**
+- **P3 2-node coarse runtime policy：完成，已发布 measured-bucket 离线选择表；**
 - **P3 full sensitivity / break-even campaign：已安全暂停，待明确恢复和最终聚合。**
 
-在 full matrix 完成前，不发布“在哪个 latency/compute/concurrency 区间异步路径必然转正”
-的外推结论。
+coarse policy 只发布精确 measured bucket。full matrix 完成前，不发布 jitter、failure、
+range、4/8-node 或未测 latency/compute/concurrency 区间的外推结论。
 
-## 9. 复现入口
+## 10. 复现入口
 
 2-node formal evaluator：
 
@@ -244,6 +274,19 @@ sim-cli obmm-remote-load-scale-report \
   --raw-dir <raw-evidence-dir> \
   --output-dir <scale-summary-dir> \
   --case-ids S1-p2a-demand,S3-p2b-demand
+```
+
+7-seed policy 合并入口：
+
+```text
+sim-cli obmm-remote-load-policy-merge \
+  --matrix scenarios/experiments/obmm_remote_load_policy_coarse_v1.yaml \
+  --input <n4-low-c-seed1-3> \
+  --input <n4-low-c-seed4-7> \
+  --input <n4c1-high-c-seed1-3> \
+  --input <n4c1-high-c-seed4-7> \
+  --seeds 1..7 \
+  --output-dir out/obmm-remote-load/policy-coarse-7seed-20260817-r1
 ```
 
 `out/` 是生成物，不提交 Git；本报告只提交可复核的指标、hash、规则和结论边界。

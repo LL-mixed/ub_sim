@@ -1,8 +1,9 @@
 # P3：OBMM 远端 Load 路径对比评估详细设计
 
 > 状态：评估器已实现；P2B ABI v2 的 2-node producer/consumer 功能验收、P3
-> 2-node 49-case formal acceptance 与 4/8-node 定向 scale-out 均已通过。4,942-case
-> full sensitivity matrix 已在远端启动但尚未执行完毕，因此完整 break-even 结论仍待生成
+> 2-node 49-case formal acceptance、4/8-node 定向 scale-out 和 2,240-case 7-seed
+> coarse runtime policy 均已通过。4,942-case full sensitivity matrix 保持安全暂停，
+> 完整 break-even 结论仍待生成
 >
 > 日期：2026-08-11
 >
@@ -15,6 +16,8 @@
 > 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 >
 > 性能结果：[2026-08-13 P3 ABI v2 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)
+>
+> 运行时选择表：[2026-08-17 sync/P2A/P2B policy](2026-08-17-obmm-runtime-policy-selection.md)
 
 ## 1. 目标和退出结论
 
@@ -45,11 +48,12 @@ P3 只在以下 gate 全部满足后运行正式矩阵：
 任一 gate 不满足时 CLI 仍可生成 `--dry-run` manifest，但正式结果标为 `invalid`，不能
 生成性能结论。
 
-截至 2026-08-13，ABI v2 已使用新 run ID 完成 2-node 49-case formal acceptance，
-并完成 P2A demand 与 P2B demand 的 4/8-node、7-seed 定向 scale-out。旧 ABI v1
-`S3-p2b-demand` raw rows 没有追认或拼接。当前剩余项是 4,942-case full matrix，
-负责补齐 latency/compute/concurrency/jitter/failure sensitivity 与 break-even 区间；
-单一 acceptance 基准点不得替代该矩阵。
+截至 2026-08-17，ABI v2 已使用新 run ID 完成 2-node 49-case formal acceptance、
+P2A demand 与 P2B demand 的 4/8-node 7-seed 定向 scale-out，以及覆盖 80 个
+latency/compute/coroutine bucket 的 2,240-case 7-seed coarse policy。旧 ABI v1
+`S3-p2b-demand` raw rows 没有追认或拼接。4,942-case full matrix 继续负责补齐
+jitter/failure/range、4/8-node sensitivity 与更精确 break-even 区间；coarse measured
+bucket 不替代该矩阵。
 
 ## 3. 三个 canonical 比较带
 
@@ -238,6 +242,12 @@ summary/policy.json
 2. **boundary refinement**：只在 coarse crossing 邻域使用 7 个 seed，扩展
    `sequential/dependent/mixed`、P2A inflight/lookahead 和 2/4/8-node 定向点，形成
    可发布 bucket。
+
+2026-08-17 的实际执行把全部 80 个 coarse bucket 从 3 seed 提升到 7 seed，先发布
+精确 measured-bucket policy，避免只保留 screening 结果。该选择增加了 1,280 个 run，
+换来每个 coarse bucket 的 paired-seed gate；策略仍然不插值。第二阶段继续细化
+100--1000 µs latency、2--4 coroutine 和 10--1000 µs compute crossing，并加入
+dependent/mixed、jitter 与 4/8-node 定向点。
 
 任何 matrix、QEMU、kernel 或 initramfs fingerprint 变化都必须新建 campaign。
 旧 campaign 只读保留，raw evidence 禁止跨 fingerprint 混合。

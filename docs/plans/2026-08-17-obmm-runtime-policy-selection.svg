@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .label { font: 650 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .edge { stroke: #475569; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .box { stroke: #64748b; stroke-width: 1.5; rx: 14; ry: 14; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="720" fill="#f8fafc"/>
+  <text x="600" y="44" text-anchor="middle" class="title">OBMM remote-load 严格运行时选择</text>
+  <text x="600" y="72" text-anchor="middle" class="subtitle">2-node · 8-byte sequential · no jitter · 7 seeds · 2240/2240 pass</text>
+
+  <rect x="410" y="100" width="380" height="72" class="box" fill="#e2e8f0"/>
+  <text x="600" y="130" text-anchor="middle" class="label">是否命中完整 measured bucket？</text>
+  <text x="600" y="154" text-anchor="middle" class="small">L / W / C / pattern / jitter / interface</text>
+
+  <path d="M 410 136 L 210 136 L 210 220" class="edge"/>
+  <text x="305" y="126" text-anchor="middle" class="small">否</text>
+  <rect x="55" y="220" width="310" height="82" class="box" fill="#dcfce7"/>
+  <text x="210" y="253" text-anchor="middle" class="label">sync</text>
+  <text x="210" y="278" text-anchor="middle" class="body">未知区域 fail closed</text>
+
+  <path d="M 600 172 L 600 220" class="edge"/>
+  <text x="616" y="202" class="small">是</text>
+  <rect x="410" y="220" width="380" height="72" class="box" fill="#e2e8f0"/>
+  <text x="600" y="251" text-anchor="middle" class="label">L = 1000 µs 且 C = 2？</text>
+  <text x="600" y="275" text-anchor="middle" class="small">其余已测 bucket 未通过严格 SLO gate</text>
+
+  <path d="M 790 256 L 990 256 L 990 334" class="edge"/>
+  <text x="892" y="246" text-anchor="middle" class="small">否</text>
+  <rect x="835" y="334" width="310" height="82" class="box" fill="#dcfce7"/>
+  <text x="990" y="367" text-anchor="middle" class="label">sync</text>
+  <text x="990" y="392" text-anchor="middle" class="body">p99 / CPU / gain gate 拒绝</text>
+
+  <path d="M 600 292 L 600 340" class="edge"/>
+  <text x="616" y="322" class="small">是</text>
+  <rect x="410" y="340" width="380" height="72" class="box" fill="#e2e8f0"/>
+  <text x="600" y="383" text-anchor="middle" class="label">Useful compute W</text>
+
+  <path d="M 490 412 L 250 478" class="edge"/>
+  <text x="358" y="438" text-anchor="middle" class="small">0 / 10 µs</text>
+  <rect x="95" y="478" width="310" height="104" class="box" fill="#dbeafe"/>
+  <text x="250" y="514" text-anchor="middle" class="label">P2B</text>
+  <text x="250" y="540" text-anchor="middle" class="body">transparent + explicit</text>
+  <text x="250" y="564" text-anchor="middle" class="small">makespan -48.9%，p99 +2.1~2.4%</text>
+
+  <path d="M 600 412 L 600 478" class="edge"/>
+  <text x="618" y="449" class="small">100 µs</text>
+  <rect x="445" y="478" width="310" height="104" class="box" fill="#dcfce7"/>
+  <text x="600" y="514" text-anchor="middle" class="label">sync</text>
+  <text x="600" y="540" text-anchor="middle" class="body">transparent + explicit</text>
+  <text x="600" y="564" text-anchor="middle" class="small">异步 p99 regression 超预算</text>
+
+  <path d="M 710 412 L 950 478" class="edge"/>
+  <text x="842" y="438" text-anchor="middle" class="small">1000 µs</text>
+  <rect x="795" y="478" width="310" height="104" class="box" fill="#fef3c7"/>
+  <text x="950" y="514" text-anchor="middle" class="label">P2A（仅 explicit）</text>
+  <text x="950" y="540" text-anchor="middle" class="body">transparent 继续 sync</text>
+  <text x="950" y="564" text-anchor="middle" class="small">makespan -43.1%，CPU -43.1%</text>
+
+  <rect x="55" y="626" width="1090" height="58" class="box" fill="#f1f5f9"/>
+  <text x="80" y="650" class="small">默认门槛：gain ≥10% · paired CI low ≥5% · p99 regression ≤5% · CPU tax ≤25%</text>
+  <text x="80" y="672" class="small">切换粒度：mapping/session quiescent point；未测 bucket、异常健康状态或 pending 未清空时选择 sync</text>
+</svg>
