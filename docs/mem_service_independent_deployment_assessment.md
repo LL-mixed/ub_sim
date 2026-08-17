@@ -1,5 +1,11 @@
 # mem_service Independent Deployment Assessment
 
+> 历史状态说明（2026-08-14）：本文主体记录独立仓库抽取前的阶段性判断，部分
+> “当前”表述已经被后续 daemon、typed SDK、durability、provider 与打包实现超越，
+> 不应再作为当前能力清单。当前状态和证据边界见
+> [ub_sim 与 Lingqu DataSystem 当前状态及 PoC 差距审计](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)；
+> 独立仓库 revision 的产品级认证仍须重新生成证据。
+
 ## 1. 结论
 
 当前 `mem_service` 已经从 guest-side link-time component 推进为具备独立二进制、Unix-socket daemon、外部 SDK、serving/pretraining 示例、安装布局、打包 smoke、release readiness 与外部认证证据入口的 Memory Service。它已经可以作为本地可发布、可安装、可协同的独立服务形态存在；但还不能宣传为生产环境完全认证的通用 Memory Service，因为真实 Linux systemd/rpm/Prometheus/Alertmanager 和跨主机 remote transport 证据仍然缺失。

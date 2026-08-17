@@ -2,8 +2,8 @@
 
 > 日期：2026-08-13
 >
-> 状态：**2-node formal acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case full
-> matrix 已于 2026-08-13 在远端启动，仍在运行，尚未形成最终结论**
+> 状态：**2-node formal acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case
+> full matrix 于 2026-08-14 按用户要求安全暂停，尚未形成最终结论**
 >
 > 设计基线：[P3 对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 
@@ -195,24 +195,27 @@ out/obmm-remote-load/p3-full-abi-v2-dry-run-20260813-r1/
 correctness、jitter/tail、duplicate、error 和 drop-timeout sweep。dry-run 目录只有
 manifest 和 model documents，所以状态按设计为 `invalid dry-run`。
 
-正式 campaign 已在 `n4-910c` 的隔离工作区后台启动：
+正式 campaign 曾在 `n4-910c` 的隔离工作区后台启动。r1/r2/r3 只保留为历史
+证据；当前唯一可续跑的 campaign 是 r4：
 
 ```text
 /home/ll/ub_sim_p2b_v2_20260812/out/obmm-remote-load/
-  p3-full-abi-v2-20260813-r1/
-  p3-full-abi-v2-20260813-r1.campaign.log
+  p3-full-abi-v2-20260813-r4/
 ```
 
-启动时 evaluator PID 为 `2613833`。它使用 `--local-repo` 直接在远端执行，避免本机
-离线或 SSH 链路中断终止长任务；每个 case 仍有独立外层 deadline、process-group
-cleanup 和 immutable raw JSONL。本文只有在 `OBMM_EVAL_COMPLETE` 出现、4,942 个 raw
-run 完整聚合且 `validation.status=pass` 后，才会把 full matrix 改写为完成。
+2026-08-14 审计时，r4 evaluator PID `419618` 处于 `Tl`（SIGSTOP）状态，canonical
+raw 为 `541/4,942`，`raw-attempts=3`，campaign 自身 QEMU 为 0。外部 QEMU 污染窗口
+内的证据已移入 `raw-quarantine/`，不得进入正式聚合。用户已经明确要求暂停 P3，
+所以即使主机当前空闲也不得自动恢复。它使用 `--local-repo` 直接在远端执行；每个
+case 仍有独立外层 deadline、process-group cleanup 和 immutable raw JSONL。本文只有在
+P3 被明确恢复、`OBMM_EVAL_COMPLETE` 出现、4,942 个 canonical raw run 完整聚合且
+`validation.status=pass` 后，才会把 full matrix 改写为完成。
 
 因此当前阶段的准确表述是：
 
 - **P3 ABI v2 acceptance：完成；**
 - **P3 2/4/8-node 基准点 scale-out：完成；**
-- **P3 full sensitivity / break-even campaign：运行中，待最终聚合。**
+- **P3 full sensitivity / break-even campaign：已安全暂停，待明确恢复和最终聚合。**
 
 在 full matrix 完成前，不发布“在哪个 latency/compute/concurrency 区间异步路径必然转正”
 的外推结论。

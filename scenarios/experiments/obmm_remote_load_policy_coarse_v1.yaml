@@ -1,0 +1,59 @@
+schema: 1
+name: obmm-remote-load-policy-coarse-v1
+minimums:
+  scalar_operations: 65536
+  range_bytes: 1073741824
+  duration_ms: 2000
+  warmup_scalar_operations: 1000
+  warmup_range_pages: 64
+  formal_seed_count: 7
+  host_noise_threshold_milli: 250
+factors:
+  model_latency_us: [0, 1, 10, 100, 1000]
+  jitter_profiles: [none]
+  outcomes: [success]
+  coroutines: [2, 4, 8, 32]
+  inflight: [32]
+  lookahead: [16]
+  compute_us: [0, 10, 100, 1000]
+  patterns: [sequential]
+cases:
+  - id: S0-sync
+    band: scalar
+    mode: sync-mmio
+    access_bytes: 8
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+  - id: S1-p2a-demand
+    band: scalar
+    mode: async-poll
+    access_bytes: 8
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+  - id: S2-p2a-lookahead
+    band: scalar
+    mode: async-poll
+    access_bytes: 8
+    issue: lookahead
+    sweep_lookahead: true
+    extra_vcpus: 0
+  - id: S3-p2b-demand
+    band: scalar
+    mode: scheduler-core
+    access_bytes: 8
+    issue: demand
+    lookahead: 0
+    extra_vcpus: 0
+sweeps:
+  - id: policy-coarse
+    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand]
+    model_latency_us: [0, 1, 10, 100, 1000]
+    jitter_profiles: [none]
+    outcomes: [success]
+    coroutines: [2, 4, 8, 32]
+    inflight: [32]
+    lookahead: [16]
+    compute_us: [0, 10, 100, 1000]
+    patterns: [sequential]

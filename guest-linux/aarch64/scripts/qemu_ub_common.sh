@@ -376,6 +376,22 @@ ensure_qemu_ub_binary() {
   bin="$(qemu_ub_bin_path "$workspace_root")"
   jobs="${QEMU_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 
+  if [[ "${UB_USE_PREBUILT_QEMU:-0}" == "1" ]]; then
+    if [[ ! -x "$bin" ]]; then
+      echo "prebuilt QEMU binary not found or not executable: $bin" >&2
+      print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
+      return 1
+    fi
+    if ! qemu_ub_supports_required_opts "$bin"; then
+      echo "prebuilt QEMU binary missing UB machine options (ummu/ub-cluster-mode): $bin" >&2
+      print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"
+      return 1
+    fi
+    echo "[ub_common] using verified prebuilt QEMU binary: $bin" >&2
+    echo "$bin"
+    return 0
+  fi
+
   if [[ ! -d "$src_dir" ]]; then
     echo "QEMU source dir not found: $src_dir" >&2
     print_qemu_preflight_help "$workspace_root" "$src_dir" "$build_dir" "$bin"

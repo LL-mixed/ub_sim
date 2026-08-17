@@ -89,6 +89,7 @@
 #define OBMM_SCC_REG_EVENT_KIND_STATUS 0x170
 #define OBMM_SCC_REG_EVENT_META 0x178
 #define OBMM_SCC_REG_EVENT_COMMAND 0x180
+#define OBMM_SCC_REG_SCHEDULER_COMMAND 0x188
 #define OBMM_SCC_REG_STATS_BASE 0x200
 #define OBMM_SCC_REG_OBSERVABILITY_BASE \
 	(OBMM_SCC_REG_STATS_BASE + 17 * 8)
@@ -1070,26 +1071,55 @@ static long linqu_scc_get_event(struct linqu_scc_file *ctx,
 	if (!(status & OBMM_SCC_STATUS_EVENT_DELIVERED)) {
 		if (!(event.flags & OBMM_SCC_EVENT_GET_WAIT))
 			return -EAGAIN;
-		timeout_ns = ctx->load_timeout_ns ? ctx->load_timeout_ns :
-			OBMM_SCC_MAX_LOAD_TIMEOUT_NS;
+		/*
+		 * The SCC device owns the per-load deadline and publishes a
+		 * COMPLETE or FAULT event.  This loop is only a host-side bound for
+		 * waiting on that event.  Reusing the per-load deadline here races
+		 * QEMU virtual time against host scheduling and can abandon a valid
+		 * completion at the deadline boundary.
+		 */
+		timeout_ns = OBMM_SCC_MAX_LOAD_TIMEOUT_NS;
 		started_ns = ktime_get_ns();
 		for (;;) {
 			status = readq(drv->obmm_scc_mmio +
 				       OBMM_SCC_REG_STATUS);
-			if (status & OBMM_SCC_STATUS_EVENT_PENDING)
+			if (status & (OBMM_SCC_STATUS_EVENT_PENDING |
+				      OBMM_SCC_STATUS_EVENT_DELIVERED))
 				break;
 			if (!(status & OBMM_SCC_STATUS_ACTIVE) ||
 			    status & OBMM_SCC_STATUS_FAIL_STOP)
 				return -EIO;
-			if (ktime_get_ns() - started_ns >= timeout_ns)
+			if (ktime_get_ns() - started_ns >= timeout_ns) {
+				pr_err("linqu_scc: GET_EVENT timeout status=0x%llx "
+				       "loads_pending=%llu loads_completed=%llu "
+				       "events_completed=%llu loads_faulted=%llu "
+				       "scc_pending=%llu backend_pending=%llu\n",
+				       status,
+				       readq(drv->obmm_scc_mmio +
+					     OBMM_SCC_REG_STATS_BASE),
+				       readq(drv->obmm_scc_mmio +
+					     OBMM_SCC_REG_STATS_BASE + 8),
+				       readq(drv->obmm_scc_mmio +
+					     OBMM_SCC_REG_STATS_BASE + 16),
+				       readq(drv->obmm_scc_mmio +
+					     OBMM_SCC_REG_STATS_BASE + 24),
+				       readq(drv->obmm_scc_mmio +
+					     OBMM_SCC_REG_OBSERVABILITY_BASE),
+				       readq(drv->obmm_scc_mmio +
+					     OBMM_SCC_REG_OBSERVABILITY_BASE + 8));
 				return -ETIMEDOUT;
+			}
 			if (signal_pending(current))
 				return -ERESTARTSYS;
 			usleep_range(10, 50);
 		}
-		writeq(2, drv->obmm_scc_mmio + OBMM_SCC_REG_EVENT_COMMAND);
-		if (readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR))
-			return -EIO;
+		if (!(status & OBMM_SCC_STATUS_EVENT_DELIVERED)) {
+			writeq(2, drv->obmm_scc_mmio +
+			       OBMM_SCC_REG_EVENT_COMMAND);
+			if (readq(drv->obmm_scc_mmio +
+				  OBMM_SCC_REG_LAST_ERROR))
+				return -EIO;
+		}
 	}
 	memset(&event, 0, sizeof(event));
 	event.sequence = readq(drv->obmm_scc_mmio +
@@ -1118,6 +1148,17 @@ static long linqu_scc_get_event(struct linqu_scc_file *ctx,
 		return -EIO;
 	return copy_to_user((void __user *)arg, &event, sizeof(event)) ?
 		-EFAULT : 0;
+}
+
+static long linqu_scc_scheduler_enter(struct linqu_scc_file *ctx)
+{
+	struct linqu_ub_drv *drv = ctx->drv;
+
+	if (!linqu_scc_owner(ctx) || !ctx->started)
+		return -EPERM;
+	writeq(1, drv->obmm_scc_mmio + OBMM_SCC_REG_SCHEDULER_COMMAND);
+	return readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR) ?
+		-EIO : 0;
 }
 
 static long linqu_scc_ioctl(struct file *file, unsigned int cmd,
@@ -1151,6 +1192,9 @@ static long linqu_scc_ioctl(struct file *file, unsigned int cmd,
 		break;
 	case OBMM_SCC_IOCTL_GET_EVENT:
 		ret = linqu_scc_get_event(ctx, arg);
+		break;
+	case OBMM_SCC_IOCTL_SCHEDULER_ENTER:
+		ret = linqu_scc_scheduler_enter(ctx);
 		break;
 	default:
 		ret = -ENOTTY;

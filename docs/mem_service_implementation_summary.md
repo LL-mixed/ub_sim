@@ -20,7 +20,11 @@
 - **可以被 `llm_infer` 端到端消费**：`llm_infer` 已有 mem-service publish/verify 路径，覆盖 serving 侧 prefix、KV、runtime handoff 和 execution artifact。
 - **可以被 pretraining 客户端消费**：新增 `pretraining_client`，覆盖 dataset shard、sample batch、checkpoint、gradient bucket、optimizer state 和 training step commit。
 - **可以生成发布包并做本地包内复验**：tar/deb smoke、installed SDK smoke、installed layout selfcheck、release/package manifest 都已经具备。
-- **生产部署认证已经完成**：2026-07-01 在 `hw-910c:/home/ll/ub_sim` 的 Docker test bed 中完成 Linux ops certification、remote transport certification 和最终 release certification verify，`release-readiness` 达到 `certified`。
+- **抽取前 revision 的 Docker 认证闭环完成**：2026-07-01 在
+  `hw-910c:/home/ll/ub_sim` 的 Docker test bed 中完成 Linux ops certification、
+  remote transport certification 和最终 release certification verify，
+  `release-readiness` 达到 `certified`。这不是当前独立仓库 revision 的生产环境
+  认证，也不等价于真实集群已部署。
 
 所以更准确的状态是：**独立构建、安装、打包和下游契约已经成立；当前独立
 仓库 revision 必须重新生成认证 evidence 后才能宣称 release-certified。**

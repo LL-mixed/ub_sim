@@ -2,7 +2,7 @@
 
 日期：2026-07-13
 
-状态：执行中；阶段 1 至阶段 5 已完成，阶段 6 已接入 W5、正在修复连续推理验收问题
+状态：执行中；阶段 1 至阶段 5 已完成，阶段 6 已接入 W5，连续多步与多拓扑验收尚未完成
 
 已完成证据：
 
@@ -22,8 +22,10 @@
   分别完成 22/21 层，handoff checksum 匹配，terminal raw/selected token 均为
   `294`；随后因官方候选缺少 token text metadata 被 terminal rewrite fail-closed
   拒绝，因此该次运行不计为通过；
-- 当前阻塞点是为官方 logits 候选补齐 tokenizer text metadata；修复后仍需完成
-  2/3/8-node 的 4-step 和 8-step 矩阵，并核对跨 topology 状态与 terminal logits。
+- 2026-07-19 的 `4dc9148` 已从内嵌 tokenizer vocabulary 补齐真实 token bytes，
+  并通过真实 2-node、1-step 运行；token text metadata 不再是当前阻塞点；
+- 当前未完成项是 2/3/8-node 的 4-step 和 8-step 连续推理矩阵、跨 topology
+  状态与 terminal logits 核对，以及 MTP 验证。
 
 ## 1. 目标
 

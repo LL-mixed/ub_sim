@@ -187,11 +187,80 @@ core_efficiency = useful_work_ns / sum(application_and_helper_cpu_ns)
 - application vCPU、EL0 scheduler runtime、UFFD handler vCPU 的资源占用；P2B 的 QEMU
   context-save/restore/switch counters 必须为 0。
 
+### 7.3 sync、P2A、P2B 共存与运行时策略
+
+三条 scalar 路径必须保持可共存：
+
+- sync 作为低延迟、低并发和未知策略区域的保守路径；
+- P2A 作为应用允许显式 submit/await 和 schedule-ahead 时的候选路径；
+- P2B 作为普通 `LDR` 透明语义下，由 guest EL0 scheduler 隐藏远端等待的候选路径。
+
+策略粒度是 mapping/session phase。切换只能发生在 pending load 已清空的 quiescent
+point，禁止逐 load 抖动切换。每个 `(topology, latency, compute, coroutines, pattern,
+jitter)` bucket 需要同时输出：
+
+```text
+sync makespan / p99 / total CPU
+best P2A config + makespan / p99 / total CPU
+P2B makespan / p99 / total CPU
+measured fastest path
+transparent-policy path: sync | P2B
+explicit-policy path: sync | P2A | P2B
+paired-seed gain interval and positive-seed count
+decision status and rejection reason
+```
+
+P2B total CPU 必须包含 `application_cpu_ns + helper_cpu_ns + el0_scheduler_ns`。策略
+比较使用同 seed paired delta；分开计算的两个单路径 CI 不能替代 paired CI。
+
+默认保守门槛：median makespan gain 至少 10%，paired 95% gain CI 下界至少 5%，
+p99 regression 不超过 5%，CPU tax 不超过 25%，failure/duplicate/drain gate 全部通过。
+这些阈值进入机器可读 policy metadata，允许产品按 CPU/SLA profile 覆盖。
+
+输出固定为：
+
+```text
+summary/policy.csv
+summary/policy.json
+```
+
+`policy.json` 可由后续 runtime policy loader 消费；当前 P3 先生成离线策略，runtime
+动态切换实现单独验收。
+
+### 7.4 两阶段策略矩阵
+
+完整全排列成本过高，且大量远离 break-even 的点不会改变策略。策略数据按两阶段
+生成：
+
+1. **coarse screening**：覆盖宽间隔 latency/compute、`2/4/8/32` coroutine 和
+   sequential pattern，用 3 个 seed 定位收益符号变化；screening 结果保持
+   `insufficient-evidence`，不直接发布为 runtime policy；
+2. **boundary refinement**：只在 coarse crossing 邻域使用 7 个 seed，扩展
+   `sequential/dependent/mixed`、P2A inflight/lookahead 和 2/4/8-node 定向点，形成
+   可发布 bucket。
+
+任何 matrix、QEMU、kernel 或 initramfs fingerprint 变化都必须新建 campaign。
+旧 campaign 只读保留，raw evidence 禁止跨 fingerprint 混合。
+
 ## 8. 统计设计与 invalidation
 
-每 case/seed：先做不计数 warmup，再执行至少 10,000 scalar ops 或 1 GiB range payload，
-两者取先达到“运行至少 2 秒”的条件。正式统计使用 7 个 seed；报告 median-of-seeds、
+每 case/seed：先做不计数 warmup，再执行至少 65,536 scalar ops 或 1 GiB range payload；
+两种 band 的计时区间都必须达到 2 秒。65,536 是 scalar band 的固定、跨节点一致的
+operation floor，不能由各 guest 按本地 wall clock 自适应，否则两节点会得到不同的
+operation count 和 checksum。正式统计使用 7 个 seed；报告 median-of-seeds、
 seed 间 min/max 和 bootstrap 95% CI，不把单次最好结果当结论。
+
+EL0 scheduler 的“等待下一个硬件事件”超时与单个 remote load 的 architected deadline
+必须解耦：单 load deadline 由 SCC/QEMU 产生 `COMPLETE` 或 `FAULT` 事件；Linux
+`GET_EVENT(WAIT)` 仅是有界 host watchdog，不能在 architected deadline 边界自行把仍在
+QEMU virtual-time 中推进的请求判成 load timeout。当前 host watchdog 为 10 秒；只有
+SCC/QEMU 交付的 `FAULT(timeout)` 才计入 load timeout，host watchdog 超时只让当前
+attempt fail-fast 并保留证据，由 evaluator 使用新 guest run ID 重试。
+
+QEMU 的 SCC status MMIO read 与 main-loop BH 都推进 ready completion 和 deadline。
+这是必要的进度保证：guest EL0 scheduler 在 `GET_EVENT(WAIT)` 中持续轮询时，繁忙的
+MTTCG vCPU 不能饿死 main-loop completion delivery，否则会出现 backend 已 drain、PLT
+仍 pending 的假死。
 
 以下任一条件使 case `invalid`：
 
@@ -204,6 +273,11 @@ seed 间 min/max 和 bootstrap 95% CI，不把单次最好结果当结论。
 - P2B 的 EL0 upcall/save/restore 未形成一一对应，或出现非零 QEMU scheduler/context counter。
 
 invalid case 保留 raw evidence，但不参与聚合。重跑必须生成新 run ID，不能覆盖。
+
+长时间 campaign 必须支持 `--resume`：已有且通过单 case 完整校验的 canonical raw
+只读跳过；缺失 case 继续执行；已有 canonical raw 一旦校验失败则 fail closed，不能覆盖。
+单 case 的进程终止、summary 缺失等失败最多自动尝试 3 次，每次使用不同 guest run ID，
+失败证据写入 `raw-attempts/`；只有完整校验通过的 attempt 才写入 canonical `raw/`。
 
 ## 9. CLI、manifest 与产物
 
@@ -225,7 +299,10 @@ cargo run -p sim-cli -- obmm-remote-load-eval \
 ```text
 run-manifest.json          hashes、build、topology、expanded cases、order
 raw/<case>-<seed>.jsonl    per-phase/per-request sampled records
+raw-attempts/*.jsonl       未晋升的失败 attempt；不可覆盖
 summary/<band>.csv         canonical metrics 与 CI
+summary/policy.csv         sync/P2A/P2B measured and gated decisions
+summary/policy.json        runtime-consumable policy buckets and thresholds
 report.md                  只引用有效 case 的结论和限制
 validation.json            gate、checksum、drain、invalid reasons
 ```
@@ -266,7 +343,9 @@ P3 退出必须形成以下证据，而不是只产出曲线：
 3. Band T 显式计算 helper vCPU、EL0 scheduler、软件改造和自定义 core mechanism 成本；
 4. 每个结论能追溯到 hashes、raw rows、gate 和 valid seed；
 5. 对“何种 L/W/并发下收益转正”给出 break-even 区间，未跨 gate 的结果不外推。
+6. 对每个已覆盖 bucket 输出 transparent/explicit 两种 policy，未满足 7-seed 和
+   paired CI 门槛的 bucket 保持 `insufficient-evidence`。
 
 截至 2026-08-13，退出项 1–4 已在 acceptance 与定向 scale-out 基准点形成证据；
-第 5 项仍受 full matrix 尚在运行、未最终聚合阻塞。当前结果和边界见
+第 5 项仍受 full matrix 已安全暂停、未最终聚合阻塞。当前结果和边界见
 [P3 ABI v2 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。

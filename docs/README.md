@@ -41,6 +41,8 @@ Current validation entry points:
   - detailed design for a general Lingqu DB/Object Service that manages Qwen3 weights, KV cache, hidden boundaries, runtime tensors, versions, and shmem/block payload placement before 8-node range forward
 - [lingqu_datasystem_review.md](lingqu_datasystem_review.md)
   - Chinese cross-repository review of Lingqu DataSystem, covering the original four-service model, current Object/Memory Service architecture, implementation map, maturity, gaps, and SVG diagrams
+- [2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)
+  - audited current-state report for the relationship between `ub_sim` and Lingqu DataSystem, completed capabilities, evidence boundaries, full-PoC gaps, risks, and an estimated delivery path
 - [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
   - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with a QEMU-modeled hardware scheduler core, pending-load table, and Context Store
 - [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)
@@ -72,7 +74,7 @@ Current validation entry points:
 - [plans/2026-06-25-mem-service-independent-service-plan.md](plans/2026-06-25-mem-service-independent-service-plan.md)
   - implementation and evaluation plan for turning `mem_service` into an independently releasable/deployable service for LLM serving and pretraining integration
 - [plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md](plans/2026-07-13-w5-deepseek-v4-flash-official-checkpoint-plan.md)
-  - active plan for direct official DeepSeek V4 Flash Safetensors; stages 1 through 5 are complete, and stage 6 now has stateful official range execution plus the fail-closed W5 profile/CLI; a 2-node step-0 run covered all 43 layers and selected token 294 but correctly failed because official candidates did not yet carry token text metadata, so the 2/3/8-node 4/8-step matrix and MTP remain incomplete; DS4 remains read-only and 1M context is explicitly not validated
+  - active plan for direct official DeepSeek V4 Flash Safetensors; stages 1 through 5 are complete, and stage 6 now has stateful official range execution plus the fail-closed W5 profile/CLI; token text metadata was fixed and a real 2-node 1-step run passed, while the 2/3/8-node 4/8-step matrix and MTP remain incomplete; DS4 remains read-only and 1M context is explicitly not validated
 - [plans/2026-05-15-w4-engram-phase5-performance-plan.md](plans/2026-05-15-w4-engram-phase5-performance-plan.md)
   - execution plan for W4 engram Phase 5 performance work, including profiling gates and vendor fused SIMT reuse boundaries
 - [drafts/obmm_spmc_mpsc_queue_design.md](drafts/obmm_spmc_mpsc_queue_design.md)

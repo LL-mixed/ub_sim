@@ -120,6 +120,15 @@ struct async_p2b_trace_line {
     char text[ASYNC_P2B_TRACE_LINE_BYTES];
 };
 
+struct async_operation_trace {
+    uint64_t ordinal;
+    uint64_t offset;
+    uint64_t latency_ns;
+    uint32_t length;
+    int status;
+    bool remote;
+};
+
 struct async_worker {
     struct async_app *app;
     uint32_t worker_id;
@@ -165,6 +174,8 @@ struct async_app {
     uint64_t measurement_end_ns;
     uint64_t measurement_cpu_start_ns;
     uint64_t measurement_cpu_end_ns;
+    atomic_uint_fast64_t operation_trace_next;
+    struct async_operation_trace *operation_trace;
     uint64_t trace_sampled;
     uint64_t trace_dropped;
     uint32_t p2b_trace_count;
@@ -173,7 +184,6 @@ struct async_app {
     struct obmm_uffd_metrics uffd_metrics;
 };
 
-static pthread_mutex_t async_trace_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local uint64_t async_last_monotonic_ns;
 static _Thread_local uint64_t async_last_raw_ns;
 static atomic_uint_fast64_t async_clock_regressions;
@@ -315,7 +325,9 @@ static void async_trace_operation(
     struct async_app *app, uint64_t ordinal, bool remote,
     uint64_t offset, uint32_t length, int status, uint64_t latency_ns)
 {
+    struct async_operation_trace *trace;
     uint64_t draw;
+    uint64_t slot;
 
     if (!app->config.trace_sample_ppm) {
         return;
@@ -325,19 +337,54 @@ static void async_trace_operation(
     if (draw >= app->config.trace_sample_ppm) {
         return;
     }
-    pthread_mutex_lock(&async_trace_lock);
-    if (app->trace_sampled >= ASYNC_TRACE_SAMPLE_LIMIT) {
-        app->trace_dropped++;
-        pthread_mutex_unlock(&async_trace_lock);
+    slot = atomic_fetch_add_explicit(
+        &app->operation_trace_next, 1, memory_order_relaxed);
+    if (slot >= ASYNC_TRACE_SAMPLE_LIMIT || !app->operation_trace) {
         return;
     }
-    app->trace_sampled++;
-    printf("OBMM_OPERATION_TRACE schema=1 ordinal=%llu remote=%u "
-           "offset=%llu length=%u status=%d latency_ns=%llu\n",
-           (unsigned long long)ordinal, remote ? 1U : 0U,
-           (unsigned long long)offset, length, status,
-           (unsigned long long)latency_ns);
-    pthread_mutex_unlock(&async_trace_lock);
+    trace = &app->operation_trace[slot];
+    trace->ordinal = ordinal;
+    trace->remote = remote;
+    trace->offset = offset;
+    trace->length = length;
+    trace->status = status;
+    trace->latency_ns = latency_ns;
+}
+
+static int async_prepare_operation_trace(struct async_app *app)
+{
+    if (!app->config.trace_sample_ppm) {
+        return 0;
+    }
+    app->operation_trace = calloc(
+        ASYNC_TRACE_SAMPLE_LIMIT, sizeof(*app->operation_trace));
+    return app->operation_trace ? 0 : -ENOMEM;
+}
+
+static void async_flush_operation_trace(struct async_app *app)
+{
+    uint64_t reserved = atomic_load_explicit(
+        &app->operation_trace_next, memory_order_acquire);
+    uint64_t index;
+
+    app->trace_sampled = reserved > ASYNC_TRACE_SAMPLE_LIMIT ?
+        ASYNC_TRACE_SAMPLE_LIMIT : reserved;
+    app->trace_dropped = reserved - app->trace_sampled;
+    for (index = 0; index < app->trace_sampled; index++) {
+        const struct async_operation_trace *trace =
+            &app->operation_trace[index];
+
+        printf("OBMM_OPERATION_TRACE schema=1 ordinal=%llu remote=%u "
+               "offset=%llu length=%u status=%d latency_ns=%llu\n",
+               (unsigned long long)trace->ordinal,
+               trace->remote ? 1U : 0U,
+               (unsigned long long)trace->offset, trace->length,
+               trace->status,
+               (unsigned long long)trace->latency_ns);
+    }
+    fflush(stdout);
+    free(app->operation_trace);
+    app->operation_trace = NULL;
 }
 
 static void async_uffd_trace(void *opaque, uint64_t ordinal,
@@ -993,6 +1040,28 @@ static int async_sync_read_one(struct async_app *app,
                 app->config.access_bytes);
         }
         if (fault_signal) {
+            uint64_t latency = async_raw_now_ns() - before;
+            int status = app->config.expected_outcome ==
+                ASYNC_OUTCOME_DROP_TIMEOUT ? -ETIMEDOUT : -EIO;
+
+            app->failures++;
+            if (status == -ETIMEDOUT) {
+                app->timeouts++;
+            }
+            async_trace_operation(
+                app, ordinal, true, offset, app->config.access_bytes,
+                status, latency);
+            return status;
+        }
+
+        /*
+         * A modeled error must fail closed even when the simulated scalar
+         * load retires with a poison/zero value instead of raising SIGBUS.
+         * Record the architected outcome explicitly so the summary cannot
+         * report status=fail with a zero failure count.
+         */
+        if (app->config.expected_outcome == ASYNC_OUTCOME_ERROR ||
+            app->config.expected_outcome == ASYNC_OUTCOME_DROP_TIMEOUT) {
             uint64_t latency = async_raw_now_ns() - before;
             int status = app->config.expected_outcome ==
                 ASYNC_OUTCOME_DROP_TIMEOUT ? -ETIMEDOUT : -EIO;
@@ -1999,6 +2068,8 @@ static void async_reset_workload_state(struct async_app *app)
     app->pending = 0;
     app->compute_steps = 0;
     app->compute_while_pending = 0;
+    atomic_store_explicit(
+        &app->operation_trace_next, 0, memory_order_relaxed);
     app->trace_sampled = 0;
     app->trace_dropped = 0;
     memset(app->buffer_busy, 0, sizeof(app->buffer_busy));
@@ -2012,6 +2083,7 @@ static int async_run_split_phase_with_warmup(
     struct obmm_async_map measurement_map = app->remote_map;
     struct obmm_async_map warm_map = { 0 };
     uint64_t iterations = app->config.iterations;
+    uint32_t trace_sample_ppm = app->config.trace_sample_ppm;
     int ret;
 
     if (app->config.warmup) {
@@ -2023,7 +2095,9 @@ static int async_run_split_phase_with_warmup(
         }
         app->remote_map = warm_map;
         app->config.iterations = app->config.warmup;
+        app->config.trace_sample_ppm = 0;
         ret = async_run_split_phase_workload(app);
+        app->config.trace_sample_ppm = trace_sample_ppm;
         async_reset_workload_state(app);
         if (obmm_async_map_unregister(app->runtime, &warm_map) != 0 &&
             !ret) {
@@ -2054,6 +2128,7 @@ static int async_run_uffd_with_warmup(
 {
     struct obmm_async_map warm_map = { 0 };
     struct obmm_uffd_metrics warm_metrics = { 0 };
+    uint32_t trace_sample_ppm = app->config.trace_sample_ppm;
     int ret;
 
     if (app->config.warmup) {
@@ -2063,8 +2138,10 @@ static int async_run_uffd_with_warmup(
         if (ret) {
             return ret;
         }
+        app->config.trace_sample_ppm = 0;
         ret = async_run_uffd_once(
             app, &warm_map, app->config.warmup, &warm_metrics);
+        app->config.trace_sample_ppm = trace_sample_ppm;
         async_reset_workload_state(app);
         if (obmm_async_map_unregister(app->runtime, &warm_map) != 0 &&
             !ret) {
@@ -2136,12 +2213,15 @@ static int async_run_scc_with_warmup(
     struct async_app *app, const struct obmm_scc_options *options,
     int mapping_fd, uint64_t import_mem_id)
 {
+    uint32_t trace_sample_ppm = app->config.trace_sample_ppm;
     int ret;
 
     if (app->config.warmup) {
+        app->config.trace_sample_ppm = 0;
         ret = async_run_scc_once(
             app, options, mapping_fd, import_mem_id,
             app->config.warmup, 2);
+        app->config.trace_sample_ppm = trace_sample_ppm;
         async_reset_workload_state(app);
         memset(&app->scc_metrics, 0, sizeof(app->scc_metrics));
         if (ret) {
@@ -2450,6 +2530,12 @@ int main(int argc, char **argv)
                selftest_status);
         return selftest_status == 0 ? 0 : 1;
     }
+    atomic_init(&app.operation_trace_next, 0);
+    failure_stage = "allocate-operation-trace";
+    run_status = async_prepare_operation_trace(&app);
+    if (run_status != 0) {
+        goto cleanup;
+    }
     failure_stage = "open-obmm";
     obmm_fd = open("/dev/obmm", O_RDWR | O_CLOEXEC);
     if (obmm_fd < 0) {
@@ -2470,6 +2556,7 @@ int main(int argc, char **argv)
             run_status = async_run_p2b_consumer(
                 &app, obmm_fd, local_cna, local_index);
         }
+        async_flush_operation_trace(&app);
         close(obmm_fd);
         return run_status == 0 ? 0 : 1;
     }
@@ -2655,6 +2742,7 @@ int main(int argc, char **argv)
     }
 
 cleanup:
+    async_flush_operation_trace(&app);
     if (strcmp(status, "pass") != 0) {
         fprintf(stderr,
                 "OBMM_APP_ERROR schema=1 stage=%s rc=%d errno=%d status=%s\n",

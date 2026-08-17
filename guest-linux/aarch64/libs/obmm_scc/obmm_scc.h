@@ -31,6 +31,7 @@ enum obmm_scc_error_stage {
     OBMM_SCC_ERROR_STAGE_EVENT_HANDLE,
     OBMM_SCC_ERROR_STAGE_COLLECT_METRICS,
     OBMM_SCC_ERROR_STAGE_STOP,
+    OBMM_SCC_ERROR_STAGE_SCHEDULER_ENTER,
 };
 
 struct obmm_scc_trace_event {

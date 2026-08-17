@@ -2,6 +2,11 @@
 
 > 回顾日期：2026-08-11
 >
+> 2026-08-14 审计更新：修正独立 `mem_service` 的当前锁定 revision。关于
+> `ub_sim` 与 Lingqu DataSystem 的当前关系、完整 PoC 缺口和证据边界，以
+> [当前状态与 PoC 差距审计](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)
+> 为准。
+>
 > 范围：`ub_sim` 的代码、设计文档与 Git 历史，以及本地
 > `~/repos/pypto_ws_hu_core` 中的 Lingqu/PyPTO 上位设计。
 
@@ -151,7 +156,7 @@ adapter 依赖 core；provider 只实现中立的 region/transfer/completion 契
 | 字段 | 值 |
 | --- | --- |
 | Version | `0.1.0` |
-| Revision | `956af0d651f450972a5f1d4fb684753688ee4f24` |
+| Revision | `91c20cd34fe6ad68405d0d17b3ad5481f889163c` |
 | 权威来源 | 根目录 `mem_service/` Git submodule |
 | 下游消费 | `ub_sim` 源码集成；DS4 安装 SDK 集成 |
 

@@ -185,6 +185,11 @@ def test_sync_scalar_and_async_modes_share_canonical_remote_identity():
     assert "async_scc_scalar_load(" in app
     assert "sigsetjmp(async_sync_fault_environment" in app
     assert "async_sync_fault_handler" in app
+    assert "A modeled error must fail closed" in app
+    assert "app->failures++;" in app[
+        app.index("A modeled error must fail closed") :
+        app.index("memcpy(app->buffers[0].data, &value")
+    ]
     assert "--expected-outcome" in app
     assert "obmm_logical_remote_ordinal(" in app
     assert "remote_local_ordinal * coroutine_count + coroutine_id" in logical
@@ -224,6 +229,11 @@ def test_build_run_and_launcher_contracts():
     assert "zsh ./scripts/build_initramfs.sh" in guest_builder
     assert "zsh ./scripts/build_guest_artifacts.sh" in common
     assert "zsh ./scripts/build_qemu_binary.sh" in common
+    assert '"${UB_USE_PREBUILT_QEMU:-0}" == "1"' in common
+    assert "using verified prebuilt QEMU binary" in common
+    assert common.index('"${UB_USE_PREBUILT_QEMU:-0}" == "1"') < common.index(
+        "zsh ./scripts/build_qemu_binary.sh"
+    )
     assert "linqu_obmm_async_coroutine=1" in run_app
     assert "run_obmm_async_coroutine" in run_app
     assert "--remote-memory-model-manifest" in launcher
@@ -282,6 +292,37 @@ def test_build_run_and_launcher_contracts():
         "tests/unit/test-ub-scc",
     ):
         assert target in qemu_builder
+
+
+def test_diagnostic_trace_excludes_warmup_operations():
+    app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+
+    for function in (
+        "async_run_split_phase_with_warmup",
+        "async_run_uffd_with_warmup",
+        "async_run_scc_with_warmup",
+    ):
+        body = app.split(f"static int {function}", 1)[1].split("\n}\n", 1)[0]
+        assert "uint32_t trace_sample_ppm = app->config.trace_sample_ppm;" in body
+        disable = body.index("app->config.trace_sample_ppm = 0;")
+        restore = body.index("app->config.trace_sample_ppm = trace_sample_ppm;")
+        reset = body.index("async_reset_workload_state(app);")
+        assert disable < restore < reset
+
+
+def test_diagnostic_trace_does_not_block_inside_preemptible_coroutine():
+    app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+    record = app.split("static void async_trace_operation", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    flush = app.split("static void async_flush_operation_trace", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+
+    assert "atomic_fetch_add_explicit" in record
+    assert "pthread_mutex_lock" not in record
+    assert "printf(" not in record
+    assert "OBMM_OPERATION_TRACE schema=1" in flush
 
 
 def test_launcher_and_run_app_syntax():

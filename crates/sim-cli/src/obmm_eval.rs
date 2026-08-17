@@ -28,6 +28,13 @@ const REMOTE_STAGE_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOTE_CASE_TIMEOUT_MARGIN: Duration = Duration::from_secs(120);
 const REMOTE_CONNECT_ATTEMPTS: u32 = 3;
 const REMOTE_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
+const CASE_ATTEMPT_LIMIT: usize = 3;
+const POLICY_SCHEMA: u32 = 1;
+const POLICY_MERGE_SCHEMA: u32 = 1;
+const POLICY_MIN_MEDIAN_GAIN_MILLI: i128 = 100;
+const POLICY_MIN_CI_GAIN_MILLI: i128 = 50;
+const POLICY_MAX_P99_REGRESSION_MILLI: i128 = 50;
+const POLICY_MAX_CPU_TAX_MILLI: i128 = 250;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
@@ -98,6 +105,16 @@ enum EvalIssue {
     Demand,
     Lookahead,
     Fault,
+}
+
+impl EvalIssue {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Demand => "demand",
+            Self::Lookahead => "lookahead",
+            Self::Fault => "fault",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -224,13 +241,57 @@ pub(crate) struct ObmmEvalCliArgs {
     pub scenario_path: PathBuf,
     pub bands: String,
     pub seeds: String,
+    pub coroutines: String,
     pub output_dir: PathBuf,
     pub gate_dir: PathBuf,
     pub remote_target: Option<String>,
     pub remote_repo: Option<PathBuf>,
     pub local_repo: Option<PathBuf>,
     pub aggregate_only: bool,
+    pub resume: bool,
     pub dry_run: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObmmPolicyMergeCliArgs {
+    pub matrix_path: PathBuf,
+    pub input_dirs: Vec<PathBuf>,
+    pub output_dir: PathBuf,
+    pub seeds: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolicyMergeSource {
+    path: String,
+    hostname: String,
+    seeds: Vec<u64>,
+    coroutines: Vec<u32>,
+    cases: usize,
+    raw_attempts: usize,
+    quarantined_raw: usize,
+    sim_cli_sha256: String,
+    evaluator_sha256: String,
+    artifact_fingerprints: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolicyMergeProvenance {
+    schema: u32,
+    expected_seeds: Vec<u64>,
+    matrix_hash: String,
+    scenario_hash: String,
+    topology_hash: String,
+    merge_binary_sha256: String,
+    merge_evaluator_sha256: String,
+    artifact_fingerprint: String,
+    sources: Vec<PolicyMergeSource>,
+}
+
+struct LoadedPolicyMergeSource {
+    dir: PathBuf,
+    manifest: EvalRunManifest,
+    validation: EvalValidation,
+    provenance: PolicyMergeSource,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -471,6 +532,57 @@ struct DerivedMetrics {
     core_efficiency: Option<f64>,
 }
 
+pub(crate) fn merge_args() -> anyhow::Result<Option<ObmmPolicyMergeCliArgs>> {
+    merge_args_from(std::env::args_os().skip(1))
+}
+
+fn merge_args_from<I, S>(args: I) -> anyhow::Result<Option<ObmmPolicyMergeCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    if args.next().as_deref() != Some(OsStr::new("obmm-remote-load-policy-merge")) {
+        return Ok(None);
+    }
+    let mut matrix_path = None;
+    let mut input_dirs = Vec::new();
+    let mut output_dir = None;
+    let mut seeds = "1..7".to_string();
+    let mut pending = args.peekable();
+
+    while let Some(argument) = pending.next() {
+        let text = argument.to_string_lossy();
+        let (name, value) = if let Some((name, value)) = text.split_once('=') {
+            (name.to_string(), value.to_string())
+        } else if text.starts_with("--") {
+            let value = pending
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("{text} requires a value"))?;
+            (text.into_owned(), value.to_string_lossy().into_owned())
+        } else {
+            anyhow::bail!("unexpected obmm-remote-load-policy-merge argument: {text}");
+        };
+        match name.as_str() {
+            "--matrix" => matrix_path = Some(PathBuf::from(value)),
+            "--input" => input_dirs.push(PathBuf::from(value)),
+            "--output-dir" => output_dir = Some(PathBuf::from(value)),
+            "--seeds" => seeds = value,
+            _ => anyhow::bail!("unknown obmm-remote-load-policy-merge option: {name}"),
+        }
+    }
+    if input_dirs.len() < 2 {
+        anyhow::bail!("obmm-remote-load-policy-merge requires at least two --input directories");
+    }
+    parse_seeds(&seeds)?;
+    Ok(Some(ObmmPolicyMergeCliArgs {
+        matrix_path: matrix_path.ok_or_else(|| anyhow::anyhow!("--matrix is required"))?,
+        input_dirs,
+        output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("--output-dir is required"))?,
+        seeds,
+    }))
+}
+
 pub(crate) fn args() -> anyhow::Result<Option<ObmmEvalCliArgs>> {
     args_from(std::env::args_os().skip(1))
 }
@@ -488,12 +600,14 @@ where
     let mut scenario_path = None;
     let mut bands = "scalar,range,transparency".to_string();
     let mut seeds = "1..7".to_string();
+    let mut coroutines = "all".to_string();
     let mut output_dir = None;
     let mut gate_dir = PathBuf::from("out/obmm-remote-load/gates");
     let mut remote_target = None;
     let mut remote_repo = None;
     let mut local_repo = None;
     let mut aggregate_only = false;
+    let mut resume = false;
     let mut dry_run = false;
     let mut pending = args.peekable();
 
@@ -505,6 +619,10 @@ where
         }
         if text == "--aggregate-only" {
             aggregate_only = true;
+            continue;
+        }
+        if text == "--resume" {
+            resume = true;
             continue;
         }
         let (name, value) = if let Some((name, value)) = text.split_once('=') {
@@ -522,6 +640,7 @@ where
             "--scenario" => scenario_path = Some(PathBuf::from(value)),
             "--bands" => bands = value,
             "--seeds" => seeds = value,
+            "--coroutines" => coroutines = value,
             "--output-dir" => output_dir = Some(PathBuf::from(value)),
             "--gate-dir" => gate_dir = PathBuf::from(value),
             "--remote-target" => remote_target = Some(value),
@@ -532,8 +651,9 @@ where
     }
     EvalBand::parse_list(&bands)?;
     parse_seeds(&seeds)?;
-    if dry_run && aggregate_only {
-        anyhow::bail!("--dry-run and --aggregate-only are mutually exclusive");
+    parse_coroutines(&coroutines)?;
+    if usize::from(dry_run) + usize::from(aggregate_only) + usize::from(resume) > 1 {
+        anyhow::bail!("--dry-run, --aggregate-only, and --resume are mutually exclusive");
     }
     let remote_partial = remote_target.is_some() != remote_repo.is_some();
     if remote_partial {
@@ -553,12 +673,14 @@ where
         scenario_path: scenario_path.ok_or_else(|| anyhow::anyhow!("--scenario is required"))?,
         bands,
         seeds,
+        coroutines,
         output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("--output-dir is required"))?,
         gate_dir,
         remote_target,
         remote_repo,
         local_repo,
         aggregate_only,
+        resume,
         dry_run,
     }))
 }
@@ -575,6 +697,7 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
         .with_context(|| format!("parse scenario {}", args.scenario_path.display()))?;
     let bands = EvalBand::parse_list(&args.bands)?;
     let seeds = parse_seeds(&args.seeds)?;
+    let selected_coroutines = parse_coroutines(&args.coroutines)?;
     let matrix_hash = hash_bytes(&matrix_bytes);
     let scenario_hash = hash_bytes(&scenario_bytes);
     let scenario_file_sha256 = sha256_file(&args.scenario_path)?;
@@ -583,7 +706,8 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
     fs::create_dir_all(args.output_dir.join("models"))?;
     fs::create_dir_all(args.output_dir.join("raw"))?;
     fs::create_dir_all(args.output_dir.join("summary"))?;
-    if !args.aggregate_only && args.output_dir.join("run-manifest.json").exists() {
+    let manifest_path = args.output_dir.join("run-manifest.json");
+    if !args.aggregate_only && !args.resume && manifest_path.exists() {
         anyhow::bail!(
             "refusing to overwrite an existing evaluation at {}; use a new --output-dir so \
              reruns receive new run IDs",
@@ -601,9 +725,17 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
         &seeds,
         &args.output_dir,
     )?;
+    if let Some(selected) = selected_coroutines.as_ref() {
+        cases.retain(|case| selected.contains(&case.coroutines));
+        if cases.is_empty() {
+            anyhow::bail!(
+                "--coroutines did not select any cases from the requested matrix and bands"
+            );
+        }
+    }
     assign_deterministic_order(&mut cases);
     let formal_seed_count_met = seeds.len() >= matrix.minimums.formal_seed_count as usize;
-    let manifest = EvalRunManifest {
+    let expected_manifest = EvalRunManifest {
         schema: EVAL_RUN_MANIFEST_SCHEMA,
         run_namespace,
         matrix_name: matrix.name.clone(),
@@ -621,7 +753,21 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
         valid_for_execution: gates_passed,
         cases,
     };
-    write_json(&args.output_dir.join("run-manifest.json"), &manifest)?;
+    let manifest = if args.aggregate_only || args.resume {
+        let bytes = fs::read(&manifest_path)
+            .with_context(|| format!("read existing manifest {}", manifest_path.display()))?;
+        let existing: EvalRunManifest = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode existing manifest {}", manifest_path.display()))?;
+        if serde_json::to_value(&existing)? != serde_json::to_value(&expected_manifest)? {
+            anyhow::bail!(
+                "existing run manifest does not match the requested matrix, scenario, bands, seeds, gates, or output namespace"
+            );
+        }
+        existing
+    } else {
+        write_json(&manifest_path, &expected_manifest)?;
+        expected_manifest
+    };
     let mut invalid_reasons = Vec::new();
     if !gates_passed {
         invalid_reasons.push("one or more P0-P4 gate evidence files are missing or invalid".into());
@@ -686,6 +832,490 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
         args.output_dir.join("report.md").display(),
     );
     Ok(())
+}
+
+pub(crate) fn run_merge(args: &ObmmPolicyMergeCliArgs) -> anyhow::Result<()> {
+    if args.output_dir.exists() {
+        anyhow::bail!(
+            "refusing to overwrite merged evidence at {}; use a new --output-dir",
+            args.output_dir.display()
+        );
+    }
+    let matrix_bytes = fs::read(&args.matrix_path)
+        .with_context(|| format!("read matrix {}", args.matrix_path.display()))?;
+    let matrix: EvalMatrix = serde_yaml::from_slice(&matrix_bytes)
+        .with_context(|| format!("parse matrix {}", args.matrix_path.display()))?;
+    validate_matrix(&matrix)?;
+    let matrix_hash = hash_bytes(&matrix_bytes);
+    let expected_seeds = parse_seeds(&args.seeds)?;
+    if expected_seeds.len() < matrix.minimums.formal_seed_count as usize {
+        anyhow::bail!(
+            "merged evidence requires at least {} seeds",
+            matrix.minimums.formal_seed_count
+        );
+    }
+
+    let mut sources = Vec::with_capacity(args.input_dirs.len());
+    for input in &args.input_dirs {
+        sources.push(load_policy_merge_source(input, &matrix, &matrix_hash)?);
+    }
+    validate_policy_merge_sources(&sources, &expected_seeds, &matrix_hash)?;
+
+    fs::create_dir_all(args.output_dir.join("models"))?;
+    fs::create_dir_all(args.output_dir.join("raw"))?;
+    fs::create_dir_all(args.output_dir.join("summary"))?;
+    fs::create_dir_all(args.output_dir.join("sources"))?;
+
+    let mut cases = Vec::new();
+    for (source_index, source) in sources.iter().enumerate() {
+        copy_policy_merge_source(source_index, source, &args.output_dir)?;
+        cases.extend(source.manifest.cases.iter().cloned());
+    }
+    cases.sort_by(|left, right| {
+        aggregate_key(left)
+            .cmp(&aggregate_key(right))
+            .then_with(|| left.seed.cmp(&right.seed))
+            .then_with(|| left.run_id.cmp(&right.run_id))
+    });
+    for (index, case) in cases.iter_mut().enumerate() {
+        case.order_index = index as u64;
+    }
+
+    let first = &sources[0];
+    let manifest = EvalRunManifest {
+        schema: EVAL_RUN_MANIFEST_SCHEMA,
+        run_namespace: eval_run_namespace(&args.output_dir)?,
+        matrix_name: matrix.name.clone(),
+        matrix_path: args.matrix_path.display().to_string(),
+        matrix_hash: matrix_hash.clone(),
+        scenario_path: first.manifest.scenario_path.clone(),
+        scenario_hash: first.manifest.scenario_hash.clone(),
+        scenario_file_sha256: first.manifest.scenario_file_sha256.clone(),
+        topology_hosts: first.manifest.topology_hosts,
+        topology_hash: first.manifest.topology_hash.clone(),
+        selected_bands: first.manifest.selected_bands.clone(),
+        seeds: expected_seeds.clone(),
+        gate_dir: "sources/*/validation.json".into(),
+        gates_passed: true,
+        valid_for_execution: true,
+        cases,
+    };
+    write_json(&args.output_dir.join("run-manifest.json"), &manifest)?;
+
+    let artifact_fingerprint = unique_merge_value(
+        "artifact fingerprint",
+        sources
+            .iter()
+            .flat_map(|source| source.provenance.artifact_fingerprints.iter().cloned()),
+    )?;
+    write_json(
+        &args.output_dir.join("source-provenance.json"),
+        &PolicyMergeProvenance {
+            schema: POLICY_MERGE_SCHEMA,
+            expected_seeds: expected_seeds.clone(),
+            matrix_hash,
+            scenario_hash: manifest.scenario_hash.clone(),
+            topology_hash: manifest.topology_hash.clone(),
+            merge_binary_sha256: sha256_file(&std::env::current_exe()?)?,
+            merge_evaluator_sha256: sha256_file(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/obmm_eval.rs"),
+            )?,
+            artifact_fingerprint,
+            sources: sources
+                .iter()
+                .map(|source| source.provenance.clone())
+                .collect(),
+        },
+    )?;
+
+    let bands = EvalBand::parse_list(&manifest.selected_bands.join(","))?;
+    let mut validation = EvalValidation {
+        schema: EVAL_VALIDATION_SCHEMA,
+        status: "invalid".into(),
+        gates: first.validation.gates.clone(),
+        invalid_reasons: vec![EVAL_INCOMPLETE_REASON.into()],
+        expanded_cases: manifest.cases.len(),
+        formal_seed_count_met: true,
+        runs: Vec::new(),
+    };
+    write_json(&args.output_dir.join("validation.json"), &validation)?;
+    validation.runs = aggregate_results(&args.output_dir, &manifest, &matrix, &bands)?;
+    finalize_validation(&mut validation, manifest.cases.len());
+    write_json(&args.output_dir.join("validation.json"), &validation)?;
+    write_final_report(&args.output_dir, &manifest, &validation)?;
+    println!(
+        "OBMM_POLICY_MERGE_COMPLETE schema=1 sources={} cases={} seeds={} status={} report={}",
+        sources.len(),
+        manifest.cases.len(),
+        expected_seeds.len(),
+        validation.status,
+        args.output_dir.join("report.md").display(),
+    );
+    if validation.status != "pass" {
+        anyhow::bail!(
+            "merged policy evidence is invalid; inspect {}",
+            args.output_dir.join("validation.json").display()
+        );
+    }
+    Ok(())
+}
+
+fn load_policy_merge_source(
+    dir: &Path,
+    matrix: &EvalMatrix,
+    matrix_hash: &str,
+) -> anyhow::Result<LoadedPolicyMergeSource> {
+    let manifest: EvalRunManifest = read_json(&dir.join("run-manifest.json"))?;
+    let validation: EvalValidation = read_json(&dir.join("validation.json"))?;
+    if manifest.schema != EVAL_RUN_MANIFEST_SCHEMA
+        || validation.schema != EVAL_VALIDATION_SCHEMA
+        || manifest.matrix_name != matrix.name
+        || manifest.matrix_hash != matrix_hash
+    {
+        anyhow::bail!(
+            "{} has incompatible matrix or schema metadata",
+            dir.display()
+        );
+    }
+    if !manifest.gates_passed
+        || !manifest.valid_for_execution
+        || validation.gates.iter().any(|gate| gate.status != "pass")
+    {
+        anyhow::bail!("{} did not pass every P0-P4 source gate", dir.display());
+    }
+    let allowed_seed_reason = format!(
+        "formal statistics require at least {} seeds",
+        matrix.minimums.formal_seed_count
+    );
+    if validation
+        .invalid_reasons
+        .iter()
+        .any(|reason| reason != &allowed_seed_reason)
+    {
+        anyhow::bail!(
+            "{} has invalid source reasons beyond the expected partial seed count",
+            dir.display()
+        );
+    }
+    if validation.expanded_cases != manifest.cases.len()
+        || validation.runs.len() != manifest.cases.len()
+        || validation.runs.iter().any(|run| run.status != "pass")
+    {
+        anyhow::bail!(
+            "{} is not a complete successful source campaign",
+            dir.display()
+        );
+    }
+
+    let validation_ids: BTreeSet<&str> = validation
+        .runs
+        .iter()
+        .map(|run| run.run_id.as_str())
+        .collect();
+    let manifest_ids: BTreeSet<&str> = manifest
+        .cases
+        .iter()
+        .map(|case| case.run_id.as_str())
+        .collect();
+    if validation_ids.len() != validation.runs.len()
+        || manifest_ids.len() != manifest.cases.len()
+        || validation_ids != manifest_ids
+    {
+        anyhow::bail!(
+            "{} has duplicate or mismatched run identities",
+            dir.display()
+        );
+    }
+    let manifest_seeds: BTreeSet<u64> = manifest.cases.iter().map(|case| case.seed).collect();
+    if manifest_seeds != manifest.seeds.iter().copied().collect() {
+        anyhow::bail!(
+            "{} manifest seed metadata differs from its cases",
+            dir.display()
+        );
+    }
+
+    let raw_dir = dir.join("raw");
+    let raw_names = jsonl_file_stems(&raw_dir)?;
+    if raw_names != manifest_ids.iter().map(|id| (*id).to_string()).collect() {
+        anyhow::bail!(
+            "{} canonical raw set differs from its manifest",
+            dir.display()
+        );
+    }
+    let mut fingerprints = BTreeSet::new();
+    for case in &manifest.cases {
+        let evidence = fs::read_to_string(raw_dir.join(format!("{}.jsonl", case.run_id)))?;
+        let fingerprint = artifact_fingerprint(&evidence).ok_or_else(|| {
+            anyhow::anyhow!("{} lacks artifact fingerprint evidence", case.run_id)
+        })?;
+        fingerprints.insert(fingerprint);
+    }
+    if fingerprints.len() != 1 {
+        anyhow::bail!("{} contains mixed artifact fingerprints", dir.display());
+    }
+
+    let provenance_path = dir.join("host-provenance.txt");
+    let host_provenance = fs::read_to_string(&provenance_path)
+        .with_context(|| format!("read {}", provenance_path.display()))?;
+    let hostname = host_provenance
+        .lines()
+        .next()
+        .filter(|line| !line.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{} has no hostname", provenance_path.display()))?
+        .trim()
+        .to_string();
+    let sim_cli_sha256 = provenance_sha256(&host_provenance, "target/release/sim-cli")?;
+    let evaluator_sha256 = provenance_sha256(&host_provenance, "crates/sim-cli/src/obmm_eval.rs")?;
+    let coroutines = manifest
+        .cases
+        .iter()
+        .map(|case| case.coroutines)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let path = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let provenance = PolicyMergeSource {
+        path: path.display().to_string(),
+        hostname,
+        seeds: manifest.seeds.clone(),
+        coroutines,
+        cases: manifest.cases.len(),
+        raw_attempts: count_jsonl_files(&dir.join("raw-attempts"))?,
+        quarantined_raw: count_jsonl_files(&dir.join("raw-quarantine"))?,
+        sim_cli_sha256,
+        evaluator_sha256,
+        artifact_fingerprints: fingerprints.into_iter().collect(),
+    };
+    Ok(LoadedPolicyMergeSource {
+        dir: dir.to_path_buf(),
+        manifest,
+        validation,
+        provenance,
+    })
+}
+
+fn validate_policy_merge_sources(
+    sources: &[LoadedPolicyMergeSource],
+    expected_seeds: &[u64],
+    matrix_hash: &str,
+) -> anyhow::Result<()> {
+    let first = &sources[0].manifest;
+    for source in sources {
+        let manifest = &source.manifest;
+        if manifest.matrix_hash != matrix_hash
+            || manifest.scenario_hash != first.scenario_hash
+            || manifest.scenario_file_sha256 != first.scenario_file_sha256
+            || manifest.topology_hosts != first.topology_hosts
+            || manifest.topology_hash != first.topology_hash
+            || manifest.selected_bands != first.selected_bands
+        {
+            anyhow::bail!(
+                "{} differs in matrix, scenario, topology, or selected bands",
+                source.dir.display()
+            );
+        }
+    }
+    unique_merge_value(
+        "sim-cli SHA-256",
+        sources
+            .iter()
+            .map(|source| source.provenance.sim_cli_sha256.clone()),
+    )?;
+    unique_merge_value(
+        "evaluator SHA-256",
+        sources
+            .iter()
+            .map(|source| source.provenance.evaluator_sha256.clone()),
+    )?;
+    unique_merge_value(
+        "artifact fingerprint",
+        sources
+            .iter()
+            .flat_map(|source| source.provenance.artifact_fingerprints.iter().cloned()),
+    )?;
+
+    let mut run_ids = BTreeSet::new();
+    let mut cases = Vec::new();
+    let mut host_by_coroutines = BTreeMap::new();
+    for source in sources {
+        for case in &source.manifest.cases {
+            if !run_ids.insert(case.run_id.as_str()) {
+                anyhow::bail!("duplicate merged run ID {}", case.run_id);
+            }
+            cases.push(case.clone());
+            if let Some(existing) =
+                host_by_coroutines.insert(case.coroutines, source.provenance.hostname.as_str())
+            {
+                if existing != source.provenance.hostname {
+                    anyhow::bail!(
+                        "coroutine count {} spans hosts {} and {}; paired seeds must stay on one host",
+                        case.coroutines,
+                        existing,
+                        source.provenance.hostname
+                    );
+                }
+            }
+        }
+    }
+    validate_merge_case_universe(&cases, expected_seeds)
+}
+
+fn validate_merge_case_universe(
+    cases: &[ExpandedEvalCase],
+    expected_seeds: &[u64],
+) -> anyhow::Result<()> {
+    let expected: BTreeSet<u64> = expected_seeds.iter().copied().collect();
+    if expected.len() != expected_seeds.len() {
+        anyhow::bail!("expected merge seed list contains duplicates");
+    }
+    let mut groups: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    for case in cases {
+        let seeds = groups.entry(aggregate_key(case)).or_default();
+        if !seeds.insert(case.seed) {
+            anyhow::bail!(
+                "duplicate logical case/seed in merged evidence: {} seed {}",
+                aggregate_key(case),
+                case.seed
+            );
+        }
+    }
+    for (key, seeds) in groups {
+        if seeds != expected {
+            anyhow::bail!(
+                "merged case {key} has seeds {:?}, expected {:?}",
+                seeds,
+                expected
+            );
+        }
+    }
+    Ok(())
+}
+
+fn unique_merge_value(
+    label: &str,
+    values: impl IntoIterator<Item = String>,
+) -> anyhow::Result<String> {
+    let values: BTreeSet<String> = values.into_iter().collect();
+    if values.len() != 1 {
+        anyhow::bail!("merged sources require one {label}, found {values:?}");
+    }
+    Ok(values.into_iter().next().expect("one merge value"))
+}
+
+fn copy_policy_merge_source(
+    source_index: usize,
+    source: &LoadedPolicyMergeSource,
+    output_dir: &Path,
+) -> anyhow::Result<()> {
+    let metadata_dir = output_dir
+        .join("sources")
+        .join(format!("{source_index:03}"));
+    fs::create_dir_all(&metadata_dir)?;
+    for name in [
+        "run-manifest.json",
+        "validation.json",
+        "host-provenance.txt",
+    ] {
+        fs::copy(source.dir.join(name), metadata_dir.join(name))
+            .with_context(|| format!("copy source metadata {name}"))?;
+    }
+    let source_models = source.dir.join("models");
+    for entry in
+        fs::read_dir(&source_models).with_context(|| format!("read {}", source_models.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let target = output_dir.join("models").join(entry.file_name());
+        if target.exists() {
+            if fs::read(entry.path())? != fs::read(&target)? {
+                anyhow::bail!("model manifest collision at {}", target.display());
+            }
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    for case in &source.manifest.cases {
+        let source_raw = source
+            .dir
+            .join("raw")
+            .join(format!("{}.jsonl", case.run_id));
+        let target_raw = output_dir
+            .join("raw")
+            .join(format!("{}.jsonl", case.run_id));
+        if target_raw.exists() {
+            anyhow::bail!(
+                "refusing raw evidence collision at {}",
+                target_raw.display()
+            );
+        }
+        fs::copy(&source_raw, &target_raw)
+            .with_context(|| format!("copy {}", source_raw.display()))?;
+    }
+    Ok(())
+}
+
+fn read_json<T>(path: &Path) -> anyhow::Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
+}
+
+fn provenance_sha256(contents: &str, suffix: &str) -> anyhow::Result<String> {
+    let digest = contents
+        .lines()
+        .find_map(|line| {
+            line.trim_end()
+                .ends_with(suffix)
+                .then(|| line.split_whitespace().next().unwrap_or_default())
+        })
+        .filter(|digest| is_sha256(digest))
+        .ok_or_else(|| anyhow::anyhow!("host provenance lacks SHA-256 for {suffix}"))?;
+    Ok(digest.to_string())
+}
+
+fn jsonl_file_stems(dir: &Path) -> anyhow::Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && entry.path().extension().and_then(OsStr::to_str) == Some("jsonl")
+        {
+            names.insert(
+                entry
+                    .path()
+                    .file_stem()
+                    .and_then(OsStr::to_str)
+                    .ok_or_else(|| anyhow::anyhow!("non-UTF-8 raw filename"))?
+                    .to_string(),
+            );
+        }
+    }
+    Ok(names)
+}
+
+fn count_jsonl_files(dir: &Path) -> anyhow::Result<usize> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut count = 0;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in
+            fs::read_dir(&current).with_context(|| format!("read {}", current.display()))?
+        {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else if entry.path().extension().and_then(OsStr::to_str) == Some("jsonl") {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
 }
 
 fn finalize_validation(validation: &mut EvalValidation, expected_runs: usize) {
@@ -824,6 +1454,24 @@ fn parse_seeds(value: &str) -> anyhow::Result<Vec<u64>> {
         anyhow::bail!("--seeds must not be empty");
     }
     Ok(seeds.into_iter().collect())
+}
+
+fn parse_coroutines(value: &str) -> anyhow::Result<Option<BTreeSet<u32>>> {
+    if value == "all" {
+        return Ok(None);
+    }
+    let mut coroutines = BTreeSet::new();
+    for part in value.split(',') {
+        let count = part.parse::<u32>().context("parse --coroutines entry")?;
+        if count == 0 {
+            anyhow::bail!("--coroutines entries must be positive integers or all");
+        }
+        coroutines.insert(count);
+    }
+    if coroutines.is_empty() {
+        anyhow::bail!("--coroutines must not be empty");
+    }
+    Ok(Some(coroutines))
 }
 
 fn expand_matrix(
@@ -1441,7 +2089,10 @@ fn execute_cases(args: &ObmmEvalCliArgs, manifest: &EvalRunManifest) -> anyhow::
     if args.output_dir.is_absolute() {
         anyhow::bail!("formal execution requires a repository-relative --output-dir");
     }
-    ensure_raw_targets_are_new(&args.output_dir, manifest)?;
+    if !args.resume {
+        ensure_raw_targets_are_new(&args.output_dir, manifest)?;
+    }
+    fs::create_dir_all(args.output_dir.join("raw-attempts"))?;
     if let Some((target, remote_repo)) = remote {
         for model_path in manifest
             .cases
@@ -1457,124 +2108,286 @@ fn execute_cases(args: &ObmmEvalCliArgs, manifest: &EvalRunManifest) -> anyhow::
         }
     }
     for (index, case) in manifest.cases.iter().enumerate() {
-        println!(
-            "{}",
-            eval_progress_line(&case.run_id, index, manifest.cases.len(), "dispatch", None,)
-        );
-        let host_before = if let Some((target, _)) = remote {
-            collect_remote_host_evidence(target)?
-        } else {
-            collect_local_host_evidence()?
-        };
-        let started = Instant::now();
-        let timeout = remote_case_timeout(&case.command)?;
-        let output = execute_case_command(remote, execution_repo, &case.command, timeout)
-            .with_context(|| format!("dispatch {}", case.run_id))?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "case {} exceeded its {} second outer deadline",
-                    case.run_id,
-                    timeout.as_secs()
-                )
-            })?;
-        let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let mut initial_reasons = Vec::new();
-        let summary = match parse_guest_summary(&stdout) {
-            Ok(summary) => Some(summary),
-            Err(error) => {
-                initial_reasons.push(error.to_string());
-                None
+        let raw_path = args
+            .output_dir
+            .join("raw")
+            .join(format!("{}.jsonl", case.run_id));
+        if raw_path.exists() {
+            if !args.resume {
+                anyhow::bail!("refusing to overwrite raw evidence {}", raw_path.display());
             }
-        };
-        let mut diagnostic_summary = None;
-        let mut diagnostic_stdout = String::new();
-        let mut diagnostic_stderr = String::new();
-        if case.diagnostic_trace_required {
-            let diagnostic_parts = diagnostic_trace_command(case);
-            let diagnostic_timeout = remote_case_timeout(&diagnostic_parts)?;
-            let diagnostic_output = execute_case_command(
-                remote,
-                execution_repo,
-                &diagnostic_parts,
-                diagnostic_timeout,
-            )
-            .with_context(|| format!("dispatch diagnostic trace {}", case.run_id))?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "diagnostic trace {} exceeded its {} second outer deadline",
-                    case.run_id,
-                    diagnostic_timeout.as_secs()
-                )
-            })?;
-            diagnostic_stdout = String::from_utf8_lossy(&diagnostic_output.stdout).into_owned();
-            diagnostic_stderr = String::from_utf8_lossy(&diagnostic_output.stderr).into_owned();
-            match parse_guest_summary(&diagnostic_stdout) {
-                Ok(diagnostic) => {
-                    if diagnostic_output.status.code() != Some(0) {
-                        initial_reasons
-                            .push("diagnostic trace process did not exit successfully".into());
-                    }
-                    if let Some(timed) = summary.as_ref() {
-                        validate_diagnostic_trace(timed, &diagnostic, &mut initial_reasons);
-                    }
-                    diagnostic_summary = Some(diagnostic);
-                }
-                Err(error) => initial_reasons.push(format!("diagnostic trace summary: {error}")),
+            let evidence = fs::read_to_string(&raw_path)
+                .with_context(|| format!("read resume evidence {}", raw_path.display()))?;
+            let record: RawRunRecord =
+                serde_json::from_str(evidence.lines().next().unwrap_or_default())
+                    .with_context(|| format!("decode resume evidence {}", raw_path.display()))?;
+            let reasons = validate_raw_run(case, &record, &evidence, manifest);
+            if !reasons.is_empty() {
+                anyhow::bail!(
+                    "resume found invalid canonical raw evidence at {}: {}",
+                    raw_path.display(),
+                    reasons.join("; ")
+                );
             }
+            println!(
+                "{}",
+                eval_progress_line(
+                    &case.run_id,
+                    index + 1,
+                    manifest.cases.len(),
+                    "resumed",
+                    record.exit_code,
+                )
+            );
+            continue;
         }
-        let record = RawRunRecord {
-            schema: 1,
-            kind: "run".into(),
-            run_id: case.run_id.clone(),
-            exit_code: output.status.code(),
-            host: HostEvidence {
-                elapsed_ns,
-                load1_milli: host_before.0,
-                online_cpus: host_before.1,
-            },
-            summary,
-            diagnostic_summary,
-            initial_reasons,
-        };
-        let combined_stdout = if diagnostic_stdout.is_empty() {
-            stdout.into_owned()
-        } else {
-            format!(
-                "{}\nOBMM_DIAGNOSTIC_TRACE_BEGIN sample_ppm=10000\n{}",
-                stdout, diagnostic_stdout
-            )
-        };
-        let combined_stderr = if diagnostic_stderr.is_empty() {
-            stderr.into_owned()
-        } else {
-            format!(
-                "{}\nOBMM_DIAGNOSTIC_TRACE_STDERR_BEGIN\n{}",
-                stderr, diagnostic_stderr
-            )
-        };
-        write_raw_run(
-            &args
-                .output_dir
-                .join("raw")
-                .join(format!("{}.jsonl", case.run_id)),
-            &record,
-            &combined_stdout,
-            &combined_stderr,
-        )?;
-        println!(
-            "{}",
-            eval_progress_line(
-                &case.run_id,
-                index + 1,
-                manifest.cases.len(),
-                "collected",
-                output.status.code(),
-            )
-        );
+        let attempt_dir = args.output_dir.join("raw-attempts");
+        let completed_attempts = existing_case_attempts(&attempt_dir, &case.run_id)?;
+        let (mut attempt_number, final_attempt_number) = next_attempt_window(completed_attempts)?;
+        loop {
+            let command = case_command_for_attempt(case, attempt_number);
+            println!(
+                "{}",
+                eval_progress_line(&case.run_id, index, manifest.cases.len(), "dispatch", None,)
+            );
+            let attempt =
+                execute_case_attempt(remote, execution_repo, case, &command, attempt_number)?;
+            let reasons = validate_raw_run(case, &attempt.record, &attempt.stdout, manifest);
+            if reasons.is_empty() {
+                write_raw_run(&raw_path, &attempt.record, &attempt.stdout, &attempt.stderr)?;
+                println!(
+                    "{}",
+                    eval_progress_line(
+                        &case.run_id,
+                        index + 1,
+                        manifest.cases.len(),
+                        "collected",
+                        attempt.record.exit_code,
+                    )
+                );
+                break;
+            }
+            let attempt_path =
+                attempt_dir.join(format!("{}.attempt-{}.jsonl", case.run_id, attempt_number));
+            if attempt_path.exists() {
+                anyhow::bail!(
+                    "refusing to overwrite failed attempt evidence {}",
+                    attempt_path.display()
+                );
+            }
+            write_raw_run(
+                &attempt_path,
+                &attempt.record,
+                &attempt.stdout,
+                &attempt.stderr,
+            )?;
+            eprintln!(
+                "OBMM_EVAL_RETRY schema=1 run_id={} attempt={} status=invalid reasons={}",
+                case.run_id,
+                attempt_number,
+                reasons.join("|")
+            );
+            if attempt_number >= final_attempt_number {
+                anyhow::bail!(
+                    "case {} remained invalid after attempts {}..={}; preserved evidence below {}",
+                    case.run_id,
+                    final_attempt_number - CASE_ATTEMPT_LIMIT + 1,
+                    final_attempt_number,
+                    attempt_dir.display()
+                );
+            }
+            attempt_number += 1;
+        }
     }
     Ok(())
+}
+
+struct CaseAttempt {
+    record: RawRunRecord,
+    stdout: String,
+    stderr: String,
+}
+
+fn execute_case_attempt(
+    remote: Option<(&str, &Path)>,
+    execution_repo: &Path,
+    case: &ExpandedEvalCase,
+    command: &[String],
+    attempt_number: usize,
+) -> anyhow::Result<CaseAttempt> {
+    let host_before = if let Some((target, _)) = remote {
+        collect_remote_host_evidence(target)?
+    } else {
+        collect_local_host_evidence()?
+    };
+    let started = Instant::now();
+    let timeout = remote_case_timeout(command)?;
+    let output = execute_case_command(remote, execution_repo, command, timeout)
+        .with_context(|| format!("dispatch {} attempt {}", case.run_id, attempt_number))?;
+    let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let (exit_code, stdout, stderr) = match output {
+        Some(output) => (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ),
+        None => (
+            None,
+            String::new(),
+            format!(
+                "case exceeded its {} second outer deadline",
+                timeout.as_secs()
+            ),
+        ),
+    };
+    let mut initial_reasons = Vec::new();
+    let summary = match parse_guest_summary(&stdout) {
+        Ok(summary) => Some(summary),
+        Err(error) => {
+            initial_reasons.push(error.to_string());
+            None
+        }
+    };
+    let mut diagnostic_summary = None;
+    let mut diagnostic_stdout = String::new();
+    let mut diagnostic_stderr = String::new();
+    if case.diagnostic_trace_required {
+        let mut diagnostic_parts = diagnostic_trace_command(case);
+        set_attempt_run_id(&mut diagnostic_parts, &case.run_id, attempt_number, "trace")?;
+        let diagnostic_timeout = remote_case_timeout(&diagnostic_parts)?;
+        let diagnostic_output = execute_case_command(
+            remote,
+            execution_repo,
+            &diagnostic_parts,
+            diagnostic_timeout,
+        )
+        .with_context(|| {
+            format!(
+                "dispatch diagnostic trace {} attempt {}",
+                case.run_id, attempt_number
+            )
+        })?;
+        match diagnostic_output {
+            Some(output) => {
+                diagnostic_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                diagnostic_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                match parse_guest_summary(&diagnostic_stdout) {
+                    Ok(diagnostic) => {
+                        if output.status.code() != Some(0) {
+                            initial_reasons
+                                .push("diagnostic trace process did not exit successfully".into());
+                        }
+                        if let Some(timed) = summary.as_ref() {
+                            validate_diagnostic_trace(timed, &diagnostic, &mut initial_reasons);
+                        }
+                        diagnostic_summary = Some(diagnostic);
+                    }
+                    Err(error) => {
+                        initial_reasons.push(format!("diagnostic trace summary: {error}"));
+                    }
+                }
+            }
+            None => initial_reasons.push(format!(
+                "diagnostic trace exceeded its {} second outer deadline",
+                diagnostic_timeout.as_secs()
+            )),
+        }
+    }
+    let record = RawRunRecord {
+        schema: 1,
+        kind: "run".into(),
+        run_id: case.run_id.clone(),
+        exit_code,
+        host: HostEvidence {
+            elapsed_ns,
+            load1_milli: host_before.0,
+            online_cpus: host_before.1,
+        },
+        summary,
+        diagnostic_summary,
+        initial_reasons,
+    };
+    let stdout = if diagnostic_stdout.is_empty() {
+        stdout
+    } else {
+        format!(
+            "{}\nOBMM_DIAGNOSTIC_TRACE_BEGIN sample_ppm=10000\n{}",
+            stdout, diagnostic_stdout
+        )
+    };
+    let stderr = if diagnostic_stderr.is_empty() {
+        stderr
+    } else {
+        format!(
+            "{}\nOBMM_DIAGNOSTIC_TRACE_STDERR_BEGIN\n{}",
+            stderr, diagnostic_stderr
+        )
+    };
+    Ok(CaseAttempt {
+        record,
+        stdout,
+        stderr,
+    })
+}
+
+fn case_command_for_attempt(case: &ExpandedEvalCase, attempt_number: usize) -> Vec<String> {
+    let mut command = case.command.clone();
+    set_attempt_run_id(&mut command, &case.run_id, attempt_number, "run")
+        .expect("expanded case command has a run ID");
+    command
+}
+
+fn set_attempt_run_id(
+    command: &mut [String],
+    run_id: &str,
+    attempt_number: usize,
+    suffix: &str,
+) -> anyhow::Result<()> {
+    let index = command
+        .iter()
+        .position(|argument| argument == "--run-id")
+        .and_then(|index| (index + 1 < command.len()).then_some(index + 1))
+        .ok_or_else(|| anyhow::anyhow!("case command is missing --run-id"))?;
+    command[index] = match (attempt_number, suffix) {
+        (1, "run") => run_id.to_string(),
+        (_, "run") => format!("{run_id}-a{attempt_number}"),
+        (_, "trace") => format!("{run_id}-t{attempt_number}"),
+        _ => format!("{run_id}-{suffix}-{attempt_number}"),
+    };
+    Ok(())
+}
+
+fn next_attempt_window(completed_attempts: usize) -> anyhow::Result<(usize, usize)> {
+    let first = completed_attempts
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("case attempt number overflow"))?;
+    let last = completed_attempts
+        .checked_add(CASE_ATTEMPT_LIMIT)
+        .ok_or_else(|| anyhow::anyhow!("case attempt limit overflow"))?;
+    Ok((first, last))
+}
+
+fn existing_case_attempts(attempt_dir: &Path, run_id: &str) -> anyhow::Result<usize> {
+    let prefix = format!("{run_id}.attempt-");
+    let mut attempts = BTreeSet::new();
+    for entry in fs::read_dir(attempt_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(number) = name
+            .strip_prefix(&prefix)
+            .and_then(|tail| tail.strip_suffix(".jsonl"))
+            .and_then(|number| number.parse::<usize>().ok())
+        {
+            attempts.insert(number);
+        }
+    }
+    for expected in 1..=attempts.len() {
+        if !attempts.contains(&expected) {
+            anyhow::bail!("failed attempt evidence for {run_id} is not contiguous");
+        }
+    }
+    Ok(attempts.len())
 }
 
 fn ensure_raw_targets_are_new(output_dir: &Path, manifest: &EvalRunManifest) -> anyhow::Result<()> {
@@ -2180,6 +2993,92 @@ struct AggregateRow {
     status: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct PolicyThresholds {
+    minimum_formal_seeds: usize,
+    minimum_median_gain_milli: i128,
+    minimum_paired_ci_gain_milli: i128,
+    maximum_p99_regression_milli: i128,
+    maximum_cpu_tax_milli: i128,
+}
+
+impl PolicyThresholds {
+    fn new(minimum_formal_seeds: usize) -> Self {
+        Self {
+            minimum_formal_seeds,
+            minimum_median_gain_milli: POLICY_MIN_MEDIAN_GAIN_MILLI,
+            minimum_paired_ci_gain_milli: POLICY_MIN_CI_GAIN_MILLI,
+            maximum_p99_regression_milli: POLICY_MAX_P99_REGRESSION_MILLI,
+            maximum_cpu_tax_milli: POLICY_MAX_CPU_TAX_MILLI,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolicyPathMetrics {
+    path: String,
+    case_id: String,
+    issue: String,
+    inflight: u32,
+    lookahead: u32,
+    valid_seeds: usize,
+    makespan_ns: Option<u64>,
+    guest_p99_ns: Option<u64>,
+    total_cpu_ns: Option<u64>,
+    row_status: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct PairedGainStats {
+    pair_count: usize,
+    positive_pairs: usize,
+    median_gain_milli: Option<i128>,
+    ci95_low_milli: Option<i128>,
+    ci95_high_milli: Option<i128>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolicyCandidateDecision {
+    eligible: bool,
+    reason: String,
+    paired_gain: PairedGainStats,
+    p99_regression_milli: Option<i128>,
+    cpu_tax_milli: Option<i128>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolicyBucket {
+    sweep: String,
+    topology_hosts: u32,
+    latency_us: u64,
+    jitter: String,
+    compute_us: u32,
+    coroutines: u32,
+    pattern: String,
+    access_bytes: u32,
+    sync: Option<PolicyPathMetrics>,
+    p2a_best: Option<PolicyPathMetrics>,
+    p2b: Option<PolicyPathMetrics>,
+    measured_fastest: String,
+    transparent_policy: String,
+    explicit_policy: String,
+    p2a_vs_sync: Option<PolicyCandidateDecision>,
+    p2b_vs_sync: Option<PolicyCandidateDecision>,
+    p2b_vs_explicit_fallback: Option<PolicyCandidateDecision>,
+    status: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolicyReport {
+    schema: u32,
+    matrix_name: String,
+    matrix_hash: String,
+    scenario_hash: String,
+    topology_hosts: u32,
+    thresholds: PolicyThresholds,
+    buckets: Vec<PolicyBucket>,
+}
+
 const PHASE_METRIC_FIELDS: [&str; 53] = [
     "ready_ns",
     "wait_ns",
@@ -2361,6 +3260,7 @@ fn aggregate_results(
     }
     derive_row_comparisons(&mut rows);
     write_summary_rows(output_dir, bands, &rows)?;
+    write_policy_summary(output_dir, &rows, &collected, manifest, matrix)?;
 
     Ok(collected
         .into_iter()
@@ -2391,6 +3291,9 @@ fn validate_raw_run(
     let mut reasons = record.initial_reasons.clone();
     if record.schema != 1 || record.kind != "run" || record.run_id != case.run_id {
         reasons.push("raw record identity/schema mismatch".into());
+    }
+    if record.exit_code != Some(0) {
+        reasons.push("case runner did not exit successfully".into());
     }
     let Some(summary) = &record.summary else {
         reasons.push("guest summary is absent".into());
@@ -2542,21 +3445,34 @@ fn validate_mode_metrics(
         reasons.push("P2B used forbidden QEMU-owned scheduler/context state".into());
     }
 
+    let expected_upcalls = expected_remote_operations(case);
     if matches!(
         case.outcome,
         OutcomeProfile::Success | OutcomeProfile::DuplicateLate
-    ) && (phase.el0_upcalls_pending != summary.operations
-        || phase.el0_upcalls_complete != summary.operations
+    ) && (phase.el0_upcalls_pending != expected_upcalls
+        || phase.el0_upcalls_complete != expected_upcalls
         || phase.el0_upcalls_fault != 0
         || phase.el0_context_saves == 0
         || phase.el0_context_restores == 0
-        || phase.el0_context_switches == 0
+        || (case.coroutines > 1 && phase.el0_context_switches == 0)
         || phase.el0_context_bytes == 0
         || phase.el0_scheduler_ns == 0
         || phase.direct_el0_upcalls != phase.el0_context_saves)
     {
         reasons.push("P2B does not prove ABI v2 guest-EL0 scheduler progress".into());
     }
+}
+
+fn expected_remote_operations(case: &ExpandedEvalCase) -> u64 {
+    if case.pattern != EvalPattern::Mixed {
+        return case.operations;
+    }
+
+    let coroutines = u64::from(case.coroutines);
+    let period = coroutines.saturating_mul(2);
+    let full_periods = case.operations / period;
+    let remainder = case.operations % period;
+    full_periods.saturating_mul(coroutines) + remainder.saturating_sub(coroutines).min(coroutines)
 }
 
 fn validate_artifact_evidence(
@@ -2611,6 +3527,9 @@ fn raw_output_lines(evidence: &str, prefix: &str) -> Vec<String> {
     evidence
         .lines()
         .filter_map(|raw| {
+            if raw.starts_with(prefix) {
+                return Some(raw.to_owned());
+            }
             serde_json::from_str::<serde_json::Value>(raw)
                 .ok()?
                 .get("line")?
@@ -3009,6 +3928,474 @@ fn derive_row_comparisons(rows: &mut [AggregateRow]) {
     }
 }
 
+fn policy_path_name(row: &AggregateRow) -> &'static str {
+    match row.case.mode {
+        EvalMode::SyncMmio => "sync",
+        EvalMode::AsyncPoll => "p2a",
+        EvalMode::SchedulerCore => "p2b",
+        EvalMode::Userfaultfd => "userfaultfd",
+    }
+}
+
+fn policy_total_cpu_ns(row: &AggregateRow) -> Option<u64> {
+    row.application_cpu_median
+        .zip(row.helper_cpu_median)
+        .map(|(application, helper)| {
+            application.saturating_add(helper).saturating_add(
+                row.phase_medians
+                    .get("el0_scheduler_ns")
+                    .copied()
+                    .unwrap_or(0),
+            )
+        })
+}
+
+fn policy_path_metrics(row: &AggregateRow) -> PolicyPathMetrics {
+    PolicyPathMetrics {
+        path: policy_path_name(row).into(),
+        case_id: row.case.case_id.clone(),
+        issue: row.case.issue.as_str().into(),
+        inflight: row.case.inflight,
+        lookahead: row.case.lookahead,
+        valid_seeds: row.valid_seeds,
+        makespan_ns: row.makespan_median,
+        guest_p99_ns: row.guest_p99_median,
+        total_cpu_ns: policy_total_cpu_ns(row),
+        row_status: row.status.clone(),
+    }
+}
+
+fn best_policy_row<'a>(rows: impl Iterator<Item = &'a AggregateRow>) -> Option<&'a AggregateRow> {
+    rows.filter(|row| row.makespan_median.is_some())
+        .min_by_key(|row| row.makespan_median)
+}
+
+fn signed_ratio_milli(candidate: u64, baseline: u64) -> Option<i128> {
+    (baseline != 0)
+        .then(|| (i128::from(candidate) - i128::from(baseline)) * 1_000 / i128::from(baseline))
+}
+
+fn median_i128(values: &mut [i128]) -> Option<i128> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    Some(values[(values.len() - 1) / 2])
+}
+
+fn bootstrap_median_i128_ci95(values: &[i128], seed: u64) -> Option<(i128, i128)> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut state = seed;
+    let mut samples = Vec::with_capacity(2_000);
+    for _ in 0..2_000 {
+        let mut resample = Vec::with_capacity(values.len());
+        for _ in values {
+            state = splitmix64(state);
+            resample.push(values[state as usize % values.len()]);
+        }
+        samples.push(median_i128(&mut resample).expect("non-empty resample"));
+    }
+    samples.sort_unstable();
+    Some((samples[49], samples[1_949]))
+}
+
+fn seed_makespans(
+    row: &AggregateRow,
+    collected: &[CollectedRun],
+    manifest: &EvalRunManifest,
+) -> BTreeMap<u64, u64> {
+    let key = aggregate_key(&row.case);
+    collected
+        .iter()
+        .filter(|run| run.reasons.is_empty())
+        .filter_map(|run| {
+            let case = &manifest.cases[run.case_index];
+            (aggregate_key(case) == key).then(|| {
+                run.record
+                    .as_ref()?
+                    .summary
+                    .as_ref()
+                    .map(|summary| (case.seed, summary.makespan_ns))
+            })?
+        })
+        .collect()
+}
+
+fn paired_gain_stats(
+    baseline: &AggregateRow,
+    candidate: &AggregateRow,
+    collected: &[CollectedRun],
+    manifest: &EvalRunManifest,
+) -> PairedGainStats {
+    let baseline_seeds = seed_makespans(baseline, collected, manifest);
+    let candidate_seeds = seed_makespans(candidate, collected, manifest);
+    let mut gains: Vec<i128> = baseline_seeds
+        .iter()
+        .filter_map(|(seed, baseline_ns)| {
+            let candidate_ns = candidate_seeds.get(seed)?;
+            signed_ratio_milli(*candidate_ns, *baseline_ns).map(|tax| -tax)
+        })
+        .collect();
+    let pair_count = gains.len();
+    let positive_pairs = gains.iter().filter(|gain| **gain > 0).count();
+    let ci95 = bootstrap_median_i128_ci95(
+        &gains,
+        fnv1a64(
+            format!(
+                "{}|{}|policy-paired-gain",
+                aggregate_key(&baseline.case),
+                aggregate_key(&candidate.case)
+            )
+            .as_bytes(),
+        ),
+    );
+    let median_gain_milli = median_i128(&mut gains);
+    PairedGainStats {
+        pair_count,
+        positive_pairs,
+        median_gain_milli,
+        ci95_low_milli: ci95.map(|interval| interval.0),
+        ci95_high_milli: ci95.map(|interval| interval.1),
+    }
+}
+
+fn evaluate_policy_candidate(
+    baseline: &AggregateRow,
+    candidate: &AggregateRow,
+    paired_gain: PairedGainStats,
+    thresholds: &PolicyThresholds,
+) -> PolicyCandidateDecision {
+    let p99_regression_milli = baseline
+        .guest_p99_median
+        .zip(candidate.guest_p99_median)
+        .and_then(|(baseline_ns, candidate_ns)| signed_ratio_milli(candidate_ns, baseline_ns));
+    let cpu_tax_milli = policy_total_cpu_ns(baseline)
+        .zip(policy_total_cpu_ns(candidate))
+        .and_then(|(baseline_ns, candidate_ns)| signed_ratio_milli(candidate_ns, baseline_ns));
+    let reason = if baseline.status != "pass" || candidate.status != "pass" {
+        "insufficient-formal-seeds"
+    } else if paired_gain.pair_count < thresholds.minimum_formal_seeds {
+        "insufficient-paired-seeds"
+    } else if paired_gain
+        .median_gain_milli
+        .map_or(true, |gain| gain < thresholds.minimum_median_gain_milli)
+    {
+        "median-gain-below-threshold"
+    } else if paired_gain
+        .ci95_low_milli
+        .map_or(true, |gain| gain < thresholds.minimum_paired_ci_gain_milli)
+    {
+        "paired-ci-gain-below-threshold"
+    } else if p99_regression_milli.map_or(true, |regression| {
+        regression > thresholds.maximum_p99_regression_milli
+    }) {
+        "p99-regression-exceeds-budget"
+    } else if cpu_tax_milli.map_or(true, |tax| tax > thresholds.maximum_cpu_tax_milli) {
+        "cpu-tax-exceeds-budget"
+    } else {
+        "eligible"
+    };
+    PolicyCandidateDecision {
+        eligible: reason == "eligible",
+        reason: reason.into(),
+        paired_gain,
+        p99_regression_milli,
+        cpu_tax_milli,
+    }
+}
+
+fn policy_bucket_status(rows: [&AggregateRow; 3]) -> String {
+    if rows.iter().all(|row| row.status == "pass") {
+        "pass"
+    } else {
+        "insufficient-evidence"
+    }
+    .into()
+}
+
+fn build_policy_buckets(
+    rows: &[AggregateRow],
+    collected: &[CollectedRun],
+    manifest: &EvalRunManifest,
+    thresholds: &PolicyThresholds,
+) -> anyhow::Result<Vec<PolicyBucket>> {
+    let mut groups: BTreeMap<String, Vec<&AggregateRow>> = BTreeMap::new();
+    for row in rows.iter().filter(|row| {
+        row.case.band == EvalBand::Scalar && row.case.outcome == OutcomeProfile::Success
+    }) {
+        groups
+            .entry(comparison_key(&row.case))
+            .or_default()
+            .push(row);
+    }
+    let mut buckets = Vec::new();
+    for group in groups.values() {
+        let sync = best_policy_row(
+            group
+                .iter()
+                .copied()
+                .filter(|row| row.case.mode == EvalMode::SyncMmio),
+        );
+        let p2a = best_policy_row(
+            group
+                .iter()
+                .copied()
+                .filter(|row| row.case.mode == EvalMode::AsyncPoll),
+        );
+        let p2b = best_policy_row(
+            group
+                .iter()
+                .copied()
+                .filter(|row| row.case.mode == EvalMode::SchedulerCore),
+        );
+        let reference = sync.or(p2a).or(p2b).expect("non-empty policy group");
+        let measured_fastest = best_policy_row([sync, p2a, p2b].into_iter().flatten())
+            .map(policy_path_name)
+            .unwrap_or("unknown")
+            .to_string();
+
+        let p2a_vs_sync = sync.zip(p2a).map(|(baseline, candidate)| {
+            evaluate_policy_candidate(
+                baseline,
+                candidate,
+                paired_gain_stats(baseline, candidate, collected, manifest),
+                thresholds,
+            )
+        });
+        let p2b_vs_sync = sync.zip(p2b).map(|(baseline, candidate)| {
+            evaluate_policy_candidate(
+                baseline,
+                candidate,
+                paired_gain_stats(baseline, candidate, collected, manifest),
+                thresholds,
+            )
+        });
+        let explicit_fallback = match (sync, p2a, p2a_vs_sync.as_ref()) {
+            (Some(_sync), Some(p2a), Some(decision)) if decision.eligible => p2a,
+            (Some(sync), _, _) => sync,
+            (_, Some(p2a), _) => p2a,
+            _ => p2b.expect("policy group has at least one path"),
+        };
+        let p2b_vs_explicit_fallback = p2b.map(|candidate| {
+            evaluate_policy_candidate(
+                explicit_fallback,
+                candidate,
+                paired_gain_stats(explicit_fallback, candidate, collected, manifest),
+                thresholds,
+            )
+        });
+        let transparent_policy = if p2b_vs_sync
+            .as_ref()
+            .is_some_and(|decision| decision.eligible)
+        {
+            "p2b"
+        } else {
+            "sync"
+        };
+        let mut explicit_policy = if p2a_vs_sync
+            .as_ref()
+            .is_some_and(|decision| decision.eligible)
+        {
+            "p2a"
+        } else {
+            "sync"
+        };
+        if p2b_vs_explicit_fallback
+            .as_ref()
+            .is_some_and(|decision| decision.eligible)
+        {
+            explicit_policy = "p2b";
+        }
+        let status = match (sync, p2a, p2b) {
+            (Some(sync), Some(p2a), Some(p2b)) => policy_bucket_status([sync, p2a, p2b]),
+            _ => "incomplete-path-set".into(),
+        };
+        buckets.push(PolicyBucket {
+            sweep: reference.case.sweep.clone(),
+            topology_hosts: manifest.topology_hosts,
+            latency_us: reference.case.model_latency_us,
+            jitter: enum_json(reference.case.jitter_profile)?,
+            compute_us: reference.case.compute_us,
+            coroutines: reference.case.coroutines,
+            pattern: reference.case.pattern.as_str().into(),
+            access_bytes: reference.case.access_bytes,
+            sync: sync.map(policy_path_metrics),
+            p2a_best: p2a.map(policy_path_metrics),
+            p2b: p2b.map(policy_path_metrics),
+            measured_fastest,
+            transparent_policy: transparent_policy.into(),
+            explicit_policy: explicit_policy.into(),
+            p2a_vs_sync,
+            p2b_vs_sync,
+            p2b_vs_explicit_fallback,
+            status,
+        });
+    }
+    Ok(buckets)
+}
+
+fn policy_csv_header() -> &'static str {
+    "sweep,topology_hosts,latency_us,jitter,compute_us,coroutines,pattern,access_bytes,\
+sync_makespan_ns,sync_p99_ns,sync_total_cpu_ns,\
+p2a_case,p2a_issue,p2a_inflight,p2a_lookahead,p2a_makespan_ns,p2a_p99_ns,p2a_total_cpu_ns,\
+p2b_makespan_ns,p2b_p99_ns,p2b_total_cpu_ns,measured_fastest,transparent_policy,explicit_policy,\
+p2a_eligible,p2a_reason,p2b_transparent_eligible,p2b_transparent_reason,\
+p2b_explicit_eligible,p2b_explicit_reason,p2b_pair_count,p2b_positive_pairs,\
+p2b_paired_gain_median_milli,p2b_paired_gain_ci95_low_milli,p2b_paired_gain_ci95_high_milli,\
+p2b_p99_regression_milli,p2b_cpu_tax_milli,status\n"
+}
+
+fn write_policy_summary(
+    output_dir: &Path,
+    rows: &[AggregateRow],
+    collected: &[CollectedRun],
+    manifest: &EvalRunManifest,
+    matrix: &EvalMatrix,
+) -> anyhow::Result<()> {
+    let thresholds = PolicyThresholds::new(matrix.minimums.formal_seed_count as usize);
+    let buckets = build_policy_buckets(rows, collected, manifest, &thresholds)?;
+    let mut csv = String::from(policy_csv_header());
+    for bucket in &buckets {
+        let p2a_decision = bucket.p2a_vs_sync.as_ref();
+        let p2b_transparent = bucket.p2b_vs_sync.as_ref();
+        let p2b_explicit = bucket.p2b_vs_explicit_fallback.as_ref();
+        let p2b_pair = p2b_explicit.map(|decision| &decision.paired_gain);
+        let fields = [
+            bucket.sweep.clone(),
+            bucket.topology_hosts.to_string(),
+            bucket.latency_us.to_string(),
+            bucket.jitter.clone(),
+            bucket.compute_us.to_string(),
+            bucket.coroutines.to_string(),
+            bucket.pattern.clone(),
+            bucket.access_bytes.to_string(),
+            bucket
+                .sync
+                .as_ref()
+                .and_then(|path| path.makespan_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .sync
+                .as_ref()
+                .and_then(|path| path.guest_p99_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .sync
+                .as_ref()
+                .and_then(|path| path.total_cpu_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .map_or_else(|| "na".into(), |path| path.case_id.clone()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .map_or_else(|| "na".into(), |path| path.issue.clone()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .map_or_else(|| "na".into(), |path| path.inflight.to_string()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .map_or_else(|| "na".into(), |path| path.lookahead.to_string()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .and_then(|path| path.makespan_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .and_then(|path| path.guest_p99_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .p2a_best
+                .as_ref()
+                .and_then(|path| path.total_cpu_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .p2b
+                .as_ref()
+                .and_then(|path| path.makespan_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .p2b
+                .as_ref()
+                .and_then(|path| path.guest_p99_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket
+                .p2b
+                .as_ref()
+                .and_then(|path| path.total_cpu_ns)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket.measured_fastest.clone(),
+            bucket.transparent_policy.clone(),
+            bucket.explicit_policy.clone(),
+            p2a_decision.map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
+            p2a_decision.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            p2b_transparent
+                .map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
+            p2b_transparent.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            p2b_explicit.map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
+            p2b_explicit.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            p2b_pair.map_or_else(|| "0".into(), |paired| paired.pair_count.to_string()),
+            p2b_pair.map_or_else(|| "0".into(), |paired| paired.positive_pairs.to_string()),
+            p2b_pair
+                .and_then(|paired| paired.median_gain_milli)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            p2b_pair
+                .and_then(|paired| paired.ci95_low_milli)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            p2b_pair
+                .and_then(|paired| paired.ci95_high_milli)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            p2b_explicit
+                .and_then(|decision| decision.p99_regression_milli)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            p2b_explicit
+                .and_then(|decision| decision.cpu_tax_milli)
+                .map_or_else(|| "na".into(), |value| value.to_string()),
+            bucket.status.clone(),
+        ];
+        csv.push_str(&fields.join(","));
+        csv.push('\n');
+    }
+    fs::write(output_dir.join("summary/policy.csv"), csv)?;
+    write_json(
+        &output_dir.join("summary/policy.json"),
+        &PolicyReport {
+            schema: POLICY_SCHEMA,
+            matrix_name: manifest.matrix_name.clone(),
+            matrix_hash: manifest.matrix_hash.clone(),
+            scenario_hash: manifest.scenario_hash.clone(),
+            topology_hosts: manifest.topology_hosts,
+            thresholds,
+            buckets,
+        },
+    )?;
+    Ok(())
+}
+
+fn write_empty_policy_summary(output_dir: &Path) -> anyhow::Result<()> {
+    fs::write(output_dir.join("summary/policy.csv"), policy_csv_header())?;
+    write_json(
+        &output_dir.join("summary/policy.json"),
+        &PolicyReport {
+            schema: POLICY_SCHEMA,
+            matrix_name: String::new(),
+            matrix_hash: String::new(),
+            scenario_hash: String::new(),
+            topology_hosts: 0,
+            thresholds: PolicyThresholds::new(7),
+            buckets: Vec::new(),
+        },
+    )
+}
+
 fn write_summary_rows(
     output_dir: &Path,
     bands: &BTreeSet<EvalBand>,
@@ -3292,7 +4679,8 @@ fn write_final_report(
          - Band S (`summary/scalar.csv`) compares 8-byte sync, P2A demand/lookahead, and P2B demand.\n\
          - Band R (`summary/range.csv`) compares the same 4-KiB logical operations for sync, P2A, and userfaultfd.\n\
          - Band T (`summary/transparency.csv`) reports interface, software/custom-hardware surface, and extra-core cost; it is not collapsed into a throughput ranking.\n\
-         - `summary/break-even.csv` reports only measured L/W/concurrency intervals: `bracketed`, `positive-at-minimum`, `not-observed`, or `non-monotonic`. It never extrapolates beyond measured latency points.\n\n\
+         - `summary/break-even.csv` reports only measured L/W/concurrency intervals: `bracketed`, `positive-at-minimum`, `not-observed`, or `non-monotonic`. It never extrapolates beyond measured latency points.\n\
+         - `summary/policy.csv` and `summary/policy.json` report measured sync/P2A/P2B choices, paired-seed confidence, p99/CPU gates, and transparent/explicit policy decisions.\n\n\
          Each Band S/R row also carries the median ready/wait/idle, P2A submit/switch/CQ, P1 pending/copy/late/duplicate, P2B save/schedule/restore/commit, and P4 fault/remote/copy/wake phase metrics. `run-manifest.json`, `validation.json`, and `raw/*.jsonl` preserve the artifact hashes and per-seed provenance.\n\n\
          Fields with a zero or unavailable denominator are `na`. Invalid rows never contribute to medians or confidence intervals.\n",
         validation.status,
@@ -3326,6 +4714,7 @@ fn write_empty_summaries(output_dir: &Path, bands: &BTreeSet<EvalBand>) -> anyho
         )?;
     }
     write_break_even_summary(output_dir, &[])?;
+    write_empty_policy_summary(output_dir)?;
     Ok(())
 }
 
@@ -3519,6 +4908,11 @@ mod tests {
             .join("../../scenarios/experiments/obmm_remote_load_eval_acceptance_v1.yaml")
     }
 
+    fn policy_coarse_matrix_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/experiments/obmm_remote_load_policy_coarse_v1.yaml")
+    }
+
     fn scenario_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios/mvp_2host_single_domain.yaml")
     }
@@ -3603,6 +4997,54 @@ mod tests {
         }
     }
 
+    fn policy_test_row(
+        mode: EvalMode,
+        issue: EvalIssue,
+        makespan_ns: u64,
+        p99_ns: u64,
+        total_cpu_ns: u64,
+    ) -> AggregateRow {
+        let mut case = test_case();
+        case.mode = mode;
+        case.issue = issue;
+        case.case_id = match mode {
+            EvalMode::SyncMmio => "S0-sync",
+            EvalMode::AsyncPoll => "S1-p2a-demand",
+            EvalMode::SchedulerCore => "S3-p2b-demand",
+            EvalMode::Userfaultfd => "R2-userfaultfd",
+        }
+        .into();
+        AggregateRow {
+            case,
+            valid_seeds: 7,
+            checksum_set: "0000000000000001".into(),
+            success_count_median: Some(10_000),
+            failure_count_median: Some(0),
+            timeout_count_median: Some(0),
+            requests_per_second: Some(1.0),
+            bytes_per_second: Some(8.0),
+            makespan_median: Some(makespan_ns),
+            makespan_min: Some(makespan_ns),
+            makespan_max: Some(makespan_ns),
+            host_elapsed_median: Some(makespan_ns),
+            ci95: Some((makespan_ns, makespan_ns)),
+            guest_p50_median: Some(p99_ns),
+            guest_p95_median: Some(p99_ns),
+            guest_p99_median: Some(p99_ns),
+            guest_max_median: Some(p99_ns),
+            model_wait_median: Some(makespan_ns),
+            useful_work_median: Some(1),
+            application_cpu_median: Some(total_cpu_ns),
+            helper_cpu_median: Some(0),
+            phase_medians: BTreeMap::new(),
+            mechanism_gain_ns: None,
+            schedule_ahead_gain_ns: None,
+            overlap_efficiency: None,
+            core_efficiency: Some(1.0),
+            status: "pass".into(),
+        }
+    }
+
     fn test_manifest(cases: Vec<ExpandedEvalCase>) -> EvalRunManifest {
         EvalRunManifest {
             schema: 1,
@@ -3625,6 +5067,104 @@ mod tests {
         }
     }
 
+    fn write_merge_source(dir: &Path, matrix: &EvalMatrix, matrix_hash: &str, seeds: &[u64]) {
+        fs::create_dir_all(dir.join("models")).expect("models directory");
+        fs::create_dir_all(dir.join("raw")).expect("raw directory");
+        let scenario_sha = "2".repeat(64);
+        let qemu_sha = "3".repeat(64);
+        let kernel_sha = "4".repeat(64);
+        let initramfs_sha = "5".repeat(64);
+        let mut cases = Vec::new();
+        let mut runs = Vec::new();
+        for &seed in seeds {
+            let mut case = test_case();
+            case.seed = seed;
+            case.run_id = format!("merge-run-{seed}");
+            case.minimum_duration_ms = matrix.minimums.duration_ms;
+            case.order_index = seed;
+            let mut summary = test_summary(2_100_000_000 + seed);
+            summary.seed = seed;
+            let record = RawRunRecord {
+                schema: 1,
+                kind: "run".into(),
+                run_id: case.run_id.clone(),
+                exit_code: Some(0),
+                host: HostEvidence {
+                    elapsed_ns: 2_200_000_000 + seed,
+                    load1_milli: Some(1_000),
+                    online_cpus: Some(320),
+                },
+                summary: Some(summary),
+                diagnostic_summary: None,
+                initial_reasons: Vec::new(),
+            };
+            let mut evidence = serde_json::to_string(&record).expect("raw record");
+            evidence.push('\n');
+            evidence.push_str(&format!(
+                "OBMM_RUN_EVIDENCE schema=1 scenario_sha256={scenario_sha} \
+                 model_file_sha256={} model_contract_hash={} node_count=2 \
+                 qemu_destroyed=1 qemu_sha256={qemu_sha} kernel_sha256={kernel_sha} \
+                 initramfs_sha256={initramfs_sha}\n",
+                case.model_file_sha256, case.model_manifest_hash,
+            ));
+            evidence.push_str("model_pending=0 backend_pending=0 qemu_destroyed=1\n");
+            fs::write(
+                dir.join("raw").join(format!("{}.jsonl", case.run_id)),
+                evidence,
+            )
+            .expect("raw evidence");
+            runs.push(RunValidation {
+                run_id: case.run_id.clone(),
+                case_id: case.case_id.clone(),
+                seed,
+                status: "pass".into(),
+                reasons: Vec::new(),
+            });
+            cases.push(case);
+        }
+        let manifest = EvalRunManifest {
+            schema: EVAL_RUN_MANIFEST_SCHEMA,
+            run_namespace: format!("source-{}", seeds[0]),
+            matrix_name: matrix.name.clone(),
+            matrix_path: policy_coarse_matrix_path().display().to_string(),
+            matrix_hash: matrix_hash.into(),
+            scenario_path: "scenario.yaml".into(),
+            scenario_hash: "scenario-hash".into(),
+            scenario_file_sha256: scenario_sha,
+            topology_hosts: 2,
+            topology_hash: "topology-hash".into(),
+            selected_bands: vec!["scalar".into()],
+            seeds: seeds.to_vec(),
+            gate_dir: "gates".into(),
+            gates_passed: true,
+            valid_for_execution: true,
+            cases,
+        };
+        let validation = EvalValidation {
+            schema: EVAL_VALIDATION_SCHEMA,
+            status: "invalid".into(),
+            gates: Vec::new(),
+            invalid_reasons: vec![format!(
+                "formal statistics require at least {} seeds",
+                matrix.minimums.formal_seed_count
+            )],
+            expanded_cases: manifest.cases.len(),
+            formal_seed_count_met: false,
+            runs,
+        };
+        write_json(&dir.join("run-manifest.json"), &manifest).expect("source manifest");
+        write_json(&dir.join("validation.json"), &validation).expect("source validation");
+        fs::write(
+            dir.join("host-provenance.txt"),
+            format!(
+                "merge-test-host\n{}  target/release/sim-cli\n{}  crates/sim-cli/src/obmm_eval.rs\n",
+                "6".repeat(64),
+                "7".repeat(64),
+            ),
+        )
+        .expect("host provenance");
+    }
+
     #[test]
     fn parses_cli_and_seed_range() {
         let args = args_from([
@@ -3633,6 +5173,7 @@ mod tests {
             "--scenario=scenarios/mvp_2host_single_domain.yaml",
             "--bands=scalar,range,transparency",
             "--seeds=1..7",
+            "--coroutines=2,4",
             "--output-dir=out/eval",
             "--dry-run",
         ])
@@ -3643,6 +5184,14 @@ mod tests {
             parse_seeds(&args.seeds).expect("seeds"),
             (1..=7).collect::<Vec<_>>()
         );
+        assert_eq!(
+            parse_coroutines(&args.coroutines).expect("coroutines"),
+            Some(BTreeSet::from([2, 4]))
+        );
+        assert!(parse_coroutines("all")
+            .expect("all coroutine counts")
+            .is_none());
+        assert!(parse_coroutines("0").is_err());
 
         let local = args_from([
             "obmm-remote-load-eval",
@@ -3654,6 +5203,28 @@ mod tests {
         .expect("local arguments")
         .expect("local eval arguments");
         assert_eq!(local.local_repo, Some(PathBuf::from("/srv/ub_sim")));
+        let resume = args_from([
+            "obmm-remote-load-eval",
+            "--matrix=matrix.yaml",
+            "--scenario=scenario.yaml",
+            "--output-dir=out/eval",
+            "--local-repo=/srv/ub_sim",
+            "--resume",
+        ])
+        .expect("resume arguments")
+        .expect("resume eval arguments");
+        assert!(resume.resume);
+        assert!(args_from([
+            "obmm-remote-load-eval",
+            "--matrix=matrix.yaml",
+            "--scenario=scenario.yaml",
+            "--output-dir=out/eval",
+            "--dry-run",
+            "--resume",
+        ])
+        .expect_err("resume and dry-run must be exclusive")
+        .to_string()
+        .contains("mutually exclusive"));
         assert!(args_from([
             "obmm-remote-load-eval",
             "--matrix=matrix.yaml",
@@ -3669,6 +5240,113 @@ mod tests {
     }
 
     #[test]
+    fn parses_policy_merge_cli_with_repeated_inputs() {
+        let args = merge_args_from([
+            "obmm-remote-load-policy-merge",
+            "--matrix=matrix.yaml",
+            "--input=seed-1-3-low",
+            "--input=seed-4-7-low",
+            "--input=seed-1-3-high",
+            "--input=seed-4-7-high",
+            "--output-dir=merged",
+            "--seeds=1..7",
+        ])
+        .expect("merge arguments")
+        .expect("merge command");
+        assert_eq!(args.input_dirs.len(), 4);
+        assert_eq!(args.output_dir, PathBuf::from("merged"));
+        assert_eq!(parse_seeds(&args.seeds).expect("seeds").len(), 7);
+        assert!(merge_args_from([
+            "obmm-remote-load-policy-merge",
+            "--matrix=matrix.yaml",
+            "--input=only-one",
+            "--output-dir=merged",
+        ])
+        .expect_err("one source cannot be merged")
+        .to_string()
+        .contains("at least two"));
+    }
+
+    #[test]
+    fn merge_case_universe_rejects_duplicate_and_missing_seeds() {
+        let cases = (1..=7)
+            .map(|seed| {
+                let mut case = test_case();
+                case.seed = seed;
+                case.run_id = format!("run-{seed}");
+                case
+            })
+            .collect::<Vec<_>>();
+        validate_merge_case_universe(&cases, &(1..=7).collect::<Vec<_>>())
+            .expect("complete seed universe");
+
+        let mut duplicate = cases.clone();
+        duplicate.push(cases[0].clone());
+        assert!(
+            validate_merge_case_universe(&duplicate, &(1..=7).collect::<Vec<_>>())
+                .expect_err("duplicate seed must fail")
+                .to_string()
+                .contains("duplicate logical case/seed")
+        );
+
+        assert!(
+            validate_merge_case_universe(&cases[..6], &(1..=7).collect::<Vec<_>>())
+                .expect_err("missing seed must fail")
+                .to_string()
+                .contains("expected")
+        );
+    }
+
+    #[test]
+    fn merge_rejects_mixed_artifact_fingerprints() {
+        assert_eq!(
+            unique_merge_value("artifact", ["same".to_string(), "same".to_string()])
+                .expect("one artifact"),
+            "same"
+        );
+        assert!(
+            unique_merge_value("artifact", ["left".to_string(), "right".to_string()])
+                .expect_err("mixed artifacts must fail")
+                .to_string()
+                .contains("found")
+        );
+    }
+
+    #[test]
+    fn policy_merge_cli_reaggregates_three_plus_four_seeds() {
+        let root = temp_dir();
+        let source_one = root.join("seed-1-3");
+        let source_two = root.join("seed-4-7");
+        let output = root.join("merged");
+        let matrix_bytes = fs::read(policy_coarse_matrix_path()).expect("matrix bytes");
+        let matrix: EvalMatrix = serde_yaml::from_slice(&matrix_bytes).expect("matrix");
+        let matrix_hash = hash_bytes(&matrix_bytes);
+        write_merge_source(&source_one, &matrix, &matrix_hash, &[1, 2, 3]);
+        write_merge_source(&source_two, &matrix, &matrix_hash, &[4, 5, 6, 7]);
+
+        run_merge(&ObmmPolicyMergeCliArgs {
+            matrix_path: policy_coarse_matrix_path(),
+            input_dirs: vec![source_one, source_two],
+            output_dir: output.clone(),
+            seeds: "1..7".into(),
+        })
+        .expect("formal merged report");
+
+        let validation: EvalValidation =
+            read_json(&output.join("validation.json")).expect("merged validation");
+        assert_eq!(validation.status, "pass");
+        assert_eq!(validation.runs.len(), 7);
+        let policy =
+            fs::read_to_string(output.join("summary/policy.json")).expect("merged policy summary");
+        assert!(policy.contains("\"minimum_formal_seeds\": 7"));
+        let provenance =
+            fs::read_to_string(output.join("source-provenance.json")).expect("merge provenance");
+        assert!(provenance.contains("\"merge_binary_sha256\""));
+        assert!(provenance.contains("\"quarantined_raw\": 0"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn progress_line_reports_actionable_case_state() {
         assert_eq!(
             eval_progress_line("case-7", 6, 49, "dispatch", None),
@@ -3680,6 +5358,59 @@ mod tests {
             "OBMM_EVAL_PROGRESS schema=1 completed=7 total=49 run_id=case-7 \
              stage=collected exit_code=0"
         );
+    }
+
+    #[test]
+    fn case_attempts_use_unique_guest_ids_and_contiguous_evidence() {
+        let mut case = test_case();
+        case.command = vec![
+            "runner".into(),
+            "--run-id".into(),
+            case.run_id.clone(),
+            "--timeout-sec".into(),
+            "300".into(),
+        ];
+        let first = case_command_for_attempt(&case, 1);
+        let retry = case_command_for_attempt(&case, 2);
+        let first_id = first
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--run-id").then_some(pair[1].as_str()))
+            .expect("first run ID");
+        let retry_id = retry
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--run-id").then_some(pair[1].as_str()))
+            .expect("retry run ID");
+        assert_eq!(first_id, case.run_id);
+        assert_eq!(retry_id, format!("{}-a2", case.run_id));
+        let mut trace = case.command.clone();
+        set_attempt_run_id(&mut trace, &case.run_id, 4, "trace").expect("trace attempt ID");
+        assert_eq!(trace[2], format!("{}-t4", case.run_id));
+
+        let output = temp_dir();
+        fs::create_dir_all(&output).expect("attempt dir");
+        fs::write(
+            output.join(format!("{}.attempt-1.jsonl", case.run_id)),
+            "attempt one\n",
+        )
+        .expect("attempt one");
+        assert_eq!(
+            existing_case_attempts(&output, &case.run_id).expect("one attempt"),
+            1
+        );
+        fs::write(
+            output.join(format!("{}.attempt-3.jsonl", case.run_id)),
+            "attempt three\n",
+        )
+        .expect("attempt three");
+        assert!(existing_case_attempts(&output, &case.run_id).is_err());
+        fs::remove_dir_all(output).expect("cleanup");
+    }
+
+    #[test]
+    fn resume_opens_a_new_three_attempt_window_without_overwrite() {
+        assert_eq!(next_attempt_window(0).expect("initial window"), (1, 3));
+        assert_eq!(next_attempt_window(3).expect("resume window"), (4, 6));
+        assert!(next_attempt_window(usize::MAX).is_err());
     }
 
     #[test]
@@ -3786,6 +5517,7 @@ mod tests {
     #[test]
     fn matrix_expansion_is_deterministic_and_band_strict() {
         let matrix = load();
+        assert_eq!(matrix.minimums.scalar_operations, 65_536);
         let scenario = ScenarioConfig::from_yaml_file(scenario_path()).expect("scenario");
         let output = temp_dir();
         fs::create_dir_all(output.join("models")).expect("model dir");
@@ -4051,6 +5783,83 @@ mod tests {
     }
 
     #[test]
+    fn p2b_mixed_validation_counts_only_remote_operations_as_upcalls() {
+        let mut case = test_case();
+        case.case_id = "S3-p2b-demand".into();
+        case.mode = EvalMode::SchedulerCore;
+        case.pattern = EvalPattern::Mixed;
+        case.operations = 65_536;
+        case.coroutines = 8;
+        let mut summary = test_summary(2_000_000_000);
+        summary.case_id = case.case_id.clone();
+        summary.mode = case.mode.as_str().into();
+        summary.operations = case.operations;
+        summary.phase.el0_upcalls_pending = 32_768;
+        summary.phase.el0_upcalls_complete = 32_768;
+        summary.phase.el0_context_saves = 65_000;
+        summary.phase.el0_context_restores = 65_008;
+        summary.phase.el0_context_switches = 50_000;
+        summary.phase.el0_context_bytes = 100_000_000;
+        summary.phase.el0_scheduler_ns = 1_000_000;
+        summary.phase.direct_el0_upcalls = summary.phase.el0_context_saves;
+
+        let mut reasons = Vec::new();
+        validate_mode_metrics(&case, &summary, &mut reasons);
+        assert!(reasons.is_empty(), "{reasons:?}");
+
+        summary.phase.el0_upcalls_pending = summary.operations;
+        summary.phase.el0_upcalls_complete = summary.operations;
+        let mut reasons = Vec::new();
+        validate_mode_metrics(&case, &summary, &mut reasons);
+        assert_eq!(
+            reasons,
+            vec!["P2B does not prove ABI v2 guest-EL0 scheduler progress"]
+        );
+    }
+
+    #[test]
+    fn p2b_single_coroutine_does_not_require_a_context_switch() {
+        let mut case = test_case();
+        case.case_id = "S3-p2b-demand".into();
+        case.mode = EvalMode::SchedulerCore;
+        case.coroutines = 1;
+        let mut summary = test_summary(2_000_000_000);
+        summary.case_id = case.case_id.clone();
+        summary.mode = case.mode.as_str().into();
+        summary.phase.el0_upcalls_pending = summary.operations;
+        summary.phase.el0_upcalls_complete = summary.operations;
+        summary.phase.el0_context_saves = summary.operations;
+        summary.phase.el0_context_restores = summary.operations + 1;
+        summary.phase.el0_context_switches = 0;
+        summary.phase.el0_context_bytes = 1_000_000;
+        summary.phase.el0_scheduler_ns = 500_000;
+        summary.phase.direct_el0_upcalls = summary.phase.el0_context_saves;
+
+        let mut reasons = Vec::new();
+        validate_mode_metrics(&case, &summary, &mut reasons);
+        assert!(reasons.is_empty(), "{reasons:?}");
+
+        case.coroutines = 2;
+        validate_mode_metrics(&case, &summary, &mut reasons);
+        assert_eq!(
+            reasons,
+            vec!["P2B does not prove ABI v2 guest-EL0 scheduler progress"]
+        );
+    }
+
+    #[test]
+    fn mixed_remote_operation_count_handles_partial_periods() {
+        let mut case = test_case();
+        case.pattern = EvalPattern::Mixed;
+        case.coroutines = 4;
+
+        for (operations, expected) in [(3, 0), (6, 2), (8, 4), (11, 4), (14, 6)] {
+            case.operations = operations;
+            assert_eq!(expected_remote_operations(&case), expected);
+        }
+    }
+
+    #[test]
     fn duplicate_evidence_requires_a_positive_counter() {
         assert!(!evidence_counter_positive(
             "OBMM_ASYNC_SUMMARY duplicate=0 late=0",
@@ -4085,6 +5894,16 @@ mod tests {
         let evidence = serde_json::json!({"line": line}).to_string();
         let mut reasons = Vec::new();
         validate_artifact_evidence(&case, &manifest, &evidence, &mut reasons);
+        assert!(reasons.is_empty(), "{reasons:?}");
+
+        reasons.clear();
+        let plain = serde_json::from_str::<serde_json::Value>(&evidence)
+            .expect("JSON evidence")
+            .get("line")
+            .and_then(serde_json::Value::as_str)
+            .expect("line")
+            .to_owned();
+        validate_artifact_evidence(&case, &manifest, &plain, &mut reasons);
         assert!(reasons.is_empty(), "{reasons:?}");
 
         let tampered = evidence.replace("node_count=2", "node_count=4");
@@ -4179,6 +5998,124 @@ mod tests {
     }
 
     #[test]
+    fn policy_coarse_matrix_expands_every_l_w_c_path_for_screening() {
+        let matrix: EvalMatrix = serde_yaml::from_slice(
+            &fs::read(policy_coarse_matrix_path()).expect("policy matrix bytes"),
+        )
+        .expect("policy matrix");
+        validate_matrix(&matrix).expect("valid policy matrix");
+        let scenario = ScenarioConfig::from_yaml_file(scenario_path()).expect("scenario");
+        let output = temp_dir();
+        fs::create_dir_all(output.join("models")).expect("output directory");
+        let cases = expand_matrix(
+            &matrix,
+            &scenario,
+            &scenario_path(),
+            &BTreeSet::from([EvalBand::Scalar]),
+            &[1, 2, 3],
+            &output,
+        )
+        .expect("expanded policy matrix");
+        assert_eq!(cases.len(), 960);
+        assert!(cases.iter().any(|case| {
+            case.mode == EvalMode::SchedulerCore
+                && case.model_latency_us == 1_000
+                && case.compute_us == 1_000
+                && case.coroutines == 32
+        }));
+        fs::remove_dir_all(output).expect("cleanup");
+    }
+
+    #[test]
+    fn policy_coarse_cli_shards_keep_complete_comparison_buckets() {
+        let output = temp_dir();
+        let args = ObmmEvalCliArgs {
+            matrix_path: policy_coarse_matrix_path(),
+            scenario_path: scenario_path(),
+            bands: "scalar".into(),
+            seeds: "1..3".into(),
+            coroutines: "2,4".into(),
+            output_dir: output.clone(),
+            gate_dir: output.join("missing-gates"),
+            remote_target: None,
+            remote_repo: None,
+            local_repo: None,
+            aggregate_only: false,
+            resume: false,
+            dry_run: true,
+        };
+        run(&args).expect("sharded dry run");
+        let manifest: EvalRunManifest = serde_json::from_slice(
+            &fs::read(output.join("run-manifest.json")).expect("manifest bytes"),
+        )
+        .expect("manifest");
+        assert_eq!(manifest.cases.len(), 480);
+        assert!(manifest
+            .cases
+            .iter()
+            .all(|case| matches!(case.coroutines, 2 | 4)));
+        let bucket_paths = manifest
+            .cases
+            .iter()
+            .filter(|case| {
+                case.seed == 1
+                    && case.model_latency_us == 100
+                    && case.compute_us == 10
+                    && case.coroutines == 2
+            })
+            .map(|case| case.case_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            bucket_paths,
+            BTreeSet::from([
+                "S0-sync",
+                "S1-p2a-demand",
+                "S2-p2a-lookahead",
+                "S3-p2b-demand"
+            ])
+        );
+        fs::remove_dir_all(output).expect("cleanup");
+    }
+
+    #[test]
+    fn policy_candidate_requires_gain_tail_and_cpu_gates() {
+        let sync = policy_test_row(EvalMode::SyncMmio, EvalIssue::Demand, 1_000, 100, 100);
+        let p2b = policy_test_row(EvalMode::SchedulerCore, EvalIssue::Demand, 800, 104, 120);
+        let thresholds = PolicyThresholds::new(7);
+        let eligible = evaluate_policy_candidate(
+            &sync,
+            &p2b,
+            PairedGainStats {
+                pair_count: 7,
+                positive_pairs: 7,
+                median_gain_milli: Some(200),
+                ci95_low_milli: Some(100),
+                ci95_high_milli: Some(250),
+            },
+            &thresholds,
+        );
+        assert!(eligible.eligible);
+        assert_eq!(eligible.reason, "eligible");
+        assert_eq!(eligible.p99_regression_milli, Some(40));
+        assert_eq!(eligible.cpu_tax_milli, Some(200));
+
+        let weak = evaluate_policy_candidate(
+            &sync,
+            &p2b,
+            PairedGainStats {
+                pair_count: 7,
+                positive_pairs: 4,
+                median_gain_milli: Some(100),
+                ci95_low_milli: Some(0),
+                ci95_high_milli: Some(200),
+            },
+            &thresholds,
+        );
+        assert!(!weak.eligible);
+        assert_eq!(weak.reason, "paired-ci-gain-below-threshold");
+    }
+
+    #[test]
     fn logical_operation_identity_ignores_mechanism() {
         let sync = operation_list_hash(EvalBand::Scalar, 7, 8, 10_000, 8, EvalPattern::Sequential);
         let p2a = operation_list_hash(EvalBand::Scalar, 7, 8, 10_000, 8, EvalPattern::Sequential);
@@ -4259,12 +6196,14 @@ mod tests {
             scenario_path: scenario_path(),
             bands: "scalar,transparency".into(),
             seeds: "1".into(),
+            coroutines: "all".into(),
             output_dir: output.clone(),
             gate_dir: output.join("missing-gates"),
             remote_target: None,
             remote_repo: None,
             local_repo: None,
             aggregate_only: false,
+            resume: false,
             dry_run: true,
         };
         run(&args).expect("dry run");
@@ -4281,6 +6220,11 @@ mod tests {
         let break_even =
             fs::read_to_string(output.join("summary/break-even.csv")).expect("break even");
         assert!(break_even.contains("nonpositive_latency_us,positive_latency_us"));
+        let policy = fs::read_to_string(output.join("summary/policy.csv")).expect("policy CSV");
+        assert!(policy.contains("transparent_policy,explicit_policy"));
+        let policy_json =
+            fs::read_to_string(output.join("summary/policy.json")).expect("policy JSON");
+        assert!(policy_json.contains("\"minimum_paired_ci_gain_milli\": 50"));
         let original_manifest = fs::read(output.join("run-manifest.json")).expect("manifest bytes");
         let error = run(&args).expect_err("rerun must not overwrite evaluation evidence");
         assert!(error.to_string().contains("new --output-dir"));

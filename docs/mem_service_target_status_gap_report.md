@@ -2,6 +2,11 @@
 
 更新时间：2026-06-30
 
+> 历史状态说明（2026-08-14）：本文的 `~98%` 是对当时独立化任务内部清单的
+> 估算，不是 `ub_sim + Lingqu DataSystem` 完整纵向 PoC 的完成度，也不是当前
+> 独立仓库 revision 的认证结果。当前关系、证据和 PoC 缺口见
+> [2026-08-14 状态与差距审计](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)。
+
 ## 1. 目标
 
 将 `mem_service` 从当前 guest-side 组件完善为独立服务，满足以下目标：

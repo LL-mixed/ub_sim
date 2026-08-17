@@ -5,9 +5,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -578,6 +580,31 @@ static int obmm_scc_status_error(uint32_t status)
     }
 }
 
+static int obmm_scc_protocol_error(
+    const struct obmm_scc *runtime,
+    const struct obmm_scc_event_v2 *event,
+    const struct obmm_scc_context_local *target,
+    const char *reason)
+{
+    fprintf(stderr,
+            "OBMM_SCC_PROTOCOL_ERROR schema=1 reason=%s kind=%u "
+            "event_context=%" PRIu64 " current_context=%" PRIu64 " "
+            "target_state=%u event_token=%" PRIu64 " "
+            "target_token=%" PRIu64 " event_pc=%" PRIu64 " "
+            "target_pc=%" PRIu64 "\n",
+            reason, event ? (unsigned int)event->kind : 0,
+            event ? (uint64_t)event->context_id : 0,
+            runtime && runtime->current ?
+                (uint64_t)runtime->current->context.context_id : 0,
+            target ? (unsigned int)target->state :
+                (unsigned int)OBMM_SCC_CONTEXT_FREE,
+            event ? (uint64_t)event->plt_token : 0,
+            target ? (uint64_t)target->waiting_token : 0,
+            event ? (uint64_t)event->fault_pc : 0,
+            target ? (uint64_t)target->context.pc : 0);
+    return -EPROTO;
+}
+
 static int obmm_scc_process_event(struct obmm_scc *runtime,
                                   const struct obmm_scc_event_v2 *event)
 {
@@ -588,7 +615,8 @@ static int obmm_scc_process_event(struct obmm_scc *runtime,
         event->rt > 31 ||
         (event->access_bytes != 1 && event->access_bytes != 2 &&
          event->access_bytes != 4 && event->access_bytes != 8)) {
-        return -EPROTO;
+        return obmm_scc_protocol_error(
+            runtime, event, target, "event-envelope");
     }
     switch (event->kind) {
     case OBMM_SCC_EVENT_PENDING:
@@ -597,7 +625,8 @@ static int obmm_scc_process_event(struct obmm_scc *runtime,
             target != runtime->current ||
             target->state != OBMM_SCC_CONTEXT_READY ||
             event->fault_pc != target->context.pc) {
-            return -EPROTO;
+            return obmm_scc_protocol_error(
+                runtime, event, target, "pending-state");
         }
         target->waiting_token = event->plt_token;
         target->state = OBMM_SCC_CONTEXT_WAIT_REMOTE;
@@ -610,7 +639,8 @@ static int obmm_scc_process_event(struct obmm_scc *runtime,
             target->state != OBMM_SCC_CONTEXT_WAIT_REMOTE ||
             target->waiting_token != event->plt_token ||
             event->fault_pc != target->context.pc) {
-            return -EPROTO;
+            return obmm_scc_protocol_error(
+                runtime, event, target, "complete-state");
         }
         if (event->rt < 31) {
             target->context.x[event->rt] = event->value;
@@ -629,7 +659,8 @@ static int obmm_scc_process_event(struct obmm_scc *runtime,
         if (target->state != OBMM_SCC_CONTEXT_WAIT_REMOTE ||
             target->waiting_token != event->plt_token ||
             event->status == OBMM_SCC_STATUS_SUCCESS) {
-            return -EPROTO;
+            return obmm_scc_protocol_error(
+                runtime, event, target, "fault-state");
         }
         target->waiting_token = 0;
         target->state = OBMM_SCC_CONTEXT_FAULTED;
@@ -655,10 +686,35 @@ static void obmm_scc_record_error(
     }
 }
 
+static void obmm_scc_log_context_states(const struct obmm_scc *runtime)
+{
+    uint16_t index;
+
+    for (index = 0; index < runtime->logical_contexts; index++) {
+        const struct obmm_scc_context_local *context =
+            &runtime->contexts[index];
+
+        fprintf(stderr,
+                "OBMM_SCC_CONTEXT_STATE schema=1 slot=%u state=%u "
+                "context=%" PRIu64 " waiting_token=%" PRIu64 " "
+                "pc=%" PRIu64 " first_error=%d stage=%u\n",
+                index, (unsigned int)context->state,
+                (uint64_t)context->context.context_id,
+                (uint64_t)context->waiting_token,
+                (uint64_t)context->context.pc,
+                runtime->first_error,
+                runtime->metrics.first_error_stage);
+    }
+}
+
 static __attribute__((noreturn)) void obmm_scc_schedule(
     struct obmm_scc *runtime, uint64_t scheduler_started_ns)
 {
     for (;;) {
+        if (runtime->first_error) {
+            obmm_scc_log_context_states(runtime);
+            break;
+        }
         struct obmm_scc_context_local *next =
             obmm_scc_choose_ready(runtime);
         uint64_t ready_count = obmm_scc_ready_count(runtime);
@@ -800,11 +856,16 @@ void obmm_scc_context_entry_c(struct obmm_scc_context_local *local)
 void obmm_scc_schedule_after_exit(void)
 {
     struct obmm_scc *runtime = active_runtime;
+    int ret;
 
     if (!runtime || !runtime->started || !runtime->current ||
         runtime->current->state != OBMM_SCC_CONTEXT_DONE) {
         _exit(127);
     }
+    ret = ioctl(runtime->fd, OBMM_SCC_IOCTL_SCHEDULER_ENTER);
+    obmm_scc_record_error(
+        runtime, ret == 0 ? 0 : obmm_scc_neg_errno(),
+        OBMM_SCC_ERROR_STAGE_SCHEDULER_ENTER);
     obmm_scc_schedule(runtime, obmm_scc_now_ns());
 }
 

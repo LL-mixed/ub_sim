@@ -136,6 +136,15 @@ def test_qemu_provides_mechanism_but_not_coroutine_policy():
     assert "obmm_scc_event_pop" in model
     assert "ub_scc_cpu_take_upcall" in device
     assert "ub_scc_cpu_resume" in device
+    assert "ub_scc_scheduler_command" in device
+    status_read = device.split("case SCC_REG_STATUS:", 1)[1].split(
+        "case SCC_REG_LAST_ERROR:", 1
+    )[0]
+    assert "obmm_remote_run_deadlines(" in status_read
+    assert "obmm_remote_deliver_ready(state->backend);" in status_read
+    assert "ub_scc_arm_deadline(state);" in status_read
+    assert "status_probe_reads" not in device
+    assert "status-no-progress" not in device
     assert "active_context_id = context_id" in device
     assert "active_context_id && !state->upcall_active" not in device
     assert "ready_queue" not in device
@@ -162,24 +171,61 @@ def test_guest_el0_runtime_owns_save_state_and_selection():
     assert "OBMM_SCC_CONTEXT_WAIT_REMOTE" in runtime
     assert "obmm_scc_choose_ready" in runtime
     assert "obmm_scc_process_event" in runtime
+    assert "OBMM_SCC_PROTOCOL_ERROR schema=1" in runtime
+    assert "OBMM_SCC_CONTEXT_STATE schema=1" in runtime
+    assert "if (runtime->first_error)" in runtime
     assert "target->context.x[event->rt] = event->value" in runtime
     assert "target->context.pc = event->fault_pc + 4" in runtime
     assert "runtime->current->state != OBMM_SCC_CONTEXT_DONE" in dispatch
     assert "interrupted_was_running" in dispatch
     assert "OBMM_SCC_IOCTL_GET_EVENT" in runtime
+    assert "OBMM_SCC_IOCTL_SCHEDULER_ENTER" in runtime
+    assert "OBMM_SCC_ERROR_STAGE_SCHEDULER_ENTER" in runtime
     assert "stp x0, x1, [sp, #16]" in assembly
     assert "stp q30, q31, [sp, #768]" in assembly
     assert ".inst 0xd44a6860" in assembly
     assert "OBMM_SCC_REG_UPCALL_ENTRY" in driver
     assert "OBMM_SCC_REG_EVENT_COMMAND" in driver
+    assert "OBMM_SCC_REG_SCHEDULER_COMMAND" in driver
     assert "struct obmm_scc_start_v2" in driver
     assert "linqu_scc_create_context" not in driver
     assert "!(event.flags & OBMM_SCC_EVENT_GET_WAIT)" in driver
+    wait_event = driver.split("static long linqu_scc_get_event", 1)[1].split(
+        "static long linqu_scc_context_commit", 1
+    )[0]
+    assert "timeout_ns = OBMM_SCC_MAX_LOAD_TIMEOUT_NS;" in wait_event
+    assert "timeout_ns = ctx->load_timeout_ns" not in wait_event
+    assert "OBMM_SCC_STATUS_EVENT_PENDING |" in wait_event
+    assert "OBMM_SCC_STATUS_EVENT_DELIVERED" in wait_event
+    assert "linqu_scc: GET_EVENT timeout" in wait_event
+    assert "if (!(status & OBMM_SCC_STATUS_EVENT_DELIVERED))" in wait_event
     event_command = device.split("static void ub_scc_event_command", 1)[1].split(
         "bool ub_scc_device_write", 1
     )[0]
     assert "!state->session_active || !state->upcall_active" not in event_command
     assert "!state->session_active || state->delivered_event_valid" in event_command
+    scheduler_command = device.split(
+        "static void ub_scc_scheduler_command", 1
+    )[1].split("bool ub_scc_device_write", 1)[0]
+    assert "state->active_context_id = 0" in scheduler_command
+    assert "state->upcall_active = true" in scheduler_command
+    schedule_after_exit = runtime.split(
+        "void obmm_scc_schedule_after_exit", 1
+    )[1].split("static int obmm_scc_collect_metrics", 1)[0]
+    assert schedule_after_exit.index("OBMM_SCC_IOCTL_SCHEDULER_ENTER") < (
+        schedule_after_exit.index("obmm_scc_schedule(runtime")
+    )
+
+
+def test_scheduler_enter_ioctl_is_part_of_guest_abi_v2():
+    uapi = (
+        KERNEL_ROOT / "include" / "uapi" / "ub" / "obmm_scc.h"
+    ).read_text()
+    driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+
+    assert "OBMM_SCC_IOCTL_SCHEDULER_ENTER" in uapi
+    assert "static long linqu_scc_scheduler_enter" in driver
+    assert "case OBMM_SCC_IOCTL_SCHEDULER_ENTER:" in driver
 
 
 def test_p2b_producer_consumer_has_causal_upcall_evidence():

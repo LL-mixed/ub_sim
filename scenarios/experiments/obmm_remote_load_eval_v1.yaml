@@ -1,7 +1,7 @@
 schema: 1
 name: obmm-remote-load-eval-v1
 minimums:
-  scalar_operations: 30000
+  scalar_operations: 65536
   range_bytes: 1073741824
   duration_ms: 2000
   warmup_scalar_operations: 1000
