@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="930" viewBox="0 0 1400 930">
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .label { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .axis { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .axis-plane { fill: #cbd5e1; fill-opacity: 0.32; stroke: #94a3b8; stroke-width: 1.1; }
+      .layer-outline { stroke: #94a3b8; stroke-width: 1.15; }
+      .grid { stroke: #cbd5e1; stroke-width: 0.9; fill: none; }
+      .layer-guide { stroke: #94a3b8; stroke-width: 1; stroke-dasharray: 4 5; fill: none; }
+      .sync { fill: #86efac; stroke: #166534; stroke-width: 1.45; }
+      .p2a { fill: #fcd34d; stroke: #92400e; stroke-width: 1.45; }
+      .p2b { fill: #93c5fd; stroke: #1e40af; stroke-width: 1.45; }
+      .note { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.25; }
+      .boundary { fill: #fff7ed; stroke: #c2410c; stroke-width: 1.35; stroke-dasharray: 7 5; }
+      .leader { stroke: #64748b; stroke-width: 1; fill: none; }
+    </style>
+
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#334155"/>
+    </marker>
+
+    <!-- C 向右下、W 向左下：比旧版水平/左上投影旋转约 30°。 -->
+    <g id="plane">
+      <polygon points="0,0 276,60 0,120 -276,60" class="layer-outline"/>
+      <path d="M 92 20 L -184 80 M 184 40 L -92 100" class="grid"/>
+      <path d="M -92 20 L 184 80 M -184 40 L 92 100" class="grid"/>
+    </g>
+
+    <g id="grid-sync">
+      <circle cx="0" cy="0" r="8" class="sync"/><circle cx="92" cy="20" r="8" class="sync"/><circle cx="184" cy="40" r="8" class="sync"/><circle cx="276" cy="60" r="8" class="sync"/>
+      <circle cx="-92" cy="20" r="8" class="sync"/><circle cx="0" cy="40" r="8" class="sync"/><circle cx="92" cy="60" r="8" class="sync"/><circle cx="184" cy="80" r="8" class="sync"/>
+      <circle cx="-184" cy="40" r="8" class="sync"/><circle cx="-92" cy="60" r="8" class="sync"/><circle cx="0" cy="80" r="8" class="sync"/><circle cx="92" cy="100" r="8" class="sync"/>
+      <circle cx="-276" cy="60" r="8" class="sync"/><circle cx="-184" cy="80" r="8" class="sync"/><circle cx="-92" cy="100" r="8" class="sync"/><circle cx="0" cy="120" r="8" class="sync"/>
+    </g>
+
+    <g id="grid-p2b">
+      <circle cx="0" cy="0" r="8" class="p2b"/><circle cx="92" cy="20" r="8" class="p2b"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
+      <circle cx="-92" cy="20" r="8" class="p2b"/><circle cx="0" cy="40" r="8" class="p2b"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
+      <circle cx="-184" cy="40" r="8" class="p2b"/><circle cx="-92" cy="60" r="8" class="p2b"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
+      <circle cx="-276" cy="60" r="8" class="p2b"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    </g>
+  </defs>
+
+  <rect width="1400" height="930" fill="#f8fafc"/>
+  <text x="700" y="42" text-anchor="middle" class="title">OBMM remote-load：QEMU PoC measured L / C / W policy</text>
+  <text x="700" y="70" text-anchor="middle" class="subtitle">explicit policy · 2-node · 8-byte sequential · no jitter · 7 seeds · 80 个正式 bucket · QEMU P2B tax 70--84 µs/load</text>
+
+  <!-- 三张浅灰坐标面建立空间边界；数据点和分层网格绘制在其上方。 -->
+  <polygon points="400,150 676,210 676,750 400,690" class="axis-plane"/>
+  <polygon points="400,150 124,210 124,750 400,690" class="axis-plane"/>
+  <polygon points="400,690 676,750 400,810 124,750" class="axis-plane"/>
+
+  <!-- 绘图区：L 竖直，C/W 在水平面内对称展开。 -->
+  <path d="M 400 690 L 400 112" class="axis"/>
+  <text x="400" y="101" text-anchor="middle" class="label">L · remote latency</text>
+
+  <path d="M 400 690 L 696 754" class="axis"/>
+  <path d="M 400 690 L 104 754" class="axis"/>
+
+  <path d="M 124 750 L 124 210" class="layer-guide"/>
+  <path d="M 676 750 L 676 210" class="layer-guide"/>
+
+  <use href="#plane" transform="translate(400 690)" fill="#d1d5db" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(400 555)" fill="#c7d2fe" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(400 420)" fill="#bae6fd" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(400 285)" fill="#ddd6fe" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(400 150)" fill="#cbd5e1" fill-opacity="0.70"/>
+
+  <use href="#grid-sync" transform="translate(400 690)"/>
+  <use href="#grid-sync" transform="translate(400 555)"/>
+  <use href="#grid-sync" transform="translate(400 420)"/>
+  <use href="#grid-p2b" transform="translate(400 285)"/>
+
+  <g transform="translate(400 150)">
+    <circle cx="0" cy="0" r="8" class="p2a"/><circle cx="92" cy="20" r="8" class="p2a"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
+    <circle cx="-92" cy="20" r="8" class="p2a"/><circle cx="0" cy="40" r="8" class="p2a"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
+    <circle cx="-184" cy="40" r="8" class="p2a"/><circle cx="-92" cy="60" r="8" class="p2a"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
+    <circle cx="-276" cy="60" r="8" class="p2a"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+  </g>
+
+  <!-- 层标签沿同一条右侧导线排列，避免进入点阵。 -->
+  <path d="M 676 750 L 706 756" class="leader"/><text x="716" y="761" class="small">L=0 µs</text>
+  <path d="M 676 615 L 706 621" class="leader"/><text x="716" y="626" class="small">L=1 µs</text>
+  <path d="M 676 480 L 706 486" class="leader"/><text x="716" y="491" class="small">L=10 µs</text>
+  <path d="M 676 345 L 706 351" class="leader"/><text x="716" y="356" class="small">L=100 µs</text>
+  <path d="M 676 210 L 706 216" class="leader"/><text x="716" y="221" class="small">L=1000 µs</text>
+
+  <!-- 只在底层标轴，减少每层重复标签。 -->
+  <text x="412" y="679" class="small">2</text>
+  <text x="504" y="699" class="small">4</text>
+  <text x="596" y="719" class="small">8</text>
+  <text x="688" y="739" class="small">32</text>
+  <text x="708" y="815" text-anchor="end" class="label">C · coroutines</text>
+
+  <text x="380" y="686" text-anchor="end" class="small">0</text>
+  <text x="304" y="706" text-anchor="end" class="small">10</text>
+  <text x="212" y="726" text-anchor="end" class="small">100</text>
+  <text x="120" y="746" text-anchor="end" class="small">1000</text>
+  <text x="96" y="815" class="label">W · useful compute / op (µs)</text>
+
+  <!-- 图例与临界带说明完全移出三维绘图区。 -->
+  <rect x="830" y="115" width="500" height="132" class="note"/>
+  <text x="858" y="149" class="label">80 个实测 bucket 的 makespan winner</text>
+  <circle cx="858" cy="184" r="8" class="sync"/><text x="878" y="190" class="body">sync · 48</text>
+  <circle cx="1000" cy="184" r="8" class="p2a"/><text x="1020" y="190" class="body">P2A · 7</text>
+  <circle cx="1128" cy="184" r="8" class="p2b"/><text x="1148" y="190" class="body">P2B · 25</text>
+  <text x="858" y="222" class="small">圆点颜色=winner；层底色只区分 L 切片，点之间尚未插值。</text>
+
+  <rect x="830" y="280" width="500" height="145" class="boundary"/>
+  <text x="858" y="316" class="label">临界带 A · sync ↔ P2B</text>
+  <text x="858" y="349" class="body">coarse 范围：L=10--100 µs</text>
+  <text x="858" y="376" class="body">加测 L=20/30/50/75 µs，分别观察每个 C/W bucket。</text>
+  <text x="858" y="403" class="small">发布门槛：median gain ≥10%，paired CI95 low ≥5%。</text>
+
+  <rect x="830" y="455" width="500" height="145" class="boundary"/>
+  <text x="858" y="491" class="label">临界带 B · P2A ↔ P2B</text>
+  <text x="858" y="524" class="body">coarse 范围：L=100--1000 µs，位置随 C/W 改变。</text>
+  <text x="858" y="551" class="body">加测 L=150/250/500/750 µs，并追踪 no-ready 空洞。</text>
+  <text x="858" y="578" class="small">P2A 同时保留 demand 与 lookahead=16。</text>
+
+  <rect x="830" y="635" width="500" height="116" class="note"/>
+  <text x="858" y="670" class="label">读图限制</text>
+  <text x="858" y="702" class="body">普通 LDR surface 只允许 sync/P2B；P2A 需要显式接口。</text>
+  <text x="858" y="729" class="body">未测 bucket fail closed 到 sync，不从相邻颜色外推。</text>
+
+  <text x="700" y="902" text-anchor="middle" class="small">QEMU measured surface；禁止直接外推到 native device/upcall/resume path · extra_vcpus=0 · fixed-vCPU workload makespan</text>
+</svg>

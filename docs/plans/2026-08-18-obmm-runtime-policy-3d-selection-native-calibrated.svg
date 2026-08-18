@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1050" viewBox="0 0 1500 1050" role="img" aria-labelledby="title description">
+  <title id="title">OBMM remote-load native-calibrated L C W runtime policy prior</title>
+  <desc id="description">Eight latency layers show the calibrated sync, P2B, and adaptive P2A/P2B recommendations. The chart assumes at least one runnable coroutine. An empty ready queue overrides every point to the sync fast path.</desc>
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .label { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .axis { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .axis-plane { fill: #cbd5e1; fill-opacity: 0.34; stroke: #94a3b8; stroke-width: 1.1; }
+      .layer-outline { stroke: #94a3b8; stroke-width: 1.15; }
+      .grid { stroke: #cbd5e1; stroke-width: 0.9; fill: none; }
+      .layer-guide { stroke: #94a3b8; stroke-width: 1; stroke-dasharray: 4 5; fill: none; }
+      .sync { fill: #86efac; stroke: #166534; stroke-width: 1.45; }
+      .p2a { fill: #fcd34d; stroke: #92400e; stroke-width: 1.45; }
+      .p2b { fill: #93c5fd; stroke: #1e40af; stroke-width: 1.45; }
+      .probe { fill: url(#sync-p2b); stroke: #475569; stroke-width: 1.45; }
+      .adaptive { fill: url(#p2a-p2b); stroke: #475569; stroke-width: 1.45; }
+      .fine-ring { fill: none; stroke: #dc2626; stroke-width: 3; }
+      .note { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.25; }
+      .prior-note { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.25; }
+      .override { fill: #f0fdf4; stroke: #15803d; stroke-width: 1.5; }
+      .warning { fill: #fff7ed; stroke: #c2410c; stroke-width: 1.25; }
+      .leader { stroke: #64748b; stroke-width: 1; fill: none; }
+    </style>
+
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#334155"/>
+    </marker>
+
+    <linearGradient id="sync-p2b" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#86efac"/>
+      <stop offset="49.9%" stop-color="#86efac"/>
+      <stop offset="50%" stop-color="#93c5fd"/>
+      <stop offset="100%" stop-color="#93c5fd"/>
+    </linearGradient>
+    <linearGradient id="p2a-p2b" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fcd34d"/>
+      <stop offset="49.9%" stop-color="#fcd34d"/>
+      <stop offset="50%" stop-color="#93c5fd"/>
+      <stop offset="100%" stop-color="#93c5fd"/>
+    </linearGradient>
+
+    <!-- C points move right/down; W points move left/down. -->
+    <g id="plane">
+      <polygon points="0,0 276,60 0,120 -276,60" class="layer-outline"/>
+      <path d="M 92 20 L -184 80 M 184 40 L -92 100" class="grid"/>
+      <path d="M -92 20 L 184 80 M -184 40 L 92 100" class="grid"/>
+    </g>
+
+    <g id="grid-sync">
+      <circle cx="0" cy="0" r="8" class="sync"/><circle cx="92" cy="20" r="8" class="sync"/><circle cx="184" cy="40" r="8" class="sync"/><circle cx="276" cy="60" r="8" class="sync"/>
+      <circle cx="-92" cy="20" r="8" class="sync"/><circle cx="0" cy="40" r="8" class="sync"/><circle cx="92" cy="60" r="8" class="sync"/><circle cx="184" cy="80" r="8" class="sync"/>
+      <circle cx="-184" cy="40" r="8" class="sync"/><circle cx="-92" cy="60" r="8" class="sync"/><circle cx="0" cy="80" r="8" class="sync"/><circle cx="92" cy="100" r="8" class="sync"/>
+      <circle cx="-276" cy="60" r="8" class="sync"/><circle cx="-184" cy="80" r="8" class="sync"/><circle cx="-92" cy="100" r="8" class="sync"/><circle cx="0" cy="120" r="8" class="sync"/>
+    </g>
+
+    <g id="grid-probe">
+      <circle cx="0" cy="0" r="8" class="probe"/><circle cx="92" cy="20" r="8" class="probe"/><circle cx="184" cy="40" r="8" class="probe"/><circle cx="276" cy="60" r="8" class="probe"/>
+      <circle cx="-92" cy="20" r="8" class="probe"/><circle cx="0" cy="40" r="8" class="probe"/><circle cx="92" cy="60" r="8" class="probe"/><circle cx="184" cy="80" r="8" class="probe"/>
+      <circle cx="-184" cy="40" r="8" class="probe"/><circle cx="-92" cy="60" r="8" class="probe"/><circle cx="0" cy="80" r="8" class="probe"/><circle cx="92" cy="100" r="8" class="probe"/>
+      <circle cx="-276" cy="60" r="8" class="probe"/><circle cx="-184" cy="80" r="8" class="probe"/><circle cx="-92" cy="100" r="8" class="probe"/><circle cx="0" cy="120" r="8" class="probe"/>
+    </g>
+
+    <g id="grid-p2b">
+      <circle cx="0" cy="0" r="8" class="p2b"/><circle cx="92" cy="20" r="8" class="p2b"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
+      <circle cx="-92" cy="20" r="8" class="p2b"/><circle cx="0" cy="40" r="8" class="p2b"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
+      <circle cx="-184" cy="40" r="8" class="p2b"/><circle cx="-92" cy="60" r="8" class="p2b"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
+      <circle cx="-276" cy="60" r="8" class="p2b"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    </g>
+  </defs>
+
+  <rect width="1500" height="1050" fill="#f8fafc"/>
+  <text x="750" y="42" text-anchor="middle" class="title">OBMM remote-load：native 校准后的 L / C / W 运行时选择 prior</text>
+  <text x="750" y="70" text-anchor="middle" class="subtitle">2-node · 8-byte sequential · runnable_count &gt; 0 · native envelope 0.415--0.431 µs · 暂定 O_budget=2 µs</text>
+
+  <!-- Three grey coordinate planes establish depth. -->
+  <polygon points="420,150 696,210 696,840 420,780" class="axis-plane"/>
+  <polygon points="420,150 144,210 144,840 420,780" class="axis-plane"/>
+  <polygon points="420,780 696,840 420,900 144,840" class="axis-plane"/>
+
+  <path d="M 420 780 L 420 102" class="axis"/>
+  <text x="420" y="94" text-anchor="middle" class="label">L · remote latency</text>
+  <path d="M 420 780 L 716 844" class="axis"/>
+  <path d="M 420 780 L 124 844" class="axis"/>
+  <path d="M 144 840 L 144 210" class="layer-guide"/>
+  <path d="M 696 840 L 696 210" class="layer-guide"/>
+
+  <!-- 70%-opaque alternating layer colors retain depth while keeping points legible. -->
+  <use href="#plane" transform="translate(420 780)" fill="#d1d5db" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 690)" fill="#c7d2fe" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 600)" fill="#bae6fd" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 510)" fill="#ddd6fe" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 420)" fill="#bfdbfe" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 330)" fill="#e9d5ff" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 240)" fill="#bae6fd" fill-opacity="0.70"/>
+  <use href="#plane" transform="translate(420 150)" fill="#cbd5e1" fill-opacity="0.70"/>
+
+  <!-- Native-calibrated point recommendations. -->
+  <use href="#grid-sync" transform="translate(420 780)"/>
+  <use href="#grid-sync" transform="translate(420 690)"/>
+  <use href="#grid-p2b" transform="translate(420 600)"/>
+
+  <g transform="translate(420 510)">
+    <use href="#grid-p2b"/>
+    <circle cx="184" cy="40" r="12" class="fine-ring"/>
+  </g>
+
+  <use href="#grid-p2b" transform="translate(420 420)"/>
+
+  <g transform="translate(420 330)">
+    <circle cx="0" cy="0" r="8" class="p2b"/><circle cx="92" cy="20" r="8" class="p2b"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
+    <circle cx="-92" cy="20" r="8" class="adaptive"/><circle cx="0" cy="40" r="8" class="p2b"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
+    <circle cx="-184" cy="40" r="8" class="p2b"/><circle cx="-92" cy="60" r="8" class="p2b"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
+    <circle cx="-276" cy="60" r="8" class="p2b"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    <circle cx="-92" cy="20" r="12" class="fine-ring"/>
+    <circle cx="92" cy="20" r="12" class="fine-ring"/>
+  </g>
+
+  <g transform="translate(420 240)">
+    <use href="#grid-p2b"/>
+    <circle cx="-276" cy="60" r="12" class="fine-ring"/>
+    <circle cx="92" cy="60" r="12" class="fine-ring"/>
+  </g>
+
+  <g transform="translate(420 150)">
+    <!-- C=2: every W is adaptive P2A/P2B. -->
+    <circle cx="0" cy="0" r="8" class="adaptive"/><circle cx="92" cy="20" r="8" class="adaptive"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
+    <circle cx="-92" cy="20" r="8" class="adaptive"/><circle cx="0" cy="40" r="8" class="adaptive"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
+    <circle cx="-184" cy="40" r="8" class="adaptive"/><circle cx="-92" cy="60" r="8" class="adaptive"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
+    <circle cx="-276" cy="60" r="8" class="adaptive"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+  </g>
+
+  <!-- Layer labels align on the right guide. -->
+  <path d="M 696 840 L 718 845" class="leader"/><text x="730" y="850" class="small">L=0 µs</text>
+  <path d="M 696 750 L 718 755" class="leader"/><text x="730" y="760" class="small">L=1 µs</text>
+  <path d="M 696 660 L 718 665" class="leader"/><text x="730" y="670" class="small">L=10 µs</text>
+  <path d="M 696 570 L 718 575" class="leader"/><text x="730" y="580" class="small">L=30 µs</text>
+  <path d="M 696 480 L 718 485" class="leader"/><text x="730" y="490" class="small">L=100 µs</text>
+  <path d="M 696 390 L 718 395" class="leader"/><text x="730" y="400" class="small">L=250 µs</text>
+  <path d="M 696 300 L 718 305" class="leader"/><text x="730" y="310" class="small">L=500 µs</text>
+  <path d="M 696 210 L 718 215" class="leader"/><text x="730" y="220" class="small">L=1000 µs</text>
+
+  <!-- Bottom-axis labels sit next to their actual vertices. -->
+  <text x="438" y="779" class="small">2</text>
+  <text x="530" y="799" class="small">4</text>
+  <text x="622" y="819" class="small">8</text>
+  <text x="714" y="839" class="small">32</text>
+  <text x="695" y="925" text-anchor="end" class="label">C · coroutines</text>
+
+  <text x="402" y="777" text-anchor="end" class="small">0</text>
+  <text x="310" y="797" text-anchor="end" class="small">10</text>
+  <text x="218" y="817" text-anchor="end" class="small">100</text>
+  <text x="126" y="837" text-anchor="end" class="small">1000</text>
+  <text x="125" y="925" class="label">W · useful compute / op (µs)</text>
+
+  <!-- Explanation remains outside the 3-D plot. -->
+  <rect x="825" y="105" width="620" height="175" class="prior-note"/>
+  <text x="853" y="138" class="label">Native calibration</text>
+  <text x="853" y="168" class="body">Measured: O_envelope = 0.415--0.431 µs/load</text>
+  <text x="853" y="194" class="body">Provisional: O_budget = 2 µs/load · static P2B threshold L≥10 µs</text>
+  <circle cx="858" cy="229" r="8" class="sync"/><text x="878" y="235" class="small">sync</text>
+  <circle cx="948" cy="229" r="8" class="p2b"/><text x="968" y="235" class="small">P2B</text>
+  <circle cx="1037" cy="229" r="8" class="probe"/><text x="1057" y="235" class="small">sync/P2B probe</text>
+  <circle cx="1215" cy="229" r="8" class="adaptive"/><text x="1235" y="235" class="small">P2A/P2B select</text>
+  <text x="853" y="262" class="small">Point colors are a deployment prior; they are not a native formal measured surface.</text>
+
+  <rect x="825" y="305" width="620" height="190" class="override"/>
+  <text x="853" y="339" class="label">Dynamic override: ready queue first</text>
+  <text x="853" y="371" class="body">runnable_count = 0  →  sync fast path at every L/C/W point</text>
+  <text x="853" y="399" class="body">runnable_count &gt; 0, L≤2 µs  →  sync default</text>
+  <text x="853" y="427" class="body">runnable_count &gt; 0, 2&lt;L&lt;10 µs  →  online probe</text>
+  <text x="853" y="455" class="body">runnable_count &gt; 0, L≥10 µs, H_est&gt;O_exposed  →  P2B prior</text>
+  <text x="853" y="477" class="small">Low-C + long-L + explicit interface: online P2A/P2B select.</text>
+  <text x="853" y="491" class="small">No-switch fast path skips full save/scan/switch; completion resumes the original load.</text>
+
+  <rect x="825" y="520" width="620" height="190" class="warning"/>
+  <text x="853" y="554" class="label">Fine-grained partial evidence</text>
+  <circle cx="858" cy="588" r="10" class="fine-ring"/><text x="880" y="594" class="body">red ring = one paired seed only; 0 buckets have completed 3 seeds</text>
+  <text x="853" y="625" class="body">L30/C8/W0: QEMU sync; native calibration changes the prior to P2B</text>
+  <text x="853" y="653" class="body">L250/C2/W10: P2A · L250/C4/W0: P2B</text>
+  <text x="853" y="681" class="body">L500/C2/W1000 and L500/C8/W10: P2B</text>
+  <text x="853" y="700" class="small">Document snapshot: 487/1536 canonical raw · aggregation pending.</text>
+
+  <rect x="825" y="735" width="620" height="155" class="note"/>
+  <text x="853" y="769" class="label">Reading limits</text>
+  <text x="853" y="801" class="body">Transparent ordinary LDR can choose sync/P2B only.</text>
+  <text x="853" y="829" class="body">Split yellow/blue points need native P2A/P2B A/B measurement.</text>
+  <text x="853" y="857" class="body">Unhealthy, unmeasured, or undrained sessions fail closed to sync.</text>
+  <text x="853" y="879" class="small">Replace O_budget and split points after real MMIO/upcall/resume and formal paired runs.</text>
+
+  <text x="750" y="1018" text-anchor="middle" class="small">fixed guest-vCPU · extra_vcpus=0 · objective: workload makespan · ready-depth override evaluated before the static L/C/W lookup</text>
+</svg>
