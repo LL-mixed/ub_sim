@@ -1,5 +1,5 @@
 # libobmm wiring shared by apps that include common/obmm_common.h.
-# Include from an app Makefile as:  include ../common/libobmm.mk
+# Include from an app Makefile as:  include ../../common/libobmm.mk
 OBMM_MK_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 AARCH64_ROOT := $(OBMM_MK_DIR)/..
 UB_SIM_ROOT := $(AARCH64_ROOT)/../..
