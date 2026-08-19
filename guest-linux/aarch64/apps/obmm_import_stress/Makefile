@@ -4,12 +4,14 @@ CFLAGS = -static -O2 -Wall -Wextra \
          -I../../common \
          -I../obmm_queue
 
+include ../../common/libobmm.mk
+
 TARGET = obmm_import_stress
 
 all: $(TARGET)
 
 $(TARGET): obmm_import_stress.c
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $(OBMM_CFLAGS) $< $(OBMM_SRCS) -o $@
 
 clean:
 	rm -f $(TARGET)
