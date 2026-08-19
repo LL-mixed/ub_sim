@@ -131,6 +131,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(args) = obmm_scale::args()? {
         return obmm_scale::run(&args);
     }
+    if let Some(args) = obmm_eval::boundary_select_args()? {
+        return obmm_eval::run_boundary_select(&args);
+    }
     if let Some(args) = obmm_eval::merge_args()? {
         return obmm_eval::run_merge(&args);
     }

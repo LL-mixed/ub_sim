@@ -177,12 +177,12 @@
   <text x="853" y="491" class="small">No-switch fast path skips full save/scan/switch; completion resumes the original load.</text>
 
   <rect x="825" y="520" width="620" height="190" class="warning"/>
-  <text x="853" y="554" class="label">Fine-grained partial evidence</text>
-  <circle cx="858" cy="588" r="10" class="fine-ring"/><text x="880" y="594" class="body">red ring = one paired seed only; 0 buckets have completed 3 seeds</text>
+  <text x="853" y="554" class="label">Historical fine snapshot overlay</text>
+  <circle cx="858" cy="588" r="10" class="fine-ring"/><text x="880" y="594" class="body">red ring = 2026-08-18 snapshot; no longer a publication input</text>
   <text x="853" y="625" class="body">L30/C8/W0: QEMU sync; native calibration changes the prior to P2B</text>
   <text x="853" y="653" class="body">L250/C2/W10: P2A · L250/C4/W0: P2B</text>
   <text x="853" y="681" class="body">L500/C2/W1000 and L500/C8/W10: P2B</text>
-  <text x="853" y="700" class="small">Document snapshot: 487/1536 canonical raw · aggregation pending.</text>
+  <text x="853" y="700" class="small">QEMU formal boundary is complete: 1,960/1,960 pass; see the 2026-08-20 formal SVG.</text>
 
   <rect x="825" y="735" width="620" height="155" class="note"/>
   <text x="853" y="769" class="label">Reading limits</text>

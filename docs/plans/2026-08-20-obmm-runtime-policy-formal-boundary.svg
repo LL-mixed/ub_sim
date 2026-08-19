@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="930" viewBox="0 0 1400 930">
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .heading { font: 700 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .count { font: 700 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #111827; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; }
+      .stage { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; }
+      .stage-final { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.6; }
+      .sync { fill: #bbf7d0; stroke: #15803d; stroke-width: 1.1; }
+      .p2a { fill: #fde68a; stroke: #b45309; stroke-width: 1.1; }
+      .p2b { fill: #bfdbfe; stroke: #1d4ed8; stroke-width: 1.1; }
+      .fallback { fill: #fee2e2; stroke: #dc2626; stroke-width: 1.2; }
+      .arrow { stroke: #64748b; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .guide { stroke: #e2e8f0; stroke-width: 1; }
+    </style>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="930" fill="#f8fafc"/>
+  <text x="700" y="42" text-anchor="middle" class="title">OBMM remote-load：细粒度边界正式验证</text>
+  <text x="700" y="70" text-anchor="middle" class="subtitle">2-node · 8-byte sequential · no jitter · paired 7 seeds · 1,960/1,960 pass</text>
+
+  <g>
+    <rect x="35" y="105" width="220" height="92" rx="12" class="stage"/>
+    <text x="145" y="134" text-anchor="middle" class="heading">Boundary screening</text>
+    <text x="145" y="160" text-anchor="middle" class="body">128 buckets · 3 seeds</text>
+    <text x="145" y="182" text-anchor="middle" class="small">1,536 canonical runs</text>
+
+    <path d="M 255 151 L 294 151" class="arrow"/>
+    <rect x="300" y="105" width="220" height="92" rx="12" class="stage"/>
+    <text x="410" y="134" text-anchor="middle" class="heading">C / W tracing</text>
+    <text x="410" y="160" text-anchor="middle" class="body">96 buckets · 3 seeds</text>
+    <text x="410" y="182" text-anchor="middle" class="small">1,152 canonical runs</text>
+
+    <path d="M 520 151 L 559 151" class="arrow"/>
+    <rect x="565" y="105" width="220" height="92" rx="12" class="stage"/>
+    <text x="675" y="134" text-anchor="middle" class="heading">Flip selection</text>
+    <text x="675" y="160" text-anchor="middle" class="body">224 buckets → 35 flips</text>
+    <text x="675" y="182" text-anchor="middle" class="small">70 adjacent endpoints</text>
+
+    <path d="M 785 151 L 824 151" class="arrow"/>
+    <rect x="830" y="105" width="220" height="92" rx="12" class="stage-final"/>
+    <text x="940" y="134" text-anchor="middle" class="heading">Formal boundary</text>
+    <text x="940" y="160" text-anchor="middle" class="body">70 × 4 paths × 7 seeds</text>
+    <text x="940" y="182" text-anchor="middle" class="small">1,960 canonical runs</text>
+
+    <path d="M 1050 151 L 1089 151" class="arrow"/>
+    <rect x="1095" y="105" width="270" height="92" rx="12" class="stage-final"/>
+    <text x="1230" y="134" text-anchor="middle" class="heading">Merged validation</text>
+    <text x="1230" y="160" text-anchor="middle" class="body">status=pass · 0 invalid</text>
+    <text x="1230" y="182" text-anchor="middle" class="small">single artifact fingerprint</text>
+  </g>
+
+  <rect x="35" y="225" width="805" height="555" rx="14" class="panel"/>
+  <text x="60" y="258" class="heading">Explicit policy：70 个正式端点按 remote latency 分布</text>
+  <text x="60" y="282" class="small">每 20 px 表示 1 个 endpoint；只表达实际选中的边界端点，不对相邻空间插值</text>
+
+  <g transform="translate(60 315)">
+    <line x1="92" y1="0" x2="92" y2="400" class="guide"/>
+    <line x1="92" y1="400" x2="700" y2="400" class="guide"/>
+
+    <text x="0" y="24" class="body">L=20 µs</text>
+    <rect x="92" y="5" width="60" height="27" rx="4" class="sync"/>
+    <text x="162" y="24" class="count">sync 3</text>
+
+    <text x="0" y="74" class="body">L=30 µs</text>
+    <rect x="92" y="55" width="220" height="27" rx="4" class="sync"/>
+    <text x="322" y="74" class="count">sync 11</text>
+    <rect x="430" y="55" width="280" height="27" rx="5" class="fallback"/>
+    <text x="570" y="73" text-anchor="middle" class="small">2 个 P2B fastest 点未过发布阈值</text>
+
+    <text x="0" y="124" class="body">L=50 µs</text>
+    <rect x="92" y="105" width="360" height="27" rx="4" class="sync"/>
+    <rect x="452" y="105" width="140" height="27" rx="4" class="p2b"/>
+    <text x="602" y="124" class="count">sync 18 · P2B 7</text>
+
+    <text x="0" y="174" class="body">L=75 µs</text>
+    <rect x="92" y="155" width="340" height="27" rx="4" class="p2b"/>
+    <text x="442" y="174" class="count">P2B 17</text>
+
+    <text x="0" y="224" class="body">L=150 µs</text>
+    <rect x="92" y="205" width="40" height="27" rx="4" class="p2b"/>
+    <text x="142" y="224" class="count">P2B 2</text>
+
+    <text x="0" y="274" class="body">L=250 µs</text>
+    <rect x="92" y="255" width="40" height="27" rx="4" class="p2a"/>
+    <rect x="132" y="255" width="40" height="27" rx="4" class="p2b"/>
+    <text x="182" y="274" class="count">P2A 2 · P2B 2</text>
+
+    <text x="0" y="324" class="body">L=500 µs</text>
+    <rect x="92" y="305" width="40" height="27" rx="4" class="p2a"/>
+    <rect x="132" y="305" width="60" height="27" rx="4" class="p2b"/>
+    <text x="202" y="324" class="count">P2A 2 · P2B 3</text>
+
+    <text x="0" y="374" class="body">L=750 µs</text>
+    <rect x="92" y="355" width="60" height="27" rx="4" class="p2a"/>
+    <text x="162" y="374" class="count">P2A 3</text>
+  </g>
+
+  <g transform="translate(60 735)">
+    <rect x="0" y="0" width="16" height="16" rx="3" class="sync"/>
+    <text x="24" y="13" class="small">sync</text>
+    <rect x="90" y="0" width="16" height="16" rx="3" class="p2a"/>
+    <text x="114" y="13" class="small">P2A</text>
+    <rect x="188" y="0" width="16" height="16" rx="3" class="p2b"/>
+    <text x="212" y="13" class="small">P2B</text>
+    <rect x="286" y="0" width="16" height="16" rx="3" class="fallback"/>
+    <text x="310" y="13" class="small">measured fastest，但发布 gate 失败</text>
+  </g>
+
+  <rect x="865" y="225" width="500" height="555" rx="14" class="panel"/>
+  <text x="890" y="258" class="heading">实测 winner 与可发布策略</text>
+  <text x="890" y="282" class="small">发布要求：paired median gain ≥10%，CI95 low ≥5%</text>
+
+  <g transform="translate(890 320)">
+    <text x="0" y="0" class="body">Measured fastest</text>
+    <rect x="0" y="15" width="174" height="32" rx="4" class="sync"/>
+    <rect x="174" y="15" width="42" height="32" rx="4" class="p2a"/>
+    <rect x="216" y="15" width="204" height="32" rx="4" class="p2b"/>
+    <text x="0" y="68" class="count">sync 29 · P2A 7 · P2B 34</text>
+
+    <text x="0" y="115" class="body">Transparent policy（普通 LDR）</text>
+    <rect x="0" y="130" width="192" height="32" rx="4" class="sync"/>
+    <rect x="192" y="130" width="228" height="32" rx="4" class="p2b"/>
+    <text x="0" y="183" class="count">sync 32 · P2B 38</text>
+
+    <text x="0" y="230" class="body">Explicit policy（submit / await）</text>
+    <rect x="0" y="245" width="192" height="32" rx="4" class="sync"/>
+    <rect x="192" y="245" width="42" height="32" rx="4" class="p2a"/>
+    <rect x="234" y="245" width="186" height="32" rx="4" class="p2b"/>
+    <text x="0" y="298" class="count">sync 32 · P2A 7 · P2B 31</text>
+  </g>
+
+  <rect x="890" y="650" width="450" height="95" rx="10" class="fallback"/>
+  <text x="910" y="677" class="heading">Fail-closed 结果</text>
+  <text x="910" y="703" class="body">3 个 P2B measured-fastest endpoint 回退 sync：</text>
+  <text x="910" y="727" class="small">L30/C2/W1000、L30/C4/W1000、L50/C2/W100</text>
+
+  <rect x="35" y="805" width="1330" height="88" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.3"/>
+  <text x="60" y="835" class="heading">运行时解释</text>
+  <text x="60" y="861" class="body">透明接口只在 sync/P2B 中选择；显式接口可选择 sync/P2A/P2B。未测 bucket、artifact/gate 异常、空 ready queue override 均回退 sync。</text>
+  <text x="60" y="883" class="small">该图验证当前 QEMU PoC 的离散边界；native SCC 的正式临界面仍需端到端硬件 paired benchmark。</text>
+</svg>

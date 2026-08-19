@@ -29,12 +29,14 @@ const REMOTE_CASE_TIMEOUT_MARGIN: Duration = Duration::from_secs(120);
 const REMOTE_CONNECT_ATTEMPTS: u32 = 3;
 const REMOTE_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
 const CASE_ATTEMPT_LIMIT: usize = 3;
-const POLICY_SCHEMA: u32 = 1;
+const POLICY_SCHEMA: u32 = 2;
 const POLICY_MERGE_SCHEMA: u32 = 1;
+const POLICY_BOUNDARY_SELECTION_SCHEMA: u32 = 1;
 const POLICY_MIN_MEDIAN_GAIN_MILLI: i128 = 100;
 const POLICY_MIN_CI_GAIN_MILLI: i128 = 50;
-const POLICY_MAX_P99_REGRESSION_MILLI: i128 = 50;
-const POLICY_MAX_CPU_TAX_MILLI: i128 = 250;
+const POLICY_SELECTION_OBJECTIVE: &str = "fixed-vcpu-workload-makespan";
+const POLICY_P99_ROLE: &str = "observation-only";
+const POLICY_CPU_ROLE: &str = "excluded-from-selection";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
@@ -258,6 +260,87 @@ pub(crate) struct ObmmPolicyMergeCliArgs {
     pub input_dirs: Vec<PathBuf>,
     pub output_dir: PathBuf,
     pub seeds: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObmmPolicyBoundarySelectCliArgs {
+    pub template_path: PathBuf,
+    pub input_dirs: Vec<PathBuf>,
+    pub output_matrix: PathBuf,
+    pub output_report: PathBuf,
+    pub matrix_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct BoundaryBucketKey {
+    latency_us: u64,
+    compute_us: u32,
+    coroutines: u32,
+    jitter: String,
+    pattern: String,
+    access_bytes: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct BoundarySeriesKey {
+    compute_us: u32,
+    coroutines: u32,
+    jitter: String,
+    pattern: String,
+    access_bytes: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BoundaryObservation {
+    bucket: BoundaryBucketKey,
+    winner: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BoundaryCrossing {
+    left: BoundaryBucketKey,
+    left_winner: String,
+    right: BoundaryBucketKey,
+    right_winner: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BoundarySelectionSource {
+    path: String,
+    matrix_hash: String,
+    scenario_hash: String,
+    topology_hash: String,
+    seeds: Vec<u64>,
+    cases: usize,
+    buckets: usize,
+    raw_attempts: usize,
+    quarantined_raw: usize,
+    artifact_fingerprint: String,
+    manifest_sha256: String,
+    validation_sha256: String,
+    policy_sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BoundarySelectionReport {
+    schema: u32,
+    selection_rule: String,
+    template_sha256: String,
+    output_matrix_sha256: String,
+    formal_seed_count: u32,
+    source_buckets: usize,
+    crossings: Vec<BoundaryCrossing>,
+    selected_buckets: Vec<BoundaryBucketKey>,
+    formal_runs: usize,
+    winner_counts: BTreeMap<String, usize>,
+    artifact_fingerprint: String,
+    sources: Vec<BoundarySelectionSource>,
+}
+
+struct LoadedBoundarySource {
+    manifest: EvalRunManifest,
+    observations: Vec<BoundaryObservation>,
+    provenance: BoundarySelectionSource,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -530,6 +613,68 @@ struct DerivedMetrics {
     schedule_ahead_gain_ns: i128,
     mechanism_gain_ns: i128,
     core_efficiency: Option<f64>,
+}
+
+pub(crate) fn boundary_select_args() -> anyhow::Result<Option<ObmmPolicyBoundarySelectCliArgs>> {
+    boundary_select_args_from(std::env::args_os().skip(1))
+}
+
+fn boundary_select_args_from<I, S>(
+    args: I,
+) -> anyhow::Result<Option<ObmmPolicyBoundarySelectCliArgs>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    if args.next().as_deref() != Some(OsStr::new("obmm-remote-load-policy-boundary-select")) {
+        return Ok(None);
+    }
+    let mut template_path = None;
+    let mut input_dirs = Vec::new();
+    let mut output_matrix = None;
+    let mut output_report = None;
+    let mut matrix_name = "obmm-remote-load-policy-boundary-formal-v1".to_string();
+    let mut pending = args.peekable();
+
+    while let Some(argument) = pending.next() {
+        let text = argument.to_string_lossy();
+        let (name, value) = if let Some((name, value)) = text.split_once('=') {
+            (name.to_string(), value.to_string())
+        } else if text.starts_with("--") {
+            let value = pending
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("{text} requires a value"))?;
+            (text.into_owned(), value.to_string_lossy().into_owned())
+        } else {
+            anyhow::bail!("unexpected obmm-remote-load-policy-boundary-select argument: {text}");
+        };
+        match name.as_str() {
+            "--template" => template_path = Some(PathBuf::from(value)),
+            "--input" => input_dirs.push(PathBuf::from(value)),
+            "--output-matrix" => output_matrix = Some(PathBuf::from(value)),
+            "--output-report" => output_report = Some(PathBuf::from(value)),
+            "--matrix-name" => matrix_name = value,
+            _ => anyhow::bail!("unknown obmm-remote-load-policy-boundary-select option: {name}"),
+        }
+    }
+    if input_dirs.len() < 2 {
+        anyhow::bail!(
+            "obmm-remote-load-policy-boundary-select requires at least two --input directories"
+        );
+    }
+    if matrix_name.trim().is_empty() {
+        anyhow::bail!("--matrix-name must not be empty");
+    }
+    Ok(Some(ObmmPolicyBoundarySelectCliArgs {
+        template_path: template_path.ok_or_else(|| anyhow::anyhow!("--template is required"))?,
+        input_dirs,
+        output_matrix: output_matrix
+            .ok_or_else(|| anyhow::anyhow!("--output-matrix is required"))?,
+        output_report: output_report
+            .ok_or_else(|| anyhow::anyhow!("--output-report is required"))?,
+        matrix_name,
+    }))
 }
 
 pub(crate) fn merge_args() -> anyhow::Result<Option<ObmmPolicyMergeCliArgs>> {
@@ -830,6 +975,452 @@ pub(crate) fn run(args: &ObmmEvalCliArgs) -> anyhow::Result<()> {
             .count(),
         validation.status,
         args.output_dir.join("report.md").display(),
+    );
+    Ok(())
+}
+
+fn boundary_csv_value<'a>(
+    headers: &BTreeMap<&str, usize>,
+    fields: &'a [&str],
+    name: &str,
+) -> anyhow::Result<&'a str> {
+    let index = headers
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("policy CSV lacks {name}"))?;
+    fields
+        .get(*index)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("policy CSV row lacks {name}"))
+}
+
+fn parse_boundary_policy(path: &Path) -> anyhow::Result<Vec<BoundaryObservation>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("read boundary policy {}", path.display()))?;
+    let mut lines = contents.lines();
+    let header = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("empty policy CSV at {}", path.display()))?;
+    if header.contains('"') {
+        anyhow::bail!("quoted policy CSV is not supported at {}", path.display());
+    }
+    let header_fields: Vec<&str> = header.split(',').collect();
+    let headers: BTreeMap<&str, usize> = header_fields
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (*name, index))
+        .collect();
+    let mut observations = Vec::new();
+    for (line_index, line) in lines.enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        if line.contains('"') {
+            anyhow::bail!(
+                "quoted policy CSV row is not supported at {}:{}",
+                path.display(),
+                line_index + 2
+            );
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        let parse_u64 = |name: &str| -> anyhow::Result<u64> {
+            boundary_csv_value(&headers, &fields, name)?
+                .parse()
+                .with_context(|| format!("parse {name} at {}:{}", path.display(), line_index + 2))
+        };
+        let parse_u32 = |name: &str| -> anyhow::Result<u32> {
+            parse_u64(name)?
+                .try_into()
+                .with_context(|| format!("narrow {name} at {}:{}", path.display(), line_index + 2))
+        };
+        let winner = boundary_csv_value(&headers, &fields, "measured_fastest")?.to_string();
+        if !matches!(winner.as_str(), "sync" | "p2a" | "p2b") {
+            anyhow::bail!(
+                "unsupported measured_fastest {winner} at {}:{}",
+                path.display(),
+                line_index + 2
+            );
+        }
+        observations.push(BoundaryObservation {
+            bucket: BoundaryBucketKey {
+                latency_us: parse_u64("latency_us")?,
+                compute_us: parse_u32("compute_us")?,
+                coroutines: parse_u32("coroutines")?,
+                jitter: boundary_csv_value(&headers, &fields, "jitter")?.to_string(),
+                pattern: boundary_csv_value(&headers, &fields, "pattern")?.to_string(),
+                access_bytes: parse_u32("access_bytes")?,
+            },
+            winner,
+        });
+    }
+    if observations.is_empty() {
+        anyhow::bail!("policy CSV has no observations at {}", path.display());
+    }
+    Ok(observations)
+}
+
+fn boundary_series_key(bucket: &BoundaryBucketKey) -> BoundarySeriesKey {
+    BoundarySeriesKey {
+        compute_us: bucket.compute_us,
+        coroutines: bucket.coroutines,
+        jitter: bucket.jitter.clone(),
+        pattern: bucket.pattern.clone(),
+        access_bytes: bucket.access_bytes,
+    }
+}
+
+fn select_boundary_crossings(
+    observations: &[BoundaryObservation],
+) -> anyhow::Result<(Vec<BoundaryCrossing>, Vec<BoundaryBucketKey>)> {
+    let mut unique = BTreeMap::new();
+    for observation in observations {
+        if unique
+            .insert(observation.bucket.clone(), observation.winner.clone())
+            .is_some()
+        {
+            anyhow::bail!(
+                "duplicate boundary bucket L={} C={} W={}",
+                observation.bucket.latency_us,
+                observation.bucket.coroutines,
+                observation.bucket.compute_us
+            );
+        }
+    }
+    let mut series: BTreeMap<BoundarySeriesKey, Vec<BoundaryObservation>> = BTreeMap::new();
+    for (bucket, winner) in unique {
+        series
+            .entry(boundary_series_key(&bucket))
+            .or_default()
+            .push(BoundaryObservation { bucket, winner });
+    }
+    let mut crossings = Vec::new();
+    let mut selected = BTreeSet::new();
+    for observations in series.values_mut() {
+        observations.sort_by_key(|observation| observation.bucket.latency_us);
+        for pair in observations.windows(2) {
+            let left = &pair[0];
+            let right = &pair[1];
+            if left.winner == right.winner {
+                continue;
+            }
+            selected.insert(left.bucket.clone());
+            selected.insert(right.bucket.clone());
+            crossings.push(BoundaryCrossing {
+                left: left.bucket.clone(),
+                left_winner: left.winner.clone(),
+                right: right.bucket.clone(),
+                right_winner: right.winner.clone(),
+            });
+        }
+    }
+    if crossings.is_empty() {
+        anyhow::bail!("screening evidence contains no adjacent-latency winner crossing");
+    }
+    Ok((crossings, selected.into_iter().collect()))
+}
+
+fn boundary_jitter(value: &str) -> anyhow::Result<JitterProfile> {
+    match value {
+        "none" => Ok(JitterProfile::None),
+        "uniform-10pct" => Ok(JitterProfile::Uniform10pct),
+        "tail-1pct-10x" => Ok(JitterProfile::Tail1pct10x),
+        _ => anyhow::bail!("unsupported boundary jitter {value}"),
+    }
+}
+
+fn boundary_pattern(value: &str) -> anyhow::Result<EvalPattern> {
+    match value {
+        "sequential" => Ok(EvalPattern::Sequential),
+        "random" => Ok(EvalPattern::Random),
+        "dependent" => Ok(EvalPattern::Dependent),
+        "mixed" => Ok(EvalPattern::Mixed),
+        _ => anyhow::bail!("unsupported boundary pattern {value}"),
+    }
+}
+
+fn build_formal_boundary_matrix(
+    mut matrix: EvalMatrix,
+    matrix_name: &str,
+    selected: &[BoundaryBucketKey],
+) -> anyhow::Result<EvalMatrix> {
+    if matrix.minimums.formal_seed_count < 7 {
+        anyhow::bail!("formal boundary template requires at least 7 seeds");
+    }
+    if matrix.cases.len() != 4
+        || matrix
+            .cases
+            .iter()
+            .any(|case| case.band != EvalBand::Scalar)
+        || matrix
+            .cases
+            .iter()
+            .filter(|case| case.mode == EvalMode::SyncMmio)
+            .count()
+            != 1
+        || matrix
+            .cases
+            .iter()
+            .filter(|case| case.mode == EvalMode::SchedulerCore)
+            .count()
+            != 1
+        || matrix
+            .cases
+            .iter()
+            .filter(|case| case.mode == EvalMode::AsyncPoll)
+            .count()
+            != 2
+    {
+        anyhow::bail!("formal boundary template must define sync, two P2A, and one P2B cases");
+    }
+    let case_ids: Vec<String> = matrix.cases.iter().map(|case| case.id.clone()).collect();
+    if matrix.factors.inflight.len() != 1 || matrix.factors.lookahead.len() != 1 {
+        anyhow::bail!("formal boundary template must fix one inflight and lookahead value");
+    }
+    let template_inflight = matrix.factors.inflight[0];
+    let template_lookahead = matrix.factors.lookahead[0];
+    let mut latencies = BTreeSet::new();
+    let mut jitters = BTreeSet::new();
+    let mut coroutines = BTreeSet::new();
+    let mut inflight = BTreeSet::new();
+    let mut lookahead = BTreeSet::new();
+    let mut computes = BTreeSet::new();
+    let mut patterns = BTreeSet::new();
+    let mut sweeps = Vec::with_capacity(selected.len());
+    for (index, bucket) in selected.iter().enumerate() {
+        if matrix
+            .cases
+            .iter()
+            .any(|case| case.access_bytes != bucket.access_bytes)
+        {
+            anyhow::bail!(
+                "template access width differs from selected bucket {}",
+                bucket.access_bytes
+            );
+        }
+        let jitter = boundary_jitter(&bucket.jitter)?;
+        let pattern = boundary_pattern(&bucket.pattern)?;
+        latencies.insert(bucket.latency_us);
+        jitters.insert(jitter);
+        coroutines.insert(bucket.coroutines);
+        inflight.insert(template_inflight);
+        lookahead.insert(template_lookahead);
+        computes.insert(bucket.compute_us);
+        patterns.insert(pattern);
+        sweeps.push(EvalSweep {
+            id: format!("formal-boundary-{:03}", index + 1),
+            cases: case_ids.clone(),
+            operations: None,
+            model_latency_us: vec![bucket.latency_us],
+            jitter_profiles: vec![jitter],
+            outcomes: vec![OutcomeProfile::Success],
+            coroutines: vec![bucket.coroutines],
+            inflight: vec![template_inflight],
+            lookahead: vec![template_lookahead],
+            compute_us: vec![bucket.compute_us],
+            patterns: vec![pattern],
+        });
+    }
+    matrix.name = matrix_name.into();
+    matrix.factors = EvalFactors {
+        model_latency_us: latencies.into_iter().collect(),
+        jitter_profiles: jitters.into_iter().collect(),
+        outcomes: vec![OutcomeProfile::Success],
+        coroutines: coroutines.into_iter().collect(),
+        inflight: inflight.into_iter().collect(),
+        lookahead: lookahead.into_iter().collect(),
+        compute_us: computes.into_iter().collect(),
+        patterns: patterns.into_iter().collect(),
+    };
+    matrix.sweeps = sweeps;
+    validate_matrix(&matrix)?;
+    Ok(matrix)
+}
+
+fn load_boundary_selection_source(
+    dir: &Path,
+    formal_seed_count: usize,
+) -> anyhow::Result<LoadedBoundarySource> {
+    let manifest_path = dir.join("run-manifest.json");
+    let validation_path = dir.join("validation.json");
+    let policy_path = dir.join("summary/policy.csv");
+    let manifest: EvalRunManifest = read_json(&manifest_path)?;
+    let validation: EvalValidation = read_json(&validation_path)?;
+    if manifest.schema != EVAL_RUN_MANIFEST_SCHEMA
+        || validation.schema != EVAL_VALIDATION_SCHEMA
+        || !manifest.gates_passed
+        || !manifest.valid_for_execution
+        || validation.gates.iter().any(|gate| gate.status != "pass")
+    {
+        anyhow::bail!(
+            "{} has incompatible metadata or failed P0-P4 gates",
+            dir.display()
+        );
+    }
+    if manifest.seeds.len() < 3 || manifest.seeds.len() >= formal_seed_count {
+        anyhow::bail!(
+            "{} must contain 3+ screening seeds and fewer than {formal_seed_count} formal seeds",
+            dir.display()
+        );
+    }
+    let allowed_reason = format!("formal statistics require at least {formal_seed_count} seeds");
+    if validation.status != "invalid"
+        || validation.formal_seed_count_met
+        || validation.invalid_reasons != [allowed_reason]
+        || validation.expanded_cases != manifest.cases.len()
+        || validation.runs.len() != manifest.cases.len()
+        || validation.runs.iter().any(|run| run.status != "pass")
+    {
+        anyhow::bail!(
+            "{} is not a complete successful screening campaign",
+            dir.display()
+        );
+    }
+    let manifest_ids: BTreeSet<String> = manifest
+        .cases
+        .iter()
+        .map(|case| case.run_id.clone())
+        .collect();
+    if manifest_ids.len() != manifest.cases.len()
+        || jsonl_file_stems(&dir.join("raw"))? != manifest_ids
+    {
+        anyhow::bail!(
+            "{} canonical raw set differs from its manifest",
+            dir.display()
+        );
+    }
+    let quarantined_raw = count_jsonl_files(&dir.join("raw-quarantine"))?;
+    let mut fingerprints = BTreeSet::new();
+    for case in &manifest.cases {
+        let evidence = fs::read_to_string(dir.join("raw").join(format!("{}.jsonl", case.run_id)))?;
+        fingerprints.insert(artifact_fingerprint(&evidence).ok_or_else(|| {
+            anyhow::anyhow!("{} lacks artifact fingerprint evidence", case.run_id)
+        })?);
+    }
+    if fingerprints.len() != 1 {
+        anyhow::bail!("{} contains mixed artifact fingerprints", dir.display());
+    }
+    let observations = parse_boundary_policy(&policy_path)?;
+    if manifest.cases.len() != observations.len() * manifest.seeds.len() * 4 {
+        anyhow::bail!(
+            "{} case count does not match policy buckets × four paths × seeds",
+            dir.display()
+        );
+    }
+    let path = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let provenance = BoundarySelectionSource {
+        path: path.display().to_string(),
+        matrix_hash: manifest.matrix_hash.clone(),
+        scenario_hash: manifest.scenario_hash.clone(),
+        topology_hash: manifest.topology_hash.clone(),
+        seeds: manifest.seeds.clone(),
+        cases: manifest.cases.len(),
+        buckets: observations.len(),
+        raw_attempts: count_jsonl_files(&dir.join("raw-attempts"))?,
+        quarantined_raw,
+        artifact_fingerprint: fingerprints.into_iter().next().expect("one fingerprint"),
+        manifest_sha256: sha256_file(&manifest_path)?,
+        validation_sha256: sha256_file(&validation_path)?,
+        policy_sha256: sha256_file(&policy_path)?,
+    };
+    Ok(LoadedBoundarySource {
+        manifest,
+        observations,
+        provenance,
+    })
+}
+
+pub(crate) fn run_boundary_select(args: &ObmmPolicyBoundarySelectCliArgs) -> anyhow::Result<()> {
+    if args.output_matrix == args.output_report {
+        anyhow::bail!("--output-matrix and --output-report must differ");
+    }
+    for output in [&args.output_matrix, &args.output_report] {
+        if output.exists() {
+            anyhow::bail!(
+                "refusing to overwrite boundary output at {}",
+                output.display()
+            );
+        }
+    }
+    let template_bytes = fs::read(&args.template_path)
+        .with_context(|| format!("read boundary template {}", args.template_path.display()))?;
+    let template: EvalMatrix = serde_yaml::from_slice(&template_bytes)
+        .with_context(|| format!("parse boundary template {}", args.template_path.display()))?;
+    validate_matrix(&template)?;
+    let formal_seed_count = template.minimums.formal_seed_count as usize;
+    let mut sources = Vec::with_capacity(args.input_dirs.len());
+    for input in &args.input_dirs {
+        sources.push(load_boundary_selection_source(input, formal_seed_count)?);
+    }
+    let first = &sources[0].manifest;
+    for source in &sources {
+        if source.manifest.scenario_hash != first.scenario_hash
+            || source.manifest.topology_hash != first.topology_hash
+            || source.manifest.selected_bands != first.selected_bands
+            || source.manifest.seeds != first.seeds
+        {
+            anyhow::bail!(
+                "{} differs in scenario, topology, bands, or screening seeds",
+                source.provenance.path
+            );
+        }
+    }
+    let artifact_fingerprint = unique_merge_value(
+        "artifact fingerprint",
+        sources
+            .iter()
+            .map(|source| source.provenance.artifact_fingerprint.clone()),
+    )?;
+    let observations: Vec<BoundaryObservation> = sources
+        .iter()
+        .flat_map(|source| source.observations.iter().cloned())
+        .collect();
+    let (crossings, selected_buckets) = select_boundary_crossings(&observations)?;
+    let matrix = build_formal_boundary_matrix(template, &args.matrix_name, &selected_buckets)?;
+    for output in [&args.output_matrix, &args.output_report] {
+        if let Some(parent) = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut matrix_yaml = serde_yaml::to_string(&matrix)?;
+    if !matrix_yaml.ends_with('\n') {
+        matrix_yaml.push('\n');
+    }
+    fs::write(&args.output_matrix, matrix_yaml)?;
+    let output_matrix_sha256 = sha256_file(&args.output_matrix)?;
+    let mut winner_counts = BTreeMap::new();
+    for observation in &observations {
+        *winner_counts.entry(observation.winner.clone()).or_insert(0) += 1;
+    }
+    let formal_runs = selected_buckets.len() * matrix.cases.len() * formal_seed_count;
+    write_json(
+        &args.output_report,
+        &BoundarySelectionReport {
+            schema: POLICY_BOUNDARY_SELECTION_SCHEMA,
+            selection_rule: "both endpoints of every adjacent-latency measured-fastest flip".into(),
+            template_sha256: sha256_file(&args.template_path)?,
+            output_matrix_sha256,
+            formal_seed_count: matrix.minimums.formal_seed_count,
+            source_buckets: observations.len(),
+            crossings,
+            selected_buckets,
+            formal_runs,
+            winner_counts,
+            artifact_fingerprint,
+            sources: sources
+                .into_iter()
+                .map(|source| source.provenance)
+                .collect(),
+        },
+    )?;
+    println!(
+        "OBMM_POLICY_BOUNDARY_SELECTION_COMPLETE schema=1 sources={} buckets={} formal_runs={} matrix={} report={}",
+        args.input_dirs.len(),
+        observations.len(),
+        formal_runs,
+        args.output_matrix.display(),
+        args.output_report.display(),
     );
     Ok(())
 }
@@ -2998,8 +3589,7 @@ struct PolicyThresholds {
     minimum_formal_seeds: usize,
     minimum_median_gain_milli: i128,
     minimum_paired_ci_gain_milli: i128,
-    maximum_p99_regression_milli: i128,
-    maximum_cpu_tax_milli: i128,
+    require_equal_extra_vcpus: bool,
 }
 
 impl PolicyThresholds {
@@ -3008,8 +3598,7 @@ impl PolicyThresholds {
             minimum_formal_seeds,
             minimum_median_gain_milli: POLICY_MIN_MEDIAN_GAIN_MILLI,
             minimum_paired_ci_gain_milli: POLICY_MIN_CI_GAIN_MILLI,
-            maximum_p99_regression_milli: POLICY_MAX_P99_REGRESSION_MILLI,
-            maximum_cpu_tax_milli: POLICY_MAX_CPU_TAX_MILLI,
+            require_equal_extra_vcpus: true,
         }
     }
 }
@@ -3024,7 +3613,6 @@ struct PolicyPathMetrics {
     valid_seeds: usize,
     makespan_ns: Option<u64>,
     guest_p99_ns: Option<u64>,
-    total_cpu_ns: Option<u64>,
     row_status: String,
 }
 
@@ -3043,7 +3631,6 @@ struct PolicyCandidateDecision {
     reason: String,
     paired_gain: PairedGainStats,
     p99_regression_milli: Option<i128>,
-    cpu_tax_milli: Option<i128>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3064,13 +3651,16 @@ struct PolicyBucket {
     explicit_policy: String,
     p2a_vs_sync: Option<PolicyCandidateDecision>,
     p2b_vs_sync: Option<PolicyCandidateDecision>,
-    p2b_vs_explicit_fallback: Option<PolicyCandidateDecision>,
+    p2b_vs_p2a: Option<PolicyCandidateDecision>,
     status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct PolicyReport {
     schema: u32,
+    selection_objective: String,
+    p99_metric_role: String,
+    cpu_metric_role: String,
     matrix_name: String,
     matrix_hash: String,
     scenario_hash: String,
@@ -3937,19 +4527,6 @@ fn policy_path_name(row: &AggregateRow) -> &'static str {
     }
 }
 
-fn policy_total_cpu_ns(row: &AggregateRow) -> Option<u64> {
-    row.application_cpu_median
-        .zip(row.helper_cpu_median)
-        .map(|(application, helper)| {
-            application.saturating_add(helper).saturating_add(
-                row.phase_medians
-                    .get("el0_scheduler_ns")
-                    .copied()
-                    .unwrap_or(0),
-            )
-        })
-}
-
 fn policy_path_metrics(row: &AggregateRow) -> PolicyPathMetrics {
     PolicyPathMetrics {
         path: policy_path_name(row).into(),
@@ -3960,7 +4537,6 @@ fn policy_path_metrics(row: &AggregateRow) -> PolicyPathMetrics {
         valid_seeds: row.valid_seeds,
         makespan_ns: row.makespan_median,
         guest_p99_ns: row.guest_p99_median,
-        total_cpu_ns: policy_total_cpu_ns(row),
         row_status: row.status.clone(),
     }
 }
@@ -4071,11 +4647,12 @@ fn evaluate_policy_candidate(
         .guest_p99_median
         .zip(candidate.guest_p99_median)
         .and_then(|(baseline_ns, candidate_ns)| signed_ratio_milli(candidate_ns, baseline_ns));
-    let cpu_tax_milli = policy_total_cpu_ns(baseline)
-        .zip(policy_total_cpu_ns(candidate))
-        .and_then(|(baseline_ns, candidate_ns)| signed_ratio_milli(candidate_ns, baseline_ns));
     let reason = if baseline.status != "pass" || candidate.status != "pass" {
         "insufficient-formal-seeds"
+    } else if thresholds.require_equal_extra_vcpus
+        && baseline.case.extra_vcpus != candidate.case.extra_vcpus
+    {
+        "resource-envelope-mismatch"
     } else if paired_gain.pair_count < thresholds.minimum_formal_seeds {
         "insufficient-paired-seeds"
     } else if paired_gain
@@ -4088,12 +4665,6 @@ fn evaluate_policy_candidate(
         .map_or(true, |gain| gain < thresholds.minimum_paired_ci_gain_milli)
     {
         "paired-ci-gain-below-threshold"
-    } else if p99_regression_milli.map_or(true, |regression| {
-        regression > thresholds.maximum_p99_regression_milli
-    }) {
-        "p99-regression-exceeds-budget"
-    } else if cpu_tax_milli.map_or(true, |tax| tax > thresholds.maximum_cpu_tax_milli) {
-        "cpu-tax-exceeds-budget"
     } else {
         "eligible"
     };
@@ -4102,7 +4673,6 @@ fn evaluate_policy_candidate(
         reason: reason.into(),
         paired_gain,
         p99_regression_milli,
-        cpu_tax_milli,
     }
 }
 
@@ -4113,6 +4683,26 @@ fn policy_bucket_status(rows: [&AggregateRow; 3]) -> String {
         "insufficient-evidence"
     }
     .into()
+}
+
+fn choose_explicit_policy(
+    sync: Option<&AggregateRow>,
+    p2a: Option<&AggregateRow>,
+    p2b: Option<&AggregateRow>,
+    p2a_eligible: bool,
+    p2b_eligible: bool,
+) -> &'static str {
+    best_policy_row(
+        [
+            sync,
+            p2a.filter(|_| p2a_eligible),
+            p2b.filter(|_| p2b_eligible),
+        ]
+        .into_iter()
+        .flatten(),
+    )
+    .map(policy_path_name)
+    .unwrap_or("sync")
 }
 
 fn build_policy_buckets(
@@ -4172,17 +4762,11 @@ fn build_policy_buckets(
                 thresholds,
             )
         });
-        let explicit_fallback = match (sync, p2a, p2a_vs_sync.as_ref()) {
-            (Some(_sync), Some(p2a), Some(decision)) if decision.eligible => p2a,
-            (Some(sync), _, _) => sync,
-            (_, Some(p2a), _) => p2a,
-            _ => p2b.expect("policy group has at least one path"),
-        };
-        let p2b_vs_explicit_fallback = p2b.map(|candidate| {
+        let p2b_vs_p2a = p2a.zip(p2b).map(|(baseline, candidate)| {
             evaluate_policy_candidate(
-                explicit_fallback,
+                baseline,
                 candidate,
-                paired_gain_stats(explicit_fallback, candidate, collected, manifest),
+                paired_gain_stats(baseline, candidate, collected, manifest),
                 thresholds,
             )
         });
@@ -4194,20 +4778,17 @@ fn build_policy_buckets(
         } else {
             "sync"
         };
-        let mut explicit_policy = if p2a_vs_sync
-            .as_ref()
-            .is_some_and(|decision| decision.eligible)
-        {
-            "p2a"
-        } else {
-            "sync"
-        };
-        if p2b_vs_explicit_fallback
-            .as_ref()
-            .is_some_and(|decision| decision.eligible)
-        {
-            explicit_policy = "p2b";
-        }
+        let explicit_policy = choose_explicit_policy(
+            sync,
+            p2a,
+            p2b,
+            p2a_vs_sync
+                .as_ref()
+                .is_some_and(|decision| decision.eligible),
+            p2b_vs_sync
+                .as_ref()
+                .is_some_and(|decision| decision.eligible),
+        );
         let status = match (sync, p2a, p2b) {
             (Some(sync), Some(p2a), Some(p2b)) => policy_bucket_status([sync, p2a, p2b]),
             _ => "incomplete-path-set".into(),
@@ -4229,7 +4810,7 @@ fn build_policy_buckets(
             explicit_policy: explicit_policy.into(),
             p2a_vs_sync,
             p2b_vs_sync,
-            p2b_vs_explicit_fallback,
+            p2b_vs_p2a,
             status,
         });
     }
@@ -4238,13 +4819,14 @@ fn build_policy_buckets(
 
 fn policy_csv_header() -> &'static str {
     "sweep,topology_hosts,latency_us,jitter,compute_us,coroutines,pattern,access_bytes,\
-sync_makespan_ns,sync_p99_ns,sync_total_cpu_ns,\
-p2a_case,p2a_issue,p2a_inflight,p2a_lookahead,p2a_makespan_ns,p2a_p99_ns,p2a_total_cpu_ns,\
-p2b_makespan_ns,p2b_p99_ns,p2b_total_cpu_ns,measured_fastest,transparent_policy,explicit_policy,\
+sync_makespan_ns,sync_p99_ns,\
+p2a_case,p2a_issue,p2a_inflight,p2a_lookahead,p2a_makespan_ns,p2a_p99_ns,\
+p2b_makespan_ns,p2b_p99_ns,measured_fastest,transparent_policy,explicit_policy,\
 p2a_eligible,p2a_reason,p2b_transparent_eligible,p2b_transparent_reason,\
-p2b_explicit_eligible,p2b_explicit_reason,p2b_pair_count,p2b_positive_pairs,\
-p2b_paired_gain_median_milli,p2b_paired_gain_ci95_low_milli,p2b_paired_gain_ci95_high_milli,\
-p2b_p99_regression_milli,p2b_cpu_tax_milli,status\n"
+p2b_vs_p2a_gain_eligible,p2b_vs_p2a_reason,p2b_vs_p2a_pair_count,\
+p2b_vs_p2a_positive_pairs,p2b_vs_p2a_gain_median_milli,\
+p2b_vs_p2a_gain_ci95_low_milli,p2b_vs_p2a_gain_ci95_high_milli,\
+p2b_vs_p2a_p99_regression_milli,status\n"
 }
 
 fn write_policy_summary(
@@ -4260,8 +4842,8 @@ fn write_policy_summary(
     for bucket in &buckets {
         let p2a_decision = bucket.p2a_vs_sync.as_ref();
         let p2b_transparent = bucket.p2b_vs_sync.as_ref();
-        let p2b_explicit = bucket.p2b_vs_explicit_fallback.as_ref();
-        let p2b_pair = p2b_explicit.map(|decision| &decision.paired_gain);
+        let p2b_vs_p2a = bucket.p2b_vs_p2a.as_ref();
+        let p2b_pair = p2b_vs_p2a.map(|decision| &decision.paired_gain);
         let fields = [
             bucket.sweep.clone(),
             bucket.topology_hosts.to_string(),
@@ -4280,11 +4862,6 @@ fn write_policy_summary(
                 .sync
                 .as_ref()
                 .and_then(|path| path.guest_p99_ns)
-                .map_or_else(|| "na".into(), |value| value.to_string()),
-            bucket
-                .sync
-                .as_ref()
-                .and_then(|path| path.total_cpu_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket
                 .p2a_best
@@ -4313,11 +4890,6 @@ fn write_policy_summary(
                 .and_then(|path| path.guest_p99_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket
-                .p2a_best
-                .as_ref()
-                .and_then(|path| path.total_cpu_ns)
-                .map_or_else(|| "na".into(), |value| value.to_string()),
-            bucket
                 .p2b
                 .as_ref()
                 .and_then(|path| path.makespan_ns)
@@ -4327,11 +4899,6 @@ fn write_policy_summary(
                 .as_ref()
                 .and_then(|path| path.guest_p99_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
-            bucket
-                .p2b
-                .as_ref()
-                .and_then(|path| path.total_cpu_ns)
-                .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket.measured_fastest.clone(),
             bucket.transparent_policy.clone(),
             bucket.explicit_policy.clone(),
@@ -4340,8 +4907,8 @@ fn write_policy_summary(
             p2b_transparent
                 .map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
             p2b_transparent.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
-            p2b_explicit.map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
-            p2b_explicit.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            p2b_vs_p2a.map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
+            p2b_vs_p2a.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
             p2b_pair.map_or_else(|| "0".into(), |paired| paired.pair_count.to_string()),
             p2b_pair.map_or_else(|| "0".into(), |paired| paired.positive_pairs.to_string()),
             p2b_pair
@@ -4353,11 +4920,8 @@ fn write_policy_summary(
             p2b_pair
                 .and_then(|paired| paired.ci95_high_milli)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
-            p2b_explicit
+            p2b_vs_p2a
                 .and_then(|decision| decision.p99_regression_milli)
-                .map_or_else(|| "na".into(), |value| value.to_string()),
-            p2b_explicit
-                .and_then(|decision| decision.cpu_tax_milli)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket.status.clone(),
         ];
@@ -4369,6 +4933,9 @@ fn write_policy_summary(
         &output_dir.join("summary/policy.json"),
         &PolicyReport {
             schema: POLICY_SCHEMA,
+            selection_objective: POLICY_SELECTION_OBJECTIVE.into(),
+            p99_metric_role: POLICY_P99_ROLE.into(),
+            cpu_metric_role: POLICY_CPU_ROLE.into(),
             matrix_name: manifest.matrix_name.clone(),
             matrix_hash: manifest.matrix_hash.clone(),
             scenario_hash: manifest.scenario_hash.clone(),
@@ -4386,6 +4953,9 @@ fn write_empty_policy_summary(output_dir: &Path) -> anyhow::Result<()> {
         &output_dir.join("summary/policy.json"),
         &PolicyReport {
             schema: POLICY_SCHEMA,
+            selection_objective: POLICY_SELECTION_OBJECTIVE.into(),
+            p99_metric_role: POLICY_P99_ROLE.into(),
+            cpu_metric_role: POLICY_CPU_ROLE.into(),
             matrix_name: String::new(),
             matrix_hash: String::new(),
             scenario_hash: String::new(),
@@ -4680,7 +5250,7 @@ fn write_final_report(
          - Band R (`summary/range.csv`) compares the same 4-KiB logical operations for sync, P2A, and userfaultfd.\n\
          - Band T (`summary/transparency.csv`) reports interface, software/custom-hardware surface, and extra-core cost; it is not collapsed into a throughput ranking.\n\
          - `summary/break-even.csv` reports only measured L/W/concurrency intervals: `bracketed`, `positive-at-minimum`, `not-observed`, or `non-monotonic`. It never extrapolates beyond measured latency points.\n\
-         - `summary/policy.csv` and `summary/policy.json` report measured sync/P2A/P2B choices, paired-seed confidence, p99/CPU gates, and transparent/explicit policy decisions.\n\n\
+         - `summary/policy.csv` and `summary/policy.json` report fixed-vCPU workload-makespan choices, paired-seed confidence, observational load p99, and transparent/explicit policy decisions.\n\n\
          Each Band S/R row also carries the median ready/wait/idle, P2A submit/switch/CQ, P1 pending/copy/late/duplicate, P2B save/schedule/restore/commit, and P4 fault/remote/copy/wake phase metrics. `run-manifest.json`, `validation.json`, and `raw/*.jsonl` preserve the artifact hashes and per-seed provenance.\n\n\
          Fields with a zero or unavailable denominator are `na`. Invalid rows never contribute to medians or confidence intervals.\n",
         validation.status,
@@ -4911,6 +5481,16 @@ mod tests {
     fn policy_coarse_matrix_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scenarios/experiments/obmm_remote_load_policy_coarse_v1.yaml")
+    }
+
+    fn policy_boundary_screen_matrix_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/experiments/obmm_remote_load_policy_boundary_screen_v1.yaml")
+    }
+
+    fn policy_boundary_trace_matrix_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/experiments/obmm_remote_load_policy_boundary_trace_v1.yaml")
     }
 
     fn scenario_path() -> PathBuf {
@@ -5268,6 +5848,97 @@ mod tests {
     }
 
     #[test]
+    fn parses_boundary_selection_cli_with_repeated_inputs() {
+        let args = boundary_select_args_from([
+            "obmm-remote-load-policy-boundary-select",
+            "--template=trace.yaml",
+            "--input=screen-low",
+            "--input=screen-high",
+            "--input=trace-low",
+            "--input=trace-high",
+            "--output-matrix=formal.yaml",
+            "--output-report=selection.json",
+        ])
+        .expect("boundary arguments")
+        .expect("boundary command");
+        assert_eq!(args.input_dirs.len(), 4);
+        assert_eq!(args.output_matrix, PathBuf::from("formal.yaml"));
+        assert_eq!(
+            args.matrix_name,
+            "obmm-remote-load-policy-boundary-formal-v1"
+        );
+        assert!(boundary_select_args_from([
+            "obmm-remote-load-policy-boundary-select",
+            "--template=trace.yaml",
+            "--input=only-one",
+            "--output-matrix=formal.yaml",
+            "--output-report=selection.json",
+        ])
+        .expect_err("one source cannot select a boundary")
+        .to_string()
+        .contains("at least two"));
+    }
+
+    fn boundary_observation(
+        latency_us: u64,
+        coroutines: u32,
+        compute_us: u32,
+        winner: &str,
+    ) -> BoundaryObservation {
+        BoundaryObservation {
+            bucket: BoundaryBucketKey {
+                latency_us,
+                compute_us,
+                coroutines,
+                jitter: "none".into(),
+                pattern: "sequential".into(),
+                access_bytes: 8,
+            },
+            winner: winner.into(),
+        }
+    }
+
+    #[test]
+    fn boundary_selection_keeps_both_endpoints_of_each_winner_flip() {
+        let observations = vec![
+            boundary_observation(20, 2, 0, "sync"),
+            boundary_observation(30, 2, 0, "p2b"),
+            boundary_observation(50, 2, 0, "p2b"),
+            boundary_observation(75, 2, 0, "p2a"),
+            boundary_observation(20, 4, 0, "sync"),
+            boundary_observation(30, 4, 0, "sync"),
+        ];
+        let (crossings, selected) =
+            select_boundary_crossings(&observations).expect("winner crossings");
+        assert_eq!(crossings.len(), 2);
+        assert_eq!(selected.len(), 4);
+        assert_eq!(crossings[0].left_winner, "sync");
+        assert_eq!(crossings[0].right_winner, "p2b");
+
+        let template: EvalMatrix = serde_yaml::from_slice(
+            &fs::read(policy_boundary_trace_matrix_path()).expect("trace matrix bytes"),
+        )
+        .expect("trace matrix");
+        let formal = build_formal_boundary_matrix(template, "formal-test", &selected)
+            .expect("formal matrix");
+        assert_eq!(formal.name, "formal-test");
+        assert_eq!(formal.sweeps.len(), 4);
+        assert_eq!(formal.minimums.formal_seed_count, 7);
+        assert!(formal.sweeps.iter().all(|sweep| sweep.cases.len() == 4));
+    }
+
+    #[test]
+    fn boundary_selection_rejects_duplicate_buckets() {
+        let observation = boundary_observation(20, 2, 0, "sync");
+        assert!(
+            select_boundary_crossings(&[observation.clone(), observation])
+                .expect_err("duplicate bucket must fail")
+                .to_string()
+                .contains("duplicate boundary bucket")
+        );
+    }
+
+    #[test]
     fn merge_case_universe_rejects_duplicate_and_missing_seeds() {
         let cases = (1..=7)
             .map(|seed| {
@@ -5339,6 +6010,8 @@ mod tests {
         let policy =
             fs::read_to_string(output.join("summary/policy.json")).expect("merged policy summary");
         assert!(policy.contains("\"minimum_formal_seeds\": 7"));
+        assert!(policy.contains("\"schema\": 2"));
+        assert!(policy.contains("\"selection_objective\": \"fixed-vcpu-workload-makespan\""));
         let provenance =
             fs::read_to_string(output.join("source-provenance.json")).expect("merge provenance");
         assert!(provenance.contains("\"merge_binary_sha256\""));
@@ -6078,26 +6751,121 @@ mod tests {
     }
 
     #[test]
-    fn policy_candidate_requires_gain_tail_and_cpu_gates() {
-        let sync = policy_test_row(EvalMode::SyncMmio, EvalIssue::Demand, 1_000, 100, 100);
-        let p2b = policy_test_row(EvalMode::SchedulerCore, EvalIssue::Demand, 800, 104, 120);
-        let thresholds = PolicyThresholds::new(7);
-        let eligible = evaluate_policy_candidate(
-            &sync,
-            &p2b,
-            PairedGainStats {
-                pair_count: 7,
-                positive_pairs: 7,
-                median_gain_milli: Some(200),
-                ci95_low_milli: Some(100),
-                ci95_high_milli: Some(250),
-            },
-            &thresholds,
+    fn policy_boundary_screen_matrix_covers_intermediate_latency_slices() {
+        let matrix: EvalMatrix = serde_yaml::from_slice(
+            &fs::read(policy_boundary_screen_matrix_path()).expect("boundary matrix bytes"),
+        )
+        .expect("boundary matrix");
+        validate_matrix(&matrix).expect("valid boundary matrix");
+        let scenario = ScenarioConfig::from_yaml_file(scenario_path()).expect("scenario");
+        let output = temp_dir();
+        fs::create_dir_all(output.join("models")).expect("output directory");
+        let cases = expand_matrix(
+            &matrix,
+            &scenario,
+            &scenario_path(),
+            &BTreeSet::from([EvalBand::Scalar]),
+            &[1, 2, 3],
+            &output,
+        )
+        .expect("expanded boundary matrix");
+        assert_eq!(cases.len(), 1_536);
+        assert_eq!(
+            cases
+                .iter()
+                .map(|case| case.model_latency_us)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([20, 30, 50, 75, 150, 250, 500, 750])
         );
+        let bucket_paths = cases
+            .iter()
+            .filter(|case| {
+                case.seed == 1
+                    && case.model_latency_us == 250
+                    && case.compute_us == 100
+                    && case.coroutines == 8
+            })
+            .map(|case| case.case_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            bucket_paths,
+            BTreeSet::from([
+                "S0-sync",
+                "S1-p2a-demand",
+                "S2-p2a-lookahead",
+                "S3-p2b-demand"
+            ])
+        );
+        fs::remove_dir_all(output).expect("cleanup");
+    }
+
+    #[test]
+    fn policy_boundary_trace_matrix_only_expands_selected_crossing_slices() {
+        let matrix: EvalMatrix = serde_yaml::from_slice(
+            &fs::read(policy_boundary_trace_matrix_path()).expect("trace matrix bytes"),
+        )
+        .expect("trace matrix");
+        validate_matrix(&matrix).expect("valid trace matrix");
+        let scenario = ScenarioConfig::from_yaml_file(scenario_path()).expect("scenario");
+        let output = temp_dir();
+        fs::create_dir_all(output.join("models")).expect("output directory");
+        let cases = expand_matrix(
+            &matrix,
+            &scenario,
+            &scenario_path(),
+            &BTreeSet::from([EvalBand::Scalar]),
+            &[1, 2, 3],
+            &output,
+        )
+        .expect("expanded trace matrix");
+        assert_eq!(cases.len(), 1_152);
+        assert_eq!(
+            cases
+                .iter()
+                .map(|case| case.coroutines)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([3, 5, 6, 12, 16, 24])
+        );
+        assert_eq!(
+            cases
+                .iter()
+                .map(|case| case.compute_us)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([30, 300])
+        );
+        for case in &cases {
+            let expected_latencies = match case.sweep.as_str() {
+                "sync-p2b-boundary-trace" => BTreeSet::from([20, 30, 50, 75]),
+                "p2a-p2b-boundary-trace" => BTreeSet::from([150, 250, 500, 750]),
+                other => panic!("unexpected trace sweep {other}"),
+            };
+            assert!(expected_latencies.contains(&case.model_latency_us));
+        }
+        fs::remove_dir_all(output).expect("cleanup");
+    }
+
+    #[test]
+    fn policy_candidate_uses_fixed_vcpu_makespan_gates() {
+        let sync = policy_test_row(EvalMode::SyncMmio, EvalIssue::Demand, 1_000, 100, 100);
+        let p2b = policy_test_row(EvalMode::SchedulerCore, EvalIssue::Demand, 800, 500, 1_000);
+        let thresholds = PolicyThresholds::new(7);
+        let strong_gain = PairedGainStats {
+            pair_count: 7,
+            positive_pairs: 7,
+            median_gain_milli: Some(200),
+            ci95_low_milli: Some(100),
+            ci95_high_milli: Some(250),
+        };
+        let eligible = evaluate_policy_candidate(&sync, &p2b, strong_gain.clone(), &thresholds);
         assert!(eligible.eligible);
         assert_eq!(eligible.reason, "eligible");
-        assert_eq!(eligible.p99_regression_milli, Some(40));
-        assert_eq!(eligible.cpu_tax_milli, Some(200));
+        assert_eq!(eligible.p99_regression_milli, Some(4_000));
+
+        let mut extra_vcpu = p2b.clone();
+        extra_vcpu.case.extra_vcpus = 1;
+        let mismatched = evaluate_policy_candidate(&sync, &extra_vcpu, strong_gain, &thresholds);
+        assert!(!mismatched.eligible);
+        assert_eq!(mismatched.reason, "resource-envelope-mismatch");
 
         let weak = evaluate_policy_candidate(
             &sync,
@@ -6113,6 +6881,26 @@ mod tests {
         );
         assert!(!weak.eligible);
         assert_eq!(weak.reason, "paired-ci-gain-below-threshold");
+    }
+
+    #[test]
+    fn explicit_policy_chooses_fastest_eligible_path() {
+        let sync = policy_test_row(EvalMode::SyncMmio, EvalIssue::Demand, 1_000, 100, 100);
+        let p2a = policy_test_row(EvalMode::AsyncPoll, EvalIssue::Lookahead, 700, 500, 100);
+        let p2b = policy_test_row(EvalMode::SchedulerCore, EvalIssue::Demand, 600, 500, 100);
+
+        assert_eq!(
+            choose_explicit_policy(Some(&sync), Some(&p2a), Some(&p2b), true, true),
+            "p2b"
+        );
+        assert_eq!(
+            choose_explicit_policy(Some(&sync), Some(&p2a), Some(&p2b), true, false),
+            "p2a"
+        );
+        assert_eq!(
+            choose_explicit_policy(Some(&sync), Some(&p2a), Some(&p2b), false, false),
+            "sync"
+        );
     }
 
     #[test]
@@ -6222,9 +7010,11 @@ mod tests {
         assert!(break_even.contains("nonpositive_latency_us,positive_latency_us"));
         let policy = fs::read_to_string(output.join("summary/policy.csv")).expect("policy CSV");
         assert!(policy.contains("transparent_policy,explicit_policy"));
+        assert!(!policy.contains("total_cpu"));
         let policy_json =
             fs::read_to_string(output.join("summary/policy.json")).expect("policy JSON");
         assert!(policy_json.contains("\"minimum_paired_ci_gain_milli\": 50"));
+        assert!(policy_json.contains("\"p99_metric_role\": \"observation-only\""));
         let original_manifest = fs::read(output.join("run-manifest.json")).expect("manifest bytes");
         let error = run(&args).expect_err("rerun must not overwrite evaluation evidence");
         assert!(error.to_string().contains("new --output-dir"));

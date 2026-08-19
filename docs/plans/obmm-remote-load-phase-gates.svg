@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1480" height="680" viewBox="0 0 1480 680" role="img" aria-labelledby="title desc">
   <title id="title">OBMM remote-load 验证阶段和门禁</title>
-  <desc id="desc">展示 P0 到 P4 的依赖关系和当前门禁状态：P3 ABI v2 的二节点正式验收与四节点、八节点定向扩展已完成；完整敏感性矩阵和 break even 结论仍待完成。所有文字均为浅色背景上的深色字体。</desc>
+  <desc id="desc">展示 P0 到 P4 的依赖关系和当前门禁状态：P3 ABI v2 的二节点正式验收、四节点八节点定向扩展、粗粒度策略和细粒度正式边界已完成；完整敏感性矩阵保持暂停。所有文字均为浅色背景上的深色字体。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
@@ -18,7 +18,7 @@
   </defs>
   <rect width="1480" height="680" fill="#f8fafc"/>
   <text x="60" y="56" class="title">OBMM remote-load：设计完成不等于阶段通过</text>
-  <text x="60" y="86" class="subtitle">P3 ABI v2：2-node 49 / 49 与 4 / 8-node scale-out 已完成；下一步执行 4,942-case full matrix</text>
+  <text x="60" y="86" class="subtitle">P3 ABI v2：acceptance、scale-out、2,240-case coarse policy 与 1,960-case formal boundary 已完成；full matrix 保持暂停</text>
 
   <rect x="60" y="144" width="260" height="150" class="box" fill="#e2e8f0"/>
   <text x="190" y="180" text-anchor="middle" class="head">P0 · 坐标系</text>
@@ -56,11 +56,11 @@
   <rect x="1202" y="210" width="218" height="236" class="box" fill="#eff6ff" stroke="#3b82f6"/>
   <text x="1311" y="248" text-anchor="middle" class="head">P3 · PARTIAL PASS</text>
   <text x="1311" y="286" text-anchor="middle" class="body">2-node · 49 / 49</text>
-  <text x="1311" y="316" text-anchor="middle" class="body">4-node · 14 / 14</text>
-  <text x="1311" y="346" text-anchor="middle" class="body">8-node · 14 / 14</text>
+  <text x="1311" y="316" text-anchor="middle" class="body">4 / 8-node · 14 / 14 each</text>
+  <text x="1311" y="346" text-anchor="middle" class="body">coarse · 2,240 / 2,240</text>
   <line x1="1230" y1="368" x2="1392" y2="368" stroke="#93c5fd"/>
-  <text x="1311" y="396" text-anchor="middle" class="mono">full matrix pending</text>
-  <text x="1311" y="423" text-anchor="middle" class="body">break-even pending</text>
+  <text x="1311" y="396" text-anchor="middle" class="mono">fine · 1,960 / 1,960</text>
+  <text x="1311" y="423" text-anchor="middle" class="body">full 4,942：paused</text>
   <path d="M1102 187 C1160 187 1158 263 1194 276" class="gate"/>
   <path d="M1102 383 C1154 383 1154 348 1194 342" class="gate"/>
   <path d="M702 461 C1000 560 1110 456 1194 405" class="gate"/>

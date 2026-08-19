@@ -2,10 +2,11 @@
 
 > 状态：评估器已实现；P2B ABI v2 的 2-node producer/consumer 功能验收、P3
 > 2-node 49-case formal acceptance、4/8-node 定向 scale-out 和 2,240-case 7-seed
-> coarse runtime policy 均已通过。4,942-case full sensitivity matrix 保持安全暂停，
+> coarse runtime policy 均已通过；1,960-case fine-grained formal boundary 也已通过。
+> 4,942-case full sensitivity matrix 保持安全暂停，跨 jitter/failure/range/topology 的
 > 完整 break-even 结论仍待生成
 >
-> 日期：2026-08-11
+> 日期：2026-08-11；更新：2026-08-20
 >
 > 前置阶段：[P0](p0-baseline-latency-model-detailed-design.md)、
 > [P1](p1-split-phase-backend-detailed-design.md)、
@@ -21,7 +22,7 @@
 
 ## 1. 目标和退出结论
 
-P3 的目标不是选一个总冠军，而是回答三个独立问题：
+P3 分别回答三个独立问题，不评选总冠军：
 
 1. split-phase 和 context switch 能隐藏多少 remote wait；
 2. P2A 的 pre-submit/lookahead 比 P2B demand-pending 多带来多少收益；
@@ -48,12 +49,13 @@ P3 只在以下 gate 全部满足后运行正式矩阵：
 任一 gate 不满足时 CLI 仍可生成 `--dry-run` manifest，但正式结果标为 `invalid`，不能
 生成性能结论。
 
-截至 2026-08-17，ABI v2 已使用新 run ID 完成 2-node 49-case formal acceptance、
+截至 2026-08-20，ABI v2 已使用新 run ID 完成 2-node 49-case formal acceptance、
 P2A demand 与 P2B demand 的 4/8-node 7-seed 定向 scale-out，以及覆盖 80 个
-latency/compute/coroutine bucket 的 2,240-case 7-seed coarse policy。旧 ABI v1
+latency/compute/coroutine bucket 的 2,240-case 7-seed coarse policy。细粒度增量矩阵
+又覆盖 224 个 3-seed screening/tracing bucket，从 35 条相邻 latency winner 翻转中
+选择 70 个 endpoint，完成 1,960-case 7-seed formal boundary。旧 ABI v1
 `S3-p2b-demand` raw rows 没有追认或拼接。4,942-case full matrix 继续负责补齐
-jitter/failure/range、4/8-node sensitivity 与更精确 break-even 区间；coarse measured
-bucket 不替代该矩阵。
+jitter/failure/range 和更完整的 4/8-node sensitivity；已测 endpoint 不替代该矩阵。
 
 ## 3. 三个 canonical 比较带
 
@@ -204,9 +206,9 @@ point，禁止逐 load 抖动切换。每个 `(topology, latency, compute, corou
 jitter)` bucket 需要同时输出：
 
 ```text
-sync makespan / p99 / total CPU
-best P2A config + makespan / p99 / total CPU
-P2B makespan / p99 / total CPU
+sync makespan / load-to-resume p99
+best P2A config + makespan / load-to-resume p99
+P2B makespan / load-to-resume p99
 measured fastest path
 transparent-policy path: sync | P2B
 explicit-policy path: sync | P2A | P2B
@@ -214,12 +216,19 @@ paired-seed gain interval and positive-seed count
 decision status and rejection reason
 ```
 
-P2B total CPU 必须包含 `application_cpu_ns + helper_cpu_ns + el0_scheduler_ns`。策略
-比较使用同 seed paired delta；分开计算的两个单路径 CI 不能替代 paired CI。
+策略比较使用同 seed paired delta；分开计算的两个单路径 CI 不能替代 paired CI。sync 与
+候选路径的 `extra_vcpus` 必须相同，保证 makespan 收益来自同一个 guest-core 资源包络内
+的 wait overlap。
 
-默认保守门槛：median makespan gain 至少 10%，paired 95% gain CI 下界至少 5%，
-p99 regression 不超过 5%，CPU tax 不超过 25%，failure/duplicate/drain gate 全部通过。
-这些阈值进入机器可读 policy metadata，允许产品按 CPU/SLA profile 覆盖。
+默认 work-conserving 门槛：median workload-makespan gain 至少 10%，paired 95% gain CI
+下界至少 5%，failure/duplicate/drain gate 全部通过。单次 P2 load 包含 suspend、调度和
+resume 开销，因此 load-to-resume p99 作为观测项输出，不参与默认路径否决。产品若声明
+单请求绝对延迟 SLO，应在 work-conserving 建议之上应用独立的 latency-isolation profile。
+
+旧 `application_cpu_ns + helper_cpu_ns + el0_scheduler_ns` 汇总混合了 process CPU、core
+占用和 scheduler elapsed time，不能作为 sync/P2 的默认选择 gate。后续若评估机制开销，
+必须单独输出 scheduler active cycles、upcall cycles 和 context-switch cycles；QEMU host
+CPU 只用于模拟器容量审计。
 
 输出固定为：
 
@@ -231,7 +240,7 @@ summary/policy.json
 `policy.json` 可由后续 runtime policy loader 消费；当前 P3 先生成离线策略，runtime
 动态切换实现单独验收。
 
-### 7.4 两阶段策略矩阵
+### 7.4 增量策略矩阵
 
 完整全排列成本过高，且大量远离 break-even 的点不会改变策略。策略数据按两阶段
 生成：
@@ -239,15 +248,19 @@ summary/policy.json
 1. **coarse screening**：覆盖宽间隔 latency/compute、`2/4/8/32` coroutine 和
    sequential pattern，用 3 个 seed 定位收益符号变化；screening 结果保持
    `insufficient-evidence`，不直接发布为 runtime policy；
-2. **boundary refinement**：只在 coarse crossing 邻域使用 7 个 seed，扩展
-   `sequential/dependent/mixed`、P2A inflight/lookahead 和 2/4/8-node 定向点，形成
-   可发布 bucket。
+2. **C/W tracing**：只在 crossing 内补充 C=`3/5/6/12/16/24` 与 W=`30/300` µs，
+   用 3 seeds 跟踪三维边界；
+3. **formal boundary**：找出相同 C/W 下的相邻 latency measured-winner flip，选择
+   两侧 endpoint，使用 7 个 paired seed 形成可发布 bucket。
 
 2026-08-17 的实际执行把全部 80 个 coarse bucket 从 3 seed 提升到 7 seed，先发布
 精确 measured-bucket policy，避免只保留 screening 结果。该选择增加了 1,280 个 run，
-换来每个 coarse bucket 的 paired-seed gate；策略仍然不插值。第二阶段继续细化
-100--1000 µs latency、2--4 coroutine 和 10--1000 µs compute crossing，并加入
-dependent/mixed、jitter 与 4/8-node 定向点。
+换来每个 coarse bucket 的 paired-seed gate；策略仍然不插值。schema v2 复用相同的
+2,240 个 canonical raw，按固定 guest-vCPU 下的 workload makespan 离线重聚合，没有
+重新运行 QEMU workload。2026-08-20 完成的增量阶段在 224 个 screening/tracing bucket
+中识别 35 条 flip，选择 70 个 endpoint，得到 1,960/1,960 pass 的 formal matrix。
+dependent/mixed、jitter、range/failure 与更完整的 4/8-node 定向点继续留在 full
+sensitivity scope。
 
 任何 matrix、QEMU、kernel 或 initramfs fingerprint 变化都必须新建 campaign。
 旧 campaign 只读保留，raw evidence 禁止跨 fingerprint 混合。
@@ -356,6 +369,8 @@ P3 退出必须形成以下证据，而不是只产出曲线：
 6. 对每个已覆盖 bucket 输出 transparent/explicit 两种 policy，未满足 7-seed 和
    paired CI 门槛的 bucket 保持 `insufficient-evidence`。
 
-截至 2026-08-13，退出项 1–4 已在 acceptance 与定向 scale-out 基准点形成证据；
-第 5 项仍受 full matrix 已安全暂停、未最终聚合阻塞。当前结果和边界见
+截至 2026-08-20，退出项 1–4 已在 acceptance、定向 scale-out、coarse policy 与
+fine-grained formal boundary 中形成证据；第 5 项已在 2-node、8-byte sequential、
+无 jitter 的离散 endpoint 上给出正式边界，跨其他测量域的完整结论仍受 full matrix
+安全暂停阻塞。当前结果和边界见
 [P3 ABI v2 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。

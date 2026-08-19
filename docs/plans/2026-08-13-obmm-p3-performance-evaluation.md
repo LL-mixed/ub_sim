@@ -1,26 +1,30 @@
 # OBMM remote-load P3 ABI v2 性能评估结果
 
-> 日期：2026-08-13
+> 日期：2026-08-13；更新：2026-08-20
 >
-> 状态：**2-node formal acceptance、4/8-node 定向 scale-out 和 2,240-case
-> 7-seed coarse runtime policy 已完成；4,942-case full matrix 于 2026-08-14
-> 按用户要求安全暂停**
+> 状态：**2-node formal acceptance、4/8-node 定向 scale-out、2,240-case
+> 7-seed coarse runtime policy 和 1,960-case fine-grained formal boundary 已完成；
+> 4,942-case full matrix 于 2026-08-14 按用户要求安全暂停**
 >
 > 设计基线：[P3 对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 
 ## 1. 结论
 
-当前可以给出四条有证据边界的结论：
+当前可以给出五条有证据边界的结论：
 
 1. ABI v2 的 2-node formal acceptance 为 **49/49 pass**，P0、P1、P2A、P2B、P4
    五个 phase gate 全部通过；旧 ABI v1 的 49-case 结果没有复用。
 2. 在 `1 µs remote latency + 100 µs useful compute + 4 coroutines` 的 scalar
    基准点，P2B 相对 P2A demand 在 2/4/8-node 的 cluster throughput 分别高
    `29.77%`、`35.13%`、`28.21%`。
-3. 2-node coarse runtime policy 的 **2,240/2,240 canonical run 全部通过**。默认
-   p99/CPU/gain gate 只放行三个异步 bucket：`L=1000 µs, C=2, W=0/10 µs`
-   选择 P2B；`L=1000 µs, C=2, W=1000 µs` 的 explicit policy 选择 P2A。
-4. 完整 P3 sensitivity 仍未完成。4,942-case full matrix 负责覆盖 jitter、tail、
+3. 2-node coarse runtime policy 的 **2,240/2,240 canonical run 全部通过**。policy
+   schema v2 按固定 guest-vCPU 下的 workload makespan 重聚合：transparent policy 为
+   `sync 48 / P2B 32`，explicit policy 为 `sync 48 / P2A 7 / P2B 25`。
+4. fine-grained formal boundary 的 **1,960/1,960 canonical run 全部通过**。70 个
+   endpoint 的 transparent policy 为 `sync 32 / P2B 38`，explicit policy 为
+   `sync 32 / P2A 7 / P2B 31`；三个 P2B measured-fastest endpoint 因发布阈值不足
+   fail closed 到 sync。
+5. 完整 P3 sensitivity 仍未完成。4,942-case full matrix 负责覆盖 jitter、tail、
    failure、range 和更完整的 crossing，当前保持暂停；coarse bucket 不向未测区域外推。
 
 ![P2A 与 P2B 在 2、4、8 节点上的 cluster throughput 和相对收益](2026-08-13-obmm-p3-performance-results.svg)
@@ -149,18 +153,20 @@ P2B 在 2→4 节点的扩展效率更高；到 8 节点时两条路径都低于
 93.54%。这说明 P2B 的优势没有随 node count 单调扩大，不能只看 4-node 的最高
 `+35.13%` 就外推。
 
-### 5.3 CPU 成本
+### 5.3 历史 CPU/elapsed 诊断字段
 
-| Nodes | P2A application CPU | P2B application CPU | P2B EL0 scheduler | P2B total vs P2A |
-|---:|---:|---:|---:|---:|
-| 2 | 18.902 s | 14.731 s | 6.354 s | +11.55% |
-| 4 | 37.641 s | 30.038 s | 13.211 s | +14.90% |
-| 8 | 80.849 s | 66.490 s | 29.964 s | +19.30% |
+| Nodes | P2A process CPU | P2B process CPU | P2B EL0 scheduler elapsed |
+|---:|---:|---:|---:|
+| 2 | 18.902 s | 14.731 s | 6.354 s |
+| 4 | 37.641 s | 30.038 s | 13.211 s |
+| 8 | 80.849 s | 66.490 s | 29.964 s |
 
 P2B 不需要额外 helper vCPU，QEMU 也不保存 guest coroutine context；但 guest EL0
-scheduler 的执行时间是真实 CPU 成本。P2B 用更高的总 CPU 消耗换取了更短的
-cluster makespan 和更高 throughput。对用户的影响是：延迟/吞吐敏感且 CPU 有余量时
-P2B 更有吸引力；CPU 配额紧张时不能只看 throughput 柱状图。
+scheduler 与 application coroutine 共用同一个 guest core。`el0_scheduler_ns` 记录
+scheduler 区间的 elapsed time，其中可能包含等待 completion 的时间；它不能直接与
+process CPU 相加。旧报告中的 “P2B total vs P2A” 因此撤回。schema v2 不使用这些字段
+选择 sync/P2A/P2B；后续机制成本需要 scheduler active cycles 和 upcall/context-switch
+cycles 才能独立核算。
 
 ## 6. Gate scenario 为什么是 10 ms，而性能点是 1 µs
 
@@ -199,17 +205,35 @@ source 完整性、paired seed universe、主机分工和唯一 artifact fingerp
 2,240/2,240 valid canonical run，`validation.status=pass`。13 份 source attempt 没有
 进入 merged raw，quarantine 为 0。
 
-默认严格策略的非 sync bucket 只有三项：
+policy schema v2 使用相同的 2,240 个 canonical raw 做离线重聚合，无需重新运行 QEMU。
+选择条件为相同 `extra_vcpus`、paired median workload-makespan gain 至少 10%、paired
+95% CI 下界至少 5%，以及 correctness/failure/duplicate/drain gate 通过。单次
+load-to-resume p99 作为观测项保留。
 
-| L | C | W | Transparent policy | Explicit policy | Makespan gain | p99 regression |
-|---:|---:|---:|---|---|---:|---:|
-| 1000 µs | 2 | 0 µs | P2B | P2B | 48.87% | 2.35% |
-| 1000 µs | 2 | 10 µs | P2B | P2B | 48.95% | 2.07% |
-| 1000 µs | 2 | 1000 µs | sync | P2A | 43.10% | 3.97% |
+| L | C | W | Transparent policy | Explicit policy |
+|---:|---:|---:|---|---|
+| 0/1/10 µs | 2/4/8/32 | 0/10/100/1000 µs | sync | sync |
+| 100 µs | 2/4/8/32 | 0/10/100/1000 µs | P2B | P2B |
+| 1000 µs | 2 | 0/10/100/1000 µs | P2B | P2A |
+| 1000 µs | 4 | 0/10/100 µs | P2B | P2A |
+| 1000 µs | 4 | 1000 µs | P2B | P2B |
+| 1000 µs | 8/32 | 0/10/100/1000 µs | P2B | P2B |
 
-其余 77 个 explicit-policy bucket 选择 sync；transparent-policy 有 78 个 sync 和 2 个
-P2B。完整选择表、makespan winner 对比、适用范围、机器可读文件和后续 boundary
-refinement 见
+完整选择表、单次 load latency 与 workload makespan 的口径、适用范围、机器可读文件和
+后续 boundary refinement 见
+[sync/P2A/P2B 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
+
+### 8.1 Fine-grained formal boundary
+
+screening 与 C/W tracing 使用 3 seeds 覆盖 224 个离散 bucket，从中识别 35 条相邻
+latency winner 翻转，并选择翻转两侧 70 个 endpoint。formal matrix 对每个 endpoint
+执行 sync、P2A demand、P2A lookahead 和 P2B 四条路径、7 个 paired seed，共
+1,960 个 run。n4-910c 完成 952 个，n4-910c1 完成 1,008 个；合并结果为
+`validation.status=pass`、0 invalid、单一 artifact fingerprint、0 formal quarantine。
+
+正式 endpoint 表明当前 QEMU PoC 的 sync/P2B crossing 位于 30--75 µs 之间，L=50 µs
+是依赖 C/W 的混合层。formal boundary 只验证 crossing 两侧的离散点，未覆盖的 bucket
+仍回退 sync。完整表格和 SVG 见
 [sync/P2A/P2B 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
 
 ## 9. Full matrix 的真实状态
@@ -288,5 +312,21 @@ sim-cli obmm-remote-load-policy-merge \
   --seeds 1..7 \
   --output-dir out/obmm-remote-load/policy-coarse-7seed-20260817-r1
 ```
+
+细粒度 screening/tracing 完成后，使用 CLI 从相邻 latency winner flip 生成 formal
+matrix；生成器拒绝覆盖已有输出：
+
+```text
+sim-cli obmm-remote-load-policy-boundary-select \
+  --input <screening-low-c> \
+  --input <screening-high-c> \
+  --input <tracing-low-c> \
+  --input <tracing-high-c> \
+  --output-matrix scenarios/experiments/obmm_remote_load_policy_boundary_formal_v1.yaml \
+  --output-report <selection.json>
+```
+
+formal source 使用相同的 `obmm-remote-load-policy-merge --seeds 1..7` 入口合并，矩阵
+替换为 `obmm_remote_load_policy_boundary_formal_v1.yaml`。
 
 `out/` 是生成物，不提交 Git；本报告只提交可复核的指标、hash、规则和结论边界。

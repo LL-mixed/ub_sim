@@ -58,7 +58,7 @@ Current validation entry points:
 - [plans/2026-08-13-obmm-p3-performance-evaluation.md](plans/2026-08-13-obmm-p3-performance-evaluation.md)
   - audited ABI v2 performance results for 2-node acceptance, 4/8-node scale-out, the completed 2,240-case coarse policy matrix, and the separately paused 4,942-case full matrix
 - [plans/2026-08-17-obmm-runtime-policy-selection.md](plans/2026-08-17-obmm-runtime-policy-selection.md)
-  - formal 7-seed sync/P2A/P2B measured-bucket selection table, strict p99/CPU/gain gates, machine-readable policy outputs, evidence provenance, and boundary-refinement targets
+  - formal QEMU 7-seed sync/P2A/P2B policy, completed 1,960-run fine-grained boundary validation, native Arm64 path-tax calibration, empty-ready-queue sync fast path, L/C/W deployment prior, evidence provenance, and remaining runtime-integration targets
 - [plans/2026-08-17-obmm-p2b-patch-replay-comparison-design.md](plans/2026-08-17-obmm-p2b-patch-replay-comparison-design.md)
   - P2B patch/replay retirement semantics, replay ABI and implementation, exact-once rules, 2-node functional gates, and measured three-seed comparison
 - [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)

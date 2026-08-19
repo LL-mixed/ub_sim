@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .label { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .body { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .small { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .edge { stroke: #475569; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .box { stroke: #64748b; stroke-width: 1.6; rx: 16; ry: 16; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" fill="#f8fafc"/>
+  <text x="700" y="44" text-anchor="middle" class="title">OBMM remote-load：QEMU PoC coarse measured 机制选择趋势</text>
+  <text x="700" y="74" text-anchor="middle" class="subtitle">QEMU P2B tax 70--84 µs/load；收益来自在同一个 core 上覆盖 remote wait</text>
+
+  <path d="M 118 128 L 1278 128" class="edge"/>
+  <text x="700" y="116" text-anchor="middle" class="body">modeled remote latency L 增加</text>
+
+  <rect x="70" y="180" width="280" height="178" class="box" fill="#dcfce7"/>
+  <text x="210" y="216" text-anchor="middle" class="small">L = 0 / 1 / 10 µs</text>
+  <text x="210" y="254" text-anchor="middle" class="label">sync</text>
+  <text x="210" y="288" text-anchor="middle" class="body">可隐藏等待很短</text>
+  <text x="210" y="316" text-anchor="middle" class="body">P2 切换开销无法摊薄</text>
+  <text x="210" y="342" text-anchor="middle" class="small">全部已测 C / W bucket</text>
+
+  <path d="M 350 269 L 420 269" class="edge"/>
+
+  <rect x="420" y="180" width="300" height="178" class="box" fill="#dbeafe"/>
+  <text x="570" y="216" text-anchor="middle" class="small">L = 100 µs</text>
+  <text x="570" y="254" text-anchor="middle" class="label">P2B</text>
+  <text x="570" y="288" text-anchor="middle" class="body">等待窗口足以覆盖 switch</text>
+  <text x="570" y="316" text-anchor="middle" class="body">普通 LDR 路径避免 submit/CQ</text>
+  <text x="570" y="342" text-anchor="middle" class="small">全部已测 C / W bucket</text>
+
+  <path d="M 720 269 L 820 269" class="edge"/>
+  <polygon points="930,170 1040,269 930,368 820,269" fill="#e2e8f0" stroke="#64748b" stroke-width="1.6"/>
+  <text x="930" y="244" text-anchor="middle" class="small">L = 1000 µs</text>
+  <text x="930" y="276" text-anchor="middle" class="label">C / W 是否足够？</text>
+  <text x="930" y="304" text-anchor="middle" class="small">能否持续提供 READY coroutine</text>
+
+  <path d="M 970 206 C 1060 126, 1115 142, 1160 180" class="edge"/>
+  <text x="1068" y="146" text-anchor="middle" class="small">足够</text>
+  <rect x="1120" y="180" width="230" height="178" class="box" fill="#dbeafe"/>
+  <text x="1235" y="216" text-anchor="middle" class="small">高 C，或 W 足够大</text>
+  <text x="1235" y="254" text-anchor="middle" class="label">P2B</text>
+  <text x="1235" y="288" text-anchor="middle" class="body">coroutine 提供足够并行度</text>
+  <text x="1235" y="316" text-anchor="middle" class="body">no-ready 空洞接近消失</text>
+  <text x="1235" y="342" text-anchor="middle" class="small">C=8/32；以及 C=4,W=1000</text>
+
+  <path d="M 970 332 C 1060 424, 1110 430, 1160 412" class="edge"/>
+  <text x="1068" y="425" text-anchor="middle" class="small">不足</text>
+  <rect x="1120" y="400" width="230" height="178" class="box" fill="#fef3c7"/>
+  <text x="1235" y="436" text-anchor="middle" class="small">低 C 且 W 较小</text>
+  <text x="1235" y="474" text-anchor="middle" class="label">P2A</text>
+  <text x="1235" y="508" text-anchor="middle" class="body">lookahead 提前发出请求</text>
+  <text x="1235" y="536" text-anchor="middle" class="body">突破低 C 的并行度限制</text>
+  <text x="1235" y="562" text-anchor="middle" class="small">6 个 lookahead bucket；另有 1 个 demand</text>
+
+  <rect x="70" y="620" width="1280" height="90" class="box" fill="#f1f5f9"/>
+  <text x="95" y="650" class="body">P2B 隐藏能力：由 READY coroutine 数量、每个 coroutine 的 useful compute W，以及每 coroutine 最多一个 pending load 共同决定。</text>
+  <text x="95" y="680" class="body">P2A 隐藏能力：由显式 submit 的 lookahead / inflight 深度决定；其收益需要覆盖 submit、future、CQ 和 cooperative switch 开销。</text>
+  <text x="95" y="702" class="small">QEMU measured 趋势不能直接外推到 native SCC；native 校准见独立三维 prior。</text>
+</svg>

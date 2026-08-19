@@ -1,0 +1,1692 @@
+schema: 1
+name: obmm-remote-load-policy-boundary-formal-v1
+minimums:
+  scalar_operations: 65536
+  range_bytes: 1073741824
+  duration_ms: 2000
+  warmup_scalar_operations: 1000
+  warmup_range_pages: 64
+  formal_seed_count: 7
+  host_noise_threshold_milli: 250
+factors:
+  model_latency_us:
+  - 20
+  - 30
+  - 50
+  - 75
+  - 150
+  - 250
+  - 500
+  - 750
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 8
+  - 12
+  - 16
+  - 24
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  - 10
+  - 30
+  - 100
+  - 300
+  - 1000
+  patterns:
+  - sequential
+cases:
+- id: T0-sync
+  band: scalar
+  mode: sync-mmio
+  access_bytes: 8
+  issue: demand
+  lookahead: 0
+  sweep_lookahead: false
+  extra_vcpus: 0
+- id: T1-p2a-demand
+  band: scalar
+  mode: async-poll
+  access_bytes: 8
+  issue: demand
+  lookahead: 0
+  sweep_lookahead: false
+  extra_vcpus: 0
+- id: T2-p2a-lookahead
+  band: scalar
+  mode: async-poll
+  access_bytes: 8
+  issue: lookahead
+  lookahead: null
+  sweep_lookahead: true
+  extra_vcpus: 0
+- id: T3-p2b-demand
+  band: scalar
+  mode: scheduler-core
+  access_bytes: 8
+  issue: demand
+  lookahead: 0
+  sweep_lookahead: false
+  extra_vcpus: 0
+sweeps:
+- id: formal-boundary-001
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 20
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-002
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 20
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-003
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 20
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-004
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-005
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 3
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-006
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 5
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-007
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 6
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-008
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 12
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-009
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 16
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-010
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 24
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-011
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-012
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-013
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-014
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 30
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-015
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-016
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-017
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-018
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-019
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-020
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-021
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-022
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-023
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 3
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-024
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 5
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-025
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 6
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-026
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 12
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-027
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 16
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-028
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 24
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-029
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-030
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-031
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-032
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-033
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 3
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-034
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 5
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-035
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 6
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-036
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 12
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-037
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 16
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-038
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 24
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 300
+  patterns:
+  - sequential
+- id: formal-boundary-039
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 50
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-040
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-041
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-042
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-043
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-044
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-045
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-046
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-047
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-048
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 3
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-049
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 5
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-050
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 6
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-051
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 12
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-052
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 16
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-053
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 24
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-054
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-055
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 8
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-056
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 75
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 32
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-057
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 150
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-058
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 150
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-059
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 250
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-060
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 250
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-061
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 250
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 3
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-062
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 250
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-063
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 500
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-064
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 500
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-065
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 500
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 3
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 30
+  patterns:
+  - sequential
+- id: formal-boundary-066
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 500
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 100
+  patterns:
+  - sequential
+- id: formal-boundary-067
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 500
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential
+- id: formal-boundary-068
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 750
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 0
+  patterns:
+  - sequential
+- id: formal-boundary-069
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 750
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 4
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 10
+  patterns:
+  - sequential
+- id: formal-boundary-070
+  cases:
+  - T0-sync
+  - T1-p2a-demand
+  - T2-p2a-lookahead
+  - T3-p2b-demand
+  operations: null
+  model_latency_us:
+  - 750
+  jitter_profiles:
+  - none
+  outcomes:
+  - success
+  coroutines:
+  - 2
+  inflight:
+  - 32
+  lookahead:
+  - 16
+  compute_us:
+  - 1000
+  patterns:
+  - sequential

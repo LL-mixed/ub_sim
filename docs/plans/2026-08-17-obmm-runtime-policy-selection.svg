@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="850" viewBox="0 0 1400 850">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
@@ -6,67 +6,97 @@
     <style>
       .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
       .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
-      .label { font: 650 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+      .label { font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
       .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
-      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
-      .edge { stroke: #475569; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
-      .box { stroke: #64748b; stroke-width: 1.5; rx: 14; ry: 14; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .edge { stroke: #475569; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+      .box { stroke: #64748b; stroke-width: 1.5; }
+      .decision { fill: #e2e8f0; }
+      .sync { fill: #dcfce7; stroke: #16a34a; }
+      .p2a { fill: #fef3c7; stroke: #d97706; }
+      .p2b { fill: #dbeafe; stroke: #2563eb; }
+      .candidate { fill: #eef2ff; stroke: #6366f1; }
+      .warning { fill: #fee2e2; stroke: #dc2626; }
     </style>
   </defs>
 
-  <rect width="1200" height="720" fill="#f8fafc"/>
-  <text x="600" y="44" text-anchor="middle" class="title">OBMM remote-load 严格运行时选择</text>
-  <text x="600" y="72" text-anchor="middle" class="subtitle">2-node · 8-byte sequential · no jitter · 7 seeds · 2240/2240 pass</text>
+  <rect width="1400" height="850" fill="#f8fafc"/>
+  <text x="700" y="42" text-anchor="middle" class="title">OBMM remote-load：work-conserving 运行时选择</text>
+  <text x="700" y="70" text-anchor="middle" class="subtitle">固定 guest-vCPU · exact bucket lookup · coarse 2,240/2,240 + formal boundary 1,960/1,960 pass</text>
 
-  <rect x="410" y="100" width="380" height="72" class="box" fill="#e2e8f0"/>
-  <text x="600" y="130" text-anchor="middle" class="label">是否命中完整 measured bucket？</text>
-  <text x="600" y="154" text-anchor="middle" class="small">L / W / C / pattern / jitter / interface</text>
+  <rect x="510" y="94" width="380" height="68" rx="13" class="box decision"/>
+  <text x="700" y="122" text-anchor="middle" class="label">是否命中完整 measured bucket？</text>
+  <text x="700" y="146" text-anchor="middle" class="small">topology / L / W / C / pattern / jitter / access / interface</text>
 
-  <path d="M 410 136 L 210 136 L 210 220" class="edge"/>
-  <text x="305" y="126" text-anchor="middle" class="small">否</text>
-  <rect x="55" y="220" width="310" height="82" class="box" fill="#dcfce7"/>
-  <text x="210" y="253" text-anchor="middle" class="label">sync</text>
-  <text x="210" y="278" text-anchor="middle" class="body">未知区域 fail closed</text>
+  <path d="M 510 128 L 250 128 L 250 194" class="edge"/>
+  <text x="380" y="118" text-anchor="middle" class="small">否</text>
+  <rect x="85" y="194" width="330" height="76" rx="13" class="box sync"/>
+  <text x="250" y="225" text-anchor="middle" class="label">sync</text>
+  <text x="250" y="250" text-anchor="middle" class="body">未测 bucket fail closed</text>
 
-  <path d="M 600 172 L 600 220" class="edge"/>
-  <text x="616" y="202" class="small">是</text>
-  <rect x="410" y="220" width="380" height="72" class="box" fill="#e2e8f0"/>
-  <text x="600" y="251" text-anchor="middle" class="label">L = 1000 µs 且 C = 2？</text>
-  <text x="600" y="275" text-anchor="middle" class="small">其余已测 bucket 未通过严格 SLO gate</text>
+  <path d="M 700 162 L 700 194" class="edge"/>
+  <text x="718" y="183" class="small">是</text>
+  <rect x="510" y="194" width="380" height="76" rx="13" class="box decision"/>
+  <text x="700" y="225" text-anchor="middle" class="label">证据与资源包络通过？</text>
+  <text x="700" y="250" text-anchor="middle" class="small">7 paired seeds · same extra_vcpus · correctness / failure / drain</text>
 
-  <path d="M 790 256 L 990 256 L 990 334" class="edge"/>
-  <text x="892" y="246" text-anchor="middle" class="small">否</text>
-  <rect x="835" y="334" width="310" height="82" class="box" fill="#dcfce7"/>
-  <text x="990" y="367" text-anchor="middle" class="label">sync</text>
-  <text x="990" y="392" text-anchor="middle" class="body">p99 / CPU / gain gate 拒绝</text>
+  <path d="M 510 232 L 450 232 L 450 314 L 415 314" class="edge"/>
+  <text x="470" y="221" text-anchor="middle" class="small">否</text>
+  <rect x="85" y="278" width="330" height="76" rx="13" class="box sync"/>
+  <text x="250" y="309" text-anchor="middle" class="label">sync</text>
+  <text x="250" y="334" text-anchor="middle" class="body">artifact、gate 或 drain 异常</text>
 
-  <path d="M 600 292 L 600 340" class="edge"/>
-  <text x="616" y="322" class="small">是</text>
-  <rect x="410" y="340" width="380" height="72" class="box" fill="#e2e8f0"/>
-  <text x="600" y="383" text-anchor="middle" class="label">Useful compute W</text>
+  <path d="M 700 270 L 700 302" class="edge"/>
+  <text x="718" y="291" class="small">是</text>
+  <rect x="510" y="302" width="380" height="76" rx="13" class="box decision"/>
+  <text x="700" y="333" text-anchor="middle" class="label">runnable_count = 0？</text>
+  <text x="700" y="358" text-anchor="middle" class="small">动态 override 先于静态 L/C/W policy</text>
 
-  <path d="M 490 412 L 250 478" class="edge"/>
-  <text x="358" y="438" text-anchor="middle" class="small">0 / 10 µs</text>
-  <rect x="95" y="478" width="310" height="104" class="box" fill="#dbeafe"/>
-  <text x="250" y="514" text-anchor="middle" class="label">P2B</text>
-  <text x="250" y="540" text-anchor="middle" class="body">transparent + explicit</text>
-  <text x="250" y="564" text-anchor="middle" class="small">makespan -48.9%，p99 +2.1~2.4%</text>
+  <path d="M 510 340 L 450 340 L 450 414 L 415 414" class="edge"/>
+  <text x="470" y="329" text-anchor="middle" class="small">是</text>
+  <rect x="85" y="378" width="330" height="76" rx="13" class="box sync"/>
+  <text x="250" y="409" text-anchor="middle" class="label">sync fast path</text>
+  <text x="250" y="434" text-anchor="middle" class="body">跳过普通 P2B save / scan / switch</text>
 
-  <path d="M 600 412 L 600 478" class="edge"/>
-  <text x="618" y="449" class="small">100 µs</text>
-  <rect x="445" y="478" width="310" height="104" class="box" fill="#dcfce7"/>
-  <text x="600" y="514" text-anchor="middle" class="label">sync</text>
-  <text x="600" y="540" text-anchor="middle" class="body">transparent + explicit</text>
-  <text x="600" y="564" text-anchor="middle" class="small">异步 p99 regression 超预算</text>
+  <path d="M 700 378 L 700 412" class="edge"/>
+  <text x="718" y="399" class="small">否</text>
+  <rect x="510" y="412" width="380" height="70" rx="13" class="box decision"/>
+  <text x="700" y="454" text-anchor="middle" class="label">应用是否声明显式 submit / await？</text>
 
-  <path d="M 710 412 L 950 478" class="edge"/>
-  <text x="842" y="438" text-anchor="middle" class="small">1000 µs</text>
-  <rect x="795" y="478" width="310" height="104" class="box" fill="#fef3c7"/>
-  <text x="950" y="514" text-anchor="middle" class="label">P2A（仅 explicit）</text>
-  <text x="950" y="540" text-anchor="middle" class="body">transparent 继续 sync</text>
-  <text x="950" y="564" text-anchor="middle" class="small">makespan -43.1%，CPU -43.1%</text>
+  <path d="M 620 482 L 425 536" class="edge"/>
+  <text x="515" y="496" text-anchor="middle" class="small">否：普通 LDR</text>
+  <rect x="210" y="536" width="430" height="82" rx="13" class="box candidate"/>
+  <text x="425" y="568" text-anchor="middle" class="label">Transparent candidate set</text>
+  <text x="425" y="594" text-anchor="middle" class="body">sync + P2B</text>
 
-  <rect x="55" y="626" width="1090" height="58" class="box" fill="#f1f5f9"/>
-  <text x="80" y="650" class="small">默认门槛：gain ≥10% · paired CI low ≥5% · p99 regression ≤5% · CPU tax ≤25%</text>
-  <text x="80" y="672" class="small">切换粒度：mapping/session quiescent point；未测 bucket、异常健康状态或 pending 未清空时选择 sync</text>
+  <path d="M 780 482 L 975 536" class="edge"/>
+  <text x="885" y="496" text-anchor="middle" class="small">是</text>
+  <rect x="760" y="536" width="430" height="82" rx="13" class="box candidate"/>
+  <text x="975" y="568" text-anchor="middle" class="label">Explicit candidate set</text>
+  <text x="975" y="594" text-anchor="middle" class="body">sync + P2A demand/lookahead + P2B</text>
+
+  <path d="M 425 618 L 575 666" class="edge"/>
+  <path d="M 975 618 L 825 666" class="edge"/>
+  <rect x="510" y="654" width="380" height="82" rx="13" class="box decision"/>
+  <text x="700" y="685" text-anchor="middle" class="label">候选相对 sync 是否达到发布阈值？</text>
+  <text x="700" y="710" text-anchor="middle" class="small">median makespan gain ≥10% · paired CI95 low ≥5%</text>
+
+  <path d="M 510 695 L 400 760" class="edge"/>
+  <text x="458" y="720" text-anchor="middle" class="small">无候选通过</text>
+  <rect x="170" y="756" width="300" height="70" rx="13" class="box sync"/>
+  <text x="320" y="786" text-anchor="middle" class="label">sync</text>
+  <text x="320" y="810" text-anchor="middle" class="small">包含 3 个 measured-fastest=P2B 回退点</text>
+
+  <path d="M 890 695 L 1000 760" class="edge"/>
+  <text x="950" y="720" text-anchor="middle" class="small">至少一个通过</text>
+  <rect x="930" y="756" width="300" height="70" rx="13" class="box p2b"/>
+  <text x="1080" y="786" text-anchor="middle" class="label">选择 eligible 中 makespan 最短路径</text>
+  <text x="1080" y="810" text-anchor="middle" class="small">P2A 只会出现在 explicit surface</text>
+
+  <rect x="1030" y="94" width="320" height="156" rx="13" class="box warning"/>
+  <text x="1190" y="124" text-anchor="middle" class="label">读取边界</text>
+  <text x="1052" y="153" class="body">• load p99 仅作观测</text>
+  <text x="1052" y="178" class="body">• 不在相邻 bucket 之间插值</text>
+  <text x="1052" y="203" class="body">• 只在 quiescent point 切换</text>
+  <text x="1052" y="228" class="body">• runtime loader 尚待实现与验收</text>
 </svg>
