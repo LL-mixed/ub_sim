@@ -42,6 +42,8 @@
 #include "../../kernel_ub/include/uapi/ub/obmm.h"
 #include "../../kernel_ub/include/uapi/ub/gsva.h"
 
+#include <libobmm.h>
+
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
@@ -470,20 +472,20 @@ static void OBMM_MAYBE_UNUSED obmm_unmap_region(struct obmm_helpers_region *regi
 static int OBMM_MAYBE_UNUSED obmm_do_export(int obmm_fd, struct obmm_helpers_meta *meta,
                           uint64_t export_size)
 {
-    struct obmm_cmd_export cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.length = 1;
-    cmd.size[0] = export_size;
-    cmd.flags = OBMM_EXPORT_FLAG_ALLOW_MMAP;
-    cmd.pxm_numa = 0;
-    if (ioctl(obmm_fd, OBMM_CMD_EXPORT, &cmd) != 0) {
-        fprintf(stderr, "[obmm] export failed: %s\n", strerror(errno));
+    size_t length[OBMM_MAX_LOCAL_NUMA_NODES] = {0};
+    struct obmm_mem_desc desc;
+    mem_id id;
+
+    (void)obmm_fd;
+    memset(&desc, 0, sizeof(desc));
+    length[0] = (size_t)export_size;
+    id = obmm_export(length, OBMM_EXPORT_FLAG_ALLOW_MMAP, &desc);
+    if (id == OBMM_INVALID_MEMID)
         return -1;
-    }
-    meta->export_mem_id = cmd.mem_id;
-    meta->remote_uba = cmd.uba;
+    meta->export_mem_id = (uint64_t)id;
+    meta->remote_uba = desc.addr;
     meta->size = export_size;
-    meta->token_id = cmd.tokenid;
+    meta->token_id = desc.tokenid;
     return 0;
 }
 
@@ -512,47 +514,43 @@ static int OBMM_MAYBE_UNUSED obmm_do_export_fixed_uba(
 
 static int OBMM_MAYBE_UNUSED obmm_do_unexport(int obmm_fd, uint64_t mem_id)
 {
-    struct obmm_cmd_unexport cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.mem_id = mem_id;
-    if (ioctl(obmm_fd, OBMM_CMD_UNEXPORT, &cmd) != 0)
-        return -1;
-    return 0;
+    (void)obmm_fd;
+    return obmm_unexport(mem_id, 0);
 }
-
-struct obmm_sim_dec_import_priv {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t len;
-    uint64_t remote_uba;
-    uint32_t token_value;
-    uint32_t flags;
-};
 
 static int OBMM_MAYBE_UNUSED obmm_do_import(int obmm_fd, const struct obmm_helpers_meta *meta,
                           uint32_t local_cna, uint64_t local_pa,
                           uint32_t token_value, uint64_t *import_mem_id)
 {
     struct obmm_sim_dec_import_priv_v1 priv;
-    struct obmm_cmd_import cmd;
+    struct obmm_mem_desc *desc;
+    int numa = 0;
+    mem_id id;
+
+    (void)obmm_fd;
     memset(&priv, 0, sizeof(priv));
     priv.magic = OBMM_SIM_DEC_PRIV_MAGIC;
     priv.version = OBMM_SIM_DEC_PRIV_VER_1;
     priv.len = sizeof(priv);
     priv.remote_uba = meta->remote_uba;
     priv.token_value = token_value;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.flags = OBMM_IMPORT_FLAG_ALLOW_MMAP;
-    cmd.addr = local_pa;
-    cmd.length = meta->size;
-    cmd.tokenid = meta->token_id;
-    cmd.scna = local_cna;
-    cmd.dcna = meta->export_cna;
-    cmd.priv_len = sizeof(priv);
-    cmd.priv = &priv;
-    if (ioctl(obmm_fd, OBMM_CMD_IMPORT, &cmd) != 0)
+
+    desc = calloc(1, sizeof(*desc) + sizeof(priv));
+    if (!desc)
         return -1;
-    *import_mem_id = cmd.mem_id;
+    desc->addr = local_pa;
+    desc->length = meta->size;
+    desc->tokenid = meta->token_id;
+    desc->scna = local_cna;
+    desc->dcna = meta->export_cna;
+    desc->priv_len = sizeof(priv);
+    memcpy(desc->priv, &priv, sizeof(priv));
+
+    id = obmm_import(desc, OBMM_IMPORT_FLAG_ALLOW_MMAP, 0, &numa);
+    free(desc);
+    if (id == OBMM_INVALID_MEMID)
+        return -1;
+    *import_mem_id = (uint64_t)id;
     return 0;
 }
 
@@ -568,9 +566,10 @@ static int obmm_do_import_v2_epoch(int obmm_fd,
                             uint64_t pte_offset, uint64_t *import_mem_id)
 {
     struct obmm_sim_dec_import_priv_v2 priv = {0};
-    struct obmm_cmd_import cmd;
+    struct obmm_mem_desc *desc;
+    int numa = 0;
+    mem_id id;
 
-    memset(&cmd, 0, sizeof(cmd));
     priv.magic = OBMM_SIM_DEC_PRIV_MAGIC;
     priv.version = OBMM_SIM_DEC_PRIV_VER_2;
     priv.len = sizeof(priv);
@@ -591,19 +590,23 @@ static int obmm_do_import_v2_epoch(int obmm_fd,
     priv.segment_id = gva_id;
     priv.epoch = epoch;
 
-    cmd.flags = OBMM_IMPORT_FLAG_ALLOW_MMAP;
-    cmd.addr = local_pa;
-    cmd.length = meta->size;
-    cmd.tokenid = meta->token_id;
-    cmd.scna = local_cna;
-    cmd.dcna = meta->export_cna;
-    cmd.priv_len = sizeof(priv);
-    cmd.priv = &priv;
-
-    if (ioctl(obmm_fd, OBMM_CMD_IMPORT, &cmd) != 0) {
+    (void)obmm_fd;
+    desc = calloc(1, sizeof(*desc) + sizeof(priv));
+    if (!desc)
         return -1;
-    }
-    *import_mem_id = cmd.mem_id;
+    desc->addr = local_pa;
+    desc->length = meta->size;
+    desc->tokenid = meta->token_id;
+    desc->scna = local_cna;
+    desc->dcna = meta->export_cna;
+    desc->priv_len = sizeof(priv);
+    memcpy(desc->priv, &priv, sizeof(priv));
+
+    id = obmm_import(desc, OBMM_IMPORT_FLAG_ALLOW_MMAP, 0, &numa);
+    free(desc);
+    if (id == OBMM_INVALID_MEMID)
+        return -1;
+    *import_mem_id = (uint64_t)id;
     return 0;
 }
 
@@ -725,12 +728,8 @@ static int OBMM_MAYBE_UNUSED obmm_bootstrap_lookup(int obmm_fd, uint32_t local_c
 
 static int OBMM_MAYBE_UNUSED obmm_do_unimport(int obmm_fd, uint64_t mem_id)
 {
-    struct obmm_cmd_unimport cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.mem_id = mem_id;
-    if (ioctl(obmm_fd, OBMM_CMD_UNIMPORT, &cmd) != 0)
-        return -1;
-    return 0;
+    (void)obmm_fd;
+    return obmm_unimport(mem_id, 0);
 }
 
 /* ------------------------------------------------------------------ */
