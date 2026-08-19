@@ -32,3 +32,8 @@
 	path = mem_service
 	url = https://github.com/LL-mixed/mem_service
 	branch = master
+[submodule "vendor/obmm"]
+	path = vendor/obmm
+	url = https://atomgit.com/openeuler/obmm.git
+	branch = master
+	ignore = all
