@@ -107,7 +107,8 @@ SSD_GSVA_TEST_BIN="$OUT_DIR/ssd_gsva_test"
 # libobmm lives in the ub_sim-level vendor/obmm submodule; apps including
 # common/obmm_common.h need its headers plus the sim vendor adaptor sources.
 OBMM_SUBMODULE_DIR="$ROOT_DIR/../../vendor/obmm"
-LIBOBMM_CFLAGS="-D__EXPORTED_HEADERS__ -I$OBMM_SUBMODULE_DIR/src/libobmm -I$ROOT_DIR/../kernel_ub/include/uapi -I$ROOT_DIR/../kernel_ub/include"
+KERNEL_UAPI_DIR="${KERNEL_UAPI_DIR:-$OUT_DIR/kernel_uapi/include}"
+LIBOBMM_CFLAGS="-D__EXPORTED_HEADERS__ -I$OBMM_SUBMODULE_DIR/src/libobmm -I$KERNEL_UAPI_DIR"
 LIBOBMM_SRCS="$OBMM_SUBMODULE_DIR/src/libobmm/libobmm.c $ROOT_DIR/common/obmm_vendor_adaptor_sim.c"
 MEM_SERVICE_CLI_SRC="$MEM_SERVICE_ROOT/apps/mem_service/mem_service.c"
 LLM_INFER_APP_SRC="$ROOT_DIR/apps/llm_infer/llm_infer.c"
@@ -587,6 +588,12 @@ if [[ -z "$AARCH64_LINUX_CC" ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
+
+if [[ ! -f "$KERNEL_UAPI_DIR/ub/obmm.h" ]]; then
+  echo "[build_initramfs] missing installed kernel UAPI: $KERNEL_UAPI_DIR" >&2
+  echo "[build_initramfs] run scripts/build_guest_artifacts.sh first" >&2
+  exit 1
+fi
 
 if (( W5_GUEST_LINK_ONLY )); then
   build_w5_guest_link_check

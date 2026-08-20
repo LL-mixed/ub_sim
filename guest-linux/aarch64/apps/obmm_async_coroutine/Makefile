@@ -1,7 +1,7 @@
 CC = aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -Werror -static
 ROOT := ../..
-KERNEL_UAPI := ../../../kernel_ub/include/uapi
+KERNEL_UAPI ?= $(ROOT)/out/kernel_uapi/include
 OBMM_SUBMODULE_DIR := ../../../../vendor/obmm
 ASYNC_LIB_DIR := $(ROOT)/libs/obmm_async
 COROUTINE_SCHEDULER_LIB_DIR := $(ROOT)/libs/obmm_coroutine_scheduler

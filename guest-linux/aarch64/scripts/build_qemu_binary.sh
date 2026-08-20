@@ -21,7 +21,11 @@ SRC_DIR="$(qemu_ub_source_path "$REPO_ROOT")"
 BUILD_DIR="$(qemu_ub_build_path "$REPO_ROOT")"
 BIN="$(qemu_ub_bin_path "$REPO_ROOT")"
 TARGET_LIST="${QEMU_TARGET_LIST:-aarch64-softmmu}"
-JOBS="${QEMU_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
+DEFAULT_QEMU_BUILD_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
+if (( DEFAULT_QEMU_BUILD_JOBS > 32 )); then
+  DEFAULT_QEMU_BUILD_JOBS=32
+fi
+JOBS="${QEMU_BUILD_JOBS:-$DEFAULT_QEMU_BUILD_JOBS}"
 CONFIGURE_ARGS="${QEMU_CONFIGURE_ARGS:---disable-werror}"
 RECONFIGURE="${RECONFIGURE:-0}"
 STAMP_FILE="$BUILD_DIR/.qemu_build.stamp"
@@ -497,6 +501,7 @@ if [[ "$RECONFIGURE" != "1" && -x "$BIN" ]] &&
    qemu_build_stamp_matches &&
    ! staticlib_newer_than_qemu_binary &&
    qemu_ub_supports_required_opts "$BIN" &&
+   (( BUILD_OBMM_TESTS == 0 )) &&
    (( TEST_TARGETS_READY == 1 )); then
   echo "[build_qemu_binary] using existing QEMU binary: $BIN" >&2
   echo "$BIN"

@@ -20438,6 +20438,12 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         assert!(qwen3_guest_w5_pass_marker_present(
             "eight-node w5 inference cluster validation passed\n"
         ));
+        assert!(qwen3_guest_w5_pass_marker_present(
+            "[w4guest8] PASS: W5 inference cluster nodes=8 profile=qwen3_0_6b_decode\n"
+        ));
+        assert!(qwen3_guest_w5_pass_marker_present(
+            "8-node W5 inference cluster validation passed\n"
+        ));
         assert!(!qwen3_guest_w5_pass_marker_present(
             "[w4guest8] PASS: eight-node w4 guest resource-backed uapi/chipbackend service coverage validated\n"
         ));
@@ -33030,10 +33036,14 @@ fn w5_memory_boundary_observations_recorded_line(
 }
 
 fn qwen3_guest_w5_pass_marker_present(log: &str) -> bool {
-    log.contains("w5 inference cluster validation passed")
-        || log.contains("PASS: W5 inference cluster")
-        || log.contains("eight-node w5 inference cluster validation passed")
-        || log.contains("PASS: eight-node w5 inference cluster")
+    let normalized = log.to_ascii_lowercase();
+
+    normalized.contains("w5 inference cluster validation passed")
+        || normalized.contains("eight-node w5 inference cluster validation passed")
+        || normalized.contains("8-node w5 inference cluster validation passed")
+        || normalized.contains("pass: w5 inference cluster")
+        || normalized.contains("pass: eight-node w5 inference cluster")
+        || normalized.contains("pass: w5 inference cluster nodes=8")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

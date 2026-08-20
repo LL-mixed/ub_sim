@@ -172,6 +172,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             env = {
                 **os.environ,
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
             }
 
@@ -254,6 +255,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             env = {
                 **os.environ,
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
             }
 
@@ -313,6 +315,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             env = {
                 **os.environ,
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
             }
 
@@ -378,6 +381,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             env = {
                 **os.environ,
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
             }
 

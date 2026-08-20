@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -133,6 +133,12 @@ if ! command -v zsh >/dev/null 2>&1; then
 fi
 
 ./guest-linux/aarch64/scripts/prepare_w5_container_deps.sh
+
+git config --global --add safe.directory /work
+git config --file /work/.gitmodules --get-regexp path |
+while read -r _ submodule_path; do
+  git config --global --add safe.directory "/work/$submodule_path"
+done
 
 if [[ -f guest-linux/aarch64/out/Image && -f guest-linux/aarch64/out/initramfs.cpio.gz ]]; then
   export UB_SYNC_ARTIFACTS="${UB_SYNC_ARTIFACTS:-0}"

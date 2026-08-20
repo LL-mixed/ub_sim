@@ -372,9 +372,19 @@ detect_w5_aarch64_linux_cc() {
   emulate -L zsh
   setopt null_glob
   local cc
+  local native_cc
+  local native_target
   if [[ -n "${AARCH64_LINUX_CC:-}" ]]; then
     echo "$AARCH64_LINUX_CC"
     return 0
+  fi
+  native_cc="$(command -v gcc 2>/dev/null || true)"
+  if [[ -n "$native_cc" ]]; then
+    native_target="$($native_cc -dumpmachine 2>/dev/null || true)"
+    if [[ "$native_target" == aarch64* ]]; then
+      echo "$native_cc"
+      return 0
+    fi
   fi
   for cc in aarch64-*-gnu-gcc /usr/bin/aarch64-*-gnu-gcc /opt/homebrew/bin/aarch64-*-gnu-gcc /opt/local/bin/aarch64-*-gnu-gcc; do
     if command -v "$cc" >/dev/null 2>&1; then

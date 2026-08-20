@@ -47,6 +47,9 @@ APP_VALIDATION_COMMANDS = {
         "scripts/run_ub_dual_node_obmm_import_stress.sh",
         "scripts/run_ub_eight_node_obmm_import_stress.sh",
     ],
+    "obmm_async_coroutine": [
+        "scripts/run_ub_dual_node_apps.sh --app obmm_async_coroutine",
+    ],
     "obmm_gsva": [
         "scripts/run_ub_dual_node_obmm_gsva.sh",
         "scripts/run_ub_eight_node_obmm_gsva_matrix.sh",
@@ -169,9 +172,12 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     assert helper.exists()
     assert helper.stat().st_mode & 0o111
     assert container_entry.exists()
+    assert container_entry.read_text().startswith("#!/usr/bin/env bash\n")
     assert container_entry.stat().st_mode & 0o111
     container_entry_text = container_entry.read_text()
     assert "prepare_w5_container_deps.sh" in container_entry_text
+    assert "git config --global --add safe.directory /work" in container_entry_text
+    assert 'safe.directory "/work/$submodule_path"' in container_entry_text
     assert 'export UB_SYNC_ARTIFACTS="${UB_SYNC_ARTIFACTS:-0}"' in container_entry_text
     assert "/Volumes/repos/qwen3_mlx_run:/Volumes/repos/qwen3_mlx_run:ro" in container_entry_text
     assert macos_env.exists()
@@ -208,8 +214,13 @@ def test_w5_container_dependency_helper_is_documented_and_dry_runnable():
     )
 
     assert "python3 -m pip install distlib" in result.stdout
+    assert "bison" in result.stdout
     assert "cpio" in result.stdout
+    assert "flex" in result.stdout
+    assert "libelf" in result.stdout
     assert "liburing" in result.stdout
+    assert "openssl" in result.stdout
+    assert "rsync" in result.stdout
     assert (
         "dnf install -y" in result.stdout
         or "yum install -y" in result.stdout
@@ -243,7 +254,7 @@ def test_qemu_common_delegates_qemu_freshness_to_build_helper():
     launcher = (ROOT / "scripts" / "launch_ub_eight_node_headless.sh").read_text()
     w5_runner = (ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh").read_text()
 
-    build = 'QEMU_BUILD_JOBS="$jobs" ./scripts/build_qemu_binary.sh >/dev/null'
+    build = 'QEMU_BUILD_JOBS="$jobs" zsh ./scripts/build_qemu_binary.sh >/dev/null'
     assert build in common
     assert 'if [[ -x "$bin" ]] && qemu_ub_supports_required_opts "$bin"; then' not in common
     assert 'if ! QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"; then' in launcher
@@ -269,15 +280,19 @@ def test_qemu_build_helper_uses_recorded_macos_qemu_configure_profile():
     assert "brew install pkgconf" not in builder
     assert "write_macos_pkg_config_shim" in builder
     assert "using in-tree pkg-config shim for Homebrew .pc files" in builder
-    assert "liburing" not in builder
+    assert "pkg-config --exists liburing" in builder
+    assert '"--disable-linux-io-uring"' in builder
+    assert builder.index("Linux)") < builder.index("pkg-config --exists liburing")
     assert "--enable-fdt=system" not in builder
-    assert "--disable-linux-io-uring" not in builder
     assert "setup_macos_build_env" not in builder
     assert "--disable-docs" in builder
     assert "--disable-zstd" in builder
     assert "--extra-ldflags=$SIM_QEMU_STATICLIB" in builder
     assert builder.index(reuse_guard) < builder.index(configure)
-    if config_status.exists():
+    if (
+        config_status.exists()
+        and subprocess.check_output(["uname", "-s"], text=True).strip() == "Darwin"
+    ):
         config_status_text = config_status.read_text()
         for flag in [
             "--target-list=aarch64-softmmu",
@@ -1555,10 +1570,37 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_CLI_SRC="$MEM_SERVICE_ROOT/apps/mem_service/mem_service.c"' in build_script
     assert 'MEM_SERVICE_CLI_BIN="$OUT_DIR/linqu_mem_service"' in build_script
     assert 'MEM_SERVICE_QWEN3_CLI_BIN="$OUT_DIR/linqu_mem_service_qwen3"' in build_script
-    assert '"$LLM_INFER_APP_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
+    llm_infer_link = next(
+        line
+        for line in build_script.splitlines()
+        if line.endswith('-o "$LLM_INFER_APP_BIN"')
+    )
+    for source in (
+        '"$LLM_INFER_APP_SRC"',
+        '"$MEM_SERVICE_SRC"',
+        '"$MEM_SERVICE_PROVIDER_SRC"',
+        '"$MEM_SERVICE_OBMM_OBJECTS_SRC"',
+        '"$LLM_INFER_SRC"',
+    ):
+        assert source in llm_infer_link
+    assert "${=LIBOBMM_CFLAGS} ${=LIBOBMM_SRCS}" in llm_infer_link
     assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
     assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in build_script
-    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_SRC" "$MEM_SERVICE_CLUSTER_UTILS_SRC" "$MEM_SERVICE_CLUSTER_PAYLOAD_SRC" "$MEM_SERVICE_CLUSTER_READ_SRC" "$MEM_SERVICE_CLUSTER_RUNTIME_SRC" "$MEM_SERVICE_CLUSTER_QUEUE_SRC" "$MEM_SERVICE_CLUSTER_OBSERVE_SRC" "$MEM_SERVICE_OBMM_OBJECT_FLOW_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_OBMM_OBJECTS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" "$MEM_SERVICE_PROFILE_SRC" "$MEM_SERVICE_DEEPSEEK_V4_FLASH_SRC" "$MEM_SERVICE_EXPERT_ROUTE_FLOW_SRC" "$MEM_SERVICE_EXPERT_CACHE_SRC" "$MEM_SERVICE_QWEN3_RECORDS_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_SRC" "$MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC" "$MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC" "$MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC" "$MEM_SERVICE_QWEN3_SRC" "$LLM_INFER_SRC" -lm -o "$MEM_SERVICE_QWEN3_CLI_BIN"' in build_script
+    mem_service_qwen3_link = next(
+        line
+        for line in build_script.splitlines()
+        if line.endswith('-o "$MEM_SERVICE_QWEN3_CLI_BIN"')
+    )
+    for source in (
+        '"$MEM_SERVICE_CLI_SRC"',
+        '"$MEM_SERVICE_SRC"',
+        '"$MEM_SERVICE_DAEMON_SRC"',
+        '"$MEM_SERVICE_PROVIDER_SRC"',
+        '"$MEM_SERVICE_OBMM_OBJECTS_SRC"',
+        '"$LLM_INFER_SRC"',
+    ):
+        assert source in mem_service_qwen3_link
+    assert "${=LIBOBMM_CFLAGS} ${=LIBOBMM_SRCS}" in mem_service_qwen3_link
     assert "Components do not install guest binaries directly" in components_readme
     assert "standalone demo" not in readme
     assert "linqu_mem_service" in build_script
@@ -1808,11 +1850,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^payload_provider_roce_libs=-lrdmacm -libverbs$" in verifier
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$" in app_makefile
-    assert "^admin_output_schema_checksum=0xef4c77f8$$" in app_makefile
+    assert "^admin_output_schema_checksum=0x4f63a749$$" in app_makefile
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0xcd341bd9$$" in app_makefile
+    assert "^package_manifest_checksum=0xc8513ae1$$" in app_makefile
     assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host checkpoint-retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host payload-gc-fixtures" in app_makefile
@@ -1849,7 +1891,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
         in app_makefile
     )
     assert "^package_gate=package-fixtures$$" in app_makefile
-    assert "^upgrade_rollback_policy_checksum=0x096e86d0$$" in app_makefile
+    assert "^upgrade_rollback_policy_checksum=0x74c57a78$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
     assert "^compat_runtime_gate=compat-runtime-fixtures$$" in app_makefile
     assert "^serving_fail_closed_matrix=certified$$" in app_makefile
@@ -1896,16 +1938,16 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^rpm_package=not-certified$$" in app_makefile
     assert "^client_retry_policy=explicit-max-attempts-backoff$$" in app_makefile
     assert "^api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt$$" in app_makefile
-    assert "^api_abi_policy_checksum=0xd0cc1392$$" in app_makefile
+    assert "^api_abi_policy_checksum=0x5e460a87$$" in app_makefile
     assert "^client_api_version=1$$" in app_makefile
     assert "^client_abi_version=1$$" in app_makefile
     assert "^client_record_abi_size=808$$" in app_makefile
     assert "^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$" in app_makefile
-    assert "^compat_matrix_checksum=0xe6d3e50c$$" in app_makefile
+    assert "^compat_matrix_checksum=0x71077a46$$" in app_makefile
     assert "^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$" in app_makefile
-    assert "^compat_baseline_checksum=0xb93a31bc$$" in app_makefile
+    assert "^compat_baseline_checksum=0x30539fd6$$" in app_makefile
     assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
-    assert "^compat_old_new_matrix_checksum=0xbc0e044d$$" in app_makefile
+    assert "^compat_old_new_matrix_checksum=0x2bcca939$$" in app_makefile
     assert "^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$" in app_makefile
     assert "^host_daemon_artifact_smoke=host-artifact-smoke$$" in app_makefile
     assert "^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$" in app_makefile
@@ -2030,11 +2072,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "collector_metric_value_at_least" in app_source
     assert "run_deployment_fixture_check" in app_source
     assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1979U" in app_source
-    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0xe6d3e50cU" in app_source
+    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x71077a46U" in app_source
     assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1252U" in app_source
-    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xb93a31bcU" in app_source
+    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0x30539fd6U" in app_source
     assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1734U" in app_source
-    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0xbc0e044dU" in app_source
+    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x2bcca939U" in app_source
     assert 'strcmp(argv[1], "compat-runtime-fixtures")' in app_source
     assert "mem_service_run_compat_runtime_fixture_check" in app_source
     assert 'strcmp(argv[1], "serving-fail-closed-fixtures")' in app_source
@@ -2055,16 +2097,16 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_tcp_payload_fixture_source" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 12456U" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x14a081c9U" in app_source
-    assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 856U" in app_source
-    assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0xd0cc1392U" in app_source
-    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 6925U" in app_source
-    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0xef4c77f8U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 12788U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xb1f00fc6U" in app_source
+    assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 1025U" in app_source
+    assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5e460a87U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 7055U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x4f63a749U" in app_source
     assert "render_admin_output_schema" in app_source
     assert "run_admin_output_fixture_check" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2143U" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x096e86d0U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2144U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x74c57a78U" in app_source
     assert "render_upgrade_rollback_policy" in app_source
     assert "run_upgrade_rollback_fixture_check" in app_source
     assert "mem_service_run_upgrade_rollback_runtime_fixture_check" in app_source
@@ -2088,7 +2130,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
     assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9703U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xcd341bd9U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xc8513ae1U" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -2166,7 +2208,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0xcd341bd9" in release_manifest
+    assert "package_manifest_checksum=0xc8513ae1" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -2298,11 +2340,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
     assert "admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt" in release_manifest
-    assert "admin_output_schema_checksum=0xef4c77f8" in release_manifest
+    assert "admin_output_schema_checksum=0x4f63a749" in release_manifest
     assert "admin_output_format=text-kv" in release_manifest
     assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0x096e86d0" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0x74c57a78" in release_manifest
     assert "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures" in release_manifest
     assert "compat_runtime_gate=compat-runtime-fixtures" in release_manifest
     assert "serving_fail_closed_matrix=certified" in release_manifest
@@ -2321,16 +2363,16 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "alert_rules_gate=alert-fixtures" in release_manifest
     assert "alert_integration_smoke=alert-integration-fixtures" in release_manifest
     assert "api_abi_policy=share/lingqu/mem_service/api-abi-policy.txt" in release_manifest
-    assert "api_abi_policy_checksum=0xd0cc1392" in release_manifest
+    assert "api_abi_policy_checksum=0x5e460a87" in release_manifest
     assert "client_api_version=1" in release_manifest
     assert "client_abi_version=1" in release_manifest
     assert "client_record_abi_size=808" in release_manifest
     assert "compat_matrix=share/lingqu/mem_service/compat-matrix.txt" in release_manifest
-    assert "compat_matrix_checksum=0xe6d3e50c" in release_manifest
+    assert "compat_matrix_checksum=0x71077a46" in release_manifest
     assert "compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt" in release_manifest
-    assert "compat_baseline_checksum=0xb93a31bc" in release_manifest
+    assert "compat_baseline_checksum=0x30539fd6" in release_manifest
     assert "compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt" in release_manifest
-    assert "compat_old_new_matrix_checksum=0xbc0e044d" in release_manifest
+    assert "compat_old_new_matrix_checksum=0x2bcca939" in release_manifest
     assert "deployment_smoke=deployment-fixtures" in release_manifest
     assert "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service" in release_manifest
     assert "systemd_unit=lib/systemd/system/linqu_mem_service.service" in release_manifest
@@ -2365,7 +2407,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert "mem_service_compat_matrix_version=1" in compat_matrix
     assert "wire_version_current=1" in compat_matrix
-    assert "wire_schema_manifest_checksum=0x14a081c9" in compat_matrix
+    assert "wire_schema_manifest_checksum=0xb1f00fc6" in compat_matrix
     assert "idempotency_conflict_status=version_conflict" in compat_matrix
     assert "idempotency_persistence=store-journal-and-full-snapshot" in compat_matrix
     assert "audit_log_persistence=store-journal-and-full-snapshot" in compat_matrix
@@ -2383,14 +2425,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "case=current-client-current-server:compat-runtime-fixtures" in compat_old_new
     assert "evidence=compat-runtime-fixtures" in compat_old_new
     assert "certification_limit=none" in compat_old_new
-    assert "wire_schema_manifest_len=12456" in release_manifest
-    assert "wire_schema_manifest_checksum=0x14a081c9" in release_manifest
-    assert "admin_output_schema_len=6925" in release_manifest
-    assert "admin_output_schema_checksum=0xef4c77f8" in release_manifest
-    assert "upgrade_rollback_policy_len=2143" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0x096e86d0" in release_manifest
+    assert "wire_schema_manifest_len=12788" in release_manifest
+    assert "wire_schema_manifest_checksum=0xb1f00fc6" in release_manifest
+    assert "admin_output_schema_len=7055" in release_manifest
+    assert "admin_output_schema_checksum=0x4f63a749" in release_manifest
+    assert "upgrade_rollback_policy_len=2144" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0x74c57a78" in release_manifest
     assert "package_manifest_len=9703" in release_manifest
-    assert "package_manifest_checksum=0xcd341bd9" in release_manifest
+    assert "package_manifest_checksum=0xc8513ae1" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2509,8 +2551,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "real_systemd_environment=not-certified" in release_manifest
     assert "production_collector_alert_environment=not-certified" in release_manifest
     assert "rpm_package=not-certified" in release_manifest
-    assert "api_abi_policy_len=856" in release_manifest
-    assert "api_abi_policy_checksum=0xd0cc1392" in release_manifest
+    assert "api_abi_policy_len=1025" in release_manifest
+    assert "api_abi_policy_checksum=0x5e460a87" in release_manifest
     assert "config_schema_version=1" in release_manifest
     assert "config_schema=share/lingqu/mem_service/config/mem_service.conf.schema" in release_manifest
     assert "config_example=share/lingqu/mem_service/config/mem_service.example.conf" in release_manifest
@@ -2534,7 +2576,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=query_training_artifact:97" in release_manifest
     assert "status=internal:10" in release_manifest
     assert "mem_service_wire_schema_manifest_version=1" in wire_schema_manifest
-    assert "operation_count=23" in wire_schema_manifest
+    assert "operation_count=24" in wire_schema_manifest
     assert "operation=metrics:5" in wire_schema_manifest
     assert "operation=audit_log:10" in wire_schema_manifest
     assert "operation=export_snapshot:6" in wire_schema_manifest
@@ -2542,7 +2584,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=restore_snapshot:8" in wire_schema_manifest
     assert "operation=restore_snapshot_page:9" in wire_schema_manifest
     assert "operation=inspect_object:18" in wire_schema_manifest
-    assert "field_count=164" in wire_schema_manifest
+    assert "field_count=168" in wire_schema_manifest
     assert "field=resolve_runtime_handoff.expected_owner type=u32 required=0" in wire_schema_manifest
     assert "field=query_execution_artifact.expected_owner type=u32 required=0" in wire_schema_manifest
     assert "field=query_training_artifact.expected_owner type=u32 required=0" in wire_schema_manifest
@@ -2697,7 +2739,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
-        "upgrade-rollback-policy.txt checksum=0x096e86d0"
+        "upgrade-rollback-policy.txt checksum=0x74c57a78"
     ) in package_manifest
     assert "required_gate=package-fixtures" in package_manifest
     assert "required_gate=upgrade-rollback-runtime-fixtures" in package_manifest
@@ -2924,7 +2966,7 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert "components/llm_infer/llm_infer.c" in makefile
     assert "-I$(ROOT)/libs/obmm_queue" in makefile
     assert "-I$(ROOT)/apps/obmm_queue" in makefile
-    assert "$^ -lm -o $@" in makefile
+    assert "$^ $(OBMM_SRCS) -lm -o $@" in makefile
     assert "$(MEM_SERVICE_CLIENT)" in makefile
     assert "$(MEM_SERVICE_WIRE_CLIENT)" in makefile
     assert "components/llm_infer/" in readme
@@ -2945,7 +2987,13 @@ def test_llm_infer_is_guest_component_consumed_by_llm_infer_app():
     assert (component_dir / "README.md").exists()
     assert "LLM_INFER_SRC=" in build_script
     assert '"$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC"' in build_script
-    assert '"$LLM_INFER_SRC" -lm -o "$LLM_INFER_APP_BIN"' in build_script
+    llm_infer_link = next(
+        line
+        for line in build_script.splitlines()
+        if line.endswith('-o "$LLM_INFER_APP_BIN"')
+    )
+    assert '"$LLM_INFER_SRC"' in llm_infer_link
+    assert "${=LIBOBMM_CFLAGS} ${=LIBOBMM_SRCS}" in llm_infer_link
     assert "write_signature_line \"llm_infer_src\"" in build_script
     assert '#include "components/llm_infer/llm_infer.h"' in llm_infer_app_source
     assert '#include "components/mem_service/mem_service_client.h"' in llm_infer_app_source
@@ -2959,7 +3007,7 @@ def test_llm_infer_is_guest_component_consumed_by_llm_infer_app():
     assert "static uint64_t qwen3_vocab_size" not in llm_infer_app_source
     assert "static const char *qwen3_model_id" not in llm_infer_app_source
     assert "static bool is_qwen3_profile_name" not in llm_infer_app_source
-    assert "llm_infer_qwen3_pipeline_nodes" in llm_infer_app_source
+    assert "llm_infer_qwen3_pipeline_nodes" in component_source
     assert "llm_infer_qwen3_total_layers" in component_header
     assert "llm_infer_qwen3_vocab_size" in component_source
     assert "current model option is" in component_readme
@@ -3622,6 +3670,62 @@ def test_shared_obmm_helpers_use_app_language():
     assert "shared across demos" not in combined
     assert "demo-specific" not in combined
     assert "user-space demo" not in combined
+
+
+def test_arm64_native_gcc_is_accepted_for_guest_builds():
+    common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
+    w5_config = (ROOT / "scripts" / "run_w5_cluster_config.sh").read_text()
+
+    for source in (common, w5_config):
+        assert 'native_target="$($native_cc -dumpmachine' in source
+        assert '[[ "$native_target" == aarch64* ]]' in source
+
+
+def test_guest_kernel_build_only_builds_required_modules():
+    builder = (ROOT / "scripts" / "build_guest_artifacts.sh").read_text()
+
+    assert '-j"$KERNEL_JOBS" Image modules' not in builder
+    assert 'build_native_required_modules "$cross_prefix"' in builder
+    assert 'INSTALL_HDR_PATH="$KERNEL_UAPI_INSTALL_DIR" headers_install' in builder
+    assert "DEFAULT_KERNEL_JOBS > 32" in builder
+    assert 'KERNEL_JOBS="${KERNEL_JOBS:-$DEFAULT_KERNEL_JOBS}"' in builder
+    for module_target in (
+        "drivers/ub/ubus/vendor/hisilicon/hisi_ubus.ko",
+        "drivers/ub/ubus/ubus.ko",
+        "drivers/ub/ubus/sim/ub-sim-decoder.ko",
+        "drivers/ub/obmm/obmm.ko",
+        "drivers/ub/ubase/ubase.ko",
+        "drivers/ub/urma/ubcore/ubcore.ko",
+        "drivers/ub/urma/hw/udma/udma.ko",
+        "drivers/ub/urma/ulp/ipourma/ipourma.ko",
+        "drivers/ub/urma/uburma/uburma.ko",
+        "drivers/iommu/hisilicon/ummu-core/ummu-core.ko",
+        "drivers/iommu/hisilicon/ummu.ko",
+    ):
+        assert module_target in builder
+
+
+def test_qemu_build_default_parallelism_is_bounded():
+    builder = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
+
+    assert "DEFAULT_QEMU_BUILD_JOBS > 32" in builder
+    assert 'JOBS="${QEMU_BUILD_JOBS:-$DEFAULT_QEMU_BUILD_JOBS}"' in builder
+    assert "BUILD_OBMM_TESTS == 0" in builder
+
+
+def test_obmm_async_coroutine_builds_against_pinned_libobmm():
+    initramfs_builder = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+    app_makefile = (ROOT / "apps" / "obmm_async_coroutine" / "Makefile").read_text()
+
+    async_link = initramfs_builder.split(
+        '"$OBMM_ASYNC_COROUTINE_SRC"', 1
+    )[1].split('-o "$OBMM_ASYNC_COROUTINE_BIN"', 1)[0]
+    assert '${=LIBOBMM_CFLAGS}' in async_link
+    assert '${=LIBOBMM_SRCS}' in async_link
+    assert '-I$KERNEL_UAPI_DIR' in initramfs_builder
+    assert '$OUT_DIR/kernel_uapi/include' in initramfs_builder
+    assert "$(OBMM_SUBMODULE_DIR)/src/libobmm/libobmm.c" in app_makefile
+    assert "$(ROOT)/common/obmm_vendor_adaptor_sim.c" in app_makefile
 
 
 def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():

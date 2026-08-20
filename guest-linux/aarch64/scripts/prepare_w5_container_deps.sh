@@ -8,7 +8,7 @@ usage() {
 usage: prepare_w5_container_deps.sh [--dry-run]
 
 Installs the native container dependencies required before running W5 when the
-workspace QEMU must be built inside the container.
+workspace QEMU or ARM64 guest kernel must be built inside the container.
 
 Supported package managers:
   - dnf/yum for openEuler, Fedora, RHEL-like containers
@@ -57,9 +57,14 @@ PY
 install_rpm_deps() {
   local installer="$1"
   run_cmd "$installer" install -y \
+    bc \
+    bison \
     cpio \
+    elfutils-libelf-devel \
+    flex \
     glib2-devel \
     liburing-devel \
+    openssl-devel \
     pixman-devel \
     zlib-devel \
     pkgconf-pkg-config \
@@ -68,14 +73,20 @@ install_rpm_deps() {
     gcc-c++ \
     make \
     zsh \
-    python3-pip
+    python3-pip \
+    rsync
 }
 
 install_deb_deps() {
   run_cmd apt-get update
   run_cmd apt-get install -y \
+    bc \
+    bison \
     cpio \
+    flex \
+    libelf-dev \
     libglib2.0-dev \
+    libssl-dev \
     liburing-dev \
     libpixman-1-dev \
     zlib1g-dev \
@@ -86,7 +97,8 @@ install_deb_deps() {
     make \
     zsh \
     python3-pip \
-    python3-distlib
+    python3-distlib \
+    rsync
 }
 
 install_distlib_for_current_python() {
@@ -106,7 +118,7 @@ verify_deps() {
   local tool
   local pkg
 
-  for tool in python3 pkg-config ninja gcc make; do
+  for tool in bc bison flex python3 pkg-config ninja gcc make rsync; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       missing+=("$tool")
     fi
@@ -115,7 +127,7 @@ verify_deps() {
     missing+=("python3 distlib")
   fi
   if command -v pkg-config >/dev/null 2>&1; then
-    for pkg in glib-2.0 liburing pixman-1 zlib; do
+    for pkg in glib-2.0 libelf liburing openssl pixman-1 zlib; do
       if ! pkg-config --exists "$pkg"; then
         missing+=("pkg-config:$pkg")
       fi

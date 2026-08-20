@@ -6,8 +6,10 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
 KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
+KERNEL_UAPI_STAMP_FILE="$OUT_DIR/.kernel_uapi.kernel_ub_head"
 KERNEL_SRC_DIR="$ROOT_DIR/../kernel_ub"
 KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$OUT_DIR/kernel_build}"
+KERNEL_UAPI_INSTALL_DIR="${KERNEL_UAPI_INSTALL_DIR:-$OUT_DIR/kernel_uapi}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 
@@ -22,7 +24,11 @@ LOCAL_KERNEL_IMAGE="${LOCAL_KERNEL_IMAGE:-}"
 LOCAL_MODULES_DIR="${LOCAL_MODULES_DIR:-}"
 KERNEL_DEFCONFIG="${KERNEL_DEFCONFIG:-openeuler_defconfig}"
 KERNEL_ARCH="${KERNEL_ARCH:-arm64}"
-KERNEL_JOBS="${KERNEL_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
+DEFAULT_KERNEL_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
+if (( DEFAULT_KERNEL_JOBS > 32 )); then
+  DEFAULT_KERNEL_JOBS=32
+fi
+KERNEL_JOBS="${KERNEL_JOBS:-$DEFAULT_KERNEL_JOBS}"
 CC="$(detect_aarch64_linux_cc)"
 BUSYBOX_BIN="${BUSYBOX:-}"
 if [[ -z "$CC" ]]; then
@@ -185,6 +191,65 @@ copy_native_modules() {
   copy_module_if_present "$ROOT_DIR/driver/linqu_ub_drv.ko" "linqu_ub_drv.ko"
 }
 
+build_native_module_if_enabled() {
+  local config_key="$1"
+  local module_target="$2"
+  local cross_prefix="$3"
+
+  if grep -q "^${config_key}=m$" "$KERNEL_BUILD_DIR/.config"; then
+    make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+      ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" \
+      -j"$KERNEL_JOBS" "$module_target"
+  fi
+}
+
+build_native_required_modules() {
+  local cross_prefix="$1"
+
+  build_native_module_if_enabled "CONFIG_UB_HISI_UBUS" \
+    "drivers/ub/ubus/vendor/hisilicon/hisi_ubus.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_UBUS_BUS" \
+    "drivers/ub/ubus/ubus.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_UBUS_SIM_DECODER" \
+    "drivers/ub/ubus/sim/ub-sim-decoder.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_OBMM" \
+    "drivers/ub/obmm/obmm.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_UBASE" \
+    "drivers/ub/ubase/ubase.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_URMA" \
+    "drivers/ub/urma/ubcore/ubcore.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_UDMA" \
+    "drivers/ub/urma/hw/udma/udma.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_URMA" \
+    "drivers/ub/urma/ulp/ipourma/ipourma.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_URMA" \
+    "drivers/ub/urma/uburma/uburma.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_UMMU_CORE_DRIVER" \
+    "drivers/iommu/hisilicon/ummu-core/ummu-core.ko" "$cross_prefix"
+  build_native_module_if_enabled "CONFIG_UB_UMMU" \
+    "drivers/iommu/hisilicon/ummu.ko" "$cross_prefix"
+}
+
+install_kernel_uapi_headers() {
+  local cross_prefix="$1"
+
+  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+    ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" \
+    INSTALL_HDR_PATH="$KERNEL_UAPI_INSTALL_DIR" headers_install
+  current_kernel_artifact_signature > "$KERNEL_UAPI_STAMP_FILE"
+}
+
+kernel_uapi_stamp_matches() {
+  local current_signature=""
+  local stamp=""
+
+  current_signature="$(current_kernel_artifact_signature)" || return 1
+  [[ -f "$KERNEL_UAPI_INSTALL_DIR/include/ub/obmm.h" ]] || return 1
+  [[ -f "$KERNEL_UAPI_STAMP_FILE" ]] || return 1
+  stamp="$(cat "$KERNEL_UAPI_STAMP_FILE" 2>/dev/null)"
+  [[ "$stamp" == "$current_signature" ]]
+}
+
 configure_native_kernel() {
   local cross_prefix="$1"
   mkdir -p "$KERNEL_BUILD_DIR"
@@ -223,7 +288,10 @@ build_native_artifacts() {
   ensure_dirs
   reset_module_artifacts
   configure_native_kernel "$cross_prefix"
-  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" KALLSYMS_EXTRA_PASS=1 -j"$KERNEL_JOBS" Image modules
+  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" \
+    CROSS_COMPILE="$cross_prefix" KALLSYMS_EXTRA_PASS=1 \
+    -j"$KERNEL_JOBS" Image
+  build_native_required_modules "$cross_prefix"
   if [[ -d "$ROOT_DIR/driver" && -f "$ROOT_DIR/driver/Makefile" ]]; then
     make -C "$KERNEL_BUILD_DIR" M="$ROOT_DIR/driver" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" modules
   fi
@@ -335,6 +403,10 @@ case "$ARTIFACT_SOURCE" in
     exit 1
     ;;
 esac
+
+if ! kernel_uapi_stamp_matches; then
+  install_kernel_uapi_headers "$(cross_compile_prefix "$CC")"
+fi
 
 echo "[build_guest_artifacts] rebuilding initramfs" >&2
 (
