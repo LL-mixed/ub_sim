@@ -118,7 +118,7 @@ pub fn host_vector_backend_spec_from_manifest(
     input_b: MemoryEndpoint,
     output_f: MemoryEndpoint,
     size_bytes: u64,
-    elems: u64,
+    _elems: u64,
 ) -> Result<DispatchBackendSpec, SimError> {
     let args = vec![
         SimplerRuntimeArg::InputSegment {
@@ -133,10 +133,6 @@ pub fn host_vector_backend_spec_from_manifest(
             endpoint: output_f,
             bytes: size_bytes,
         },
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(elems),
     ];
     Ok(DispatchBackendSpec {
         profile: DispatchBackendProfile::HostVector,
@@ -154,7 +150,7 @@ fn w4_host_vector_runtime_artifacts(
     input_b: MemoryEndpoint,
     output_f: MemoryEndpoint,
     size_bytes: u64,
-    elems: u64,
+    _elems: u64,
 ) -> Result<SimplerRuntimeArtifacts, SimError> {
     let args = vec![
         SimplerRuntimeArg::InputSegment {
@@ -169,10 +165,6 @@ fn w4_host_vector_runtime_artifacts(
             endpoint: output_f,
             bytes: size_bytes,
         },
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(elems),
     ];
     load_host_vector_runtime_artifacts(manifest_path, args)
 }

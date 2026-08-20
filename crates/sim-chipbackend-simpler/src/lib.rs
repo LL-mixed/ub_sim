@@ -4,13 +4,14 @@
 //! worker C API: initialize a device context with `simpler_init`, register a
 //! `ChipCallable`, then launch it via `simpler_run`.
 
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::ffi::{c_int, c_void};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use libc::{free, malloc};
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_LOCAL, RTLD_NOW};
 use thiserror::Error;
 
@@ -20,6 +21,7 @@ pub type DeviceContextHandle = *mut c_void;
 type CreateDeviceContextFn = unsafe extern "C" fn() -> DeviceContextHandle;
 type DestroyDeviceContextFn = unsafe extern "C" fn(DeviceContextHandle);
 type GetRuntimeSizeFn = unsafe extern "C" fn() -> usize;
+type GetRuntimeAlignmentFn = unsafe extern "C" fn() -> usize;
 type DeviceMallocCtxFn = unsafe extern "C" fn(DeviceContextHandle, usize) -> *mut c_void;
 type DeviceFreeCtxFn = unsafe extern "C" fn(DeviceContextHandle, *mut c_void);
 type CopyToDeviceCtxFn =
@@ -35,16 +37,19 @@ type SimplerInitFn = unsafe extern "C" fn(
     usize,
     *const u8,
     usize,
+    *const CallConfig,
 ) -> c_int;
 type SimplerRegisterCallableFn =
     unsafe extern "C" fn(DeviceContextHandle, i32, *const c_void) -> c_int;
-type SimplerRunFn = unsafe extern "C" fn(
+type SimplerPrepareRunFn = unsafe extern "C" fn(
     DeviceContextHandle,
     RuntimeHandle,
     i32,
     *const c_void,
     *const CallConfig,
+    *const NativeRunDescriptor,
 ) -> c_int;
+type SimplerRunPhaseFn = unsafe extern "C" fn(DeviceContextHandle, RuntimeHandle) -> c_int;
 type SimplerUnregisterCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32) -> c_int;
 type FinalizeDeviceFn = unsafe extern "C" fn(DeviceContextHandle) -> c_int;
 
@@ -59,10 +64,9 @@ struct RuntimeEnv {
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct CallConfig {
-    block_dim: i32,
     aicpu_thread_num: i32,
-    enable_l2_swimlane: i32,
-    enable_dump_tensor: i32,
+    enable_chip_swimlane: i32,
+    enable_dump_args: i32,
     enable_pmu: i32,
     enable_dep_gen: i32,
     enable_scope_stats: i32,
@@ -71,12 +75,11 @@ struct CallConfig {
 }
 
 impl CallConfig {
-    fn new(block_dim: i32, aicpu_thread_num: i32) -> Self {
+    fn new(aicpu_thread_num: i32) -> Self {
         Self {
-            block_dim,
             aicpu_thread_num,
-            enable_l2_swimlane: 0,
-            enable_dump_tensor: 0,
+            enable_chip_swimlane: 0,
+            enable_dump_args: 0,
             enable_pmu: 0,
             enable_dep_gen: 0,
             enable_scope_stats: 0,
@@ -87,6 +90,36 @@ impl CallConfig {
             },
             output_prefix: [0; 1024],
         }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeRunDescriptor {
+    pipeline_slot: u32,
+    arena_bank: u32,
+    run_id: u64,
+    generation: u64,
+    dispatch_id: u64,
+    run_epoch: u64,
+    accepted_state: *mut i32,
+    accepted_value: i32,
+}
+
+static NEXT_NATIVE_RUN_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+fn next_native_run_descriptor() -> NativeRunDescriptor {
+    let run_epoch = NEXT_NATIVE_RUN_EPOCH.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(run_epoch, 0, "simpler native-run epoch exhausted");
+    NativeRunDescriptor {
+        pipeline_slot: 0,
+        arena_bank: 0,
+        run_id: run_epoch,
+        generation: 1,
+        dispatch_id: run_epoch,
+        run_epoch,
+        accepted_state: std::ptr::null_mut(),
+        accepted_value: 0,
     }
 }
 
@@ -113,6 +146,10 @@ pub enum DataType {
     Uint64 = 8,
     Uint16 = 9,
     Uint32 = 10,
+    Bool = 11,
+    Fp8E4M3Fn = 12,
+    Fp8E8M0 = 13,
+    Fp4E2M1 = 14,
 }
 
 impl DataType {
@@ -120,7 +157,12 @@ impl DataType {
         match self {
             Self::Float32 | Self::Int32 | Self::Uint32 => 4,
             Self::Float16 | Self::Int16 | Self::Bfloat16 | Self::Uint16 => 2,
-            Self::Int8 | Self::Uint8 => 1,
+            Self::Int8
+            | Self::Uint8
+            | Self::Bool
+            | Self::Fp8E4M3Fn
+            | Self::Fp8E8M0
+            | Self::Fp4E2M1 => 1,
             Self::Int64 | Self::Uint64 => 8,
         }
     }
@@ -162,7 +204,7 @@ pub struct Tensor {
     dtype: DataType,
     manual_dep: u8,
     is_contiguous: u8,
-    child_memory: u8,
+    address_space: u8,
     shapes: [u32; 5],
     extent_elem_cache: u64,
     strides: [u32; 5],
@@ -185,7 +227,7 @@ impl Tensor {
         bytes: u64,
         shape: &[u32],
         dtype: DataType,
-        child_memory: bool,
+        device_memory: bool,
     ) -> Result<Self, SimplerApiError> {
         if shape.is_empty() || shape.len() > 5 || shape.contains(&0) {
             return Err(SimplerApiError::InvalidTensorShape);
@@ -217,7 +259,7 @@ impl Tensor {
             dtype,
             manual_dep: 0,
             is_contiguous: 1,
-            child_memory: u8::from(child_memory),
+            address_space: u8::from(device_memory),
             shapes,
             extent_elem_cache: elements,
             strides,
@@ -269,7 +311,7 @@ impl ChipStorageTaskArgs {
             dtype: DataType::Uint8,
             manual_dep: 0,
             is_contiguous: 0,
-            child_memory: 0,
+            address_space: 0,
             shapes: [0; 5],
             extent_elem_cache: 0,
             strides: [0; 5],
@@ -292,14 +334,38 @@ pub struct KernelCallableInput<'a> {
     pub binary: &'a [u8],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CallableBuffer {
-    bytes: Vec<u8>,
+    storage: Vec<u8>,
+    offset: usize,
+    len: usize,
 }
 
 impl CallableBuffer {
+    fn new(bytes: &[u8]) -> Self {
+        let mut storage = vec![0u8; bytes.len() + CALLABLE_CHILD_ALIGN - 1];
+        let address = storage.as_ptr() as usize;
+        let offset = (CALLABLE_CHILD_ALIGN - address % CALLABLE_CHILD_ALIGN) % CALLABLE_CHILD_ALIGN;
+        storage[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Self {
+            storage,
+            offset,
+            len: bytes.len(),
+        }
+    }
+
     pub fn as_ptr(&self) -> *const c_void {
-        self.bytes.as_ptr() as *const c_void
+        unsafe { self.storage.as_ptr().add(self.offset) as *const c_void }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.storage[self.offset..self.offset + self.len]
+    }
+}
+
+impl Clone for CallableBuffer {
+    fn clone(&self) -> Self {
+        Self::new(self.as_bytes())
     }
 }
 
@@ -376,7 +442,7 @@ pub fn make_chip_callable(
         let start = CHIP_CALLABLE_HEADER_SIZE + *offset as usize;
         bytes[start..start + child.len()].copy_from_slice(child);
     }
-    Ok(CallableBuffer { bytes })
+    Ok(CallableBuffer::new(&bytes))
 }
 
 fn make_core_callable(binary: &[u8]) -> Result<Vec<u8>, SimplerApiError> {
@@ -392,6 +458,7 @@ fn make_core_callable(binary: &[u8]) -> Result<Vec<u8>, SimplerApiError> {
 #[derive(Debug)]
 pub struct RuntimeBuffer {
     ptr: NonNull<c_void>,
+    layout: Layout,
 }
 
 // Runtime buffers are only used while the owning simpler device-context mutex
@@ -401,9 +468,16 @@ unsafe impl Send for RuntimeBuffer {}
 
 impl RuntimeBuffer {
     pub fn allocate(api: &RuntimeLibrary) -> Result<Self, SimplerApiError> {
-        let ptr = unsafe { malloc(api.runtime_size()) };
+        let size = api.runtime_size();
+        let alignment = api.runtime_alignment();
+        if size == 0 {
+            return Err(SimplerApiError::InvalidRuntimeLayout { size, alignment });
+        }
+        let layout = Layout::from_size_align(size, alignment)
+            .map_err(|_| SimplerApiError::InvalidRuntimeLayout { size, alignment })?;
+        let ptr = unsafe { alloc_zeroed(layout) } as *mut c_void;
         let ptr = NonNull::new(ptr).ok_or(SimplerApiError::NullRuntime)?;
-        Ok(Self { ptr })
+        Ok(Self { ptr, layout })
     }
 
     pub fn handle(&self) -> OwnedRuntime {
@@ -413,7 +487,7 @@ impl RuntimeBuffer {
 
 impl Drop for RuntimeBuffer {
     fn drop(&mut self) {
-        unsafe { free(self.ptr.as_ptr()) }
+        unsafe { dealloc(self.ptr.as_ptr() as *mut u8, self.layout) }
     }
 }
 
@@ -433,20 +507,22 @@ pub enum SimplerApiError {
     CallableTooLarge,
     #[error("null runtime pointer")]
     NullRuntime,
+    #[error("invalid runtime layout size={size} alignment={alignment}")]
+    InvalidRuntimeLayout { size: usize, alignment: usize },
     #[error("null device context")]
     NullDeviceContext,
     #[error("null device pointer")]
     NullDevicePointer,
-    #[error("api returned error code {code}")]
-    ApiFailure { code: i32 },
+    #[error("{operation} returned error code {code}")]
+    ApiFailure { operation: &'static str, code: i32 },
 }
 
 impl SimplerApiError {
-    fn from_code(code: i32) -> Result<(), Self> {
+    fn from_code(operation: &'static str, code: i32) -> Result<(), Self> {
         if code == 0 {
             Ok(())
         } else {
-            Err(Self::ApiFailure { code })
+            Err(Self::ApiFailure { operation, code })
         }
     }
 }
@@ -458,13 +534,17 @@ pub struct RuntimeLibrary {
     create_device_context: CreateDeviceContextFn,
     destroy_device_context: DestroyDeviceContextFn,
     get_runtime_size: GetRuntimeSizeFn,
+    get_runtime_alignment: GetRuntimeAlignmentFn,
     device_malloc_ctx: DeviceMallocCtxFn,
     device_free_ctx: DeviceFreeCtxFn,
     copy_to_device_ctx: CopyToDeviceCtxFn,
     copy_from_device_ctx: CopyFromDeviceCtxFn,
     simpler_init: SimplerInitFn,
     register_callable: SimplerRegisterCallableFn,
-    simpler_run: SimplerRunFn,
+    prepare_run: SimplerPrepareRunFn,
+    launch_run: SimplerRunPhaseFn,
+    wait_run: SimplerRunPhaseFn,
+    finalize_run: SimplerRunPhaseFn,
     unregister_callable: SimplerUnregisterCallableFn,
     finalize_device: FinalizeDeviceFn,
 }
@@ -501,7 +581,7 @@ impl DeviceContext<'_> {
         };
         let finalize_result = unsafe { (self.api.finalize_device)(ctx.as_ptr()) };
         unsafe { (self.api.destroy_device_context)(ctx.as_ptr()) };
-        SimplerApiError::from_code(finalize_result)
+        SimplerApiError::from_code("finalize_device", finalize_result)
     }
 
     pub fn shutdown(mut self) -> Result<(), SimplerApiError> {
@@ -549,6 +629,10 @@ impl RuntimeLibrary {
                     b"destroy_device_context\0",
                 )?,
                 get_runtime_size: *load_symbol::<GetRuntimeSizeFn>(&lib, b"get_runtime_size\0")?,
+                get_runtime_alignment: *load_symbol::<GetRuntimeAlignmentFn>(
+                    &lib,
+                    b"get_runtime_alignment\0",
+                )?,
                 device_malloc_ctx: *load_symbol::<DeviceMallocCtxFn>(&lib, b"device_malloc_ctx\0")?,
                 device_free_ctx: *load_symbol::<DeviceFreeCtxFn>(&lib, b"device_free_ctx\0")?,
                 copy_to_device_ctx: *load_symbol::<CopyToDeviceCtxFn>(
@@ -564,7 +648,10 @@ impl RuntimeLibrary {
                     &lib,
                     b"simpler_register_callable\0",
                 )?,
-                simpler_run: *load_symbol::<SimplerRunFn>(&lib, b"simpler_run\0")?,
+                prepare_run: *load_symbol::<SimplerPrepareRunFn>(&lib, b"simpler_prepare_run\0")?,
+                launch_run: *load_symbol::<SimplerRunPhaseFn>(&lib, b"simpler_launch_run\0")?,
+                wait_run: *load_symbol::<SimplerRunPhaseFn>(&lib, b"simpler_wait_run\0")?,
+                finalize_run: *load_symbol::<SimplerRunPhaseFn>(&lib, b"simpler_finalize_run\0")?,
                 unregister_callable: *load_symbol::<SimplerUnregisterCallableFn>(
                     &lib,
                     b"simpler_unregister_callable\0",
@@ -579,6 +666,10 @@ impl RuntimeLibrary {
 
     pub fn runtime_size(&self) -> usize {
         unsafe { (self.get_runtime_size)() }
+    }
+
+    pub fn runtime_alignment(&self) -> usize {
+        unsafe { (self.get_runtime_alignment)() }
     }
 
     pub fn create_context(&self) -> Result<DeviceContext<'_>, SimplerApiError> {
@@ -611,12 +702,10 @@ impl RuntimeLibrary {
         size: usize,
     ) -> Result<(), SimplerApiError> {
         unsafe {
-            SimplerApiError::from_code((self.copy_to_device_ctx)(
-                ctx.as_raw(),
-                dev_ptr.as_ptr(),
-                host_ptr,
-                size,
-            ))
+            SimplerApiError::from_code(
+                "copy_to_device_ctx",
+                (self.copy_to_device_ctx)(ctx.as_raw(), dev_ptr.as_ptr(), host_ptr, size),
+            )
         }
     }
 
@@ -628,12 +717,10 @@ impl RuntimeLibrary {
         size: usize,
     ) -> Result<(), SimplerApiError> {
         unsafe {
-            SimplerApiError::from_code((self.copy_from_device_ctx)(
-                ctx.as_raw(),
-                host_ptr,
-                dev_ptr.as_ptr(),
-                size,
-            ))
+            SimplerApiError::from_code(
+                "copy_from_device_ctx",
+                (self.copy_from_device_ctx)(ctx.as_raw(), host_ptr, dev_ptr.as_ptr(), size),
+            )
         }
     }
 
@@ -667,7 +754,12 @@ impl RuntimeLibrary {
             aicore_binary,
             aicore_size,
         )?;
-        unsafe { SimplerApiError::from_code((self.unregister_callable)(ctx.as_raw(), callable_id)) }
+        unsafe {
+            SimplerApiError::from_code(
+                "simpler_unregister_callable",
+                (self.unregister_callable)(ctx.as_raw(), callable_id),
+            )
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -679,7 +771,7 @@ impl RuntimeLibrary {
         args: &ChipStorageTaskArgs,
         callable_id: i32,
         prepare: bool,
-        block_dim: i32,
+        _block_dim: i32,
         aicpu_thread_num: i32,
         device_id: i32,
         aicpu_binary: *const u8,
@@ -687,32 +779,50 @@ impl RuntimeLibrary {
         aicore_binary: *const u8,
         aicore_size: usize,
     ) -> Result<(), SimplerApiError> {
-        let config = CallConfig::new(block_dim, aicpu_thread_num);
+        let config = CallConfig::new(aicpu_thread_num);
+        let descriptor = next_native_run_descriptor();
         unsafe {
-            SimplerApiError::from_code((self.simpler_init)(
-                ctx.as_raw(),
-                device_id as c_int,
-                aicpu_binary,
-                aicpu_size,
-                aicore_binary,
-                aicore_size,
-                std::ptr::null(),
-                0,
-            ))?;
-            if prepare {
-                SimplerApiError::from_code((self.register_callable)(
+            SimplerApiError::from_code(
+                "simpler_init",
+                (self.simpler_init)(
                     ctx.as_raw(),
-                    callable_id,
-                    callable.as_ptr(),
-                ))?;
+                    device_id as c_int,
+                    aicpu_binary,
+                    aicpu_size,
+                    aicore_binary,
+                    aicore_size,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                ),
+            )?;
+            if prepare {
+                SimplerApiError::from_code(
+                    "simpler_register_callable",
+                    (self.register_callable)(ctx.as_raw(), callable_id, callable.as_ptr()),
+                )?;
             }
-            SimplerApiError::from_code((self.simpler_run)(
-                ctx.as_raw(),
-                runtime.as_raw(),
-                callable_id,
-                args as *const _ as *const c_void,
-                &config,
-            ))
+            SimplerApiError::from_code(
+                "simpler_prepare_run",
+                (self.prepare_run)(
+                    ctx.as_raw(),
+                    runtime.as_raw(),
+                    callable_id,
+                    args as *const _ as *const c_void,
+                    &config,
+                    &descriptor,
+                ),
+            )?;
+            let launch_code = (self.launch_run)(ctx.as_raw(), runtime.as_raw());
+            let wait_code = if launch_code == 0 {
+                (self.wait_run)(ctx.as_raw(), runtime.as_raw())
+            } else {
+                0
+            };
+            let finalize_code = (self.finalize_run)(ctx.as_raw(), runtime.as_raw());
+            SimplerApiError::from_code("simpler_finalize_run", finalize_code)?;
+            SimplerApiError::from_code("simpler_launch_run", launch_code)?;
+            SimplerApiError::from_code("simpler_wait_run", wait_code)
         }
     }
 }
@@ -777,27 +887,90 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
-const CHIP_MAX_TENSOR_ARGS: usize = 128;
+const CHIP_MAX_TENSOR_ARGS: usize = 256;
 const CHIP_MAX_SCALAR_ARGS: usize = 128;
 const CHIP_MAX_CHILDREN: usize = 1024;
 const CALLABLE_ALIGN: usize = 64;
+const CALLABLE_CHILD_ALIGN: usize = 16;
 const CALLABLE_FUNC_NAME_MAX: usize = 64;
 const CORE_CALLABLE_SIG_COUNT_OFFSET: usize = 128;
 const CORE_CALLABLE_BINARY_SIZE_OFFSET: usize = 132;
 const CORE_CALLABLE_RESOLVED_ADDR_OFFSET: usize = 136;
 const CORE_CALLABLE_BINARY_OFFSET: usize = 192;
-const CHIP_CALLABLE_SIG_COUNT_OFFSET: usize = 512;
-const CHIP_CALLABLE_BINARY_SIZE_OFFSET: usize = 516;
-const CHIP_CALLABLE_FUNC_NAME_OFFSET: usize = 520;
-const CHIP_CALLABLE_FUNC_NAME_LEN_OFFSET: usize = 584;
-const CHIP_CALLABLE_CHILD_FUNC_IDS_OFFSET: usize = 588;
-const CHIP_CALLABLE_CHILD_OFFSETS_OFFSET: usize = 4684;
-const CHIP_CALLABLE_CHILD_COUNT_OFFSET: usize = 8780;
-const CHIP_CALLABLE_CONFIG_NAME_LEN_OFFSET: usize = 8848;
-const CHIP_CALLABLE_HEADER_SIZE: usize = 8864;
+const CHIP_CALLABLE_SIG_COUNT_OFFSET: usize = 1024;
+const CHIP_CALLABLE_BINARY_SIZE_OFFSET: usize = 1028;
+const CHIP_CALLABLE_FUNC_NAME_OFFSET: usize = 1032;
+const CHIP_CALLABLE_FUNC_NAME_LEN_OFFSET: usize = 1096;
+const CHIP_CALLABLE_CHILD_FUNC_IDS_OFFSET: usize = 1100;
+const CHIP_CALLABLE_CHILD_OFFSETS_OFFSET: usize = 5196;
+const CHIP_CALLABLE_CHILD_COUNT_OFFSET: usize = 9292;
+const CHIP_CALLABLE_CONFIG_NAME_LEN_OFFSET: usize = 9360;
+const CHIP_CALLABLE_HEADER_SIZE: usize = 9376;
 
 const _: () = assert!(std::mem::size_of::<Tensor>() == 128);
 const _: () = assert!(std::mem::align_of::<Tensor>() == 64);
-const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 17472);
+const _: () = assert!(std::mem::size_of::<ChipStorageTaskArgs>() == 33856);
 const _: () = assert!(std::mem::size_of::<RuntimeEnv>() == 96);
-const _: () = assert!(std::mem::size_of::<CallConfig>() == 1148);
+const _: () = assert!(std::mem::size_of::<CallConfig>() == 1144);
+const _: () = assert!(std::mem::size_of::<NativeRunDescriptor>() == 56);
+const _: () = assert!(std::mem::align_of::<NativeRunDescriptor>() == 8);
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        make_chip_callable, next_native_run_descriptor, ArgDirection, ChipStorageTaskArgs,
+        DataType, KernelCallableInput, Tensor, CALLABLE_CHILD_ALIGN,
+        CHIP_CALLABLE_BINARY_SIZE_OFFSET, CHIP_CALLABLE_CHILD_COUNT_OFFSET,
+        CHIP_CALLABLE_CHILD_OFFSETS_OFFSET, CHIP_CALLABLE_HEADER_SIZE,
+        CHIP_CALLABLE_SIG_COUNT_OFFSET, CHIP_MAX_TENSOR_ARGS,
+    };
+
+    fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_ne_bytes(bytes[offset..offset + 4].try_into().expect("u32 field"))
+    }
+
+    #[test]
+    fn native_run_descriptors_have_unique_valid_identities() {
+        let first = next_native_run_descriptor();
+        let second = next_native_run_descriptor();
+
+        assert_ne!(first.run_epoch, 0);
+        assert!(second.run_epoch > first.run_epoch);
+        assert_eq!(first.generation, 1);
+        assert_eq!(first.run_id, first.run_epoch);
+        assert_eq!(first.dispatch_id, first.run_epoch);
+        assert!(first.accepted_state.is_null());
+    }
+
+    #[test]
+    fn chip_callable_matches_current_simpler_wire_layout() {
+        let kernel = [0x33u8, 0x44];
+        let callable = make_chip_callable(
+            "test_entry",
+            &[0x11, 0x22],
+            &[KernelCallableInput {
+                func_id: 7,
+                binary: &kernel,
+            }],
+            &[ArgDirection::In],
+        )
+        .expect("callable");
+        let bytes = callable.as_bytes();
+
+        assert_eq!(callable.as_ptr() as usize % CALLABLE_CHILD_ALIGN, 0);
+        assert_eq!(read_u32(bytes, CHIP_CALLABLE_SIG_COUNT_OFFSET), 1);
+        assert_eq!(read_u32(bytes, CHIP_CALLABLE_BINARY_SIZE_OFFSET), 2);
+        assert_eq!(read_u32(bytes, CHIP_CALLABLE_CHILD_COUNT_OFFSET), 1);
+        assert_eq!(read_u32(bytes, CHIP_CALLABLE_CHILD_OFFSETS_OFFSET), 64);
+        assert_eq!(&bytes[CHIP_CALLABLE_HEADER_SIZE..][..2], &[0x11, 0x22]);
+    }
+
+    #[test]
+    fn chip_task_args_accept_current_tensor_capacity() {
+        let tensor = Tensor::new(0, 4, DataType::Float32).expect("tensor");
+        let tensors = vec![tensor; CHIP_MAX_TENSOR_ARGS];
+        let args = ChipStorageTaskArgs::new(&tensors, &[]).expect("task args");
+
+        assert_eq!(args.tensor_count, CHIP_MAX_TENSOR_ARGS as i32);
+    }
+}

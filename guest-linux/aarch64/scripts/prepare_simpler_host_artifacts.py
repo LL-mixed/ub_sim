@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-SIMPLER_CAPI_ABI_VERSION = 2
+SIMPLER_CAPI_ABI_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ PROFILE_SPECS = {
         manifest_name="host_vector_manifest.json",
         callable_hint="host_vector_example",
         orch_source="kernels/orchestration/example_orch.cpp",
-        orch_function="build_example_graph",
+        orch_function="aicpu_orchestration_entry",
         kernels=(
             KernelSpec(0, "kernels/aiv/kernel_add.cpp", "aiv"),
             KernelSpec(1, "kernels/aiv/kernel_add_scalar.cpp", "aiv"),
@@ -51,10 +52,6 @@ PROFILE_SPECS = {
             {"kind": "input", "name": "a"},
             {"kind": "input", "name": "b"},
             {"kind": "output", "name": "f"},
-            {"kind": "scalar_size", "name": "size_a"},
-            {"kind": "scalar_size", "name": "size_b"},
-            {"kind": "scalar_size", "name": "size_f"},
-            {"kind": "scalar_elems", "name": "SIZE"},
         ),
     ),
     "host_matmul": ProfileSpec(
@@ -63,7 +60,7 @@ PROFILE_SPECS = {
         manifest_name="host_matmul_manifest.json",
         callable_hint="host_matmul_example",
         orch_source="kernels/orchestration/matmul_orch.cpp",
-        orch_function="build_matmul_graph",
+        orch_function="aicpu_orchestration_entry",
         kernels=(
             KernelSpec(0, "kernels/aiv/kernel_log_sqrt.cpp", "aiv"),
             KernelSpec(1, "kernels/aic/kernel_matmul.cpp", "aic"),
@@ -74,11 +71,6 @@ PROFILE_SPECS = {
             {"kind": "input", "name": "w1"},
             {"kind": "input", "name": "w2"},
             {"kind": "output", "name": "f"},
-            {"kind": "scalar_size", "name": "size_a"},
-            {"kind": "scalar_size", "name": "size_w1"},
-            {"kind": "scalar_size", "name": "size_w2"},
-            {"kind": "scalar_size", "name": "size_f"},
-            {"kind": "scalar_elems", "name": "SIZE"},
         ),
     ),
     "host_gemm": ProfileSpec(
@@ -206,7 +198,7 @@ PROFILE_SPECS = {
             {"kind": "input", "name": "indices"},
             {"kind": "input", "name": "hidden"},
             {"kind": "input", "name": "gate_weight"},
-            {"kind": "output", "name": "output"},
+            {"kind": "inout", "name": "output"},
             {"kind": "inout", "name": "gate_state"},
             {"kind": "scalar_u64", "name": "batch"},
             {"kind": "scalar_u64", "name": "table_rows"},
@@ -299,7 +291,46 @@ def resolve_example_root(simpler_root: Path, spec: ProfileSpec) -> Path:
     raise SystemExit(f"{spec.example} HostBuildGraph sources not found; tried: {tried}")
 
 
+def path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def prefer_explicit_simpler_root(simpler_root: Path) -> None:
+    package_root = (simpler_root / "simpler_setup").resolve()
+
+    retained_finders = []
+    for finder in sys.meta_path:
+        known_sources = getattr(finder, "known_source_files", None)
+        package_source = (
+            known_sources.get("simpler_setup")
+            if isinstance(known_sources, dict)
+            else None
+        )
+        if package_source is not None and not path_is_within(
+            Path(package_source).resolve(), package_root
+        ):
+            continue
+        retained_finders.append(finder)
+    sys.meta_path[:] = retained_finders
+
+    for module_name, module in list(sys.modules.items()):
+        if module_name != "simpler_setup" and not module_name.startswith(
+            "simpler_setup."
+        ):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is not None and not path_is_within(
+            Path(module_file).resolve(), package_root
+        ):
+            del sys.modules[module_name]
+
+
 def load_simpler_build_api(simpler_root: Path):
+    prefer_explicit_simpler_root(simpler_root)
     sys.path.insert(0, str(simpler_root))
     sys.path.insert(0, str(simpler_root / "python"))
     try:
@@ -312,6 +343,35 @@ def load_simpler_build_api(simpler_root: Path):
         from runtime_builder import RuntimeBuilder  # type: ignore
 
         return RuntimeBuilder, KernelCompiler, "legacy"
+
+
+def configure_sim_kernel_libgcc(
+    kernel_compiler, build_dir: Path, linkage: str
+) -> Path | None:
+    if linkage == "shared":
+        return None
+    if linkage != "static":
+        raise ValueError(f"unsupported sim kernel libgcc linkage: {linkage}")
+
+    toolchain = getattr(kernel_compiler, "gxx15", None)
+    compiler_name = getattr(toolchain, "cxx_path", None)
+    compiler_path = shutil.which(compiler_name) if compiler_name else None
+    if compiler_path is None:
+        raise SystemExit(
+            "simpler simulation kernel compiler is unavailable: "
+            f"{compiler_name or 'g++-15'}"
+        )
+
+    wrapper_dir = build_dir / "toolchain"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_path = wrapper_dir / "g++-15-static-libgcc"
+    wrapper_path.write_text(
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(compiler_path)} -static-libgcc \"$@\"\n"
+    )
+    wrapper_path.chmod(0o755)
+    toolchain.cxx_path = str(wrapper_path)
+    return wrapper_path
 
 
 def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: Path):
@@ -335,6 +395,21 @@ def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: 
     return host_binary, aicpu_binary, aicore_binary, None, None
 
 
+def load_reuse_runtime_manifest(path: Path) -> dict:
+    manifest = json.loads(path.read_text())
+    abi_version = manifest.get("simpler_capi_abi_version")
+    if abi_version != SIMPLER_CAPI_ABI_VERSION:
+        raise SystemExit(
+            "reuse runtime manifest has stale simpler C API ABI: "
+            f"got={abi_version!r} expected={SIMPLER_CAPI_ABI_VERSION} "
+            f"path={path}"
+        )
+    try:
+        return manifest["simpler_runtime"]
+    except KeyError as err:
+        raise SystemExit(f"reuse runtime manifest is incomplete: {path}") from err
+
+
 def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, tile_cols: int) -> Path | None:
     op_name = {
         0: "TADD(dstTile, src0Tile, src1Tile);",
@@ -349,9 +424,16 @@ def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, ti
     load_second = ""
     if func_id in (0, 2):
         second_input = """\
-    __gm__ float* src1 = reinterpret_cast<__gm__ float*>(args[1]);
-    __gm__ float* out = reinterpret_cast<__gm__ float*>(args[2]);
-    int size = static_cast<int>(args[3]);
+    __gm__ ChipTensor* src1_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* out_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ float* src1 =
+        reinterpret_cast<__gm__ float*>(src1_tensor->buffer.addr) +
+        src1_tensor->start_offset;
+    __gm__ float* out =
+        reinterpret_cast<__gm__ float*>(out_tensor->buffer.addr) +
+        out_tensor->start_offset;
 """
         load_second = """\
     TileData src1Tile(vRows, vCols);
@@ -361,14 +443,17 @@ def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, ti
 """
     else:
         scalar_input = """\
+    __gm__ ChipTensor* out_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[1]);
     union {
         uint64_t u64;
         float f32;
     } converter;
-    converter.u64 = args[1];
+    converter.u64 = args[2];
     float scalar = converter.f32;
-    __gm__ float* out = reinterpret_cast<__gm__ float*>(args[2]);
-    int size = static_cast<int>(args[3]);
+    __gm__ float* out =
+        reinterpret_cast<__gm__ float*>(out_tensor->buffer.addr) +
+        out_tensor->start_offset;
 """
 
     source = build_dir / f"vector_kernel_func_{func_id}.cpp"
@@ -376,6 +461,8 @@ def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, ti
         f"""\
 #include <cstdint>
 #include <pto/pto-inst.hpp>
+
+#include "tensor.h"
 
 using namespace pto;
 
@@ -390,7 +477,11 @@ using namespace pto;
 #endif
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
-    __gm__ float* src0 = reinterpret_cast<__gm__ float*>(args[0]);
+    __gm__ ChipTensor* src0_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ float* src0 =
+        reinterpret_cast<__gm__ float*>(src0_tensor->buffer.addr) +
+        src0_tensor->start_offset;
 {second_input}{scalar_input}
     constexpr int kTRows_ = {tile_rows};
     constexpr int kTCols_ = {tile_cols};
@@ -428,115 +519,83 @@ def write_batched_matmul_orchestration(build_dir: Path, tile_batch: int) -> Path
     source = build_dir / "matmul_batched_orch.cpp"
     source.write_text(
         f"""\
-#include "orchestration_api.h"
+#include "pto_orchestration_api.h"
 #include <cstdint>
-#include <iostream>
 
 extern "C" {{
 
-int build_matmul_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
-    if (orch_args.tensor_count() < 4) {{
-        std::cerr << "build_matmul_graph: Expected at least 4 tensor args, got "
-                  << orch_args.tensor_count() << '\\n';
-        return -1;
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {{
+    (void)orch_args;
+    return PTO2OrchestrationConfig{{.expected_arg_count = 10}};
+}}
+
+__attribute__((visibility("default"))) void
+aicpu_orchestration_entry(const ChipTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() != 4 || orch_args.scalar_count() != 6) {{
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "expected 4 tensor args and 6 scalar args");
+        return;
     }}
 
-    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
-    auto* host_w1 = orch_args.tensor(1).data_as<uint8_t>();
-    auto* host_w2 = orch_args.tensor(2).data_as<uint8_t>();
-    auto* host_f = orch_args.tensor(3).data_as<uint8_t>();
-    size_t size_a = static_cast<size_t>(orch_args.tensor(0).nbytes());
-    size_t size_w1 = static_cast<size_t>(orch_args.tensor(1).nbytes());
-    size_t size_w2 = static_cast<size_t>(orch_args.tensor(2).nbytes());
-    size_t size_f = static_cast<size_t>(orch_args.tensor(3).nbytes());
-    int tile_size = 0;
-    int tile_batch = {tile_batch};
-    if (orch_args.scalar_count() >= 6) {{
-        tile_size = static_cast<int>(orch_args.scalar(4));
-        tile_batch = static_cast<int>(orch_args.scalar(5));
-    }} else if (orch_args.scalar_count() >= 1) {{
-        tile_batch = static_cast<int>(orch_args.scalar(orch_args.scalar_count() - 1));
-    }}
+    const ChipTensor& a = orch_args.tensor(0).ref();
+    const ChipTensor& w1 = orch_args.tensor(1).ref();
+    const ChipTensor& w2 = orch_args.tensor(2).ref();
+    const ChipTensor& f = orch_args.tensor(3).ref();
+    const int tile_size = static_cast<int>(orch_args.scalar(4));
+    const int tile_batch = static_cast<int>(orch_args.scalar(5));
 
     if (tile_batch <= 0 || tile_batch > {tile_batch}) {{
-        std::cerr << "build_matmul_graph: invalid tile_batch=" << tile_batch << '\\n';
-        return -1;
-    }}
-    if (size_a % static_cast<size_t>(tile_batch) != 0 ||
-        size_w1 % static_cast<size_t>(tile_batch) != 0 ||
-        size_w2 % static_cast<size_t>(tile_batch) != 0 ||
-        size_f % static_cast<size_t>(tile_batch) != 0) {{
-        std::cerr << "build_matmul_graph: batch sizes must divide evenly by tile_batch\\n";
-        return -1;
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "invalid tile_batch");
+        return;
     }}
     if (tile_size <= 0) {{
-        tile_size = static_cast<int>(orch_args.tensor(0).shapes[0] / static_cast<uint32_t>(tile_batch));
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "invalid tile_size");
+        return;
+    }}
+    const uint64_t elements =
+        static_cast<uint64_t>(tile_size) * static_cast<uint64_t>(tile_batch);
+    if (a.shapes[0] < elements || w1.shapes[0] < elements ||
+        w2.shapes[0] < elements || f.shapes[0] < elements) {{
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "tensor payload too short");
+        return;
     }}
 
-    std::cout << "\\n=== build_matmul_graph: Creating Batched Task Runtime ===\\n";
-    std::cout << "Formula: F = exp(sqrt(log(A)) @ W1 + sqrt(log(A)) @ W2)\\n";
-    std::cout << "Tile SIZE: " << tile_size << " elements, tile_batch=" << tile_batch << "\\n";
+    uint32_t shape[1] = {{static_cast<uint32_t>(elements)}};
+    TensorCreateInfo b_info(shape, 1, DataType::FLOAT16);
+    TensorCreateInfo c_info(shape, 1, DataType::FLOAT32);
+    TensorCreateInfo d_info(shape, 1, DataType::FLOAT32);
 
-    void* dev_a = device_malloc(runtime, size_a);
-    void* dev_w1 = device_malloc(runtime, size_w1);
-    void* dev_w2 = device_malloc(runtime, size_w2);
-    void* dev_f = device_malloc(runtime, size_f);
-    void* dev_b = device_malloc(runtime, size_a);
-    void* dev_c = device_malloc(runtime, size_f);
-    void* dev_d = device_malloc(runtime, size_f);
-    if (!dev_a || !dev_w1 || !dev_w2 || !dev_f || !dev_b || !dev_c || !dev_d) {{
-        std::cerr << "Error: Failed to allocate batched device memory\\n";
-        if (dev_a) device_free(runtime, dev_a);
-        if (dev_w1) device_free(runtime, dev_w1);
-        if (dev_w2) device_free(runtime, dev_w2);
-        if (dev_f) device_free(runtime, dev_f);
-        if (dev_b) device_free(runtime, dev_b);
-        if (dev_c) device_free(runtime, dev_c);
-        if (dev_d) device_free(runtime, dev_d);
-        return -1;
-    }}
-    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
-        copy_to_device(runtime, dev_w1, host_w1, size_w1) != 0 ||
-        copy_to_device(runtime, dev_w2, host_w2, size_w2) != 0) {{
-        std::cerr << "Error: Failed to copy batched inputs to device\\n";
-        return -1;
-    }}
-    record_tensor_pair(runtime, host_f, dev_f, size_f);
+    CoreTaskArgs args_t0;
+    args_t0.add_input(a);
+    args_t0.add_output(b_info);
+    args_t0.add_scalar(tile_size);
+    TaskOutputTensors b_outputs = rt_submit_aiv_task(0, args_t0);
+    if (rt_is_fatal()) return;
+    const ChipTensor& b = b_outputs.get_ref(0);
 
-    uint64_t args_t0[3];
-    args_t0[0] = reinterpret_cast<uint64_t>(dev_a);
-    args_t0[1] = reinterpret_cast<uint64_t>(dev_b);
-    args_t0[2] = tile_size;
-    int t0 = add_task(runtime, args_t0, 3, 0, CoreType::AIV);
+    CoreTaskArgs args_t1;
+    args_t1.add_input(b, w1);
+    args_t1.add_output(c_info);
+    args_t1.add_scalar(tile_size);
+    TaskOutputTensors c_outputs = rt_submit_aic_task(1, args_t1);
+    if (rt_is_fatal()) return;
+    const ChipTensor& c = c_outputs.get_ref(0);
 
-    uint64_t args_t1[4];
-    args_t1[0] = reinterpret_cast<uint64_t>(dev_b);
-    args_t1[1] = reinterpret_cast<uint64_t>(dev_w1);
-    args_t1[2] = reinterpret_cast<uint64_t>(dev_c);
-    args_t1[3] = tile_size;
-    int t1 = add_task(runtime, args_t1, 4, 1, CoreType::AIC);
+    CoreTaskArgs args_t2;
+    args_t2.add_input(b, w2);
+    args_t2.add_output(d_info);
+    args_t2.add_scalar(tile_size);
+    TaskOutputTensors d_outputs = rt_submit_aic_task(1, args_t2);
+    if (rt_is_fatal()) return;
+    const ChipTensor& d = d_outputs.get_ref(0);
 
-    uint64_t args_t2[4];
-    args_t2[0] = reinterpret_cast<uint64_t>(dev_b);
-    args_t2[1] = reinterpret_cast<uint64_t>(dev_w2);
-    args_t2[2] = reinterpret_cast<uint64_t>(dev_d);
-    args_t2[3] = tile_size;
-    int t2 = add_task(runtime, args_t2, 4, 1, CoreType::AIC);
-
-    uint64_t args_t3[4];
-    args_t3[0] = reinterpret_cast<uint64_t>(dev_c);
-    args_t3[1] = reinterpret_cast<uint64_t>(dev_d);
-    args_t3[2] = reinterpret_cast<uint64_t>(dev_f);
-    args_t3[3] = tile_size;
-    int t3 = add_task(runtime, args_t3, 4, 2, CoreType::AIV);
-
-    add_successor(runtime, t0, t1);
-    add_successor(runtime, t0, t2);
-    add_successor(runtime, t1, t3);
-    add_successor(runtime, t2, t3);
-
-    std::cout << "Created batched runtime with " << get_task_count(runtime) << " tasks\\n";
-    return 0;
+    CoreTaskArgs args_t3;
+    args_t3.add_input(c, d);
+    args_t3.add_output(f);
+    args_t3.add_scalar(tile_size);
+    rt_submit_aiv_task(2, args_t3);
 }}
 
 }}  // extern "C"
@@ -549,6 +608,8 @@ def write_batched_matmul_kernel_source(build_dir: Path, func_id: int, tile_batch
     common_prefix = """\
 #include <cstdint>
 #include <pto/pto-inst.hpp>
+
+#include "tensor.h"
 
 using namespace pto;
 
@@ -564,8 +625,12 @@ using namespace pto;
     if func_id == 0:
         body = f"""\
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
-    __gm__ half* src = reinterpret_cast<__gm__ half*>(args[0]);
-    __gm__ half* out = reinterpret_cast<__gm__ half*>(args[1]);
+    __gm__ ChipTensor* src_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* out_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ half* src = reinterpret_cast<__gm__ half*>(src_tensor->buffer.addr) +
+        src_tensor->start_offset;
+    __gm__ half* out = reinterpret_cast<__gm__ half*>(out_tensor->buffer.addr) +
+        out_tensor->start_offset;
 
     constexpr int kTRows_ = 128;
     constexpr int kTCols_ = 128;
@@ -603,9 +668,15 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     elif func_id == 1:
         body = f"""\
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
-    __gm__ half* src0 = reinterpret_cast<__gm__ half*>(args[0]);
-    __gm__ half* src1 = reinterpret_cast<__gm__ half*>(args[1]);
-    __gm__ float* out = reinterpret_cast<__gm__ float*>(args[2]);
+    __gm__ ChipTensor* src0_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* src1_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* out_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ half* src0 = reinterpret_cast<__gm__ half*>(src0_tensor->buffer.addr) +
+        src0_tensor->start_offset;
+    __gm__ half* src1 = reinterpret_cast<__gm__ half*>(src1_tensor->buffer.addr) +
+        src1_tensor->start_offset;
+    __gm__ float* out = reinterpret_cast<__gm__ float*>(out_tensor->buffer.addr) +
+        out_tensor->start_offset;
 
     constexpr int validM = 128;
     constexpr int validK = 128;
@@ -663,9 +734,15 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     elif func_id == 2:
         body = f"""\
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
-    __gm__ float* src0 = reinterpret_cast<__gm__ float*>(args[0]);
-    __gm__ float* src1 = reinterpret_cast<__gm__ float*>(args[1]);
-    __gm__ float* out = reinterpret_cast<__gm__ float*>(args[2]);
+    __gm__ ChipTensor* src0_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* src1_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* out_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ float* src0 = reinterpret_cast<__gm__ float*>(src0_tensor->buffer.addr) +
+        src0_tensor->start_offset;
+    __gm__ float* src1 = reinterpret_cast<__gm__ float*>(src1_tensor->buffer.addr) +
+        src1_tensor->start_offset;
+    __gm__ float* out = reinterpret_cast<__gm__ float*>(out_tensor->buffer.addr) +
+        out_tensor->start_offset;
 
     constexpr int kTRows_ = 128;
     constexpr int kTCols_ = 128;
@@ -735,16 +812,24 @@ def write_host_gemm_orchestration(
     source = build_dir / source_name
     source.write_text(
         f"""\
-#include "orchestration_api.h"
+#include "pto_orchestration_api.h"
 #include <cstdint>
-#include <iostream>
 
 extern "C" {{
 
-int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {{
-    if (orch_args.tensor_count() < 3 || orch_args.scalar_count() < 3) {{
-        std::cerr << "{function_name}: expected 3 tensors and 3 scalars\\n";
-        return -1;
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {{
+    (void)orch_args;
+    return PTO2OrchestrationConfig{{.expected_arg_count = 6}};
+}}
+
+__attribute__((visibility("default"))) void
+{function_name}(const ChipTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() != 3 || orch_args.scalar_count() != 3) {{
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "expected 3 tensor args and 3 scalar args");
+        return;
     }}
 
     constexpr uint64_t kM = {m};
@@ -755,58 +840,36 @@ int {function_name}(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& or
     const uint64_t k = orch_args.scalar(1);
     const uint64_t n = orch_args.scalar(2);
     if (m != kM || k != kK || n != kN) {{
-        std::cerr << "{function_name}: artifact geometry mismatch got="
-                  << m << "x" << k << "x" << n << " expected="
-                  << kM << "x" << kK << "x" << kN << '\\n';
-        return -1;
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "artifact geometry mismatch");
+        return;
     }}
     if ((m % kTile) != 0 || (k % kTile) != 0 || (n % kTile) != 0) {{
-        std::cerr << "{function_name}: dimensions must be 128-aligned\\n";
-        return -1;
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS, "dimensions must be 128-aligned");
+        return;
     }}
 
     const uint64_t elements_a = m * k;
     const uint64_t elements_b = k * n;
     const uint64_t elements_c = m * n;
-    const size_t size_a = static_cast<size_t>(elements_a * sizeof({input_type}));
-    const size_t size_b = static_cast<size_t>(elements_b * sizeof({input_type}));
-    const size_t size_c = static_cast<size_t>(elements_c * sizeof({output_type}));
-    if (orch_args.tensor(0).shapes[0] < elements_a ||
-        orch_args.tensor(1).shapes[0] < elements_b ||
-        orch_args.tensor(2).shapes[0] < elements_c) {{
-        std::cerr << "{function_name}: tensor payload is shorter than geometry\\n";
-        return -1;
+    const ChipTensor& a = orch_args.tensor(0).ref();
+    const ChipTensor& b = orch_args.tensor(1).ref();
+    const ChipTensor& c = orch_args.tensor(2).ref();
+    if (a.shapes[0] < elements_a || b.shapes[0] < elements_b ||
+        c.shapes[0] < elements_c) {{
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "tensor payload too short");
+        return;
     }}
-
-    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
-    auto* host_b = orch_args.tensor(1).data_as<uint8_t>();
-    auto* host_c = orch_args.tensor(2).data_as<uint8_t>();
-    void* dev_a = device_malloc(runtime, size_a);
-    void* dev_b = device_malloc(runtime, size_b);
-    void* dev_c = device_malloc(runtime, size_c);
-    if (!dev_a || !dev_b || !dev_c) {{
-        std::cerr << "{function_name}: device allocation failed\\n";
-        return -1;
-    }}
-    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
-        copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
-        std::cerr << "{function_name}: input copy failed\\n";
-        return -1;
-    }}
-    record_tensor_pair(runtime, host_c, dev_c, size_c);
 
     for (uint64_t tile_m = 0; tile_m < m / kTile; ++tile_m) {{
         for (uint64_t tile_n = 0; tile_n < n / kTile; ++tile_n) {{
-            uint64_t task_args[5];
-            task_args[0] = reinterpret_cast<uint64_t>(dev_a);
-            task_args[1] = reinterpret_cast<uint64_t>(dev_b);
-            task_args[2] = reinterpret_cast<uint64_t>(dev_c);
-            task_args[3] = tile_m;
-            task_args[4] = tile_n;
-            add_task(runtime, task_args, 5, 0, CoreType::AIC);
+            CoreTaskArgs task_args;
+            task_args.add_input(a, b);
+            task_args.add_output(c);
+            task_args.add_scalar(tile_m, tile_n);
+            rt_submit_aic_task(0, task_args);
         }}
     }}
-    return 0;
 }}
 
 }}  // extern "C"
@@ -833,18 +896,24 @@ def write_host_fp8_gemm_orchestration(
     source = build_dir / "host_fp8_gemm_orch.cpp"
     source.write_text(
         f"""\
-#include "orchestration_api.h"
+#include "pto_orchestration_api.h"
 #include <cstdint>
-#include <iostream>
 
 extern "C" {{
 
-int build_fp8_gemm_graph(
-        OrchestrationRuntime* runtime,
-        const ChipStorageTaskArgs& orch_args) {{
-    if (orch_args.tensor_count() < 5 || orch_args.scalar_count() < 3) {{
-        std::cerr << "build_fp8_gemm_graph: expected 5 tensors and 3 scalars\\n";
-        return -1;
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {{
+    (void)orch_args;
+    return PTO2OrchestrationConfig{{.expected_arg_count = 8}};
+}}
+
+__attribute__((visibility("default"))) void
+build_fp8_gemm_graph(const ChipTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() != 5 || orch_args.scalar_count() != 3) {{
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "expected 5 tensor args and 3 scalar args");
+        return;
     }}
 
     constexpr uint64_t kM = {m};
@@ -853,8 +922,10 @@ int build_fp8_gemm_graph(
     constexpr uint64_t kScaleGroup = 32;
     if (orch_args.scalar(0) != kM || orch_args.scalar(1) != kK ||
         orch_args.scalar(2) != kN || kM != 128 || kK != 128 || kN != 128) {{
-        std::cerr << "build_fp8_gemm_graph: artifact geometry must be 128x128x128\\n";
-        return -1;
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "artifact geometry must be 128x128x128");
+        return;
     }}
 
     constexpr uint64_t kActivationElements = kM * kK;
@@ -862,49 +933,24 @@ int build_fp8_gemm_graph(
     constexpr uint64_t kActivationScaleElements = kM * kK / kScaleGroup;
     constexpr uint64_t kWeightScaleElements = kK * kN / kScaleGroup;
     constexpr uint64_t kOutputElements = kM * kN;
-    if (orch_args.tensor(0).shapes[0] < kActivationElements ||
-        orch_args.tensor(1).shapes[0] < kWeightElements ||
-        orch_args.tensor(2).shapes[0] < kActivationScaleElements ||
-        orch_args.tensor(3).shapes[0] < kWeightScaleElements ||
-        orch_args.tensor(4).shapes[0] < kOutputElements) {{
-        std::cerr << "build_fp8_gemm_graph: tensor payload is shorter than geometry\\n";
-        return -1;
+    const ChipTensor& activation = orch_args.tensor(0).ref();
+    const ChipTensor& weight = orch_args.tensor(1).ref();
+    const ChipTensor& activation_scale = orch_args.tensor(2).ref();
+    const ChipTensor& weight_scale = orch_args.tensor(3).ref();
+    const ChipTensor& output = orch_args.tensor(4).ref();
+    if (activation.shapes[0] < kActivationElements ||
+        weight.shapes[0] < kWeightElements ||
+        activation_scale.shapes[0] < kActivationScaleElements ||
+        weight_scale.shapes[0] < kWeightScaleElements ||
+        output.shapes[0] < kOutputElements) {{
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "tensor payload too short");
+        return;
     }}
 
-    void* dev_activation = device_malloc(runtime, kActivationElements);
-    void* dev_weight = device_malloc(runtime, kWeightElements);
-    void* dev_activation_scale = device_malloc(runtime, kActivationScaleElements);
-    void* dev_weight_scale = device_malloc(runtime, kWeightScaleElements);
-    void* dev_output = device_malloc(runtime, kOutputElements * sizeof(float));
-    if (!dev_activation || !dev_weight || !dev_activation_scale ||
-        !dev_weight_scale || !dev_output) {{
-        std::cerr << "build_fp8_gemm_graph: device allocation failed\\n";
-        return -1;
-    }}
-    if (copy_to_device(runtime, dev_activation, orch_args.tensor(0).data_as<uint8_t>(),
-                       kActivationElements) != 0 ||
-        copy_to_device(runtime, dev_weight, orch_args.tensor(1).data_as<uint8_t>(),
-                       kWeightElements) != 0 ||
-        copy_to_device(runtime, dev_activation_scale,
-                       orch_args.tensor(2).data_as<uint8_t>(),
-                       kActivationScaleElements) != 0 ||
-        copy_to_device(runtime, dev_weight_scale,
-                       orch_args.tensor(3).data_as<uint8_t>(),
-                       kWeightScaleElements) != 0) {{
-        std::cerr << "build_fp8_gemm_graph: input copy failed\\n";
-        return -1;
-    }}
-    record_tensor_pair(runtime, orch_args.tensor(4).data_as<uint8_t>(),
-                       dev_output, kOutputElements * sizeof(float));
-
-    uint64_t task_args[5];
-    task_args[0] = reinterpret_cast<uint64_t>(dev_activation);
-    task_args[1] = reinterpret_cast<uint64_t>(dev_weight);
-    task_args[2] = reinterpret_cast<uint64_t>(dev_activation_scale);
-    task_args[3] = reinterpret_cast<uint64_t>(dev_weight_scale);
-    task_args[4] = reinterpret_cast<uint64_t>(dev_output);
-    add_task(runtime, task_args, 5, 0, CoreType::AIC);
-    return 0;
+    CoreTaskArgs task_args;
+    task_args.add_input(activation, weight, activation_scale, weight_scale);
+    task_args.add_output(output);
+    rt_submit_aic_task(0, task_args);
 }}
 
 }}  // extern "C"
@@ -956,6 +1002,8 @@ def write_host_gemm_kernel(
 #include <cstdint>
 #include <pto/pto-inst.hpp>
 
+#include "tensor.h"
+
 using namespace pto;
 
 #ifndef __gm__
@@ -967,9 +1015,15 @@ using namespace pto;
 #endif
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
-    __gm__ {input_type}* a = reinterpret_cast<__gm__ {input_type}*>(args[0]);
-    __gm__ {input_type}* b = reinterpret_cast<__gm__ {input_type}*>(args[1]);
-    __gm__ {output_type}* c = reinterpret_cast<__gm__ {output_type}*>(args[2]);
+    __gm__ ChipTensor* a_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* b_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* c_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ {input_type}* a = reinterpret_cast<__gm__ {input_type}*>(a_tensor->buffer.addr) +
+        a_tensor->start_offset;
+    __gm__ {input_type}* b = reinterpret_cast<__gm__ {input_type}*>(b_tensor->buffer.addr) +
+        b_tensor->start_offset;
+    __gm__ {output_type}* c = reinterpret_cast<__gm__ {output_type}*>(c_tensor->buffer.addr) +
+        c_tensor->start_offset;
     const uint64_t tile_m = static_cast<uint64_t>(args[3]);
     const uint64_t tile_n = static_cast<uint64_t>(args[4]);
 
@@ -1057,6 +1111,8 @@ def write_host_fp8_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
 #include <cstdint>
 #include <pto/pto-inst.hpp>
 
+#include "tensor.h"
+
 using namespace pto;
 
 #ifndef __gm__
@@ -1068,15 +1124,30 @@ using namespace pto;
 #endif
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ ChipTensor* activation_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* weight_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* activation_scale_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ ChipTensor* weight_scale_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[3]);
+    __gm__ ChipTensor* output_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[4]);
     __gm__ float8_e4m3_t* activation =
-        reinterpret_cast<__gm__ float8_e4m3_t*>(args[0]);
+        reinterpret_cast<__gm__ float8_e4m3_t*>(activation_tensor->buffer.addr) +
+        activation_tensor->start_offset;
     __gm__ float8_e4m3_t* weight =
-        reinterpret_cast<__gm__ float8_e4m3_t*>(args[1]);
+        reinterpret_cast<__gm__ float8_e4m3_t*>(weight_tensor->buffer.addr) +
+        weight_tensor->start_offset;
     __gm__ float8_e8m0_t* activation_scale =
-        reinterpret_cast<__gm__ float8_e8m0_t*>(args[2]);
+        reinterpret_cast<__gm__ float8_e8m0_t*>(activation_scale_tensor->buffer.addr) +
+        activation_scale_tensor->start_offset;
     __gm__ float8_e8m0_t* weight_scale =
-        reinterpret_cast<__gm__ float8_e8m0_t*>(args[3]);
-    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[4]);
+        reinterpret_cast<__gm__ float8_e8m0_t*>(weight_scale_tensor->buffer.addr) +
+        weight_scale_tensor->start_offset;
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(output_tensor->buffer.addr) +
+        output_tensor->start_offset;
 
     constexpr int M = {m};
     constexpr int K = {k};
@@ -1176,6 +1247,8 @@ def write_host_fp4_gemm_kernel(build_dir: Path, m: int, k: int, n: int) -> Path:
 #include <cstdint>
 #include <pto/pto-inst.hpp>
 
+#include "tensor.h"
+
 using namespace pto;
 
 #ifndef __gm__
@@ -1187,15 +1260,30 @@ using namespace pto;
 #endif
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {{
+    __gm__ ChipTensor* activation_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* weight_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* activation_scale_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ ChipTensor* weight_scale_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[3]);
+    __gm__ ChipTensor* output_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[4]);
     __gm__ float8_e4m3_t* activation =
-        reinterpret_cast<__gm__ float8_e4m3_t*>(args[0]);
+        reinterpret_cast<__gm__ float8_e4m3_t*>(activation_tensor->buffer.addr) +
+        activation_tensor->start_offset;
     __gm__ float8_e4m3_t* weight =
-        reinterpret_cast<__gm__ float8_e4m3_t*>(args[1]);
+        reinterpret_cast<__gm__ float8_e4m3_t*>(weight_tensor->buffer.addr) +
+        weight_tensor->start_offset;
     __gm__ float8_e8m0_t* activation_scale =
-        reinterpret_cast<__gm__ float8_e8m0_t*>(args[2]);
+        reinterpret_cast<__gm__ float8_e8m0_t*>(activation_scale_tensor->buffer.addr) +
+        activation_scale_tensor->start_offset;
     __gm__ float8_e8m0_t* weight_scale =
-        reinterpret_cast<__gm__ float8_e8m0_t*>(args[3]);
-    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[4]);
+        reinterpret_cast<__gm__ float8_e8m0_t*>(weight_scale_tensor->buffer.addr) +
+        weight_scale_tensor->start_offset;
+    __gm__ float* output = reinterpret_cast<__gm__ float*>(output_tensor->buffer.addr) +
+        output_tensor->start_offset;
 
     constexpr int M = {m};
     constexpr int K = {k};
@@ -1302,18 +1390,24 @@ def write_host_q8_block_dot_orchestration(build_dir: Path, blocks: int, n: int) 
     source = build_dir / "host_q8_block_dot_orch.cpp"
     source.write_text(
         f"""\
-#include "orchestration_api.h"
+#include "pto_orchestration_api.h"
 #include <cstdint>
-#include <iostream>
 
 extern "C" {{
 
-int build_q8_block_dot_graph(
-        OrchestrationRuntime* runtime,
-        const ChipStorageTaskArgs& orch_args) {{
-    if (orch_args.tensor_count() < 3 || orch_args.scalar_count() < 3) {{
-        std::cerr << "build_q8_block_dot_graph: expected 3 tensors and 3 scalars\\n";
-        return -1;
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {{
+    (void)orch_args;
+    return PTO2OrchestrationConfig{{.expected_arg_count = 6}};
+}}
+
+__attribute__((visibility("default"))) void
+build_q8_block_dot_graph(const ChipTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() != 3 || orch_args.scalar_count() != 3) {{
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "expected 3 tensor args and 3 scalar args");
+        return;
     }}
 
     constexpr uint64_t kBlocks = {blocks};
@@ -1322,53 +1416,33 @@ int build_q8_block_dot_graph(
     constexpr uint64_t kTileN = 128;
     if (orch_args.scalar(0) != kBlocks || orch_args.scalar(1) != kK ||
         orch_args.scalar(2) != kN) {{
-        std::cerr << "build_q8_block_dot_graph: artifact geometry mismatch\\n";
-        return -1;
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "artifact geometry mismatch");
+        return;
     }}
     if ((kN % kTileN) != 0) {{
-        std::cerr << "build_q8_block_dot_graph: N must be 128-aligned\\n";
-        return -1;
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "N must be 128-aligned");
+        return;
     }}
 
-    const size_t size_a = static_cast<size_t>(kBlocks * 32 * sizeof(int8_t));
-    const size_t size_b = static_cast<size_t>(kBlocks * 32 * kN * sizeof(int8_t));
-    const size_t size_c = static_cast<size_t>(kBlocks * kN * sizeof(int32_t));
-    if (orch_args.tensor(0).shapes[0] < kBlocks * 32 ||
-        orch_args.tensor(1).shapes[0] < kBlocks * 32 * kN ||
-        orch_args.tensor(2).shapes[0] < kBlocks * kN) {{
-        std::cerr << "build_q8_block_dot_graph: tensor payload is too short\\n";
-        return -1;
+    const ChipTensor& activation = orch_args.tensor(0).ref();
+    const ChipTensor& weight = orch_args.tensor(1).ref();
+    const ChipTensor& output = orch_args.tensor(2).ref();
+    if (activation.shapes[0] < kBlocks * 32 ||
+        weight.shapes[0] < kBlocks * 32 * kN ||
+        output.shapes[0] < kBlocks * kN) {{
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "tensor payload too short");
+        return;
     }}
-
-    auto* host_a = orch_args.tensor(0).data_as<uint8_t>();
-    auto* host_b = orch_args.tensor(1).data_as<uint8_t>();
-    auto* host_c = orch_args.tensor(2).data_as<uint8_t>();
-    void* dev_a = device_malloc(runtime, size_a);
-    void* dev_b = device_malloc(runtime, size_b);
-    void* dev_c = device_malloc(runtime, size_c);
-    if (!dev_a || !dev_b || !dev_c) {{
-        std::cerr << "build_q8_block_dot_graph: device allocation failed\\n";
-        return -1;
-    }}
-    if (copy_to_device(runtime, dev_a, host_a, size_a) != 0 ||
-        copy_to_device(runtime, dev_b, host_b, size_b) != 0) {{
-        std::cerr << "build_q8_block_dot_graph: input copy failed\\n";
-        return -1;
-    }}
-    record_tensor_pair(runtime, host_c, dev_c, size_c);
 
     for (uint64_t block = 0; block < kBlocks; ++block) {{
         for (uint64_t tile_n = 0; tile_n < kN / kTileN; ++tile_n) {{
-            uint64_t task_args[5];
-            task_args[0] = reinterpret_cast<uint64_t>(dev_a);
-            task_args[1] = reinterpret_cast<uint64_t>(dev_b);
-            task_args[2] = reinterpret_cast<uint64_t>(dev_c);
-            task_args[3] = block;
-            task_args[4] = tile_n;
-            add_task(runtime, task_args, 5, 0, CoreType::AIC);
+            CoreTaskArgs task_args;
+            task_args.add_input(activation, weight);
+            task_args.add_output(output);
+            task_args.add_scalar(block, tile_n);
+            rt_submit_aic_task(0, task_args);
         }}
     }}
-    return 0;
 }}
 
 }}  // extern "C"
@@ -1384,6 +1458,8 @@ def write_host_q8_block_dot_kernel(build_dir: Path, n: int) -> Path:
 #include <cstdint>
 #include <pto/pto-inst.hpp>
 
+#include "tensor.h"
+
 using namespace pto;
 
 #ifndef __gm__
@@ -1396,9 +1472,21 @@ using namespace pto;
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(
         __gm__ int64_t* args) {{
-    __gm__ int8_t* activation = reinterpret_cast<__gm__ int8_t*>(args[0]);
-    __gm__ int8_t* weight = reinterpret_cast<__gm__ int8_t*>(args[1]);
-    __gm__ int32_t* output = reinterpret_cast<__gm__ int32_t*>(args[2]);
+    __gm__ ChipTensor* activation_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* weight_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* output_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ int8_t* activation =
+        reinterpret_cast<__gm__ int8_t*>(activation_tensor->buffer.addr) +
+        activation_tensor->start_offset;
+    __gm__ int8_t* weight =
+        reinterpret_cast<__gm__ int8_t*>(weight_tensor->buffer.addr) +
+        weight_tensor->start_offset;
+    __gm__ int32_t* output =
+        reinterpret_cast<__gm__ int32_t*>(output_tensor->buffer.addr) +
+        output_tensor->start_offset;
     const uint64_t block = static_cast<uint64_t>(args[3]);
     const uint64_t tile_n = static_cast<uint64_t>(args[4]);
 
@@ -1458,32 +1546,34 @@ def write_host_engram_context_orchestration(build_dir: Path) -> Path:
     source = build_dir / "host_engram_context_orch.cpp"
     source.write_text(
         """\
-#include "orchestration_api.h"
+#include "pto_orchestration_api.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <iostream>
 
 extern "C" {
 
-int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageTaskArgs& orch_args) {
-    if (orch_args.tensor_count() < 6) {
-        std::cerr << "build_engram_context_graph: Expected 6 tensor args, got "
-                  << orch_args.tensor_count() << '\\n';
-        return -1;
-    }
-    if (orch_args.scalar_count() < 6) {
-        std::cerr << "build_engram_context_graph: Expected 6 scalar args, got "
-                  << orch_args.scalar_count() << '\\n';
-        return -1;
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {
+    (void)orch_args;
+    return PTO2OrchestrationConfig{.expected_arg_count = 12};
+}
+
+__attribute__((visibility("default"))) void
+build_engram_context_graph(const ChipTaskArgs& orch_args) {
+    if (orch_args.tensor_count() != 6 || orch_args.scalar_count() != 6) {
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "expected 6 tensor args and 6 scalar args");
+        return;
     }
 
-    const float* table = orch_args.tensor(0).data_as<float>();
-    const int32_t* indices = orch_args.tensor(1).data_as<int32_t>();
-    const float* hidden = orch_args.tensor(2).data_as<float>();
-    const float* gate_weight = orch_args.tensor(3).data_as<float>();
-    float* output = orch_args.tensor(4).data_as<float>();
-    float* gate_state = orch_args.tensor(5).data_as<float>();
+    const ChipTensor& table = orch_args.tensor(0).ref();
+    const ChipTensor& indices = orch_args.tensor(1).ref();
+    const ChipTensor& hidden = orch_args.tensor(2).ref();
+    const ChipTensor& gate_weight = orch_args.tensor(3).ref();
+    const ChipTensor& output = orch_args.tensor(4).ref();
+    const ChipTensor& gate_state = orch_args.tensor(5).ref();
 
     const uint64_t batch = orch_args.scalar(0);
     const uint64_t table_rows = orch_args.scalar(1);
@@ -1496,59 +1586,73 @@ int build_engram_context_graph(OrchestrationRuntime* runtime, const ChipStorageT
 
     constexpr uint64_t kIndicesPerBatch = 8;
     if (batch != 1) {
-        std::cerr << "build_engram_context_graph: batch unsupported, got " << batch << '\\n';
-        return -1;
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "batch must be 1");
+        return;
     }
     if (hidden_size == 0 || table_rows < kIndicesPerBatch) {
-        std::cerr << "build_engram_context_graph: invalid table_rows/hidden_size\\n";
-        return -1;
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "invalid table_rows or hidden_size");
+        return;
     }
     if (chunk_offset > hidden_size || chunk_elems > hidden_size - chunk_offset) {
-        std::cerr << "build_engram_context_graph: invalid chunk range\\n";
-        return -1;
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "invalid chunk range");
+        return;
     }
-    if (orch_args.tensor(0).shapes[0] < table_rows * hidden_size ||
-        orch_args.tensor(1).shapes[0] < batch * kIndicesPerBatch ||
-        orch_args.tensor(2).shapes[0] < batch * hidden_size ||
-        orch_args.tensor(3).shapes[0] < batch * hidden_size ||
-        orch_args.tensor(4).shapes[0] < batch * hidden_size ||
-        orch_args.tensor(5).shapes[0] < batch) {
-        std::cerr << "build_engram_context_graph: tensor bytes too short\\n";
-        return -1;
+    if (table.shapes[0] < table_rows * hidden_size ||
+        indices.shapes[0] < batch * kIndicesPerBatch ||
+        hidden.shapes[0] < batch * hidden_size ||
+        gate_weight.shapes[0] < batch * hidden_size ||
+        output.shapes[0] < batch * hidden_size ||
+        gate_state.shapes[0] < batch) {
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "tensor payload too short");
+        return;
     }
 
     for (uint64_t b = 0; b < batch; ++b) {
         const uint64_t vector_base = b * hidden_size;
         const uint64_t index_base = b * kIndicesPerBatch;
-        float gate = gate_state[b];
+        uint32_t gate_index[1] = {static_cast<uint32_t>(b)};
+        float gate = get_tensor_data<float>(gate_state, 1, gate_index);
         if (chunk_offset == 0) {
             float dot = 0.0f;
             for (uint64_t d = 0; d < hidden_size; ++d) {
-                dot += hidden[vector_base + d] * gate_weight[vector_base + d];
+                uint32_t value_index[1] = {
+                    static_cast<uint32_t>(vector_base + d)};
+                dot += get_tensor_data<float>(hidden, 1, value_index) *
+                       get_tensor_data<float>(gate_weight, 1, value_index);
             }
             gate = 1.0f / (1.0f + expf(-(dot + bias)));
-            gate_state[b] = gate;
+            set_tensor_data(gate_state, 1, gate_index, gate);
         }
         for (uint64_t d = chunk_offset; d < chunk_offset + chunk_elems; ++d) {
             float table_sum = 0.0f;
             for (uint64_t slot = 0; slot < kIndicesPerBatch; ++slot) {
-                const int32_t row = indices[index_base + slot];
+                uint32_t index_index[1] = {
+                    static_cast<uint32_t>(index_base + slot)};
+                const int32_t row =
+                    get_tensor_data<int32_t>(indices, 1, index_index);
                 if (row < 0 || static_cast<uint64_t>(row) >= table_rows) {
-                    std::cerr << "build_engram_context_graph: index out of bounds\\n";
-                    return -1;
+                    rt_report_fatal(
+                        PTO2_ERROR_INVALID_ARGS, "index out of bounds");
+                    return;
                 }
-                table_sum += table[static_cast<uint64_t>(row) * hidden_size + d];
+                uint32_t table_index[1] = {static_cast<uint32_t>(
+                    static_cast<uint64_t>(row) * hidden_size + d)};
+                table_sum += get_tensor_data<float>(table, 1, table_index);
             }
             const float mean = table_sum / static_cast<float>(kIndicesPerBatch);
-            output[vector_base + d] = hidden[vector_base + d] + gate * mean;
+            uint32_t value_index[1] = {
+                static_cast<uint32_t>(vector_base + d)};
+            const float value =
+                get_tensor_data<float>(hidden, 1, value_index) + gate * mean;
+            set_tensor_data(output, 1, value_index, value);
         }
     }
 
-    uint64_t noop_args[1];
-    noop_args[0] = 0;
-    add_task(runtime, noop_args, 1, 0, CoreType::AIV);
-
-    return 0;
+    CoreTaskArgs noop_args;
+    noop_args.add_inout(output, gate_state);
+    rt_submit_aiv_task(0, noop_args);
 }
 
 }  // extern "C"
@@ -1584,61 +1688,48 @@ def write_host_deepseek_vector_orchestration(build_dir: Path) -> Path:
     source = build_dir / "host_deepseek_vector_orch.cpp"
     source.write_text(
         """\
-#include "orchestration_api.h"
+#include "pto_orchestration_api.h"
 #include <cstdint>
-#include <iostream>
 
 extern "C" {
 
-int build_deepseek_vector_graph(
-        OrchestrationRuntime* runtime,
-        const ChipStorageTaskArgs& orch_args) {
-    if (orch_args.tensor_count() < 4 || orch_args.scalar_count() < 11) {
-        std::cerr << "build_deepseek_vector_graph: expected 4 tensors and 11 scalars\\n";
-        return -1;
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {
+    (void)orch_args;
+    return PTO2OrchestrationConfig{.expected_arg_count = 15};
+}
+
+__attribute__((visibility("default"))) void
+build_deepseek_vector_graph(const ChipTaskArgs& orch_args) {
+    if (orch_args.tensor_count() != 4 || orch_args.scalar_count() != 11) {
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "expected 4 tensor args and 11 scalar args");
+        return;
     }
     const uint64_t len0 = orch_args.scalar(1);
     const uint64_t len1 = orch_args.scalar(2);
     const uint64_t len2 = orch_args.scalar(3);
     const uint64_t out_len = orch_args.scalar(4);
     if (out_len == 0 ||
-        orch_args.tensor(0).shapes[0] < (len0 == 0 ? 1 : len0) ||
-        orch_args.tensor(1).shapes[0] < (len1 == 0 ? 1 : len1) ||
-        orch_args.tensor(2).shapes[0] < (len2 == 0 ? 1 : len2) ||
-        orch_args.tensor(3).shapes[0] < out_len) {
-        std::cerr << "build_deepseek_vector_graph: tensor payload shorter than declared geometry\\n";
-        return -1;
+        orch_args.tensor(0).ref().shapes[0] < (len0 == 0 ? 1 : len0) ||
+        orch_args.tensor(1).ref().shapes[0] < (len1 == 0 ? 1 : len1) ||
+        orch_args.tensor(2).ref().shapes[0] < (len2 == 0 ? 1 : len2) ||
+        orch_args.tensor(3).ref().shapes[0] < out_len) {
+        rt_report_fatal(PTO2_ERROR_INVALID_ARGS, "tensor payload too short");
+        return;
     }
-    const size_t bytes0 = static_cast<size_t>((len0 == 0 ? 1 : len0) * sizeof(float));
-    const size_t bytes1 = static_cast<size_t>((len1 == 0 ? 1 : len1) * sizeof(float));
-    const size_t bytes2 = static_cast<size_t>((len2 == 0 ? 1 : len2) * sizeof(float));
-    const size_t output_bytes = static_cast<size_t>(out_len * sizeof(float));
-    void* dev0 = device_malloc(runtime, bytes0);
-    void* dev1 = device_malloc(runtime, bytes1);
-    void* dev2 = device_malloc(runtime, bytes2);
-    void* dev_out = device_malloc(runtime, output_bytes);
-    if (!dev0 || !dev1 || !dev2 || !dev_out ||
-        copy_to_device(runtime, dev0, orch_args.tensor(0).data_as<uint8_t>(), bytes0) != 0 ||
-        copy_to_device(runtime, dev1, orch_args.tensor(1).data_as<uint8_t>(), bytes1) != 0 ||
-        copy_to_device(runtime, dev2, orch_args.tensor(2).data_as<uint8_t>(), bytes2) != 0) {
-        std::cerr << "build_deepseek_vector_graph: allocation or input copy failed\\n";
-        return -1;
-    }
-    record_tensor_pair(
-        runtime,
-        orch_args.tensor(3).data_as<uint8_t>(),
-        dev_out,
-        output_bytes);
-    uint64_t task_args[15];
-    task_args[0] = reinterpret_cast<uint64_t>(dev0);
-    task_args[1] = reinterpret_cast<uint64_t>(dev1);
-    task_args[2] = reinterpret_cast<uint64_t>(dev2);
-    task_args[3] = reinterpret_cast<uint64_t>(dev_out);
+
+    CoreTaskArgs task_args;
+    task_args.add_input(
+        orch_args.tensor(0).ref(),
+        orch_args.tensor(1).ref(),
+        orch_args.tensor(2).ref());
+    task_args.add_output(orch_args.tensor(3).ref());
     for (uint64_t index = 0; index < 11; ++index) {
-        task_args[4 + index] = orch_args.scalar(index);
+        task_args.add_scalar(orch_args.scalar(index));
     }
-    add_task(runtime, task_args, 15, 0, CoreType::AIV);
-    return 0;
+    rt_submit_aiv_task(0, task_args);
 }
 
 }  // extern "C"
@@ -1654,6 +1745,8 @@ def write_host_deepseek_vector_kernel(build_dir: Path) -> Path:
 #include <cstdint>
 #include <cmath>
 #include <pto/pto-inst.hpp>
+
+#include "tensor.h"
 
 #ifndef __gm__
 #define __gm__
@@ -1830,10 +1923,26 @@ inline void rms_norm(
 }  // namespace
 
 extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args) {
-    __gm__ const float* input0 = reinterpret_cast<__gm__ const float*>(args[0]);
-    __gm__ const float* input1 = reinterpret_cast<__gm__ const float*>(args[1]);
-    __gm__ const float* input2 = reinterpret_cast<__gm__ const float*>(args[2]);
-    __gm__ float* output = reinterpret_cast<__gm__ float*>(args[3]);
+    __gm__ ChipTensor* input0_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[0]);
+    __gm__ ChipTensor* input1_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[1]);
+    __gm__ ChipTensor* input2_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[2]);
+    __gm__ ChipTensor* output_tensor =
+        reinterpret_cast<__gm__ ChipTensor*>(args[3]);
+    __gm__ const float* input0 =
+        reinterpret_cast<__gm__ const float*>(input0_tensor->buffer.addr) +
+        input0_tensor->start_offset;
+    __gm__ const float* input1 =
+        reinterpret_cast<__gm__ const float*>(input1_tensor->buffer.addr) +
+        input1_tensor->start_offset;
+    __gm__ const float* input2 =
+        reinterpret_cast<__gm__ const float*>(input2_tensor->buffer.addr) +
+        input2_tensor->start_offset;
+    __gm__ float* output =
+        reinterpret_cast<__gm__ float*>(output_tensor->buffer.addr) +
+        output_tensor->start_offset;
     const uint64_t operation = static_cast<uint64_t>(args[4]);
     const uint64_t len0 = static_cast<uint64_t>(args[5]);
     const uint64_t len1 = static_cast<uint64_t>(args[6]);
@@ -2332,6 +2441,7 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
         "example_root": str(example_root),
         "manifest": str(manifest_path),
         "orchestration": orchestration,
+        "sim_kernel_libgcc": args.sim_kernel_libgcc,
         "tile_batch": args.tile_batch if args.profile == "host_matmul" else None,
         "kernels": [
             {
@@ -2399,8 +2509,9 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit("host_deepseek_vector requires --platform a5sim")
     reuse_runtime = None
     if args.reuse_runtime_manifest:
-        reuse_manifest = json.loads(Path(args.reuse_runtime_manifest).read_text())
-        reuse_runtime = reuse_manifest["simpler_runtime"]
+        reuse_runtime = load_reuse_runtime_manifest(
+            Path(args.reuse_runtime_manifest)
+        )
 
     example_root = resolve_example_root(simpler_root, spec)
     os.environ["PTO_ISA_ROOT"] = str(pto_isa_root)
@@ -2418,6 +2529,9 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         KernelCompiler(platform=args.platform)
         if api_kind == "setup"
         else builder.get_kernel_compiler()
+    )
+    configure_sim_kernel_libgcc(
+        kernel_compiler, build_dir, args.sim_kernel_libgcc
     )
 
     runtime_name = "host_build_graph"
@@ -2459,6 +2573,9 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         runtime_name,
         str(orch_source),
         build_dir=str(build_dir),
+    )
+    incore_include_dirs = kernel_compiler.get_orchestration_include_dirs(
+        runtime_name
     )
 
     kernel_entries = []
@@ -2553,18 +2670,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             str(wrapped),
             core_type=kernel.core_type,
             pto_isa_root=str(pto_isa_root),
-            extra_include_dirs=[
-                str(
-                    (
-                        simpler_root
-                        / "src"
-                        / ("a5" if args.platform.startswith("a5") else "a2a3")
-                        / "runtime"
-                        / runtime_name
-                        / "runtime"
-                    ).resolve()
-                )
-            ],
+            extra_include_dirs=incore_include_dirs,
             build_dir=str(build_dir),
         )
         out_path = output_dir / f"kernel_func_{kernel.func_id}.bin"
@@ -2610,6 +2716,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         "platform": args.platform,
         "runtime_variant": "HostBuildGraph",
         "callable_hint": spec.callable_hint,
+        "sim_kernel_libgcc": args.sim_kernel_libgcc,
         "simpler_runtime": {
             "host_runtime_library": reuse_runtime["host_runtime_library"]
             if reuse_runtime is not None
@@ -2739,6 +2846,12 @@ def main() -> int:
     parser.add_argument("--gemm-n", type=int, default=128)
     parser.add_argument("--tile-batch", type=int, default=1)
     parser.add_argument("--reuse-runtime-manifest", default=None)
+    parser.add_argument(
+        "--sim-kernel-libgcc",
+        choices=("static", "shared"),
+        default="static",
+        help="link generated simulation kernels to static or host libgcc",
+    )
     parser.add_argument("--describe", action="store_true")
     args = parser.parse_args()
 

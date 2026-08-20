@@ -16466,8 +16466,13 @@ fn simpler_manifest_has_current_capi_abi(manifest_path: &Path) -> bool {
     else {
         return false;
     };
-    manifest["simpler_capi_abi_version"].as_u64() == Some(2)
+    manifest["simpler_capi_abi_version"].as_u64() == Some(3)
+        && simpler_manifest_uses_portable_sim_kernel(&manifest)
         && simpler_manifest_runtime_matches_current_build(&manifest)
+}
+
+fn simpler_manifest_uses_portable_sim_kernel(manifest: &serde_json::Value) -> bool {
+    manifest["sim_kernel_libgcc"].as_str() == Some("static")
 }
 
 fn simpler_manifest_runtime_matches_current_build(manifest: &serde_json::Value) -> bool {
@@ -16546,10 +16551,11 @@ fn simpler_host_engram_context_manifest_current(manifest_path: &Path) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         return false;
     };
-    value
-        .get("host_engram_context_manifest_version")
-        .and_then(|version| version.as_u64())
-        == Some(6)
+    simpler_manifest_has_current_capi_abi(manifest_path)
+        && value
+            .get("host_engram_context_manifest_version")
+            .and_then(|version| version.as_u64())
+            == Some(6)
         && value
             .get("simpler_runtime")
             .and_then(|runtime| runtime.get("runtime_env"))
@@ -16605,12 +16611,7 @@ fn simpler_engram_context_reuse_runtime_args() -> Result<Vec<std::ffi::OsString>
         .unwrap_or_else(|_| {
             PathBuf::from("/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json")
         });
-    if !matmul_manifest.exists() {
-        return Err(format!(
-            "missing_simpler_host_engram_context_reuse_runtime_manifest:{}",
-            matmul_manifest.display()
-        ));
-    }
+    ensure_simpler_host_matmul_manifest(&matmul_manifest)?;
     Ok(vec![
         std::ffi::OsString::from("--reuse-runtime-manifest"),
         matmul_manifest.into_os_string(),
@@ -16660,6 +16661,7 @@ pub fn ensure_simpler_host_gemm_manifest(
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
             if value["host_gemm_manifest_version"].as_u64() == Some(3)
+                && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest.host_gemm.as_ref().is_some_and(|geometry| {
                     geometry.m == m
@@ -16737,6 +16739,7 @@ pub fn ensure_simpler_host_fp32_gemm_manifest(
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
             if value["host_gemm_manifest_version"].as_u64() == Some(4)
+                && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest.host_gemm.as_ref().is_some_and(|geometry| {
                     geometry.m == m
@@ -16814,6 +16817,7 @@ pub fn ensure_simpler_host_quantized_gemm_manifest(
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
             if value["host_quantized_gemm_manifest_version"].as_u64() == Some(2)
+                && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest
                     .host_quantized_gemm
@@ -16898,6 +16902,7 @@ pub fn ensure_simpler_host_q8_block_dot_manifest(
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
             if value["host_q8_block_dot_manifest_version"].as_u64() == Some(3)
+                && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest.host_q8_block_dot.as_ref().is_some_and(|geometry| {
                     geometry.m == blocks
@@ -17043,7 +17048,7 @@ fn host_vector_backend_spec_from_manifest(
     input_b: MemoryEndpoint,
     output_f: MemoryEndpoint,
     size_bytes: u64,
-    elems: u64,
+    _elems: u64,
 ) -> Result<DispatchBackendSpec, String> {
     let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
         format!(
@@ -17071,10 +17076,6 @@ fn host_vector_backend_spec_from_manifest(
             endpoint: output_f,
             bytes: size_bytes,
         },
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(size_bytes),
-        SimplerRuntimeArg::ScalarU64(elems),
     ];
     let runtime = SimplerRuntimeArtifacts {
         host_runtime_library: manifest.simpler_runtime.host_runtime_library,
@@ -17105,7 +17106,7 @@ fn host_matmul_backend_spec_from_manifest(
     output_f: MemoryEndpoint,
     input_bytes: u64,
     output_bytes: u64,
-    elems: u64,
+    _elems: u64,
 ) -> Result<DispatchBackendSpec, String> {
     let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
         format!(
@@ -17137,11 +17138,6 @@ fn host_matmul_backend_spec_from_manifest(
             endpoint: output_f,
             bytes: output_bytes,
         },
-        SimplerRuntimeArg::ScalarU64(input_bytes),
-        SimplerRuntimeArg::ScalarU64(input_bytes),
-        SimplerRuntimeArg::ScalarU64(input_bytes),
-        SimplerRuntimeArg::ScalarU64(output_bytes),
-        SimplerRuntimeArg::ScalarU64(elems),
     ];
     let runtime = SimplerRuntimeArtifacts {
         host_runtime_library: manifest.simpler_runtime.host_runtime_library,
@@ -17628,7 +17624,7 @@ fn host_engram_context_backend_spec_from_manifest(
             endpoint: gate_weight,
             bytes: hidden_bytes,
         },
-        SimplerRuntimeArg::OutputSegment {
+        SimplerRuntimeArg::InoutSegment {
             endpoint: output,
             bytes: hidden_bytes,
         },
@@ -20069,7 +20065,7 @@ fn run_simpler_host_engram_context(
                 ),
                 dense_f32_binding(
                     "engram_context_output",
-                    BufferUsage::Output,
+                    BufferUsage::Inout,
                     output_endpoint.clone(),
                     hidden.len() as u64,
                 ),
@@ -29264,6 +29260,19 @@ mod tests {
             Some(previous) => std::env::set_var(name, previous),
             None => std::env::remove_var(name),
         }
+    }
+
+    #[test]
+    fn simpler_manifest_cache_requires_portable_sim_kernel_linkage() {
+        let portable = serde_json::json!({"sim_kernel_libgcc": "static"});
+        let host_bound = serde_json::json!({"sim_kernel_libgcc": "shared"});
+        let legacy = serde_json::json!({});
+
+        assert!(super::simpler_manifest_uses_portable_sim_kernel(&portable));
+        assert!(!super::simpler_manifest_uses_portable_sim_kernel(
+            &host_bound
+        ));
+        assert!(!super::simpler_manifest_uses_portable_sim_kernel(&legacy));
     }
 
     #[cfg(unix)]

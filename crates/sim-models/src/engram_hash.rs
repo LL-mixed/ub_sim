@@ -455,67 +455,51 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    fn parse_vendor_u64_constant(name: &str, text: &str) -> Option<u64> {
+    fn parse_guest_u64_define(name: &str, text: &str) -> Option<u64> {
         for line in text.lines() {
             let line = line.trim();
-            if !line.starts_with("constexpr uint64_t ")
-                && !line.starts_with("constexpr const char* ")
-            {
+            let prefix = format!("#define {name}");
+            if !line.starts_with(&prefix) {
                 continue;
             }
-            if !line.contains(name) {
-                continue;
-            }
-            let parts: Vec<&str> = line.split('=').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let value_token = parts[1].trim().trim_end_matches(';').trim();
-            let value_token = value_token.strip_suffix("ULL").unwrap_or(value_token);
-            let normalized = value_token.trim();
-            if let Some(raw) = normalized.strip_prefix("0x") {
+            let value = line[prefix.len()..].trim();
+            let value = value
+                .strip_prefix("UINT64_C(")
+                .and_then(|value| value.strip_suffix(')'))
+                .unwrap_or(value);
+            if let Some(raw) = value.strip_prefix("0x") {
                 return u64::from_str_radix(raw, 16).ok();
             }
-            if normalized.starts_with('"') && normalized.ends_with('"') {
-                continue;
-            }
-            return normalized.parse::<u64>().ok();
+            return value.parse::<u64>().ok();
         }
         None
     }
 
-    fn parse_vendor_string_constant(name: &str, text: &str) -> Option<String> {
+    fn parse_guest_string_define(name: &str, text: &str) -> Option<String> {
         for line in text.lines() {
             let line = line.trim();
-            if !line.starts_with("constexpr const char*") {
+            let prefix = format!("#define {name}");
+            if !line.starts_with(&prefix) {
                 continue;
             }
-            if !line.contains(name) {
-                continue;
-            }
-            let parts: Vec<&str> = line.split('=').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let value_token = parts[1].trim().trim_end_matches(';').trim();
-            let value = value_token.trim_matches('"');
+            let value = line[prefix.len()..].trim().trim_matches('"');
             return Some(value.to_string());
         }
         None
     }
 
     #[test]
-    fn hash_constants_match_vendor_header() {
+    fn hash_constants_match_guest_header() {
         let header_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../vendor/pto-isa/kernels/manual/a5/engram_simt/engram_common.h");
-        let header =
-            fs::read_to_string(&header_path).expect("read engram_common.h from vendor workspace");
-        let offset = parse_vendor_u64_constant("ENGRAM_FNV1A_OFFSET_BASIS", &header)
-            .expect("vendor offset basis constant");
-        let prime = parse_vendor_u64_constant("ENGRAM_FNV1A_PRIME", &header)
-            .expect("vendor prime constant");
-        let algorithm = parse_vendor_string_constant("ENGRAM_HASH_ALGORITHM_V1", &header)
-            .expect("vendor algorithm string");
+            .join("../../guest-linux/aarch64/common/paper_engram_hash.h");
+        let header = fs::read_to_string(&header_path)
+            .expect("read paper_engram_hash.h from guest workspace");
+        let offset = parse_guest_u64_define("PAPER_ENGRAM_FNV1A_OFFSET_BASIS", &header)
+            .expect("guest offset basis constant");
+        let prime = parse_guest_u64_define("PAPER_ENGRAM_FNV1A_PRIME", &header)
+            .expect("guest prime constant");
+        let algorithm = parse_guest_string_define("PAPER_ENGRAM_HASH_ALGORITHM_V1", &header)
+            .expect("guest algorithm string");
         assert_eq!(offset, ENGRAM_HASH_OFFSET_BASIS);
         assert_eq!(prime, ENGRAM_HASH_PRIME);
         assert_eq!(algorithm, ENGRAM_HASH_ALGORITHM_VERSION);
