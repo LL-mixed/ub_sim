@@ -11,8 +11,8 @@
       .stage { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; }
       .stage-final { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.6; }
       .sync { fill: #bbf7d0; stroke: #15803d; stroke-width: 1.1; }
-      .p2a { fill: #fde68a; stroke: #b45309; stroke-width: 1.1; }
-      .p2b { fill: #bfdbfe; stroke: #1d4ed8; stroke-width: 1.1; }
+      .submit-await { fill: #fde68a; stroke: #b45309; stroke-width: 1.1; }
+      .async-load { fill: #bfdbfe; stroke: #1d4ed8; stroke-width: 1.1; }
       .fallback { fill: #fee2e2; stroke: #dc2626; stroke-width: 1.2; }
       .arrow { stroke: #64748b; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
       .guide { stroke: #e2e8f0; stroke-width: 1; }
@@ -73,43 +73,43 @@
     <rect x="92" y="55" width="220" height="27" rx="4" class="sync"/>
     <text x="322" y="74" class="count">sync 11</text>
     <rect x="430" y="55" width="280" height="27" rx="5" class="fallback"/>
-    <text x="570" y="73" text-anchor="middle" class="small">2 个 P2B fastest 点未过发布阈值</text>
+    <text x="570" y="73" text-anchor="middle" class="small">2 个 async load fastest 点未过发布阈值</text>
 
     <text x="0" y="124" class="body">L=50 µs</text>
     <rect x="92" y="105" width="360" height="27" rx="4" class="sync"/>
-    <rect x="452" y="105" width="140" height="27" rx="4" class="p2b"/>
-    <text x="602" y="124" class="count">sync 18 · P2B 7</text>
+    <rect x="452" y="105" width="140" height="27" rx="4" class="async-load"/>
+    <text x="602" y="124" class="count">sync 18 · async load 7</text>
 
     <text x="0" y="174" class="body">L=75 µs</text>
-    <rect x="92" y="155" width="340" height="27" rx="4" class="p2b"/>
-    <text x="442" y="174" class="count">P2B 17</text>
+    <rect x="92" y="155" width="340" height="27" rx="4" class="async-load"/>
+    <text x="442" y="174" class="count">async load 17</text>
 
     <text x="0" y="224" class="body">L=150 µs</text>
-    <rect x="92" y="205" width="40" height="27" rx="4" class="p2b"/>
-    <text x="142" y="224" class="count">P2B 2</text>
+    <rect x="92" y="205" width="40" height="27" rx="4" class="async-load"/>
+    <text x="142" y="224" class="count">async load 2</text>
 
     <text x="0" y="274" class="body">L=250 µs</text>
-    <rect x="92" y="255" width="40" height="27" rx="4" class="p2a"/>
-    <rect x="132" y="255" width="40" height="27" rx="4" class="p2b"/>
-    <text x="182" y="274" class="count">P2A 2 · P2B 2</text>
+    <rect x="92" y="255" width="40" height="27" rx="4" class="submit-await"/>
+    <rect x="132" y="255" width="40" height="27" rx="4" class="async-load"/>
+    <text x="182" y="274" class="count">submit/await 2 · async load 2</text>
 
     <text x="0" y="324" class="body">L=500 µs</text>
-    <rect x="92" y="305" width="40" height="27" rx="4" class="p2a"/>
-    <rect x="132" y="305" width="60" height="27" rx="4" class="p2b"/>
-    <text x="202" y="324" class="count">P2A 2 · P2B 3</text>
+    <rect x="92" y="305" width="40" height="27" rx="4" class="submit-await"/>
+    <rect x="132" y="305" width="60" height="27" rx="4" class="async-load"/>
+    <text x="202" y="324" class="count">submit/await 2 · async load 3</text>
 
     <text x="0" y="374" class="body">L=750 µs</text>
-    <rect x="92" y="355" width="60" height="27" rx="4" class="p2a"/>
-    <text x="162" y="374" class="count">P2A 3</text>
+    <rect x="92" y="355" width="60" height="27" rx="4" class="submit-await"/>
+    <text x="162" y="374" class="count">submit/await 3</text>
   </g>
 
   <g transform="translate(60 735)">
     <rect x="0" y="0" width="16" height="16" rx="3" class="sync"/>
     <text x="24" y="13" class="small">sync</text>
-    <rect x="90" y="0" width="16" height="16" rx="3" class="p2a"/>
-    <text x="114" y="13" class="small">P2A</text>
-    <rect x="188" y="0" width="16" height="16" rx="3" class="p2b"/>
-    <text x="212" y="13" class="small">P2B</text>
+    <rect x="90" y="0" width="16" height="16" rx="3" class="submit-await"/>
+    <text x="114" y="13" class="small">submit/await</text>
+    <rect x="188" y="0" width="16" height="16" rx="3" class="async-load"/>
+    <text x="212" y="13" class="small">async load</text>
     <rect x="286" y="0" width="16" height="16" rx="3" class="fallback"/>
     <text x="310" y="13" class="small">measured fastest，但发布 gate 失败</text>
   </g>
@@ -121,29 +121,29 @@
   <g transform="translate(890 320)">
     <text x="0" y="0" class="body">Measured fastest</text>
     <rect x="0" y="15" width="174" height="32" rx="4" class="sync"/>
-    <rect x="174" y="15" width="42" height="32" rx="4" class="p2a"/>
-    <rect x="216" y="15" width="204" height="32" rx="4" class="p2b"/>
-    <text x="0" y="68" class="count">sync 29 · P2A 7 · P2B 34</text>
+    <rect x="174" y="15" width="42" height="32" rx="4" class="submit-await"/>
+    <rect x="216" y="15" width="204" height="32" rx="4" class="async-load"/>
+    <text x="0" y="68" class="count">sync 29 · submit/await 7 · async load 34</text>
 
     <text x="0" y="115" class="body">Transparent policy（普通 LDR）</text>
     <rect x="0" y="130" width="192" height="32" rx="4" class="sync"/>
-    <rect x="192" y="130" width="228" height="32" rx="4" class="p2b"/>
-    <text x="0" y="183" class="count">sync 32 · P2B 38</text>
+    <rect x="192" y="130" width="228" height="32" rx="4" class="async-load"/>
+    <text x="0" y="183" class="count">sync 32 · async load 38</text>
 
     <text x="0" y="230" class="body">Explicit policy（submit / await）</text>
     <rect x="0" y="245" width="192" height="32" rx="4" class="sync"/>
-    <rect x="192" y="245" width="42" height="32" rx="4" class="p2a"/>
-    <rect x="234" y="245" width="186" height="32" rx="4" class="p2b"/>
-    <text x="0" y="298" class="count">sync 32 · P2A 7 · P2B 31</text>
+    <rect x="192" y="245" width="42" height="32" rx="4" class="submit-await"/>
+    <rect x="234" y="245" width="186" height="32" rx="4" class="async-load"/>
+    <text x="0" y="298" class="count">sync 32 · submit/await 7 · async load 31</text>
   </g>
 
   <rect x="890" y="650" width="450" height="95" rx="10" class="fallback"/>
   <text x="910" y="677" class="heading">Fail-closed 结果</text>
-  <text x="910" y="703" class="body">3 个 P2B measured-fastest endpoint 回退 sync：</text>
+  <text x="910" y="703" class="body">3 个 async load measured-fastest endpoint 回退 sync：</text>
   <text x="910" y="727" class="small">L30/C2/W1000、L30/C4/W1000、L50/C2/W100</text>
 
   <rect x="35" y="805" width="1330" height="88" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.3"/>
   <text x="60" y="835" class="heading">运行时解释</text>
-  <text x="60" y="861" class="body">透明接口只在 sync/P2B 中选择；显式接口可选择 sync/P2A/P2B。未测 bucket、artifact/gate 异常、空 ready queue override 均回退 sync。</text>
-  <text x="60" y="883" class="small">该图验证当前 QEMU PoC 的离散边界；native SCC 的正式临界面仍需端到端硬件 paired benchmark。</text>
+  <text x="60" y="861" class="body">透明接口只在 sync/async load 中选择；显式接口可选择 sync、submit/await、async load。未测 bucket、artifact/gate 异常、空 ready queue override 均回退 sync。</text>
+  <text x="60" y="883" class="small">该图验证当前 QEMU PoC 的离散边界；native coroutine scheduler 的正式临界面仍需端到端硬件 paired benchmark。</text>
 </svg>

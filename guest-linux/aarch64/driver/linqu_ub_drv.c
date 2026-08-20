@@ -21,13 +21,13 @@
 #include <linux/uaccess.h>
 #include <linux/wait.h>
 #include <ub/obmm_async.h>
-#include <ub/obmm_scc.h>
+#include <ub/obmm_async_load.h>
 
 #define LINQU_UB_REG_IRQ_STATUS 0x078
 #define LINQU_UB_REG_IRQ_ACK    0x080
 #define LINQU_UB_ENDPOINT1_OFFSET 0x1000
 #define LINQU_UB_OBMM_ASYNC_OFFSET 0x2000
-#define LINQU_UB_OBMM_SCC_OFFSET 0x3000
+#define LINQU_UB_OBMM_ASYNC_LOAD_OFFSET 0x3000
 
 #define OBMM_ASYNC_REG_VERSION_CAPS 0x000
 #define OBMM_ASYNC_REG_STATUS 0x008
@@ -61,49 +61,49 @@
 #define OBMM_ASYNC_REG_OBSERVABILITY_BASE 0x200
 #define OBMM_ASYNC_OBSERVABILITY_VALUES 21
 
-#define OBMM_SCC_REG_VERSION_CAPS 0x000
-#define OBMM_SCC_REG_STATUS 0x008
-#define OBMM_SCC_REG_LAST_ERROR 0x010
-#define OBMM_SCC_REG_OWNER_GENERATION 0x018
-#define OBMM_SCC_REG_MAP_GSVA_BASE 0x020
-#define OBMM_SCC_REG_MAP_LOCAL_PA 0x028
-#define OBMM_SCC_REG_MAP_LENGTH 0x030
-#define OBMM_SCC_REG_MAP_ID 0x038
-#define OBMM_SCC_REG_MAP_GENERATION 0x040
-#define OBMM_SCC_REG_MAP_COMMAND 0x048
-#define OBMM_SCC_REG_SESSION_COMMAND 0x0a0
-#define OBMM_SCC_REG_CLOCK_MHZ 0x0f8
-#define OBMM_SCC_REG_LOAD_TIMEOUT_NS 0x100
-#define OBMM_SCC_REG_OWNER_TTBR0 0x108
-#define OBMM_SCC_REG_MAP_MODEL_GENERATION 0x110
-#define OBMM_SCC_REG_MAP_FLAGS 0x118
-#define OBMM_SCC_REG_UPCALL_ENTRY 0x120
-#define OBMM_SCC_REG_LOGICAL_CONTEXTS 0x128
-#define OBMM_SCC_REG_EVENT_SEQUENCE 0x138
-#define OBMM_SCC_REG_EVENT_CONTEXT_ID 0x140
-#define OBMM_SCC_REG_EVENT_PLT_TOKEN 0x148
-#define OBMM_SCC_REG_EVENT_INTERRUPTED_PC 0x150
-#define OBMM_SCC_REG_EVENT_FAULT_PC 0x158
-#define OBMM_SCC_REG_EVENT_VA 0x160
-#define OBMM_SCC_REG_EVENT_VALUE 0x168
-#define OBMM_SCC_REG_EVENT_KIND_STATUS 0x170
-#define OBMM_SCC_REG_EVENT_META 0x178
-#define OBMM_SCC_REG_EVENT_COMMAND 0x180
-#define OBMM_SCC_REG_SCHEDULER_COMMAND 0x188
-#define OBMM_SCC_REG_SESSION_FLAGS 0x190
-#define OBMM_SCC_REG_CAPABILITIES 0x198
-#define OBMM_SCC_REG_STATS_BASE 0x200
-#define OBMM_SCC_REG_OBSERVABILITY_BASE \
-	(OBMM_SCC_REG_STATS_BASE + 17 * 8)
-#define OBMM_SCC_OBSERVABILITY_VALUES 17
-#define OBMM_SCC_REG_REPLAY_STATS_BASE 0x400
-#define OBMM_SCC_MAX_LOAD_TIMEOUT_NS 10000000000ULL
+#define OBMM_ASYNC_LOAD_REG_VERSION_CAPS 0x000
+#define OBMM_ASYNC_LOAD_REG_STATUS 0x008
+#define OBMM_ASYNC_LOAD_REG_LAST_ERROR 0x010
+#define OBMM_ASYNC_LOAD_REG_OWNER_GENERATION 0x018
+#define OBMM_ASYNC_LOAD_REG_MAP_GSVA_BASE 0x020
+#define OBMM_ASYNC_LOAD_REG_MAP_LOCAL_PA 0x028
+#define OBMM_ASYNC_LOAD_REG_MAP_LENGTH 0x030
+#define OBMM_ASYNC_LOAD_REG_MAP_ID 0x038
+#define OBMM_ASYNC_LOAD_REG_MAP_GENERATION 0x040
+#define OBMM_ASYNC_LOAD_REG_MAP_COMMAND 0x048
+#define OBMM_ASYNC_LOAD_REG_SESSION_COMMAND 0x0a0
+#define OBMM_ASYNC_LOAD_REG_CLOCK_MHZ 0x0f8
+#define OBMM_ASYNC_LOAD_REG_LOAD_TIMEOUT_NS 0x100
+#define OBMM_ASYNC_LOAD_REG_OWNER_TTBR0 0x108
+#define OBMM_ASYNC_LOAD_REG_MAP_MODEL_GENERATION 0x110
+#define OBMM_ASYNC_LOAD_REG_MAP_FLAGS 0x118
+#define OBMM_ASYNC_LOAD_REG_UPCALL_ENTRY 0x120
+#define OBMM_ASYNC_LOAD_REG_LOGICAL_CONTEXTS 0x128
+#define OBMM_ASYNC_LOAD_REG_EVENT_SEQUENCE 0x138
+#define OBMM_ASYNC_LOAD_REG_EVENT_CONTEXT_ID 0x140
+#define OBMM_ASYNC_LOAD_REG_EVENT_PLT_TOKEN 0x148
+#define OBMM_ASYNC_LOAD_REG_EVENT_INTERRUPTED_PC 0x150
+#define OBMM_ASYNC_LOAD_REG_EVENT_FAULT_PC 0x158
+#define OBMM_ASYNC_LOAD_REG_EVENT_VA 0x160
+#define OBMM_ASYNC_LOAD_REG_EVENT_VALUE 0x168
+#define OBMM_ASYNC_LOAD_REG_EVENT_KIND_STATUS 0x170
+#define OBMM_ASYNC_LOAD_REG_EVENT_META 0x178
+#define OBMM_ASYNC_LOAD_REG_EVENT_COMMAND 0x180
+#define OBMM_ASYNC_LOAD_REG_SCHEDULER_COMMAND 0x188
+#define OBMM_ASYNC_LOAD_REG_SESSION_FLAGS 0x190
+#define OBMM_ASYNC_LOAD_REG_CAPABILITIES 0x198
+#define OBMM_ASYNC_LOAD_REG_STATS_BASE 0x200
+#define OBMM_ASYNC_LOAD_REG_OBSERVABILITY_BASE \
+	(OBMM_ASYNC_LOAD_REG_STATS_BASE + 17 * 8)
+#define OBMM_ASYNC_LOAD_OBSERVABILITY_VALUES 17
+#define OBMM_ASYNC_LOAD_REG_REPLAY_STATS_BASE 0x400
+#define OBMM_ASYNC_LOAD_MAX_LOAD_TIMEOUT_NS 10000000000ULL
 
-#define OBMM_SCC_STATUS_ACTIVE BIT(0)
-#define OBMM_SCC_STATUS_FAIL_STOP BIT(1)
-#define OBMM_SCC_STATUS_EVENT_PENDING BIT(3)
-#define OBMM_SCC_STATUS_EVENT_DELIVERED BIT(4)
-#define OBMM_SCC_STATUS_UPCALL_ACTIVE BIT(5)
+#define OBMM_ASYNC_LOAD_STATUS_ACTIVE BIT(0)
+#define OBMM_ASYNC_LOAD_STATUS_FAIL_STOP BIT(1)
+#define OBMM_ASYNC_LOAD_STATUS_EVENT_PENDING BIT(3)
+#define OBMM_ASYNC_LOAD_STATUS_EVENT_DELIVERED BIT(4)
+#define OBMM_ASYNC_LOAD_STATUS_UPCALL_ACTIVE BIT(5)
 
 #define OBMM_ASYNC_QUEUE_BYTES \
 	(2 * OBMM_ASYNC_QUEUE_DEPTH * OBMM_ASYNC_SLOT_BYTES)
@@ -119,26 +119,26 @@ static_assert(offsetof(struct obmm_async_sq_entry_v1, user_data) == 56);
 static_assert(offsetof(struct obmm_async_cq_entry_v1, token) == 8);
 static_assert(offsetof(struct obmm_async_cq_entry_v1, reserved) == 56);
 static_assert(sizeof(struct obmm_async_observability_v1) == 168);
-static_assert(sizeof(struct obmm_scc_context_v2) ==
-	      OBMM_SCC_CONTEXT_STATE_BYTES);
-static_assert(offsetof(struct obmm_scc_context_v2, x) == 16);
-static_assert(offsetof(struct obmm_scc_context_v2, sp) == 264);
-static_assert(offsetof(struct obmm_scc_context_v2, pc) == 272);
-static_assert(offsetof(struct obmm_scc_context_v2, q) == 288);
-static_assert(offsetof(struct obmm_scc_context_v2, fpcr) == 800);
-static_assert(sizeof(struct obmm_scc_caps_v2) == 64);
-static_assert(sizeof(struct obmm_scc_map_register_v1) == 64);
-static_assert(sizeof(struct obmm_scc_start_v2) == 40);
-static_assert(sizeof(struct obmm_scc_event_v2) == 72);
-static_assert(sizeof(struct obmm_scc_stats_v2) == 152);
-static_assert(sizeof(struct obmm_scc_observability_v2) == 144);
+static_assert(sizeof(struct obmm_async_load_context_v2) ==
+	      OBMM_ASYNC_LOAD_CONTEXT_STATE_BYTES);
+static_assert(offsetof(struct obmm_async_load_context_v2, x) == 16);
+static_assert(offsetof(struct obmm_async_load_context_v2, sp) == 264);
+static_assert(offsetof(struct obmm_async_load_context_v2, pc) == 272);
+static_assert(offsetof(struct obmm_async_load_context_v2, q) == 288);
+static_assert(offsetof(struct obmm_async_load_context_v2, fpcr) == 800);
+static_assert(sizeof(struct obmm_async_load_caps_v2) == 64);
+static_assert(sizeof(struct obmm_async_load_map_register_v1) == 64);
+static_assert(sizeof(struct obmm_async_load_start_v2) == 40);
+static_assert(sizeof(struct obmm_async_load_event_v2) == 72);
+static_assert(sizeof(struct obmm_async_load_stats_v2) == 152);
+static_assert(sizeof(struct obmm_async_load_observability_v2) == 144);
 
-struct linqu_obmm_scc_map {
+struct linqu_obmm_async_load_map {
 	bool allocated;
 	u64 generation;
 };
 
-struct linqu_scc_file {
+struct linqu_async_load_file {
 	struct linqu_ub_drv *drv;
 	struct mutex lock;
 	pid_t owner_tgid;
@@ -150,7 +150,7 @@ struct linqu_scc_file {
 	u16 context_entries;
 	u16 pending_load_entries;
 	u16 event_queue_depth;
-	struct linqu_obmm_scc_map maps[OBMM_SCC_MAX_PENDING_LOADS];
+	struct linqu_obmm_async_load_map maps[OBMM_ASYNC_LOAD_MAX_PENDING_LOADS];
 };
 
 struct linqu_obmm_async_buffer {
@@ -186,22 +186,22 @@ struct linqu_ub_drv {
 	void __iomem *mmio;
 	u8 __iomem *ep_mmio;
 	u8 __iomem *obmm_async_mmio;
-	u8 __iomem *obmm_scc_mmio;
+	u8 __iomem *obmm_async_load_mmio;
 	int irq;
 	wait_queue_head_t waitq;
 	/* Serializes the legacy endpoint file and interrupt state. */
 	struct mutex lock;
-	/* Serializes P2A queue and P2B scheduler-core ownership. */
+	/* Serializes submit/await queue and async-load endpoint ownership. */
 	struct mutex queue_lock;
 	struct cdev cdev;
-	struct cdev scc_cdev;
+	struct cdev async_load_cdev;
 	dev_t devt;
 	struct class *class;
 	bool event_pending;
 	u64 irq_count;
 	u64 last_irq_status;
 	struct linqu_ub_file *active_file;
-	struct linqu_scc_file *active_scc_file;
+	struct linqu_async_load_file *active_async_load_file;
 	u32 next_queue_id;
 };
 
@@ -703,11 +703,11 @@ static long linqu_ub_ioctl(struct file *file, unsigned int cmd,
 	}
 }
 
-static int linqu_scc_open(struct inode *inode, struct file *file)
+static int linqu_async_load_open(struct inode *inode, struct file *file)
 {
 	struct linqu_ub_drv *drv = container_of(inode->i_cdev,
-						struct linqu_ub_drv, scc_cdev);
-	struct linqu_scc_file *ctx;
+						struct linqu_ub_drv, async_load_cdev);
+	struct linqu_async_load_file *ctx;
 	u64 version;
 
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
@@ -719,46 +719,46 @@ static int linqu_scc_open(struct inode *inode, struct file *file)
 	ctx->next_map_generation = 1;
 
 	mutex_lock(&drv->queue_lock);
-	if (drv->active_scc_file) {
+	if (drv->active_async_load_file) {
 		mutex_unlock(&drv->queue_lock);
 		kfree(ctx);
 		return -EBUSY;
 	}
-	version = readq(drv->obmm_scc_mmio + OBMM_SCC_REG_VERSION_CAPS);
+	version = readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_VERSION_CAPS);
 	ctx->context_entries = version >> 16;
 	ctx->pending_load_entries = version >> 32;
 	ctx->event_queue_depth = version >> 48;
-	if ((u16)version != OBMM_SCC_ABI_VERSION ||
+	if ((u16)version != OBMM_ASYNC_LOAD_ABI_VERSION ||
 	    !ctx->context_entries ||
-	    ctx->context_entries > OBMM_SCC_MAX_CONTEXTS ||
+	    ctx->context_entries > OBMM_ASYNC_LOAD_MAX_CONTEXTS ||
 	    !ctx->pending_load_entries ||
-	    ctx->pending_load_entries > OBMM_SCC_MAX_PENDING_LOADS ||
+	    ctx->pending_load_entries > OBMM_ASYNC_LOAD_MAX_PENDING_LOADS ||
 	    !ctx->event_queue_depth ||
-	    ctx->event_queue_depth > OBMM_SCC_MAX_EVENTS) {
+	    ctx->event_queue_depth > OBMM_ASYNC_LOAD_MAX_EVENTS) {
 		mutex_unlock(&drv->queue_lock);
 		kfree(ctx);
 		return -ENODEV;
 	}
-	ctx->owner_generation = readq(drv->obmm_scc_mmio +
-				      OBMM_SCC_REG_OWNER_GENERATION);
-	ctx->capabilities = OBMM_SCC_CAP_SCALAR_1 |
-		OBMM_SCC_CAP_SCALAR_2 | OBMM_SCC_CAP_SCALAR_4 |
-		OBMM_SCC_CAP_SCALAR_8 | OBMM_SCC_CAP_XZR |
-		OBMM_SCC_CAP_DIRECT_EL0_UPCALL | OBMM_SCC_CAP_EL0_RESUME |
-		OBMM_SCC_CAP_FULL_CONTEXT |
-		readq(drv->obmm_scc_mmio + OBMM_SCC_REG_CAPABILITIES);
-	drv->active_scc_file = ctx;
+	ctx->owner_generation = readq(drv->obmm_async_load_mmio +
+				      OBMM_ASYNC_LOAD_REG_OWNER_GENERATION);
+	ctx->capabilities = OBMM_ASYNC_LOAD_CAP_SCALAR_1 |
+		OBMM_ASYNC_LOAD_CAP_SCALAR_2 | OBMM_ASYNC_LOAD_CAP_SCALAR_4 |
+		OBMM_ASYNC_LOAD_CAP_SCALAR_8 | OBMM_ASYNC_LOAD_CAP_XZR |
+		OBMM_ASYNC_LOAD_CAP_DIRECT_EL0_UPCALL | OBMM_ASYNC_LOAD_CAP_EL0_RESUME |
+		OBMM_ASYNC_LOAD_CAP_FULL_CONTEXT |
+		readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_CAPABILITIES);
+	drv->active_async_load_file = ctx;
 	mutex_unlock(&drv->queue_lock);
 	file->private_data = ctx;
 	return 0;
 }
 
-static bool linqu_scc_owner(const struct linqu_scc_file *ctx)
+static bool linqu_async_load_owner(const struct linqu_async_load_file *ctx)
 {
 	return task_tgid_nr(current) == ctx->owner_tgid;
 }
 
-static void linqu_scc_unregister_all(struct linqu_scc_file *ctx)
+static void linqu_async_load_unregister_all(struct linqu_async_load_file *ctx)
 {
 	struct linqu_ub_drv *drv = ctx->drv;
 	u32 index;
@@ -767,56 +767,56 @@ static void linqu_scc_unregister_all(struct linqu_scc_file *ctx)
 		if (!ctx->maps[index].allocated)
 			continue;
 		writeq(index + 1,
-		       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_ID);
+		       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_ID);
 		writeq(ctx->maps[index].generation,
-		       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_GENERATION);
-		writeq(2, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_COMMAND);
+		       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_GENERATION);
+		writeq(2, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_COMMAND);
 		ctx->maps[index].allocated = false;
 	}
 }
 
-static int linqu_scc_release(struct inode *inode, struct file *file)
+static int linqu_async_load_release(struct inode *inode, struct file *file)
 {
-	struct linqu_scc_file *ctx = file->private_data;
+	struct linqu_async_load_file *ctx = file->private_data;
 	struct linqu_ub_drv *drv = ctx->drv;
 
 	mutex_lock(&drv->queue_lock);
 	if (ctx->started)
-		writeq(2, drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_COMMAND);
-	linqu_scc_unregister_all(ctx);
-	if (drv->active_scc_file == ctx)
-		drv->active_scc_file = NULL;
+		writeq(2, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_COMMAND);
+	linqu_async_load_unregister_all(ctx);
+	if (drv->active_async_load_file == ctx)
+		drv->active_async_load_file = NULL;
 	mutex_unlock(&drv->queue_lock);
 	kfree(ctx);
 	return 0;
 }
 
-static long linqu_scc_query_caps(struct linqu_scc_file *ctx,
+static long linqu_async_load_query_caps(struct linqu_async_load_file *ctx,
 				 unsigned long arg)
 {
-	u64 version = readq(ctx->drv->obmm_scc_mmio +
-			    OBMM_SCC_REG_VERSION_CAPS);
-	struct obmm_scc_caps_v2 caps = {
+	u64 version = readq(ctx->drv->obmm_async_load_mmio +
+			    OBMM_ASYNC_LOAD_REG_VERSION_CAPS);
+	struct obmm_async_load_caps_v2 caps = {
 		.abi_version = version & 0xffff,
 		.context_entries = (version >> 16) & 0xffff,
 		.pending_load_entries = (version >> 32) & 0xffff,
 		.event_queue_depth = (version >> 48) & 0xffff,
-		.context_state_bytes = OBMM_SCC_CONTEXT_STATE_BYTES,
+		.context_state_bytes = OBMM_ASYNC_LOAD_CONTEXT_STATE_BYTES,
 		.capabilities = ctx->capabilities,
 		.owner_generation = ctx->owner_generation,
-		.clock_mhz = readq(ctx->drv->obmm_scc_mmio +
-				  OBMM_SCC_REG_CLOCK_MHZ),
-		.resume_hlt_imm = OBMM_SCC_RESUME_HLT_IMM,
+		.clock_mhz = readq(ctx->drv->obmm_async_load_mmio +
+				  OBMM_ASYNC_LOAD_REG_CLOCK_MHZ),
+		.resume_hlt_imm = OBMM_ASYNC_LOAD_RESUME_HLT_IMM,
 	};
 
 	return copy_to_user((void __user *)arg, &caps, sizeof(caps)) ?
 		-EFAULT : 0;
 }
 
-static long linqu_scc_register_map(struct linqu_scc_file *ctx,
+static long linqu_async_load_register_map(struct linqu_async_load_file *ctx,
 				   unsigned long arg)
 {
-	struct obmm_scc_map_register_v1 request;
+	struct obmm_async_load_map_register_v1 request;
 	struct linqu_ub_drv *drv = ctx->drv;
 	struct vm_area_struct *vma;
 	struct fd obmm_file;
@@ -829,12 +829,12 @@ static long linqu_scc_register_map(struct linqu_scc_file *ctx,
 
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
 		return -EFAULT;
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	if (!request.mem_id || !request.gsva_base ||
 	    request.mapped_addr != request.gsva_base || !request.length ||
 	    request.gsva_base > U64_MAX - request.length ||
-	    request.flags & ~OBMM_SCC_MAP_LOGICAL_MIXED ||
+	    request.flags & ~OBMM_ASYNC_LOAD_MAP_LOGICAL_MIXED ||
 	    !IS_ALIGNED(request.gsva_base, PAGE_SIZE) ||
 	    !IS_ALIGNED(request.length, PAGE_SIZE) ||
 	    request.mapping_fd < 0 || request.policy_id ||
@@ -888,45 +888,45 @@ out_unlock:
 	request.map_generation = ctx->next_map_generation;
 
 	writeq(request.gsva_base,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_GSVA_BASE);
-	writeq(local_pa, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_LOCAL_PA);
-	writeq(request.length, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_LENGTH);
-	writeq(request.policy_id, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_ID);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_GSVA_BASE);
+	writeq(local_pa, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_LOCAL_PA);
+	writeq(request.length, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_LENGTH);
+	writeq(request.policy_id, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_ID);
 	writeq(request.map_generation,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_GENERATION);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_GENERATION);
 	writeq(request.model_phase_generation,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_MODEL_GENERATION);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_MODEL_GENERATION);
 	writeq(request.flags,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_FLAGS);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_FLAGS);
 	/* Publish the complete map descriptor before the command doorbell. */
 	wmb();
-	writeq(1, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_COMMAND);
-	if (readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR))
+	writeq(1, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_COMMAND);
+	if (readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LAST_ERROR))
 		return -EIO;
 	ctx->maps[index].allocated = true;
 	ctx->maps[index].generation = request.map_generation;
 	if (copy_to_user((void __user *)arg, &request, sizeof(request))) {
 		writeq(request.policy_id,
-		       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_ID);
+		       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_ID);
 		writeq(request.map_generation,
-		       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_GENERATION);
-		writeq(2, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_COMMAND);
+		       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_GENERATION);
+		writeq(2, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_COMMAND);
 		ctx->maps[index].allocated = false;
 		return -EFAULT;
 	}
 	return 0;
 }
 
-static long linqu_scc_unregister_map(struct linqu_scc_file *ctx,
+static long linqu_async_load_unregister_map(struct linqu_async_load_file *ctx,
 				     unsigned long arg)
 {
-	struct obmm_scc_map_unregister_v1 request;
+	struct obmm_async_load_map_unregister_v1 request;
 	struct linqu_ub_drv *drv = ctx->drv;
 	u32 index;
 
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
 		return -EFAULT;
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	if (!request.policy_id ||
 	    request.policy_id > ctx->pending_load_entries)
@@ -935,37 +935,37 @@ static long linqu_scc_unregister_map(struct linqu_scc_file *ctx,
 	if (!ctx->maps[index].allocated ||
 	    ctx->maps[index].generation != request.map_generation)
 		return -ESTALE;
-	writeq(request.policy_id, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_ID);
+	writeq(request.policy_id, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_ID);
 	writeq(request.map_generation,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_GENERATION);
-	writeq(2, drv->obmm_scc_mmio + OBMM_SCC_REG_MAP_COMMAND);
-	if (readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR))
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_GENERATION);
+	writeq(2, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_MAP_COMMAND);
+	if (readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LAST_ERROR))
 		return -EBUSY;
 	ctx->maps[index].allocated = false;
 	return 0;
 }
 
-static long linqu_scc_start(struct linqu_scc_file *ctx,
+static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 			    unsigned long arg)
 {
-	struct obmm_scc_start_v2 request;
+	struct obmm_async_load_start_v2 request;
 	struct linqu_ub_drv *drv = ctx->drv;
 	u64 status;
 
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
 		return -EFAULT;
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	if (ctx->started ||
-	    request.flags & ~OBMM_SCC_START_REPLAY_RETIRE ||
-	    (request.flags & OBMM_SCC_START_REPLAY_RETIRE &&
-	     !(ctx->capabilities & OBMM_SCC_CAP_REPLAY_RETIRE)) ||
+	    request.flags & ~OBMM_ASYNC_LOAD_START_REPLAY_RETIRE ||
+	    (request.flags & OBMM_ASYNC_LOAD_START_REPLAY_RETIRE &&
+	     !(ctx->capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE)) ||
 	    request.owner_generation ||
 	    request.reserved0 || !request.upcall_entry ||
 	    !IS_ALIGNED(request.upcall_entry, 4) ||
 	    !request.logical_contexts ||
 	    request.logical_contexts > ctx->context_entries ||
-	    request.load_timeout_ns > OBMM_SCC_MAX_LOAD_TIMEOUT_NS ||
+	    request.load_timeout_ns > OBMM_ASYNC_LOAD_MAX_LOAD_TIMEOUT_NS ||
 	    current->nr_cpus_allowed != 1 ||
 	    request.home_cpu != task_cpu(current) ||
 	    !access_ok((void __user *)(uintptr_t)request.upcall_entry, 4))
@@ -974,108 +974,108 @@ static long linqu_scc_start(struct linqu_scc_file *ctx,
 	       (system_supports_cnp() && ASID(current->mm) ? TTBR_CNP_BIT : 0) |
 	       (IS_ENABLED(CONFIG_ARM64_SW_TTBR0_PAN) ?
 		FIELD_PREP(TTBR_ASID_MASK, ASID(current->mm)) : 0),
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_OWNER_TTBR0);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_OWNER_TTBR0);
 	writeq(request.load_timeout_ns,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_LOAD_TIMEOUT_NS);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LOAD_TIMEOUT_NS);
 	writeq(request.upcall_entry,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_UPCALL_ENTRY);
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_UPCALL_ENTRY);
 	writeq(request.logical_contexts,
-	       drv->obmm_scc_mmio + OBMM_SCC_REG_LOGICAL_CONTEXTS);
-	if (ctx->capabilities & OBMM_SCC_CAP_REPLAY_RETIRE)
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LOGICAL_CONTEXTS);
+	if (ctx->capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE)
 		writeq(request.flags,
-		       drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_FLAGS);
+		       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_FLAGS);
 	/* Publish owner identity and deadline before enabling interception. */
 	wmb();
-	writeq(1, drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_COMMAND);
-	status = readq(drv->obmm_scc_mmio + OBMM_SCC_REG_STATUS);
-	if (readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR) ||
-	    !(status & OBMM_SCC_STATUS_ACTIVE))
+	writeq(1, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_COMMAND);
+	status = readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_STATUS);
+	if (readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LAST_ERROR) ||
+	    !(status & OBMM_ASYNC_LOAD_STATUS_ACTIVE))
 		return -EIO;
 	ctx->started = true;
 	ctx->load_timeout_ns = request.load_timeout_ns;
 	request.owner_generation = ctx->owner_generation;
 	if (copy_to_user((void __user *)arg, &request, sizeof(request))) {
-		writeq(2, drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_COMMAND);
+		writeq(2, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_COMMAND);
 		ctx->started = false;
 		return -EFAULT;
 	}
 	return 0;
 }
 
-static long linqu_scc_stop(struct linqu_scc_file *ctx)
+static long linqu_async_load_stop(struct linqu_async_load_file *ctx)
 {
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	if (!ctx->started)
 		return 0;
-	writeq(2, ctx->drv->obmm_scc_mmio + OBMM_SCC_REG_SESSION_COMMAND);
+	writeq(2, ctx->drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_COMMAND);
 	ctx->started = false;
 	return 0;
 }
 
-static long linqu_scc_get_stats(struct linqu_scc_file *ctx,
+static long linqu_async_load_get_stats(struct linqu_async_load_file *ctx,
 				unsigned long arg)
 {
-	struct obmm_scc_stats_v2 stats = { 0 };
+	struct obmm_async_load_stats_v2 stats = { 0 };
 	struct linqu_ub_drv *drv = ctx->drv;
 	u64 *values = (u64 *)&stats;
 	u32 index;
 
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	for (index = 0; index < 17; index++)
-		values[index] = readq(drv->obmm_scc_mmio +
-				      OBMM_SCC_REG_STATS_BASE + index * 8);
-	stats.direct_upcalls = readq(drv->obmm_scc_mmio +
-		OBMM_SCC_REG_OBSERVABILITY_BASE + 16 * 8);
-	stats.fail_stop = !!(readq(drv->obmm_scc_mmio + OBMM_SCC_REG_STATUS) &
-			     OBMM_SCC_STATUS_FAIL_STOP);
+		values[index] = readq(drv->obmm_async_load_mmio +
+				      OBMM_ASYNC_LOAD_REG_STATS_BASE + index * 8);
+	stats.direct_upcalls = readq(drv->obmm_async_load_mmio +
+		OBMM_ASYNC_LOAD_REG_OBSERVABILITY_BASE + 16 * 8);
+	stats.fail_stop = !!(readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_STATUS) &
+			     OBMM_ASYNC_LOAD_STATUS_FAIL_STOP);
 	return copy_to_user((void __user *)arg, &stats, sizeof(stats)) ?
 		-EFAULT : 0;
 }
 
-static long linqu_scc_get_observability(struct linqu_scc_file *ctx,
+static long linqu_async_load_get_observability(struct linqu_async_load_file *ctx,
 					unsigned long arg)
 {
-	struct obmm_scc_observability_v2 observability = {
-		.abi_version = OBMM_SCC_ABI_VERSION,
+	struct obmm_async_load_observability_v2 observability = {
+		.abi_version = OBMM_ASYNC_LOAD_ABI_VERSION,
 	};
 	struct linqu_ub_drv *drv = ctx->drv;
-	u64 *values = &observability.scc_pending_current;
+	u64 *values = &observability.async_load_pending_current;
 	u32 index;
 
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
-	for (index = 0; index < OBMM_SCC_OBSERVABILITY_VALUES; index++)
-		values[index] = readq(drv->obmm_scc_mmio +
-				      OBMM_SCC_REG_OBSERVABILITY_BASE +
+	for (index = 0; index < OBMM_ASYNC_LOAD_OBSERVABILITY_VALUES; index++)
+		values[index] = readq(drv->obmm_async_load_mmio +
+				      OBMM_ASYNC_LOAD_REG_OBSERVABILITY_BASE +
 				      index * 8);
 	return copy_to_user((void __user *)arg, &observability,
 			    sizeof(observability)) ? -EFAULT : 0;
 }
 
-static long linqu_scc_get_replay_stats(struct linqu_scc_file *ctx,
+static long linqu_async_load_get_replay_stats(struct linqu_async_load_file *ctx,
 				       unsigned long arg)
 {
-	struct obmm_scc_replay_stats_v1 stats = { 0 };
+	struct obmm_async_load_replay_stats_v1 stats = { 0 };
 	struct linqu_ub_drv *drv = ctx->drv;
 	u64 *values = (u64 *)&stats;
 	u32 index;
 
-	if (!linqu_scc_owner(ctx))
+	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	for (index = 0; index < 3; index++)
-		values[index] = readq(drv->obmm_scc_mmio +
-				      OBMM_SCC_REG_REPLAY_STATS_BASE + index * 8);
+		values[index] = readq(drv->obmm_async_load_mmio +
+				      OBMM_ASYNC_LOAD_REG_REPLAY_STATS_BASE + index * 8);
 	return copy_to_user((void __user *)arg, &stats, sizeof(stats)) ?
 		-EFAULT : 0;
 }
 
-static long linqu_scc_get_event(struct linqu_scc_file *ctx,
+static long linqu_async_load_get_event(struct linqu_async_load_file *ctx,
 				unsigned long arg)
 {
 	struct linqu_ub_drv *drv = ctx->drv;
-	struct obmm_scc_event_v2 event;
+	struct obmm_async_load_event_v2 event;
 	u64 timeout_ns;
 	u64 started_ns;
 	u64 kind_status;
@@ -1084,149 +1084,149 @@ static long linqu_scc_get_event(struct linqu_scc_file *ctx,
 
 	if (copy_from_user(&event, (void __user *)arg, sizeof(event)))
 		return -EFAULT;
-	if (!linqu_scc_owner(ctx) || !ctx->started)
+	if (!linqu_async_load_owner(ctx) || !ctx->started)
 		return -EPERM;
-	if (event.flags & ~OBMM_SCC_EVENT_GET_WAIT)
+	if (event.flags & ~OBMM_ASYNC_LOAD_EVENT_GET_WAIT)
 		return -EINVAL;
-	status = readq(drv->obmm_scc_mmio + OBMM_SCC_REG_STATUS);
+	status = readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_STATUS);
 	/*
 	 * A non-waiting read consumes the event attached to the current EL0
 	 * upcall.  A waiting read is issued by the EL0 scheduler when every
 	 * logical context is blocked, so it is valid without an active upcall.
 	 */
-	if (!(status & OBMM_SCC_STATUS_UPCALL_ACTIVE) &&
-	    !(event.flags & OBMM_SCC_EVENT_GET_WAIT))
+	if (!(status & OBMM_ASYNC_LOAD_STATUS_UPCALL_ACTIVE) &&
+	    !(event.flags & OBMM_ASYNC_LOAD_EVENT_GET_WAIT))
 		return -EPERM;
-	if (!(status & OBMM_SCC_STATUS_EVENT_DELIVERED)) {
-		if (!(event.flags & OBMM_SCC_EVENT_GET_WAIT))
+	if (!(status & OBMM_ASYNC_LOAD_STATUS_EVENT_DELIVERED)) {
+		if (!(event.flags & OBMM_ASYNC_LOAD_EVENT_GET_WAIT))
 			return -EAGAIN;
 		/*
-		 * The SCC device owns the per-load deadline and publishes a
+		 * The ASYNC_LOAD device owns the per-load deadline and publishes a
 		 * COMPLETE or FAULT event.  This loop is only a host-side bound for
 		 * waiting on that event.  Reusing the per-load deadline here races
 		 * QEMU virtual time against host scheduling and can abandon a valid
 		 * completion at the deadline boundary.
 		 */
-		timeout_ns = OBMM_SCC_MAX_LOAD_TIMEOUT_NS;
+		timeout_ns = OBMM_ASYNC_LOAD_MAX_LOAD_TIMEOUT_NS;
 		started_ns = ktime_get_ns();
 		for (;;) {
-			status = readq(drv->obmm_scc_mmio +
-				       OBMM_SCC_REG_STATUS);
-			if (status & (OBMM_SCC_STATUS_EVENT_PENDING |
-				      OBMM_SCC_STATUS_EVENT_DELIVERED))
+			status = readq(drv->obmm_async_load_mmio +
+				       OBMM_ASYNC_LOAD_REG_STATUS);
+			if (status & (OBMM_ASYNC_LOAD_STATUS_EVENT_PENDING |
+				      OBMM_ASYNC_LOAD_STATUS_EVENT_DELIVERED))
 				break;
-			if (!(status & OBMM_SCC_STATUS_ACTIVE) ||
-			    status & OBMM_SCC_STATUS_FAIL_STOP)
+			if (!(status & OBMM_ASYNC_LOAD_STATUS_ACTIVE) ||
+			    status & OBMM_ASYNC_LOAD_STATUS_FAIL_STOP)
 				return -EIO;
 			if (ktime_get_ns() - started_ns >= timeout_ns) {
-				pr_err("linqu_scc: GET_EVENT timeout status=0x%llx "
+				pr_err("linqu_async_load: GET_EVENT timeout status=0x%llx "
 				       "loads_pending=%llu loads_completed=%llu "
 				       "events_completed=%llu loads_faulted=%llu "
-				       "scc_pending=%llu backend_pending=%llu\n",
+				       "async_load_pending=%llu backend_pending=%llu\n",
 				       status,
-				       readq(drv->obmm_scc_mmio +
-					     OBMM_SCC_REG_STATS_BASE),
-				       readq(drv->obmm_scc_mmio +
-					     OBMM_SCC_REG_STATS_BASE + 8),
-				       readq(drv->obmm_scc_mmio +
-					     OBMM_SCC_REG_STATS_BASE + 16),
-				       readq(drv->obmm_scc_mmio +
-					     OBMM_SCC_REG_STATS_BASE + 24),
-				       readq(drv->obmm_scc_mmio +
-					     OBMM_SCC_REG_OBSERVABILITY_BASE),
-				       readq(drv->obmm_scc_mmio +
-					     OBMM_SCC_REG_OBSERVABILITY_BASE + 8));
+				       readq(drv->obmm_async_load_mmio +
+					     OBMM_ASYNC_LOAD_REG_STATS_BASE),
+				       readq(drv->obmm_async_load_mmio +
+					     OBMM_ASYNC_LOAD_REG_STATS_BASE + 8),
+				       readq(drv->obmm_async_load_mmio +
+					     OBMM_ASYNC_LOAD_REG_STATS_BASE + 16),
+				       readq(drv->obmm_async_load_mmio +
+					     OBMM_ASYNC_LOAD_REG_STATS_BASE + 24),
+				       readq(drv->obmm_async_load_mmio +
+					     OBMM_ASYNC_LOAD_REG_OBSERVABILITY_BASE),
+				       readq(drv->obmm_async_load_mmio +
+					     OBMM_ASYNC_LOAD_REG_OBSERVABILITY_BASE + 8));
 				return -ETIMEDOUT;
 			}
 			if (signal_pending(current))
 				return -ERESTARTSYS;
 			usleep_range(10, 50);
 		}
-		if (!(status & OBMM_SCC_STATUS_EVENT_DELIVERED)) {
-			writeq(2, drv->obmm_scc_mmio +
-			       OBMM_SCC_REG_EVENT_COMMAND);
-			if (readq(drv->obmm_scc_mmio +
-				  OBMM_SCC_REG_LAST_ERROR))
+		if (!(status & OBMM_ASYNC_LOAD_STATUS_EVENT_DELIVERED)) {
+			writeq(2, drv->obmm_async_load_mmio +
+			       OBMM_ASYNC_LOAD_REG_EVENT_COMMAND);
+			if (readq(drv->obmm_async_load_mmio +
+				  OBMM_ASYNC_LOAD_REG_LAST_ERROR))
 				return -EIO;
 		}
 	}
 	memset(&event, 0, sizeof(event));
-	event.sequence = readq(drv->obmm_scc_mmio +
-			       OBMM_SCC_REG_EVENT_SEQUENCE);
-	event.context_id = readq(drv->obmm_scc_mmio +
-				 OBMM_SCC_REG_EVENT_CONTEXT_ID);
-	event.plt_token = readq(drv->obmm_scc_mmio +
-				OBMM_SCC_REG_EVENT_PLT_TOKEN);
-	event.interrupted_pc = readq(drv->obmm_scc_mmio +
-				     OBMM_SCC_REG_EVENT_INTERRUPTED_PC);
-	event.fault_pc = readq(drv->obmm_scc_mmio +
-			       OBMM_SCC_REG_EVENT_FAULT_PC);
-	event.effective_va = readq(drv->obmm_scc_mmio +
-				   OBMM_SCC_REG_EVENT_VA);
-	event.value = readq(drv->obmm_scc_mmio + OBMM_SCC_REG_EVENT_VALUE);
-	kind_status = readq(drv->obmm_scc_mmio +
-			    OBMM_SCC_REG_EVENT_KIND_STATUS);
+	event.sequence = readq(drv->obmm_async_load_mmio +
+			       OBMM_ASYNC_LOAD_REG_EVENT_SEQUENCE);
+	event.context_id = readq(drv->obmm_async_load_mmio +
+				 OBMM_ASYNC_LOAD_REG_EVENT_CONTEXT_ID);
+	event.plt_token = readq(drv->obmm_async_load_mmio +
+				OBMM_ASYNC_LOAD_REG_EVENT_PLT_TOKEN);
+	event.interrupted_pc = readq(drv->obmm_async_load_mmio +
+				     OBMM_ASYNC_LOAD_REG_EVENT_INTERRUPTED_PC);
+	event.fault_pc = readq(drv->obmm_async_load_mmio +
+			       OBMM_ASYNC_LOAD_REG_EVENT_FAULT_PC);
+	event.effective_va = readq(drv->obmm_async_load_mmio +
+				   OBMM_ASYNC_LOAD_REG_EVENT_VA);
+	event.value = readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_EVENT_VALUE);
+	kind_status = readq(drv->obmm_async_load_mmio +
+			    OBMM_ASYNC_LOAD_REG_EVENT_KIND_STATUS);
 	event.kind = kind_status;
 	event.status = kind_status >> 32;
-	event_meta = readq(drv->obmm_scc_mmio + OBMM_SCC_REG_EVENT_META);
+	event_meta = readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_EVENT_META);
 	event.rt = event_meta;
 	event.access_bytes = event_meta >> 16;
 	event.flags = event_meta >> 32;
-	writeq(1, drv->obmm_scc_mmio + OBMM_SCC_REG_EVENT_COMMAND);
-	if (readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR))
+	writeq(1, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_EVENT_COMMAND);
+	if (readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LAST_ERROR))
 		return -EIO;
 	return copy_to_user((void __user *)arg, &event, sizeof(event)) ?
 		-EFAULT : 0;
 }
 
-static long linqu_scc_scheduler_enter(struct linqu_scc_file *ctx)
+static long linqu_async_load_scheduler_enter(struct linqu_async_load_file *ctx)
 {
 	struct linqu_ub_drv *drv = ctx->drv;
 
-	if (!linqu_scc_owner(ctx) || !ctx->started)
+	if (!linqu_async_load_owner(ctx) || !ctx->started)
 		return -EPERM;
-	writeq(1, drv->obmm_scc_mmio + OBMM_SCC_REG_SCHEDULER_COMMAND);
-	return readq(drv->obmm_scc_mmio + OBMM_SCC_REG_LAST_ERROR) ?
+	writeq(1, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SCHEDULER_COMMAND);
+	return readq(drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_LAST_ERROR) ?
 		-EIO : 0;
 }
 
-static long linqu_scc_ioctl(struct file *file, unsigned int cmd,
+static long linqu_async_load_ioctl(struct file *file, unsigned int cmd,
 				    unsigned long arg)
 {
-	struct linqu_scc_file *ctx = file->private_data;
+	struct linqu_async_load_file *ctx = file->private_data;
 	long ret;
 
 	mutex_lock(&ctx->lock);
 	switch (cmd) {
-	case OBMM_SCC_IOCTL_QUERY_CAPS:
-		ret = linqu_scc_query_caps(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_QUERY_CAPS:
+		ret = linqu_async_load_query_caps(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_REGISTER_MAP:
-		ret = linqu_scc_register_map(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_REGISTER_MAP:
+		ret = linqu_async_load_register_map(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_UNREGISTER_MAP:
-		ret = linqu_scc_unregister_map(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_UNREGISTER_MAP:
+		ret = linqu_async_load_unregister_map(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_START:
-		ret = linqu_scc_start(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_START:
+		ret = linqu_async_load_start(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_STOP:
-		ret = linqu_scc_stop(ctx);
+	case OBMM_ASYNC_LOAD_IOCTL_STOP:
+		ret = linqu_async_load_stop(ctx);
 		break;
-	case OBMM_SCC_IOCTL_GET_STATS:
-		ret = linqu_scc_get_stats(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_GET_STATS:
+		ret = linqu_async_load_get_stats(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_GET_OBSERVABILITY:
-		ret = linqu_scc_get_observability(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_GET_OBSERVABILITY:
+		ret = linqu_async_load_get_observability(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_GET_EVENT:
-		ret = linqu_scc_get_event(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_GET_EVENT:
+		ret = linqu_async_load_get_event(ctx, arg);
 		break;
-	case OBMM_SCC_IOCTL_SCHEDULER_ENTER:
-		ret = linqu_scc_scheduler_enter(ctx);
+	case OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER:
+		ret = linqu_async_load_scheduler_enter(ctx);
 		break;
-	case OBMM_SCC_IOCTL_GET_REPLAY_STATS:
-		ret = linqu_scc_get_replay_stats(ctx, arg);
+	case OBMM_ASYNC_LOAD_IOCTL_GET_REPLAY_STATS:
+		ret = linqu_async_load_get_replay_stats(ctx, arg);
 		break;
 	default:
 		ret = -ENOTTY;
@@ -1247,11 +1247,11 @@ static const struct file_operations linqu_ub_fops = {
 	.llseek = no_llseek,
 };
 
-static const struct file_operations linqu_scc_fops = {
+static const struct file_operations linqu_async_load_fops = {
 	.owner = THIS_MODULE,
-	.open = linqu_scc_open,
-	.release = linqu_scc_release,
-	.unlocked_ioctl = linqu_scc_ioctl,
+	.open = linqu_async_load_open,
+	.release = linqu_async_load_release,
+	.unlocked_ioctl = linqu_async_load_ioctl,
 	.llseek = no_llseek,
 };
 
@@ -1304,15 +1304,15 @@ static int linqu_ub_chrdev_init(struct linqu_ub_drv *drv)
 	if (ret)
 		goto err_chrdev;
 
-	cdev_init(&drv->scc_cdev, &linqu_scc_fops);
-	ret = cdev_add(&drv->scc_cdev, drv->devt + 1, 1);
+	cdev_init(&drv->async_load_cdev, &linqu_async_load_fops);
+	ret = cdev_add(&drv->async_load_cdev, drv->devt + 1, 1);
 	if (ret)
 		goto err_cdev;
 
 	drv->class = class_create("linqu-ub");
 	if (IS_ERR(drv->class)) {
 		ret = PTR_ERR(drv->class);
-		goto err_scc_cdev;
+		goto err_async_load_cdev;
 	}
 
 	if (IS_ERR(device_create(drv->class, drv->dev, drv->devt, NULL, "linqu-ub0"))) {
@@ -1320,7 +1320,7 @@ static int linqu_ub_chrdev_init(struct linqu_ub_drv *drv)
 		goto err_class;
 	}
 	if (IS_ERR(device_create(drv->class, drv->dev, drv->devt + 1,
-				 NULL, "linqu-scc0"))) {
+				 NULL, "linqu-async-load0"))) {
 		ret = -EINVAL;
 		goto err_ub_device;
 	}
@@ -1331,8 +1331,8 @@ err_ub_device:
 	device_destroy(drv->class, drv->devt);
 err_class:
 	class_destroy(drv->class);
-err_scc_cdev:
-	cdev_del(&drv->scc_cdev);
+err_async_load_cdev:
+	cdev_del(&drv->async_load_cdev);
 err_cdev:
 	cdev_del(&drv->cdev);
 err_chrdev:
@@ -1348,7 +1348,7 @@ static void linqu_ub_chrdev_cleanup(struct linqu_ub_drv *drv)
 		class_destroy(drv->class);
 	}
 	cdev_del(&drv->cdev);
-	cdev_del(&drv->scc_cdev);
+	cdev_del(&drv->async_load_cdev);
 	unregister_chrdev_region(drv->devt, 2);
 }
 
@@ -1381,8 +1381,8 @@ static int linqu_ub_probe(struct platform_device *pdev)
 	drv->ep_mmio = (u8 __iomem *)drv->mmio + LINQU_UB_ENDPOINT1_OFFSET;
 	drv->obmm_async_mmio = (u8 __iomem *)drv->mmio +
 		LINQU_UB_OBMM_ASYNC_OFFSET;
-	drv->obmm_scc_mmio = (u8 __iomem *)drv->mmio +
-		LINQU_UB_OBMM_SCC_OFFSET;
+	drv->obmm_async_load_mmio = (u8 __iomem *)drv->mmio +
+		LINQU_UB_OBMM_ASYNC_LOAD_OFFSET;
 
 	irq = platform_get_irq_optional(pdev, 0);
 	drv->irq = irq;

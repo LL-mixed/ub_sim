@@ -34,12 +34,12 @@
   <path d="M320 219 H394" class="flow"/>
 
   <rect x="802" y="112" width="300" height="150" class="box" fill="#dbeafe"/>
-  <text x="952" y="148" text-anchor="middle" class="head">P2A · 软件路径</text>
+  <text x="952" y="148" text-anchor="middle" class="head">submit/await · 软件路径</text>
   <text x="952" y="180" text-anchor="middle" class="body">submit / await / CQ</text>
   <text x="952" y="206" text-anchor="middle" class="body">EL0 stackful coroutine</text>
   <text x="952" y="236" text-anchor="middle" class="mono">A waits → B runs → A resumes</text>
   <rect x="802" y="308" width="300" height="150" class="box" fill="#ede9fe"/>
-  <text x="952" y="344" text-anchor="middle" class="head">P2B · direct-upcall 路径</text>
+  <text x="952" y="344" text-anchor="middle" class="head">async load · direct-upcall 路径</text>
   <text x="952" y="376" text-anchor="middle" class="body">unretired LDR / QEMU PLT + event</text>
   <text x="952" y="402" text-anchor="middle" class="body">guest EL0 Context Store + scheduler</text>
   <text x="952" y="432" text-anchor="middle" class="mono">2-node functional acceptance PASS</text>

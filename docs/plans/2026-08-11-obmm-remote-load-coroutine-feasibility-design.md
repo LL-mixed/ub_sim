@@ -1,10 +1,11 @@
 # OBMM 远端内存 Load 的 EL0 协程延迟隐藏：可行性分析与验证设计
 
-> 状态：P0/P1/P2A/P4 沿用既有结果；P2B 已按 direct-to-EL0 upcall + guest EL0
+> 状态：P0、P1、submit/await、P4 沿用既有结果；async load 已按 direct-to-EL0 upcall + guest EL0
 > scheduler 的 ABI v2 重构，并在 `n4-910c` 通过 ARM64 Linux build、2-node 远端
 > QEMU guest E2E 和 phase gate，2-node producer/consumer 功能目标已完成。P3 ABI v2
-> 的 2-node formal acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case full
-> sensitivity matrix 已启动、仍待完成。P3 不属于 P2B 功能验收退出条件
+> 的 2-node formal acceptance、4/8-node 定向 scale-out、2,240-case coarse policy
+> 和 1,960-case fine-grained formal boundary 已完成；4,942-case full sensitivity
+> matrix 按要求安全暂停。P3 不属于 async load 功能验收退出条件
 >
 > 日期：2026-08-11
 >
@@ -20,8 +21,8 @@
 
 - [P0：同步基线、时钟与远端延迟模型详细设计](p0-baseline-latency-model-detailed-design.md)
 - [P1：provider-neutral split-phase backend 详细设计](p1-split-phase-backend-detailed-design.md)
-- [P2A：submit/await + EL0 协程详细设计](p2a-submit-await-detailed-design.md)
-- [P2B：普通 `LDR` + direct EL0 upcall + EL0 scheduler 详细设计](p2b-scheduler-core-detailed-design.md)
+- [submit/await + EL0 协程详细设计](submit-await-detailed-design.md)
+- [async load：普通 `LDR` + direct EL0 upcall + EL0 scheduler 详细设计](async-load-coroutine-scheduler-detailed-design.md)
 - [P3：OBMM 远端 Load 路径对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 - [P4：标准 userfaultfd 透明页访问基线详细设计](p4-userfaultfd-baseline-detailed-design.md)
 - [P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
@@ -55,14 +56,14 @@
 - **标准软件路径：** `obmm_load_submit()` + `obmm_await()`，请求和 completion
   通过队列关联，EL0 协程在 `await` 点主动切换；编译器后续可把带注解的远端访问
   降低成该 API。该路径符合 Arm/Linux，错误也能作为 completion status 返回。
-- **自定义 P2B 路径：** 程序仍执行普通 `LDR`；QEMU 的 PLT 冻结未退休 load，core
+- **自定义 async load 路径：** 程序仍执行普通 `LDR`；QEMU 的 PLT 冻结未退休 load，core
   在精确边界只把 EL0 PC 导向 registered upcall entry。EL0 assembly/runtime 保存
   context、维护 ready/wait、选择 next，并以自定义 resume instruction 请求 core 原子
   安装所选 context。QEMU 不拥有 Context Store 或调度策略。
 
-![P2A 的 submit/CQ 软件架构](2026-08-11-obmm-remote-load-coroutine-architecture.svg)
+![submit/await 的 submit/CQ 软件架构](2026-08-11-obmm-remote-load-coroutine-architecture.svg)
 
-![submit-await 与 scheduler-core upcall 的系统边界](2026-08-11-obmm-await-vs-scheduler-core-upcall.svg)
+![submit-await 与 async-load upcall 的系统边界](2026-08-11-obmm-await-vs-async-load-upcall.svg)
 
 ## 2. 问题定义
 
@@ -119,7 +120,7 @@ EL0 LDR
 
 QEMU 官方 Memory API 也把 MMIO 描述为“每次 read/write 调用 host callback”。因此，
 现有 `.read()` 边界只能同步返回一个值。显式软件路径应走独立 submit/CQ 通道；
-P2B 路径则必须在 TCG scalar-load path 中新增 `PENDING` 和精确 TB exit，不能让
+async load 路径则必须在 TCG scalar-load path 中新增 `PENDING` 和精确 TB exit，不能让
 现有 `.read()` 返回“空”或伪造数值。pending 的 load metadata 属于 QEMU PLT；
 coroutine context 与 scheduling state 属于 guest EL0 runtime。
 
@@ -184,7 +185,7 @@ branch 无法精确恢复全部 GPR。该契约不属于现有 Arm/Linux archite
 | `userfaultfd` 缺页恢复 | 是 | 是，页粒度 | 否；faulting kernel thread 阻塞，需另一线程 | 页错误/handler status | 中 | 透明基线 |
 | EL1 page fault + signal trampoline | 是 | 是 | 理论可做但信号安全、重放和嵌套复杂 | signal/fault | 高 | 不推荐 |
 | QEMU host coroutine | 与 guest ISA 无关 | guest load 仍未退休 | 否，只可能让其他 vCPU/host task 运行 | host 内部 | 中 | 不能满足目标 |
-| direct EL0 upcall + EL0 scheduler（QEMU 模拟） | **自定义 core architecture** | 是 | 是 | 自定义 event/status | 极高 | P2B 对照验证 |
+| direct EL0 upcall + EL0 scheduler（QEMU 模拟） | **自定义 core architecture** | 是 | 是 | 自定义 event/status | 极高 | async load 对照验证 |
 | 自定义 `LD_REMOTE_ASYNC` 指令 | 自定义 ISA | 否 | 是 | token/CQ | 高 | 比透明 upcall 更诚实的 ISA 实验 |
 
 `userfaultfd` 具备实际基线价值：当前 guest kernel 是 6.6，构建配置包含
@@ -200,13 +201,13 @@ branch 无法精确恢复全部 GPR。该契约不属于现有 Arm/Linux archite
 - `submit/await` 在软件层把一次读拆成“请求”和“消费结果”。`submit` 已经退休，
   `await` 是编译器/runtime 明确知道的 suspension point；系统里不存在一个尚未退休
   的普通 `LDR`。
-- P2B upcall 在普通 `LDR` 已经发出之后才发现 remote pending。此时
+- async load upcall 在普通 `LDR` 已经发出之后才发现 remote pending。此时
   `LDR` 必须保持未退休，pending table 必须保存 PC、目标寄存器、memop、ordering、
   fault state 和 context ID；guest EL0 scheduler 再保存并换走 coroutine context。
 
 因此，关键问题不是“谁会不会修改 PC/SP”，而是：
 
-| 维度 | 显式 submit/await | scheduler-core upcall |
+| 维度 | 显式 submit/await | async-load upcall |
 |---|---|---|
 | data-plane 可见接口 | `submit/test/await`、future/CQE | 普通 `LDR`；pending/completion 只在 core 内可见 |
 | pending 状态所有者 | software runtime、destination buffer、CQ | QEMU PLT 保存 load；EL0 Context Store 保存 coroutine |
@@ -228,22 +229,22 @@ CLI 和逐文件实现顺序以
 
 ### 5.1 共同的只有异步传输，不是上层协议
 
-P2A 和 P2B 都要求 remote provider 不阻塞 application vCPU，并允许多个 request
+submit/await 和 async load 都要求 remote provider 不阻塞 application vCPU，并允许多个 request
 同时处于 in-flight；两者可以共用 OBMM validation、pending request、provider token、
 timeout/cancel 和 completion generation 检查。
 
 两条路径从 backend 的两侧接入方式不同：
 
-| 边界 | P2A | P2B |
+| 边界 | submit/await | async load |
 |---|---|---|
 | 谁发起 backend request | EL0 写 SQ，async endpoint 验证后提交 | 普通 `LDR` remote miss，RLA/PLT 验证后提交 |
 | backend pending 的上层身份 | software token/future | PLT token + EL0 context ID |
 | payload completion 落点 | registered destination buffer | PLT 的 scalar result field |
-| completion 通知对象 | CQE，随后唤醒 EL0 waiter | SCC `COMPLETE/FAULT` event |
+| completion 通知对象 | CQE，随后唤醒 EL0 waiter | coroutine scheduler `COMPLETE/FAULT` event |
 | 最终消费 | `await` 返回后软件读取 buffer | EL0 scheduler patch 保存态 `Rt/PC` |
 
-所以 P1 不能定义 SQ/CQ、`await`、Context Store 或目标寄存器；这些分别属于 P2A
-和 P2B guest runtime。P1 只定义“一项通过 OBMM 检查的 read，如何非阻塞地进入 provider，并且
+所以 P1 不能定义 SQ/CQ、`await`、Context Store 或目标寄存器；这些分别属于 submit/await
+和 async load guest runtime。P1 只定义“一项通过 OBMM 检查的 read，如何非阻塞地进入 provider，并且
 恰好完成一次”。
 
 ### 5.2 Backend 内部契约
@@ -284,8 +285,8 @@ enum obmm_submit_result {
 ```
 
 `sink` 是经过验证、带 generation 的内部 callback descriptor。P1 不根据 `type`
-识别 P2A/P2B；P2A adapter 的 callback 写 registered buffer/CQ，P2B adapter 的
-callback 写 PLT/SCC event。`adapter_state` 必须是 backend 生命周期内稳定的 QEMU
+识别 submit/await 与 async load；submit/await adapter 的 callback 写 registered buffer/CQ，async load adapter 的
+callback 写 PLT/coroutine scheduler event。`adapter_state` 必须是 backend 生命周期内稳定的 QEMU
 对象，不能是 guest pointer。provider 只把 payload/status 返回 P1，不直接调用 sink、
 读取 coroutine pointer、修改 `CPUARMState` 或决定调度策略。
 
@@ -299,7 +300,7 @@ callback 写 PLT/SCC event。`adapter_state` 必须是 backend 生命周期内�
 | completion router | revalidate request/map/sink generation，恰好交付一次 | 把 failure 转成 payload 0；猜测上层消费方式 |
 
 payload 写入和 completion publish 必须形成 release/acquire 关系，但具体 publish
-对象由上层 adapter 决定：P2A 发布 `CQ_TAIL`，P2B 发布 SCC event/PLT terminal state。
+对象由上层 adapter 决定：submit/await 发布 `CQ_TAIL`，async load 发布 coroutine scheduler event/PLT terminal state。
 
 ### 5.4 Backend 状态机
 
@@ -320,7 +321,7 @@ FREE
 - timeout、cancel、map retire 和 provider response 通过单一 terminal commit 点竞争；
 - completion backpressure 不能覆盖或丢弃已完成结果；
 - provider 不持有可被 guest 提前释放的 raw pointer；
-- 固定 seed 的 latency、jitter、reorder、drop/error 注入在 P2A/P2B 中必须一致。
+- 固定 seed 的 latency、jitter、reorder、drop/error 注入在 submit/await 与 async load 中必须一致。
 
 ### 5.5 当前实现与 P1 落点
 
@@ -329,30 +330,30 @@ FREE
 response match 和 CQE 形成可复用实现范式，但 OBMM adapter 必须先完成 map/token/
 epoch/coherence 检查，且 provider completion 必须经上面的 sink router 返回。
 
-P1 完成的判断标准不是“P2A CQ 已经能用”，而是同一个 backend unit model 能分别
-挂接 test sink、P2A sink 和 P2B sink，并通过 64 in-flight、乱序、duplicate、late、
+P1 完成的判断标准不是“submit/await CQ 已经能用”，而是同一个 backend unit model 能分别
+挂接 test sink、submit/await sink 和 async load sink，并通过 64 in-flight、乱序、duplicate、late、
 timeout、cancel、retire 和 queue-full/fail-closed 测试。
 
-## 6. P2A：显式 submit/await + EL0 协程
+## 6. 显式 submit/await + EL0 协程
 
 ### 6.1 第一性原理与软件边界
 
-P2A 要隐藏远端读，真正需要以下四个能力：
+submit/await 要隐藏远端读，真正需要以下四个能力：
 
 1. **提前知道该访问可能很慢；**
 2. **把请求提交和结果消费分开；**
 3. **用稳定 token 关联请求、结果和等待者；**
 4. **等待期间存在独立且 ready 的工作。**
 
-因此 P2A 使用显式 future：`submit` 已经退休，`await` 是明确 suspension point，
+因此 submit/await 使用显式 future：`submit` 已经退休，`await` 是明确 suspension point，
 EL0 runtime 可以在此保存当前 coroutine 并运行其他 ready coroutine。该结论只属于
-P2A；P2B 的普通 `LDR` 在 completion commit 前一直没有退休。
+submit/await；async load 的普通 `LDR` 在 completion commit 前一直没有退休。
 
 ### 6.2 用户态 API 概要
 
 以下代码只说明调用形态。v1 SQ/CQ layout、token、buffer ownership、状态机、
 coroutine ABI 和实现文件已在
-[P2A 详细设计](p2a-submit-await-detailed-design.md) 中冻结；本节不再作为 canonical
+[submit/await 详细设计](submit-await-detailed-design.md) 中冻结；本节不再作为 canonical
 ABI 定义。
 
 ```c
@@ -409,22 +410,22 @@ consume(*(uint64_t *)obmm_async_buffer_addr(buffer));
 - timeout、retired、route missing、token denied、remote I/O error、checksum mismatch
   都是显式 status，绝不把失败静默转换为数值 0。
 
-### 6.3 P2A 数据面分层
+### 6.3 submit/await 数据面分层
 
 推荐保留三个边界：
 
 | 层 | 责任 | 不应该承担的责任 |
 |---|---|---|
 | EL0 coroutine runtime | future、等待者映射、ready queue、context switch、poll/idle policy | 解析 remote UBA、伪造 Arm exception |
-| guest driver + P2A async endpoint | SQ/CQ ownership、registered buffer、software token、把 SQ 转成 §5 P1 request、把 completion 转成 CQE | 实现 provider transport；替应用选择 coroutine |
+| guest driver + submit/await async endpoint | SQ/CQ ownership、registered buffer、software token、把 SQ 转成 §5 P1 request、把 completion 转成 CQE | 实现 provider transport；替应用选择 coroutine |
 | §5 P1 backend/provider | OBMM bounds/token/epoch/coherence、pending transfer、completion router | 解释 software future；暴露 SIM_DEC 私有名称 |
 
 现有 URMA pending/CQE 代码可作为 split-phase engine 的实现参考，但不能直接绕过
 OBMM/GSVA 的 map lifecycle、token 和 coherence 检查。它属于 §5 P1 的实现参考，
-不是 P2A UAPI。P2A endpoint 只负责把 software token/registered buffer 转成带
+不是 submit/await UAPI。submit/await endpoint 只负责把 software token/registered buffer 转成带
 generation 的 P1 completion sink。
 
-### 6.4 P2A software-visible 状态机
+### 6.4 submit/await software-visible 状态机
 
 ```text
 FREE
@@ -478,7 +479,7 @@ else:
 标量 8-byte 远端读通常会被固定协议成本支配。验证必须同时测标量、cache line、
 page 和批量 range；如果 8-byte 路径没有收益，不应通过放大模拟延迟掩盖这一事实。
 
-### 6.6 P2A 时间模型
+### 6.6 submit/await 时间模型
 
 设：
 
@@ -500,11 +501,11 @@ gain    = min(L, W) - S - C
 
 ![同步等待与异步重叠的时间线](2026-08-11-obmm-remote-load-coroutine-timeline.svg)
 
-### 6.7 P2A 执行时序
+### 6.7 submit/await 执行时序
 
 1. 应用根据 map metadata 或编译器注解识别潜在远端访问，向 SQ 写入
    `{map_id, offset, dst, len, deadline, user_data}`；
-2. P2A endpoint 校验 queue owner、software token 和 registered destination，把请求
+2. submit/await endpoint 校验 queue owner、software token 和 registered destination，把请求
    转成带 generation 的 §5 P1 request/sink；
 3. P1 校验 map range、lifecycle、token、segment epoch、coherence 和 read permission；
 4. local/cache hit 直接写 destination 并发布 CQE；remote miss 分配 provider token，
@@ -513,7 +514,7 @@ gain    = min(L, W) - S - C
 6. A 执行 `await(token)` 时先 drain CQ；若 future 尚未 terminal，才把 A 标为
    `WAIT_REMOTE` 并选择另一 ready coroutine；若没有，则短轮询后 poll IRQ；
 7. remote response 到达，P1 completion router 重新校验 generations，先形成 P1-owned
-   terminal result；P2A sink 再复制到 registered destination 并 release-publish CQE/
+   terminal result；submit/await sink 再复制到 registered destination 并 release-publish CQE/
    可选 IRQ；
 8. EL0 scheduler acquire-drain CQ，把对应 waiter 从 `WAIT_REMOTE` 置为 `READY`；
 9. A 恢复在 `await` 之后，先检查 status，再消费 destination。
@@ -522,20 +523,20 @@ gain    = min(L, W) - S - C
 scheduler 侧 acquire consume。对外暴露的 ordering 至少要区分 relaxed read 和
 acquire read；普通 `LDR`、`LDAR`、barrier 的透明重放不纳入 MVP。
 
-## 7. P2B：普通 `LDR` + direct EL0 upcall + EL0 scheduler 设计
+## 7. async load：普通 `LDR` + direct EL0 upcall + EL0 scheduler 设计
 
 本节给出架构概要。EL0 Context Store、PLT 字段、control-plane ABI、AArch64
 scalar-load 白名单、TCG hook、TB precise exit、completion patch 和容量降级的
 canonical 定义见
-[P2B 详细设计](p2b-scheduler-core-detailed-design.md)。
+[async load 详细设计](async-load-coroutine-scheduler-detailed-design.md)。
 
-P2B 不经过 P2A 的 EL0 API、SQ/CQ、future 或 registered destination buffer。它只在
+async load 不经过 submit/await 的 EL0 API、SQ/CQ、future 或 registered destination buffer。它只在
 OBMM validation 和 provider transfer 层复用 §5 的 P1 backend：RLA 以 PLT entry
-作为 completion sink 提交请求，completion router 把结果交回 PLT/SCC。
+作为 completion sink 提交请求，completion router 把结果交回 PLT/coroutine scheduler。
 
 ### 7.1 用户代码、拆分边界与 precise invariant
 
-P2B 的正常数据面仍是普通 load：
+async load 的正常数据面仍是普通 load：
 
 ```c
 uint64_t value = *(volatile uint64_t *)remote_ptr;
@@ -557,7 +558,7 @@ remote value 尚未返回时。application core 可以换出整个 context，但
 | provider failure | `P` | old | PLT fault record | `FAULTED` |
 
 这里的不可破坏条件是：**pending 不能修改 `Rt` 或推进 PC；只有 EL0 completion
-handler 校验 terminal event 后才能同时 patch 保存态 `Rt` 和 `PC`。** 这就是 P2B 相比 P2A 额外承担的
+handler 校验 terminal event 后才能同时 patch 保存态 `Rt` 和 `PC`。** 这就是 async load 相比 submit/await 额外承担的
 精确架构状态责任。
 
 ### 7.2 数据面组件与 ownership
@@ -578,11 +579,11 @@ handler 校验 terminal event 后才能同时 patch 保存态 `Rt` 和 `PC`。**
 EL0 scheduler 运行在同一个 guest EL0 task 中，使用独立 scheduler stack。它决定
 “application core 接下来恢复哪个 context”；QEMU 只执行它提交的原子 resume 请求。
 
-![P2B 未退休 LDR、EL0 Context Store 与 scheduler](p2b-scheduler-core-flow.svg)
+![async load 未退休 LDR、EL0 Context Store 与 scheduler](async-load-coroutine-scheduler-flow.svg)
 
 ### 7.3 Load 与 context 双状态机
 
-P2B 有两个相关但不能混成一个的状态机。
+async load 有两个相关但不能混成一个的状态机。
 
 原始 load 由 PLT 拥有：
 
@@ -636,9 +637,9 @@ success path 不能代表完整的普通 `LDR` 语义。以下分支必须显式
 
 | 条件 | 原 load 状态 | A 的状态 | 系统动作 |
 |---|---|---|---|
-| translation/permission/token 在 P1 request 接受前失败 | 未发出 provider request，`PC=P`、`Rt=old` | 仍是当前 context | 走现有 precise Arm fault 到 EL1，不产生 SCC pending event |
+| translation/permission/token 在 P1 request 接受前失败 | 未发出 provider request，`PC=P`、`Rt=old` | 仍是当前 context | 走现有 precise Arm fault 到 EL1，不产生 coroutine scheduler pending event |
 | provider timeout/I/O/checksum/retire | PLT `FAULTED`，`PC=P`、`Rt=old` | `FAULTED` | EL0 scheduler 记录 status 并终止该 coroutine；绝不注入 0 |
-| event/context/token invariant 破坏 | 未退休 | `FAULTED` | fail-stop SCC session，并向 Linux task 报错 |
+| event/context/token invariant 破坏 | 未退休 | `FAULTED` | fail-stop async-load session，并向 Linux task 报错 |
 | 没有其他 `READY` context | PLT `PENDING` | `WAIT_REMOTE` | EL0 scheduler 留在 event wait loop；completion 到达后恢复 A |
 | PLT/event queue 满 | 不创建可丢失的 pending state | A 保持 `RUNNING` | 退化为同步 stall path，并增加 `capacity_stall`；不丢 event |
 | context/map destroy 时仍有 request | PLT generation 仍有效 | `WAIT_REMOTE/FAULTED` | teardown 返回 busy 或先 cancel/drain；不能先复用 slot |
@@ -648,7 +649,7 @@ success path 不能代表完整的普通 `LDR` 语义。以下分支必须显式
 retry 必须复用 fault record 重新建立一个新 generation 的 provider request；不能简单
 把 PC 恢复为 `P` 后无条件重放，否则可能重复已经产生外部副作用的检查或请求。
 
-### 7.6 P2B 时间模型与 schedule-ahead 边界
+### 7.6 async load 时间模型与 schedule-ahead 边界
 
 设：
 
@@ -661,17 +662,17 @@ provider request 发出后，`L` 与 `S_out + W` 可以重叠。理想模型为�
 
 ```text
 T_sync = L + W
-T_p2b  = max(L, S_out + W) + S_in
-gain   = T_sync - T_p2b
+T_async_load  = max(L, S_out + W) + S_in
+gain   = T_sync - T_async_load
 ```
 
-若没有 ready context，`W=0`，P2B 只能增加状态管理成本。报告必须独立展示 QEMU
+若没有 ready context，`W=0`，async load 只能增加状态管理成本。报告必须独立展示 QEMU
 PLT/event 与 EL0 Context Store bytes、save/restore/switch/scheduler time，不能把
 QEMU host 调度时间或旧 QEMU scheduler-cycle 配置当成 EL0 调度成本。
 
-P2B v2 是 **demand-pending**：直到程序真正执行普通 `LDR` 才启动 `L`。P2A 可以在
-消费点之前 pre-submit，因此拥有额外的 schedule-ahead 窗口。未来若给 P2B 加硬件
-prefetch/predictor，必须作为 P3 的独立变量，不能计入 P2B baseline。
+async load v2 是 **demand-pending**：直到程序真正执行普通 `LDR` 才启动 `L`。submit/await 可以在
+消费点之前 pre-submit，因此拥有额外的 schedule-ahead 窗口。未来若给 async load 加硬件
+prefetch/predictor，必须作为 P3 的独立变量，不能计入 async load baseline。
 
 ### 7.7 QEMU 如何模拟该硬件
 
@@ -680,7 +681,7 @@ prefetch/predictor，必须作为 P3 的独立变量，不能计入 P2B baseline
 MMIO callback 中猜原指令。QEMU 必须从 scalar-load translation/execution path 携带
 `{address, Rt, MemOp, fault_pc, next_pc, mmu_index}`：
 
-1. `target/arm/tcg/translate-a64.c` 的 scalar-load lowering 在 SCC-active TB 中先走
+1. `target/arm/tcg/translate-a64.c` 的 scalar-load lowering 在 coroutine scheduler-active TB 中先走
    RLA helper；非目标地址直接回到原 `qemu_ld` fast path；
 2. helper 完成 §7.4 第 2/3 步；pending 时写 PLT/event，令
    `env->pc=registered_upcall_entry` 并 `cpu_loop_exit_noexc()`；
@@ -699,9 +700,9 @@ coroutine SP/context，也不决定跳到哪个业务 coroutine。
 data plane 可以保持普通 `LDR`，但系统仍需一个独立的控制面来定义：
 
 ```text
-setup:    EL0 create local contexts -> register owner/map/upcall -> SCC_START
+setup:    EL0 create local contexts -> register owner/map/upcall -> coroutine scheduler_START
 hot path: ordinary LDR -> RLA/PLT/P1 -> direct upcall -> EL0 schedule/resume
-teardown: SCC_STOP -> cancel/drain -> EL0 destroy local contexts/maps
+teardown: coroutine scheduler_STOP -> cancel/drain -> EL0 destroy local contexts/maps
 ```
 
 控制面只负责建立 core 可解释的 owner/map/upcall identity，不能参与每个 payload 的
@@ -753,16 +754,16 @@ DRAM、代码页、EL0 Context Store 或 scheduler stack 自身访问被递归�
 | 阶段 | 当前状态 | Canonical 设计/产物 | 退出条件 |
 |---|---|---|---|
 | P0：基线与延迟模型 | **已实现；gate pass** | [p0-baseline-latency-model-detailed-design.md](p0-baseline-latency-model-detailed-design.md)：四类同步基线、strong scenario schema、virtual-time fault model、三种时钟、CLI/测试 | scenario/model hash 闭环通过；四类 canonical case 和 0-delay payload 语义通过 |
-| P1：split-phase backend | **已实现；gate pass** | [p1-split-phase-backend-detailed-design.md](p1-split-phase-backend-detailed-design.md)：64 parent、多 child 聚合、P1-owned result pool、generation-safe sink、terminal race、CLI/测试 | test/P2A/P2B 三种 sink 的 144 个 conformance case 通过 |
-| P2A：显式软件路径 | **已实现；gate pass** | [p2a-submit-await-detailed-design.md](p2a-submit-await-detailed-design.md)：独立 endpoint、64-byte SQ/CQ、registered buffer、future、EL0 stackful coroutine、CLI/测试 | 同一 guest vCPU 上 `A await → B 推进 → A 恢复`，completion/failure generation-safe |
-| P2B：direct-upcall 路径 | **功能验收完成；ABI v2 2-node producer/consumer gate pass** | [p2b-scheduler-core-detailed-design.md](p2b-scheduler-core-detailed-design.md)：RLA/PLT、direct EL0 upcall、EL0 Context Store/scheduler、resume ABI、CLI/测试 | nodeA write/export、nodeB import、两个 coroutine 普通 `LDR`、逐事件 overlap/value 及 machine phase gate 均通过 |
-| P3：对比评估 | **ABI v2 acceptance 与 4/8-node 定向 scale-out 已完成；full matrix 已安全暂停** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)、[2026-08-13 性能结果](2026-08-13-obmm-p3-performance-evaluation.md)：scalar/range/transparency 三个比较带、公平性规则、统计/invalid gate、CLI/产物 | 2-node 49/49、4/8-node 各 14/14 已通过；4,942-case latency/compute/jitter/failure matrix 待明确恢复和完整聚合 |
+| P1：split-phase backend | **已实现；gate pass** | [p1-split-phase-backend-detailed-design.md](p1-split-phase-backend-detailed-design.md)：64 parent、多 child 聚合、P1-owned result pool、generation-safe sink、terminal race、CLI/测试 | test、submit/await、async load 三种 sink 的 144 个 conformance case 通过 |
+| submit/await：显式软件路径 | **已实现；gate pass** | [submit-await-detailed-design.md](submit-await-detailed-design.md)：独立 endpoint、64-byte SQ/CQ、registered buffer、future、EL0 stackful coroutine、CLI/测试 | 同一 guest vCPU 上 `A await → B 推进 → A 恢复`，completion/failure generation-safe |
+| async load：direct-upcall 路径 | **功能验收完成；ABI v2 2-node producer/consumer gate pass** | [async-load-coroutine-scheduler-detailed-design.md](async-load-coroutine-scheduler-detailed-design.md)：RLA/PLT、direct EL0 upcall、EL0 Context Store/scheduler、resume ABI、CLI/测试 | nodeA write/export、nodeB import、两个 coroutine 普通 `LDR`、逐事件 overlap/value 及 machine phase gate 均通过 |
+| P3：对比评估 | **acceptance、scale-out、coarse policy 与 fine formal boundary 已完成；full matrix 已安全暂停** | [p3-comparative-evaluation-detailed-design.md](p3-comparative-evaluation-detailed-design.md)、[2026-08-13 性能结果](2026-08-13-obmm-p3-performance-evaluation.md)、[运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)：三个比较带、公平性规则、统计/invalid gate、边界选择 CLI 和机器可读 policy | 2-node 49/49、4/8-node 各 14/14、coarse 2,240/2,240、fine formal 1,960/1,960 已通过；4,942-case jitter/tail/failure/range full matrix 待明确恢复和完整聚合 |
 | P4：透明 OS 基线 | **已实现；gate pass** | [p4-userfaultfd-baseline-detailed-design.md](p4-userfaultfd-baseline-detailed-design.md)：标准 UFFD MISSING、shadow/source range、handler vCPU、failure/shutdown、CLI/测试 | 4-KiB payload 一致；fault/read/copy/wake 可分解；失败不以 zeropage 伪装成功 |
 
 ![P0 到 P4 的实现依赖和验收门禁](obmm-remote-load-phase-gates.svg)
 
 阶段编号不是纯时间顺序：P4 只依赖 P0 的统一模型与 payload oracle，可与 P1/P2
-并行实现；P3 是最终评估汇合点。P1 之前不要实现 scheduler-core context switch，
+并行实现；P3 是最终评估汇合点。P1 之前不要实现 async-load context switch，
 否则上层切换会掩盖当前单槽同步 backend，无法区分“调度器有效”与“QEMU 恰好让
 另一个 host task 运行”。
 
@@ -777,7 +778,7 @@ guest-linux/aarch64/apps/obmm_async_coroutine/obmm_async_coroutine
 建议参数：
 
 ```text
---mode sync-mmio|async-poll|async-irq|userfaultfd|scheduler-core
+--mode sync-mmio|async-poll|async-irq|userfaultfd|async-load
 --coroutines 1|2|4|8|32
 --inflight 1|8|16|32|64
 --access-bytes 1|2|4|8|64|256|4096|65536
@@ -789,8 +790,8 @@ guest-linux/aarch64/apps/obmm_async_coroutine/obmm_async_coroutine
 --verify
 ```
 
-其中 P2B `scheduler-core` v2 只接受 1/2/4/8-byte scalar load；P4 `userfaultfd` v1
-只接受 4-KiB page；其他 range 只用于 P2A。CLI 必须按 mode fail closed，不能把大
+其中 async load `async-load` v2 只接受 1/2/4/8-byte scalar load；P4 `userfaultfd` v1
+只接受 4-KiB page；其他 range 只用于 submit/await。CLI 必须按 mode fail closed，不能把大
 请求静默拆成多个“普通 `LDR`”，也不能把 scalar P4 访问伪装成一次远端 operation。
 
 输出使用单行、机器可解析的 summary：
@@ -837,13 +838,13 @@ remote_memory_model:
 
 | 维度 | 取值 |
 |---|---|
-| topology | P2B 功能验收固定 2-node；P3 先跑 2-node correctness/acceptance，再跑 4/8-node scale-out |
-| mode | sync-mmio、async-poll、async-irq、userfaultfd、scheduler-core |
+| topology | async load 功能验收固定 2-node；P3 先跑 2-node correctness/acceptance，再跑 4/8-node scale-out |
+| mode | sync-mmio、async-poll、async-irq、userfaultfd、async-load |
 | fixed latency | 0、1、5、10、50、100、1000 us |
 | jitter | 0、10%、100%、长尾脉冲 |
 | coroutines | 1、2、4、8、32 |
 | in-flight | 1、8、16、32、64、queue full |
-| size | P2B scalar：1/2/4/8 B；P2A range：1/2/4/8 B、64 B、256 B、4 KiB、64 KiB；P4：4 KiB |
+| size | async load scalar：1/2/4/8 B；submit/await range：1/2/4/8 B、64 B、256 B、4 KiB、64 KiB；P4：4 KiB |
 | pattern | sequential、random、dependent chain、mixed local/remote |
 | result | success、remote error、timeout、duplicate、late、retired、token denied |
 | cache/coherence | local hit、shadow/page-cache hit、remote miss、stale epoch |
@@ -857,10 +858,10 @@ P1 共同 backend 的轻量 unit tests：
 - capacity full、duplicate、out-of-order、late response；
 - timeout、cancel、segment retire/unmap 的 terminal commit 竞争；
 - map bounds、token/epoch denied、checksum mismatch；
-- test sink、P2A sink、P2B sink 都恰好调用一次；
-- 固定 seed 的 latency/failure event sequence 在 P2A/P2B 中一致。
+- test sink、submit/await sink、async load sink 都恰好调用一次；
+- 固定 seed 的 latency/failure event sequence 在 submit/await 与 async load 中一致。
 
-P2A contract tests：
+submit/await contract tests：
 
 - SQ full 返回 `-EAGAIN`，CQ full 不覆盖 CQE；
 - registered destination bounds/ownership 和 buffer-free-before-completion 拒绝；
@@ -868,26 +869,26 @@ P2A contract tests：
 - callee-saved registers、SIMD/FP state、shared TLS 和 stack canary；
 - CLI 参数、summary schema、build/initramfs/run_app contract。
 
-P2B contract/TCG tests：
+async load contract/TCG tests：
 
 - PLT/context generation、capacity-full synchronous stall；
 - pending 时原 `Rt`/PC 不变，EL0 completion patch 只写 `Rt` 且 PC 前进一次；
 - EL0 assembly 完整 context save、独立 scheduler stack、ready/wait policy；
 - QEMU model 不含 Context Store、ready queue 或 scheduler decision；
-- unsupported atomic/LDAR/vector load 不进入 P2B async hook，保持既有同步语义；
+- unsupported atomic/LDAR/vector load 不进入 async load async hook，保持既有同步语义；
 - EL1 entry quiesce、late completion 不修改复用后的 context。
 
 远端 QEMU 验证：
 
-- P2A：A 在未完成 `await` 挂起后，B 在**同一 guest vCPU** 上推进，A 从 `await`
+- submit/await：A 在未完成 `await` 挂起后，B 在**同一 guest vCPU** 上推进，A 从 `await`
   后恢复；
-- P2B：nodeA program A 写入并 export；nodeB program B import 后，coroutine A 的普通
+- async load：nodeA program A 写入并 export；nodeB program B import 后，coroutine A 的普通
   `LDR` 未退休并触发 direct upcall，EL0 保存 A 并选择 B；B 必须在 A completion 前
   实际发出自己的普通 `LDR`；两次 completion 分别 patch 对应 `Rt/PC`，恢复后不重发
   load，且实际值必须等于 nodeA 写入值；
 - 1/2/4/8/32 coroutine 的等待重叠与 queue depth 关系；
 - injected failure 后无值 0 的 silent success；
-- P2A/P2B 的 payload/checksum 与 sync baseline 相同；
+- submit/await 与 async load 的 payload/checksum 与 sync baseline 相同；
 - 每次 guest run 后确认没有残留 `qemu-system-aarch64` 进程。
 
 本地开发机只运行静态检查和已知轻量的 unit/contract tests；多节点、QEMU、长延迟
@@ -903,8 +904,8 @@ P1 共同指标：
 - bytes/request、requests/s、effective bandwidth；
 - payload checksum 与 sync baseline 一致性。
 
-P2A 另外报告 submit、EL0 context switch、CQ drain/resume、CQ occupancy、
-ready/waiter 数、`lookahead` 和 useful work during wait。P2B 另外报告 PLT/event
+submit/await 另外报告 submit、EL0 context switch、CQ drain/resume、CQ occupancy、
+ready/waiter 数、`lookahead` 和 useful work during wait。async load 另外报告 PLT/event
 occupancy、direct-upcall 数、EL0 save/restore/switch/bytes/scheduler time、capacity
 stall 和 no-ready waits；QEMU context/scheduler-cycle counter 必须为 0。
 
@@ -922,7 +923,7 @@ overlap_efficiency = (T_sync - T_async) / min(L, W)
 | local/cache hit | 异步可预测 fast path 相对 sync 回归不超过 5% |
 | 有足够工作，`L >= 10 * (S+C)` | `overlap_efficiency >= 0.70` |
 | 无其他 runnable coroutine | 相对 sync 的额外开销不超过 15%，无 busy-spin 失控 |
-| 64 in-flight + 乱序 | P1 无错误关联；P2A 无 destination/CQ 覆盖；P2B 无 PLT/context 错配 |
+| 64 in-flight + 乱序 | P1 无错误关联；submit/await 无 destination/CQ 覆盖；async load 无 PLT/context 错配 |
 | timeout/late completion | 100% 确定性 status；late completion 不修改任何已复用 sink |
 | 可重复性 | 固定 seed 下结果和事件计数稳定；wall time 波动单独报告 |
 
@@ -933,8 +934,8 @@ overlap_efficiency = (T_sync - T_async) / min(L, W)
 下表只保留跨方案的目录级索引；逐文件顺序和测试落点以各阶段详细设计为准：
 [P0 §11](p0-baseline-latency-model-detailed-design.md#11-实现落点)、
 [P1 §11](p1-split-phase-backend-detailed-design.md#11-实现落点)、
-[P2A §10](p2a-submit-await-detailed-design.md#10-实现落点)、
-[P2B §11](p2b-scheduler-core-detailed-design.md#11-实现顺序)、
+[submit/await §10](submit-await-detailed-design.md#10-实现落点)、
+[async load §11](async-load-coroutine-scheduler-detailed-design.md#11-实现顺序)、
 [P3 §10](p3-comparative-evaluation-detailed-design.md#10-实现落点)和
 [P4 §10](p4-userfaultfd-baseline-detailed-design.md#10-实现落点)。
 
@@ -942,18 +943,18 @@ overlap_efficiency = (T_sync - T_async) / min(L, W)
 |---|---|---|
 | P0 | `crates/sim-config`、`crates/sim-cli`、QEMU OBMM model | scenario/manifest、virtual-time latency/failure、同步 baseline |
 | P1 | `vendor/qemu_8.2.0_ub/hw/ub/ub_obmm_remote.*`、`ub_ubc.c` | provider-neutral parent/child pending、result pool、completion sink；淘汰单同步槽作为 async 主路径 |
-| P2A | `guest-linux/aarch64/libs/obmm_async/` | C ABI、SQ/CQ、future、stackful coroutine scheduler |
-| P2A | `guest-linux/aarch64/common/`、`driver/linqu_ub_drv.c` | P2A UAPI/status、registered buffer、queue mmap、IRQ/poll；IRQ handler 不调度 coroutine |
-| P2B | QEMU `target/arm/tcg/`、`target/arm/cpu.h` | scalar-load hook、PC-only direct upcall、atomic context-install mechanism |
-| P2B | QEMU `hw/ub/ub_scc.*` | PLT、event queue、backend adapter；不含 coroutine policy |
-| P2B | `guest-linux/aarch64/libs/obmm_scc/` | EL0 Context Store、assembly save、scheduler stack、ready/wait policy、completion patch |
+| submit/await | `guest-linux/aarch64/libs/obmm_async/` | C ABI、SQ/CQ、future、stackful coroutine scheduler |
+| submit/await | `guest-linux/aarch64/common/`、`driver/linqu_ub_drv.c` | submit/await UAPI/status、registered buffer、queue mmap、IRQ/poll；IRQ handler 不调度 coroutine |
+| async load | QEMU `target/arm/tcg/`、`target/arm/cpu.h` | scalar-load hook、PC-only direct upcall、atomic context-install mechanism |
+| async load | QEMU `hw/ub/ub_async_load.*` | PLT、event queue、backend adapter；不含 coroutine policy |
+| async load | `guest-linux/aarch64/libs/obmm_coroutine_scheduler/` | EL0 Context Store、assembly save、scheduler stack、ready/wait policy、completion patch |
 | P4 | guest app UFFD mode | standard MISSING handler、shadow/source ranges、page fault/copy metrics |
 | P3 | `crates/sim-cli`、`scenarios/experiments/` | matrix expansion、gate、aggregation、report evidence |
-| 共享 | `guest-linux/aarch64/apps/obmm_async_coroutine/` | P2A/P2B 使用同一 CLI/workload/checksum |
-| 共享 | `scenarios/` | `remote_memory_model` 与 `scheduler_core_model` 可重复配置 |
+| 共享 | `guest-linux/aarch64/apps/obmm_async_coroutine/` | submit/await 与 async load 使用同一 CLI/workload/checksum |
+| 共享 | `scenarios/` | `remote_memory_model` 与 `async_load_model` 可重复配置 |
 | 共享 | `guest-linux/aarch64/tests/`、QEMU unit/qtest/TCG tests | UAPI、状态机、instruction、CLI 和脚本 contracts |
 
-P1 不包含 guest-visible SQ/CQ 或 PLT layout；P2A/P2B adapter 分别拥有这些状态。
+P1 不包含 guest-visible SQ/CQ 或 PLT layout；submit/await 与 async load adapter 分别拥有这些状态。
 
 长期 public ABI 应使用 `remote_memory`/`obmm_async` 语义；SIM_DEC 只能出现在 provider
 实现和调试日志中。
@@ -963,10 +964,10 @@ P1 不包含 guest-visible SQ/CQ 或 PLT layout；P2A/P2B adapter 分别拥有�
 ### 已确定
 
 - 不把 `REMOTE_LOAD_PENDING` 描述为标准 Arm exception；它是 core 直接投递到已注册
-  guest EL0 coroutine scheduler core 的自定义 upcall event。scheduler core 是 EL0
+  guest EL0 coroutine scheduler 的自定义 upcall event。coroutine scheduler 是 EL0
   软件组件和独立 scheduler stack，不是额外 vCPU，也不在 QEMU 内；
 - 不让现有 `MemoryRegionOps.read()` 返回伪造值来表示 pending；
-- 软件路径使用 submit/CQ/future；P2B 使用 QEMU pending-load table + guest EL0
+- 软件路径使用 submit/CQ/future；async load 使用 QEMU pending-load table + guest EL0
   Context Store；
 - error/timeout 使用 completion status，fail closed；
 - 先解决多 in-flight backend，再做 coroutine 和 schedule-ahead；

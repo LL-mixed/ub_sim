@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
+  <title id="title">GVA、GSVA 与 direct EL0 upcall coroutine 的硬件组件关系</title>
+  <desc id="desc">从 guest 软件、CPU、MMU、async-load assist、UBC、UB Link 到 home memory 的端到端机制图，并标出当前 PoC 与真实硬件边界。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #64748b; stroke-width: 2; }
+      .software { fill: #dbeafe; stroke: #2563eb; stroke-width: 2; }
+      .custom { fill: #ffedd5; stroke: #ea580c; stroke-width: 2; }
+      .model { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; }
+      .standard { fill: #e2e8f0; stroke: #475569; stroke-width: 2; }
+      .gap { fill: #fef3c7; stroke: #d97706; stroke-width: 2; stroke-dasharray: 8 5; }
+      .title { font: 700 30px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 17px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", sans-serif; fill: #334155; }
+      .section { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", sans-serif; fill: #0f172a; }
+      .label { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", sans-serif; fill: #0f172a; }
+      .body { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", sans-serif; fill: #1e293b; }
+      .small { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", sans-serif; fill: #334155; }
+      .number { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .arrow { fill: none; stroke: #0f172a; stroke-width: 2.4; marker-end: url(#arrow); }
+      .async { fill: none; stroke: #c2410c; stroke-width: 2.4; stroke-dasharray: 8 5; marker-end: url(#arrowOrange); }
+      .control { fill: none; stroke: #2563eb; stroke-width: 2; stroke-dasharray: 5 5; marker-end: url(#arrowBlue); }
+      .boundary { fill: none; stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 10 6; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#0f172a"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1120"/>
+  <text class="title" x="50" y="48">GVA、GSVA 与 Direct-EL0 Upcall Coroutine：硬件组件拆解</text>
+  <text class="subtitle" x="50" y="76">当前 PoC 将多个目标硬件块集中在 QEMU/SIM_DEC 中；图中按真实硬件职责重新拆分</text>
+
+  <rect class="panel" x="40" y="98" width="1520" height="152"/>
+  <text class="section" x="60" y="126">Guest 软件与控制平面</text>
+
+  <rect class="software" x="65" y="145" width="260" height="80"/>
+  <text class="label" x="195" y="171" text-anchor="middle">Application coroutines</text>
+  <text class="body" x="195" y="195" text-anchor="middle">普通 LDR / 显式 submit-await</text>
+  <text class="small" x="195" y="215" text-anchor="middle">业务逻辑和 ready work</text>
+
+  <rect class="software" x="355" y="145" width="280" height="80"/>
+  <text class="label" x="495" y="171" text-anchor="middle">Coroutine scheduler</text>
+  <text class="body" x="495" y="195" text-anchor="middle">保存 context · 处理 event · 选协程</text>
+  <text class="small" x="495" y="215" text-anchor="middle">同一 vCPU，独立 scheduler stack</text>
+
+  <rect class="software" x="665" y="145" width="285" height="80"/>
+  <text class="label" x="807" y="171" text-anchor="middle">OS / driver / libobmm</text>
+  <text class="body" x="807" y="195" text-anchor="middle">map · session · capability · lifecycle</text>
+  <text class="small" x="807" y="215" text-anchor="middle">编程硬件表项和安全 owner</text>
+
+  <rect class="software" x="980" y="145" width="315" height="80"/>
+  <text class="label" x="1137" y="171" text-anchor="middle">GVA Manager software service</text>
+  <text class="body" x="1137" y="195" text-anchor="middle">segment · route · epoch · token</text>
+  <text class="small" x="1137" y="215" text-anchor="middle">分配全局身份并驱动 retire/revoke</text>
+
+  <rect class="gap" x="1325" y="145" width="210" height="80"/>
+  <text class="label" x="1430" y="171" text-anchor="middle">联合接口缺口</text>
+  <text class="body" x="1430" y="195" text-anchor="middle">Async-load map 尚未携带</text>
+  <text class="small" x="1430" y="215" text-anchor="middle">GSVA key / epoch / token</text>
+
+  <rect class="panel" x="40" y="280" width="500" height="675"/>
+  <text class="section" x="60" y="312">Initiator CPU core</text>
+
+  <rect class="standard" x="70" y="335" width="200" height="112"/>
+  <text class="label" x="170" y="363" text-anchor="middle">Decode / LSU / ROB</text>
+  <text class="body" x="170" y="388" text-anchor="middle">识别 eligible LDR</text>
+  <text class="body" x="170" y="410" text-anchor="middle">精确挂起、禁止退休</text>
+  <text class="small" x="170" y="431" text-anchor="middle">标准路径：DRAM/HBM load</text>
+
+  <rect class="model" x="300" y="335" width="210" height="112"/>
+  <text class="label" x="405" y="363" text-anchor="middle">MMU / TLB / GVA S3</text>
+  <text class="body" x="405" y="388" text-anchor="middle">VA + PTE.offset → UBA</text>
+  <text class="body" x="405" y="410" text-anchor="middle">ma_table → route attributes</text>
+  <text class="small" x="405" y="431" text-anchor="middle">GSVA 绑定 segment / epoch</text>
+
+  <rect class="custom" x="70" y="485" width="200" height="148"/>
+  <text class="label" x="170" y="513" text-anchor="middle">Same-EL Upcall Unit</text>
+  <text class="body" x="170" y="540" text-anchor="middle">PENDING / COMPLETE / FAULT</text>
+  <text class="body" x="170" y="563" text-anchor="middle">直接投递注册的 EL0 entry</text>
+  <text class="body" x="170" y="586" text-anchor="middle">精确边界 · nested 屏蔽</text>
+  <text class="small" x="170" y="614" text-anchor="middle">自定义行为，标准 Arm 未提供</text>
+
+  <rect class="custom" x="300" y="485" width="210" height="148"/>
+  <text class="label" x="405" y="513" text-anchor="middle">Atomic Resume Assist</text>
+  <text class="body" x="405" y="540" text-anchor="middle">原子恢复 GPR / SIMD</text>
+  <text class="body" x="405" y="563" text-anchor="middle">SP / PC / flags / TLS</text>
+  <text class="body" x="405" y="586" text-anchor="middle">owner + generation 校验</text>
+  <text class="small" x="405" y="614" text-anchor="middle">PoC：HLT #0x5343 私有语义</text>
+
+  <rect class="custom" x="70" y="670" width="440" height="245"/>
+  <text class="label" x="290" y="699" text-anchor="middle">Async-Load Assist</text>
+  <rect class="standard" x="92" y="720" width="190" height="80"/>
+  <text class="label" x="187" y="747" text-anchor="middle">Pending-Load Table</text>
+  <text class="body" x="187" y="771" text-anchor="middle">64 entries · request identity</text>
+  <text class="small" x="187" y="791" text-anchor="middle">PENDING / COMPLETE / REPLAY</text>
+  <rect class="standard" x="300" y="720" width="188" height="80"/>
+  <text class="label" x="394" y="747" text-anchor="middle">Event FIFO</text>
+  <text class="body" x="394" y="771" text-anchor="middle">128 entries · home CPU kick</text>
+  <text class="small" x="394" y="791" text-anchor="middle">stale / duplicate / overflow</text>
+  <rect class="standard" x="92" y="818" width="396" height="72"/>
+  <text class="label" x="290" y="846" text-anchor="middle">Replay matcher / patch completion</text>
+  <text class="body" x="290" y="871" text-anchor="middle">PC · VA · Rt · size · map generation · MMU · endian</text>
+
+  <rect class="panel" x="570" y="280" width="500" height="675"/>
+  <text class="section" x="590" y="312">Initiator UBC / UMMU / coherence</text>
+
+  <rect class="model" x="600" y="335" width="210" height="112"/>
+  <text class="label" x="705" y="363" text-anchor="middle">Route Engine</text>
+  <text class="body" x="705" y="388" text-anchor="middle">ma_table / mp_table</text>
+  <text class="body" x="705" y="410" text-anchor="middle">p_tag → port / link / lane</text>
+  <text class="small" x="705" y="431" text-anchor="middle">route generation · fail closed</text>
+
+  <rect class="model" x="835" y="335" width="205" height="112"/>
+  <text class="label" x="937" y="363" text-anchor="middle">Async Request Engine</text>
+  <text class="body" x="937" y="388" text-anchor="middle">split-phase read/write</text>
+  <text class="body" x="937" y="410" text-anchor="middle">transaction → pending slot</text>
+  <text class="small" x="937" y="431" text-anchor="middle">timeout · cancel · terminal result</text>
+
+  <rect class="model" x="600" y="485" width="440" height="170"/>
+  <text class="label" x="820" y="514" text-anchor="middle">GSVA Semantic Directory</text>
+  <text class="body" x="820" y="541" text-anchor="middle">gsva_key_v1 · segment ID · epoch · token / lease</text>
+  <text class="body" x="820" y="565" text-anchor="middle">I / S / E / M / RETIRED / TIMEOUT</text>
+  <text class="body" x="820" y="589" text-anchor="middle">owner · sharers · pending op · ack bitmap</text>
+  <text class="small" x="820" y="624" text-anchor="middle">segment-level：acquire · downgrade · fence · revoke · retire</text>
+
+  <rect class="model" x="600" y="690" width="440" height="150"/>
+  <text class="label" x="820" y="719" text-anchor="middle">OBMM 64-byte Line Directory</text>
+  <text class="body" x="820" y="747" text-anchor="middle">GETS · GETM · INV · WB · FENCE</text>
+  <text class="body" x="820" y="772" text-anchor="middle">MESI owner / sharers · data consistency</text>
+  <text class="small" x="820" y="811" text-anchor="middle">先通过 GSVA segment 语义，再获取目标 cache line</text>
+
+  <rect class="standard" x="600" y="865" width="440" height="64"/>
+  <text class="label" x="820" y="892" text-anchor="middle">RAS / telemetry / MMIO control</text>
+  <text class="body" x="820" y="916" text-anchor="middle">timeout · mismatch · retry · tail latency · drain / reset</text>
+
+  <rect class="panel" x="1100" y="280" width="165" height="675"/>
+  <text class="section" x="1182" y="312" text-anchor="middle">UB Link</text>
+  <rect class="standard" x="1125" y="340" width="115" height="510"/>
+  <text class="label" x="1182" y="380" text-anchor="middle">Packet</text>
+  <text class="label" x="1182" y="405" text-anchor="middle">Endpoint</text>
+  <text class="body" x="1182" y="455" text-anchor="middle">request</text>
+  <text class="body" x="1182" y="480" text-anchor="middle">completion</text>
+  <text class="body" x="1182" y="505" text-anchor="middle">coherence</text>
+  <text class="body" x="1182" y="530" text-anchor="middle">ack</text>
+  <line x1="1145" y1="560" x2="1220" y2="560" stroke="#64748b" stroke-width="1.5"/>
+  <text class="small" x="1182" y="595" text-anchor="middle">credit</text>
+  <text class="small" x="1182" y="618" text-anchor="middle">retry</text>
+  <text class="small" x="1182" y="641" text-anchor="middle">ordering</text>
+  <text class="small" x="1182" y="664" text-anchor="middle">dedup</text>
+  <text class="small" x="1182" y="687" text-anchor="middle">poison</text>
+  <line x1="1145" y1="716" x2="1220" y2="716" stroke="#64748b" stroke-width="1.5"/>
+  <text class="small" x="1182" y="750" text-anchor="middle">control / data</text>
+  <text class="small" x="1182" y="773" text-anchor="middle">virtual channel</text>
+  <text class="small" x="1182" y="811" text-anchor="middle">route identity</text>
+
+  <rect class="panel" x="1295" y="280" width="265" height="675"/>
+  <text class="section" x="1427" y="312" text-anchor="middle">Home node</text>
+
+  <rect class="standard" x="1320" y="340" width="215" height="135"/>
+  <text class="label" x="1427" y="369" text-anchor="middle">Home UBC / UMMU</text>
+  <text class="body" x="1427" y="397" text-anchor="middle">range · EID/CNA · TID</text>
+  <text class="body" x="1427" y="421" text-anchor="middle">segment · epoch · token</text>
+  <text class="small" x="1427" y="453" text-anchor="middle">target-side protection recheck</text>
+
+  <rect class="standard" x="1320" y="515" width="215" height="125"/>
+  <text class="label" x="1427" y="545" text-anchor="middle">Memory Controller</text>
+  <text class="body" x="1427" y="573" text-anchor="middle">UBA → home PA</text>
+  <text class="body" x="1427" y="597" text-anchor="middle">DRAM / HBM read-write</text>
+  <text class="small" x="1427" y="624" text-anchor="middle">backpressure · ECC · poison</text>
+
+  <rect class="standard" x="1320" y="680" width="215" height="110"/>
+  <text class="label" x="1427" y="710" text-anchor="middle">Exported memory</text>
+  <text class="body" x="1427" y="739" text-anchor="middle">home segment backing</text>
+  <text class="small" x="1427" y="768" text-anchor="middle">owner data / writeback target</text>
+
+  <rect class="model" x="1320" y="830" width="215" height="95"/>
+  <text class="label" x="1427" y="858" text-anchor="middle">NPU / SSD SVA master</text>
+  <text class="body" x="1427" y="884" text-anchor="middle">GVA/GSVA DMA + fence</text>
+  <text class="small" x="1427" y="908" text-anchor="middle">当前为功能设备模型</text>
+
+  <path class="control" d="M807 225 L807 270 L405 270 L405 335"/>
+  <path class="control" d="M1137 225 L1137 265 L820 265 L820 335"/>
+  <path class="control" d="M495 225 L495 485"/>
+
+  <path class="arrow" d="M270 390 L300 390"/>
+  <circle cx="283" cy="374" r="11" fill="#ffffff" stroke="#0f172a"/>
+  <text class="number" x="283" y="379" text-anchor="middle">1</text>
+
+  <path class="arrow" d="M510 390 L600 390"/>
+  <circle cx="555" cy="374" r="11" fill="#ffffff" stroke="#0f172a"/>
+  <text class="number" x="555" y="379" text-anchor="middle">2</text>
+
+  <path class="arrow" d="M810 390 L835 390"/>
+  <path class="arrow" d="M1040 400 L1125 400"/>
+  <circle cx="1082" cy="384" r="11" fill="#ffffff" stroke="#0f172a"/>
+  <text class="number" x="1082" y="389" text-anchor="middle">3</text>
+
+  <path class="arrow" d="M1240 420 L1320 420"/>
+  <path class="arrow" d="M1427 475 L1427 515"/>
+  <path class="arrow" d="M1427 640 L1427 680"/>
+
+  <path class="async" d="M937 447 L937 660 L520 660 L520 745 L488 745"/>
+  <circle cx="550" cy="644" r="11" fill="#ffffff" stroke="#c2410c"/>
+  <text class="number" x="550" y="649" text-anchor="middle">4</text>
+
+  <path class="async" d="M170 670 L170 633"/>
+  <circle cx="151" cy="650" r="11" fill="#ffffff" stroke="#c2410c"/>
+  <text class="number" x="151" y="655" text-anchor="middle">5</text>
+
+  <path class="async" d="M70 555 L25 555 L25 265 L495 265 L495 225"/>
+  <circle cx="33" cy="535" r="11" fill="#ffffff" stroke="#c2410c"/>
+  <text class="number" x="33" y="540" text-anchor="middle">6</text>
+
+  <path class="async" d="M495 225 L495 470 L405 470 L405 485"/>
+  <circle cx="476" cy="454" r="11" fill="#ffffff" stroke="#c2410c"/>
+  <text class="number" x="476" y="459" text-anchor="middle">7</text>
+
+  <path class="async" d="M300 560 L270 560"/>
+  <path class="async" d="M170 485 L170 447"/>
+
+  <rect class="boundary" x="54" y="325" width="1001" height="615" rx="12"/>
+  <text class="small" x="74" y="937">PoC 中由 QEMU TCG + SIM_DEC/UBC 集中模拟；目标硅实现按虚线边界内的 CPU、async-load assist、MMU、route、coherence 模块拆分</text>
+
+  <rect class="panel" x="40" y="980" width="1520" height="105"/>
+  <text class="label" x="60" y="1008">主路径编号</text>
+  <text class="body" x="60" y="1036">1 LDR 与地址转换</text>
+  <text class="body" x="260" y="1036">2 GVA/GSVA route</text>
+  <text class="body" x="470" y="1036">3 UB request</text>
+  <text class="body" x="650" y="1036">4 completion → load assist</text>
+  <text class="body" x="890" y="1036">5 event → upcall</text>
+  <text class="body" x="1080" y="1036">6 EL0 scheduler</text>
+  <text class="body" x="1270" y="1036">7 atomic resume</text>
+
+  <rect class="software" x="60" y="1053" width="22" height="16"/>
+  <text class="small" x="90" y="1067">guest 软件</text>
+  <rect class="custom" x="205" y="1053" width="22" height="16"/>
+  <text class="small" x="235" y="1067">Async load 自定义 CPU/load-assist 能力</text>
+  <rect class="model" x="475" y="1053" width="22" height="16"/>
+  <text class="small" x="505" y="1067">已有功能模型</text>
+  <rect class="standard" x="660" y="1053" width="22" height="16"/>
+  <text class="small" x="690" y="1067">常规目标硬件数据通路</text>
+  <rect class="gap" x="930" y="1053" width="22" height="16"/>
+  <text class="small" x="960" y="1067">待打通的联合接口</text>
+</svg>

@@ -18,7 +18,7 @@ QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
 USE_QMP="${USE_QMP:-0}"
 APP_SELECTION="${APP_SELECTION:-}"
 REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
-SCHEDULER_CORE_MODEL="${SCHEDULER_CORE_MODEL:-}"
+ASYNC_LOAD_MODEL="${ASYNC_LOAD_MODEL:-}"
 OBMM_ASYNC_ARGS="${OBMM_ASYNC_ARGS:-}"
 APPEND_EXTRA_WAS_SET=0
 if [[ -n "${APPEND_EXTRA+x}" ]]; then
@@ -77,7 +77,7 @@ Options:
   --append-extra STR Extra kernel cmdline tokens to append.
   --remote-memory-model-manifest PATH
                       Canonical QEMU remote-memory model manifest.
-  --scheduler-core-model SPEC
+  --async-load-model SPEC
                       Canonical v2 event/upcall capacity spec.
   --obmm-async-args STR
                       Arguments for obmm_async_coroutine.
@@ -195,7 +195,7 @@ append_obmm_async_args() {
     value="${words[$((index + 1))]}"
     case "$option" in
       --mode) append_cmdline_if_missing "obmm_async_mode=$value" ;;
-      --p2b-completion) append_cmdline_if_missing "obmm_async_p2b_completion=$value" ;;
+      --async-load-completion) append_cmdline_if_missing "obmm_async_load_completion=$value" ;;
       --coroutines) append_cmdline_if_missing "obmm_async_coroutines=$value" ;;
       --inflight) append_cmdline_if_missing "obmm_async_inflight=$value" ;;
       --lookahead) append_cmdline_if_missing "obmm_async_lookahead=$value" ;;
@@ -308,12 +308,12 @@ while [[ $# -gt 0 ]]; do
       REMOTE_MEMORY_MODEL_MANIFEST="$2"
       shift 2
       ;;
-    --scheduler-core-model)
+    --async-load-model)
       if [[ $# -lt 2 ]]; then
-        echo "--scheduler-core-model requires a value" >&2
+        echo "--async-load-model requires a value" >&2
         exit 2
       fi
-      SCHEDULER_CORE_MODEL="$2"
+      ASYNC_LOAD_MODEL="$2"
       shift 2
       ;;
     --obmm-async-args)
@@ -346,9 +346,9 @@ if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
   if [[ -z "$OBMM_ASYNC_ARGS" ]]; then
     OBMM_ASYNC_ARGS="--mode async-poll --coroutines 8 --inflight 32 --lookahead 16 --access-bytes 64 --pattern sequential --compute-us 10 --iterations 1024 --deadline-us 1000000 --seed 1 --verify"
   fi
-  if [[ "$OBMM_ASYNC_ARGS" == *"--mode scheduler-core"* &&
-        -z "$SCHEDULER_CORE_MODEL" ]]; then
-    echo "scheduler-core mode requires --scheduler-core-model from the scenario" >&2
+  if [[ "$OBMM_ASYNC_ARGS" == *"--mode async-load"* &&
+        -z "$ASYNC_LOAD_MODEL" ]]; then
+    echo "async-load mode requires --async-load-model from the scenario" >&2
     exit 2
   fi
   append_obmm_async_args
@@ -659,7 +659,7 @@ validate_obmm_async_coroutine_log() {
     return 0
   fi
   assert_log_has "$log_file" \
-    "OBMM_ASYNC_SUMMARY abi=1 mode=(async-(poll|irq)|scheduler-core) status=pass .*failures=0 .*stale=0" \
+    "OBMM_ASYNC_SUMMARY abi=1 mode=(async-(poll|irq)|async-load) status=pass .*failures=0 .*stale=0" \
     "${node_name} OBMM async summary" || return 1
   assert_log_absent "$log_file" \
     "OBMM_ASYNC_SUMMARY .*status=fail" \
@@ -840,7 +840,7 @@ start_node() {
   local qemu_extra=()
   local qemu_control_args=()
   local remote_model_args=()
-  local scheduler_core_args=()
+  local async_load_args=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
 
@@ -865,9 +865,9 @@ start_node() {
       -global "ubc.remote-memory-model-manifest=$REMOTE_MEMORY_MODEL_MANIFEST"
     )
   fi
-  if [[ -n "$SCHEDULER_CORE_MODEL" ]]; then
-    scheduler_core_args=(
-      -global "ubc.scheduler-core-model=$SCHEDULER_CORE_MODEL"
+  if [[ -n "$ASYNC_LOAD_MODEL" ]]; then
+    async_load_args=(
+      -global "ubc.async-load-model=$ASYNC_LOAD_MODEL"
     )
   fi
   mkdir -p "$(dirname "$guest_log")"
@@ -891,7 +891,7 @@ start_node() {
       -nodefaults \
       -nographic \
       "${remote_model_args[@]}" \
-      "${scheduler_core_args[@]}" \
+      "${async_load_args[@]}" \
       -serial file:"$guest_log" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \

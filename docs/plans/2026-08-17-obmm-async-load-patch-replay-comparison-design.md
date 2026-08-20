@@ -1,4 +1,7 @@
-# OBMM P2B patch 与 replay 模式对比及 replay 设计
+# OBMM async load patch 与 replay 模式对比及 replay 设计
+
+> 命名说明：当前机制与接口统一称为 `async load`。文中小写 `p2b` 仅出现在改名前
+> 已生成且不可改写的 workspace、日志和 gate 文件名中。
 
 > 日期：2026-08-17
 > 范围：AArch64 EL0 普通标量 `LDR`、direct EL0 upcall、guest EL0
@@ -8,15 +11,15 @@
 
 ## 1. 结论
 
-P2B 可以支持 page-fault 风格的原指令重试。新增模式称为
-`P2B-replay`：远端读完成后，EL0 调度器保留协程保存上下文中的 `PC` 和
+async load 可以支持 page-fault 风格的原指令重试。新增模式称为
+`async load-replay`：远端读完成后，EL0 调度器保留协程保存上下文中的 `PC` 和
 目标寄存器；协程恢复到原 `LDR`，core 重新执行地址生成、MMU/MTE/权限探测和
 指令退休，并从只可消费一次的 replay entry 取得远端结果。
 
-现有 `P2B-patch` 继续作为默认模式。它在 COMPLETE upcall 中由 EL0 runtime
+现有 `async load-patch` 继续作为默认模式。它在 COMPLETE upcall 中由 EL0 runtime
 把结果写入保存上下文的 `Rt`，再令 `PC=fault_pc+4`。保留该模式有三个原因：
 
-- 已有 ABI v2 程序、P2B 功能证据和 P3 数据继续有效；
+- 已有 ABI v2 程序、async load 功能证据和 P3 数据继续有效；
 - patch 的固定控制开销更低，适合作为轻量 PoC 与性能基线；
 - replay 增加 completed PLT 保留、精确匹配、一次性消费和取消回收状态，适合
   验证更接近硬件退休语义的路径。
@@ -24,7 +27,7 @@ P2B 可以支持 page-fault 风格的原指令重试。新增模式称为
 两种模式共享远端 backend、PENDING/COMPLETE upcall、EL0 Context Store、ready
 queue 和 `HLT #0x5343` 原子 resume。差异集中在 COMPLETE 之后的退休责任。
 
-![P2B patch 与 replay 数据和控制路径](2026-08-17-obmm-p2b-patch-vs-replay.svg)
+![async load patch 与 replay 数据和控制路径](2026-08-17-obmm-async-load-patch-vs-replay.svg)
 
 ## 2. 当前 patch 模式的准确行为
 
@@ -32,13 +35,13 @@ queue 和 `HLT #0x5343` 原子 resume。差异集中在 COMPLETE 之后的退休
 路径如下：
 
 1. AArch64 translator 在受支持的无符号标量 `LDR` 前插入
-   `obmm_scc_remote_load` helper；
-2. helper 先执行标准地址访问探测，再向 SCC/remote backend 提交一次读；
+   `async_load_remote_load` helper；
+2. helper 先执行标准地址访问探测，再向 coroutine scheduler/remote backend 提交一次读；
 3. PENDING 时，helper 令当前 TB 退出并把 EL0 `PC` 指向 upcall entry；原
    `qemu_ld` 尚未执行；
 4. guest EL0 upcall entry 保存完整上下文，EL0 scheduler 切换到其他 ready
    coroutine；
-5. COMPLETE event 到达后，`libobmm_scc` 将 `event.value` 写入目标保存上下文的
+5. COMPLETE event 到达后，`libobmm_coroutine_scheduler` 将 `event.value` 写入目标保存上下文的
    `x[Rt]`，令保存的 `PC=fault_pc+4`；
 6. 后续 resume 从下一条指令继续执行。
 
@@ -47,7 +50,7 @@ queue 和 `HLT #0x5343` 原子 resume。差异集中在 COMPLETE 之后的退休
 
 ## 3. replay 的目标语义
 
-`P2B-replay` 要满足以下可观察语义：
+`async load-replay` 要满足以下可观察语义：
 
 - 一个逻辑 load 只提交一次远端 backend 请求；
 - COMPLETE upcall 不写保存上下文的 `Rt`，也不前移保存的 `PC`；
@@ -60,7 +63,7 @@ queue 和 `HLT #0x5343` 原子 resume。差异集中在 COMPLETE 之后的退休
 
 这里模拟的是 precise restart/retirement。它保留 direct EL0 upcall 与 EL0 coroutine
 scheduler，没有构造真实的 EL0→EL1 Data Abort。真实 Linux page fault 路径由 P4
-userfaultfd baseline 覆盖，会安装 4 KiB page 后通过 `ERET` 重试原 load；P2B-replay
+userfaultfd baseline 覆盖，会安装 4 KiB page 后通过 `ERET` 重试原 load；async load-replay
 保留 1/2/4/8-byte 标量粒度，结果存放在 core-side replay entry。
 
 ## 4. 状态机与一次性消费
@@ -84,7 +87,7 @@ userfaultfd baseline 覆盖，会安装 4 KiB page 后通过 `ERET` 重试原 lo
 | resume | `REPLAY_READY` | `RUNNING` at `fault_pc` | PLT replay entry |
 | retried `LDR` matches | `FREE` | `RUNNING` after retired `LDR` | decoded `Rt` |
 
-`REPLAY_READY` 延长了 PLT 占用时间。它使 `scc_pending_current=0` 成为强 drain
+`REPLAY_READY` 延长了 PLT 占用时间。它使 `async_load_pending_current=0` 成为强 drain
 证据：所有完成结果都已由重试的 `LDR` 消费。相应代价是，ready coroutine 长时间
 得不到调度时会占用 PLT，可能触发 capacity stall。
 
@@ -115,11 +118,11 @@ ABI version 保持 2，结构体原有字段和 ioctl 编号均保持。新增�
 
 | 项目 | 定义 | 作用 |
 |---|---|---|
-| capability | `OBMM_SCC_CAP_REPLAY_RETIRE` | driver/QEMU 声明 replay 支持 |
-| start flag | `OBMM_SCC_START_REPLAY_RETIRE` | 按 session 选择退休模式 |
-| event flag | `OBMM_SCC_EVENT_RETIRE_REPLAY` | COMPLETE event 声明结果留在 PLT |
-| stats ioctl | `OBMM_SCC_IOCTL_GET_REPLAY_STATS` | 导出 consume/mismatch/high-water |
-| application CLI | `--p2b-completion patch\|replay` | 用户显式选择模式，默认 `patch` |
+| capability | `OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE` | driver/QEMU 声明 replay 支持 |
+| start flag | `OBMM_ASYNC_LOAD_START_REPLAY_RETIRE` | 按 session 选择退休模式 |
+| event flag | `OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY` | COMPLETE event 声明结果留在 PLT |
+| stats ioctl | `OBMM_ASYNC_LOAD_IOCTL_GET_REPLAY_STATS` | 导出 consume/mismatch/high-water |
+| application CLI | `--async-load-completion patch\|replay` | 用户显式选择模式，默认 `patch` |
 
 新 guest runtime 请求 replay 时会检查 capability；旧 QEMU 缺少该 capability 时返回
 `-EOPNOTSUPP`，不会静默回退到 patch。patch 对旧配置保持兼容，也不会调用旧 driver
@@ -129,12 +132,12 @@ ABI version 保持 2，结构体原有字段和 ioctl 编号均保持。新增�
 
 | 层 | 文件 | 新增职责 |
 |---|---|---|
-| UAPI | `guest-linux/kernel_ub/include/uapi/ub/obmm_scc.h` | capability、session/event flag、replay stats ioctl |
-| QEMU model | `vendor/qemu_8.2.0_ub/hw/ub/ub_scc.c` | `REPLAY_READY`、精确匹配、一次性消费、fail-stop |
-| QEMU device | `vendor/qemu_8.2.0_ub/hw/ub/ub_scc_device.c` | session mode、MMIO stats、replay consume 路由；upcall/scheduler 窗口禁止误消费 |
+| UAPI | `guest-linux/kernel_ub/include/uapi/ub/obmm_async_load.h` | capability、session/event flag、replay stats ioctl |
+| QEMU model | `vendor/qemu_8.2.0_ub/hw/ub/ub_async_load.c` | `REPLAY_READY`、精确匹配、一次性消费、fail-stop |
+| QEMU device | `vendor/qemu_8.2.0_ub/hw/ub/ub_async_load_device.c` | session mode、MMIO stats、replay consume 路由；upcall/scheduler 窗口禁止误消费 |
 | AArch64 TCG | `vendor/qemu_8.2.0_ub/target/arm/tcg/helper-a64.c`、`translate-a64.c` | 原 `LDR` 重试、probe、写回 decoded `Rt`、跳过第二次 mapped load |
 | guest driver | `guest-linux/aarch64/driver/linqu_ub_drv.c` | capability 协商、session flag、stats 导出 |
-| EL0 runtime | `guest-linux/aarch64/libs/obmm_scc/obmm_scc.c` | `READY_REPLAY` 与 COMPLETE 分流 |
+| EL0 runtime | `guest-linux/aarch64/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.c` | `READY_REPLAY` 与 COMPLETE 分流 |
 | application | `guest-linux/aarch64/apps/obmm_async_coroutine/obmm_async_coroutine.c` | CLI、mode-specific pass gate、日志字段 |
 | host/guest 转发 | `run_ub_obmm_eval.sh`、`run_ub_dual_node_apps.sh`、`initramfs/run_app` | host CLI 到 guest CLI 的完整传递与证据校验 |
 
@@ -178,7 +181,7 @@ coroutine、`upcall_active=false` 后成为 CPU 的预期消费对象。
 
 若忽略这一区分，scheduler 自己的本地 `LDR` 可能被误判为“原远端 `LDR` 已不再命中
 remote map”。循环实跑曾触发该问题并由 QEMU fail-stop。最终实现让
-`ub_scc_cpu_replay_expected()` 在 upcall 窗口返回 false；恢复 coroutine 后仍执行完整
+`ub_async_load_cpu_replay_expected()` 在 upcall 窗口返回 false；恢复 coroutine 后仍执行完整
 descriptor 匹配，错误地址、PC、map generation 或 decode metadata 继续 fail-stop。
 
 ## 8. EL0 runtime 详细设计
@@ -200,7 +203,7 @@ round-robin scheduler 同时选择 `READY` 和 `READY_REPLAY`。它仍通过
 
 ## 9. 两种模式的工程对比
 
-| 维度 | `P2B-patch` | `P2B-replay` |
+| 维度 | `async load-patch` | `async load-replay` |
 |---|---|---|
 | saved `Rt/PC` 处理 | EL0 COMPLETE handler 写 `Rt`、前移 PC | EL0 不改，原 `LDR` 重试 |
 | 指令退休一致性 | EL0 模拟当前 scalar load 退休 | decoder/TCG 完成目标写回和退休 |
@@ -229,12 +232,12 @@ round-robin scheduler 同时选择 `READY` 和 `READY_REPLAY`。它仍通过
 ### 11.1 静态、编译与单元测试
 
 - UAPI layout 与 capability/start/event flag 编译断言；
-- AArch64 `libobmm_scc`、assembly 和共享 CLI 以
+- AArch64 `libobmm_coroutine_scheduler`、assembly 和共享 CLI 以
   `-Wall -Wextra -Werror` 交叉编译；
 - QEMU 完整构建，覆盖 TCG helper 返回值与 replay branch；
 - QEMU model unit：retain、exact consume once、mismatch fail-stop；
 - 既有 OBMM remote backend unit 全部继续通过；
-- Rust P2B phase gate 接受 replay exact-once 证据并拒绝少消费。
+- Rust async load phase gate 接受 replay exact-once 证据并拒绝少消费。
 
 ### 11.2 双节点功能验收
 
@@ -247,7 +250,7 @@ patch 与 replay 各跑一次相同 producer/consumer case，要求：
 - `pending == complete == coroutine count`；
 - replay：`replay_consumed == coroutine count`、`replay_mismatch == 0`；
 - patch：`replay_consumed == 0`；
-- 两种模式最终 `scc_pending=backend_pending=0`，无残留 QEMU。
+- 两种模式最终 `async_load_pending=backend_pending=0`，无残留 QEMU。
 
 ### 11.3 同负载性能对比
 
@@ -268,7 +271,7 @@ coroutine 数、iterations、warmup 与 compute。至少采集：
 ## 12. 实现与测试状态
 
 代码实现已覆盖 QEMU model/device/TCG、UAPI、driver、EL0 runtime、application
-CLI、日志字段和 Rust P2B gate。远端构建和 2-node 实跑使用 n4-910c 上的独立工作区
+CLI、日志字段和 Rust async load gate。远端构建和 2-node 实跑使用 n4-910c 上的独立工作区
 `/home/ll/ub_sim_p2b_replay_20260817`；暂停的 P3 campaign 保持 `Tl`，本次没有恢复或
 续写 P3 evidence。
 
@@ -276,13 +279,13 @@ CLI、日志字段和 Rust P2B gate。远端构建和 2-node 实跑使用 n4-910
 |---|---:|
 | guest ABI/runtime contract | 9/9 pass |
 | host/initramfs 参数转发 contract | 10/10 pass |
-| QEMU SCC unit | 9/9 pass，其中 replay 2/2 |
+| QEMU async-load unit | 9/9 pass，其中 replay 2/2 |
 | QEMU common remote unit | 6/6 pass |
 | QEMU remote-model unit | 7/7 pass |
 | QEMU aarch64-softmmu/TCG ARM64 native build | pass |
 | Rust replay phase-gate focused test | 1/1 pass |
 | ARM64 kernel、`linqu_ub_drv.ko`、应用、initramfs | pass |
-| patch/replay 2-node producer/consumer | 各 1 次 pass；各自 P2B phase gate pass |
+| patch/replay 2-node producer/consumer | 各 1 次 pass；各自 async load phase gate pass |
 | patch/replay 同负载性能日志 | 3 组配对、共 6 次 pass |
 | 最终队列与进程清理 | 每次 `qemu_destroyed=1`；最终无残留 QEMU |
 
@@ -326,8 +329,8 @@ seed 29 的 producer/consumer 用例由 nodeA 写两个确定值，nodeB 的两�
 | blocked-load switches | 1 | 1 |
 | EL0 save / restore / switch | 2 / 4 / 3 | 2 / 4 / 3 |
 | replay consumed / mismatch / high-water | 0 / 0 / 0 | 2 / 0 / 1 |
-| final SCC / backend pending | 0 / 0 | 0 / 0 |
-| P2B phase gate | pass | pass |
+| final coroutine scheduler / backend pending | 0 / 0 | 0 / 0 |
+| async load phase gate | pass | pass |
 
 最终功能日志和 gate：
 
@@ -383,7 +386,7 @@ replay 更快，也没有显示可观测的性能回退。
 这些文件位于远端独立工作区的 `out/obmm-p2b-replay-comparison/`。每次的 per-node
 guest/QEMU 日志位于
 `guest-linux/aarch64/logs/<run-id>_headless8/`。6 次运行均为 `failures=0`、
-`timeouts=0`、`model_pending_final=backend_pending_final=scc_pending_final=0`、
+`timeouts=0`、`model_pending_final=backend_pending_final=async_load_pending_final=0`、
 `qemu_destroyed=1`。
 
 这组定向数据回答了两个模式能否真实运行及其在 10 ms 场景下的相对成本。它没有覆盖

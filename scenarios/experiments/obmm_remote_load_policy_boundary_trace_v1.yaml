@@ -25,30 +25,30 @@ cases:
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: T1-p2a-demand
+  - id: T1-submit-await-demand
     band: scalar
     mode: async-poll
     access_bytes: 8
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: T2-p2a-lookahead
+  - id: T2-submit-await-lookahead
     band: scalar
     mode: async-poll
     access_bytes: 8
     issue: lookahead
     sweep_lookahead: true
     extra_vcpus: 0
-  - id: T3-p2b-demand
+  - id: T3-async-load-demand
     band: scalar
-    mode: scheduler-core
+    mode: async-load
     access_bytes: 8
     issue: demand
     lookahead: 0
     extra_vcpus: 0
 sweeps:
-  - id: sync-p2b-boundary-trace
-    cases: [T0-sync, T1-p2a-demand, T2-p2a-lookahead, T3-p2b-demand]
+  - id: sync-async-load-boundary-trace
+    cases: [T0-sync, T1-submit-await-demand, T2-submit-await-lookahead, T3-async-load-demand]
     model_latency_us: [20, 30, 50, 75]
     jitter_profiles: [none]
     outcomes: [success]
@@ -57,8 +57,8 @@ sweeps:
     lookahead: [16]
     compute_us: [30, 300]
     patterns: [sequential]
-  - id: p2a-p2b-boundary-trace
-    cases: [T0-sync, T1-p2a-demand, T2-p2a-lookahead, T3-p2b-demand]
+  - id: submit-await-async-load-boundary-trace
+    cases: [T0-sync, T1-submit-await-demand, T2-submit-await-lookahead, T3-async-load-demand]
     model_latency_us: [150, 250, 500, 750]
     jitter_profiles: [none]
     outcomes: [success]

@@ -6,8 +6,8 @@
 >
 > 前置阶段：[P0：同步基线、时钟与远端延迟模型](p0-baseline-latency-model-detailed-design.md)
 >
-> 后继阶段：[P2A：submit/await](p2a-submit-await-detailed-design.md)、
-> [P2B：scheduler core](p2b-scheduler-core-detailed-design.md)
+> 后继阶段：[submit/await：submit/await](submit-await-detailed-design.md)、
+> [async load：coroutine scheduler](async-load-coroutine-scheduler-detailed-design.md)
 >
 > 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
@@ -15,7 +15,7 @@
 
 P1 把当前“发送一个 SIM_DEC READ 后在 vCPU 回调中 poll/`g_usleep()`”改造成真正的
 split-phase backend：提交方得到内部 request token 后立即返回；0 到 64 个请求可以
-同时 pending；响应通过 generation-safe completion sink 交给 P2A、P2B 或测试适配器。
+同时 pending；响应通过 generation-safe completion sink 交给 submit/await、async load 或测试适配器。
 
 P1 不定义 EL0 SQ/CQ、future、coroutine、PLT、Context Store 或目标寄存器。它只拥有
 provider-neutral request lifecycle、payload、timeout/cancel 和 exactly-once terminal
@@ -43,7 +43,7 @@ response lookup 必须使用 `(peer_cna, wire_req_id)`，不能只按可能回�
 
 - 固定容量 64 的 parent pending table 和 bounded payload pool；
 - parent request 到一个或多个 wire child request 的拆分与聚合；
-- test、P2A、P2B 三种 generation-safe completion sink；
+- test、submit/await、async load 三种 generation-safe completion sink；
 - inline、pending、rejected 三种 submit outcome；
 - timeout、cancel、map retire、duplicate、late response 的单一 terminal commit；
 - P0 virtual-time latency/failure model 的唯一接入点；
@@ -129,8 +129,8 @@ P1 v1 每个 UBC/device 固定配置：
 provider response 先复制到 P1 payload slot；parent terminal 后：
 
 - test sink 对比 expected payload/checksum；
-- P2A sink 复制到 registered destination，完成后 release-publish CQE；
-- P2B sink 只接受 1/2/4/8-byte scalar，把结果复制到 PLT result field，再排 SCC event。
+- submit/await sink 复制到 registered destination，完成后 release-publish CQE；
+- async load sink 只接受 1/2/4/8-byte scalar，把结果复制到 PLT result field，再排 coroutine scheduler event。
 
 这会产生一次有意保留的 sink copy，但 ownership 明确，不会让 provider 持有 guest VA、
 已释放 buffer 或已复用 PLT 的裸指针。trace 必须输出 `sink_copy_bytes` 和
@@ -235,8 +235,8 @@ RETIRED, UNSUPPORTED, INTERNAL
 ```
 
 `provider_status` 只作为诊断字段，不进入上层控制流。success payload 对 sink callback
-可见之前，P1 做 release；adapter 发布 CQE/SCC event 时再做其边界的 release。P1
-不承诺普通 CPU load 的 acquire/atomic 语义；P2B 白名单负责限制可支持的 memop。
+可见之前，P1 做 release；adapter 发布 CQE/coroutine scheduler event 时再做其边界的 release。P1
+不承诺普通 CPU load 的 acquire/atomic 语义；async load 白名单负责限制可支持的 memop。
 
 必需 trace：
 
@@ -244,7 +244,7 @@ RETIRED, UNSUPPORTED, INTERNAL
 obmm_p1_submit token=... operation_key=... chunks=... bytes=...
 obmm_p1_child_response token=... req_id=... chunk=... status=...
 obmm_p1_terminal token=... winner=response|deadline|cancel|retire status=...
-obmm_p1_deliver token=... sink=test|p2a|p2b copy_bytes=... copy_ns=...
+obmm_p1_deliver token=... sink=test|submit-await|async-load copy_bytes=... copy_ns=...
 obmm_p1_late token=... source=response|deadline|cancel|retire
 ```
 
@@ -255,7 +255,7 @@ Host CLI：
 ```text
 cargo run -p sim-cli -- obmm-remote-backend-conformance \
   --scenario scenarios/mvp_2host_single_domain.yaml \
-  --sink test|p2a|p2b \
+  --sink test|submit-await|async-load \
   --case inline|inflight64|reorder|duplicate|timeout|cancel-race|retire|capacity \
   --access-bytes 1|2|4|8|64|4096|65536 \
   --seed 1 \
@@ -263,11 +263,11 @@ cargo run -p sim-cli -- obmm-remote-backend-conformance \
   --dry-run
 ```
 
-`--dry-run` 校验 P0 manifest、sink/size 组合和远端执行命令，不启动 QEMU。P2B sink
+`--dry-run` 校验 P0 manifest、sink/size 组合和远端执行命令，不启动 QEMU。async load sink
 拒绝大于 8 B。summary：
 
 ```text
-OBMM_P1_SUMMARY schema=1 sink=p2a case=inflight64 accepted=64 \
+OBMM_P1_SUMMARY schema=1 sink=submit-await case=inflight64 accepted=64 \
 delivered=64 late=0 duplicate=0 checksum=... status=pass
 ```
 
@@ -279,8 +279,8 @@ delivered=64 late=0 duplicate=0 checksum=... status=pass
 | 2 | `vendor/qemu_8.2.0_ub/hw/ub/ub_obmm_remote.c` | parent table、payload pool、terminal arbitration、delivery |
 | 3 | `vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c` | SIM_DEC child adapter、多 response lookup、移除 async path 的 poll/sleep |
 | 4 | P0 model files | virtual-time eligible/error/drop/duplicate/reorder |
-| 5 | P2A endpoint | registered-buffer sink adapter |
-| 6 | P2B RLA/PLT | scalar-result sink adapter |
+| 5 | submit/await endpoint | registered-buffer sink adapter |
+| 6 | async load RLA/PLT | scalar-result sink adapter |
 | 7 | `crates/sim-cli/` | conformance CLI、dry-run、summary aggregation |
 | 8 | QEMU unit/qtest、Rust/Python tests | state/race/wire/CLI contracts |
 
@@ -293,7 +293,7 @@ delivered=64 late=0 duplicate=0 checksum=... status=pass
 - 1/2/4/8/64 KiB 分块、乱序 child、首错、短响应、duplicate；
 - 64 accepted + 第 65 项 capacity fail，资源计数不泄漏；
 - fixed seed 下 P0 outcome 与 sink kind 无关；
-- test/P2A/P2B sink 各 exactly once，stale sink 不被调用；
+- test、submit/await、async load sink 各 exactly once，stale sink 不被调用；
 - CLI 参数组合、dry-run、summary/trace schema。
 
 ### 12.2 远端 QEMU 验证
@@ -301,13 +301,13 @@ delivered=64 late=0 duplicate=0 checksum=... status=pass
 - 64 个 remote read 同时 pending，application vCPU 没有 `g_usleep()`/busy-poll；
 - response 任意乱序仍落入正确 parent offset/destination/PLT；
 - timeout/cancel/retire 与 response 竞争 100% 只有一个 terminal status；
-- P2A/P2B 与 test sink 使用同一 operation key 时 payload/status 相同；
+- submit/await 与 async load 与 test sink 使用同一 operation key 时 payload/status 相同；
 - teardown 后 pending、child、payload、timer、BH 均为 0；
 - run 后无残留 QEMU process。
 
 ### 12.3 P1 退出条件
 
-1. test、P2A、P2B 三种 sink 通过同一 conformance suite；
+1. test、submit/await、async load 三种 sink 通过同一 conformance suite；
 2. 64 in-flight、分块、乱序、duplicate、late 和 capacity full 均 generation-safe；
 3. async path 不在 vCPU 上 poll/sleep，completion 从 provider callback 解耦；
 4. timeout/cancel/retire/response 恰好一个 terminal winner；

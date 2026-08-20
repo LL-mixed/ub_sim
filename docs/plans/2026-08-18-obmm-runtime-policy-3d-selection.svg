@@ -12,8 +12,8 @@
       .grid { stroke: #cbd5e1; stroke-width: 0.9; fill: none; }
       .layer-guide { stroke: #94a3b8; stroke-width: 1; stroke-dasharray: 4 5; fill: none; }
       .sync { fill: #86efac; stroke: #166534; stroke-width: 1.45; }
-      .p2a { fill: #fcd34d; stroke: #92400e; stroke-width: 1.45; }
-      .p2b { fill: #93c5fd; stroke: #1e40af; stroke-width: 1.45; }
+      .submit-await { fill: #fcd34d; stroke: #92400e; stroke-width: 1.45; }
+      .async-load { fill: #93c5fd; stroke: #1e40af; stroke-width: 1.45; }
       .note { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.25; }
       .boundary { fill: #fff7ed; stroke: #c2410c; stroke-width: 1.35; stroke-dasharray: 7 5; }
       .leader { stroke: #64748b; stroke-width: 1; fill: none; }
@@ -37,17 +37,17 @@
       <circle cx="-276" cy="60" r="8" class="sync"/><circle cx="-184" cy="80" r="8" class="sync"/><circle cx="-92" cy="100" r="8" class="sync"/><circle cx="0" cy="120" r="8" class="sync"/>
     </g>
 
-    <g id="grid-p2b">
-      <circle cx="0" cy="0" r="8" class="p2b"/><circle cx="92" cy="20" r="8" class="p2b"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
-      <circle cx="-92" cy="20" r="8" class="p2b"/><circle cx="0" cy="40" r="8" class="p2b"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
-      <circle cx="-184" cy="40" r="8" class="p2b"/><circle cx="-92" cy="60" r="8" class="p2b"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
-      <circle cx="-276" cy="60" r="8" class="p2b"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    <g id="grid-async-load">
+      <circle cx="0" cy="0" r="8" class="async-load"/><circle cx="92" cy="20" r="8" class="async-load"/><circle cx="184" cy="40" r="8" class="async-load"/><circle cx="276" cy="60" r="8" class="async-load"/>
+      <circle cx="-92" cy="20" r="8" class="async-load"/><circle cx="0" cy="40" r="8" class="async-load"/><circle cx="92" cy="60" r="8" class="async-load"/><circle cx="184" cy="80" r="8" class="async-load"/>
+      <circle cx="-184" cy="40" r="8" class="async-load"/><circle cx="-92" cy="60" r="8" class="async-load"/><circle cx="0" cy="80" r="8" class="async-load"/><circle cx="92" cy="100" r="8" class="async-load"/>
+      <circle cx="-276" cy="60" r="8" class="async-load"/><circle cx="-184" cy="80" r="8" class="async-load"/><circle cx="-92" cy="100" r="8" class="async-load"/><circle cx="0" cy="120" r="8" class="async-load"/>
     </g>
   </defs>
 
   <rect width="1400" height="930" fill="#f8fafc"/>
   <text x="700" y="42" text-anchor="middle" class="title">OBMM remote-load：QEMU PoC measured L / C / W policy</text>
-  <text x="700" y="70" text-anchor="middle" class="subtitle">explicit policy · 2-node · 8-byte sequential · no jitter · 7 seeds · 80 个正式 bucket · QEMU P2B tax 70--84 µs/load</text>
+  <text x="700" y="70" text-anchor="middle" class="subtitle">explicit policy · 2-node · 8-byte sequential · no jitter · 7 seeds · 80 个正式 bucket · QEMU async load tax 70--84 µs/load</text>
 
   <!-- 三张浅灰坐标面建立空间边界；数据点和分层网格绘制在其上方。 -->
   <polygon points="400,150 676,210 676,750 400,690" class="axis-plane"/>
@@ -73,13 +73,13 @@
   <use href="#grid-sync" transform="translate(400 690)"/>
   <use href="#grid-sync" transform="translate(400 555)"/>
   <use href="#grid-sync" transform="translate(400 420)"/>
-  <use href="#grid-p2b" transform="translate(400 285)"/>
+  <use href="#grid-async-load" transform="translate(400 285)"/>
 
   <g transform="translate(400 150)">
-    <circle cx="0" cy="0" r="8" class="p2a"/><circle cx="92" cy="20" r="8" class="p2a"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
-    <circle cx="-92" cy="20" r="8" class="p2a"/><circle cx="0" cy="40" r="8" class="p2a"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
-    <circle cx="-184" cy="40" r="8" class="p2a"/><circle cx="-92" cy="60" r="8" class="p2a"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
-    <circle cx="-276" cy="60" r="8" class="p2a"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    <circle cx="0" cy="0" r="8" class="submit-await"/><circle cx="92" cy="20" r="8" class="submit-await"/><circle cx="184" cy="40" r="8" class="async-load"/><circle cx="276" cy="60" r="8" class="async-load"/>
+    <circle cx="-92" cy="20" r="8" class="submit-await"/><circle cx="0" cy="40" r="8" class="submit-await"/><circle cx="92" cy="60" r="8" class="async-load"/><circle cx="184" cy="80" r="8" class="async-load"/>
+    <circle cx="-184" cy="40" r="8" class="submit-await"/><circle cx="-92" cy="60" r="8" class="submit-await"/><circle cx="0" cy="80" r="8" class="async-load"/><circle cx="92" cy="100" r="8" class="async-load"/>
+    <circle cx="-276" cy="60" r="8" class="submit-await"/><circle cx="-184" cy="80" r="8" class="async-load"/><circle cx="-92" cy="100" r="8" class="async-load"/><circle cx="0" cy="120" r="8" class="async-load"/>
   </g>
 
   <!-- 层标签沿同一条右侧导线排列，避免进入点阵。 -->
@@ -106,25 +106,25 @@
   <rect x="830" y="115" width="500" height="132" class="note"/>
   <text x="858" y="149" class="label">80 个实测 bucket 的 makespan winner</text>
   <circle cx="858" cy="184" r="8" class="sync"/><text x="878" y="190" class="body">sync · 48</text>
-  <circle cx="1000" cy="184" r="8" class="p2a"/><text x="1020" y="190" class="body">P2A · 7</text>
-  <circle cx="1128" cy="184" r="8" class="p2b"/><text x="1148" y="190" class="body">P2B · 25</text>
+  <circle cx="1000" cy="184" r="8" class="submit-await"/><text x="1020" y="190" class="body">submit/await · 7</text>
+  <circle cx="1128" cy="184" r="8" class="async-load"/><text x="1148" y="190" class="body">async load · 25</text>
   <text x="858" y="222" class="small">圆点颜色=winner；层底色只区分 L 切片，点之间尚未插值。</text>
 
   <rect x="830" y="280" width="500" height="145" class="boundary"/>
-  <text x="858" y="316" class="label">临界带 A · sync ↔ P2B</text>
+  <text x="858" y="316" class="label">临界带 A · sync ↔ async load</text>
   <text x="858" y="349" class="body">coarse 范围：L=10--100 µs</text>
   <text x="858" y="376" class="body">加测 L=20/30/50/75 µs，分别观察每个 C/W bucket。</text>
   <text x="858" y="403" class="small">发布门槛：median gain ≥10%，paired CI95 low ≥5%。</text>
 
   <rect x="830" y="455" width="500" height="145" class="boundary"/>
-  <text x="858" y="491" class="label">临界带 B · P2A ↔ P2B</text>
+  <text x="858" y="491" class="label">临界带 B · submit/await ↔ async load</text>
   <text x="858" y="524" class="body">coarse 范围：L=100--1000 µs，位置随 C/W 改变。</text>
   <text x="858" y="551" class="body">加测 L=150/250/500/750 µs，并追踪 no-ready 空洞。</text>
-  <text x="858" y="578" class="small">P2A 同时保留 demand 与 lookahead=16。</text>
+  <text x="858" y="578" class="small">submit/await 同时保留 demand 与 lookahead=16。</text>
 
   <rect x="830" y="635" width="500" height="116" class="note"/>
   <text x="858" y="670" class="label">读图限制</text>
-  <text x="858" y="702" class="body">普通 LDR surface 只允许 sync/P2B；P2A 需要显式接口。</text>
+  <text x="858" y="702" class="body">普通 LDR surface 只允许 sync/async load；submit/await 需要显式接口。</text>
   <text x="858" y="729" class="body">未测 bucket fail closed 到 sync，不从相邻颜色外推。</text>
 
   <text x="700" y="902" text-anchor="middle" class="small">QEMU measured surface；禁止直接外推到 native device/upcall/resume path · extra_vcpus=0 · fixed-vCPU workload makespan</text>

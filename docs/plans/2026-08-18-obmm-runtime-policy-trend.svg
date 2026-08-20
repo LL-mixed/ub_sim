@@ -16,7 +16,7 @@
 
   <rect width="1400" height="760" fill="#f8fafc"/>
   <text x="700" y="44" text-anchor="middle" class="title">OBMM remote-load：QEMU PoC coarse measured 机制选择趋势</text>
-  <text x="700" y="74" text-anchor="middle" class="subtitle">QEMU P2B tax 70--84 µs/load；收益来自在同一个 core 上覆盖 remote wait</text>
+  <text x="700" y="74" text-anchor="middle" class="subtitle">QEMU async load tax 70--84 µs/load；收益来自在同一个 core 上覆盖 remote wait</text>
 
   <path d="M 118 128 L 1278 128" class="edge"/>
   <text x="700" y="116" text-anchor="middle" class="body">modeled remote latency L 增加</text>
@@ -32,7 +32,7 @@
 
   <rect x="420" y="180" width="300" height="178" class="box" fill="#dbeafe"/>
   <text x="570" y="216" text-anchor="middle" class="small">L = 100 µs</text>
-  <text x="570" y="254" text-anchor="middle" class="label">P2B</text>
+  <text x="570" y="254" text-anchor="middle" class="label">async load</text>
   <text x="570" y="288" text-anchor="middle" class="body">等待窗口足以覆盖 switch</text>
   <text x="570" y="316" text-anchor="middle" class="body">普通 LDR 路径避免 submit/CQ</text>
   <text x="570" y="342" text-anchor="middle" class="small">全部已测 C / W bucket</text>
@@ -47,7 +47,7 @@
   <text x="1068" y="146" text-anchor="middle" class="small">足够</text>
   <rect x="1120" y="180" width="230" height="178" class="box" fill="#dbeafe"/>
   <text x="1235" y="216" text-anchor="middle" class="small">高 C，或 W 足够大</text>
-  <text x="1235" y="254" text-anchor="middle" class="label">P2B</text>
+  <text x="1235" y="254" text-anchor="middle" class="label">async load</text>
   <text x="1235" y="288" text-anchor="middle" class="body">coroutine 提供足够并行度</text>
   <text x="1235" y="316" text-anchor="middle" class="body">no-ready 空洞接近消失</text>
   <text x="1235" y="342" text-anchor="middle" class="small">C=8/32；以及 C=4,W=1000</text>
@@ -56,13 +56,13 @@
   <text x="1068" y="425" text-anchor="middle" class="small">不足</text>
   <rect x="1120" y="400" width="230" height="178" class="box" fill="#fef3c7"/>
   <text x="1235" y="436" text-anchor="middle" class="small">低 C 且 W 较小</text>
-  <text x="1235" y="474" text-anchor="middle" class="label">P2A</text>
+  <text x="1235" y="474" text-anchor="middle" class="label">submit/await</text>
   <text x="1235" y="508" text-anchor="middle" class="body">lookahead 提前发出请求</text>
   <text x="1235" y="536" text-anchor="middle" class="body">突破低 C 的并行度限制</text>
   <text x="1235" y="562" text-anchor="middle" class="small">6 个 lookahead bucket；另有 1 个 demand</text>
 
   <rect x="70" y="620" width="1280" height="90" class="box" fill="#f1f5f9"/>
-  <text x="95" y="650" class="body">P2B 隐藏能力：由 READY coroutine 数量、每个 coroutine 的 useful compute W，以及每 coroutine 最多一个 pending load 共同决定。</text>
-  <text x="95" y="680" class="body">P2A 隐藏能力：由显式 submit 的 lookahead / inflight 深度决定；其收益需要覆盖 submit、future、CQ 和 cooperative switch 开销。</text>
-  <text x="95" y="702" class="small">QEMU measured 趋势不能直接外推到 native SCC；native 校准见独立三维 prior。</text>
+  <text x="95" y="650" class="body">async load 隐藏能力：由 READY coroutine 数量、每个 coroutine 的 useful compute W，以及每 coroutine 最多一个 pending load 共同决定。</text>
+  <text x="95" y="680" class="body">submit/await 隐藏能力：由显式 submit 的 lookahead / inflight 深度决定；其收益需要覆盖 submit、future、CQ 和 cooperative switch 开销。</text>
+  <text x="95" y="702" class="small">QEMU measured 趋势不能直接外推到 native coroutine scheduler；native 校准见独立三维 prior。</text>
 </svg>

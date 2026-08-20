@@ -25,23 +25,23 @@ cases:
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: S1-p2a-demand
+  - id: S1-submit-await-demand
     band: scalar
     mode: async-poll
     access_bytes: 8
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: S2-p2a-lookahead
+  - id: S2-submit-await-lookahead
     band: scalar
     mode: async-poll
     access_bytes: 8
     issue: lookahead
     sweep_lookahead: true
     extra_vcpus: 0
-  - id: S3-p2b-demand
+  - id: S3-async-load-demand
     band: scalar
-    mode: scheduler-core
+    mode: async-load
     access_bytes: 8
     issue: demand
     lookahead: 0
@@ -53,7 +53,7 @@ cases:
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: R1-p2a-range
+  - id: R1-submit-await-range
     band: range
     mode: async-poll
     access_bytes: 4096
@@ -69,7 +69,7 @@ cases:
     extra_vcpus: 1
 sweeps:
   - id: scalar-acceptance
-    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand]
+    cases: [S0-sync, S1-submit-await-demand, S2-submit-await-lookahead, S3-async-load-demand]
     model_latency_us: [1]
     jitter_profiles: [none]
     outcomes: [success]
@@ -79,7 +79,7 @@ sweeps:
     compute_us: [100]
     patterns: [sequential]
   - id: range-acceptance
-    cases: [R0-sync-range, R1-p2a-range, R2-userfaultfd]
+    cases: [R0-sync-range, R1-submit-await-range, R2-userfaultfd]
     model_latency_us: [1]
     jitter_profiles: [none]
     outcomes: [success]

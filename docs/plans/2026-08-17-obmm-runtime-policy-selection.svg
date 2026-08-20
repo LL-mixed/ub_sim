@@ -13,8 +13,8 @@
       .box { stroke: #64748b; stroke-width: 1.5; }
       .decision { fill: #e2e8f0; }
       .sync { fill: #dcfce7; stroke: #16a34a; }
-      .p2a { fill: #fef3c7; stroke: #d97706; }
-      .p2b { fill: #dbeafe; stroke: #2563eb; }
+      .submit-await { fill: #fef3c7; stroke: #d97706; }
+      .async-load { fill: #dbeafe; stroke: #2563eb; }
       .candidate { fill: #eef2ff; stroke: #6366f1; }
       .warning { fill: #fee2e2; stroke: #dc2626; }
     </style>
@@ -56,7 +56,7 @@
   <text x="470" y="329" text-anchor="middle" class="small">是</text>
   <rect x="85" y="378" width="330" height="76" rx="13" class="box sync"/>
   <text x="250" y="409" text-anchor="middle" class="label">sync fast path</text>
-  <text x="250" y="434" text-anchor="middle" class="body">跳过普通 P2B save / scan / switch</text>
+  <text x="250" y="434" text-anchor="middle" class="body">跳过普通 async load save / scan / switch</text>
 
   <path d="M 700 378 L 700 412" class="edge"/>
   <text x="718" y="399" class="small">否</text>
@@ -67,13 +67,13 @@
   <text x="515" y="496" text-anchor="middle" class="small">否：普通 LDR</text>
   <rect x="210" y="536" width="430" height="82" rx="13" class="box candidate"/>
   <text x="425" y="568" text-anchor="middle" class="label">Transparent candidate set</text>
-  <text x="425" y="594" text-anchor="middle" class="body">sync + P2B</text>
+  <text x="425" y="594" text-anchor="middle" class="body">sync + async load</text>
 
   <path d="M 780 482 L 975 536" class="edge"/>
   <text x="885" y="496" text-anchor="middle" class="small">是</text>
   <rect x="760" y="536" width="430" height="82" rx="13" class="box candidate"/>
   <text x="975" y="568" text-anchor="middle" class="label">Explicit candidate set</text>
-  <text x="975" y="594" text-anchor="middle" class="body">sync + P2A demand/lookahead + P2B</text>
+  <text x="975" y="594" text-anchor="middle" class="body">sync + submit/await demand/lookahead + async load</text>
 
   <path d="M 425 618 L 575 666" class="edge"/>
   <path d="M 975 618 L 825 666" class="edge"/>
@@ -85,13 +85,13 @@
   <text x="458" y="720" text-anchor="middle" class="small">无候选通过</text>
   <rect x="170" y="756" width="300" height="70" rx="13" class="box sync"/>
   <text x="320" y="786" text-anchor="middle" class="label">sync</text>
-  <text x="320" y="810" text-anchor="middle" class="small">包含 3 个 measured-fastest=P2B 回退点</text>
+  <text x="320" y="810" text-anchor="middle" class="small">包含 3 个 measured-fastest=async load 回退点</text>
 
   <path d="M 890 695 L 1000 760" class="edge"/>
   <text x="950" y="720" text-anchor="middle" class="small">至少一个通过</text>
-  <rect x="930" y="756" width="300" height="70" rx="13" class="box p2b"/>
+  <rect x="930" y="756" width="300" height="70" rx="13" class="box async-load"/>
   <text x="1080" y="786" text-anchor="middle" class="label">选择 eligible 中 makespan 最短路径</text>
-  <text x="1080" y="810" text-anchor="middle" class="small">P2A 只会出现在 explicit surface</text>
+  <text x="1080" y="810" text-anchor="middle" class="small">submit/await 只会出现在 explicit surface</text>
 
   <rect x="1030" y="94" width="320" height="156" rx="13" class="box warning"/>
   <text x="1190" y="124" text-anchor="middle" class="label">读取边界</text>

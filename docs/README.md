@@ -29,6 +29,8 @@ Current validation entry points:
 - [sim_gsva_shared_virtual_address_design.md](sim_gsva_shared_virtual_address_design.md)
   - design for a GSVA mode where OBMM shmem ranges use identical user VA, public UBA, and home VA across nodes
   - includes bootstrap dependency on existing OBMM bootstrap and manager queue bootstrap flow
+- [2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md](2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md)
+  - audited hardware-component breakdown of GVA, GSVA, OBMM, and async-load direct-EL0 upcall coroutine PoCs, including the current simulator-to-silicon boundary and joint-integration gaps
 - [2026-06-24-w5-gva-gsva-dataplane-benefit-report.md](2026-06-24-w5-gva-gsva-dataplane-benefit-report.md)
   - host-core dataplane microbenchmark benefit report for W5 GVA/GSVA, including expanded legacy PA-to-UBA resolver baselines (`linear`, `direct`, `indexed`, `cached`)
 - [w5_test_env_inventory.md](w5_test_env_inventory.md)
@@ -44,27 +46,27 @@ Current validation entry points:
 - [2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)
   - audited current-state report for the relationship between `ub_sim` and Lingqu DataSystem, completed capabilities, evidence boundaries, full-PoC gaps, risks, and an estimated delivery path
 - [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
-  - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with a QEMU-modeled hardware scheduler core, pending-load table, and Context Store
+  - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with async load, direct EL0 upcall, a pending-load table, and a guest EL0 coroutine scheduler
 - [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)
   - implementation-level P0 design for four synchronous baselines, strong scenario configuration, deterministic QEMU virtual-time latency/failure injection, three-clock observation, CLI, and reproducibility gates
 - [plans/p1-split-phase-backend-detailed-design.md](plans/p1-split-phase-backend-detailed-design.md)
-  - implementation-level P1 design for 64 parent requests, SIM_DEC child aggregation, bounded result ownership, generation-safe test/P2A/P2B sinks, terminal races, conformance CLI, and tests
-- [plans/p2a-submit-await-detailed-design.md](plans/p2a-submit-await-detailed-design.md)
-  - implementation-level P2A design for the independent OBMM async endpoint, 64-byte SQ/CQ ABI, registered destination buffers, generation-safe futures, AArch64 EL0 stackful coroutines, CLI, and tests
-- [plans/p2b-scheduler-core-detailed-design.md](plans/p2b-scheduler-core-detailed-design.md)
-  - implementation-level P2B design for ordinary unretired AArch64 loads, Remote Load Assist, pending-load table, Context Store, dedicated scheduler core, precise TCG exit/commit, fault service, CLI, and tests
+  - implementation-level split-phase backend design for 64 parent requests, SIM_DEC child aggregation, bounded result ownership, generation-safe test/submit-await/async-load sinks, terminal races, conformance CLI, and tests
+- [plans/submit-await-detailed-design.md](plans/submit-await-detailed-design.md)
+  - implementation-level submit/await design for the independent OBMM async endpoint, 64-byte SQ/CQ ABI, registered destination buffers, generation-safe futures, AArch64 EL0 stackful coroutines, CLI, and tests
+- [plans/async-load-coroutine-scheduler-detailed-design.md](plans/async-load-coroutine-scheduler-detailed-design.md)
+  - implementation-level async-load design for ordinary unretired AArch64 loads, load assist, pending-load table, guest EL0 coroutine scheduler, precise TCG exit/commit, fault service, CLI, and tests
 - [plans/p3-comparative-evaluation-detailed-design.md](plans/p3-comparative-evaluation-detailed-design.md)
   - implementation-level P3 design for scalar/range/transparency comparison bands, schedule-ahead isolation, fairness and statistics rules, invalidation gates, CLI, evidence artifacts, and break-even reporting
 - [plans/2026-08-13-obmm-p3-performance-evaluation.md](plans/2026-08-13-obmm-p3-performance-evaluation.md)
   - audited ABI v2 performance results for 2-node acceptance, 4/8-node scale-out, the completed 2,240-case coarse policy matrix, and the separately paused 4,942-case full matrix
 - [plans/2026-08-17-obmm-runtime-policy-selection.md](plans/2026-08-17-obmm-runtime-policy-selection.md)
-  - formal QEMU 7-seed sync/P2A/P2B policy, completed 1,960-run fine-grained boundary validation, native Arm64 path-tax calibration, empty-ready-queue sync fast path, L/C/W deployment prior, evidence provenance, and remaining runtime-integration targets
-- [plans/2026-08-17-obmm-p2b-patch-replay-comparison-design.md](plans/2026-08-17-obmm-p2b-patch-replay-comparison-design.md)
-  - P2B patch/replay retirement semantics, replay ABI and implementation, exact-once rules, 2-node functional gates, and measured three-seed comparison
+  - formal QEMU 7-seed sync/submit-await/async-load policy, completed 1,960-run fine-grained boundary validation, native Arm64 path-tax calibration, empty-ready-queue sync fast path, L/C/W deployment prior, evidence provenance, and remaining runtime-integration targets
+- [plans/2026-08-17-obmm-async-load-patch-replay-comparison-design.md](plans/2026-08-17-obmm-async-load-patch-replay-comparison-design.md)
+  - async-load patch/replay retirement semantics, replay ABI and implementation, exact-once rules, 2-node functional gates, and measured three-seed comparison
 - [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)
   - implementation-level P4 design for the standard userfaultfd MISSING baseline, separate OBMM source and anonymous shadow ranges, handler-vCPU costs, page failure semantics, CLI, and tests
 - [plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md](plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
-  - implemented phase status, 49-case formal acceptance evidence, QEMU artifact identity, focused/full-suite validation audit, and remaining performance-study boundary
+  - implemented phase status, 49-case formal acceptance, 4/8-node scale-out, completed coarse/fine policy evidence, QEMU artifact identity, focused/full-suite audit, and the separately paused full sensitivity boundary
 - [mem_service_independent_deployment_assessment.md](mem_service_independent_deployment_assessment.md)
   - assessment of whether `mem_service` can be independently released/deployed, current component capabilities, blockers, and the service-productization plan for LLM serving and pretraining integration
 - [mem_service_implementation_summary.md](mem_service_implementation_summary.md)

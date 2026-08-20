@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1040" viewBox="0 0 1500 1040" role="img" aria-labelledby="title desc">
-  <title id="title">P2B two-node producer consumer validation timeline</title>
+  <title id="title">async load two-node producer consumer validation timeline</title>
   <desc id="desc">Node A exports and writes two values. Node B imports the same mapping. Coroutine zero blocks on an ordinary LDR, the EL0 scheduler switches to coroutine one, and coroutine one issues its LDR before coroutine zero completes. Both values are then completed and verified.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
@@ -24,7 +24,7 @@
   </defs>
 
   <rect x="0" y="0" width="1500" height="1040" fill="#FCFCFD"/>
-  <text x="60" y="52" class="title">P2B 2-node 实际验收：producer 写值，consumer 的两个协程用普通 LDR 读取</text>
+  <text x="60" y="52" class="title">async load 2-node 实际验收：producer 写值，consumer 的两个协程用普通 LDR 读取</text>
   <text x="60" y="82" class="subtitle">通过条件：coroutine 1 的 LDR issue 必须发生在 coroutine 0 的 PENDING 与 COMPLETE 之间</text>
 
   <rect x="55" y="110" width="300" height="62" rx="10" class="local"/>
@@ -51,7 +51,7 @@
   <path d="M575 315 H1095" class="arrow"/>
   <text x="835" y="302" text-anchor="middle" class="small">nodeB lookup + import 同一个 export_mem_id=1</text>
   <rect x="1115" y="292" width="310" height="55" rx="10" class="proof"/>
-  <text x="1270" y="316" text-anchor="middle" class="mono">OBMM_P2B_IMPORT … status=mapped</text>
+  <text x="1270" y="316" text-anchor="middle" class="mono">OBMM_async load_IMPORT … status=mapped</text>
   <text x="1270" y="337" text-anchor="middle" class="small">两个 coroutine context 均 READY</text>
 
   <rect x="1120" y="382" width="300" height="64" rx="10" class="proof"/>
@@ -98,5 +98,5 @@
   <rect x="180" y="900" width="1140" height="92" rx="14" class="pass"/>
   <text x="750" y="930" text-anchor="middle" class="lane-title">r15 PASS</text>
   <text x="750" y="956" text-anchor="middle" class="mono">blocked_load_switches=1 · values_verified=2 · pending=2 · complete=2 · fault=0</text>
-  <text x="750" y="978" text-anchor="middle" class="mono">scc_pending_final=0 · backend_pending_final=0 · trace_dropped=0 · qemu_destroyed=1</text>
+  <text x="750" y="978" text-anchor="middle" class="mono">async_load_pending_final=0 · backend_pending_final=0 · trace_dropped=0 · qemu_destroyed=1</text>
 </svg>

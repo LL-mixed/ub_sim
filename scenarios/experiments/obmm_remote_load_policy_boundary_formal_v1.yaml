@@ -55,7 +55,7 @@ cases:
   lookahead: 0
   sweep_lookahead: false
   extra_vcpus: 0
-- id: T1-p2a-demand
+- id: T1-submit-await-demand
   band: scalar
   mode: async-poll
   access_bytes: 8
@@ -63,7 +63,7 @@ cases:
   lookahead: 0
   sweep_lookahead: false
   extra_vcpus: 0
-- id: T2-p2a-lookahead
+- id: T2-submit-await-lookahead
   band: scalar
   mode: async-poll
   access_bytes: 8
@@ -71,9 +71,9 @@ cases:
   lookahead: null
   sweep_lookahead: true
   extra_vcpus: 0
-- id: T3-p2b-demand
+- id: T3-async-load-demand
   band: scalar
-  mode: scheduler-core
+  mode: async-load
   access_bytes: 8
   issue: demand
   lookahead: 0
@@ -83,9 +83,9 @@ sweeps:
 - id: formal-boundary-001
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 20
@@ -106,9 +106,9 @@ sweeps:
 - id: formal-boundary-002
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 20
@@ -129,9 +129,9 @@ sweeps:
 - id: formal-boundary-003
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 20
@@ -152,9 +152,9 @@ sweeps:
 - id: formal-boundary-004
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -175,9 +175,9 @@ sweeps:
 - id: formal-boundary-005
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -198,9 +198,9 @@ sweeps:
 - id: formal-boundary-006
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -221,9 +221,9 @@ sweeps:
 - id: formal-boundary-007
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -244,9 +244,9 @@ sweeps:
 - id: formal-boundary-008
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -267,9 +267,9 @@ sweeps:
 - id: formal-boundary-009
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -290,9 +290,9 @@ sweeps:
 - id: formal-boundary-010
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -313,9 +313,9 @@ sweeps:
 - id: formal-boundary-011
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -336,9 +336,9 @@ sweeps:
 - id: formal-boundary-012
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -359,9 +359,9 @@ sweeps:
 - id: formal-boundary-013
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -382,9 +382,9 @@ sweeps:
 - id: formal-boundary-014
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 30
@@ -405,9 +405,9 @@ sweeps:
 - id: formal-boundary-015
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -428,9 +428,9 @@ sweeps:
 - id: formal-boundary-016
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -451,9 +451,9 @@ sweeps:
 - id: formal-boundary-017
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -474,9 +474,9 @@ sweeps:
 - id: formal-boundary-018
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -497,9 +497,9 @@ sweeps:
 - id: formal-boundary-019
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -520,9 +520,9 @@ sweeps:
 - id: formal-boundary-020
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -543,9 +543,9 @@ sweeps:
 - id: formal-boundary-021
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -566,9 +566,9 @@ sweeps:
 - id: formal-boundary-022
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -589,9 +589,9 @@ sweeps:
 - id: formal-boundary-023
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -612,9 +612,9 @@ sweeps:
 - id: formal-boundary-024
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -635,9 +635,9 @@ sweeps:
 - id: formal-boundary-025
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -658,9 +658,9 @@ sweeps:
 - id: formal-boundary-026
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -681,9 +681,9 @@ sweeps:
 - id: formal-boundary-027
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -704,9 +704,9 @@ sweeps:
 - id: formal-boundary-028
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -727,9 +727,9 @@ sweeps:
 - id: formal-boundary-029
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -750,9 +750,9 @@ sweeps:
 - id: formal-boundary-030
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -773,9 +773,9 @@ sweeps:
 - id: formal-boundary-031
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -796,9 +796,9 @@ sweeps:
 - id: formal-boundary-032
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -819,9 +819,9 @@ sweeps:
 - id: formal-boundary-033
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -842,9 +842,9 @@ sweeps:
 - id: formal-boundary-034
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -865,9 +865,9 @@ sweeps:
 - id: formal-boundary-035
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -888,9 +888,9 @@ sweeps:
 - id: formal-boundary-036
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -911,9 +911,9 @@ sweeps:
 - id: formal-boundary-037
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -934,9 +934,9 @@ sweeps:
 - id: formal-boundary-038
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -957,9 +957,9 @@ sweeps:
 - id: formal-boundary-039
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 50
@@ -980,9 +980,9 @@ sweeps:
 - id: formal-boundary-040
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1003,9 +1003,9 @@ sweeps:
 - id: formal-boundary-041
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1026,9 +1026,9 @@ sweeps:
 - id: formal-boundary-042
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1049,9 +1049,9 @@ sweeps:
 - id: formal-boundary-043
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1072,9 +1072,9 @@ sweeps:
 - id: formal-boundary-044
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1095,9 +1095,9 @@ sweeps:
 - id: formal-boundary-045
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1118,9 +1118,9 @@ sweeps:
 - id: formal-boundary-046
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1141,9 +1141,9 @@ sweeps:
 - id: formal-boundary-047
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1164,9 +1164,9 @@ sweeps:
 - id: formal-boundary-048
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1187,9 +1187,9 @@ sweeps:
 - id: formal-boundary-049
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1210,9 +1210,9 @@ sweeps:
 - id: formal-boundary-050
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1233,9 +1233,9 @@ sweeps:
 - id: formal-boundary-051
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1256,9 +1256,9 @@ sweeps:
 - id: formal-boundary-052
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1279,9 +1279,9 @@ sweeps:
 - id: formal-boundary-053
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1302,9 +1302,9 @@ sweeps:
 - id: formal-boundary-054
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1325,9 +1325,9 @@ sweeps:
 - id: formal-boundary-055
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1348,9 +1348,9 @@ sweeps:
 - id: formal-boundary-056
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 75
@@ -1371,9 +1371,9 @@ sweeps:
 - id: formal-boundary-057
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 150
@@ -1394,9 +1394,9 @@ sweeps:
 - id: formal-boundary-058
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 150
@@ -1417,9 +1417,9 @@ sweeps:
 - id: formal-boundary-059
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 250
@@ -1440,9 +1440,9 @@ sweeps:
 - id: formal-boundary-060
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 250
@@ -1463,9 +1463,9 @@ sweeps:
 - id: formal-boundary-061
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 250
@@ -1486,9 +1486,9 @@ sweeps:
 - id: formal-boundary-062
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 250
@@ -1509,9 +1509,9 @@ sweeps:
 - id: formal-boundary-063
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 500
@@ -1532,9 +1532,9 @@ sweeps:
 - id: formal-boundary-064
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 500
@@ -1555,9 +1555,9 @@ sweeps:
 - id: formal-boundary-065
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 500
@@ -1578,9 +1578,9 @@ sweeps:
 - id: formal-boundary-066
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 500
@@ -1601,9 +1601,9 @@ sweeps:
 - id: formal-boundary-067
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 500
@@ -1624,9 +1624,9 @@ sweeps:
 - id: formal-boundary-068
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 750
@@ -1647,9 +1647,9 @@ sweeps:
 - id: formal-boundary-069
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 750
@@ -1670,9 +1670,9 @@ sweeps:
 - id: formal-boundary-070
   cases:
   - T0-sync
-  - T1-p2a-demand
-  - T2-p2a-lookahead
-  - T3-p2b-demand
+  - T1-submit-await-demand
+  - T2-submit-await-lookahead
+  - T3-async-load-demand
   operations: null
   model_latency_us:
   - 750

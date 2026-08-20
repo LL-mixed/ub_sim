@@ -21,7 +21,7 @@
 
 #include "obmm_async.h"
 #include "obmm_common.h"
-#include "obmm_scc.h"
+#include "obmm_coroutine_scheduler.h"
 #include "uffd_mode.h"
 #include "logical_op.h"
 
@@ -29,10 +29,10 @@
 #define ASYNC_BOOTSTRAP_GENERATION 0x4153594e4301ULL
 #define ASYNC_COROUTINE_STACK_BYTES (64UL * 1024UL)
 #define ASYNC_TRACE_SAMPLE_LIMIT 65536
-#define ASYNC_P2B_VALUE_OFFSET_BASE 0x1000UL
-#define ASYNC_P2B_VALUE_OFFSET_STRIDE 0x1000UL
-#define ASYNC_P2B_TRACE_LINES 128
-#define ASYNC_P2B_TRACE_LINE_BYTES 384
+#define ASYNC_LOAD_VALUE_OFFSET_BASE 0x1000UL
+#define ASYNC_LOAD_VALUE_OFFSET_STRIDE 0x1000UL
+#define ASYNC_LOAD_TRACE_LINES 128
+#define ASYNC_LOAD_TRACE_LINE_BYTES 384
 
 enum async_pattern {
     ASYNC_PATTERN_SEQUENTIAL,
@@ -45,13 +45,13 @@ enum async_app_mode {
     ASYNC_APP_MODE_SYNC,
     ASYNC_APP_MODE_POLL,
     ASYNC_APP_MODE_IRQ,
-    ASYNC_APP_MODE_SCHEDULER_CORE,
+    ASYNC_APP_MODE_ASYNC_LOAD,
     ASYNC_APP_MODE_USERFAULTFD,
 };
 
-enum async_p2b_completion {
-    ASYNC_P2B_COMPLETION_PATCH,
-    ASYNC_P2B_COMPLETION_REPLAY,
+enum async_load_completion {
+    ASYNC_LOAD_COMPLETION_PATCH,
+    ASYNC_LOAD_COMPLETION_REPLAY,
 };
 
 enum async_baseline_case {
@@ -78,7 +78,7 @@ enum async_option_flag {
     ASYNC_OPTION_HANDLER_CPU = 1U << 6,
     ASYNC_OPTION_PAGES = 1U << 7,
     ASYNC_OPTION_BASELINE_CASE = 1U << 8,
-    ASYNC_OPTION_P2B_COMPLETION = 1U << 9,
+    ASYNC_OPTION_ASYNC_LOAD_COMPLETION = 1U << 9,
 };
 
 struct async_config {
@@ -87,7 +87,7 @@ struct async_config {
     enum obmm_uffd_case uffd_case;
     enum async_baseline_case baseline_case;
     enum async_expected_outcome expected_outcome;
-    enum async_p2b_completion p2b_completion;
+    enum async_load_completion async_load_completion;
     uint32_t coroutines;
     uint32_t inflight;
     uint32_t lookahead;
@@ -110,7 +110,7 @@ struct async_config {
     const char *eval_case;
     bool verify;
     bool self_test;
-    bool p2b_producer_consumer;
+    bool async_load_producer_consumer;
 };
 
 struct async_request {
@@ -123,8 +123,8 @@ struct async_request {
 
 struct async_app;
 
-struct async_p2b_trace_line {
-    char text[ASYNC_P2B_TRACE_LINE_BYTES];
+struct async_load_trace_line {
+    char text[ASYNC_LOAD_TRACE_LINE_BYTES];
 };
 
 struct async_operation_trace {
@@ -146,20 +146,20 @@ struct async_worker {
     uint64_t progress;
     uint64_t last_monotonic_ns;
     uint64_t context_id;
-    uint64_t p2b_expected;
-    uint64_t p2b_actual;
-    uint64_t p2b_pending_upcalls;
-    uint64_t p2b_complete_upcalls;
-    uint64_t p2b_resumes_after_complete;
+    uint64_t async_load_expected;
+    uint64_t async_load_actual;
+    uint64_t async_load_pending_upcalls;
+    uint64_t async_load_complete_upcalls;
+    uint64_t async_load_resumes_after_complete;
 };
 
 struct async_app {
     struct async_config config;
     struct obmm_async *runtime;
     struct obmm_async_map remote_map;
-    struct obmm_scc *scc;
-    struct obmm_scc_map scc_map;
-    struct obmm_scc_metrics scc_metrics;
+    struct obmm_coroutine_scheduler *coroutine_scheduler;
+    struct obmm_coroutine_scheduler_map async_load_map;
+    struct obmm_coroutine_scheduler_metrics async_load_metrics;
     struct obmm_async_observability_v1 observability;
     void *remote_address;
     void *local_address;
@@ -185,9 +185,9 @@ struct async_app {
     struct async_operation_trace *operation_trace;
     uint64_t trace_sampled;
     uint64_t trace_dropped;
-    uint32_t p2b_trace_count;
-    uint32_t p2b_trace_dropped;
-    struct async_p2b_trace_line p2b_trace[ASYNC_P2B_TRACE_LINES];
+    uint32_t async_load_trace_count;
+    uint32_t async_load_trace_dropped;
+    struct async_load_trace_line async_load_trace[ASYNC_LOAD_TRACE_LINES];
     struct obmm_uffd_metrics uffd_metrics;
 };
 
@@ -407,7 +407,7 @@ static void async_uffd_trace(void *opaque, uint64_t ordinal,
 static void async_usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s --mode sync-mmio|async-poll|async-irq|scheduler-core|"
+            "usage: %s --mode sync-mmio|async-poll|async-irq|async-load|"
             "userfaultfd "
             "[--coroutines N] [--inflight N] [--lookahead N] "
             "[--access-bytes 1|2|4|8|64|256|4096|65536] "
@@ -421,8 +421,8 @@ static void async_usage(const char *program)
             "[--expected-outcome success|error|drop-timeout|duplicate-late] "
             "[--compute-us N] [--iterations N] [--deadline-us N] "
             "[--seed N] [--node-count N] [--peer-index N] "
-            "[--p2b-completion patch|replay] "
-            "[--p2b-producer-consumer] [--producer-index N] [--verify]\n",
+            "[--async-load-completion patch|replay] "
+            "[--async-load-producer-consumer] [--producer-index N] [--verify]\n",
             program);
 }
 
@@ -457,7 +457,7 @@ static bool async_parse_args(int argc, char **argv,
         .uffd_case = OBMM_UFFD_CASE_MISSING_REMOTE,
         .baseline_case = ASYNC_BASELINE_SYNC_REMOTE_MODELED,
         .expected_outcome = ASYNC_OUTCOME_SUCCESS,
-        .p2b_completion = ASYNC_P2B_COMPLETION_PATCH,
+        .async_load_completion = ASYNC_LOAD_COMPLETION_PATCH,
         .coroutines = 8,
         .inflight = 32,
         .lookahead = 16,
@@ -485,8 +485,8 @@ static bool async_parse_args(int argc, char **argv,
             config->self_test = true;
             continue;
         }
-        if (strcmp(option, "--p2b-producer-consumer") == 0) {
-            config->p2b_producer_consumer = true;
+        if (strcmp(option, "--async-load-producer-consumer") == 0) {
+            config->async_load_producer_consumer = true;
             continue;
         }
         if (index + 1 >= argc) {
@@ -500,8 +500,8 @@ static bool async_parse_args(int argc, char **argv,
                 config->mode = ASYNC_APP_MODE_POLL;
             } else if (strcmp(value, "async-irq") == 0) {
                 config->mode = ASYNC_APP_MODE_IRQ;
-            } else if (strcmp(value, "scheduler-core") == 0) {
-                config->mode = ASYNC_APP_MODE_SCHEDULER_CORE;
+            } else if (strcmp(value, "async-load") == 0) {
+                config->mode = ASYNC_APP_MODE_ASYNC_LOAD;
             } else if (strcmp(value, "userfaultfd") == 0) {
                 config->mode = ASYNC_APP_MODE_USERFAULTFD;
             } else {
@@ -544,15 +544,15 @@ static bool async_parse_args(int argc, char **argv,
             } else {
                 return false;
             }
-        } else if (strcmp(option, "--p2b-completion") == 0) {
+        } else if (strcmp(option, "--async-load-completion") == 0) {
             if (strcmp(value, "patch") == 0) {
-                config->p2b_completion = ASYNC_P2B_COMPLETION_PATCH;
+                config->async_load_completion = ASYNC_LOAD_COMPLETION_PATCH;
             } else if (strcmp(value, "replay") == 0) {
-                config->p2b_completion = ASYNC_P2B_COMPLETION_REPLAY;
+                config->async_load_completion = ASYNC_LOAD_COMPLETION_REPLAY;
             } else {
                 return false;
             }
-            config->option_flags |= ASYNC_OPTION_P2B_COMPLETION;
+            config->option_flags |= ASYNC_OPTION_ASYNC_LOAD_COMPLETION;
         } else if (strcmp(option, "--coroutines") == 0) {
             if (!async_parse_u32(value, &config->coroutines)) {
                 return false;
@@ -682,8 +682,8 @@ static bool async_parse_args(int argc, char **argv,
         config->producer_index >= config->node_count) {
         return false;
     }
-    if (config->p2b_producer_consumer &&
-        (config->mode != ASYNC_APP_MODE_SCHEDULER_CORE ||
+    if (config->async_load_producer_consumer &&
+        (config->mode != ASYNC_APP_MODE_ASYNC_LOAD ||
          config->node_count != 2 || config->coroutines < 2 ||
          config->iterations != config->coroutines ||
          config->warmup != 0 || config->access_bytes != 8 ||
@@ -697,12 +697,12 @@ static bool async_parse_args(int argc, char **argv,
         config->access_bytes != 65536) {
         return false;
     }
-    if (config->mode == ASYNC_APP_MODE_SCHEDULER_CORE &&
+    if (config->mode == ASYNC_APP_MODE_ASYNC_LOAD &&
         config->access_bytes > 8) {
         return false;
     }
-    if (config->mode != ASYNC_APP_MODE_SCHEDULER_CORE &&
-        config->option_flags & ASYNC_OPTION_P2B_COMPLETION) {
+    if (config->mode != ASYNC_APP_MODE_ASYNC_LOAD &&
+        config->option_flags & ASYNC_OPTION_ASYNC_LOAD_COMPLETION) {
         return false;
     }
     if (config->access_bytes == 4096 &&
@@ -767,16 +767,16 @@ static const char *async_mode_name(enum async_app_mode mode)
     if (mode == ASYNC_APP_MODE_USERFAULTFD) {
         return "userfaultfd";
     }
-    if (mode == ASYNC_APP_MODE_SCHEDULER_CORE) {
-        return "scheduler-core";
+    if (mode == ASYNC_APP_MODE_ASYNC_LOAD) {
+        return "async-load";
     }
     return mode == ASYNC_APP_MODE_IRQ ? "async-irq" : "async-poll";
 }
 
-static const char *async_p2b_completion_name(
-    enum async_p2b_completion completion)
+static const char *async_load_completion_name(
+    enum async_load_completion completion)
 {
-    return completion == ASYNC_P2B_COMPLETION_REPLAY ?
+    return completion == ASYNC_LOAD_COMPLETION_REPLAY ?
         "replay" : "patch";
 }
 
@@ -816,13 +816,13 @@ static void async_fill_export(void *address, uint64_t length, uint64_t seed)
     }
 }
 
-static uint64_t async_p2b_offset(uint32_t coroutine_id)
+static uint64_t async_load_offset(uint32_t coroutine_id)
 {
-    return ASYNC_P2B_VALUE_OFFSET_BASE +
-        (uint64_t)coroutine_id * ASYNC_P2B_VALUE_OFFSET_STRIDE;
+    return ASYNC_LOAD_VALUE_OFFSET_BASE +
+        (uint64_t)coroutine_id * ASYNC_LOAD_VALUE_OFFSET_STRIDE;
 }
 
-static uint64_t async_p2b_value(uint64_t seed, uint32_t coroutine_id)
+static uint64_t async_load_value(uint64_t seed, uint32_t coroutine_id)
 {
     return 0xa11c000000000000ULL ^
         (seed * 0x9e3779b97f4a7c15ULL) ^ coroutine_id;
@@ -867,7 +867,7 @@ static int async_bootstrap_lookup_node(
     return -1;
 }
 
-static struct async_worker *async_p2b_worker_by_context(
+static struct async_worker *async_load_worker_by_context(
     struct async_app *app, uint64_t context_id)
 {
     uint32_t index;
@@ -880,50 +880,50 @@ static struct async_worker *async_p2b_worker_by_context(
     return NULL;
 }
 
-static void async_p2b_record(struct async_app *app, const char *format, ...)
+static void async_load_record(struct async_app *app, const char *format, ...)
 {
-    struct async_p2b_trace_line *line;
+    struct async_load_trace_line *line;
     va_list arguments;
 
-    if (app->p2b_trace_count >= ASYNC_P2B_TRACE_LINES) {
-        app->p2b_trace_dropped++;
+    if (app->async_load_trace_count >= ASYNC_LOAD_TRACE_LINES) {
+        app->async_load_trace_dropped++;
         return;
     }
-    line = &app->p2b_trace[app->p2b_trace_count++];
+    line = &app->async_load_trace[app->async_load_trace_count++];
     va_start(arguments, format);
     if (vsnprintf(line->text, sizeof(line->text), format, arguments) < 0) {
         line->text[0] = '\0';
-        app->p2b_trace_dropped++;
+        app->async_load_trace_dropped++;
     }
     va_end(arguments);
 }
 
-static void async_p2b_flush_trace(const struct async_app *app)
+static void async_load_flush_trace(const struct async_app *app)
 {
     uint32_t index;
 
-    for (index = 0; index < app->p2b_trace_count; index++) {
-        puts(app->p2b_trace[index].text);
+    for (index = 0; index < app->async_load_trace_count; index++) {
+        puts(app->async_load_trace[index].text);
     }
     fflush(stdout);
 }
 
-static void async_p2b_scc_trace(
-    void *opaque, const struct obmm_scc_trace_event *event)
+static void async_load_coroutine_trace(
+    void *opaque, const struct obmm_coroutine_scheduler_trace_event *event)
 {
     struct async_app *app = opaque;
-    struct async_worker *worker = async_p2b_worker_by_context(
+    struct async_worker *worker = async_load_worker_by_context(
         app, event->context_id);
     uint32_t coroutine_id = worker ? worker->worker_id : UINT32_MAX;
 
     switch (event->kind) {
-    case OBMM_SCC_TRACE_UPCALL_PENDING:
+    case OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_PENDING:
         if (worker) {
-            worker->p2b_pending_upcalls++;
+            worker->async_load_pending_upcalls++;
         }
-        async_p2b_record(
+        async_load_record(
             app,
-            "OBMM_P2B_UPCALL schema=1 event=pending coroutine=%u "
+            "OBMM_ASYNC_LOAD_UPCALL schema=1 event=pending coroutine=%u "
             "context_id=%016llx sequence=%llu token=%016llx "
             "pc=%016llx bytes=%u rt=%u status=%u",
             coroutine_id, (unsigned long long)event->context_id,
@@ -932,13 +932,13 @@ static void async_p2b_scc_trace(
             (unsigned long long)event->pc, event->access_bytes,
             event->rt, event->status);
         break;
-    case OBMM_SCC_TRACE_UPCALL_COMPLETE:
+    case OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_COMPLETE:
         if (worker) {
-            worker->p2b_complete_upcalls++;
+            worker->async_load_complete_upcalls++;
         }
-        async_p2b_record(
+        async_load_record(
             app,
-            "OBMM_P2B_UPCALL schema=1 event=complete coroutine=%u "
+            "OBMM_ASYNC_LOAD_UPCALL schema=1 event=complete coroutine=%u "
             "context_id=%016llx sequence=%llu token=%016llx "
             "pc=%016llx bytes=%u rt=%u value=%016llx status=%u",
             coroutine_id, (unsigned long long)event->context_id,
@@ -948,10 +948,10 @@ static void async_p2b_scc_trace(
             event->rt, (unsigned long long)event->value,
             event->status);
         break;
-    case OBMM_SCC_TRACE_UPCALL_FAULT:
-        async_p2b_record(
+    case OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_FAULT:
+        async_load_record(
             app,
-            "OBMM_P2B_UPCALL schema=1 event=fault coroutine=%u "
+            "OBMM_ASYNC_LOAD_UPCALL schema=1 event=fault coroutine=%u "
             "context_id=%016llx sequence=%llu token=%016llx "
             "pc=%016llx status=%u",
             coroutine_id, (unsigned long long)event->context_id,
@@ -959,23 +959,23 @@ static void async_p2b_scc_trace(
             (unsigned long long)event->token,
             (unsigned long long)event->pc, event->status);
         break;
-    case OBMM_SCC_TRACE_CONTEXT_RESUME:
-        if (worker && worker->p2b_complete_upcalls) {
-            worker->p2b_resumes_after_complete++;
+    case OBMM_COROUTINE_SCHEDULER_TRACE_CONTEXT_RESUME:
+        if (worker && worker->async_load_complete_upcalls) {
+            worker->async_load_resumes_after_complete++;
         }
-        async_p2b_record(
+        async_load_record(
             app,
-            "OBMM_P2B_SCHEDULE schema=1 event=resume "
+            "OBMM_ASYNC_LOAD_SCHEDULE schema=1 event=resume "
             "from_context_id=%016llx to_context_id=%016llx "
             "to_coroutine=%u after_complete=%u",
             (unsigned long long)event->previous_context_id,
             (unsigned long long)event->context_id, coroutine_id,
-            worker && worker->p2b_complete_upcalls ? 1U : 0U);
+            worker && worker->async_load_complete_upcalls ? 1U : 0U);
         break;
-    case OBMM_SCC_TRACE_CONTEXT_DONE:
-        async_p2b_record(
+    case OBMM_COROUTINE_SCHEDULER_TRACE_CONTEXT_DONE:
+        async_load_record(
             app,
-            "OBMM_P2B_SCHEDULE schema=1 event=done "
+            "OBMM_ASYNC_LOAD_SCHEDULE schema=1 event=done "
             "context_id=%016llx coroutine=%u",
             (unsigned long long)event->context_id, coroutine_id);
         break;
@@ -1029,7 +1029,7 @@ static bool async_operation_remote(const struct async_worker *worker,
         (((ordinal - worker->begin) / worker->stride) & 1);
 }
 
-static __attribute__((noinline)) uint64_t async_scc_scalar_load(
+static __attribute__((noinline)) uint64_t async_load_scalar_load(
     const volatile void *address, uint32_t access_bytes);
 
 static int async_sync_read_one(struct async_app *app,
@@ -1058,13 +1058,13 @@ static int async_sync_read_one(struct async_app *app,
             fault_signal = sigsetjmp(async_sync_fault_environment, 1);
             if (!fault_signal) {
                 async_sync_fault_armed = 1;
-                value = async_scc_scalar_load(
+                value = async_load_scalar_load(
                     (const volatile uint8_t *)app->remote_address + offset,
                     app->config.access_bytes);
                 async_sync_fault_armed = 0;
             }
         } else {
-            value = async_scc_scalar_load(
+            value = async_load_scalar_load(
                 (const volatile uint8_t *)app->remote_address + offset,
                 app->config.access_bytes);
         }
@@ -1575,7 +1575,7 @@ static void async_split_phase_worker_entry(void *opaque)
     }
 }
 
-static __attribute__((noinline)) uint64_t async_scc_scalar_load(
+static __attribute__((noinline)) uint64_t async_load_scalar_load(
     const volatile void *address, uint32_t access_bytes)
 {
     switch (access_bytes) {
@@ -1592,7 +1592,7 @@ static __attribute__((noinline)) uint64_t async_scc_scalar_load(
     }
 }
 
-static void async_scc_worker_entry(void *opaque)
+static void async_load_worker_entry(void *opaque)
 {
     struct async_worker *worker = opaque;
     struct async_app *app = worker->app;
@@ -1600,25 +1600,25 @@ static void async_scc_worker_entry(void *opaque)
         ((uint64_t)worker->worker_id << 32) ^ 1;
     uint64_t iteration;
 
-    if (app->config.p2b_producer_consumer) {
-        uint64_t offset = async_p2b_offset(worker->worker_id);
+    if (app->config.async_load_producer_consumer) {
+        uint64_t offset = async_load_offset(worker->worker_id);
         const volatile void *address =
             (const volatile uint8_t *)app->remote_address + offset;
         uint64_t submit_ns = async_worker_now_ns(worker);
         uint64_t latency_ns;
 
-        worker->p2b_expected = async_p2b_value(
+        worker->async_load_expected = async_load_value(
             app->config.seed, worker->worker_id);
-        async_p2b_record(
+        async_load_record(
             app,
-            "OBMM_P2B_LDR schema=1 event=issue coroutine=%u "
+            "OBMM_ASYNC_LOAD_LDR schema=1 event=issue coroutine=%u "
             "context_id=%016llx offset=%llu expected=%016llx",
             worker->worker_id,
             (unsigned long long)worker->context_id,
             (unsigned long long)offset,
-            (unsigned long long)worker->p2b_expected);
+            (unsigned long long)worker->async_load_expected);
         app->pending++;
-        worker->p2b_actual = async_scc_scalar_load(address, 8);
+        worker->async_load_actual = async_load_scalar_load(address, 8);
         app->pending--;
         latency_ns = async_worker_now_ns(worker) - submit_ns;
         if (app->latency_count < app->config.iterations) {
@@ -1626,23 +1626,23 @@ static void async_scc_worker_entry(void *opaque)
         }
         app->completed++;
         app->checksum ^= async_payload_checksum(
-            &worker->p2b_actual, sizeof(worker->p2b_actual)) +
+            &worker->async_load_actual, sizeof(worker->async_load_actual)) +
             worker->worker_id;
-        if (worker->p2b_actual != worker->p2b_expected) {
+        if (worker->async_load_actual != worker->async_load_expected) {
             app->verify_failures++;
         }
-        async_p2b_record(
+        async_load_record(
             app,
-            "OBMM_P2B_LDR schema=1 event=retire coroutine=%u "
+            "OBMM_ASYNC_LOAD_LDR schema=1 event=retire coroutine=%u "
             "context_id=%016llx offset=%llu expected=%016llx "
             "actual=%016llx latency_ns=%llu status=%s",
             worker->worker_id,
             (unsigned long long)worker->context_id,
             (unsigned long long)offset,
-            (unsigned long long)worker->p2b_expected,
-            (unsigned long long)worker->p2b_actual,
+            (unsigned long long)worker->async_load_expected,
+            (unsigned long long)worker->async_load_actual,
             (unsigned long long)latency_ns,
-            worker->p2b_actual == worker->p2b_expected ?
+            worker->async_load_actual == worker->async_load_expected ?
                 "pass" : "fail");
         return;
     }
@@ -1662,7 +1662,7 @@ static void async_scc_worker_entry(void *opaque)
         uint64_t latency_ns;
 
         app->pending++;
-        value = async_scc_scalar_load(address, app->config.access_bytes);
+        value = async_load_scalar_load(address, app->config.access_bytes);
         app->pending--;
         latency_ns = async_worker_now_ns(worker) - submit_ns;
         memcpy(payload, &value, app->config.access_bytes);
@@ -1738,35 +1738,35 @@ static void async_print_eval_summary(const struct async_app *app,
     const char *status = run_status;
     uint64_t helper_cpu_ns = app->uffd_metrics.handler_cpu_ns;
     uint64_t backend_pending = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_pending_current :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_pending_current :
         app->observability.backend_pending;
     uint64_t backend_pending_high = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_pending_high_water :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_pending_high_water :
         app->observability.backend_pending_high_water;
     uint64_t backend_capacity = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_capacity :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_capacity :
         app->observability.backend_capacity;
     uint64_t sink_copy_bytes = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_sink_copy_bytes :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_sink_copy_bytes :
         app->observability.backend_sink_copy_bytes;
     uint64_t sink_copy_ns = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_sink_copy_ns :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_sink_copy_ns :
         app->observability.backend_sink_copy_ns;
     uint64_t backend_late = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_late :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_late :
         app->observability.backend_late;
     uint64_t backend_duplicate = app->config.mode ==
-        ASYNC_APP_MODE_SCHEDULER_CORE ?
-        app->scc_metrics.observability.backend_duplicate :
+        ASYNC_APP_MODE_ASYNC_LOAD ?
+        app->async_load_metrics.observability.backend_duplicate :
         app->observability.backend_duplicate;
-    uint64_t scc_pending =
-        app->scc_metrics.observability.scc_pending_current;
+    uint64_t async_load_pending =
+        app->async_load_metrics.observability.async_load_pending_current;
     uint64_t counter_overflow =
         app->completed == UINT64_MAX || app->failures == UINT64_MAX ||
         app->timeouts == UINT64_MAX || backend_pending_high == UINT64_MAX ||
@@ -1775,9 +1775,9 @@ static void async_print_eval_summary(const struct async_app *app,
     if (!app->config.eval_case) {
         return;
     }
-    if (app->config.mode == ASYNC_APP_MODE_SCHEDULER_CORE &&
-        app->scc_metrics.clock_mhz) {
-        helper_cpu_ns = app->scc_metrics.el0_scheduler_ns;
+    if (app->config.mode == ASYNC_APP_MODE_ASYNC_LOAD &&
+        app->async_load_metrics.clock_mhz) {
+        helper_cpu_ns = app->async_load_metrics.el0_scheduler_ns;
     }
     if (strcmp(status, "pass") == 0 && minimum_ns &&
         makespan_ns < minimum_ns) {
@@ -1797,8 +1797,8 @@ static void async_print_eval_summary(const struct async_app *app,
            "configured_lookahead=%u backend_pending_high=%llu "
            "backend_capacity=%llu sink_copy_bytes=%llu sink_copy_ns=%llu "
            "backend_late=%llu backend_duplicate=%llu "
-           "scc_save_cycles=%llu scc_schedule_cycles=%llu "
-           "scc_restore_cycles=%llu scc_commit_cycles=%llu "
+           "async_load_save_cycles=%llu async_load_schedule_cycles=%llu "
+           "async_load_restore_cycles=%llu async_load_commit_cycles=%llu "
            "el0_upcalls_pending=%llu el0_upcalls_complete=%llu "
            "el0_upcalls_fault=%llu el0_context_saves=%llu "
            "el0_context_restores=%llu el0_context_switches=%llu "
@@ -1816,9 +1816,9 @@ static void async_print_eval_summary(const struct async_app *app,
            "uffd_wake_ns_p99=%llu uffd_wake_ns_max=%llu "
            "uffd_handler_cpu_ns=%llu uffd_worker_cpu_ns=%llu "
            "model_pending_final=%llu backend_pending_final=%llu "
-           "scc_pending_final=%llu counter_overflow=%llu "
+           "async_load_pending_final=%llu counter_overflow=%llu "
            "clock_regressions=%llu fail_closed_process_exit=0 "
-           "p2b_completion=%s replay_consumed=%llu "
+           "async_load_completion=%s replay_consumed=%llu "
            "replay_mismatch=%llu replay_ready_high_water=%llu "
            "status=%s\n",
            app->config.eval_band, async_mode_name(app->config.mode),
@@ -1862,24 +1862,24 @@ static void async_print_eval_summary(const struct async_app *app,
            (unsigned long long)sink_copy_ns,
            (unsigned long long)backend_late,
            (unsigned long long)backend_duplicate,
-           (unsigned long long)app->scc_metrics.observability.save_cycles,
-           (unsigned long long)app->scc_metrics.observability.schedule_cycles,
-           (unsigned long long)app->scc_metrics.observability.restore_cycles,
-           (unsigned long long)app->scc_metrics.observability.commit_cycles,
-           (unsigned long long)app->scc_metrics.el0_pending_upcalls,
-           (unsigned long long)app->scc_metrics.el0_complete_upcalls,
-           (unsigned long long)app->scc_metrics.el0_fault_upcalls,
-           (unsigned long long)app->scc_metrics.el0_context_saves,
-           (unsigned long long)app->scc_metrics.el0_context_restores,
-           (unsigned long long)app->scc_metrics.el0_context_switches,
-           (unsigned long long)app->scc_metrics.el0_context_bytes,
-           (unsigned long long)app->scc_metrics.el0_scheduler_ns,
-           (unsigned long long)app->scc_metrics.el0_no_ready_waits,
-           (unsigned long long)app->scc_metrics.device.direct_upcalls,
-           (unsigned long long)app->scc_metrics.device.context_saves,
-           (unsigned long long)app->scc_metrics.device.context_restores,
-           (unsigned long long)app->scc_metrics.device.context_switches,
-           (unsigned long long)app->scc_metrics.device.context_bytes_moved,
+           (unsigned long long)app->async_load_metrics.observability.save_cycles,
+           (unsigned long long)app->async_load_metrics.observability.schedule_cycles,
+           (unsigned long long)app->async_load_metrics.observability.restore_cycles,
+           (unsigned long long)app->async_load_metrics.observability.commit_cycles,
+           (unsigned long long)app->async_load_metrics.el0_pending_upcalls,
+           (unsigned long long)app->async_load_metrics.el0_complete_upcalls,
+           (unsigned long long)app->async_load_metrics.el0_fault_upcalls,
+           (unsigned long long)app->async_load_metrics.el0_context_saves,
+           (unsigned long long)app->async_load_metrics.el0_context_restores,
+           (unsigned long long)app->async_load_metrics.el0_context_switches,
+           (unsigned long long)app->async_load_metrics.el0_context_bytes,
+           (unsigned long long)app->async_load_metrics.el0_scheduler_ns,
+           (unsigned long long)app->async_load_metrics.el0_no_ready_waits,
+           (unsigned long long)app->async_load_metrics.device.direct_upcalls,
+           (unsigned long long)app->async_load_metrics.device.context_saves,
+           (unsigned long long)app->async_load_metrics.device.context_restores,
+           (unsigned long long)app->async_load_metrics.device.context_switches,
+           (unsigned long long)app->async_load_metrics.device.context_bytes_moved,
            (unsigned long long)app->uffd_metrics.fault_ns_p50,
            (unsigned long long)app->uffd_metrics.fault_ns_p95,
            (unsigned long long)app->uffd_metrics.fault_ns_p99,
@@ -1900,15 +1900,15 @@ static void async_print_eval_summary(const struct async_app *app,
            (unsigned long long)app->uffd_metrics.worker_cpu_ns,
            (unsigned long long)app->observability.model_pending,
            (unsigned long long)backend_pending,
-           (unsigned long long)scc_pending,
+           (unsigned long long)async_load_pending,
            (unsigned long long)counter_overflow,
            (unsigned long long)atomic_load_explicit(
                &async_clock_regressions, memory_order_relaxed),
-           async_p2b_completion_name(app->config.p2b_completion),
-           (unsigned long long)app->scc_metrics.replay.replay_consumed,
-           (unsigned long long)app->scc_metrics.replay.replay_mismatch,
+           async_load_completion_name(app->config.async_load_completion),
+           (unsigned long long)app->async_load_metrics.replay.replay_consumed,
+           (unsigned long long)app->async_load_metrics.replay.replay_mismatch,
            (unsigned long long)
-               app->scc_metrics.replay.replay_ready_high_water,
+               app->async_load_metrics.replay.replay_ready_high_water,
            status);
 }
 
@@ -2033,9 +2033,9 @@ static int async_pin_current_cpu(void)
         0 : -errno;
 }
 
-static int async_run_scc_workload(struct async_app *app)
+static int async_run_async_load_workload(struct async_app *app)
 {
-    struct obmm_scc_caps_v2 caps;
+    struct obmm_async_load_caps_v2 caps;
     uint32_t index;
     int ret;
 
@@ -2043,7 +2043,7 @@ static int async_run_scc_workload(struct async_app *app)
     if (ret) {
         return ret;
     }
-    ret = obmm_scc_get_caps(app->scc, &caps);
+    ret = obmm_coroutine_scheduler_get_caps(app->coroutine_scheduler, &caps);
     if (ret || app->config.coroutines > caps.context_entries) {
         return ret ? ret : -ENOSPC;
     }
@@ -2054,25 +2054,25 @@ static int async_run_scc_workload(struct async_app *app)
     for (index = 0; index < app->config.coroutines; index++) {
         uint64_t context_id;
 
-        ret = obmm_scc_context_create(
-            app->scc, async_scc_worker_entry, &app->workers[index],
+        ret = obmm_coroutine_scheduler_context_create(
+            app->coroutine_scheduler, async_load_worker_entry, &app->workers[index],
             ASYNC_COROUTINE_STACK_BYTES, 0, &context_id);
         if (ret) {
             return ret;
         }
         app->workers[index].context_id = context_id;
-        if (app->config.p2b_producer_consumer) {
-            async_p2b_record(
+        if (app->config.async_load_producer_consumer) {
+            async_load_record(
                 app,
-                "OBMM_P2B_CONTEXT schema=1 coroutine=%u "
+                "OBMM_ASYNC_LOAD_CONTEXT schema=1 coroutine=%u "
                 "context_id=%016llx state=ready",
                 index, (unsigned long long)context_id);
         }
     }
-    ret = obmm_scc_run(app->scc);
-    obmm_scc_get_metrics(app->scc, &app->scc_metrics);
-    app->failures += app->scc_metrics.el0_fault_upcalls;
-    app->timeouts += app->scc_metrics.el0_timeout_faults;
+    ret = obmm_coroutine_scheduler_run(app->coroutine_scheduler);
+    obmm_coroutine_scheduler_get_metrics(app->coroutine_scheduler, &app->async_load_metrics);
+    app->failures += app->async_load_metrics.el0_fault_upcalls;
+    app->timeouts += app->async_load_metrics.el0_timeout_faults;
     return ret;
 }
 
@@ -2209,8 +2209,8 @@ static int async_run_uffd_with_warmup(
     return ret;
 }
 
-static int async_run_scc_once(struct async_app *app,
-                              const struct obmm_scc_options *options,
+static int async_run_async_load_once(struct async_app *app,
+                              const struct obmm_coroutine_scheduler_options *options,
                               int mapping_fd, uint64_t import_mem_id,
                               uint64_t iterations,
                               uint64_t model_phase_generation)
@@ -2219,35 +2219,35 @@ static int async_run_scc_once(struct async_app *app,
     int ret;
 
     app->config.iterations = iterations;
-    ret = obmm_scc_open(&app->scc, options);
+    ret = obmm_coroutine_scheduler_open(&app->coroutine_scheduler, options);
     if (!ret) {
-        ret = obmm_scc_register_map_for_phase(
-            app->scc, mapping_fd, import_mem_id, app->remote_address,
+        ret = obmm_coroutine_scheduler_register_map_for_phase(
+            app->coroutine_scheduler, mapping_fd, import_mem_id, app->remote_address,
             ASYNC_EXPORT_BYTES,
             app->config.pattern == ASYNC_PATTERN_MIXED ?
-                OBMM_SCC_MAP_LOGICAL_MIXED : 0,
+                OBMM_ASYNC_LOAD_MAP_LOGICAL_MIXED : 0,
             model_phase_generation,
-            &app->scc_map);
+            &app->async_load_map);
     }
     if (!ret) {
-        ret = async_run_scc_workload(app);
+        ret = async_run_async_load_workload(app);
     }
-    if (app->scc && app->scc_map.policy_id) {
-        int unregister_ret = obmm_scc_unregister_map(
-            app->scc, &app->scc_map);
+    if (app->coroutine_scheduler && app->async_load_map.policy_id) {
+        int unregister_ret = obmm_coroutine_scheduler_unregister_map(
+            app->coroutine_scheduler, &app->async_load_map);
 
         if (!ret && unregister_ret) {
             ret = unregister_ret;
         }
     }
-    obmm_scc_close(app->scc);
-    app->scc = NULL;
+    obmm_coroutine_scheduler_close(app->coroutine_scheduler);
+    app->coroutine_scheduler = NULL;
     app->config.iterations = saved_iterations;
     return ret;
 }
 
-static int async_run_scc_with_warmup(
-    struct async_app *app, const struct obmm_scc_options *options,
+static int async_run_async_load_with_warmup(
+    struct async_app *app, const struct obmm_coroutine_scheduler_options *options,
     int mapping_fd, uint64_t import_mem_id)
 {
     uint32_t trace_sample_ppm = app->config.trace_sample_ppm;
@@ -2255,12 +2255,12 @@ static int async_run_scc_with_warmup(
 
     if (app->config.warmup) {
         app->config.trace_sample_ppm = 0;
-        ret = async_run_scc_once(
+        ret = async_run_async_load_once(
             app, options, mapping_fd, import_mem_id,
             app->config.warmup, 2);
         app->config.trace_sample_ppm = trace_sample_ppm;
         async_reset_workload_state(app);
-        memset(&app->scc_metrics, 0, sizeof(app->scc_metrics));
+        memset(&app->async_load_metrics, 0, sizeof(app->async_load_metrics));
         if (ret) {
             return ret;
         }
@@ -2274,14 +2274,14 @@ static int async_run_scc_with_warmup(
         return ret;
     }
     async_measurement_begin(app);
-    ret = async_run_scc_once(
+    ret = async_run_async_load_once(
         app, options, mapping_fd, import_mem_id,
         app->config.iterations, 1);
     async_measurement_end(app);
     return ret;
 }
 
-static int async_run_p2b_producer(struct async_app *app, int obmm_fd,
+static int async_run_async_load_producer(struct async_app *app, int obmm_fd,
                                   uint32_t local_cna, int local_index)
 {
     struct obmm_helpers_meta meta = {
@@ -2304,11 +2304,11 @@ static int async_run_p2b_producer(struct async_app *app, int obmm_fd,
     }
     memset(region.addr, 0, ASYNC_EXPORT_BYTES);
     for (index = 0; index < app->config.coroutines; index++) {
-        uint64_t offset = async_p2b_offset(index);
-        uint64_t value = async_p2b_value(app->config.seed, index);
+        uint64_t offset = async_load_offset(index);
+        uint64_t value = async_load_value(app->config.seed, index);
 
         *(volatile uint64_t *)((uint8_t *)region.addr + offset) = value;
-        printf("OBMM_P2B_WRITE schema=1 producer_node=%d coroutine=%u "
+        printf("OBMM_ASYNC_LOAD_WRITE schema=1 producer_node=%d coroutine=%u "
                "export_mem_id=%llu offset=%llu value=%016llx\n",
                local_index, index,
                (unsigned long long)meta.export_mem_id,
@@ -2324,7 +2324,7 @@ static int async_run_p2b_producer(struct async_app *app, int obmm_fd,
         obmm_do_unexport(obmm_fd, meta.export_mem_id);
         return error;
     }
-    printf("OBMM_P2B_EXPORT schema=1 role=producer node=%d "
+    printf("OBMM_ASYNC_LOAD_EXPORT schema=1 role=producer node=%d "
            "export_mem_id=%llu remote_uba=%016llx bytes=%llu writes=%u "
            "status=ready\n",
            local_index, (unsigned long long)meta.export_mem_id,
@@ -2337,7 +2337,7 @@ static int async_run_p2b_producer(struct async_app *app, int obmm_fd,
     }
 }
 
-static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
+static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
                                   uint32_t local_cna, int local_index)
 {
     struct obmm_helpers_meta producer_meta = { 0 };
@@ -2351,14 +2351,14 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
         .mode = OBMM_ASYNC_MODE_POLL,
         .spin_us = 10,
     };
-    struct obmm_scc_options scc_options = {
-        .device_path = OBMM_SCC_DEFAULT_DEVICE,
+    struct obmm_coroutine_scheduler_options async_load_options = {
+        .device_path = OBMM_COROUTINE_SCHEDULER_DEFAULT_DEVICE,
         .load_timeout_ns = (uint64_t)app->config.deadline_us * 1000,
-        .trace = async_p2b_scc_trace,
+        .trace = async_load_coroutine_trace,
         .trace_opaque = app,
-        .completion_mode = app->config.p2b_completion ==
-            ASYNC_P2B_COMPLETION_REPLAY ?
-            OBMM_SCC_COMPLETION_REPLAY : OBMM_SCC_COMPLETION_PATCH,
+        .completion_mode = app->config.async_load_completion ==
+            ASYNC_LOAD_COMPLETION_REPLAY ?
+            OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY : OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH,
     };
     uint64_t import_mem_id = 0;
     uint32_t verified = 0;
@@ -2373,7 +2373,7 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
         ret = -errno;
         goto cleanup;
     }
-    if (producer_meta.size < async_p2b_offset(
+    if (producer_meta.size < async_load_offset(
             app->config.coroutines - 1) + sizeof(uint64_t)) {
         ret = -ERANGE;
         goto cleanup;
@@ -2395,7 +2395,7 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
         ret = -errno;
         goto cleanup;
     }
-    printf("OBMM_P2B_IMPORT schema=1 role=consumer node=%d "
+    printf("OBMM_ASYNC_LOAD_IMPORT schema=1 role=consumer node=%d "
            "producer_node=%d source_export_mem_id=%llu "
            "import_mem_id=%llu bytes=%llu status=mapped\n",
            local_index, app->config.producer_index,
@@ -2409,9 +2409,9 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
     if (ret) {
         goto cleanup;
     }
-    ret = async_run_scc_with_warmup(
-        app, &scc_options, import_region.fd, import_mem_id);
-    async_p2b_flush_trace(app);
+    ret = async_run_async_load_with_warmup(
+        app, &async_load_options, import_region.fd, import_mem_id);
+    async_load_flush_trace(app);
     if (!ret) {
         ret = async_drain_observability(app);
     }
@@ -2422,46 +2422,46 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
     for (index = 0; index < app->config.coroutines; index++) {
         struct async_worker *worker = &app->workers[index];
         bool worker_pass =
-            worker->p2b_actual == worker->p2b_expected &&
-            worker->p2b_pending_upcalls == 1 &&
-            worker->p2b_complete_upcalls == 1 &&
-            worker->p2b_resumes_after_complete >= 1;
+            worker->async_load_actual == worker->async_load_expected &&
+            worker->async_load_pending_upcalls == 1 &&
+            worker->async_load_complete_upcalls == 1 &&
+            worker->async_load_resumes_after_complete >= 1;
 
         if (worker_pass) {
             verified++;
         }
-        printf("OBMM_P2B_COROUTINE_SUMMARY schema=1 coroutine=%u "
+        printf("OBMM_ASYNC_LOAD_COROUTINE_SUMMARY schema=1 coroutine=%u "
                "context_id=%016llx expected=%016llx actual=%016llx "
                "pending=%llu complete=%llu resumes_after_complete=%llu "
                "status=%s\n",
                index, (unsigned long long)worker->context_id,
-               (unsigned long long)worker->p2b_expected,
-               (unsigned long long)worker->p2b_actual,
-               (unsigned long long)worker->p2b_pending_upcalls,
-               (unsigned long long)worker->p2b_complete_upcalls,
-               (unsigned long long)worker->p2b_resumes_after_complete,
+               (unsigned long long)worker->async_load_expected,
+               (unsigned long long)worker->async_load_actual,
+               (unsigned long long)worker->async_load_pending_upcalls,
+               (unsigned long long)worker->async_load_complete_upcalls,
+               (unsigned long long)worker->async_load_resumes_after_complete,
                worker_pass ? "pass" : "fail");
     }
     pass = ret == 0 && app->completed == app->config.coroutines &&
         app->verify_failures == 0 && verified == app->config.coroutines &&
-        app->scc_metrics.el0_pending_upcalls == app->config.coroutines &&
-        app->scc_metrics.el0_complete_upcalls == app->config.coroutines &&
-        app->scc_metrics.el0_fault_upcalls == 0 &&
-        app->scc_metrics.el0_context_switches > 0 &&
-        app->p2b_trace_dropped == 0 &&
-        app->scc_metrics.el0_context_saves ==
-            app->scc_metrics.device.direct_upcalls &&
-        app->scc_metrics.device.context_saves == 0 &&
-        app->scc_metrics.device.context_restores == 0 &&
-        app->scc_metrics.device.context_switches == 0 &&
-        app->scc_metrics.device.context_bytes_moved == 0 &&
-        app->scc_metrics.observability.scc_pending_current == 0 &&
-        app->scc_metrics.observability.backend_pending_current == 0 &&
-        app->scc_metrics.replay.replay_mismatch == 0 &&
-        app->scc_metrics.replay.replay_consumed ==
-            (app->config.p2b_completion == ASYNC_P2B_COMPLETION_REPLAY ?
+        app->async_load_metrics.el0_pending_upcalls == app->config.coroutines &&
+        app->async_load_metrics.el0_complete_upcalls == app->config.coroutines &&
+        app->async_load_metrics.el0_fault_upcalls == 0 &&
+        app->async_load_metrics.el0_context_switches > 0 &&
+        app->async_load_trace_dropped == 0 &&
+        app->async_load_metrics.el0_context_saves ==
+            app->async_load_metrics.device.direct_upcalls &&
+        app->async_load_metrics.device.context_saves == 0 &&
+        app->async_load_metrics.device.context_restores == 0 &&
+        app->async_load_metrics.device.context_switches == 0 &&
+        app->async_load_metrics.device.context_bytes_moved == 0 &&
+        app->async_load_metrics.observability.async_load_pending_current == 0 &&
+        app->async_load_metrics.observability.backend_pending_current == 0 &&
+        app->async_load_metrics.replay.replay_mismatch == 0 &&
+        app->async_load_metrics.replay.replay_consumed ==
+            (app->config.async_load_completion == ASYNC_LOAD_COMPLETION_REPLAY ?
              app->config.coroutines : 0);
-    printf("OBMM_P2B_SUMMARY schema=1 role=consumer "
+    printf("OBMM_ASYNC_LOAD_SUMMARY schema=1 role=consumer "
            "producer_node=%d consumer_node=%d "
            "source_export_mem_id=%llu import_mem_id=%llu "
            "coroutines=%u completed=%llu values_verified=%u "
@@ -2470,41 +2470,41 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
            "el0_context_restores=%llu el0_context_switches=%llu "
            "direct_el0_upcalls=%llu qemu_context_saves=%llu "
            "qemu_context_restores=%llu qemu_context_switches=%llu "
-           "qemu_context_bytes=%llu scc_pending_final=%llu "
+           "qemu_context_bytes=%llu async_load_pending_final=%llu "
            "backend_pending_final=%llu trace_dropped=%u "
-           "p2b_completion=%s replay_consumed=%llu "
+           "async_load_completion=%s replay_consumed=%llu "
            "replay_mismatch=%llu replay_ready_high_water=%llu "
            "status=%s\n",
            app->config.producer_index, local_index,
            (unsigned long long)producer_meta.export_mem_id,
            (unsigned long long)import_mem_id, app->config.coroutines,
            (unsigned long long)app->completed, verified,
-           (unsigned long long)app->scc_metrics.el0_pending_upcalls,
-           (unsigned long long)app->scc_metrics.el0_complete_upcalls,
-           (unsigned long long)app->scc_metrics.el0_fault_upcalls,
-           (unsigned long long)app->scc_metrics.el0_context_saves,
-           (unsigned long long)app->scc_metrics.el0_context_restores,
-           (unsigned long long)app->scc_metrics.el0_context_switches,
-           (unsigned long long)app->scc_metrics.device.direct_upcalls,
-           (unsigned long long)app->scc_metrics.device.context_saves,
-           (unsigned long long)app->scc_metrics.device.context_restores,
-           (unsigned long long)app->scc_metrics.device.context_switches,
-           (unsigned long long)app->scc_metrics.device.context_bytes_moved,
+           (unsigned long long)app->async_load_metrics.el0_pending_upcalls,
+           (unsigned long long)app->async_load_metrics.el0_complete_upcalls,
+           (unsigned long long)app->async_load_metrics.el0_fault_upcalls,
+           (unsigned long long)app->async_load_metrics.el0_context_saves,
+           (unsigned long long)app->async_load_metrics.el0_context_restores,
+           (unsigned long long)app->async_load_metrics.el0_context_switches,
+           (unsigned long long)app->async_load_metrics.device.direct_upcalls,
+           (unsigned long long)app->async_load_metrics.device.context_saves,
+           (unsigned long long)app->async_load_metrics.device.context_restores,
+           (unsigned long long)app->async_load_metrics.device.context_switches,
+           (unsigned long long)app->async_load_metrics.device.context_bytes_moved,
            (unsigned long long)
-               app->scc_metrics.observability.scc_pending_current,
+               app->async_load_metrics.observability.async_load_pending_current,
            (unsigned long long)
-               app->scc_metrics.observability.backend_pending_current,
-           app->p2b_trace_dropped,
-           async_p2b_completion_name(app->config.p2b_completion),
-           (unsigned long long)app->scc_metrics.replay.replay_consumed,
-           (unsigned long long)app->scc_metrics.replay.replay_mismatch,
+               app->async_load_metrics.observability.backend_pending_current,
+           app->async_load_trace_dropped,
+           async_load_completion_name(app->config.async_load_completion),
+           (unsigned long long)app->async_load_metrics.replay.replay_consumed,
+           (unsigned long long)app->async_load_metrics.replay.replay_mismatch,
            (unsigned long long)
-               app->scc_metrics.replay.replay_ready_high_water,
+               app->async_load_metrics.replay.replay_ready_high_water,
            pass ? "pass" : "fail");
     if (ret) {
-        printf("OBMM_P2B_SCC_ERROR schema=1 rc=%d stage=%u\n",
-               app->scc_metrics.first_error,
-               app->scc_metrics.first_error_stage);
+        printf("OBMM_ASYNC_LOAD_ASYNC_LOAD_ERROR schema=1 rc=%d stage=%u\n",
+               app->async_load_metrics.first_error,
+               app->async_load_metrics.first_error_stage);
     }
     fflush(stdout);
     if (!pass && !ret) {
@@ -2514,7 +2514,7 @@ static int async_run_p2b_consumer(struct async_app *app, int obmm_fd,
 cleanup:
     if (ret) {
         fprintf(stderr,
-                "OBMM_P2B_ERROR schema=1 role=consumer node=%d rc=%d "
+                "OBMM_ASYNC_LOAD_ERROR schema=1 role=consumer node=%d rc=%d "
                 "errno=%d\n",
                 local_index, ret, errno);
     }
@@ -2534,8 +2534,8 @@ int main(int argc, char **argv)
 {
     struct async_app app = { 0 };
     struct obmm_async_options options;
-    struct obmm_scc_options scc_options = {
-        .device_path = OBMM_SCC_DEFAULT_DEVICE,
+    struct obmm_coroutine_scheduler_options async_load_options = {
+        .device_path = OBMM_COROUTINE_SCHEDULER_DEFAULT_DEVICE,
     };
     struct obmm_helpers_meta local_meta = { 0 };
     struct obmm_helpers_meta remote_metas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
@@ -2555,7 +2555,7 @@ int main(int argc, char **argv)
     uint64_t latency_p99_ns = 0;
     uint64_t latency_max_ns = 0;
     uint64_t overlap_milli = 0;
-    uint64_t scc_util_milli = 0;
+    uint64_t async_load_util_milli = 0;
     uint64_t workload_start_ns = 0;
     uint64_t workload_end_ns = 0;
     uint64_t workload_cpu_start_ns = 0;
@@ -2601,12 +2601,12 @@ int main(int argc, char **argv)
         run_status = -ENOENT;
         goto cleanup;
     }
-    if (app.config.p2b_producer_consumer) {
+    if (app.config.async_load_producer_consumer) {
         if (local_index == app.config.producer_index) {
-            run_status = async_run_p2b_producer(
+            run_status = async_run_async_load_producer(
                 &app, obmm_fd, local_cna, local_index);
         } else {
-            run_status = async_run_p2b_consumer(
+            run_status = async_run_async_load_consumer(
                 &app, obmm_fd, local_cna, local_index);
         }
         async_flush_operation_trace(&app);
@@ -2677,22 +2677,22 @@ int main(int argc, char **argv)
     if (run_status != 0) {
         goto cleanup;
     }
-    if (app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE) {
-        scc_options.load_timeout_ns =
+    if (app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD) {
+        async_load_options.load_timeout_ns =
             (uint64_t)app.config.deadline_us * 1000;
-        scc_options.completion_mode = app.config.p2b_completion ==
-            ASYNC_P2B_COMPLETION_REPLAY ?
-            OBMM_SCC_COMPLETION_REPLAY : OBMM_SCC_COMPLETION_PATCH;
-        failure_stage = "scc-workload";
+        async_load_options.completion_mode = app.config.async_load_completion ==
+            ASYNC_LOAD_COMPLETION_REPLAY ?
+            OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY : OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH;
+        failure_stage = "coroutine-scheduler-workload";
         workload_start_ns = async_now_ns();
         workload_cpu_start_ns = async_process_now_ns();
-        run_status = async_run_scc_with_warmup(
-            &app, &scc_options, import_region.fd, import_mem_id);
+        run_status = async_run_async_load_with_warmup(
+            &app, &async_load_options, import_region.fd, import_mem_id);
         workload_cpu_end_ns = async_process_now_ns();
         workload_end_ns = async_now_ns();
         stale_completions =
-            app.scc_metrics.device.stale_completions;
-        switches = app.scc_metrics.el0_context_switches;
+            app.async_load_metrics.device.stale_completions;
+        switches = app.async_load_metrics.el0_context_switches;
     } else {
         failure_stage = "async-map-register";
         run_status = obmm_async_map_register(
@@ -2776,17 +2776,17 @@ int main(int argc, char **argv)
         overlap_milli = app.compute_while_pending * 1000 /
             app.compute_steps;
     }
-    if (app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE &&
+    if (app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD &&
         workload_end_ns > workload_start_ns &&
-        app.scc_metrics.clock_mhz) {
+        app.async_load_metrics.clock_mhz) {
         __uint128_t available_cycles =
             (__uint128_t)(workload_end_ns - workload_start_ns) *
-            app.scc_metrics.clock_mhz / 1000;
+            app.async_load_metrics.clock_mhz / 1000;
         __uint128_t utilization =
-            (__uint128_t)app.scc_metrics.device.modeled_cycles * 1000 /
+            (__uint128_t)app.async_load_metrics.device.modeled_cycles * 1000 /
             available_cycles;
 
-        scc_util_milli = utilization > 1000 ? 1000 : utilization;
+        async_load_util_milli = utilization > 1000 ? 1000 : utilization;
     }
     if (run_status == -EOPNOTSUPP &&
         app.config.mode == ASYNC_APP_MODE_USERFAULTFD) {
@@ -2794,10 +2794,10 @@ int main(int argc, char **argv)
     } else if (run_status == 0 && barrier_ok && app.failures == 0 &&
         app.verify_failures == 0 &&
         app.completed == app.config.iterations &&
-        (app.config.mode != ASYNC_APP_MODE_SCHEDULER_CORE ||
-         (app.scc_metrics.replay.replay_mismatch == 0 &&
-          app.scc_metrics.replay.replay_consumed ==
-            (app.config.p2b_completion == ASYNC_P2B_COMPLETION_REPLAY ?
+        (app.config.mode != ASYNC_APP_MODE_ASYNC_LOAD ||
+         (app.async_load_metrics.replay.replay_mismatch == 0 &&
+          app.async_load_metrics.replay.replay_consumed ==
+            (app.config.async_load_completion == ASYNC_LOAD_COMPLETION_REPLAY ?
              app.completed : 0)))) {
         status = "pass";
     }
@@ -2809,10 +2809,10 @@ cleanup:
                 "OBMM_APP_ERROR schema=1 stage=%s rc=%d errno=%d status=%s\n",
                 failure_stage, run_status, errno, status);
     }
-    if (app.scc && app.scc_map.policy_id) {
-        obmm_scc_unregister_map(app.scc, &app.scc_map);
+    if (app.coroutine_scheduler && app.async_load_map.policy_id) {
+        obmm_coroutine_scheduler_unregister_map(app.coroutine_scheduler, &app.async_load_map);
     }
-    obmm_scc_close(app.scc);
+    obmm_coroutine_scheduler_close(app.coroutine_scheduler);
     if (app.runtime && app.remote_map.id) {
         obmm_async_map_unregister(app.runtime, &app.remote_map);
     }
@@ -2940,23 +2940,23 @@ cleanup:
            " overlap_milli=%" PRIu64
            " pending_high=%" PRIu64 " ready_high=%" PRIu64
            " switches=%" PRIu64 " capacity_stalls=%" PRIu64
-           " scc_util_milli=%" PRIu64 " scc_cycles=%" PRIu64
+           " async_load_util_milli=%" PRIu64 " async_load_cycles=%" PRIu64
            " context_bytes=%" PRIu64
            " model_service_ns=%" PRIu64
            " model_accept_publish_ns=%" PRIu64
            " model_duplicated=%" PRIu64
            " model_duplicate_published=%" PRIu64
-           " model_pending=%" PRIu64 " scc_pending=%" PRIu64
+           " model_pending=%" PRIu64 " async_load_pending=%" PRIu64
            " backend_pending=%" PRIu64
            " backend_pending_high=%" PRIu64
            " backend_late=%" PRIu64 " backend_duplicate=%" PRIu64
            " backend_capacity=%" PRIu64
            " sink_copy_bytes=%" PRIu64 " sink_copy_ns=%" PRIu64
-           " scc_save_cycles=%" PRIu64
-           " scc_schedule_cycles=%" PRIu64
-           " scc_restore_cycles=%" PRIu64
-           " scc_commit_cycles=%" PRIu64
-           " scc_logical_contexts=%" PRIu64
+           " async_load_save_cycles=%" PRIu64
+           " async_load_schedule_cycles=%" PRIu64
+           " async_load_restore_cycles=%" PRIu64
+           " async_load_commit_cycles=%" PRIu64
+           " async_load_logical_contexts=%" PRIu64
            " el0_upcalls_pending=%" PRIu64
            " el0_upcalls_complete=%" PRIu64
            " el0_upcalls_fault=%" PRIu64
@@ -2971,15 +2971,15 @@ cleanup:
            " qemu_context_restores=%" PRIu64
            " qemu_context_switches=%" PRIu64
            " qemu_context_bytes=%" PRIu64
-           " p2b_completion=%s replay_consumed=%" PRIu64
+           " async_load_completion=%s replay_consumed=%" PRIu64
            " replay_mismatch=%" PRIu64
            " replay_ready_high_water=%" PRIu64
            "\n",
            OBMM_ASYNC_ABI_VERSION, async_mode_name(app.config.mode), status,
            app.config.coroutines,
-           app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ? 1 :
+           app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ? 1 :
                app.config.inflight,
-           app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ? 0 :
+           app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ? 0 :
                app.config.lookahead,
            app.completed, app.failures, app.timeouts,
            stale_completions, app.checksum,
@@ -2989,65 +2989,65 @@ cleanup:
            metrics.cq_drain_ns_p50, metrics.cq_drain_ns_total,
            metrics.ready_ns, metrics.wait_ns,
            metrics.idle_ns,
-           app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.el0_no_ready_waits : metrics.no_ready,
+           app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.el0_no_ready_waits : metrics.no_ready,
            overlap_milli,
-           (uint64_t)app.scc_metrics.device.pending_high_water,
-           (uint64_t)app.scc_metrics.el0_ready_high_water, switches,
-           (uint64_t)app.scc_metrics.device.capacity_stalls,
-           scc_util_milli,
-           (uint64_t)app.scc_metrics.device.modeled_cycles,
-           (uint64_t)app.scc_metrics.el0_context_bytes,
+           (uint64_t)app.async_load_metrics.device.pending_high_water,
+           (uint64_t)app.async_load_metrics.el0_ready_high_water, switches,
+           (uint64_t)app.async_load_metrics.device.capacity_stalls,
+           async_load_util_milli,
+           (uint64_t)app.async_load_metrics.device.modeled_cycles,
+           (uint64_t)app.async_load_metrics.el0_context_bytes,
            (uint64_t)app.observability.model_service_ns,
            (uint64_t)app.observability.model_accept_publish_ns,
            (uint64_t)app.observability.model_duplicated,
            (uint64_t)app.observability.model_duplicate_published,
            (uint64_t)app.observability.model_pending,
-           (uint64_t)app.scc_metrics.observability.scc_pending_current,
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_pending_current :
+           (uint64_t)app.async_load_metrics.observability.async_load_pending_current,
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_pending_current :
                app.observability.backend_pending),
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_pending_high_water :
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_pending_high_water :
                app.observability.backend_pending_high_water),
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_late :
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_late :
                app.observability.backend_late),
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_duplicate :
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_duplicate :
                app.observability.backend_duplicate),
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_capacity :
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_capacity :
                app.observability.backend_capacity),
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_sink_copy_bytes :
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_sink_copy_bytes :
                app.observability.backend_sink_copy_bytes),
-           (uint64_t)(app.config.mode == ASYNC_APP_MODE_SCHEDULER_CORE ?
-               app.scc_metrics.observability.backend_sink_copy_ns :
+           (uint64_t)(app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD ?
+               app.async_load_metrics.observability.backend_sink_copy_ns :
                app.observability.backend_sink_copy_ns),
-           (uint64_t)app.scc_metrics.observability.save_cycles,
-           (uint64_t)app.scc_metrics.observability.schedule_cycles,
-           (uint64_t)app.scc_metrics.observability.restore_cycles,
-           (uint64_t)app.scc_metrics.observability.commit_cycles,
-           (uint64_t)app.scc_metrics.observability.logical_contexts,
-           (uint64_t)app.scc_metrics.el0_pending_upcalls,
-           (uint64_t)app.scc_metrics.el0_complete_upcalls,
-           (uint64_t)app.scc_metrics.el0_fault_upcalls,
-           (uint64_t)app.scc_metrics.el0_context_saves,
-           (uint64_t)app.scc_metrics.el0_context_restores,
-           (uint64_t)app.scc_metrics.el0_context_switches,
-           (uint64_t)app.scc_metrics.el0_context_bytes,
-           (uint64_t)app.scc_metrics.el0_scheduler_ns,
-           (uint64_t)app.scc_metrics.el0_no_ready_waits,
-           (uint64_t)app.scc_metrics.device.direct_upcalls,
-           (uint64_t)app.scc_metrics.device.context_saves,
-           (uint64_t)app.scc_metrics.device.context_restores,
-           (uint64_t)app.scc_metrics.device.context_switches,
-           (uint64_t)app.scc_metrics.device.context_bytes_moved,
-           async_p2b_completion_name(app.config.p2b_completion),
-           (uint64_t)app.scc_metrics.replay.replay_consumed,
-           (uint64_t)app.scc_metrics.replay.replay_mismatch,
-           (uint64_t)app.scc_metrics.replay.replay_ready_high_water);
+           (uint64_t)app.async_load_metrics.observability.save_cycles,
+           (uint64_t)app.async_load_metrics.observability.schedule_cycles,
+           (uint64_t)app.async_load_metrics.observability.restore_cycles,
+           (uint64_t)app.async_load_metrics.observability.commit_cycles,
+           (uint64_t)app.async_load_metrics.observability.logical_contexts,
+           (uint64_t)app.async_load_metrics.el0_pending_upcalls,
+           (uint64_t)app.async_load_metrics.el0_complete_upcalls,
+           (uint64_t)app.async_load_metrics.el0_fault_upcalls,
+           (uint64_t)app.async_load_metrics.el0_context_saves,
+           (uint64_t)app.async_load_metrics.el0_context_restores,
+           (uint64_t)app.async_load_metrics.el0_context_switches,
+           (uint64_t)app.async_load_metrics.el0_context_bytes,
+           (uint64_t)app.async_load_metrics.el0_scheduler_ns,
+           (uint64_t)app.async_load_metrics.el0_no_ready_waits,
+           (uint64_t)app.async_load_metrics.device.direct_upcalls,
+           (uint64_t)app.async_load_metrics.device.context_saves,
+           (uint64_t)app.async_load_metrics.device.context_restores,
+           (uint64_t)app.async_load_metrics.device.context_switches,
+           (uint64_t)app.async_load_metrics.device.context_bytes_moved,
+           async_load_completion_name(app.config.async_load_completion),
+           (uint64_t)app.async_load_metrics.replay.replay_consumed,
+           (uint64_t)app.async_load_metrics.replay.replay_mismatch,
+           (uint64_t)app.async_load_metrics.replay.replay_ready_high_water);
     async_print_eval_summary(
         &app, &metrics, status,
         async_elapsed_ns(workload_start_ns, workload_end_ns),

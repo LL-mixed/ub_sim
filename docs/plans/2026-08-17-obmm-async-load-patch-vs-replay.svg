@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1020"
      viewBox="0 0 1600 1020" role="img"
      aria-labelledby="title desc">
-  <title id="title">OBMM P2B patch 与 replay 模式对比</title>
+  <title id="title">OBMM async load patch 与 replay 模式对比</title>
   <desc id="desc">比较远端 LDR 完成后由 EL0 patch saved context 与原 LDR replay 的路径、状态和责任边界。</desc>
   <defs>
     <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5"
@@ -28,13 +28,13 @@
   </defs>
 
   <rect width="1600" height="1020" fill="#f8fafc"/>
-  <text x="800" y="52" text-anchor="middle" class="title">OBMM P2B：patch 与 replay 的关键差异</text>
+  <text x="800" y="52" text-anchor="middle" class="title">OBMM async load：patch 与 replay 的关键差异</text>
   <text x="800" y="84" text-anchor="middle" class="subtitle">两者共享 PENDING upcall、EL0 Context Store 与 EL0 scheduler；COMPLETE 后的 load 退休责任不同</text>
 
   <rect x="38" y="112" width="744" height="826" rx="22" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
   <rect x="818" y="112" width="744" height="826" rx="22" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
-  <text x="410" y="154" text-anchor="middle" class="lane-title">P2B-patch（默认）</text>
-  <text x="1190" y="154" text-anchor="middle" class="lane-title">P2B-replay（新增）</text>
+  <text x="410" y="154" text-anchor="middle" class="lane-title">async load-patch（默认）</text>
+  <text x="1190" y="154" text-anchor="middle" class="lane-title">async load-replay（新增）</text>
 
   <rect x="218" y="184" width="384" height="82" class="box" fill="#ffffff" stroke="#60a5fa"/>
   <text x="410" y="214" text-anchor="middle" class="box-title">① 原始普通 LDR</text>

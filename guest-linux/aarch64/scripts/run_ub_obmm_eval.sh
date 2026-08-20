@@ -7,14 +7,14 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NODE_COUNT=""
 SCENARIO_CONFIG=""
 REMOTE_MEMORY_MODEL_MANIFEST=""
-SCHEDULER_CORE_MODEL=""
+ASYNC_LOAD_MODEL=""
 OBMM_ASYNC_ARGS=""
 RUN_ID=""
 TIMEOUT_SEC=180
 EXPECTED_OUTCOME="success"
-P2B_PRODUCER_CONSUMER=0
-P2B_PRODUCER_INDEX=0
-P2B_COMPLETION=patch
+ASYNC_LOAD_PRODUCER_CONSUMER=0
+ASYNC_LOAD_PRODUCER_INDEX=0
+ASYNC_LOAD_COMPLETION=patch
 
 usage() {
   cat <<'EOF'
@@ -23,7 +23,7 @@ Usage: run_ub_obmm_eval.sh \
   --scenario-config PATH \
   --remote-memory-model-manifest PATH \
   --obmm-async-args "ARGS" \
-  [--scheduler-core-model SPEC] \
+  [--async-load-model SPEC] \
   [--run-id ID] [--timeout-sec N]
 
 Runs one OBMM evaluation case on all nodes, validates one machine-readable
@@ -76,9 +76,9 @@ while (( $# )); do
       SCENARIO_CONFIG="$2"
       shift 2
       ;;
-    --scheduler-core-model)
+    --async-load-model)
       require_value "$1" "${2-}"
-      SCHEDULER_CORE_MODEL="$2"
+      ASYNC_LOAD_MODEL="$2"
       shift 2
       ;;
     --obmm-async-args)
@@ -179,9 +179,9 @@ while (( async_index <= ${#async_words} )); do
     async_index=$((async_index + 1))
     continue
   fi
-  if [[ "$option" == "--p2b-producer-consumer" ]]; then
-    P2B_PRODUCER_CONSUMER=1
-    append_cmdline "obmm_async_p2b_producer_consumer=1"
+  if [[ "$option" == "--async-load-producer-consumer" ]]; then
+    ASYNC_LOAD_PRODUCER_CONSUMER=1
+    append_cmdline "obmm_async_load_producer_consumer=1"
     async_index=$((async_index + 1))
     continue
   fi
@@ -196,16 +196,16 @@ while (( async_index <= ${#async_words} )); do
   fi
   case "$option" in
     --mode) append_cmdline "obmm_async_mode=$value" ;;
-    --p2b-completion)
+    --async-load-completion)
       case "$value" in
         patch|replay) ;;
         *)
-          echo "--p2b-completion must be patch or replay" >&2
+          echo "--async-load-completion must be patch or replay" >&2
           exit 2
           ;;
       esac
-      P2B_COMPLETION="$value"
-      append_cmdline "obmm_async_p2b_completion=$value"
+      ASYNC_LOAD_COMPLETION="$value"
+      append_cmdline "obmm_async_load_completion=$value"
       ;;
     --coroutines) append_cmdline "obmm_async_coroutines=$value" ;;
     --inflight) append_cmdline "obmm_async_inflight=$value" ;;
@@ -225,7 +225,7 @@ while (( async_index <= ${#async_words} )); do
     --seed) append_cmdline "obmm_async_seed=$value" ;;
     --peer-index) append_cmdline "obmm_async_peer_index=$value" ;;
     --producer-index)
-      P2B_PRODUCER_INDEX="$value"
+      ASYNC_LOAD_PRODUCER_INDEX="$value"
       append_cmdline "obmm_async_producer_index=$value"
       ;;
     --uffd-case) append_cmdline "obmm_uffd_case=$value" ;;
@@ -243,18 +243,18 @@ while (( async_index <= ${#async_words} )); do
   async_index=$((async_index + 2))
 done
 
-if (( P2B_PRODUCER_CONSUMER )); then
-  if [[ "$NODE_COUNT" != "2" || "$P2B_PRODUCER_INDEX" != "0" ||
-        "$OBMM_ASYNC_ARGS" != *"--mode scheduler-core"* ||
+if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
+  if [[ "$NODE_COUNT" != "2" || "$ASYNC_LOAD_PRODUCER_INDEX" != "0" ||
+        "$OBMM_ASYNC_ARGS" != *"--mode async-load"* ||
         "$EXPECTED_OUTCOME" != "success" ]]; then
-    echo "P2B producer/consumer validation requires node_count=2, producer_index=0, scheduler-core mode, and success outcome" >&2
+    echo "ASYNC_LOAD producer/consumer validation requires node_count=2, producer_index=0, async-load mode, and success outcome" >&2
     exit 2
   fi
 fi
 
-if [[ "$OBMM_ASYNC_ARGS" == *"--mode scheduler-core"* &&
-      -z "$SCHEDULER_CORE_MODEL" ]]; then
-  echo "scheduler-core mode requires --scheduler-core-model" >&2
+if [[ "$OBMM_ASYNC_ARGS" == *"--mode async-load"* &&
+      -z "$ASYNC_LOAD_MODEL" ]]; then
+  echo "async-load mode requires --async-load-model" >&2
   exit 2
 fi
 
@@ -273,7 +273,7 @@ fi
 
 export APPEND_EXTRA
 export REMOTE_MEMORY_MODEL_MANIFEST
-export SCHEDULER_CORE_MODEL
+export ASYNC_LOAD_MODEL
 export RUN_ID
 export SIM_UAPI_SCENARIO_CONFIG="$SCENARIO_CONFIG"
 
@@ -337,23 +337,23 @@ summary_field() {
 }
 
 deadline=$((SECONDS + TIMEOUT_SEC))
-if (( P2B_PRODUCER_CONSUMER )); then
+if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   producer_log="$RUN_DIR/nodeA_guest.log"
   consumer_log="$RUN_DIR/nodeB_guest.log"
   while true; do
     producer_count=0
     consumer_count=0
     if [[ -f "$producer_log" ]]; then
-      producer_count="$(grep -c '^OBMM_P2B_EXPORT .*status=ready' "$producer_log" || true)"
+      producer_count="$(grep -c '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" || true)"
     fi
     if [[ -f "$consumer_log" ]]; then
-      consumer_count="$(grep -c '^OBMM_P2B_SUMMARY .*status=pass' "$consumer_log" || true)"
+      consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" || true)"
     fi
     if (( producer_count == 1 && consumer_count == 1 )); then
       break
     fi
     if (( producer_count > 1 || consumer_count > 1 )); then
-      echo "P2B producer/consumer emitted duplicate terminal markers" >&2
+      echo "ASYNC_LOAD producer/consumer emitted duplicate terminal markers" >&2
       exit 1
     fi
     for node_id in nodeA nodeB; do
@@ -362,14 +362,14 @@ if (( P2B_PRODUCER_CONSUMER )); then
       if [[ -f "$pid_file" ]]; then
         qemu_pid="$(<"$pid_file")"
         if [[ -n "$qemu_pid" ]] && ! kill -0 "$qemu_pid" 2>/dev/null; then
-          echo "$node_id QEMU exited before P2B producer/consumer proof completed" >&2
+          echo "$node_id QEMU exited before ASYNC_LOAD producer/consumer proof completed" >&2
           tail -n 80 "$guest_log" >&2 || true
           exit 1
         fi
       fi
     done
     if (( SECONDS >= deadline )); then
-      echo "timeout waiting for P2B producer/consumer proof" >&2
+      echo "timeout waiting for ASYNC_LOAD producer/consumer proof" >&2
       tail -n 100 "$producer_log" >&2 || true
       tail -n 160 "$consumer_log" >&2 || true
       exit 1
@@ -377,67 +377,67 @@ if (( P2B_PRODUCER_CONSUMER )); then
     sleep 0.2
   done
 
-  p2b_export="$(grep '^OBMM_P2B_EXPORT .*status=ready' "$producer_log" | tr -d '\r')"
-  p2b_summary="$(grep '^OBMM_P2B_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
-  p2b_coroutines="$(summary_field "$p2b_summary" coroutines)"
-  p2b_export_mem_id="$(summary_field "$p2b_export" export_mem_id)"
-  p2b_source_mem_id="$(summary_field "$p2b_summary" source_export_mem_id)"
-  if [[ "$p2b_coroutines" != <2-> || "$p2b_source_mem_id" != "$p2b_export_mem_id" ||
-        "$(summary_field "$p2b_summary" p2b_completion)" != "$P2B_COMPLETION" ||
-        "$(summary_field "$p2b_export" writes)" != "$p2b_coroutines" ||
-        "$(summary_field "$p2b_summary" completed)" != "$p2b_coroutines" ||
-        "$(summary_field "$p2b_summary" values_verified)" != "$p2b_coroutines" ||
-        "$(summary_field "$p2b_summary" el0_upcalls_pending)" != "$p2b_coroutines" ||
-        "$(summary_field "$p2b_summary" el0_upcalls_complete)" != "$p2b_coroutines" ||
-        "$(summary_field "$p2b_summary" el0_upcalls_fault)" != "0" ||
-        "$(summary_field "$p2b_summary" qemu_context_saves)" != "0" ||
-        "$(summary_field "$p2b_summary" qemu_context_restores)" != "0" ||
-        "$(summary_field "$p2b_summary" qemu_context_switches)" != "0" ||
-        "$(summary_field "$p2b_summary" qemu_context_bytes)" != "0" ||
-        "$(summary_field "$p2b_summary" scc_pending_final)" != "0" ||
-        "$(summary_field "$p2b_summary" backend_pending_final)" != "0" ||
-        "$(summary_field "$p2b_summary" trace_dropped)" != "0" ||
-        "$(summary_field "$p2b_summary" el0_context_switches)" != <1-> ]]; then
-    echo "P2B producer/consumer terminal summary is inconsistent" >&2
+  async_load_export="$(grep '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" | tr -d '\r')"
+  async_load_summary="$(grep '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
+  async_load_coroutines="$(summary_field "$async_load_summary" coroutines)"
+  async_load_export_mem_id="$(summary_field "$async_load_export" export_mem_id)"
+  async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
+  if [[ "$async_load_coroutines" != <2-> || "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
+        "$(summary_field "$async_load_summary" async_load_completion)" != "$ASYNC_LOAD_COMPLETION" ||
+        "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
+        "$(summary_field "$async_load_summary" completed)" != "$async_load_coroutines" ||
+        "$(summary_field "$async_load_summary" values_verified)" != "$async_load_coroutines" ||
+        "$(summary_field "$async_load_summary" el0_upcalls_pending)" != "$async_load_coroutines" ||
+        "$(summary_field "$async_load_summary" el0_upcalls_complete)" != "$async_load_coroutines" ||
+        "$(summary_field "$async_load_summary" el0_upcalls_fault)" != "0" ||
+        "$(summary_field "$async_load_summary" qemu_context_saves)" != "0" ||
+        "$(summary_field "$async_load_summary" qemu_context_restores)" != "0" ||
+        "$(summary_field "$async_load_summary" qemu_context_switches)" != "0" ||
+        "$(summary_field "$async_load_summary" qemu_context_bytes)" != "0" ||
+        "$(summary_field "$async_load_summary" async_load_pending_final)" != "0" ||
+        "$(summary_field "$async_load_summary" backend_pending_final)" != "0" ||
+        "$(summary_field "$async_load_summary" trace_dropped)" != "0" ||
+        "$(summary_field "$async_load_summary" el0_context_switches)" != <1-> ]]; then
+    echo "ASYNC_LOAD producer/consumer terminal summary is inconsistent" >&2
     exit 1
   fi
-  case "$P2B_COMPLETION" in
+  case "$ASYNC_LOAD_COMPLETION" in
     patch)
-      if [[ "$(summary_field "$p2b_summary" replay_consumed)" != "0" ||
-            "$(summary_field "$p2b_summary" replay_mismatch)" != "0" ]]; then
-        echo "P2B patch mode reported replay activity" >&2
+      if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "0" ||
+            "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ]]; then
+        echo "ASYNC_LOAD patch mode reported replay activity" >&2
         exit 1
       fi
       ;;
     replay)
-      if [[ "$(summary_field "$p2b_summary" replay_consumed)" != "$p2b_coroutines" ||
-            "$(summary_field "$p2b_summary" replay_mismatch)" != "0" ||
-            "$(summary_field "$p2b_summary" replay_ready_high_water)" != <1-> ]]; then
-        echo "P2B replay mode lacks exact-once retirement evidence" >&2
+      if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_coroutines" ||
+            "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
+            "$(summary_field "$async_load_summary" replay_ready_high_water)" != <1-> ]]; then
+        echo "ASYNC_LOAD replay mode lacks exact-once retirement evidence" >&2
         exit 1
       fi
       ;;
   esac
 
   blocked_load_switches=0
-  for (( coroutine_id = 0; coroutine_id < p2b_coroutines; coroutine_id++ )); do
-    write_line="$(grep "^OBMM_P2B_WRITE .*coroutine=${coroutine_id} " "$producer_log" | tr -d '\r')"
-    context_line="$(grep "^OBMM_P2B_CONTEXT .*coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
-    issue_line="$(grep "^OBMM_P2B_LDR .*event=issue coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
-    pending_line="$(grep "^OBMM_P2B_UPCALL .*event=pending coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
-    complete_line="$(grep "^OBMM_P2B_UPCALL .*event=complete coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
-    resume_line="$(grep "^OBMM_P2B_SCHEDULE .*to_coroutine=${coroutine_id} after_complete=1" "$consumer_log" | tr -d '\r')"
-    retire_line="$(grep "^OBMM_P2B_LDR .*event=retire coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
-    coroutine_summary="$(grep "^OBMM_P2B_COROUTINE_SUMMARY .*coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
+  for (( coroutine_id = 0; coroutine_id < async_load_coroutines; coroutine_id++ )); do
+    write_line="$(grep "^OBMM_ASYNC_LOAD_WRITE .*coroutine=${coroutine_id} " "$producer_log" | tr -d '\r')"
+    context_line="$(grep "^OBMM_ASYNC_LOAD_CONTEXT .*coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
+    issue_line="$(grep "^OBMM_ASYNC_LOAD_LDR .*event=issue coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
+    pending_line="$(grep "^OBMM_ASYNC_LOAD_UPCALL .*event=pending coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
+    complete_line="$(grep "^OBMM_ASYNC_LOAD_UPCALL .*event=complete coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
+    resume_line="$(grep "^OBMM_ASYNC_LOAD_SCHEDULE .*to_coroutine=${coroutine_id} after_complete=1" "$consumer_log" | tr -d '\r')"
+    retire_line="$(grep "^OBMM_ASYNC_LOAD_LDR .*event=retire coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
+    coroutine_summary="$(grep "^OBMM_ASYNC_LOAD_COROUTINE_SUMMARY .*coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
     if [[ -z "$write_line" || -z "$context_line" || -z "$issue_line" ||
           -z "$pending_line" || -z "$complete_line" || -z "$resume_line" ||
           -z "$retire_line" || -z "$coroutine_summary" ]]; then
-      echo "P2B coroutine $coroutine_id is missing causal evidence" >&2
+      echo "ASYNC_LOAD coroutine $coroutine_id is missing causal evidence" >&2
       exit 1
     fi
     context_id="$(summary_field "$context_line" context_id)"
     expected_value="$(summary_field "$write_line" value)"
-    if [[ "$(summary_field "$write_line" export_mem_id)" != "$p2b_export_mem_id" ||
+    if [[ "$(summary_field "$write_line" export_mem_id)" != "$async_load_export_mem_id" ||
           "$(summary_field "$issue_line" context_id)" != "$context_id" ||
           "$(summary_field "$pending_line" context_id)" != "$context_id" ||
           "$(summary_field "$complete_line" context_id)" != "$context_id" ||
@@ -453,31 +453,31 @@ if (( P2B_PRODUCER_CONSUMER )); then
           "$(summary_field "$coroutine_summary" pending)" != "1" ||
           "$(summary_field "$coroutine_summary" complete)" != "1" ||
           "$(summary_field "$coroutine_summary" resumes_after_complete)" != <1-> ]]; then
-      echo "P2B coroutine $coroutine_id has inconsistent context, token, PC, or value evidence" >&2
+      echo "ASYNC_LOAD coroutine $coroutine_id has inconsistent context, token, PC, or value evidence" >&2
       exit 1
     fi
-    issue_position="$(grep -n "^OBMM_P2B_LDR .*event=issue coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
-    pending_position="$(grep -n "^OBMM_P2B_UPCALL .*event=pending coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
-    complete_position="$(grep -n "^OBMM_P2B_UPCALL .*event=complete coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
-    resume_position="$(grep -n "^OBMM_P2B_SCHEDULE .*to_coroutine=${coroutine_id} after_complete=1" "$consumer_log" | cut -d: -f1)"
-    retire_position="$(grep -n "^OBMM_P2B_LDR .*event=retire coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
+    issue_position="$(grep -n "^OBMM_ASYNC_LOAD_LDR .*event=issue coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
+    pending_position="$(grep -n "^OBMM_ASYNC_LOAD_UPCALL .*event=pending coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
+    complete_position="$(grep -n "^OBMM_ASYNC_LOAD_UPCALL .*event=complete coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
+    resume_position="$(grep -n "^OBMM_ASYNC_LOAD_SCHEDULE .*to_coroutine=${coroutine_id} after_complete=1" "$consumer_log" | cut -d: -f1)"
+    retire_position="$(grep -n "^OBMM_ASYNC_LOAD_LDR .*event=retire coroutine=${coroutine_id} " "$consumer_log" | cut -d: -f1)"
     if (( issue_position >= pending_position || pending_position >= complete_position ||
           complete_position >= resume_position || resume_position >= retire_position )); then
-      echo "P2B coroutine $coroutine_id causal event order is invalid" >&2
+      echo "ASYNC_LOAD coroutine $coroutine_id causal event order is invalid" >&2
       exit 1
     fi
     switched_context=""
     switched_load=""
     if (( complete_position > pending_position + 1 )); then
-      switched_context="$(sed -n "$((pending_position + 1)),$((complete_position - 1))p" "$consumer_log" | grep '^OBMM_P2B_SCHEDULE .*event=resume ' | grep -v "to_context_id=${context_id} " | head -n 1 | tr -d '\r' || true)"
-      switched_load="$(sed -n "$((pending_position + 1)),$((complete_position - 1))p" "$consumer_log" | grep '^OBMM_P2B_LDR .*event=issue ' | grep -v "context_id=${context_id} " | head -n 1 | tr -d '\r' || true)"
+      switched_context="$(sed -n "$((pending_position + 1)),$((complete_position - 1))p" "$consumer_log" | grep '^OBMM_ASYNC_LOAD_SCHEDULE .*event=resume ' | grep -v "to_context_id=${context_id} " | head -n 1 | tr -d '\r' || true)"
+      switched_load="$(sed -n "$((pending_position + 1)),$((complete_position - 1))p" "$consumer_log" | grep '^OBMM_ASYNC_LOAD_LDR .*event=issue ' | grep -v "context_id=${context_id} " | head -n 1 | tr -d '\r' || true)"
     fi
     if [[ -n "$switched_context" && -n "$switched_load" ]]; then
       blocked_load_switches=$((blocked_load_switches + 1))
     fi
   done
   if (( blocked_load_switches == 0 )); then
-    echo "P2B evidence does not show a blocked load switching to another coroutine that issues its own LDR" >&2
+    echo "ASYNC_LOAD evidence does not show a blocked load switching to another coroutine that issues its own LDR" >&2
     exit 1
   fi
 else
@@ -596,19 +596,19 @@ done
 
 integer node_index=1
 print -r -- "OBMM_RUN_EVIDENCE node_count=$NODE_COUNT scenario_sha256=$SCENARIO_SHA256 model_file_sha256=$MODEL_FILE_SHA256 model_contract_hash=$MODEL_CONTRACT_HASH qemu_sha256=$QEMU_SHA256 kernel_sha256=$KERNEL_SHA256 initramfs_sha256=$INITRAMFS_SHA256 qemu_destroyed=1"
-if (( P2B_PRODUCER_CONSUMER )); then
-  print -r -- "OBMM_P2B_NODE_EVIDENCE node=nodeA role=producer export_mem_id=$p2b_export_mem_id writes=$p2b_coroutines status=ready"
-  print -r -- "OBMM_P2B_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$p2b_source_mem_id coroutines=$p2b_coroutines completed=$p2b_coroutines status=pass"
-  print -r -- "OBMM_P2B_CAUSAL_SUMMARY blocked_load_switches=$blocked_load_switches status=pass"
-  grep '^OBMM_P2B_\(WRITE\|EXPORT\)' "$producer_log"
-  grep '^OBMM_P2B_\(IMPORT\|CONTEXT\|LDR\|UPCALL\|SCHEDULE\|COROUTINE_SUMMARY\)' "$consumer_log"
+if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
+  print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeA role=producer export_mem_id=$async_load_export_mem_id writes=$async_load_coroutines status=ready"
+  print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id coroutines=$async_load_coroutines completed=$async_load_coroutines status=pass"
+  print -r -- "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY blocked_load_switches=$blocked_load_switches status=pass"
+  grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
+  grep '^OBMM_ASYNC_LOAD_\(IMPORT\|CONTEXT\|LDR\|UPCALL\|SCHEDULE\|COROUTINE_SUMMARY\)' "$consumer_log"
   for node_id in nodeA nodeB; do
     qemu_log="$RUN_DIR/${node_id}_qemu.log"
     duplicate_count="$(grep -c 'duplicate=1' "$qemu_log" || true)"
     late_count="$(grep -c 'obmm_p1_late' "$qemu_log" || true)"
     print -r -- "OBMM_BACKEND_EVIDENCE node=$node_id duplicate=$duplicate_count late=$late_count drained=1"
   done
-  print -r -- "$p2b_summary"
+  print -r -- "$async_load_summary"
   exit 0
 fi
 for node_id in "${NODE_IDS[@]}"; do

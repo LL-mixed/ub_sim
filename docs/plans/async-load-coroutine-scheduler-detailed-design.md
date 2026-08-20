@@ -1,9 +1,13 @@
-# P2B：普通 `LDR` + 自定义 EL0 upcall + EL0 协程调度核心
+# async load：普通 `LDR` + 自定义 EL0 upcall + guest EL0 coroutine scheduler
+
+> 命名说明：当前接口统一使用 `async load` / `async-load` / `async_load`。下文仍含
+> `p2b` 的字符串仅用于精确引用改名前的历史 evidence 路径或输出原文。
 
 > 状态：ABI v2 的 2-node producer/consumer 功能目标已完成，并在 `n4-910c`
 > 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 phase gate。P3 ABI v2
-> 的 2-node acceptance 与 4/8-node 定向 scale-out 已完成，4,942-case full matrix
-> 尚待完成；P3 不是本设计的功能退出条件。旧 QEMU-internal SCC
+> 的 2-node acceptance、4/8-node 定向 scale-out、2,240-case coarse policy 与
+> 1,960-case fine formal boundary 已完成，4,942-case full matrix 按要求暂停；
+> P3 不是本设计的功能退出条件。旧 QEMU-internal coroutine scheduler
 > 结果不计为本设计验收
 >
 > 日期：2026-08-12
@@ -12,20 +16,20 @@
 >
 > 共同底座：[P1：provider-neutral split-phase backend](p1-split-phase-backend-detailed-design.md)
 >
-> 软件基线：[P2A：submit/await + EL0 协程详细设计](p2a-submit-await-detailed-design.md)
+> 软件基线：[submit/await：submit/await + EL0 协程详细设计](submit-await-detailed-design.md)
 
 ## 1. 结论和纠偏
 
-P2B 要验证的是一套偏离标准 Arm exception routing 的自定义 core 行为：普通
+async load 要验证的是一套偏离标准 Arm exception routing 的自定义 core 行为：普通
 AArch64 EL0 `LDR` 访问 registered OBMM/GSVA range 时，如果远端读取不能立即完成，
-QEMU 模拟的 core 直接产生 EL0 **upcall**。运行在 guest EL0 的协程调度核心直接处理 **upcall** 保存当前
+QEMU 模拟的 core 直接产生 EL0 **upcall**。运行在 guest EL0 的 coroutine scheduler 直接处理 **upcall** 保存当前
 coroutine context、维护 ready/wait 状态、选择并恢复另一个 coroutine。远端 completion
 到达后，core 再产生 EL0 upcall；EL0 scheduler 把结果提交到挂起 coroutine 保存态中的
 原 `Rt`，令其 `PC=fault_pc+4`，再择机恢复。
 
 此前实现了把完整 context save/restore、ready queue 和 round-robin policy 放入 QEMU
-`ub_scc.c`，并由 QEMU 直接安装另一个 `CPUARMState`。该实现验证的是 hardware-managed
-threading，与本设计要求的 EL0 coroutine scheduler 不同，不作为 P2B 的目标和完成证据。
+`ub_async_load.c`，并由 QEMU 直接安装另一个 `CPUARMState`。该实现验证的是 hardware-managed
+threading，与本设计要求的 EL0 coroutine scheduler 不同，不作为 async load 的目标和完成证据。
 
 本次重构冻结如下 ownership：
 
@@ -40,7 +44,7 @@ threading，与本设计要求的 EL0 coroutine scheduler 不同，不作为 P2B
 | 修改 completion 对应的保存态 `Rt/PC` | 否 | 是 |
 | 原子安装 EL0 选择的 context image | 是，作为 core mechanism | 发起 |
 
-![P2B EL0 upcall 与 EL0 协程调度核心](p2b-scheduler-core-flow.svg)
+![async load EL0 upcall 与 guest EL0 coroutine scheduler](async-load-coroutine-scheduler-flow.svg)
 
 ## 2. V2 范围
 
@@ -57,10 +61,10 @@ threading，与本设计要求的 EL0 coroutine scheduler 不同，不作为 P2B
 - 不支持 store、signed load、atomic/exclusive、acquire、pair、SIMD load、SVE/SME、
   unaligned/cross-page、ptrace、single-step 和 live migration。
 
-P2B V2 是 demand-pending：只有普通 `LDR` 真正需要远端访问时才切换，`lookahead=0`。
-它不具有 P2A 在消费前显式 submit 的 schedule-ahead 窗口。
+async load V2 是 demand-pending：只有普通 `LDR` 真正需要远端访问时才切换，`lookahead=0`。
+它不具有 submit/await 在消费前显式 submit 的 schedule-ahead 窗口。
 
-## 3. 公共基座与 P2B 边界
+## 3. 公共基座与 async load 边界
 
 ### 3.1 P1 不拥有 coroutine
 
@@ -74,10 +78,10 @@ validated request
   -> generation-safe terminal sink
 ```
 
-P1 不知道 EL0 stack、ready queue、fault PC、`Rt` 或调度策略。P2A sink 把结果交给
-future/CQ；P2B sink 把结果交给 PLT/event adapter。
+P1 不知道 EL0 stack、ready queue、fault PC、`Rt` 或调度策略。submit/await sink 把结果交给
+future/CQ；async load sink 把结果交给 PLT/event adapter。
 
-### 3.2 P2B core-visible state
+### 3.2 async load core-visible state
 
 QEMU/core 只保留尚未退休 load 所必需的状态：
 
@@ -97,7 +101,7 @@ QEMU 不再拥有 coroutine Context Store，也不维护 coroutine READY/RUNNING
 每个 EL0 coroutine 拥有一个 user-space context image：
 
 ```c
-struct obmm_scc_context_v2 {
+struct obmm_async_load_context_v2 {
     uint64_t context_id;
     uint64_t flags;
     uint64_t x[31];
@@ -137,44 +141,44 @@ interrupted PC 和 pending/completion metadata，把 transient frame 复制到�
 
 #### 4.1.1 注册 upcall entry 并启用 TCG hook
 
-`guest-linux/aarch64/libs/obmm_scc/obmm_scc.c::obmm_scc_run()` 把 assembly symbol
-`obmm_scc_upcall_entry` 的 EL0 VA 放进 `OBMM_SCC_IOCTL_START`：
+`guest-linux/aarch64/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.c::obmm_coroutine_scheduler_run()` 把 assembly symbol
+`obmm_coroutine_scheduler_upcall_entry` 的 EL0 VA 放进 `OBMM_ASYNC_LOAD_IOCTL_START`：
 
 ```c
-request = (struct obmm_scc_start_v2) {
+request = (struct obmm_async_load_start_v2) {
     .home_cpu = sched_getcpu(),
-    .upcall_entry = (uintptr_t)obmm_scc_upcall_entry,
+    .upcall_entry = (uintptr_t)obmm_coroutine_scheduler_upcall_entry,
     .logical_contexts = runtime->logical_contexts,
 };
-ioctl(runtime->fd, OBMM_SCC_IOCTL_START, &request);
+ioctl(runtime->fd, OBMM_ASYNC_LOAD_IOCTL_START, &request);
 ```
 
-driver 的 `linqu_scc_start()` 验证调用进程、single-CPU affinity、entry 对齐和用户地址
-可访问性，然后把 owner TTBR0、upcall entry、logical context count 写入 SCC MMIO，
-最后写 `SESSION_COMMAND=START`。QEMU 的 `ub_scc_session_command()` 将执行该 MMIO
+driver 的 `linqu_async_load_start()` 验证调用进程、single-CPU affinity、entry 对齐和用户地址
+可访问性，然后把 owner TTBR0、upcall entry、logical context count 写入 async-load MMIO，
+最后写 `SESSION_COMMAND=START`。QEMU 的 `ub_async_load_session_command()` 将执行该 MMIO
 命令的 vCPU 记为唯一 `home_cpu`，置 `session_active=true`，并调用
-`arm_obmm_scc_set_active()`。
+`arm_async_load_set_active()`。
 
-`arm_obmm_scc_set_active()` 设置 `CPUARMState.obmm_scc_active`、flush 已翻译 TB，并
+`arm_async_load_set_active()` 设置 `CPUARMState.async_load_active`、flush 已翻译 TB，并
 请求退出当前 TB。后续只为 active session 的 AArch64 EL0 TB 生成 remote-load hook 和
 boundary hook；其他进程、vCPU 和 EL 不受影响。
 
 #### 4.1.2 PENDING：在 faulting `LDR` 内同步重定向
 
 `target/arm/tcg/translate-a64.c` 在白名单 unsigned scalar `LDR` 的正常 load lowering
-之前插入 `gen_obmm_scc_remote_load()`：
+之前插入 `gen_async_load_remote_load()`：
 
 ```text
-gen_helper_obmm_scc_remote_load(..., Rt, fault_pc)
+gen_helper_async_load_remote_load(..., Rt, fault_pc)
 do_gpr_ld_memidx(...)                         // 正常 load 在 helper 之后
 ```
 
-对应的 `target/arm/tcg/helper-a64.c::HELPER(obmm_scc_remote_load)` 执行：
+对应的 `target/arm/tcg/helper-a64.c::HELPER(async_load_remote_load)` 执行：
 
 1. 校验 active session、AArch64 EL0、owner TTBR0、home vCPU 和 remote mapping；
 2. 先做正常 MMU translation/permission probe，不能用 upcall 吞掉标准 page fault；
-3. `ub_scc_cpu_remote_load()` 分配 PLT、enqueue PENDING，并向 P1 backend submit；
-4. `ub_scc_cpu_take_upcall(fault_pc, &entry)` 把 PENDING 从 event queue 移到
+3. `ub_async_load_cpu_remote_load()` 分配 PLT、enqueue PENDING，并向 P1 backend submit；
+4. `ub_async_load_cpu_take_upcall(fault_pc, &entry)` 把 PENDING 从 event queue 移到
    `delivered_event`，写入 `interrupted_pc=fault_pc`，置 `upcall_active=true`；
 5. helper 只执行 `env->pc=entry`，随后 `cpu_loop_exit_noexc()`。
 
@@ -183,14 +187,14 @@ do_gpr_ld_memidx(...)                         // 正常 load 在 helper 之后
 exception、没有切 EL，也没有进入 Linux signal handler；从 guest 视角，下一条执行的
 指令就是注册的 EL0 assembly entry。
 
-PENDING 在 `hw/ub/ub_scc.c::obmm_scc_event_push()` 中从 queue head 入队，而 COMPLETE/
+PENDING 在 `hw/ub/ub_async_load.c::ub_async_load_event_push()` 中从 queue head 入队，而 COMPLETE/
 FAULT 从 tail 入队。这保证当前刚触发 `LDR` 的 PENDING 不会被旧 terminal event 抢在
 前面，否则 EL0 可能保存了当前 coroutine，却先收到另一个 coroutine 的 completion。
 
 #### 4.1.3 COMPLETE/FAULT：异步产生，在下一个 EL0 TB boundary 交付
 
-远端结果由 `hw/ub/ub_scc_device.c::ub_scc_load_complete()` 回调接收。
-`obmm_scc_load_complete()` 校验 PLT generation 后 enqueue COMPLETE 或 FAULT；callback
+远端结果由 `hw/ub/ub_async_load_device.c::ub_async_load_load_complete()` 回调接收。
+`ub_async_load_load_complete()` 校验 PLT generation 后 enqueue COMPLETE 或 FAULT；callback
 本身不改 guest PC/GPR，只执行：
 
 ```c
@@ -201,8 +205,8 @@ qemu_cpu_kick(state->home_cpu);
 
 这三步只负责唤醒或打断 host 上的 QEMU vCPU loop。真正的 control transfer 发生在下一
 个 active EL0 TB 开头：`aarch64_tr_tb_start()` 已插入
-`HELPER(obmm_scc_boundary)`。boundary helper 用当前 `env->pc` 作为
-`interrupted_pc`，调用同一个 `ub_scc_cpu_take_upcall()`，然后同样执行：
+`HELPER(async_load_boundary)`。boundary helper 用当前 `env->pc` 作为
+`interrupted_pc`，调用同一个 `ub_async_load_cpu_take_upcall()`，然后同样执行：
 
 ```c
 env->pc = upcall_entry;
@@ -215,13 +219,13 @@ cpu_loop_exit_noexc(cs);
 
 `upcall_active` 期间禁止嵌套 PC redirection。如果所有 coroutine 都在
 `WAIT_REMOTE`，EL0 scheduler 已经位于当前 upcall 中，就通过
-`GET_EVENT|OBMM_SCC_EVENT_GET_WAIT` 等待。driver 观察到 queue pending 后写
+`GET_EVENT|OBMM_ASYNC_LOAD_EVENT_GET_WAIT` 等待。driver 观察到 queue pending 后写
 `EVENT_COMMAND=2`，把下一 event promote 为 `delivered_event`，直接交给现有 handler，
 不再递归进入 assembly entry。
 
 #### 4.1.4 EL0 entry 如何保存现场并取得 event
 
-`guest-linux/aarch64/libs/obmm_scc/obmm_scc_aarch64.S::obmm_scc_upcall_entry` 是真正被
+`guest-linux/aarch64/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler_aarch64.S::obmm_coroutine_scheduler_upcall_entry` 是真正被
 QEMU 写入 PC 的地址。QEMU 没有替换 SP 或传递 scratch 参数，所以 entry 可以看到完整
 的被中断寄存器状态：
 
@@ -229,16 +233,16 @@ QEMU 写入 PC 的地址。QEMU 没有替换 SP 或传递 scratch 参数，所�
 sub sp, sp, #832           // 在当前 coroutine stack 建 transient frame
 save x0..x30 / old SP / NZCV / Q0..Q31 / FPCR / FPSR / TPIDR_EL0
 x19 = transient frame
-sp = obmm_scc_scheduler_stack_top()
+sp = obmm_coroutine_scheduler_stack_top()
 x0 = transient frame
-bl obmm_scc_upcall_dispatch
+bl obmm_coroutine_scheduler_upcall_dispatch
 ```
 
 assembly 必须先保存所有寄存器，再使用 `x9/x19/x0` 作为 scratch；这些寄存器的旧值此时
 已经在 frame 中。切换 scheduler stack 是 guest EL0 指令完成的，不是 QEMU 改 SP。
 
-`obmm_scc_upcall_dispatch()` 随后通过 `OBMM_SCC_IOCTL_GET_EVENT` 获取 payload。driver
-从 SCC MMIO 读取 sequence、context ID、PLT token、`interrupted_pc`、fault PC、VA、
+`obmm_coroutine_scheduler_upcall_dispatch()` 随后通过 `OBMM_ASYNC_LOAD_IOCTL_GET_EVENT` 获取 payload。driver
+从 async-load MMIO 读取 sequence、context ID、PLT token、`interrupted_pc`、fault PC、VA、
 value、kind/status、Rt 和 width，再写 `EVENT_COMMAND=1` ack 当前
 `delivered_event`。event 不通过 GPR 传递，避免在完整上下文保存前污染 application
 register state。
@@ -258,11 +262,11 @@ dispatcher 把 transient frame 复制到 guest-owned Context Store、用 event �
 | 项目 | 标准同步 exception | 当前模拟 upcall delivery |
 |---|---|---|
 | 初始 control transfer | EL0 → EL1/EL2/EL3 vector | QEMU 直接转到 EL0 entry；随后取 event 的 ioctl 可正常进入 EL1 |
-| PC 保存 | hardware 写 ELR | QEMU 把 `interrupted_pc` 写入 SCC event |
+| PC 保存 | hardware 写 ELR | QEMU 把 `interrupted_pc` 写入 coroutine scheduler event |
 | PSTATE 保存 | hardware 写 SPSR | EL0 assembly 读取并保存 NZCV；不生成 SPSR frame |
 | stack | exception level 选择对应 SP | QEMU 保持 SP；entry 先用 coroutine stack，再由 EL0 切 scheduler stack |
-| handler entry | `VBAR_ELx + vector offset` | session 注册的 `obmm_scc_upcall_entry` |
-| syndrome | ESR/FAR 等 exception registers | SCC event 中的 kind/status/fault PC/VA/Rt/token |
+| handler entry | `VBAR_ELx + vector offset` | session 注册的 `obmm_coroutine_scheduler_upcall_entry` |
+| syndrome | ESR/FAR 等 exception registers | coroutine scheduler event 中的 kind/status/fault PC/VA/Rt/token |
 | 返回 | `ERET` | EL0 scheduler 提交 context，`HLT #0x5343` 模拟原子安装 |
 
 因此“direct-to-EL0”在当前代码中的准确含义是：**QEMU 在 TCG helper 中改
@@ -272,14 +276,14 @@ entry 通常由硬件完成的上下文保存工作。**
 ### 4.2 EL0 event
 
 ```c
-enum obmm_scc_event_kind_v2 {
-    OBMM_SCC_EVENT_PENDING = 1,
-    OBMM_SCC_EVENT_COMPLETE = 2,
-    OBMM_SCC_EVENT_FAULT = 3,
-    OBMM_SCC_EVENT_OWNER_STOP = 4,
+enum obmm_async_load_event_kind_v2 {
+    OBMM_ASYNC_LOAD_EVENT_PENDING = 1,
+    OBMM_ASYNC_LOAD_EVENT_COMPLETE = 2,
+    OBMM_ASYNC_LOAD_EVENT_FAULT = 3,
+    OBMM_ASYNC_LOAD_EVENT_OWNER_STOP = 4,
 };
 
-struct obmm_scc_event_v2 {
+struct obmm_async_load_event_v2 {
     uint64_t sequence;
     uint64_t context_id;
     uint64_t plt_token;
@@ -327,12 +331,12 @@ FPCR/FPSR 和 `TPIDR_EL0` 也必须属于同一个 context，不能在普通指�
 本实验要验证的 direct-to-EL0 模型。因此定义一个明确的 **QEMU 模拟 core 指令**：
 
 ```text
-HLT #0x5343                 // OBMM_SCC_RESUME，"SC"
-x0 = struct obmm_scc_context_v2 *
+HLT #0x5343                 // OBMM_ASYNC_LOAD_RESUME，"SC"
+x0 = struct obmm_async_load_context_v2 *
 ```
 
 这不是标准 Arm 定义的 coroutine 指令。QEMU TCG 专门识别 immediate `0x5343`，把它
-翻译为 `obmm_scc_resume` helper；在目标硬件 ISA 尚未定义相同机制之前，该二进制只能
+翻译为 `async_load_resume` helper；在目标硬件 ISA 尚未定义相同机制之前，该二进制只能
 在本实验的 QEMU 模型中运行。
 
 #### 4.3.2 一次 resume 实际发生了什么
@@ -340,7 +344,7 @@ x0 = struct obmm_scc_context_v2 *
 假设 A 因 remote load pending 进入 scheduler，EL0 协程 scheduler 从 ready queue 选择 B：
 
 1. EL0 协程 scheduler 把 `&B.context` 放入参数寄存器 `x0`，执行 `HLT #0x5343`；
-2. QEMU 先校验 SCC session、AArch64 EL0、owner TTBR0 和 context pointer 16-byte
+2. QEMU 先校验 async-load session、AArch64 EL0、owner TTBR0 和 context pointer 16-byte
    alignment；
 3. QEMU 把 guest 中的 832-byte context image 完整复制到 host 临时对象；context
    跨 4-KiB guest page 时逐页做 translation/permission probe；
@@ -435,7 +439,7 @@ event page，减少 ioctl，但不改变 ownership。
 
 ### 6.1 状态机
 
-![P2B guest EL0 coroutine 状态机](p2b-el0-coroutine-state-machine.svg)
+![async load guest EL0 coroutine 状态机](async-load-el0-coroutine-state-machine.svg)
 
 direct upcall 到达时，EL0 assembly 总是先保存被中断的 `RUNNING` context，并把它变为
 `READY`，然后 dispatcher 才处理 event。因此一次 remote PENDING 的完整转换实际是
@@ -446,7 +450,7 @@ completion 可能中断另一个正在推进的 coroutine B。此时 B 因保存
 `Rt/PC` patch。A、B 此后都只是 ready candidate，仍由 EL0 round-robin policy 决定谁先
 resume。
 
-round-robin policy 完全在 `guest-linux/aarch64/libs/obmm_scc/` 中。QEMU 不得出现
+round-robin policy 完全在 `guest-linux/aarch64/libs/obmm_coroutine_scheduler/` 中。QEMU 不得出现
 `schedule_next()` 或扫描 ready context 的逻辑。
 
 ### 6.2 初始 context 与退出
@@ -455,12 +459,12 @@ EL0 library 为每个 coroutine 分配带双 guard page 的 stack，构造初始
 
 - `x19 = coroutine-local descriptor *`，bootstrap 再把它传给 C entry；
 - `sp = aligned stack top`；
-- `pc = obmm_scc_context_start`；
+- `pc = obmm_coroutine_scheduler_context_start`；
 - FP/SIMD、NZCV 初始化为 0；
 - `TPIDR_EL0` 继承当前 Linux task。
 
 bootstrap 调用 entry；entry return 后在 EL0 把 coroutine 标记 DONE，再由相同 scheduler
-选择下一个 context。全部 worker 结束时恢复 `obmm_scc_run()` 的 scheduler-return
+选择下一个 context。全部 worker 结束时恢复 `obmm_coroutine_scheduler_run()` 的 scheduler-return
 context、读取 metrics、STOP session 并返回。
 
 ### 6.3 Metrics ownership
@@ -495,7 +499,7 @@ driver 仍要求单 owner、单 CPU affinity，并用 mapping fd 交叉验证 VM
 
 ### 8.1 TCG load hook
 
-SCC active 时，unsigned scalar load lowering 在正常 `do_gpr_ld` 前调用 remote helper。
+coroutine scheduler active 时，unsigned scalar load lowering 在正常 `do_gpr_ld` 前调用 remote helper。
 非 registered VA 返回继续原 load；pending helper 不返回当前 TB，保持 load 未退休。
 
 ### 8.2 Upcall delivery
@@ -513,7 +517,7 @@ exit current TB
 
 ### 8.3 Resume helper
 
-`HLT #0x5343` translator 只在 active EL0 SCC session 下生成 `obmm_scc_resume` helper。
+`HLT #0x5343` translator 只在 active EL0 async-load session 下生成 `async_load_resume` helper。
 helper 验证 context pointer 对齐、guest-readable、context ID 非零、PC/SP 合法且 owner
 匹配；随后读取 context image、原子更新 `CPUARMState`、清 exclusive monitor、重建
 hflags、记录 active context ID并退出 TB。
@@ -521,7 +525,7 @@ hflags、记录 active context ID并退出 TB。
 ### 8.4 Completion concurrency
 
 provider callback 只更新 PLT/event 并 kick CPU。vCPU helper 与 I/O completion 对
-SCC/P1 state 的访问继续由 QEMU iothread lock 串行化；completion 不直接写 guest GPR。
+coroutine scheduler/P1 state 的访问继续由 QEMU iothread lock 串行化；completion 不直接写 guest GPR。
 
 ## 9. 当前测试方法、结果与证据边界
 
@@ -530,10 +534,10 @@ SCC/P1 state 的访问继续由 QEMU iothread lock 串行化；completion 不直
 
 | 层次 | 当前测试 | 已通过 | 它实际证明什么 |
 |---|---|---:|---|
-| L1 · build/contract | AArch64 编译、UAPI static assert、源码 ownership contract | SCC 9/9；OBMM focused 合计 27/27 | ABI/layout 能编译；目标机制确实接入；旧 QEMU scheduler 没被重新引入 |
-| L2 · QEMU model unit | SCC、remote model、P1 backend unit binary | 7 + 7 + 6 = 20/20，本地与 `n4-910c` 均通过 | PLT/event/backend 的纯状态机、数据和顺序规则 |
+| L1 · build/contract | AArch64 编译、UAPI static assert、源码 ownership contract | coroutine scheduler 9/9；OBMM focused 合计 27/27 | ABI/layout 能编译；目标机制确实接入；旧 QEMU scheduler 没被重新引入 |
+| L2 · QEMU model unit | async-load、remote model、P1 backend unit binary | 历史版本 7 + 7 + 6 = 20/20；当前改名后 async-load 9/9、backend 6/6 | PLT/event/backend 的纯状态机、数据和顺序规则 |
 | L3 · real guest E2E | `n4-910c` 启动两个完整 AArch64 QEMU guest | producer/consumer r15 pass | nodeA 写值/export，nodeB import；两个 EL0 coroutine 在同一远端等待窗口内分别执行普通 `LDR`，并读取正确值 |
-| L4 · machine phase gate | Rust parser 对原始日志 fail closed | producer/consumer r15 P2B gate pass | 跨节点 export/import/value 一致性、逐 coroutine 因果顺序、ownership counters、drain 和 artifact hash 同时满足 |
+| L4 · machine phase gate | Rust parser 对原始日志 fail closed | producer/consumer r15 async load gate pass | 跨节点 export/import/value 一致性、逐 coroutine 因果顺序、ownership counters、drain 和 artifact hash 同时满足 |
 
 ### 9.1 L1：build 与 contract tests
 
@@ -541,15 +545,15 @@ SCC/P1 state 的访问继续由 QEMU iothread lock 串行化；completion 不直
 
 ```text
 python3 -m unittest \
-  guest-linux/aarch64/tests/test_obmm_scc_contract.py
+  guest-linux/aarch64/tests/test_obmm_async_load_coroutine_contract.py
 ```
 
-`test_obmm_scc_contract.py` 的 9 个 case 做的是：
+`test_obmm_async_load_coroutine_contract.py` 的 9 个 case 做的是：
 
 1. 用 AArch64 compiler 编译 static asserts，检查 ABI v2、832-byte context 及关键
    offset；
 2. 以 `-Wall -Wextra -Werror -static` 交叉编译 EL0 runtime、assembly 和共同 workload；
-3. 检查 scheduler-core worker 源码只调用普通 volatile scalar load，不出现
+3. 检查 async-load worker 源码只调用普通 volatile scalar load，不出现
    `submit/await`；
 4. 检查 QEMU 有 `take_upcall/resume` mechanism，但没有 ready queue、Context Store 或
    `schedule_next()` policy；
@@ -559,7 +563,7 @@ python3 -m unittest \
 7. 检查 scenario 已删除 QEMU-owned save/schedule/restore/commit cycle model；
 8. 检查 `GET_EVENT(WAIT)` 可以在没有 active upcall frame 时由 EL0 scheduler 拉取
    completion；
-9. 检查 kernel artifact fingerprint 覆盖 SCC v2 headers，避免复用旧 Image。
+9. 检查 kernel artifact fingerprint 覆盖 async-load ABI v2 header，避免复用旧 Image。
 
 这层是 **编译和静态 contract**，不是执行测试。比如它能证明 assembly 文件里存在
 `stp q30, q31`，不能证明一个任意 Q31 bit pattern 已经在 real guest 中往返保持。
@@ -569,15 +573,15 @@ python3 -m unittest \
 ```text
 python3 -m unittest \
   guest-linux/aarch64/tests/test_obmm_async_contract.py \
-  guest-linux/aarch64/tests/test_obmm_scc_contract.py \
+  guest-linux/aarch64/tests/test_obmm_async_load_coroutine_contract.py \
   guest-linux/aarch64/tests/test_obmm_uffd_contract.py
 ```
 
-结果为 27/27，用于确认 P2B 修改没有破坏共同 workload、P2A 和 P4 contracts。
+结果为 27/27，用于确认 async load 修改没有破坏共同 workload、submit/await 和 P4 contracts。
 
 ### 9.2 L2：QEMU model unit tests
 
-`vendor/qemu_8.2.0_ub/tests/unit/test-ub-scc.c` 直接构造 `ObmmScc` model，不启动 Arm
+`vendor/qemu_8.2.0_ub/tests/unit/test-ub-async-load.c` 直接构造 `UbAsyncLoad` model，不启动 Arm
 CPU。7 个 case 分别验证：
 
 | case | 断言 |
@@ -593,16 +597,16 @@ CPU。7 个 case 分别验证：
 执行入口：
 
 ```text
-vendor/qemu_8.2.0_ub/build/tests/unit/test-ub-scc
+vendor/qemu_8.2.0_ub/build/tests/unit/test-ub-async-load
 vendor/qemu_8.2.0_ub/build/tests/unit/test-ub-obmm-remote-model
 vendor/qemu_8.2.0_ub/build/tests/unit/test-ub-obmm-remote
 ```
 
-结果是 SCC 7/7、remote model 7/7、P1 backend 6/6，共 20/20；macOS build 和
+结果是 coroutine scheduler 7/7、remote model 7/7、P1 backend 6/6，共 20/20；macOS build 和
 `n4-910c` ARM64 Linux native build 都通过。
 
-这里必须明确限制：`test-ub-scc` 没有实例化 `CPUARMState`，所以它不直接执行
-`HELPER(obmm_scc_remote_load)`、TB boundary 或 `HLT #0x5343`。它证明 event/PLT model，
+这里必须明确限制：`test-ub-async-load` 没有实例化 `CPUARMState`，所以它不直接执行
+`HELPER(async_load_remote_load)`、TB boundary 或 `HLT #0x5343`。它证明 event/PLT model，
 不能单独证明“upcall 只改 PC”或“完整 register image 已恢复”；后两项当前主要由 L1
 源码 contract 和 L3 real guest 组合覆盖。
 
@@ -611,27 +615,27 @@ vendor/qemu_8.2.0_ub/build/tests/unit/test-ub-obmm-remote
 旧 r8 是两端运行同一种 workload 的对称 smoke。它能证明 ABI v2 的普通 load/upcall
 链路可运行，但没有证明“nodeA 的程序写入 export，nodeB 的两个 coroutine 从同一
 export 读到这些值”，也没有逐事件证明第二个 coroutine 在第一个 load 完成前实际发出
-自己的 `LDR`。因此 r8 降级为历史 smoke，不再作为 P2B 功能验收依据。
+自己的 `LDR`。因此 r8 降级为历史 smoke，不再作为 async load 功能验收依据。
 
 当前验收入口仍是 `guest-linux/aarch64/scripts/run_ub_obmm_eval.sh`，但使用专用
-`--p2b-producer-consumer` 角色模式：
+`--async-load-producer-consumer` 角色模式：
 
 | 角色 | 行为 |
 |---|---|
 | nodeA / program A | export 2 MiB；在 `0x1000`、`0x2000` 写入两个 seed 派生的 64-bit 值；发布 `export_mem_id` 后保持 mapping 存活 |
-| nodeB / program B | lookup nodeA 的 export，import/map；内置 guest EL0 scheduler core 和两个 stackful coroutine |
+| nodeB / program B | lookup nodeA 的 export，import/map；内置 guest EL0 coroutine scheduler 和两个 stackful coroutine |
 | coroutine 0 | 普通 `LDR [import+0x1000]`，验证值 0 |
 | coroutine 1 | 普通 `LDR [import+0x2000]`，验证值 1 |
 
-![P2B 2-node producer/consumer 验收时序](p2b-2node-producer-consumer-validation.svg)
+![async load 2-node producer/consumer 验收时序](async-load-2node-producer-consumer-validation.svg)
 
 r15 使用的 correctness 参数：
 
 | 参数 | 值 |
 |---|---|
 | topology | 2-node；每 guest `-smp 2 -m 2G` |
-| scenario | `scenarios/mvp_2host_p2b_remote_10ms.yaml` |
-| mode | `scheduler-core`；nodeB 2 个 EL0 coroutine；0 extra vCPU |
+| scenario | `scenarios/mvp_2host_async_load_remote_10ms.yaml` |
+| mode | `async-load`；nodeB 2 个 EL0 coroutine；0 extra vCPU |
 | data plane | 每 coroutine 一次 8-byte ordinary scalar `LDR`；`lookahead=0`；`--verify` |
 | producer | nodeA；两个 offset、两个不同的确定值；seed 29 |
 | remote model | fixed 10 ms、无 jitter/drop/error/duplicate；queue depth 64 |
@@ -668,7 +672,7 @@ resume c1 → c1 LDR retire, actual == nodeA value1
 | direct upcalls / no-ready synchronous completion | 2 / 2 |
 | QEMU context saves/restores/switches/bytes | 0 / 0 / 0 / 0 |
 | causally proven blocked-load switches | 1 |
-| final SCC / backend pending | 0 / 0 |
+| final coroutine scheduler / backend pending | 0 / 0 |
 | trace dropped / QEMU remaining | 0 / 0 |
 | terminal status | pass |
 
@@ -678,13 +682,13 @@ EL0 trampoline；两个 COMPLETE 在所有 coroutine 均为 `WAIT_REMOTE` 时由
 context save。正确不变量是 `el0_context_saves == direct_el0_upcalls`，不是 save 数等于
 PENDING+COMPLETE。
 
-### 9.4 L4：machine-readable P2B phase gate 检查什么
+### 9.4 L4：machine-readable async load phase gate 检查什么
 
 `crates/sim-cli/src/obmm_remote.rs::validate_phase_evidence()` 不相信 runner 的一个
-`status=pass`，而是重新解析完整 evidence。P2B producer/consumer gate 检查：
+`status=pass`，而是重新解析完整 evidence。async load producer/consumer gate 检查：
 
 - 恰好一个 nodeA producer 和一个 nodeB consumer；nodeA `writes==coroutines>=2`；
-- `OBMM_P2B_EXPORT.export_mem_id`、nodeB import 的 `source_export_mem_id` 和 terminal
+- `OBMM_async load_EXPORT.export_mem_id`、nodeB import 的 `source_export_mem_id` 和 terminal
   summary 三者一致；
 - 对每个 coroutine，producer write、context ID、LDR issue、PENDING、COMPLETE、resume、
   LDR retire 和 coroutine summary 必须各出现一次；
@@ -693,7 +697,7 @@ PENDING+COMPLETE。
   `resume(c1)` 而 c1 未真正执行 load 不算通过；
 - `pending==complete==coroutines`、fault=0、EL0 save/restore/switch 非零，且
   `save==direct_upcalls`；
-- QEMU context save/restore/switch/bytes 全为 0；SCC/backend final pending 全为 0；
+- QEMU context save/restore/switch/bytes 全为 0；async-load/backend final pending 全为 0；
   `trace_dropped=0`、backend `drained=1`、`qemu_destroyed=1`；
 - scenario、model manifest、QEMU、kernel 和 initramfs hash 必须与 run evidence 绑定。
 
@@ -730,9 +734,10 @@ contract `fnv1a64:e0b3f5ef7cc0da5c`。任何一个产物变化都不能直接继
 5. **更一般的 overlap。** r15 已严格证明至少一个“c0 pending 期间 c1 发出 LDR”的
    窗口；它没有证明任意 coroutine 数、任意 latency 或连续工作负载下都能保持相同
    overlap，也不是 throughput/break-even 证据；
-6. **性能结论。** P3 的新 7-seed acceptance 和 4/8-node 定向 scale-out 已完成；
-   4,942-case campaign 尚未完成。因此可以发布当前基准点结果，但不能发布完整
-   latency/compute/jitter/failure break-even 结论。
+6. **性能结论。** P3 的新 7-seed acceptance、4/8-node 定向 scale-out、2,240-case
+   coarse policy 和 1,960-case fine formal boundary 已完成。当前可以发布精确
+   measured bucket 和 70 个正式边界 endpoint；4,942-case campaign 仍暂停，因此
+   不能发布完整 jitter/tail/failure/range break-even 结论。
 
 ### 9.6 远端 E2E 产生的实现约束
 
@@ -752,20 +757,21 @@ contract `fnv1a64:e0b3f5ef7cc0da5c`。任何一个产物变化都不能直接继
 
 ## 10. 旧实现与证据处理
 
-旧 QEMU-internal SCC 源码和测试只能作为对照/迁移输入。当前证据规则是：
+旧 QEMU-internal coroutine scheduler 源码和测试只能作为对照/迁移输入。当前证据规则是：
 
-- P2B 状态是 `ABI v2 2-node producer/consumer functional acceptance passed`；
-- 旧 `out/obmm-remote-load/gates/p2b.json` 不再代表目标 P2B；
-- 旧 `S3-p2b-demand` 性能数字标记为 `qemu-internal-scc legacy`；
+- async load 状态是 `ABI v2 2-node producer/consumer functional acceptance passed`；
+- 旧 `out/obmm-remote-load/gates/p2b.json` 不再代表目标 async load；
+- 旧 `S3-async-load-demand` 性能数字标记为 legacy QEMU-owned scheduler evidence；
 - P3 formal acceptance 现已用 ABI v2 新证据达到 49/49；
 - 新 2-node gate、P3 acceptance 与 4/8-node scale-out 均使用 ABI v2、EL0 counters
   和当前 QEMU binary hash，未拼接旧运行；
-- 4,942-case full matrix 仍是独立未完成项。
+- coarse policy 2,240/2,240 与 fine formal boundary 1,960/1,960 已形成独立正式证据；
+- 4,942-case full matrix 仍是按要求暂停的独立未完成项。
 
 ## 11. 实现顺序
 
 1. 冻结 UAPI v2 event/context/resume ABI；
-2. 将 QEMU SCC model 缩减为 PLT + event，不再拥有 context/scheduler；
+2. 将 QEMU async-load model 缩减为 PLT + event，不再拥有 context/scheduler；
 3. 实现 direct EL0 upcall entry registration/delivery；
 4. 实现 `HLT #0x5343` context install helper；
 5. 实现 EL0 full-context save entry assembly 和 C scheduler；
@@ -773,7 +779,10 @@ contract `fnv1a64:e0b3f5ef7cc0da5c`。任何一个产物变化都不能直接继
 7. 更新 unit/contract tests；
 8. 在远端运行 2-node producer/consumer guest gate（已完成）。
 
-P3 的 2-node correctness/acceptance 与 4/8-node 定向 scale-out 已完成，结果见
-[2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。下一步执行
-完整 4,942-case matrix。P3 是整体方案的必做阶段，但不作为 P2B 2-node 功能验收的
-退出条件。
+P3 的 2-node correctness/acceptance、4/8-node 定向 scale-out、coarse policy 与
+fine formal boundary 已完成，结果见
+[2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)和
+[运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。下一步先完成 runtime
+policy loader、quiescent switching、在线 telemetry 和 native coroutine scheduler 正式测量；完整
+4,942-case matrix 只在收到明确恢复指令后续跑。P3 是整体方案的必做阶段，但不作为
+async load 2-node 功能验收的退出条件。

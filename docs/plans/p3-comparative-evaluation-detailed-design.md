@@ -1,6 +1,6 @@
 # P3：OBMM 远端 Load 路径对比评估详细设计
 
-> 状态：评估器已实现；P2B ABI v2 的 2-node producer/consumer 功能验收、P3
+> 状态：评估器已实现；async load ABI v2 的 2-node producer/consumer 功能验收、P3
 > 2-node 49-case formal acceptance、4/8-node 定向 scale-out 和 2,240-case 7-seed
 > coarse runtime policy 均已通过；1,960-case fine-grained formal boundary 也已通过。
 > 4,942-case full sensitivity matrix 保持安全暂停，跨 jitter/failure/range/topology 的
@@ -10,26 +10,26 @@
 >
 > 前置阶段：[P0](p0-baseline-latency-model-detailed-design.md)、
 > [P1](p1-split-phase-backend-detailed-design.md)、
-> [P2A](p2a-submit-await-detailed-design.md)、
-> [P2B](p2b-scheduler-core-detailed-design.md)、
+> [submit/await](submit-await-detailed-design.md)、
+> [async load](async-load-coroutine-scheduler-detailed-design.md)、
 > [P4](p4-userfaultfd-baseline-detailed-design.md)
 >
 > 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 >
 > 性能结果：[2026-08-13 P3 ABI v2 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)
 >
-> 运行时选择表：[2026-08-17 sync/P2A/P2B policy](2026-08-17-obmm-runtime-policy-selection.md)
+> 运行时选择表：[2026-08-17 sync、submit/await、async load policy](2026-08-17-obmm-runtime-policy-selection.md)
 
 ## 1. 目标和退出结论
 
 P3 分别回答三个独立问题，不评选总冠军：
 
 1. split-phase 和 context switch 能隐藏多少 remote wait；
-2. P2A 的 pre-submit/lookahead 比 P2B demand-pending 多带来多少收益；
-3. 用户态显式 API、页故障透明性和自定义 scheduler core 分别付出什么成本。
+2. submit/await 的 pre-submit/lookahead 比 async load demand-pending 多带来多少收益；
+3. 用户态显式 API、页故障透明性和自定义 coroutine scheduler 分别付出什么成本。
 
 所有结论必须在相同 payload、logical operation、延迟/failure 序列和统计规则下产生。
-scalar 和 page-range 是不同实验带，不能把 8-byte P2B 与 4-KiB `userfaultfd` 的结果
+scalar 和 page-range 是不同实验带，不能把 8-byte async load 与 4-KiB `userfaultfd` 的结果
 放在同一吞吐柱上直接排名。
 
 ![P3 的 scalar、range 和 transparency 三个比较带](p3-comparison-bands.svg)
@@ -40,8 +40,8 @@ P3 只在以下 gate 全部满足后运行正式矩阵：
 
 - P0：scenario/manifest/QEMU/report hash 一致，三种时钟分列；
 - P1：三种 sink 通过 64 in-flight、乱序、迟到和 terminal-race conformance；
-- P2A：同一 vCPU 上 A await 时 B 推进，registered destination/CQ generation-safe；
-- P2B：普通 `LDR` 只发出一次，pending 时原 load 不退休；QEMU direct upcall 到
+- submit/await：同一 vCPU 上 A await 时 B 推进，registered destination/CQ generation-safe；
+- async load：普通 `LDR` 只发出一次，pending 时原 load 不退休；QEMU direct upcall 到
   guest EL0，由 EL0 保存/选择/patch context，resume 时精确安装；
 - P4：标准 userfaultfd feature probe、page fill、failure fail-closed 已通过；
 - 所有路径与 sync oracle 的 payload/checksum 一致。
@@ -50,11 +50,11 @@ P3 只在以下 gate 全部满足后运行正式矩阵：
 生成性能结论。
 
 截至 2026-08-20，ABI v2 已使用新 run ID 完成 2-node 49-case formal acceptance、
-P2A demand 与 P2B demand 的 4/8-node 7-seed 定向 scale-out，以及覆盖 80 个
+submit/await demand 与 async load demand 的 4/8-node 7-seed 定向 scale-out，以及覆盖 80 个
 latency/compute/coroutine bucket 的 2,240-case 7-seed coarse policy。细粒度增量矩阵
 又覆盖 224 个 3-seed screening/tracing bucket，从 35 条相邻 latency winner 翻转中
 选择 70 个 endpoint，完成 1,960-case 7-seed formal boundary。旧 ABI v1
-`S3-p2b-demand` raw rows 没有追认或拼接。4,942-case full matrix 继续负责补齐
+`S3-async-load-demand` raw rows 没有追认或拼接。4,942-case full matrix 继续负责补齐
 jitter/failure/range 和更完整的 4/8-node sensitivity；已测 endpoint 不替代该矩阵。
 
 ## 3. 三个 canonical 比较带
@@ -64,33 +64,33 @@ jitter/failure/range 和更完整的 4/8-node sensitivity；已测 endpoint 不�
 | case | payload | issue point | suspension owner | 要回答的问题 |
 |---|---:|---|---|---|
 | `S0-sync` | 8 B | demand `LDR` | 无，vCPU stall | 同步参考 |
-| `S1-p2a-demand` | 8 B | 消费点前立即 submit | EL0 runtime | 仅 split/context-switch 收益 |
-| `S2-p2a-lookahead` | 8 B | 提前 K 个 logical ops submit | EL0 runtime | software schedule-ahead 增益 |
-| `S3-p2b-demand` | 8 B | 普通 `LDR` remote miss | scheduler core | 透明 scalar load 的成本/收益 |
+| `S1-submit-await-demand` | 8 B | 消费点前立即 submit | EL0 runtime | 仅 split/context-switch 收益 |
+| `S2-submit-await-lookahead` | 8 B | 提前 K 个 logical ops submit | EL0 runtime | software schedule-ahead 增益 |
+| `S3-async-load-demand` | 8 B | 普通 `LDR` remote miss | guest EL0 coroutine scheduler | 透明 scalar load 的成本/收益 |
 
-P2A demand case 必须令 `lookahead=0`；否则 P2A 同时获得提前发请求和切换的双重优势，
-无法与 P2B demand-pending 隔离比较。
+submit/await demand case 必须令 `lookahead=0`；否则 submit/await 同时获得提前发请求和切换的双重优势，
+无法与 async load demand-pending 隔离比较。
 
 ### 3.2 Band R：range/page transfer
 
 | case | payload | issue/fault point | 粒度 | 要回答的问题 |
 |---|---:|---|---:|---|
 | `R0-sync-range` | 4 KiB | 显式同步 remote read | range | 页 payload 参考 |
-| `R1-p2a-range` | 4 KiB | submit/await | range | 显式异步 range 的 overlap |
+| `R1-submit-await-range` | 4 KiB | submit/await | range | 显式异步 range 的 overlap |
 | `R2-userfaultfd` | 4 KiB | shadow mapping first touch | page | 标准 OS 透明路径代价 |
 
-P2B v2 不进入 Band R，因为其白名单只有 1/2/4/8-byte scalar load。`userfaultfd` 不进入
+async load v2 不进入 Band R，因为其白名单只有 1/2/4/8-byte scalar load。`userfaultfd` 不进入
 Band S，因为 Linux userfaultfd 解决的是页缺失，不是单条 scalar load completion。
 
 ### 3.3 Band T：透明性与资源成本
 
 Band T 不把不同粒度压成单一性能分数，而是报告：
 
-| 维度 | P2A | P2B | P4 |
+| 维度 | submit/await | async load | P4 |
 |---|---|---|---|
 | hot-path 源码接口 | submit/test/await | 普通 scalar load | 普通 shadow-range load |
 | machine-code suspension point | runtime `await` | 未退休 `LDR` | page fault / kernel block |
-| 调度执行者 | 同一 application core 的 EL0 runtime | guest EL0 coroutine scheduler core（独立 scheduler stack） | dedicated userspace handler thread |
+| 调度执行者 | 同一 application core 的 EL0 runtime | guest EL0 coroutine scheduler（独立 scheduler stack） | dedicated userspace handler thread |
 | 额外 core/vCPU | 无硬要求 | 无；不是 helper vCPU | 一个 handler vCPU |
 | completion 粒度 | 1 B–64 KiB | 1/2/4/8 B | 4 KiB v1 |
 | 软件/硬件改动面 | app/runtime/UAPI | 自定义 core/QEMU/控制面 | 标准 Linux UFFD + app handler |
@@ -122,7 +122,7 @@ outcome。P4 的 4-KiB page 用该页 base offset 作为 identity；同页内多
 | outcome | success；error；drop→timeout；duplicate/late |
 | coroutines | 1、2、4、8、32 |
 | in-flight | 1、8、16、32、64 |
-| P2A lookahead | 0、1、4、16、64 logical ops |
+| submit/await lookahead | 0、1、4、16、64 logical ops |
 | useful compute | 0、1、5、10、50、100、1000 us/op |
 | pattern | sequential、random、dependent、mixed local/remote |
 | access size | Band S 8 B；Band R 4 KiB；扩展结果单列 |
@@ -140,7 +140,7 @@ scenarios/experiments/obmm_remote_load_eval_v1.yaml
 
 1. 同一 band 的 mode 使用相同 topology、QEMU build、guest image、CPU pinning、payload、
    operation list、model manifest 和 warmup policy；
-2. P2A `demand` 与 P2B `demand` 均从真实消费点开始计时；P2A `lookahead` 单独列；
+2. submit/await `demand` 与 async load `demand` 均从真实消费点开始计时；submit/await `lookahead` 单独列；
 3. P1 v1 sink copy 包含在 end-to-end 时间中，并单列 copy bytes/ns；
 4. P4 handler 使用的额外 vCPU、CPU time 和 staging copy 必须报告，不能当免费资源；
 5. scalar case 禁止 transport batching；range case 的 chunking 由 P1 统一实现；
@@ -174,7 +174,7 @@ T_makespan    全部 logical ops 完成时间
 overlap_hidden_ns = max(0, T_sync_makespan - T_mode_makespan)
 overlap_efficiency = overlap_hidden_ns / min(total_model_wait_ns,
                                              available_useful_work_ns)
-schedule_ahead_gain = T_p2a_demand - T_p2a_lookahead
+schedule_ahead_gain = T_submit-await_demand - T_submit-await_lookahead
 mechanism_gain = T_sync - T_mode_demand
 core_efficiency = useful_work_ns / sum(application_and_helper_cpu_ns)
 ```
@@ -187,19 +187,19 @@ core_efficiency = useful_work_ns / sum(application_and_helper_cpu_ns)
 - model latency与 host wall elapsed 分列；
 - requests/s、bytes/s、checksum、success/error/timeout counts；
 - ready/wait/idle 时间和 no-ready 次数；
-- P2A submit/switch/CQ/lookahead；P2B PLT/upcall、EL0 save/choose/patch/restore；P4 fault/poll/read/
+- submit/await submit/switch/CQ/lookahead；async load PLT/upcall、EL0 save/choose/patch/restore；P4 fault/poll/read/
   `UFFDIO_COPY`/wake 和 handler CPU；
 - P1 pending depth、capacity、sink-copy、late/duplicate；
-- application vCPU、EL0 scheduler runtime、UFFD handler vCPU 的资源占用；P2B 的 QEMU
+- application vCPU、EL0 scheduler runtime、UFFD handler vCPU 的资源占用；async load 的 QEMU
   context-save/restore/switch counters 必须为 0。
 
-### 7.3 sync、P2A、P2B 共存与运行时策略
+### 7.3 sync、submit/await、async load 共存与运行时策略
 
 三条 scalar 路径必须保持可共存：
 
 - sync 作为低延迟、低并发和未知策略区域的保守路径；
-- P2A 作为应用允许显式 submit/await 和 schedule-ahead 时的候选路径；
-- P2B 作为普通 `LDR` 透明语义下，由 guest EL0 scheduler 隐藏远端等待的候选路径。
+- submit/await 作为应用允许显式 submit/await 和 schedule-ahead 时的候选路径；
+- async load 作为普通 `LDR` 透明语义下，由 guest EL0 scheduler 隐藏远端等待的候选路径。
 
 策略粒度是 mapping/session phase。切换只能发生在 pending load 已清空的 quiescent
 point，禁止逐 load 抖动切换。每个 `(topology, latency, compute, coroutines, pattern,
@@ -207,11 +207,11 @@ jitter)` bucket 需要同时输出：
 
 ```text
 sync makespan / load-to-resume p99
-best P2A config + makespan / load-to-resume p99
-P2B makespan / load-to-resume p99
+best submit/await config + makespan / load-to-resume p99
+async load makespan / load-to-resume p99
 measured fastest path
-transparent-policy path: sync | P2B
-explicit-policy path: sync | P2A | P2B
+transparent-policy path: sync | async load
+explicit-policy path: sync | submit/await | async load
 paired-seed gain interval and positive-seed count
 decision status and rejection reason
 ```
@@ -274,13 +274,13 @@ operation count 和 checksum。正式统计使用 7 个 seed；报告 median-of-
 seed 间 min/max 和 bootstrap 95% CI，不把单次最好结果当结论。
 
 EL0 scheduler 的“等待下一个硬件事件”超时与单个 remote load 的 architected deadline
-必须解耦：单 load deadline 由 SCC/QEMU 产生 `COMPLETE` 或 `FAULT` 事件；Linux
+必须解耦：单 load deadline 由 coroutine scheduler/QEMU 产生 `COMPLETE` 或 `FAULT` 事件；Linux
 `GET_EVENT(WAIT)` 仅是有界 host watchdog，不能在 architected deadline 边界自行把仍在
 QEMU virtual-time 中推进的请求判成 load timeout。当前 host watchdog 为 10 秒；只有
-SCC/QEMU 交付的 `FAULT(timeout)` 才计入 load timeout，host watchdog 超时只让当前
+coroutine scheduler/QEMU 交付的 `FAULT(timeout)` 才计入 load timeout，host watchdog 超时只让当前
 attempt fail-fast 并保留证据，由 evaluator 使用新 guest run ID 重试。
 
-QEMU 的 SCC status MMIO read 与 main-loop BH 都推进 ready completion 和 deadline。
+QEMU 的 coroutine scheduler status MMIO read 与 main-loop BH 都推进 ready completion 和 deadline。
 这是必要的进度保证：guest EL0 scheduler 在 `GET_EVENT(WAIT)` 中持续轮询时，繁忙的
 MTTCG vCPU 不能饿死 main-loop completion delivery，否则会出现 backend 已 drain、PLT
 仍 pending 的假死。
@@ -292,8 +292,8 @@ MTTCG vCPU 不能饿死 main-loop completion delivery，否则会出现 backend 
 - pending/page/context 未 drain；
 - trace dropped、counter overflow、clock regression；
 - host elapsed 相对同组 median 偏离超过预先配置阈值且有 host-load 证据；
-- P2A/P2B/P4 使用了不属于该 canonical case 的 lookahead、batch、helper vCPU 或 cache state；
-- P2B 的 EL0 upcall/save/restore 未形成一一对应，或出现非零 QEMU scheduler/context counter。
+- submit/await、async load、P4 使用了不属于该 canonical case 的 lookahead、batch、helper vCPU 或 cache state；
+- async load 的 EL0 upcall/save/restore 未形成一一对应，或出现非零 QEMU scheduler/context counter。
 
 invalid case 保留 raw evidence，但不参与聚合。重跑必须生成新 run ID，不能覆盖。
 
@@ -324,7 +324,7 @@ run-manifest.json          hashes、build、topology、expanded cases、order
 raw/<case>-<seed>.jsonl    per-phase/per-request sampled records
 raw-attempts/*.jsonl       未晋升的失败 attempt；不可覆盖
 summary/<band>.csv         canonical metrics 与 CI
-summary/policy.csv         sync/P2A/P2B measured and gated decisions
+summary/policy.csv         sync、submit/await、async load measured and gated decisions
 summary/policy.json        runtime-consumable policy buckets and thresholds
 report.md                  只引用有效 case 的结论和限制
 validation.json            gate、checksum、drain、invalid reasons
@@ -333,7 +333,7 @@ validation.json            gate、checksum、drain、invalid reasons
 guest 单行输出：
 
 ```text
-OBMM_EVAL_SUMMARY schema=1 band=scalar mode=p2b-demand seed=1 \
+OBMM_EVAL_SUMMARY schema=1 band=scalar mode=async-load seed=1 \
 operations=10000 checksum=... failures=0 timeouts=0 guest_ns_p50=... \
 makespan_ns=... model_wait_ns=... useful_work_ns=... status=pass
 ```
@@ -361,8 +361,8 @@ drain；无残留 QEMU process。
 
 P3 退出必须形成以下证据，而不是只产出曲线：
 
-1. Band S 分离 demand mechanism gain 与 P2A schedule-ahead gain；
-2. Band R 在同一 4-KiB payload 上比较 P2A 与标准 userfaultfd；
+1. Band S 分离 demand mechanism gain 与 submit/await schedule-ahead gain；
+2. Band R 在同一 4-KiB payload 上比较 submit/await 与标准 userfaultfd；
 3. Band T 显式计算 helper vCPU、EL0 scheduler、软件改造和自定义 core mechanism 成本；
 4. 每个结论能追溯到 hashes、raw rows、gate 和 valid seed；
 5. 对“何种 L/W/并发下收益转正”给出 break-even 区间，未跨 gate 的结果不外推。

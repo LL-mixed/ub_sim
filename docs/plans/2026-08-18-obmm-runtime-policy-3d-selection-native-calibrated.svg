@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1050" viewBox="0 0 1500 1050" role="img" aria-labelledby="title description">
   <title id="title">OBMM remote-load native-calibrated L C W runtime policy prior</title>
-  <desc id="description">Eight latency layers show the calibrated sync, P2B, and adaptive P2A/P2B recommendations. The chart assumes at least one runnable coroutine. An empty ready queue overrides every point to the sync fast path.</desc>
+  <desc id="description">Eight latency layers show the calibrated sync, async load, and adaptive submit/await 与 async load recommendations. The chart assumes at least one runnable coroutine. An empty ready queue overrides every point to the sync fast path.</desc>
   <defs>
     <style>
       .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
@@ -14,10 +14,10 @@
       .grid { stroke: #cbd5e1; stroke-width: 0.9; fill: none; }
       .layer-guide { stroke: #94a3b8; stroke-width: 1; stroke-dasharray: 4 5; fill: none; }
       .sync { fill: #86efac; stroke: #166534; stroke-width: 1.45; }
-      .p2a { fill: #fcd34d; stroke: #92400e; stroke-width: 1.45; }
-      .p2b { fill: #93c5fd; stroke: #1e40af; stroke-width: 1.45; }
-      .probe { fill: url(#sync-p2b); stroke: #475569; stroke-width: 1.45; }
-      .adaptive { fill: url(#p2a-p2b); stroke: #475569; stroke-width: 1.45; }
+      .submit-await { fill: #fcd34d; stroke: #92400e; stroke-width: 1.45; }
+      .async-load { fill: #93c5fd; stroke: #1e40af; stroke-width: 1.45; }
+      .probe { fill: url(#sync-async-load); stroke: #475569; stroke-width: 1.45; }
+      .adaptive { fill: url(#submit-await-async-load); stroke: #475569; stroke-width: 1.45; }
       .fine-ring { fill: none; stroke: #dc2626; stroke-width: 3; }
       .note { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.25; }
       .prior-note { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.25; }
@@ -30,13 +30,13 @@
       <path d="M 0 0 L 8 4 L 0 8 Z" fill="#334155"/>
     </marker>
 
-    <linearGradient id="sync-p2b" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="sync-async-load" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#86efac"/>
       <stop offset="49.9%" stop-color="#86efac"/>
       <stop offset="50%" stop-color="#93c5fd"/>
       <stop offset="100%" stop-color="#93c5fd"/>
     </linearGradient>
-    <linearGradient id="p2a-p2b" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="submit-await-async-load" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#fcd34d"/>
       <stop offset="49.9%" stop-color="#fcd34d"/>
       <stop offset="50%" stop-color="#93c5fd"/>
@@ -64,11 +64,11 @@
       <circle cx="-276" cy="60" r="8" class="probe"/><circle cx="-184" cy="80" r="8" class="probe"/><circle cx="-92" cy="100" r="8" class="probe"/><circle cx="0" cy="120" r="8" class="probe"/>
     </g>
 
-    <g id="grid-p2b">
-      <circle cx="0" cy="0" r="8" class="p2b"/><circle cx="92" cy="20" r="8" class="p2b"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
-      <circle cx="-92" cy="20" r="8" class="p2b"/><circle cx="0" cy="40" r="8" class="p2b"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
-      <circle cx="-184" cy="40" r="8" class="p2b"/><circle cx="-92" cy="60" r="8" class="p2b"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
-      <circle cx="-276" cy="60" r="8" class="p2b"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    <g id="grid-async-load">
+      <circle cx="0" cy="0" r="8" class="async-load"/><circle cx="92" cy="20" r="8" class="async-load"/><circle cx="184" cy="40" r="8" class="async-load"/><circle cx="276" cy="60" r="8" class="async-load"/>
+      <circle cx="-92" cy="20" r="8" class="async-load"/><circle cx="0" cy="40" r="8" class="async-load"/><circle cx="92" cy="60" r="8" class="async-load"/><circle cx="184" cy="80" r="8" class="async-load"/>
+      <circle cx="-184" cy="40" r="8" class="async-load"/><circle cx="-92" cy="60" r="8" class="async-load"/><circle cx="0" cy="80" r="8" class="async-load"/><circle cx="92" cy="100" r="8" class="async-load"/>
+      <circle cx="-276" cy="60" r="8" class="async-load"/><circle cx="-184" cy="80" r="8" class="async-load"/><circle cx="-92" cy="100" r="8" class="async-load"/><circle cx="0" cy="120" r="8" class="async-load"/>
     </g>
   </defs>
 
@@ -101,36 +101,36 @@
   <!-- Native-calibrated point recommendations. -->
   <use href="#grid-sync" transform="translate(420 780)"/>
   <use href="#grid-sync" transform="translate(420 690)"/>
-  <use href="#grid-p2b" transform="translate(420 600)"/>
+  <use href="#grid-async-load" transform="translate(420 600)"/>
 
   <g transform="translate(420 510)">
-    <use href="#grid-p2b"/>
+    <use href="#grid-async-load"/>
     <circle cx="184" cy="40" r="12" class="fine-ring"/>
   </g>
 
-  <use href="#grid-p2b" transform="translate(420 420)"/>
+  <use href="#grid-async-load" transform="translate(420 420)"/>
 
   <g transform="translate(420 330)">
-    <circle cx="0" cy="0" r="8" class="p2b"/><circle cx="92" cy="20" r="8" class="p2b"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
-    <circle cx="-92" cy="20" r="8" class="adaptive"/><circle cx="0" cy="40" r="8" class="p2b"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
-    <circle cx="-184" cy="40" r="8" class="p2b"/><circle cx="-92" cy="60" r="8" class="p2b"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
-    <circle cx="-276" cy="60" r="8" class="p2b"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    <circle cx="0" cy="0" r="8" class="async-load"/><circle cx="92" cy="20" r="8" class="async-load"/><circle cx="184" cy="40" r="8" class="async-load"/><circle cx="276" cy="60" r="8" class="async-load"/>
+    <circle cx="-92" cy="20" r="8" class="adaptive"/><circle cx="0" cy="40" r="8" class="async-load"/><circle cx="92" cy="60" r="8" class="async-load"/><circle cx="184" cy="80" r="8" class="async-load"/>
+    <circle cx="-184" cy="40" r="8" class="async-load"/><circle cx="-92" cy="60" r="8" class="async-load"/><circle cx="0" cy="80" r="8" class="async-load"/><circle cx="92" cy="100" r="8" class="async-load"/>
+    <circle cx="-276" cy="60" r="8" class="async-load"/><circle cx="-184" cy="80" r="8" class="async-load"/><circle cx="-92" cy="100" r="8" class="async-load"/><circle cx="0" cy="120" r="8" class="async-load"/>
     <circle cx="-92" cy="20" r="12" class="fine-ring"/>
     <circle cx="92" cy="20" r="12" class="fine-ring"/>
   </g>
 
   <g transform="translate(420 240)">
-    <use href="#grid-p2b"/>
+    <use href="#grid-async-load"/>
     <circle cx="-276" cy="60" r="12" class="fine-ring"/>
     <circle cx="92" cy="60" r="12" class="fine-ring"/>
   </g>
 
   <g transform="translate(420 150)">
-    <!-- C=2: every W is adaptive P2A/P2B. -->
-    <circle cx="0" cy="0" r="8" class="adaptive"/><circle cx="92" cy="20" r="8" class="adaptive"/><circle cx="184" cy="40" r="8" class="p2b"/><circle cx="276" cy="60" r="8" class="p2b"/>
-    <circle cx="-92" cy="20" r="8" class="adaptive"/><circle cx="0" cy="40" r="8" class="adaptive"/><circle cx="92" cy="60" r="8" class="p2b"/><circle cx="184" cy="80" r="8" class="p2b"/>
-    <circle cx="-184" cy="40" r="8" class="adaptive"/><circle cx="-92" cy="60" r="8" class="adaptive"/><circle cx="0" cy="80" r="8" class="p2b"/><circle cx="92" cy="100" r="8" class="p2b"/>
-    <circle cx="-276" cy="60" r="8" class="adaptive"/><circle cx="-184" cy="80" r="8" class="p2b"/><circle cx="-92" cy="100" r="8" class="p2b"/><circle cx="0" cy="120" r="8" class="p2b"/>
+    <!-- C=2: every W is adaptive submit/await 与 async load. -->
+    <circle cx="0" cy="0" r="8" class="adaptive"/><circle cx="92" cy="20" r="8" class="adaptive"/><circle cx="184" cy="40" r="8" class="async-load"/><circle cx="276" cy="60" r="8" class="async-load"/>
+    <circle cx="-92" cy="20" r="8" class="adaptive"/><circle cx="0" cy="40" r="8" class="adaptive"/><circle cx="92" cy="60" r="8" class="async-load"/><circle cx="184" cy="80" r="8" class="async-load"/>
+    <circle cx="-184" cy="40" r="8" class="adaptive"/><circle cx="-92" cy="60" r="8" class="adaptive"/><circle cx="0" cy="80" r="8" class="async-load"/><circle cx="92" cy="100" r="8" class="async-load"/>
+    <circle cx="-276" cy="60" r="8" class="adaptive"/><circle cx="-184" cy="80" r="8" class="async-load"/><circle cx="-92" cy="100" r="8" class="async-load"/><circle cx="0" cy="120" r="8" class="async-load"/>
   </g>
 
   <!-- Layer labels align on the right guide. -->
@@ -160,11 +160,11 @@
   <rect x="825" y="105" width="620" height="175" class="prior-note"/>
   <text x="853" y="138" class="label">Native calibration</text>
   <text x="853" y="168" class="body">Measured: O_envelope = 0.415--0.431 µs/load</text>
-  <text x="853" y="194" class="body">Provisional: O_budget = 2 µs/load · static P2B threshold L≥10 µs</text>
+  <text x="853" y="194" class="body">Provisional: O_budget = 2 µs/load · static async load threshold L≥10 µs</text>
   <circle cx="858" cy="229" r="8" class="sync"/><text x="878" y="235" class="small">sync</text>
-  <circle cx="948" cy="229" r="8" class="p2b"/><text x="968" y="235" class="small">P2B</text>
-  <circle cx="1037" cy="229" r="8" class="probe"/><text x="1057" y="235" class="small">sync/P2B probe</text>
-  <circle cx="1215" cy="229" r="8" class="adaptive"/><text x="1235" y="235" class="small">P2A/P2B select</text>
+  <circle cx="948" cy="229" r="8" class="async-load"/><text x="968" y="235" class="small">async load</text>
+  <circle cx="1037" cy="229" r="8" class="probe"/><text x="1057" y="235" class="small">sync/async load probe</text>
+  <circle cx="1215" cy="229" r="8" class="adaptive"/><text x="1235" y="235" class="small">submit/await 与 async load select</text>
   <text x="853" y="262" class="small">Point colors are a deployment prior; they are not a native formal measured surface.</text>
 
   <rect x="825" y="305" width="620" height="190" class="override"/>
@@ -172,22 +172,22 @@
   <text x="853" y="371" class="body">runnable_count = 0  →  sync fast path at every L/C/W point</text>
   <text x="853" y="399" class="body">runnable_count &gt; 0, L≤2 µs  →  sync default</text>
   <text x="853" y="427" class="body">runnable_count &gt; 0, 2&lt;L&lt;10 µs  →  online probe</text>
-  <text x="853" y="455" class="body">runnable_count &gt; 0, L≥10 µs, H_est&gt;O_exposed  →  P2B prior</text>
-  <text x="853" y="477" class="small">Low-C + long-L + explicit interface: online P2A/P2B select.</text>
+  <text x="853" y="455" class="body">runnable_count &gt; 0, L≥10 µs, H_est&gt;O_exposed  →  async load prior</text>
+  <text x="853" y="477" class="small">Low-C + long-L + explicit interface: online submit/await 与 async load select.</text>
   <text x="853" y="491" class="small">No-switch fast path skips full save/scan/switch; completion resumes the original load.</text>
 
   <rect x="825" y="520" width="620" height="190" class="warning"/>
   <text x="853" y="554" class="label">Historical fine snapshot overlay</text>
   <circle cx="858" cy="588" r="10" class="fine-ring"/><text x="880" y="594" class="body">red ring = 2026-08-18 snapshot; no longer a publication input</text>
-  <text x="853" y="625" class="body">L30/C8/W0: QEMU sync; native calibration changes the prior to P2B</text>
-  <text x="853" y="653" class="body">L250/C2/W10: P2A · L250/C4/W0: P2B</text>
-  <text x="853" y="681" class="body">L500/C2/W1000 and L500/C8/W10: P2B</text>
+  <text x="853" y="625" class="body">L30/C8/W0: QEMU sync; native calibration changes the prior to async load</text>
+  <text x="853" y="653" class="body">L250/C2/W10: submit/await · L250/C4/W0: async load</text>
+  <text x="853" y="681" class="body">L500/C2/W1000 and L500/C8/W10: async load</text>
   <text x="853" y="700" class="small">QEMU formal boundary is complete: 1,960/1,960 pass; see the 2026-08-20 formal SVG.</text>
 
   <rect x="825" y="735" width="620" height="155" class="note"/>
   <text x="853" y="769" class="label">Reading limits</text>
-  <text x="853" y="801" class="body">Transparent ordinary LDR can choose sync/P2B only.</text>
-  <text x="853" y="829" class="body">Split yellow/blue points need native P2A/P2B A/B measurement.</text>
+  <text x="853" y="801" class="body">Transparent ordinary LDR can choose sync/async load only.</text>
+  <text x="853" y="829" class="body">Split yellow/blue points need native submit/await 与 async load A/B measurement.</text>
   <text x="853" y="857" class="body">Unhealthy, unmeasured, or undrained sessions fail closed to sync.</text>
   <text x="853" y="879" class="small">Replace O_budget and split points after real MMIO/upcall/resume and formal paired runs.</text>
 

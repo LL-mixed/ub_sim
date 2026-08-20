@@ -1,6 +1,6 @@
 # obmm_async_coroutine layout
 
-- `obmm_async_coroutine.c`: the shared P2A/P2B/P4 validation CLI and workload.
+- `obmm_async_coroutine.c`: the shared submit/await、async-load、P4 validation CLI and workload.
 - `uffd_mode.[ch]`: the P4 standard userfaultfd MISSING-mode baseline.
 - `uffd_state.[ch]`: the portable per-page generation/state machine.
 - `test_uffd_state.c`: the host-runnable state-machine unit test.
@@ -9,7 +9,7 @@
 
 The CLI owns OBMM export/import setup. `async-poll` and `async-irq` route
 split-phase reads and cooperative switches through `libs/obmm_async`.
-`scheduler-core` registers its contexts through `libs/obmm_scc`, then its data
+`async-load` registers its contexts through `libs/obmm_coroutine_scheduler`, then its data
 plane uses only ordinary aligned 1/2/4/8-byte scalar loads. All modes share the
 same access generator, payload verification, and checksum definition.
 `userfaultfd` uses an anonymous shadow range, a dedicated handler pthread on a

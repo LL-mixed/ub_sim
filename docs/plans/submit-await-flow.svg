@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1480" height="940"
      viewBox="0 0 1480 940" role="img" aria-labelledby="title desc">
-  <title id="title">P2A submit await data plane and coroutine state</title>
+  <title id="title">OBMM submit/await data plane and coroutine state</title>
   <desc id="desc">The EL0 runtime submits an explicit remote read through a
   registered SQ, switches coroutines at await, and resumes after the device
   writes the registered destination and publishes a CQ entry.</desc>
@@ -36,8 +36,8 @@
   </defs>
 
   <rect width="1480" height="940" fill="url(#bg)"/>
-  <text x="56" y="46" class="kicker">P2A · SOFTWARE-VISIBLE SPLIT PHASE</text>
-  <text x="56" y="88" class="title">submit/await：队列拥有请求，EL0 runtime 拥有协程</text>
+  <text x="56" y="46" class="kicker">submit/await · SOFTWARE-VISIBLE SPLIT PHASE</text>
+  <text x="56" y="88" class="title">队列拥有请求，EL0 runtime 拥有协程</text>
   <text x="56" y="118" class="subtitle">load 已在软件边界拆开；await 是明确 suspension point，因此可以在消费前 schedule ahead。</text>
 
   <g transform="translate(56 154)">

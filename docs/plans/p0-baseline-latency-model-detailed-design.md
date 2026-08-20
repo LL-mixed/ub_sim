@@ -112,8 +112,8 @@ operation_key = hash(
 )
 ```
 
-性能对比 workload 默认每个 logical operation 使用不同 offset，使 P2A lookahead 和
-P2B demand issue 即使顺序不同，也得到相同 operation key。重复访问同一 range 时，
+性能对比 workload 默认每个 logical operation 使用不同 offset，使 submit/await lookahead 和
+async load demand issue 即使顺序不同，也得到相同 operation key。重复访问同一 range 时，
 adapter 维护 per-range ordinal；trace 必须输出该 ordinal。
 
 从 `operation_key` 派生互不共享状态的 draw：

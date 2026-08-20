@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1480" height="880"
      viewBox="0 0 1480 880" role="img" aria-labelledby="title desc">
-  <title id="title">P2B guest EL0 coroutine state machine</title>
+  <title id="title">async load guest EL0 coroutine state machine</title>
   <desc id="desc">The guest EL0 scheduler owns coroutine lifecycle state.
   A direct upcall first saves the interrupted running context as ready. A
   pending event then moves that context to wait remote. A completion patches
@@ -54,7 +54,7 @@
   </defs>
 
   <rect width="1480" height="880" fill="url(#page-bg)"/>
-  <text x="58" y="45" class="kicker">P2B · GUEST EL0 SCHEDULER-OWNED STATE</text>
+  <text x="58" y="45" class="kicker">async load · GUEST EL0 SCHEDULER-OWNED STATE</text>
   <text x="58" y="87" class="title">Coroutine 状态机：upcall 先保存，event 再改变目标状态</text>
   <text x="58" y="118" class="subtitle">QEMU 负责 PENDING / COMPLETE / FAULT 交付和 context install；状态、队列与选择策略属于 guest EL0。</text>
 

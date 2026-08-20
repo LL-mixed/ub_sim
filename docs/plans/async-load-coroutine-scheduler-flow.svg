@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="940"
      viewBox="0 0 1500 940" role="img" aria-labelledby="title desc">
-  <title id="title">P2B direct EL0 upcall and EL0 coroutine scheduler</title>
+  <title id="title">async load direct EL0 upcall and EL0 coroutine scheduler</title>
   <desc id="desc">QEMU simulates direct EL0 pending and completion upcalls.
   Guest EL0 assembly saves coroutine context and the guest EL0 scheduler owns
   ready queues, selection, result patching and context resume.</desc>
@@ -39,7 +39,7 @@
   </defs>
 
   <rect width="1500" height="940" fill="url(#bg)"/>
-  <text x="52" y="42" class="kicker">P2B · CUSTOM DIRECT-TO-EL0 UPCALL</text>
+  <text x="52" y="42" class="kicker">async load · CUSTOM DIRECT-TO-EL0 UPCALL</text>
   <text x="52" y="84" class="title">QEMU 只交付事件；guest EL0 保存上下文、选择并恢复 coroutine</text>
   <text x="52" y="114" class="subtitle">普通 LDR 保持未退休；调度策略和 Context Store 不在 QEMU，全部属于 EL0 runtime。</text>
 
@@ -96,7 +96,7 @@
       <rect width="266" height="128" rx="13" fill="#edf5f1" stroke="#a6c9ba"/>
       <circle cx="242" cy="19" r="14" fill="#c5dfd4"/>
       <text x="242" y="24" text-anchor="middle" class="step">7</text>
-      <text x="16" y="30" class="box-title">OBMM_SCC_RESUME</text>
+      <text x="16" y="30" class="box-title">OBMM_ASYNC_LOAD_RESUME</text>
       <text x="16" y="55" class="copy">EL0: HLT #0x5343，x0=context*</text>
       <text x="16" y="77" class="copy">core 原子安装选中 context</text>
       <text x="16" y="99" class="copy">清 upcall_active，退出 TB</text>
@@ -106,7 +106,7 @@
     <text x="390" y="563" class="strong">禁止：QEMU Context Store</text>
 
     <rect x="702" y="20" width="374" height="570" rx="18" fill="#edf6f2" stroke="#a9cbbb"/>
-    <text x="722" y="54" class="lane">Guest EL0 scheduler core</text>
+    <text x="722" y="54" class="lane">Guest EL0 coroutine scheduler</text>
     <g transform="translate(722 78)">
       <rect width="334" height="122" rx="13" fill="#ffffff" stroke="#a9cbbb"/>
       <circle cx="310" cy="19" r="14" fill="#c4dfd3"/>

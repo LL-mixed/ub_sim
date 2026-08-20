@@ -1,19 +1,24 @@
-# P2B ABI v2 实现总结与源码导读
+# async load ABI v2 实现总结与源码导读
+
+> 命名说明：当前代码、CLI、UAPI 和正文统一使用 `async load` / `async-load` /
+> `async_load`。下文仍含 `p2b` 的字符串仅是改名前生成的远端 workspace、日志和
+> gate 文件原名，不属于当前接口。
 
 > 状态：ABI v2 的 2-node producer/consumer 功能目标已完成，并在 `n4-910c`
-> 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 P2B phase gate。
-> P3 ABI v2 的 2-node acceptance 与 4/8-node 定向 scale-out 已完成；4,942-case
-> full matrix 尚待完成。P3 不是本次 P2B 功能验收的未完成项
+> 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 async load phase gate。
+> P3 ABI v2 的 2-node acceptance、4/8-node 定向 scale-out、2,240-case coarse
+> policy 与 1,960-case fine formal boundary 已完成；4,942-case full matrix 按要求
+> 暂停。P3 不是本次 async load 功能验收的未完成项
 >
 > 日期：2026-08-12
 >
-> 详细设计：[P2B：普通 `LDR` + 自定义 EL0 upcall + EL0 协程调度核心](p2b-scheduler-core-detailed-design.md)
+> 详细设计：[async load：普通 `LDR` + 自定义 EL0 upcall + guest EL0 coroutine scheduler](async-load-coroutine-scheduler-detailed-design.md)
 >
-> 可视化：[P2B core mechanism 与 guest EL0 scheduler 边界](p2b-scheduler-core-flow.svg)
+> 可视化：[async load core mechanism 与 guest EL0 scheduler 边界](async-load-coroutine-scheduler-flow.svg)
 
 ## 1. 结论
 
-P2B 已按目标边界重构为：普通 AArch64 EL0 `LDR` 遇到 registered remote mapping
+async load 已按目标边界重构为：普通 AArch64 EL0 `LDR` 遇到 registered remote mapping
 且不能同步完成时，QEMU 保持原 load 未退休，只把执行流直接导向 registered EL0
 upcall entry。guest EL0 runtime 自己保存被中断 coroutine 的完整上下文、维护
 `READY/RUNNING/WAIT_REMOTE/FAULTED/DONE`、选择另一个 coroutine，并请求 core 原子
@@ -27,9 +32,9 @@ EL1 exception vector。QEMU 提供的是两项 mechanism：
 2. 执行自定义 `HLT #0x5343` 时，原子安装 EL0 选中的完整 context image。
 
 QEMU 不再拥有 coroutine Context Store、ready queue、状态机或 round-robin policy。
-这些职责现在都在 `guest-linux/aarch64/libs/obmm_scc/`。
+这些职责现在都在 `guest-linux/aarch64/libs/obmm_coroutine_scheduler/`。
 
-![P2B EL0 upcall 与 EL0 scheduler](p2b-scheduler-core-flow.svg)
+![async load EL0 upcall 与 EL0 scheduler](async-load-coroutine-scheduler-flow.svg)
 
 ## 2. Ownership 已落到代码
 
@@ -48,7 +53,7 @@ QEMU 不再拥有 coroutine Context Store、ready queue、状态机或 round-rob
 
 代码层有两个反向约束：
 
-- QEMU public SCC model 不存在 `ObmmSccArchState`、`context_create()` 或
+- QEMU public async-load model 不存在 coroutine architectural state、`context_create()` 或
   `schedule_next()`；
 - contract test 要求这些符号不得重新进入 QEMU，同时要求 guest library 必须出现
   ready/wait 状态、选择函数和 `Rt/PC` patch。
@@ -62,7 +67,7 @@ QEMU 不再拥有 coroutine Context Store、ready queue、状态机或 round-rob
 3. QEMU 分配 PLT 并通过 P1 backend 提交 remote read；
 4. QEMU enqueue `PENDING(A, token, fault_pc, Rt=X3)`；
 5. helper 在正常 `qemu_ld` 之前退出 TB，所以原 load 未执行，`X3` 和 writeback 均未提交；
-6. QEMU 保留所有 EL0 register，只令 `PC=obmm_scc_upcall_entry`；
+6. QEMU 保留所有 EL0 register，只令 `PC=obmm_coroutine_scheduler_upcall_entry`；
 7. EL0 assembly 在 A 的 stack 上保存 832-byte transient frame；
 8. assembly 切到独立 scheduler stack；
 9. EL0 C dispatcher 把 frame 复制到 A 的 Context Store，将 A 置为 `WAIT_REMOTE`；
@@ -87,10 +92,10 @@ QEMU 不再拥有 coroutine Context Store、ready queue、状态机或 round-rob
 
 文件：
 
-- `vendor/qemu_8.2.0_ub/include/hw/ub/ub_scc.h`
-- `vendor/qemu_8.2.0_ub/hw/ub/ub_scc.c`
+- `vendor/qemu_8.2.0_ub/include/hw/ub/ub_async_load.h`
+- `vendor/qemu_8.2.0_ub/hw/ub/ub_async_load.c`
 
-`ObmmScc` 现在只维护：
+`UbAsyncLoad` 只维护：
 
 - bounded PLT；
 - slot/owner/generation token；
@@ -98,9 +103,9 @@ QEMU 不再拥有 coroutine Context Store、ready queue、状态机或 round-rob
 - scalar value endian assembly；
 - stale/duplicate/capacity/overflow/fail-stop counters。
 
-`obmm_scc_load_pending()` 只建 PLT 并产生 PENDING event；
-`obmm_scc_load_complete()` 只产生 COMPLETE/FAULT event；
-`obmm_scc_event_pop()` 在 terminal event 交付时回收 PLT。QEMU 的 context save/restore/
+`ub_async_load_load_pending()` 只建 PLT 并产生 PENDING event；
+`ub_async_load_load_complete()` 只产生 COMPLETE/FAULT event；
+`ub_async_load_event_pop()` 在 terminal event 交付时回收 PLT。QEMU 的 context save/restore/
 switch/bytes counters 在 ABI v2 必须为 0。
 
 event queue 采用一条与未退休 load 直接相关的优先级规则：**当前刚触发 load 的
@@ -122,8 +127,8 @@ v2|enabled=1|contexts=64|pending=64|events=128|clock_mhz=2000
 
 文件：
 
-- `vendor/qemu_8.2.0_ub/include/hw/ub/ub_scc_device.h`
-- `vendor/qemu_8.2.0_ub/hw/ub/ub_scc_device.c`
+- `vendor/qemu_8.2.0_ub/include/hw/ub/ub_async_load_device.h`
+- `vendor/qemu_8.2.0_ub/hw/ub/ub_async_load_device.c`
 
 新增/保留的核心状态：
 
@@ -134,8 +139,8 @@ v2|enabled=1|contexts=64|pending=64|events=128|clock_mhz=2000
 - 当前 delivered event；
 - registered remote maps、PLT futures 和 P1 backend。
 
-`ub_scc_cpu_take_upcall()` 只复制一个 event、填 `interrupted_pc`、设置
-`upcall_active` 并返回 upcall entry。`ub_scc_cpu_resume()` 只验证 generation、home CPU、
+`ub_async_load_cpu_take_upcall()` 只复制一个 event、填 `interrupted_pc`、设置
+`upcall_active` 并返回 upcall entry。`ub_async_load_cpu_resume()` 只验证 generation、home CPU、
 slot 和嵌套状态，然后接受 EL0 提交的 context ID；它不扫描 context，也不选择 next。
 
 event delivery 有两个入口：运行中的 coroutine 被 pending/completion 打断时使用 direct
@@ -180,14 +185,14 @@ resume instruction 是这套模拟 core ABI 的必要部分，不是调度策略
 
 文件：
 
-- `guest-linux/kernel_ub/include/uapi/ub/obmm_scc.h`
+- `guest-linux/kernel_ub/include/uapi/ub/obmm_async_load.h`
 - `guest-linux/aarch64/driver/linqu_ub_drv.c`
 
 UAPI 从 v1 升级到 v2：
 
-- 新增固定 832-byte `obmm_scc_context_v2` layout；
+- 新增固定 832-byte `obmm_async_load_context_v2` layout；
 - `START` 新增 `upcall_entry` 和 `logical_contexts`；
-- 新增 `obmm_scc_event_v2` 与 `GET_EVENT`；
+- 新增 `obmm_async_load_event_v2` 与 `GET_EVENT`；
 - capability 明确 `DIRECT_EL0_UPCALL`、`EL0_RESUME`、`FULL_CONTEXT`；
 - 删除 QEMU-owned create/destroy context、fault-context、context-exit ioctls。
 
@@ -201,15 +206,15 @@ session owner。这一区分避免 scheduler 在全部 coroutine 阻塞时错误
 
 文件：
 
-- `guest-linux/aarch64/libs/obmm_scc/obmm_scc.h`
-- `guest-linux/aarch64/libs/obmm_scc/obmm_scc.c`
-- `guest-linux/aarch64/libs/obmm_scc/obmm_scc_aarch64.S`
-- `guest-linux/aarch64/libs/obmm_scc/Makefile`
+- `guest-linux/aarch64/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.h`
+- `guest-linux/aarch64/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.c`
+- `guest-linux/aarch64/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler_aarch64.S`
+- `guest-linux/aarch64/libs/obmm_coroutine_scheduler/Makefile`
 
 这是重构的核心。C runtime 现在拥有：
 
 - 每 coroutine 双 guard-page stack；
-- user-space `obmm_scc_context_v2` Context Store；
+- user-space `obmm_async_load_context_v2` Context Store；
 - `FREE/READY/RUNNING/WAIT_REMOTE/FAULTED/DONE`；
 - waiting PLT token；
 - round-robin selector；
@@ -243,9 +248,9 @@ workload 的数据面仍是普通 volatile 1/2/4/8-byte scalar load，没有 per
 旧 fault-service coroutine 已删除；FAULT event 由 EL0 scheduler 直接把目标 coroutine 置
 为 `FAULTED`，并计入 failure/timeout。
 
-2-node 功能验收新增 `--p2b-producer-consumer --producer-index 0`：nodeA export 并写入
+2-node 功能验收新增 `--async-load-producer-consumer --producer-index 0`：nodeA export 并写入
 每 coroutine 对应的确定值，nodeB import 同一个 export，内置两个 EL0 coroutine 和
-scheduler core。runtime trace callback 在内存中记录 context、LDR、upcall 和 resume
+coroutine scheduler。runtime trace callback 在内存中记录 context、LDR、upcall 和 resume
 顺序，运行结束后统一输出，避免串口 `printf` 改变短延迟调度时序。
 
 新增 evidence：
@@ -256,8 +261,8 @@ scheduler core。runtime trace callback 在内存中记录 context、LDR、upcal
 - `direct_el0_upcalls`；
 - `qemu_context_saves/restores/switches/bytes`。
 
-新 P2B gate 要求 EL0 指标非零、pending/complete 成对、save 等于 direct-upcall 数；同时
-要求 QEMU context 指标及旧 scheduler-cycle 指标全部为 0。P2B 不再声明额外 helper
+新 async load gate 要求 EL0 指标非零、pending/complete 成对、save 等于 direct-upcall 数；同时
+要求 QEMU context 指标及旧 scheduler-cycle 指标全部为 0。async load 不再声明额外 helper
 vCPU，EL0 scheduler 与 worker 在同一 home vCPU 上交替执行。producer/consumer gate
 还逐 coroutine 验证 write/import/issue/pending/complete/resume/retire 的 context、token、
 PC、offset 和 value，并要求至少一次“另一 coroutine 在当前 pending/complete 窗口内
@@ -286,13 +291,13 @@ library static asserts 和 QEMU build-time asserts 使用同一组 offset。
 
 | 验证 | 结果 |
 |---|---|
-| AArch64 `libobmm_scc` 交叉编译 | 通过，`-Wall -Wextra -Werror` |
+| AArch64 `libobmm_coroutine_scheduler` 交叉编译 | 通过，`-Wall -Wextra -Werror` |
 | AArch64 workload 静态交叉链接 | 通过 |
 | assembly 反汇编 | 通过，保存 GPR/SIMD，resume 为 `hlt #0x5343` |
 | 本地 QEMU `qemu-system-aarch64` 增量构建 | 通过 |
-| QEMU OBMM tests | SCC 7/7、model 7/7、backend 6/6，共 20/20 通过 |
+| QEMU OBMM tests | async-load 9/9、backend 6/6；当前改名后的 focused tests 共 15/15 通过 |
 | guest OBMM focused contracts | 27/27 通过 |
-| Rust P2B phase-gate focused tests | 12/12 通过 |
+| Rust async load phase-gate focused tests | 12/12 通过 |
 | `sim-config` tests | 7/7 通过 |
 | ARM64 Linux 原生 QEMU build | 在 `n4-910c` 通过，同一组 QEMU tests 20/20 通过 |
 | ARM64 Linux kernel/driver/initramfs | 当前 kernel Image、`linqu_ub_drv.ko`、ABI v2 initramfs 均构建通过 |
@@ -305,9 +310,9 @@ PENDING 优先交付、1/2/4/8-byte endian value、fault/stale 和 capacity/fail
 验证在 `n4-910c` 的隔离工作区
 `/home/ll/ub_sim_p2b_v2_20260812` 执行。nodeA 的 test program A export 2 MiB 并写入
 两个不同值；nodeB 的 test program B import 同一个 `export_mem_id`，内置两个 coroutine
-和 EL0 scheduler core。两个 coroutine 分别执行一次普通 `LDR`，没有调用 submit/await。
+和 guest EL0 coroutine scheduler。两个 coroutine 分别执行一次普通 `LDR`，没有调用 submit/await。
 
-![P2B 2-node producer/consumer 验收时序](p2b-2node-producer-consumer-validation.svg)
+![async load 2-node producer/consumer 验收时序](async-load-2node-producer-consumer-validation.svg)
 
 证据文件：
 
@@ -320,7 +325,7 @@ PENDING 优先交付、1/2/4/8-byte endian value、fault/stale 和 capacity/fail
 
 旧 r8 是 nodeA/nodeB 对称 workload smoke，不包含明确的 producer/consumer ownership，
 也没有要求 coroutine 1 在 coroutine 0 completion 前实际发出 `LDR`，因此不再作为当前
-P2B 功能验收证据。
+async load 功能验收证据。
 
 ### 7.1 产物绑定
 
@@ -335,7 +340,7 @@ P2B 功能验收证据。
 | remote model file | `e8d7d2e291a9612e1d8b95f78ddee56069d22bc3b4b0256cc3fb6b8cec271f04` |
 | model contract | `fnv1a64:e0b3f5ef7cc0da5c` |
 
-`scenarios/mvp_2host_p2b_remote_10ms.yaml` 使用 fixed 10 ms、无 jitter/drop/error/
+`scenarios/mvp_2host_async_load_remote_10ms.yaml` 使用 fixed 10 ms、无 jitter/drop/error/
 duplicate。它只为稳定制造可观察 overlap，不是性能模型。
 
 ### 7.2 跨节点和逐 coroutine 结果
@@ -349,9 +354,9 @@ duplicate。它只为稳定制造可观察 overlap，不是性能模型。
 | coroutine 1 | pending=1，complete=1，actual=`4d54ca036b700e60`，pass |
 | overlap | `pending(c0) < resume(c1) < LDR-issue(c1) < complete(c0)` |
 | scheduler ownership | EL0 saves/restores/switches = 2/4/3；QEMU context counters 全 0 |
-| final state | SCC/backend pending = 0/0；trace dropped=0；QEMU destroyed=1 |
+| final state | async-load/backend pending = 0/0；trace dropped=0；QEMU destroyed=1 |
 
-`OBMM_P2B_CAUSAL_SUMMARY blocked_load_switches=1 status=pass` 不是根据 counter 推断，
+`OBMM_async load_CAUSAL_SUMMARY blocked_load_switches=1 status=pass` 不是根据 counter 推断，
 而是 runner 扫描逐事件日志后得到：另一个 context 的 resume 和另一个 coroutine 的
 `LDR issue` 都必须落在某个 pending/complete 开区间内。Rust phase gate重新执行相同
 检查，并交叉验证 context ID、token、PC、offset 和 value。
@@ -369,23 +374,27 @@ duplicate。它只为稳定制造可观察 overlap，不是性能模型。
 ## 8. 功能验收结论、下一阶段与旧证据
 
 2-node ABI v2 producer/consumer 功能验收已经完成。P3 acceptance 与定向 scale-out
-也已生成新证据；故障硬化和额外指令/pattern 覆盖可单独扩展。它们不是当前 P2B
+也已生成新证据；故障硬化和额外指令/pattern 覆盖可单独扩展。它们不是当前 async load
 完成条件。当前进度为：
 
-1. 使用新 run ID 完成 2-node、7-seed `S3-p2b-demand` 和完整 P3 acceptance（完成）；
+1. 使用新 run ID 完成 2-node、7-seed `S3-async-load-demand` 和完整 P3 acceptance（完成）；
 2. 扩展 4/8-node 定向 scale-out，每个 topology 14/14 valid runs（完成）；
-3. 执行 4,942-case 性能 campaign 与 break-even 分析（待完成）；
-4. 另行执行 timeout、stale、duplicate、event overflow、invalid resume fault-injection
+3. 完成 2,240-case coarse policy 和 1,960-case fine formal boundary，发布精确
+   measured-bucket 离线策略（完成）；
+4. 接入 runtime policy loader、quiescent switching 与在线 telemetry（待完成）；
+5. 在收到明确恢复指令后续跑 4,942-case full campaign，补齐 tail/failure/range
+   全域结论（当前暂停）；
+6. 另行执行 timeout、stale、duplicate、event overflow、invalid resume fault-injection
    gate。
 
-旧 `qemu-internal-scc` 的 49-case/gate 结果验证的是 QEMU 保存和选择 context 的另一套
-架构，不能作为 ABI v2 的证据。当前 P2B 状态必须准确写为：
+旧 49-case/gate 结果验证的是由 QEMU 保存和选择 context 的另一套 legacy scheduler
+架构，不能作为 ABI v2 的证据。当前 async load 状态必须准确写为：
 
 ```text
 ABI v2 2-node producer/consumer functional acceptance passed
 ```
 
-不得把“full matrix 尚未执行完毕”写成 P2B 功能仍未完成；也不得因此把 P3 降级成
+不得把“full matrix 尚未执行完毕”写成 async load 功能仍未完成；也不得因此把 P3 降级成
 可选工作。当前结果见
 [2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)，它没有复用
 当前 2-node 功能 gate 代替性能数据。
@@ -398,6 +407,6 @@ ABI v2 2-node producer/consumer functional acceptance passed
 - unsigned scalar `LDRB/LDRH/LDR Wt/LDR Xt`，1/2/4/8 bytes；
 - 不支持 signed、store、atomic/exclusive、acquire、pair、SIMD memory op、SVE/SME；
 - custom upcall 不等价于标准 Arm exception；
-- `HLT #0x5343` 只在 active owner-matched EL0 SCC session 中有效；
+- `HLT #0x5343` 只在 active、owner-matched async-load session 中有效；
 - worker 不应依赖 signal handler 在 upcall-active 窗口做 context switching；
-- 当前是 demand-pending，不包含 P2A 的 pre-submit schedule-ahead 窗口。
+- 当前是 demand-pending，不包含 submit/await 的 pre-submit schedule-ahead 窗口。

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="940" viewBox="0 0 1440 940" role="img" aria-labelledby="title desc">
   <title id="title">OBMM split-phase remote load and EL0 coroutine scheduling</title>
-  <desc id="desc">The P2A explicit submit and await flow, plus the P2B ordinary-load path where QEMU delivers a custom direct EL0 upcall and the guest EL0 scheduler owns coroutine contexts and policy.</desc>
+  <desc id="desc">The submit/await explicit submit and await flow, plus the async load ordinary-load path where QEMU delivers a custom direct EL0 upcall and the guest EL0 scheduler owns coroutine contexts and policy.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#f7fbfa"/>
@@ -37,7 +37,7 @@
 
   <rect width="1440" height="940" fill="url(#bg)"/>
   <rect x="54" y="42" width="1332" height="138" rx="26" fill="url(#hero)" filter="url(#shadow)"/>
-  <text x="92" y="80" class="eyebrow" fill="#a7e2da">P2A · EXPLICIT SUBMIT / AWAIT</text>
+  <text x="92" y="80" class="eyebrow" fill="#a7e2da">submit/await · EXPLICIT SUBMIT / AWAIT</text>
   <text x="92" y="124" class="title" fill="#ffffff">OBMM 远端读：显式 split-phase + EL0 协程</text>
   <text x="92" y="154" class="subtitle" fill="#d8f1ed">submit 立即返回 token；数据到达后发布 CQE。普通 LDR 保持同步兼容语义。</text>
 
@@ -154,7 +154,7 @@
   <g transform="translate(54 754)">
     <rect width="1332" height="132" rx="22" fill="#fff7ed" stroke="#e5bd88"/>
     <path d="M28 28 H28 V104" stroke="#c67526" stroke-width="5" stroke-linecap="round"/>
-    <text x="54" y="52" class="note-title">P2B 对照路径：普通 LDR → custom direct EL0 upcall</text>
+    <text x="54" y="52" class="note-title">async load 对照路径：普通 LDR → custom direct EL0 upcall</text>
     <text x="54" y="80" class="note-copy">原 load 不退休；EL0 trampoline 保存 A，切到 scheduler stack，guest EL0 scheduler 选择 B。</text>
     <text x="54" y="106" class="note-copy">QEMU 只维护 PLT/event 并原子安装 EL0 指定 context；不拥有 Context Store、ready queue 或调度策略。</text>
   </g>

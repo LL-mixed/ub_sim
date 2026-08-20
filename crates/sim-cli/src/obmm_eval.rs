@@ -78,7 +78,7 @@ impl EvalBand {
 enum EvalMode {
     SyncMmio,
     AsyncPoll,
-    SchedulerCore,
+    AsyncLoad,
     Userfaultfd,
 }
 
@@ -87,13 +87,13 @@ impl EvalMode {
         match self {
             Self::SyncMmio => "sync-mmio",
             Self::AsyncPoll => "async-poll",
-            Self::SchedulerCore => "scheduler-core",
+            Self::AsyncLoad => "async-load",
             Self::Userfaultfd => "userfaultfd",
         }
     }
 
     fn uses_coroutines(self) -> bool {
-        matches!(self, Self::SyncMmio | Self::AsyncPoll | Self::SchedulerCore)
+        matches!(self, Self::SyncMmio | Self::AsyncPoll | Self::AsyncLoad)
     }
 
     fn uses_inflight(self) -> bool {
@@ -534,10 +534,10 @@ struct GuestPhaseMetrics {
     sink_copy_ns: u64,
     backend_late: u64,
     backend_duplicate: u64,
-    scc_save_cycles: u64,
-    scc_schedule_cycles: u64,
-    scc_restore_cycles: u64,
-    scc_commit_cycles: u64,
+    async_load_save_cycles: u64,
+    async_load_schedule_cycles: u64,
+    async_load_restore_cycles: u64,
+    async_load_commit_cycles: u64,
     el0_upcalls_pending: u64,
     el0_upcalls_complete: u64,
     el0_upcalls_fault: u64,
@@ -572,7 +572,7 @@ struct GuestPhaseMetrics {
     uffd_worker_cpu_ns: u64,
     model_pending_final: u64,
     backend_pending_final: u64,
-    scc_pending_final: u64,
+    async_load_pending_final: u64,
     counter_overflow: u64,
     clock_regressions: u64,
 }
@@ -1033,7 +1033,7 @@ fn parse_boundary_policy(path: &Path) -> anyhow::Result<Vec<BoundaryObservation>
                 .with_context(|| format!("narrow {name} at {}:{}", path.display(), line_index + 2))
         };
         let winner = boundary_csv_value(&headers, &fields, "measured_fastest")?.to_string();
-        if !matches!(winner.as_str(), "sync" | "p2a" | "p2b") {
+        if !matches!(winner.as_str(), "sync" | "submit-await" | "async-load") {
             anyhow::bail!(
                 "unsupported measured_fastest {winner} at {}:{}",
                 path.display(),
@@ -1159,7 +1159,7 @@ fn build_formal_boundary_matrix(
         || matrix
             .cases
             .iter()
-            .filter(|case| case.mode == EvalMode::SchedulerCore)
+            .filter(|case| case.mode == EvalMode::AsyncLoad)
             .count()
             != 1
         || matrix
@@ -1169,7 +1169,9 @@ fn build_formal_boundary_matrix(
             .count()
             != 2
     {
-        anyhow::bail!("formal boundary template must define sync, two P2A, and one P2B cases");
+        anyhow::bail!(
+            "formal boundary template must define sync, two submit/await, and one ASYNC_LOAD cases"
+        );
     }
     let case_ids: Vec<String> = matrix.cases.iter().map(|case| case.id.clone()).collect();
     if matrix.factors.inflight.len() != 1 || matrix.factors.lookahead.len() != 1 {
@@ -1954,8 +1956,8 @@ fn validate_matrix(matrix: &EvalMatrix) -> anyhow::Result<()> {
             anyhow::bail!("duplicate case id {}", case.id);
         }
         match case.mode {
-            EvalMode::SchedulerCore if case.access_bytes != 8 || case.band != EvalBand::Scalar => {
-                anyhow::bail!("{} violates the P2B scalar 8-byte band", case.id)
+            EvalMode::AsyncLoad if case.access_bytes != 8 || case.band != EvalBand::Scalar => {
+                anyhow::bail!("{} violates the ASYNC_LOAD scalar 8-byte band", case.id)
             }
             EvalMode::Userfaultfd if case.access_bytes != 4096 || case.band != EvalBand::Range => {
                 anyhow::bail!("{} violates the P4 page-range band", case.id)
@@ -2380,10 +2382,10 @@ fn planned_command(
             "300".into()
         },
     ];
-    if case.mode == EvalMode::SchedulerCore {
-        let scheduler = &scenario.scheduler_core_model;
+    if case.mode == EvalMode::AsyncLoad {
+        let scheduler = &scenario.async_load_model;
         command.extend([
-            "--scheduler-core-model".into(),
+            "--async-load-model".into(),
             format!(
                 "v2|enabled={}|contexts={}|pending={}|events={}|clock_mhz={}",
                 u8::from(scheduler.enabled),
@@ -2420,7 +2422,7 @@ fn planned_command(
             "{common} --coroutines {} --inflight {} --lookahead {} --compute-us {}",
             case.coroutines, case.inflight, case.lookahead, case.compute_us,
         ),
-        EvalMode::SchedulerCore => format!(
+        EvalMode::AsyncLoad => format!(
             "{common} --coroutines {} --inflight 1 --lookahead 0 --compute-us {}",
             case.coroutines, case.compute_us,
         ),
@@ -2585,7 +2587,7 @@ fn validate_gates(
     let mut validations = Vec::new();
     let mut shared_model_contract_hash = None;
 
-    for phase in ["p0", "p1", "p2a", "p2b", "p4"] {
+    for phase in ["p0", "p1", "submit-await", "async-load", "p4"] {
         let path = gate_dir.join(format!("{phase}.json"));
         let mut reasons = Vec::new();
         let status = match fs::read(&path) {
@@ -3500,10 +3502,10 @@ fn parse_guest_summary(output: &str) -> anyhow::Result<GuestEvalSummary> {
             sink_copy_ns: parse_u64_field("sink_copy_ns")?,
             backend_late: parse_u64_field("backend_late")?,
             backend_duplicate: parse_u64_field("backend_duplicate")?,
-            scc_save_cycles: parse_u64_field("scc_save_cycles")?,
-            scc_schedule_cycles: parse_u64_field("scc_schedule_cycles")?,
-            scc_restore_cycles: parse_u64_field("scc_restore_cycles")?,
-            scc_commit_cycles: parse_u64_field("scc_commit_cycles")?,
+            async_load_save_cycles: parse_u64_field("async_load_save_cycles")?,
+            async_load_schedule_cycles: parse_u64_field("async_load_schedule_cycles")?,
+            async_load_restore_cycles: parse_u64_field("async_load_restore_cycles")?,
+            async_load_commit_cycles: parse_u64_field("async_load_commit_cycles")?,
             el0_upcalls_pending: parse_u64_field("el0_upcalls_pending")?,
             el0_upcalls_complete: parse_u64_field("el0_upcalls_complete")?,
             el0_upcalls_fault: parse_u64_field("el0_upcalls_fault")?,
@@ -3538,7 +3540,7 @@ fn parse_guest_summary(output: &str) -> anyhow::Result<GuestEvalSummary> {
             uffd_worker_cpu_ns: parse_u64_field("uffd_worker_cpu_ns")?,
             model_pending_final: parse_u64_field("model_pending_final")?,
             backend_pending_final: parse_u64_field("backend_pending_final")?,
-            scc_pending_final: parse_u64_field("scc_pending_final")?,
+            async_load_pending_final: parse_u64_field("async_load_pending_final")?,
             counter_overflow: parse_u64_field("counter_overflow")?,
             clock_regressions: parse_u64_field("clock_regressions")?,
         },
@@ -3644,14 +3646,14 @@ struct PolicyBucket {
     pattern: String,
     access_bytes: u32,
     sync: Option<PolicyPathMetrics>,
-    p2a_best: Option<PolicyPathMetrics>,
-    p2b: Option<PolicyPathMetrics>,
+    submit_await_best: Option<PolicyPathMetrics>,
+    async_load: Option<PolicyPathMetrics>,
     measured_fastest: String,
     transparent_policy: String,
     explicit_policy: String,
-    p2a_vs_sync: Option<PolicyCandidateDecision>,
-    p2b_vs_sync: Option<PolicyCandidateDecision>,
-    p2b_vs_p2a: Option<PolicyCandidateDecision>,
+    submit_await_vs_sync: Option<PolicyCandidateDecision>,
+    async_load_vs_sync: Option<PolicyCandidateDecision>,
+    async_load_vs_submit_await: Option<PolicyCandidateDecision>,
     status: String,
 }
 
@@ -3686,10 +3688,10 @@ const PHASE_METRIC_FIELDS: [&str; 53] = [
     "sink_copy_ns",
     "backend_late",
     "backend_duplicate",
-    "scc_save_cycles",
-    "scc_schedule_cycles",
-    "scc_restore_cycles",
-    "scc_commit_cycles",
+    "async_load_save_cycles",
+    "async_load_schedule_cycles",
+    "async_load_restore_cycles",
+    "async_load_commit_cycles",
     "el0_upcalls_pending",
     "el0_upcalls_complete",
     "el0_upcalls_fault",
@@ -3743,10 +3745,10 @@ fn phase_metric(metrics: &GuestPhaseMetrics, name: &str) -> u64 {
         "sink_copy_ns" => metrics.sink_copy_ns,
         "backend_late" => metrics.backend_late,
         "backend_duplicate" => metrics.backend_duplicate,
-        "scc_save_cycles" => metrics.scc_save_cycles,
-        "scc_schedule_cycles" => metrics.scc_schedule_cycles,
-        "scc_restore_cycles" => metrics.scc_restore_cycles,
-        "scc_commit_cycles" => metrics.scc_commit_cycles,
+        "async_load_save_cycles" => metrics.async_load_save_cycles,
+        "async_load_schedule_cycles" => metrics.async_load_schedule_cycles,
+        "async_load_restore_cycles" => metrics.async_load_restore_cycles,
+        "async_load_commit_cycles" => metrics.async_load_commit_cycles,
         "el0_upcalls_pending" => metrics.el0_upcalls_pending,
         "el0_upcalls_complete" => metrics.el0_upcalls_complete,
         "el0_upcalls_fault" => metrics.el0_upcalls_fault,
@@ -3982,7 +3984,7 @@ fn validate_raw_run(
                 "backend_duplicate",
                 "model_duplicated",
                 "model_duplicate_published",
-                "scc_duplicate",
+                "async_load_duplicate",
                 "late",
                 "backend_late",
             ],
@@ -4003,10 +4005,11 @@ fn validate_raw_run(
             reasons.push("drain evidence is absent".into());
         }
     }
-    if case.mode == EvalMode::SchedulerCore
-        && (summary.phase.scc_pending_final != 0 || !evidence.contains("scc_pending=0"))
+    if case.mode == EvalMode::AsyncLoad
+        && (summary.phase.async_load_pending_final != 0
+            || !evidence.contains("async_load_pending=0"))
     {
-        reasons.push("scheduler-core drain evidence is absent".into());
+        reasons.push("async-load drain evidence is absent".into());
     }
     validate_mode_metrics(case, summary, &mut reasons);
     validate_artifact_evidence(case, manifest, evidence, &mut reasons);
@@ -4018,7 +4021,7 @@ fn validate_mode_metrics(
     summary: &GuestEvalSummary,
     reasons: &mut Vec<String>,
 ) {
-    if case.mode != EvalMode::SchedulerCore {
+    if case.mode != EvalMode::AsyncLoad {
         return;
     }
 
@@ -4027,12 +4030,12 @@ fn validate_mode_metrics(
         || phase.qemu_context_restores != 0
         || phase.qemu_context_switches != 0
         || phase.qemu_context_bytes != 0
-        || phase.scc_save_cycles != 0
-        || phase.scc_schedule_cycles != 0
-        || phase.scc_restore_cycles != 0
-        || phase.scc_commit_cycles != 0
+        || phase.async_load_save_cycles != 0
+        || phase.async_load_schedule_cycles != 0
+        || phase.async_load_restore_cycles != 0
+        || phase.async_load_commit_cycles != 0
     {
-        reasons.push("P2B used forbidden QEMU-owned scheduler/context state".into());
+        reasons.push("ASYNC_LOAD used forbidden QEMU-owned scheduler/context state".into());
     }
 
     let expected_upcalls = expected_remote_operations(case);
@@ -4049,7 +4052,7 @@ fn validate_mode_metrics(
         || phase.el0_scheduler_ns == 0
         || phase.direct_el0_upcalls != phase.el0_context_saves)
     {
-        reasons.push("P2B does not prove ABI v2 guest-EL0 scheduler progress".into());
+        reasons.push("ASYNC_LOAD does not prove ABI v2 guest-EL0 scheduler progress".into());
     }
 }
 
@@ -4521,8 +4524,8 @@ fn derive_row_comparisons(rows: &mut [AggregateRow]) {
 fn policy_path_name(row: &AggregateRow) -> &'static str {
     match row.case.mode {
         EvalMode::SyncMmio => "sync",
-        EvalMode::AsyncPoll => "p2a",
-        EvalMode::SchedulerCore => "p2b",
+        EvalMode::AsyncPoll => "submit-await",
+        EvalMode::AsyncLoad => "async-load",
         EvalMode::Userfaultfd => "userfaultfd",
     }
 }
@@ -4687,16 +4690,16 @@ fn policy_bucket_status(rows: [&AggregateRow; 3]) -> String {
 
 fn choose_explicit_policy(
     sync: Option<&AggregateRow>,
-    p2a: Option<&AggregateRow>,
-    p2b: Option<&AggregateRow>,
-    p2a_eligible: bool,
-    p2b_eligible: bool,
+    submit_await: Option<&AggregateRow>,
+    async_load: Option<&AggregateRow>,
+    submit_await_eligible: bool,
+    async_load_eligible: bool,
 ) -> &'static str {
     best_policy_row(
         [
             sync,
-            p2a.filter(|_| p2a_eligible),
-            p2b.filter(|_| p2b_eligible),
+            submit_await.filter(|_| submit_await_eligible),
+            async_load.filter(|_| async_load_eligible),
         ]
         .into_iter()
         .flatten(),
@@ -4728,25 +4731,29 @@ fn build_policy_buckets(
                 .copied()
                 .filter(|row| row.case.mode == EvalMode::SyncMmio),
         );
-        let p2a = best_policy_row(
+        let submit_await = best_policy_row(
             group
                 .iter()
                 .copied()
                 .filter(|row| row.case.mode == EvalMode::AsyncPoll),
         );
-        let p2b = best_policy_row(
+        let async_load = best_policy_row(
             group
                 .iter()
                 .copied()
-                .filter(|row| row.case.mode == EvalMode::SchedulerCore),
+                .filter(|row| row.case.mode == EvalMode::AsyncLoad),
         );
-        let reference = sync.or(p2a).or(p2b).expect("non-empty policy group");
-        let measured_fastest = best_policy_row([sync, p2a, p2b].into_iter().flatten())
-            .map(policy_path_name)
-            .unwrap_or("unknown")
-            .to_string();
+        let reference = sync
+            .or(submit_await)
+            .or(async_load)
+            .expect("non-empty policy group");
+        let measured_fastest =
+            best_policy_row([sync, submit_await, async_load].into_iter().flatten())
+                .map(policy_path_name)
+                .unwrap_or("unknown")
+                .to_string();
 
-        let p2a_vs_sync = sync.zip(p2a).map(|(baseline, candidate)| {
+        let submit_await_vs_sync = sync.zip(submit_await).map(|(baseline, candidate)| {
             evaluate_policy_candidate(
                 baseline,
                 candidate,
@@ -4754,7 +4761,7 @@ fn build_policy_buckets(
                 thresholds,
             )
         });
-        let p2b_vs_sync = sync.zip(p2b).map(|(baseline, candidate)| {
+        let async_load_vs_sync = sync.zip(async_load).map(|(baseline, candidate)| {
             evaluate_policy_candidate(
                 baseline,
                 candidate,
@@ -4762,35 +4769,38 @@ fn build_policy_buckets(
                 thresholds,
             )
         });
-        let p2b_vs_p2a = p2a.zip(p2b).map(|(baseline, candidate)| {
-            evaluate_policy_candidate(
-                baseline,
-                candidate,
-                paired_gain_stats(baseline, candidate, collected, manifest),
-                thresholds,
-            )
-        });
-        let transparent_policy = if p2b_vs_sync
+        let async_load_vs_submit_await =
+            submit_await.zip(async_load).map(|(baseline, candidate)| {
+                evaluate_policy_candidate(
+                    baseline,
+                    candidate,
+                    paired_gain_stats(baseline, candidate, collected, manifest),
+                    thresholds,
+                )
+            });
+        let transparent_policy = if async_load_vs_sync
             .as_ref()
             .is_some_and(|decision| decision.eligible)
         {
-            "p2b"
+            "async-load"
         } else {
             "sync"
         };
         let explicit_policy = choose_explicit_policy(
             sync,
-            p2a,
-            p2b,
-            p2a_vs_sync
+            submit_await,
+            async_load,
+            submit_await_vs_sync
                 .as_ref()
                 .is_some_and(|decision| decision.eligible),
-            p2b_vs_sync
+            async_load_vs_sync
                 .as_ref()
                 .is_some_and(|decision| decision.eligible),
         );
-        let status = match (sync, p2a, p2b) {
-            (Some(sync), Some(p2a), Some(p2b)) => policy_bucket_status([sync, p2a, p2b]),
+        let status = match (sync, submit_await, async_load) {
+            (Some(sync), Some(submit_await), Some(async_load)) => {
+                policy_bucket_status([sync, submit_await, async_load])
+            }
             _ => "incomplete-path-set".into(),
         };
         buckets.push(PolicyBucket {
@@ -4803,14 +4813,14 @@ fn build_policy_buckets(
             pattern: reference.case.pattern.as_str().into(),
             access_bytes: reference.case.access_bytes,
             sync: sync.map(policy_path_metrics),
-            p2a_best: p2a.map(policy_path_metrics),
-            p2b: p2b.map(policy_path_metrics),
+            submit_await_best: submit_await.map(policy_path_metrics),
+            async_load: async_load.map(policy_path_metrics),
             measured_fastest,
             transparent_policy: transparent_policy.into(),
             explicit_policy: explicit_policy.into(),
-            p2a_vs_sync,
-            p2b_vs_sync,
-            p2b_vs_p2a,
+            submit_await_vs_sync,
+            async_load_vs_sync,
+            async_load_vs_submit_await,
             status,
         });
     }
@@ -4820,13 +4830,13 @@ fn build_policy_buckets(
 fn policy_csv_header() -> &'static str {
     "sweep,topology_hosts,latency_us,jitter,compute_us,coroutines,pattern,access_bytes,\
 sync_makespan_ns,sync_p99_ns,\
-p2a_case,p2a_issue,p2a_inflight,p2a_lookahead,p2a_makespan_ns,p2a_p99_ns,\
-p2b_makespan_ns,p2b_p99_ns,measured_fastest,transparent_policy,explicit_policy,\
-p2a_eligible,p2a_reason,p2b_transparent_eligible,p2b_transparent_reason,\
-p2b_vs_p2a_gain_eligible,p2b_vs_p2a_reason,p2b_vs_p2a_pair_count,\
-p2b_vs_p2a_positive_pairs,p2b_vs_p2a_gain_median_milli,\
-p2b_vs_p2a_gain_ci95_low_milli,p2b_vs_p2a_gain_ci95_high_milli,\
-p2b_vs_p2a_p99_regression_milli,status\n"
+submit_await_case,submit_await_issue,submit_await_inflight,submit_await_lookahead,submit_await_makespan_ns,submit_await_p99_ns,\
+async_load_makespan_ns,async_load_p99_ns,measured_fastest,transparent_policy,explicit_policy,\
+submit_await_eligible,submit_await_reason,async_load_transparent_eligible,async_load_transparent_reason,\
+async_load_vs_submit_await_gain_eligible,async_load_vs_submit_await_reason,async_load_vs_submit_await_pair_count,\
+async_load_vs_submit_await_positive_pairs,async_load_vs_submit_await_gain_median_milli,\
+async_load_vs_submit_await_gain_ci95_low_milli,async_load_vs_submit_await_gain_ci95_high_milli,\
+async_load_vs_submit_await_p99_regression_milli,status\n"
 }
 
 fn write_policy_summary(
@@ -4840,10 +4850,10 @@ fn write_policy_summary(
     let buckets = build_policy_buckets(rows, collected, manifest, &thresholds)?;
     let mut csv = String::from(policy_csv_header());
     for bucket in &buckets {
-        let p2a_decision = bucket.p2a_vs_sync.as_ref();
-        let p2b_transparent = bucket.p2b_vs_sync.as_ref();
-        let p2b_vs_p2a = bucket.p2b_vs_p2a.as_ref();
-        let p2b_pair = p2b_vs_p2a.map(|decision| &decision.paired_gain);
+        let submit_await_decision = bucket.submit_await_vs_sync.as_ref();
+        let async_load_transparent = bucket.async_load_vs_sync.as_ref();
+        let async_load_vs_submit_await = bucket.async_load_vs_submit_await.as_ref();
+        let async_load_pair = async_load_vs_submit_await.map(|decision| &decision.paired_gain);
         let fields = [
             bucket.sweep.clone(),
             bucket.topology_hosts.to_string(),
@@ -4864,63 +4874,68 @@ fn write_policy_summary(
                 .and_then(|path| path.guest_p99_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket
-                .p2a_best
+                .submit_await_best
                 .as_ref()
                 .map_or_else(|| "na".into(), |path| path.case_id.clone()),
             bucket
-                .p2a_best
+                .submit_await_best
                 .as_ref()
                 .map_or_else(|| "na".into(), |path| path.issue.clone()),
             bucket
-                .p2a_best
+                .submit_await_best
                 .as_ref()
                 .map_or_else(|| "na".into(), |path| path.inflight.to_string()),
             bucket
-                .p2a_best
+                .submit_await_best
                 .as_ref()
                 .map_or_else(|| "na".into(), |path| path.lookahead.to_string()),
             bucket
-                .p2a_best
+                .submit_await_best
                 .as_ref()
                 .and_then(|path| path.makespan_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket
-                .p2a_best
+                .submit_await_best
                 .as_ref()
                 .and_then(|path| path.guest_p99_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket
-                .p2b
+                .async_load
                 .as_ref()
                 .and_then(|path| path.makespan_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket
-                .p2b
+                .async_load
                 .as_ref()
                 .and_then(|path| path.guest_p99_ns)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket.measured_fastest.clone(),
             bucket.transparent_policy.clone(),
             bucket.explicit_policy.clone(),
-            p2a_decision.map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
-            p2a_decision.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
-            p2b_transparent
+            submit_await_decision
                 .map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
-            p2b_transparent.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
-            p2b_vs_p2a.map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
-            p2b_vs_p2a.map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
-            p2b_pair.map_or_else(|| "0".into(), |paired| paired.pair_count.to_string()),
-            p2b_pair.map_or_else(|| "0".into(), |paired| paired.positive_pairs.to_string()),
-            p2b_pair
+            submit_await_decision
+                .map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            async_load_transparent
+                .map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
+            async_load_transparent
+                .map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            async_load_vs_submit_await
+                .map_or_else(|| "false".into(), |decision| decision.eligible.to_string()),
+            async_load_vs_submit_await
+                .map_or_else(|| "missing".into(), |decision| decision.reason.clone()),
+            async_load_pair.map_or_else(|| "0".into(), |paired| paired.pair_count.to_string()),
+            async_load_pair.map_or_else(|| "0".into(), |paired| paired.positive_pairs.to_string()),
+            async_load_pair
                 .and_then(|paired| paired.median_gain_milli)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
-            p2b_pair
+            async_load_pair
                 .and_then(|paired| paired.ci95_low_milli)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
-            p2b_pair
+            async_load_pair
                 .and_then(|paired| paired.ci95_high_milli)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
-            p2b_vs_p2a
+            async_load_vs_submit_await
                 .and_then(|decision| decision.p99_regression_milli)
                 .map_or_else(|| "na".into(), |value| value.to_string()),
             bucket.status.clone(),
@@ -5178,8 +5193,8 @@ fn write_break_even_summary(output_dir: &Path, rows: &[AggregateRow]) -> anyhow:
 
 fn write_transparency_summary(output_dir: &Path) -> anyhow::Result<()> {
     const CSV: &str = "path,hot_path_source,machine_code_suspension,suspension_owner,extra_vcpus,completion_bytes_min,completion_bytes_max,software_components,software_change_surface,custom_hardware_components,custom_hardware_state,cost_interpretation\n\
-P2A,submit/test/await,runtime-await,EL0-runtime,0,1,65536,3,application+runtime+UAPI,0,none,explicit-software-interface\n\
-P2B,ordinary-scalar-LDR,pending-unretired-LDR,guest-EL0-runtime,0,1,8,2,control-plane+UAPI,2,PLT+event-queue+direct-upcall+atomic-resume,custom-core-state\n\
+submit-await,submit/test/await,runtime-await,EL0-runtime,0,1,65536,3,application+runtime+UAPI,0,none,explicit-software-interface\n\
+ASYNC_LOAD,ordinary-scalar-LDR,pending-unretired-LDR,guest-EL0-runtime,0,1,8,2,control-plane+UAPI,2,PLT+event-queue+direct-upcall+atomic-resume,custom-core-state\n\
 P4,ordinary-shadow-range-load,page-fault-kernel-block,kernel-UFFD+userspace-handler,1,4096,4096,2,application+UFFD-handler,0,none,page-granularity-and-handler-core\n";
     fs::write(output_dir.join("summary/transparency.csv"), CSV)?;
     Ok(())
@@ -5246,12 +5261,12 @@ fn write_final_report(
          |---|---|---|---|\n\
          {}\n\n\
          ## Comparison bands\n\n\
-         - Band S (`summary/scalar.csv`) compares 8-byte sync, P2A demand/lookahead, and P2B demand.\n\
-         - Band R (`summary/range.csv`) compares the same 4-KiB logical operations for sync, P2A, and userfaultfd.\n\
+         - Band S (`summary/scalar.csv`) compares 8-byte sync, submit/await demand/lookahead, and ASYNC_LOAD demand.\n\
+         - Band R (`summary/range.csv`) compares the same 4-KiB logical operations for sync, submit/await, and userfaultfd.\n\
          - Band T (`summary/transparency.csv`) reports interface, software/custom-hardware surface, and extra-core cost; it is not collapsed into a throughput ranking.\n\
          - `summary/break-even.csv` reports only measured L/W/concurrency intervals: `bracketed`, `positive-at-minimum`, `not-observed`, or `non-monotonic`. It never extrapolates beyond measured latency points.\n\
          - `summary/policy.csv` and `summary/policy.json` report fixed-vCPU workload-makespan choices, paired-seed confidence, observational load p99, and transparent/explicit policy decisions.\n\n\
-         Each Band S/R row also carries the median ready/wait/idle, P2A submit/switch/CQ, P1 pending/copy/late/duplicate, P2B save/schedule/restore/commit, and P4 fault/remote/copy/wake phase metrics. `run-manifest.json`, `validation.json`, and `raw/*.jsonl` preserve the artifact hashes and per-seed provenance.\n\n\
+         Each Band S/R row also carries the median ready/wait/idle, submit/switch/CQ for submit/await, P1 pending/copy/late/duplicate, ASYNC_LOAD save/schedule/restore/commit, and P4 fault/remote/copy/wake phase metrics. `run-manifest.json`, `validation.json`, and `raw/*.jsonl` preserve the artifact hashes and per-seed provenance.\n\n\
          Fields with a zero or unavailable denominator are `na`. Invalid rows never contribute to medians or confidence intervals.\n",
         validation.status,
         valid,
@@ -5309,8 +5324,8 @@ fn write_dry_run_report(
          ## Transparency/resource contract\n\n\
          | Path | Hot path | Suspension owner | Extra vCPU | Granularity |\n\
          |---|---|---|---:|---:|\n\
-         | P2A | submit/await | EL0 runtime | 0 | 1 B-64 KiB |\n\
-         | P2B | ordinary LDR | guest EL0 runtime | 0 | 1/2/4/8 B |\n\
+         | submit/await | submit/await | EL0 runtime | 0 | 1 B-64 KiB |\n\
+         | ASYNC_LOAD | ordinary LDR | guest EL0 runtime | 0 | 1/2/4/8 B |\n\
          | P4 | shadow pointer load | kernel UFFD + handler | 1 | 4 KiB |\n",
         validation.status,
         manifest.cases.len(),
@@ -5589,8 +5604,8 @@ mod tests {
         case.issue = issue;
         case.case_id = match mode {
             EvalMode::SyncMmio => "S0-sync",
-            EvalMode::AsyncPoll => "S1-p2a-demand",
-            EvalMode::SchedulerCore => "S3-p2b-demand",
+            EvalMode::AsyncPoll => "S1-submit-await-demand",
+            EvalMode::AsyncLoad => "S3-async-load-demand",
             EvalMode::Userfaultfd => "R2-userfaultfd",
         }
         .into();
@@ -5902,9 +5917,9 @@ mod tests {
     fn boundary_selection_keeps_both_endpoints_of_each_winner_flip() {
         let observations = vec![
             boundary_observation(20, 2, 0, "sync"),
-            boundary_observation(30, 2, 0, "p2b"),
-            boundary_observation(50, 2, 0, "p2b"),
-            boundary_observation(75, 2, 0, "p2a"),
+            boundary_observation(30, 2, 0, "async-load"),
+            boundary_observation(50, 2, 0, "async-load"),
+            boundary_observation(75, 2, 0, "submit-await"),
             boundary_observation(20, 4, 0, "sync"),
             boundary_observation(30, 4, 0, "sync"),
         ];
@@ -5913,7 +5928,7 @@ mod tests {
         assert_eq!(crossings.len(), 2);
         assert_eq!(selected.len(), 4);
         assert_eq!(crossings[0].left_winner, "sync");
-        assert_eq!(crossings[0].right_winner, "p2b");
+        assert_eq!(crossings[0].right_winner, "async-load");
 
         let template: EvalMatrix = serde_yaml::from_slice(
             &fs::read(policy_boundary_trace_matrix_path()).expect("trace matrix bytes"),
@@ -6251,11 +6266,11 @@ mod tests {
             diagnostic_cases,
             BTreeSet::from([
                 "S0-sync",
-                "S1-p2a-demand",
-                "S2-p2a-lookahead",
-                "S3-p2b-demand",
+                "S1-submit-await-demand",
+                "S2-submit-await-lookahead",
+                "S3-async-load-demand",
                 "R0-sync-range",
-                "R1-p2a-range",
+                "R1-submit-await-range",
                 "R2-userfaultfd",
             ])
         );
@@ -6268,15 +6283,12 @@ mod tests {
                 pair[0] == "--obmm-async-args" && pair[1].contains("--trace-sample-ppm 10000")
             }));
         }
-        for case in left
-            .iter()
-            .filter(|case| case.mode == EvalMode::SchedulerCore)
-        {
+        for case in left.iter().filter(|case| case.mode == EvalMode::AsyncLoad) {
             let guest_args = case
                 .command
                 .windows(2)
                 .find_map(|pair| (pair[0] == "--obmm-async-args").then_some(pair[1].as_str()))
-                .expect("P2B guest arguments");
+                .expect("ASYNC_LOAD guest arguments");
             assert!(guest_args.contains("--inflight 1 --lookahead 0"));
         }
         for case in &left {
@@ -6370,11 +6382,11 @@ mod tests {
                 paths,
                 BTreeSet::from([
                     "S0-sync",
-                    "S1-p2a-demand",
-                    "S2-p2a-lookahead",
-                    "S3-p2b-demand",
+                    "S1-submit-await-demand",
+                    "S2-submit-await-lookahead",
+                    "S3-async-load-demand",
                     "R0-sync-range",
-                    "R1-p2a-range",
+                    "R1-submit-await-range",
                     "R2-userfaultfd",
                 ])
             );
@@ -6396,9 +6408,9 @@ mod tests {
                     cq_drain_ns_total=0 configured_lookahead=0 \
                     backend_pending_high=0 backend_capacity=0 \
                     sink_copy_bytes=0 sink_copy_ns=0 backend_late=0 \
-                    backend_duplicate=0 scc_save_cycles=0 \
-                    scc_schedule_cycles=0 scc_restore_cycles=0 \
-                    scc_commit_cycles=0 el0_upcalls_pending=0 \
+                    backend_duplicate=0 async_load_save_cycles=0 \
+                    async_load_schedule_cycles=0 async_load_restore_cycles=0 \
+                    async_load_commit_cycles=0 el0_upcalls_pending=0 \
                     el0_upcalls_complete=0 el0_upcalls_fault=0 \
                     el0_context_saves=0 el0_context_restores=0 \
                     el0_context_switches=0 el0_context_bytes=0 \
@@ -6415,7 +6427,7 @@ mod tests {
                     uffd_wake_ns_p95=0 uffd_wake_ns_p99=0 \
                     uffd_wake_ns_max=0 uffd_handler_cpu_ns=0 \
                     uffd_worker_cpu_ns=0 model_pending_final=0 \
-                    backend_pending_final=0 scc_pending_final=0 \
+                    backend_pending_final=0 async_load_pending_final=0 \
                     counter_overflow=0 clock_regressions=0 \
                     fail_closed_process_exit=0 status=pass";
         let parsed = parse_guest_summary(line).expect("summary");
@@ -6426,10 +6438,10 @@ mod tests {
     }
 
     #[test]
-    fn p2b_validation_requires_guest_el0_progress_and_zero_qemu_context_state() {
+    fn async_load_validation_requires_guest_el0_progress_and_zero_qemu_context_state() {
         let mut case = test_case();
-        case.case_id = "S3-p2b-demand".into();
-        case.mode = EvalMode::SchedulerCore;
+        case.case_id = "S3-async-load-demand".into();
+        case.mode = EvalMode::AsyncLoad;
         let mut summary = test_summary(2_000_000_000);
         summary.case_id = case.case_id.clone();
         summary.mode = case.mode.as_str().into();
@@ -6456,10 +6468,10 @@ mod tests {
     }
 
     #[test]
-    fn p2b_mixed_validation_counts_only_remote_operations_as_upcalls() {
+    fn async_load_mixed_validation_counts_only_remote_operations_as_upcalls() {
         let mut case = test_case();
-        case.case_id = "S3-p2b-demand".into();
-        case.mode = EvalMode::SchedulerCore;
+        case.case_id = "S3-async-load-demand".into();
+        case.mode = EvalMode::AsyncLoad;
         case.pattern = EvalPattern::Mixed;
         case.operations = 65_536;
         case.coroutines = 8;
@@ -6486,15 +6498,15 @@ mod tests {
         validate_mode_metrics(&case, &summary, &mut reasons);
         assert_eq!(
             reasons,
-            vec!["P2B does not prove ABI v2 guest-EL0 scheduler progress"]
+            vec!["ASYNC_LOAD does not prove ABI v2 guest-EL0 scheduler progress"]
         );
     }
 
     #[test]
-    fn p2b_single_coroutine_does_not_require_a_context_switch() {
+    fn async_load_single_coroutine_does_not_require_a_context_switch() {
         let mut case = test_case();
-        case.case_id = "S3-p2b-demand".into();
-        case.mode = EvalMode::SchedulerCore;
+        case.case_id = "S3-async-load-demand".into();
+        case.mode = EvalMode::AsyncLoad;
         case.coroutines = 1;
         let mut summary = test_summary(2_000_000_000);
         summary.case_id = case.case_id.clone();
@@ -6516,7 +6528,7 @@ mod tests {
         validate_mode_metrics(&case, &summary, &mut reasons);
         assert_eq!(
             reasons,
-            vec!["P2B does not prove ABI v2 guest-EL0 scheduler progress"]
+            vec!["ASYNC_LOAD does not prove ABI v2 guest-EL0 scheduler progress"]
         );
     }
 
@@ -6691,7 +6703,7 @@ mod tests {
         .expect("expanded policy matrix");
         assert_eq!(cases.len(), 960);
         assert!(cases.iter().any(|case| {
-            case.mode == EvalMode::SchedulerCore
+            case.mode == EvalMode::AsyncLoad
                 && case.model_latency_us == 1_000
                 && case.compute_us == 1_000
                 && case.coroutines == 32
@@ -6742,9 +6754,9 @@ mod tests {
             bucket_paths,
             BTreeSet::from([
                 "S0-sync",
-                "S1-p2a-demand",
-                "S2-p2a-lookahead",
-                "S3-p2b-demand"
+                "S1-submit-await-demand",
+                "S2-submit-await-lookahead",
+                "S3-async-load-demand"
             ])
         );
         fs::remove_dir_all(output).expect("cleanup");
@@ -6791,9 +6803,9 @@ mod tests {
             bucket_paths,
             BTreeSet::from([
                 "S0-sync",
-                "S1-p2a-demand",
-                "S2-p2a-lookahead",
-                "S3-p2b-demand"
+                "S1-submit-await-demand",
+                "S2-submit-await-lookahead",
+                "S3-async-load-demand"
             ])
         );
         fs::remove_dir_all(output).expect("cleanup");
@@ -6835,8 +6847,8 @@ mod tests {
         );
         for case in &cases {
             let expected_latencies = match case.sweep.as_str() {
-                "sync-p2b-boundary-trace" => BTreeSet::from([20, 30, 50, 75]),
-                "p2a-p2b-boundary-trace" => BTreeSet::from([150, 250, 500, 750]),
+                "sync-async-load-boundary-trace" => BTreeSet::from([20, 30, 50, 75]),
+                "submit-await-async-load-boundary-trace" => BTreeSet::from([150, 250, 500, 750]),
                 other => panic!("unexpected trace sweep {other}"),
             };
             assert!(expected_latencies.contains(&case.model_latency_us));
@@ -6847,7 +6859,7 @@ mod tests {
     #[test]
     fn policy_candidate_uses_fixed_vcpu_makespan_gates() {
         let sync = policy_test_row(EvalMode::SyncMmio, EvalIssue::Demand, 1_000, 100, 100);
-        let p2b = policy_test_row(EvalMode::SchedulerCore, EvalIssue::Demand, 800, 500, 1_000);
+        let async_load = policy_test_row(EvalMode::AsyncLoad, EvalIssue::Demand, 800, 500, 1_000);
         let thresholds = PolicyThresholds::new(7);
         let strong_gain = PairedGainStats {
             pair_count: 7,
@@ -6856,12 +6868,13 @@ mod tests {
             ci95_low_milli: Some(100),
             ci95_high_milli: Some(250),
         };
-        let eligible = evaluate_policy_candidate(&sync, &p2b, strong_gain.clone(), &thresholds);
+        let eligible =
+            evaluate_policy_candidate(&sync, &async_load, strong_gain.clone(), &thresholds);
         assert!(eligible.eligible);
         assert_eq!(eligible.reason, "eligible");
         assert_eq!(eligible.p99_regression_milli, Some(4_000));
 
-        let mut extra_vcpu = p2b.clone();
+        let mut extra_vcpu = async_load.clone();
         extra_vcpu.case.extra_vcpus = 1;
         let mismatched = evaluate_policy_candidate(&sync, &extra_vcpu, strong_gain, &thresholds);
         assert!(!mismatched.eligible);
@@ -6869,7 +6882,7 @@ mod tests {
 
         let weak = evaluate_policy_candidate(
             &sync,
-            &p2b,
+            &async_load,
             PairedGainStats {
                 pair_count: 7,
                 positive_pairs: 4,
@@ -6886,19 +6899,38 @@ mod tests {
     #[test]
     fn explicit_policy_chooses_fastest_eligible_path() {
         let sync = policy_test_row(EvalMode::SyncMmio, EvalIssue::Demand, 1_000, 100, 100);
-        let p2a = policy_test_row(EvalMode::AsyncPoll, EvalIssue::Lookahead, 700, 500, 100);
-        let p2b = policy_test_row(EvalMode::SchedulerCore, EvalIssue::Demand, 600, 500, 100);
+        let submit_await =
+            policy_test_row(EvalMode::AsyncPoll, EvalIssue::Lookahead, 700, 500, 100);
+        let async_load = policy_test_row(EvalMode::AsyncLoad, EvalIssue::Demand, 600, 500, 100);
 
         assert_eq!(
-            choose_explicit_policy(Some(&sync), Some(&p2a), Some(&p2b), true, true),
-            "p2b"
+            choose_explicit_policy(
+                Some(&sync),
+                Some(&submit_await),
+                Some(&async_load),
+                true,
+                true
+            ),
+            "async-load"
         );
         assert_eq!(
-            choose_explicit_policy(Some(&sync), Some(&p2a), Some(&p2b), true, false),
-            "p2a"
+            choose_explicit_policy(
+                Some(&sync),
+                Some(&submit_await),
+                Some(&async_load),
+                true,
+                false
+            ),
+            "submit-await"
         );
         assert_eq!(
-            choose_explicit_policy(Some(&sync), Some(&p2a), Some(&p2b), false, false),
+            choose_explicit_policy(
+                Some(&sync),
+                Some(&submit_await),
+                Some(&async_load),
+                false,
+                false
+            ),
             "sync"
         );
     }
@@ -6906,8 +6938,9 @@ mod tests {
     #[test]
     fn logical_operation_identity_ignores_mechanism() {
         let sync = operation_list_hash(EvalBand::Scalar, 7, 8, 10_000, 8, EvalPattern::Sequential);
-        let p2a = operation_list_hash(EvalBand::Scalar, 7, 8, 10_000, 8, EvalPattern::Sequential);
-        assert_eq!(sync, p2a);
+        let submit_await =
+            operation_list_hash(EvalBand::Scalar, 7, 8, 10_000, 8, EvalPattern::Sequential);
+        assert_eq!(sync, submit_await);
     }
 
     #[test]
@@ -7004,7 +7037,7 @@ mod tests {
         let transparency =
             fs::read_to_string(output.join("summary/transparency.csv")).expect("Band T");
         assert!(transparency.contains("custom_hardware_components"));
-        assert!(transparency.contains("P2B,ordinary-scalar-LDR"));
+        assert!(transparency.contains("ASYNC_LOAD,ordinary-scalar-LDR"));
         let break_even =
             fs::read_to_string(output.join("summary/break-even.csv")).expect("break even");
         assert!(break_even.contains("nonpositive_latency_us,positive_latency_us"));

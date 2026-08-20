@@ -9,7 +9,7 @@
   <desc id="desc">
     模型和 serving client 经 typed SDK 访问独立 mem_service 控制面。控制面通过
     provider contract 选择 OBMM、Block 或 DFS。OBMM 热数据路径进入 ub_sim 的
-    guest、Linux UAPI 和 QEMU 模型；慢速普通远端 load 触发 P2B direct EL0 upcall，
+    guest、Linux UAPI 和 QEMU 模型；慢速普通远端 load 触发 async load direct EL0 upcall，
     由 guest EL0 scheduler 切换和恢复协程。完整 PoC 仍需一条统一验收链覆盖全部环节。
   </desc>
 
@@ -158,7 +158,7 @@
 
   <path class="arrow-accent" d="M 752 786 L 752 823 L 220 823 L 220 801"/>
   <text class="arrow-label" x="486" y="816" text-anchor="middle">
-    P2B direct EL0 upcall：pending / complete / fault
+    async load direct EL0 upcall：pending / complete / fault
   </text>
   <text class="small" x="486" y="849" text-anchor="middle">
     guest EL0 scheduler 保存上下文、选择其他 coroutine，并在 completion 后恢复

@@ -1,6 +1,6 @@
-# P2A：OBMM submit/await + EL0 协程详细设计
+# OBMM submit/await + EL0 协程详细设计
 
-> 状态：已实现；P2A gate 通过
+> 状态：已实现；submit/await gate 通过
 >
 > 日期：2026-08-11
 >
@@ -8,28 +8,28 @@
 >
 > 共同底座：[P1：provider-neutral split-phase backend](p1-split-phase-backend-detailed-design.md)
 >
-> 对照方案：[P2B：普通 LDR + scheduler core 详细设计](p2b-scheduler-core-detailed-design.md)
+> 对照方案：[async load：普通 LDR + coroutine scheduler 详细设计](async-load-coroutine-scheduler-detailed-design.md)
 >
 > 实施证据：[P0–P4 实施与验证报告](2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)
 
 ## 1. 结论
 
-P2A 把一次远端读显式拆成 `submit` 和 `await`：`submit` 产生稳定 token，远端结果
+submit/await 把一次远端读显式拆成 `submit` 和 `await`：`submit` 产生稳定 token，远端结果
 写入预注册 destination buffer，`await` 只在结果未完成时把当前 EL0 协程从
 `RUNNING` 变为 `WAIT_REMOTE`。同一 guest vCPU 随后运行其他 `READY` 协程。
 
 该方案是标准 AArch64/Linux 软件路径，不修改异常级别、普通 `LDR` 退休语义或
-QEMU 的通用 MMIO read contract。它也是 P2B 的正确性和性能基线。
+QEMU 的通用 MMIO read contract。它也是 async load 的正确性和性能基线。
 
 对用户的直接影响是：访问点必须通过 API、编译器 lowering 或上层 tensor runtime
 显式表达；作为交换，调用方可以在真正消费数据前提前 submit，完整处理 timeout/
 retire/I/O failure，并且不依赖自定义 CPU。
 
-![P2A 数据面、队列 ownership 与协程状态](p2a-submit-await-flow.svg)
+![submit/await 数据面、队列 ownership 与协程状态](submit-await-flow.svg)
 
 ## 2. 范围与非目标
 
-### 2.1 P2A 必须交付
+### 2.1 submit/await 必须交付
 
 - 一套 provider-neutral 的 64-byte SQ/CQ ABI；
 - 独立 OBMM async endpoint，不复用现有 Lingqu 服务命令描述符；
@@ -40,7 +40,7 @@ retire/I/O failure，并且不依赖自定义 CPU。
 - token、ring、状态机、CLI/build/run contract 测试；
 - 与同步 OBMM/GSVA load 一致的 payload 校验和故障注入结果。
 
-### 2.2 P2A 不做
+### 2.2 submit/await 不做
 
 - 不让任意普通指针 `LDR` 自动变成异步访问；
 - 不实现 remote store、atomic、exclusive、SVE/vector 语义；
@@ -62,18 +62,18 @@ retire/I/O failure，并且不依赖自定义 CPU。
 | remote-memory provider | request token、payload transfer、completion | 执行 split-phase read；不管理 EL0 上下文 |
 
 现有 Linqu endpoint 的寄存器布局、64-byte ring slot 和 IRQ/poll 代码是实现参考，
-不是可兼容的命令 ABI。P2A 使用独立 capability/endpoint，避免服务命令和远端内存
+不是可兼容的命令 ABI。submit/await 使用独立 capability/endpoint，避免服务命令和远端内存
 命令共享 opcode、queue lifetime 或错误语义。
 
 ### 3.2 必须先完成的 P1 backend
 
-P2A 依赖一个真正的多请求 backend，而不是在 EL0 包装当前同步 read：
+submit/await 依赖一个真正的多请求 backend，而不是在 EL0 包装当前同步 read：
 
 ```text
 accept request -> allocate provider token -> return to vCPU
                -> remote transfer in flight
 response       -> P1 result slot -> validate generations
-               -> P2A sink copies destination -> publish CQE
+               -> submit/await sink copies destination -> publish CQE
 ```
 
 当前单一 `sim_dec_sync_read` + poll/`g_usleep()` 只能用于 `sync-mmio` 基线。P1 应把
@@ -370,7 +370,7 @@ provider response
   -> P1 match provider token/chunks and commit terminal result
   -> revalidate request + map + buffer generations
   -> reject duplicate/late/stale
-  -> P2A sink copies P1-owned payload to registered destination
+  -> submit/await sink copies P1-owned payload to registered destination
   -> optional checksum verify
   -> release-publish CQE
   -> raise coalesced IRQ if armed
@@ -397,7 +397,7 @@ fault，但仍不能静默丢 completion。
 
 ## 9. Schedule-ahead 策略
 
-P2A 的主要优势不是 `await` 本身，而是可以在消费点之前发出请求：
+submit/await 的主要优势不是 `await` 本身，而是可以在消费点之前发出请求：
 
 ```c
 for (i = 0; i < lookahead; i++)
@@ -420,9 +420,9 @@ buffer bytes 和 `max_inflight` 限制。dependent chain 没有可提前的独�
 |---:|---|---|
 | 1 | `guest-linux/kernel_ub/include/uapi/ub/obmm_async.h` | v1 ioctl、SQ/CQ、status、capability；layout asserts |
 | 2 | `guest-linux/aarch64/driver/linqu_ub_drv.c` | queue/buffer owner、mmap/ioctl、poll/IRQ、teardown |
-| 3 | `vendor/qemu_8.2.0_ub/include/hw/ub/ub_obmm_async.h` | P2A endpoint/SQ/CQ adapter state |
+| 3 | `vendor/qemu_8.2.0_ub/include/hw/ub/ub_obmm_async.h` | submit/await endpoint/SQ/CQ adapter state |
 | 4 | `vendor/qemu_8.2.0_ub/hw/ub/ub_obmm_async.c` | MMIO、SQ drain、CQ publish、timeout/cancel |
-| 5 | P1 `ub_obmm_remote.*`、`ub_ubc.c` | 共同 validation、result pool、provider completion；P2A sink 复制/发布 |
+| 5 | P1 `ub_obmm_remote.*`、`ub_ubc.c` | 共同 validation、result pool、provider completion；submit/await sink 复制/发布 |
 | 6 | `guest-linux/aarch64/libs/obmm_async/` | C API、future table、ring、AArch64 context switch |
 | 7 | `guest-linux/aarch64/apps/obmm_async_coroutine/` | 统一 CLI、workload、checksum summary |
 | 8 | `guest-linux/aarch64/scripts/build_initramfs.sh` | 构建并打包 app/library |
@@ -483,7 +483,7 @@ switch_ns_p50=... cq_drain_ns_p50=... overlap_milli=...
 - failure 从不表现为 payload 0 的 success；
 - guest 退出后无残留 `qemu-system-aarch64`。
 
-### 12.3 P2A 退出条件
+### 12.3 submit/await 退出条件
 
 1. 64 个乱序 in-flight 请求无错配、越界或 CQ 覆盖；
 2. A 等待时 B 在同一 vCPU 推进，A 恢复后寄存器/栈/结果正确；
@@ -493,7 +493,7 @@ switch_ns_p50=... cq_drain_ns_p50=... overlap_milli=...
 
 ## 13. 尚未冻结的实验参数
 
-以下不是 ABI，必须由 P0/P1/P2A 数据决定：
+以下不是 ABI，必须由 P0/P1/submit/await 数据决定：
 
 - `spin_us`、IRQ coalescing threshold；
 - 默认 `lookahead`、`max_inflight`、batch size；

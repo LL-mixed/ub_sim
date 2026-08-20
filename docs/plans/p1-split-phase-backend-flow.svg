@@ -25,10 +25,10 @@
   <text x="185" y="186" text-anchor="middle" class="head">Test sink submit</text>
   <text x="185" y="215" text-anchor="middle" class="body">conformance / qtest</text>
   <rect x="60" y="272" width="250" height="92" class="box" fill="#dbeafe"/>
-  <text x="185" y="306" text-anchor="middle" class="head">P2A endpoint</text>
+  <text x="185" y="306" text-anchor="middle" class="head">submit/await endpoint</text>
   <text x="185" y="335" text-anchor="middle" class="body">SQ + registered buffer</text>
   <rect x="60" y="392" width="250" height="92" class="box" fill="#ede9fe"/>
-  <text x="185" y="426" text-anchor="middle" class="head">P2B RLA / PLT</text>
+  <text x="185" y="426" text-anchor="middle" class="head">async load RLA / PLT</text>
   <text x="185" y="455" text-anchor="middle" class="body">ordinary scalar LDR</text>
 
   <rect x="380" y="152" width="260" height="332" class="box" fill="#f1f5f9"/>
@@ -85,15 +85,15 @@
   <text x="255" y="744" text-anchor="middle" class="body">exactly-once counter</text>
 
   <rect x="545" y="618" width="390" height="142" class="box" fill="#dbeafe"/>
-  <text x="740" y="654" text-anchor="middle" class="head">P2A sink</text>
+  <text x="740" y="654" text-anchor="middle" class="head">submit/await sink</text>
   <text x="740" y="688" text-anchor="middle" class="body">copy result → registered destination</text>
   <text x="740" y="718" text-anchor="middle" class="body">release-publish CQE / optional IRQ</text>
   <text x="740" y="744" text-anchor="middle" class="mono">future becomes terminal</text>
 
   <rect x="1030" y="618" width="390" height="142" class="box" fill="#ede9fe"/>
-  <text x="1225" y="654" text-anchor="middle" class="head">P2B sink</text>
+  <text x="1225" y="654" text-anchor="middle" class="head">async load sink</text>
   <text x="1225" y="688" text-anchor="middle" class="body">copy scalar → PLT result field</text>
-  <text x="1225" y="718" text-anchor="middle" class="body">queue SCC COMPLETE / FAULT event</text>
+  <text x="1225" y="718" text-anchor="middle" class="body">queue coroutine scheduler COMPLETE / FAULT event</text>
   <text x="1225" y="744" text-anchor="middle" class="mono">no direct CPUARMState write</text>
 
   <path d="M875 588 C700 588 455 588 255 610" class="flow"/>

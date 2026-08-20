@@ -1,5 +1,5 @@
 scenario:
-  name: mvp_2host_p2b_remote_10ms
+  name: mvp_2host_async_load_remote_10ms
   group: M
   variant: m_single_domain_mvp
   seed: 42
@@ -31,7 +31,7 @@ remote_memory_model:
   duplicate_delay_ns: 1000
   seed: 1
 
-scheduler_core_model:
+async_load_model:
   enabled: true
   context_entries: 64
   pending_load_entries: 64

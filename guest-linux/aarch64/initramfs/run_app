@@ -401,7 +401,7 @@ run_obmm_async_coroutine() {
   for token in $cmdline; do
     case "$token" in
       obmm_async_mode=*) args="$args --mode ${token#*=}" ;;
-      obmm_async_p2b_completion=*) args="$args --p2b-completion ${token#*=}" ;;
+      obmm_async_load_completion=*) args="$args --async-load-completion ${token#*=}" ;;
       obmm_async_coroutines=*) args="$args --coroutines ${token#*=}" ;;
       obmm_async_inflight=*) args="$args --inflight ${token#*=}" ;;
       obmm_async_lookahead=*) args="$args --lookahead ${token#*=}" ;;
@@ -417,7 +417,7 @@ run_obmm_async_coroutine() {
       obmm_async_seed=*) args="$args --seed ${token#*=}" ;;
       obmm_async_peer_index=*) args="$args --peer-index ${token#*=}" ;;
       obmm_async_producer_index=*) args="$args --producer-index ${token#*=}" ;;
-      obmm_async_p2b_producer_consumer=1) args="$args --p2b-producer-consumer" ;;
+      obmm_async_load_producer_consumer=1) args="$args --async-load-producer-consumer" ;;
       obmm_uffd_case=*) args="$args --uffd-case ${token#*=}" ;;
       obmm_uffd_worker_threads=*) args="$args --worker-threads ${token#*=}" ;;
       obmm_uffd_handler_cpu=*) args="$args --handler-cpu ${token#*=}" ;;
@@ -446,7 +446,7 @@ run_obmm_async_coroutine() {
     if [ "$expected_outcome" = "drop-timeout" ]; then
       timeout_count=1
     fi
-    echo "OBMM_EVAL_SUMMARY schema=1 band=$(cmdline_value obmm_eval_band range) mode=$mode case=$eval_case seed=$(cmdline_value obmm_async_seed 1) operations=0 checksum=0000000000000000 failures=1 timeouts=$timeout_count guest_ns_p50=0 guest_ns_p95=0 guest_ns_p99=0 guest_ns_max=0 makespan_ns=0 model_wait_ns=0 useful_work_ns=0 application_cpu_ns=0 helper_cpu_ns=0 extra_vcpus=1 trace_sample_ppm=$(cmdline_value obmm_async_trace_sample_ppm 0) trace_sampled=0 trace_dropped=0 ready_ns=0 wait_ns=0 idle_ns=0 no_ready=0 submit_ns_p50=0 submit_ns_total=0 switch_ns_p50=0 switch_ns_total=0 cq_drain_ns_p50=0 cq_drain_ns_total=0 configured_lookahead=0 backend_pending_high=0 backend_capacity=0 sink_copy_bytes=0 sink_copy_ns=0 backend_late=0 backend_duplicate=0 scc_save_cycles=0 scc_schedule_cycles=0 scc_restore_cycles=0 scc_commit_cycles=0 el0_upcalls_pending=0 el0_upcalls_complete=0 el0_upcalls_fault=0 el0_context_saves=0 el0_context_restores=0 el0_context_switches=0 el0_context_bytes=0 el0_scheduler_ns=0 el0_no_ready_waits=0 direct_el0_upcalls=0 qemu_context_saves=0 qemu_context_restores=0 qemu_context_switches=0 qemu_context_bytes=0 uffd_fault_ns_p50=0 uffd_fault_ns_p95=0 uffd_fault_ns_p99=0 uffd_fault_ns_max=0 uffd_remote_ns_p50=0 uffd_remote_ns_p95=0 uffd_remote_ns_p99=0 uffd_remote_ns_max=0 uffd_copy_ns_p50=0 uffd_copy_ns_p95=0 uffd_copy_ns_p99=0 uffd_copy_ns_max=0 uffd_wake_ns_p50=0 uffd_wake_ns_p95=0 uffd_wake_ns_p99=0 uffd_wake_ns_max=0 uffd_handler_cpu_ns=0 uffd_worker_cpu_ns=0 model_pending_final=1 backend_pending_final=1 scc_pending_final=0 counter_overflow=0 clock_regressions=0 fail_closed_process_exit=1 status=fail"
+    echo "OBMM_EVAL_SUMMARY schema=1 band=$(cmdline_value obmm_eval_band range) mode=$mode case=$eval_case seed=$(cmdline_value obmm_async_seed 1) operations=0 checksum=0000000000000000 failures=1 timeouts=$timeout_count guest_ns_p50=0 guest_ns_p95=0 guest_ns_p99=0 guest_ns_max=0 makespan_ns=0 model_wait_ns=0 useful_work_ns=0 application_cpu_ns=0 helper_cpu_ns=0 extra_vcpus=1 trace_sample_ppm=$(cmdline_value obmm_async_trace_sample_ppm 0) trace_sampled=0 trace_dropped=0 ready_ns=0 wait_ns=0 idle_ns=0 no_ready=0 submit_ns_p50=0 submit_ns_total=0 switch_ns_p50=0 switch_ns_total=0 cq_drain_ns_p50=0 cq_drain_ns_total=0 configured_lookahead=0 backend_pending_high=0 backend_capacity=0 sink_copy_bytes=0 sink_copy_ns=0 backend_late=0 backend_duplicate=0 async_load_save_cycles=0 async_load_schedule_cycles=0 async_load_restore_cycles=0 async_load_commit_cycles=0 el0_upcalls_pending=0 el0_upcalls_complete=0 el0_upcalls_fault=0 el0_context_saves=0 el0_context_restores=0 el0_context_switches=0 el0_context_bytes=0 el0_scheduler_ns=0 el0_no_ready_waits=0 direct_el0_upcalls=0 qemu_context_saves=0 qemu_context_restores=0 qemu_context_switches=0 qemu_context_bytes=0 uffd_fault_ns_p50=0 uffd_fault_ns_p95=0 uffd_fault_ns_p99=0 uffd_fault_ns_max=0 uffd_remote_ns_p50=0 uffd_remote_ns_p95=0 uffd_remote_ns_p99=0 uffd_remote_ns_max=0 uffd_copy_ns_p50=0 uffd_copy_ns_p95=0 uffd_copy_ns_p99=0 uffd_copy_ns_max=0 uffd_wake_ns_p50=0 uffd_wake_ns_p95=0 uffd_wake_ns_p99=0 uffd_wake_ns_max=0 uffd_handler_cpu_ns=0 uffd_worker_cpu_ns=0 model_pending_final=1 backend_pending_final=1 async_load_pending_final=0 counter_overflow=0 clock_regressions=0 fail_closed_process_exit=1 status=fail"
   fi
   return "$rc"
 }

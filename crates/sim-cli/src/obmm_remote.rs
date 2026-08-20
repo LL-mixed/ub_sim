@@ -320,8 +320,8 @@ fn build_model_manifest(config: &ScenarioConfig) -> anyhow::Result<RemoteMemoryM
 }
 
 #[cfg(test)]
-fn scheduler_core_model_spec(config: &ScenarioConfig) -> String {
-    let model = &config.scheduler_core_model;
+fn async_load_model_spec(config: &ScenarioConfig) -> String {
+    let model = &config.async_load_model;
 
     format!(
         "v2|enabled={}|contexts={}|pending={}|events={}|clock_mhz={}",
@@ -484,25 +484,25 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ObmmConformanceSink {
     Test,
-    P2a,
-    P2b,
+    SubmitAwait,
+    AsyncLoad,
 }
 
 impl ObmmConformanceSink {
     fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
             "test" => Ok(Self::Test),
-            "p2a" => Ok(Self::P2a),
-            "p2b" => Ok(Self::P2b),
-            _ => anyhow::bail!("--sink must be test, p2a, or p2b"),
+            "submit-await" => Ok(Self::SubmitAwait),
+            "async-load" => Ok(Self::AsyncLoad),
+            _ => anyhow::bail!("--sink must be test, submit-await, or async-load"),
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
             Self::Test => "test",
-            Self::P2a => "p2a",
-            Self::P2b => "p2b",
+            Self::SubmitAwait => "submit-await",
+            Self::AsyncLoad => "async-load",
         }
     }
 }
@@ -652,8 +652,8 @@ where
     if !matches!(access_bytes, 1 | 2 | 4 | 8 | 64 | 4096 | 65536) {
         anyhow::bail!("--access-bytes must be one of 1, 2, 4, 8, 64, 4096, 65536");
     }
-    if sink == ObmmConformanceSink::P2b && access_bytes > 8 {
-        anyhow::bail!("P2B sink only supports 1, 2, 4, or 8 bytes");
+    if sink == ObmmConformanceSink::AsyncLoad && access_bytes > 8 {
+        anyhow::bail!("ASYNC_LOAD sink only supports 1, 2, 4, or 8 bytes");
     }
     Ok(Some(ObmmConformanceCliArgs {
         scenario_path,
@@ -774,8 +774,8 @@ fn run_conformance_suite(
     fs::create_dir_all(&raw_dir)?;
     let sinks = [
         ObmmConformanceSink::Test,
-        ObmmConformanceSink::P2a,
-        ObmmConformanceSink::P2b,
+        ObmmConformanceSink::SubmitAwait,
+        ObmmConformanceSink::AsyncLoad,
     ];
     let cases = [
         ObmmConformanceCase::Inline,
@@ -790,7 +790,7 @@ fn run_conformance_suite(
     let mut evidence = Vec::new();
     let mut count = 0_u64;
     for sink in sinks {
-        let sizes: &[u32] = if sink == ObmmConformanceSink::P2b {
+        let sizes: &[u32] = if sink == ObmmConformanceSink::AsyncLoad {
             &[1, 2, 4, 8]
         } else {
             &[1, 2, 4, 8, 64, 4096, 65536]
@@ -867,8 +867,8 @@ fn run_conformance_suite(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ObmmPhaseGate {
     P0,
-    P2a,
-    P2b,
+    SubmitAwait,
+    AsyncLoad,
     P4,
 }
 
@@ -876,18 +876,18 @@ impl ObmmPhaseGate {
     fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
             "p0" => Ok(Self::P0),
-            "p2a" => Ok(Self::P2a),
-            "p2b" => Ok(Self::P2b),
+            "submit-await" => Ok(Self::SubmitAwait),
+            "async-load" => Ok(Self::AsyncLoad),
             "p4" => Ok(Self::P4),
-            _ => anyhow::bail!("--phase must be p0, p2a, p2b, or p4"),
+            _ => anyhow::bail!("--phase must be p0, submit-await, async-load, or p4"),
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
             Self::P0 => "p0",
-            Self::P2a => "p2a",
-            Self::P2b => "p2b",
+            Self::SubmitAwait => "submit-await",
+            Self::AsyncLoad => "async-load",
             Self::P4 => "p4",
         }
     }
@@ -895,8 +895,8 @@ impl ObmmPhaseGate {
     fn eval_mode(self) -> &'static str {
         match self {
             Self::P0 => "sync-mmio",
-            Self::P2a => "async-poll",
-            Self::P2b => "scheduler-core",
+            Self::SubmitAwait => "async-poll",
+            Self::AsyncLoad => "async-load",
             Self::P4 => "userfaultfd",
         }
     }
@@ -1232,25 +1232,28 @@ fn exactly_one_matching_marker(
     Ok(matches.into_iter().next().expect("one matching marker"))
 }
 
-fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyhow::Result<()> {
+fn validate_async_load_producer_consumer_evidence(
+    text: &str,
+    node_count: u64,
+) -> anyhow::Result<()> {
     if node_count != 2 {
-        anyhow::bail!("P2B producer/consumer gate requires a two-node run");
+        anyhow::bail!("ASYNC_LOAD producer/consumer gate requires a two-node run");
     }
-    let node_evidence = node_markers(text, "OBMM_P2B_NODE_EVIDENCE ", node_count)?;
+    let node_evidence = node_markers(text, "OBMM_ASYNC_LOAD_NODE_EVIDENCE ", node_count)?;
     let producer_node = node_evidence
         .iter()
         .find(|fields| fields.get("role").map(String::as_str) == Some("producer"))
-        .ok_or_else(|| anyhow::anyhow!("missing P2B producer node evidence"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing ASYNC_LOAD producer node evidence"))?;
     let consumer_node = node_evidence
         .iter()
         .find(|fields| fields.get("role").map(String::as_str) == Some("consumer"))
-        .ok_or_else(|| anyhow::anyhow!("missing P2B consumer node evidence"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing ASYNC_LOAD consumer node evidence"))?;
     require_field(producer_node, "node", "nodeA")?;
     require_field(producer_node, "status", "ready")?;
     require_field(consumer_node, "node", "nodeB")?;
     require_field(consumer_node, "status", "pass")?;
 
-    let export = exactly_one_marker(text, "OBMM_P2B_EXPORT ")?;
+    let export = exactly_one_marker(text, "OBMM_ASYNC_LOAD_EXPORT ")?;
     require_field(&export, "schema", "1")?;
     require_field(&export, "role", "producer")?;
     require_field(&export, "node", "0")?;
@@ -1259,10 +1262,10 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
         .get("export_mem_id")
         .ok_or_else(|| anyhow::anyhow!("missing producer export_mem_id"))?;
     if required_u64(&export, "bytes")? == 0 {
-        anyhow::bail!("P2B producer export must be non-empty");
+        anyhow::bail!("ASYNC_LOAD producer export must be non-empty");
     }
 
-    let import = exactly_one_marker(text, "OBMM_P2B_IMPORT ")?;
+    let import = exactly_one_marker(text, "OBMM_ASYNC_LOAD_IMPORT ")?;
     require_field(&import, "schema", "1")?;
     require_field(&import, "role", "consumer")?;
     require_field(&import, "node", "1")?;
@@ -1270,7 +1273,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
     require_field(&import, "source_export_mem_id", export_mem_id)?;
     require_field(&import, "status", "mapped")?;
 
-    let summary = exactly_one_marker(text, "OBMM_P2B_SUMMARY ")?;
+    let summary = exactly_one_marker(text, "OBMM_ASYNC_LOAD_SUMMARY ")?;
     require_field(&summary, "schema", "1")?;
     require_field(&summary, "role", "consumer")?;
     require_field(&summary, "producer_node", "0")?;
@@ -1292,17 +1295,17 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
         || required_u64(&summary, "qemu_context_restores")? != 0
         || required_u64(&summary, "qemu_context_switches")? != 0
         || required_u64(&summary, "qemu_context_bytes")? != 0
-        || required_u64(&summary, "scc_pending_final")? != 0
+        || required_u64(&summary, "async_load_pending_final")? != 0
         || required_u64(&summary, "backend_pending_final")? != 0
         || required_u64(&summary, "trace_dropped")? != 0
     {
-        anyhow::bail!("P2B summary does not prove EL0 scheduler progress and drain");
+        anyhow::bail!("ASYNC_LOAD summary does not prove EL0 scheduler progress and drain");
     }
     if required_u64(&summary, "el0_context_saves")? != required_u64(&summary, "direct_el0_upcalls")?
     {
-        anyhow::bail!("P2B EL0 context saves must match direct EL0 upcalls");
+        anyhow::bail!("ASYNC_LOAD EL0 context saves must match direct EL0 upcalls");
     }
-    match summary.get("p2b_completion").map(String::as_str) {
+    match summary.get("async_load_completion").map(String::as_str) {
         None | Some("patch") => {
             if summary
                 .get("replay_consumed")
@@ -1317,7 +1320,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
                     .unwrap_or(0)
                     != 0
             {
-                anyhow::bail!("P2B patch mode reported replay activity");
+                anyhow::bail!("ASYNC_LOAD patch mode reported replay activity");
             }
         }
         Some("replay") => {
@@ -1325,13 +1328,13 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
                 || required_u64(&summary, "replay_mismatch")? != 0
                 || required_u64(&summary, "replay_ready_high_water")? == 0
             {
-                anyhow::bail!("P2B replay mode does not prove exact-once replay retirement");
+                anyhow::bail!("ASYNC_LOAD replay mode does not prove exact-once replay retirement");
             }
         }
-        Some(mode) => anyhow::bail!("unknown P2B completion mode: {mode}"),
+        Some(mode) => anyhow::bail!("unknown ASYNC_LOAD completion mode: {mode}"),
     }
     if required_u64(&export, "writes")? != coroutines {
-        anyhow::bail!("P2B producer writes must match the coroutine count");
+        anyhow::bail!("ASYNC_LOAD producer writes must match the coroutine count");
     }
 
     let mut blocked_load_switches = 0;
@@ -1339,7 +1342,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
         let coroutine_text = coroutine.to_string();
         let (_, write) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_WRITE ",
+            "OBMM_ASYNC_LOAD_WRITE ",
             &[("coroutine", coroutine_text.as_str())],
         )?;
         require_field(&write, "export_mem_id", export_mem_id)?;
@@ -1352,7 +1355,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (_, context) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_CONTEXT ",
+            "OBMM_ASYNC_LOAD_CONTEXT ",
             &[("coroutine", coroutine_text.as_str())],
         )?;
         require_field(&context, "state", "ready")?;
@@ -1362,7 +1365,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (issue_position, issue) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_LDR ",
+            "OBMM_ASYNC_LOAD_LDR ",
             &[("event", "issue"), ("coroutine", coroutine_text.as_str())],
         )?;
         require_field(&issue, "context_id", context_id)?;
@@ -1371,7 +1374,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (pending_position, pending) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_UPCALL ",
+            "OBMM_ASYNC_LOAD_UPCALL ",
             &[("event", "pending"), ("coroutine", coroutine_text.as_str())],
         )?;
         require_field(&pending, "context_id", context_id)?;
@@ -1380,7 +1383,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (complete_position, complete) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_UPCALL ",
+            "OBMM_ASYNC_LOAD_UPCALL ",
             &[
                 ("event", "complete"),
                 ("coroutine", coroutine_text.as_str()),
@@ -1407,7 +1410,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (resume_position, resume) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_SCHEDULE ",
+            "OBMM_ASYNC_LOAD_SCHEDULE ",
             &[
                 ("event", "resume"),
                 ("to_coroutine", coroutine_text.as_str()),
@@ -1418,7 +1421,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (retire_position, retire) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_LDR ",
+            "OBMM_ASYNC_LOAD_LDR ",
             &[("event", "retire"), ("coroutine", coroutine_text.as_str())],
         )?;
         require_field(&retire, "context_id", context_id)?;
@@ -1429,7 +1432,7 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
 
         let (_, coroutine_summary) = exactly_one_matching_marker(
             text,
-            "OBMM_P2B_COROUTINE_SUMMARY ",
+            "OBMM_ASYNC_LOAD_COROUTINE_SUMMARY ",
             &[("coroutine", coroutine_text.as_str())],
         )?;
         require_field(&coroutine_summary, "context_id", context_id)?;
@@ -1439,14 +1442,14 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
         require_field(&coroutine_summary, "complete", "1")?;
         require_field(&coroutine_summary, "status", "pass")?;
         if required_u64(&coroutine_summary, "resumes_after_complete")? == 0 {
-            anyhow::bail!("P2B coroutine {coroutine} was not resumed after completion");
+            anyhow::bail!("ASYNC_LOAD coroutine {coroutine} was not resumed after completion");
         }
         if !(issue_position < pending_position
             && pending_position < complete_position
             && complete_position < resume_position
             && resume_position < retire_position)
         {
-            anyhow::bail!("P2B coroutine {coroutine} causal event order is invalid");
+            anyhow::bail!("ASYNC_LOAD coroutine {coroutine} causal event order is invalid");
         }
         let interval = text
             .lines()
@@ -1455,13 +1458,13 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
             .map(|(_, line)| line)
             .collect::<Vec<_>>();
         let switched_to_another = interval.iter().any(|line| {
-            marker_fields(line, "OBMM_P2B_SCHEDULE ").is_some_and(|fields| {
+            marker_fields(line, "OBMM_ASYNC_LOAD_SCHEDULE ").is_some_and(|fields| {
                 fields.get("event").map(String::as_str) == Some("resume")
                     && fields.get("to_context_id").map(String::as_str) != Some(context_id.as_str())
             })
         });
         let another_coroutine_issued_load = interval.iter().any(|line| {
-            marker_fields(line, "OBMM_P2B_LDR ").is_some_and(|fields| {
+            marker_fields(line, "OBMM_ASYNC_LOAD_LDR ").is_some_and(|fields| {
                 fields.get("event").map(String::as_str) == Some("issue")
                     && fields.get("context_id").map(String::as_str) != Some(context_id.as_str())
             })
@@ -1472,14 +1475,14 @@ fn validate_p2b_producer_consumer_evidence(text: &str, node_count: u64) -> anyho
     }
     if blocked_load_switches == 0 {
         anyhow::bail!(
-            "P2B does not prove that a blocked load switched to another coroutine that issued an LDR"
+            "ASYNC_LOAD does not prove that a blocked load switched to another coroutine that issued an LDR"
         );
     }
 
-    let causal = exactly_one_marker(text, "OBMM_P2B_CAUSAL_SUMMARY ")?;
+    let causal = exactly_one_marker(text, "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY ")?;
     require_field(&causal, "status", "pass")?;
     if required_u64(&causal, "blocked_load_switches")? != blocked_load_switches {
-        anyhow::bail!("P2B blocked-load switch count does not match causal trace");
+        anyhow::bail!("ASYNC_LOAD blocked-load switch count does not match causal trace");
     }
 
     for backend in node_markers(text, "OBMM_BACKEND_EVIDENCE ", node_count)? {
@@ -1507,8 +1510,8 @@ fn validate_phase_evidence(
     if !matches!(node_count, 2 | 4 | 8) {
         anyhow::bail!("node_count must be 2, 4, or 8");
     }
-    if phase == ObmmPhaseGate::P2b {
-        return validate_p2b_producer_consumer_evidence(text, node_count);
+    if phase == ObmmPhaseGate::AsyncLoad {
+        return validate_async_load_producer_consumer_evidence(text, node_count);
     }
 
     let summary = exactly_one_marker(text, "OBMM_EVAL_SUMMARY ")?;
@@ -1520,7 +1523,7 @@ fn validate_phase_evidence(
         "timeouts",
         "model_pending_final",
         "backend_pending_final",
-        "scc_pending_final",
+        "async_load_pending_final",
         "trace_dropped",
         "backend_late",
         "backend_duplicate",
@@ -1559,7 +1562,7 @@ fn validate_phase_evidence(
             "timeouts",
             "model_pending_final",
             "backend_pending_final",
-            "scc_pending_final",
+            "async_load_pending_final",
             "trace_dropped",
             "backend_late",
             "backend_duplicate",
@@ -1599,7 +1602,7 @@ fn validate_phase_evidence(
                 require_field(&baseline, "backend_pending", "0")?;
             }
         }
-        ObmmPhaseGate::P2a => {
+        ObmmPhaseGate::SubmitAwait => {
             require_field(&summary, "extra_vcpus", "0")?;
             for node in &node_evidence {
                 require_field(node, "extra_vcpus", "0")?;
@@ -1607,7 +1610,7 @@ fn validate_phase_evidence(
                     || required_u64(node, "switch_ns_total")? == 0
                     || required_u64(node, "cq_drain_ns_total")? == 0
                 {
-                    anyhow::bail!("P2A node does not prove await/switch/resume progress");
+                    anyhow::bail!("submit/await node does not prove await/switch/resume progress");
                 }
             }
             for async_summary in node_markers(text, "OBMM_ASYNC_SUMMARY ", node_count)? {
@@ -1619,17 +1622,21 @@ fn validate_phase_evidence(
                 require_field(&async_summary, "stale", "0")?;
                 require_field(&async_summary, "model_pending", "0")?;
                 require_field(&async_summary, "backend_pending", "0")?;
-                require_field(&async_summary, "scc_pending", "0")?;
+                require_field(&async_summary, "async_load_pending", "0")?;
                 require_field(&async_summary, "checksum", checksum)?;
                 if required_u64(&async_summary, "coroutines")? < 2
                     || required_u64(&async_summary, "completed")? != operations
                     || required_u64(&async_summary, "switches")? == 0
                 {
-                    anyhow::bail!("P2A evidence does not prove await/switch/resume progress");
+                    anyhow::bail!(
+                        "submit/await evidence does not prove await/switch/resume progress"
+                    );
                 }
             }
         }
-        ObmmPhaseGate::P2b => unreachable!("P2B is validated before common symmetric evidence"),
+        ObmmPhaseGate::AsyncLoad => {
+            unreachable!("ASYNC_LOAD is validated before common symmetric evidence")
+        }
         ObmmPhaseGate::P4 => {
             require_field(&summary, "extra_vcpus", "1")?;
             let expected_copy_bytes = operations
@@ -1781,60 +1788,60 @@ mod tests {
     }
 
     fn phase_evidence(phase: ObmmPhaseGate, model_hash: &str) -> String {
-        if phase == ObmmPhaseGate::P2b {
+        if phase == ObmmPhaseGate::AsyncLoad {
             return format!(
                 "OBMM_RUN_EVIDENCE node_count=2 model_contract_hash={model_hash} \
                  qemu_destroyed=1\n\
-                 OBMM_P2B_NODE_EVIDENCE node=nodeA role=producer \
+                 OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeA role=producer \
                  export_mem_id=17 writes=2 status=ready\n\
-                 OBMM_P2B_NODE_EVIDENCE node=nodeB role=consumer \
+                 OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer \
                  source_export_mem_id=17 coroutines=2 completed=2 status=pass\n\
-                 OBMM_P2B_CAUSAL_SUMMARY blocked_load_switches=1 status=pass\n\
-                 OBMM_P2B_WRITE schema=1 producer_node=0 coroutine=0 \
+                 OBMM_ASYNC_LOAD_CAUSAL_SUMMARY blocked_load_switches=1 status=pass\n\
+                 OBMM_ASYNC_LOAD_WRITE schema=1 producer_node=0 coroutine=0 \
                  export_mem_id=17 offset=4096 value=1111111111111111\n\
-                 OBMM_P2B_WRITE schema=1 producer_node=0 coroutine=1 \
+                 OBMM_ASYNC_LOAD_WRITE schema=1 producer_node=0 coroutine=1 \
                  export_mem_id=17 offset=8192 value=2222222222222222\n\
-                 OBMM_P2B_EXPORT schema=1 role=producer node=0 export_mem_id=17 \
+                 OBMM_ASYNC_LOAD_EXPORT schema=1 role=producer node=0 export_mem_id=17 \
                  remote_uba=0000000000100000 bytes=2097152 writes=2 status=ready\n\
-                 OBMM_P2B_IMPORT schema=1 role=consumer node=1 producer_node=0 \
+                 OBMM_ASYNC_LOAD_IMPORT schema=1 role=consumer node=1 producer_node=0 \
                  source_export_mem_id=17 import_mem_id=33 bytes=2097152 status=mapped\n\
-                 OBMM_P2B_CONTEXT schema=1 coroutine=0 context_id=abc0 state=ready\n\
-                 OBMM_P2B_CONTEXT schema=1 coroutine=1 context_id=abc1 state=ready\n\
-                 OBMM_P2B_SCHEDULE schema=1 event=resume from_context_id=0000 \
+                 OBMM_ASYNC_LOAD_CONTEXT schema=1 coroutine=0 context_id=abc0 state=ready\n\
+                 OBMM_ASYNC_LOAD_CONTEXT schema=1 coroutine=1 context_id=abc1 state=ready\n\
+                 OBMM_ASYNC_LOAD_SCHEDULE schema=1 event=resume from_context_id=0000 \
                  to_context_id=abc0 to_coroutine=0 after_complete=0\n\
-                 OBMM_P2B_LDR schema=1 event=issue coroutine=0 context_id=abc0 \
+                 OBMM_ASYNC_LOAD_LDR schema=1 event=issue coroutine=0 context_id=abc0 \
                  offset=4096 expected=1111111111111111\n\
-                 OBMM_P2B_UPCALL schema=1 event=pending coroutine=0 context_id=abc0 \
+                 OBMM_ASYNC_LOAD_UPCALL schema=1 event=pending coroutine=0 context_id=abc0 \
                  sequence=1 token=1001 pc=2000 bytes=8 rt=0 status=0\n\
-                 OBMM_P2B_SCHEDULE schema=1 event=resume from_context_id=abc0 \
+                 OBMM_ASYNC_LOAD_SCHEDULE schema=1 event=resume from_context_id=abc0 \
                  to_context_id=abc1 to_coroutine=1 after_complete=0\n\
-                 OBMM_P2B_LDR schema=1 event=issue coroutine=1 context_id=abc1 \
+                 OBMM_ASYNC_LOAD_LDR schema=1 event=issue coroutine=1 context_id=abc1 \
                  offset=8192 expected=2222222222222222\n\
-                 OBMM_P2B_UPCALL schema=1 event=pending coroutine=1 context_id=abc1 \
+                 OBMM_ASYNC_LOAD_UPCALL schema=1 event=pending coroutine=1 context_id=abc1 \
                  sequence=2 token=1002 pc=3000 bytes=8 rt=1 status=0\n\
-                 OBMM_P2B_UPCALL schema=1 event=complete coroutine=0 context_id=abc0 \
+                 OBMM_ASYNC_LOAD_UPCALL schema=1 event=complete coroutine=0 context_id=abc0 \
                  sequence=3 token=1001 pc=2000 bytes=8 rt=0 \
                  value=1111111111111111 status=0\n\
-                 OBMM_P2B_SCHEDULE schema=1 event=resume from_context_id=abc1 \
+                 OBMM_ASYNC_LOAD_SCHEDULE schema=1 event=resume from_context_id=abc1 \
                  to_context_id=abc0 to_coroutine=0 after_complete=1\n\
-                 OBMM_P2B_LDR schema=1 event=retire coroutine=0 context_id=abc0 \
+                 OBMM_ASYNC_LOAD_LDR schema=1 event=retire coroutine=0 context_id=abc0 \
                  offset=4096 expected=1111111111111111 actual=1111111111111111 \
                  latency_ns=10000 status=pass\n\
-                 OBMM_P2B_UPCALL schema=1 event=complete coroutine=1 context_id=abc1 \
+                 OBMM_ASYNC_LOAD_UPCALL schema=1 event=complete coroutine=1 context_id=abc1 \
                  sequence=4 token=1002 pc=3000 bytes=8 rt=1 \
                  value=2222222222222222 status=0\n\
-                 OBMM_P2B_SCHEDULE schema=1 event=resume from_context_id=abc0 \
+                 OBMM_ASYNC_LOAD_SCHEDULE schema=1 event=resume from_context_id=abc0 \
                  to_context_id=abc1 to_coroutine=1 after_complete=1\n\
-                 OBMM_P2B_LDR schema=1 event=retire coroutine=1 context_id=abc1 \
+                 OBMM_ASYNC_LOAD_LDR schema=1 event=retire coroutine=1 context_id=abc1 \
                  offset=8192 expected=2222222222222222 actual=2222222222222222 \
                  latency_ns=11000 status=pass\n\
-                 OBMM_P2B_COROUTINE_SUMMARY schema=1 coroutine=0 context_id=abc0 \
+                 OBMM_ASYNC_LOAD_COROUTINE_SUMMARY schema=1 coroutine=0 context_id=abc0 \
                  expected=1111111111111111 actual=1111111111111111 pending=1 \
                  complete=1 resumes_after_complete=1 status=pass\n\
-                 OBMM_P2B_COROUTINE_SUMMARY schema=1 coroutine=1 context_id=abc1 \
+                 OBMM_ASYNC_LOAD_COROUTINE_SUMMARY schema=1 coroutine=1 context_id=abc1 \
                  expected=2222222222222222 actual=2222222222222222 pending=1 \
                  complete=1 resumes_after_complete=1 status=pass\n\
-                 OBMM_P2B_SUMMARY schema=1 role=consumer producer_node=0 \
+                 OBMM_ASYNC_LOAD_SUMMARY schema=1 role=consumer producer_node=0 \
                  consumer_node=1 source_export_mem_id=17 import_mem_id=33 \
                  coroutines=2 completed=2 values_verified=2 \
                  el0_upcalls_pending=2 el0_upcalls_complete=2 el0_upcalls_fault=0 \
@@ -1842,8 +1849,8 @@ mod tests {
                  el0_context_switches=3 direct_el0_upcalls=4 \
                  qemu_context_saves=0 qemu_context_restores=0 \
                  qemu_context_switches=0 qemu_context_bytes=0 \
-                 scc_pending_final=0 backend_pending_final=0 trace_dropped=0 \
-                 p2b_completion=patch replay_consumed=0 replay_mismatch=0 \
+                 async_load_pending_final=0 backend_pending_final=0 trace_dropped=0 \
+                 async_load_completion=patch replay_consumed=0 replay_mismatch=0 \
                  replay_ready_high_water=0 \
                  status=pass\n\
                  OBMM_BACKEND_EVIDENCE node=nodeA duplicate=0 late=0 drained=1\n\
@@ -1855,8 +1862,8 @@ mod tests {
                 "sync-mmio",
                 0,
                 "switch_ns_total=0 cq_drain_ns_total=0 \
-                 scc_save_cycles=0 scc_schedule_cycles=0 scc_restore_cycles=0 \
-                 scc_commit_cycles=0 uffd_fault_ns_max=0 uffd_remote_ns_max=0 \
+                 async_load_save_cycles=0 async_load_schedule_cycles=0 async_load_restore_cycles=0 \
+                 async_load_commit_cycles=0 uffd_fault_ns_max=0 uffd_remote_ns_max=0 \
                  uffd_copy_ns_max=0 uffd_wake_ns_max=0",
                 "",
                 "OBMM_BASELINE_SUMMARY schema=1 case=local-dram status=pass \
@@ -1866,18 +1873,18 @@ mod tests {
                  iterations=4 checksum=0123456789abcdef failures=0 timeouts=0 \
                  model_pending=0 backend_pending=0",
             ),
-            ObmmPhaseGate::P2a => (
+            ObmmPhaseGate::SubmitAwait => (
                 "async-poll",
                 0,
                 "useful_work_ns=40 switch_ns_total=20 cq_drain_ns_total=30 \
-                 scc_save_cycles=0 scc_schedule_cycles=0 scc_restore_cycles=0 \
-                 scc_commit_cycles=0 uffd_fault_ns_max=0 uffd_remote_ns_max=0 \
+                 async_load_save_cycles=0 async_load_schedule_cycles=0 async_load_restore_cycles=0 \
+                 async_load_commit_cycles=0 uffd_fault_ns_max=0 uffd_remote_ns_max=0 \
                  uffd_copy_ns_max=0 uffd_wake_ns_max=0",
                 "OBMM_NODE_EVIDENCE node=nodeA drained=1 mode=async-poll \
                  operations=4 checksum=0123456789abcdef failures=0 timeouts=0 \
                  useful_work_ns=40 helper_cpu_ns=0 extra_vcpus=0 \
                  switch_ns_total=20 cq_drain_ns_total=30 sink_copy_bytes=32 \
-                 model_pending_final=0 backend_pending_final=0 scc_pending_final=0 \
+                 model_pending_final=0 backend_pending_final=0 async_load_pending_final=0 \
                  trace_dropped=0 backend_late=0 backend_duplicate=0 \
                  counter_overflow=0 clock_regressions=0 fail_closed_process_exit=0 \
                  status=pass\n\
@@ -1885,34 +1892,34 @@ mod tests {
                  operations=4 checksum=0123456789abcdef failures=0 timeouts=0 \
                  useful_work_ns=40 helper_cpu_ns=0 extra_vcpus=0 \
                  switch_ns_total=20 cq_drain_ns_total=30 sink_copy_bytes=32 \
-                 model_pending_final=0 backend_pending_final=0 scc_pending_final=0 \
+                 model_pending_final=0 backend_pending_final=0 async_load_pending_final=0 \
                  trace_dropped=0 backend_late=0 backend_duplicate=0 \
                  counter_overflow=0 clock_regressions=0 fail_closed_process_exit=0 \
                  status=pass\n",
                 "OBMM_ASYNC_SUMMARY abi=1 mode=async-poll status=pass \
                  coroutines=2 completed=4 switches=3 failures=0 timeouts=0 stale=0 \
                  checksum=0123456789abcdef model_pending=0 backend_pending=0 \
-                 scc_pending=0\n\
+                 async_load_pending=0\n\
                  OBMM_BACKEND_EVIDENCE node=nodeA duplicate=0 late=0 drained=1\n\
                  OBMM_ASYNC_SUMMARY abi=1 mode=async-poll status=pass \
                  coroutines=2 completed=4 switches=3 failures=0 timeouts=0 stale=0 \
                  checksum=0123456789abcdef model_pending=0 backend_pending=0 \
-                 scc_pending=0\n\
+                 async_load_pending=0\n\
                  OBMM_BACKEND_EVIDENCE node=nodeB duplicate=0 late=0 drained=1",
             ),
-            ObmmPhaseGate::P2b => unreachable!("P2B fixture returned above"),
+            ObmmPhaseGate::AsyncLoad => unreachable!("ASYNC_LOAD fixture returned above"),
             ObmmPhaseGate::P4 => (
                 "userfaultfd",
                 1,
                 "switch_ns_total=0 cq_drain_ns_total=0 \
-                 scc_save_cycles=0 scc_schedule_cycles=0 scc_restore_cycles=0 \
-                 scc_commit_cycles=0 uffd_fault_ns_max=10 uffd_remote_ns_max=20 \
+                 async_load_save_cycles=0 async_load_schedule_cycles=0 async_load_restore_cycles=0 \
+                 async_load_commit_cycles=0 uffd_fault_ns_max=10 uffd_remote_ns_max=20 \
                  uffd_copy_ns_max=30 uffd_wake_ns_max=40",
                 "OBMM_NODE_EVIDENCE node=nodeA drained=1 mode=userfaultfd \
                  operations=4 checksum=0123456789abcdef failures=0 timeouts=0 \
                  helper_cpu_ns=10 extra_vcpus=1 sink_copy_bytes=16384 \
                  uffd_handler_cpu_ns=10 uffd_worker_cpu_ns=10 \
-                 model_pending_final=0 backend_pending_final=0 scc_pending_final=0 \
+                 model_pending_final=0 backend_pending_final=0 async_load_pending_final=0 \
                  trace_dropped=0 backend_late=0 backend_duplicate=0 \
                  counter_overflow=0 clock_regressions=0 fail_closed_process_exit=0 \
                  status=pass\n\
@@ -1920,7 +1927,7 @@ mod tests {
                  operations=4 checksum=0123456789abcdef failures=0 timeouts=0 \
                  helper_cpu_ns=10 extra_vcpus=1 sink_copy_bytes=16384 \
                  uffd_handler_cpu_ns=10 uffd_worker_cpu_ns=10 \
-                 model_pending_final=0 backend_pending_final=0 scc_pending_final=0 \
+                 model_pending_final=0 backend_pending_final=0 async_load_pending_final=0 \
                  trace_dropped=0 backend_late=0 backend_duplicate=0 \
                  counter_overflow=0 clock_regressions=0 fail_closed_process_exit=0 \
                  status=pass\n",
@@ -1943,7 +1950,7 @@ mod tests {
              qemu_destroyed=1\n\
              OBMM_EVAL_SUMMARY schema=1 mode={mode} operations=4 \
              checksum=0123456789abcdef failures=0 timeouts=0 \
-             model_pending_final=0 backend_pending_final=0 scc_pending_final=0 \
+             model_pending_final=0 backend_pending_final=0 async_load_pending_final=0 \
              trace_dropped=0 backend_late=0 backend_duplicate=0 counter_overflow=0 \
              clock_regressions=0 fail_closed_process_exit=0 \
              extra_vcpus={extra_vcpus} {phase_fields} status=pass\n\
@@ -1977,9 +1984,17 @@ mod tests {
 
     #[test]
     fn phase_gate_args_require_explicit_evidence() {
+        let removed_phase = format!("--phase={}", ["p2", "a"].concat());
+        let legacy_error =
+            phase_gate_args_from(["obmm-remote-load-phase-gate".to_string(), removed_phase])
+                .expect_err("the removed phase name must fail closed");
+        assert!(legacy_error
+            .to_string()
+            .contains("--phase must be p0, submit-await, async-load, or p4"));
+
         let args = phase_gate_args_from([
             "obmm-remote-load-phase-gate",
-            "--phase=p2a",
+            "--phase=submit-await",
             "--scenario=scenarios/mvp_2host_single_domain.yaml",
             "--model-manifest=out/model.json",
             "--evidence=out/run.log",
@@ -1987,13 +2002,13 @@ mod tests {
         ])
         .expect("parse gate args")
         .expect("phase gate args");
-        assert_eq!(args.phase, ObmmPhaseGate::P2a);
+        assert_eq!(args.phase, ObmmPhaseGate::SubmitAwait);
         assert!(args.case_model_manifest_paths.is_empty());
         assert_eq!(args.evidence_paths, vec![PathBuf::from("out/run.log")]);
 
         let error = phase_gate_args_from([
             "obmm-remote-load-phase-gate",
-            "--phase=p2a",
+            "--phase=submit-await",
             "--scenario=scenarios/mvp_2host_single_domain.yaml",
             "--model-manifest=out/model.json",
             "--output-dir=out/gates",
@@ -2019,49 +2034,49 @@ mod tests {
         let accepted = BTreeSet::from([hash.to_string()]);
         for phase in [
             ObmmPhaseGate::P0,
-            ObmmPhaseGate::P2a,
-            ObmmPhaseGate::P2b,
+            ObmmPhaseGate::SubmitAwait,
+            ObmmPhaseGate::AsyncLoad,
             ObmmPhaseGate::P4,
         ] {
             validate_phase_evidence(phase, &accepted, &phase_evidence(phase, hash))
                 .expect("valid phase evidence");
         }
-        let invalid = phase_evidence(ObmmPhaseGate::P2b, hash)
+        let invalid = phase_evidence(ObmmPhaseGate::AsyncLoad, hash)
             .replace("el0_context_saves=4", "el0_context_saves=0");
-        let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &invalid)
-            .expect_err("missing EL0 save evidence must fail P2B gate");
+        let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid)
+            .expect_err("missing EL0 save evidence must fail ASYNC_LOAD gate");
         assert!(error.to_string().contains("EL0 scheduler progress"));
 
         let invalid =
-            phase_evidence(ObmmPhaseGate::P2b, hash).replace("completed=2", "completed=1");
-        let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &invalid)
-            .expect_err("incomplete P2B operation set must fail");
+            phase_evidence(ObmmPhaseGate::AsyncLoad, hash).replace("completed=2", "completed=1");
+        let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid)
+            .expect_err("incomplete ASYNC_LOAD operation set must fail");
         assert!(error.to_string().contains("EL0 scheduler progress"));
 
-        let invalid = phase_evidence(ObmmPhaseGate::P2b, hash)
+        let invalid = phase_evidence(ObmmPhaseGate::AsyncLoad, hash)
             .replace("qemu_context_saves=0", "qemu_context_saves=1");
-        let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &invalid)
-            .expect_err("QEMU-owned P2B context save must fail");
+        let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid)
+            .expect_err("QEMU-owned ASYNC_LOAD context save must fail");
         assert!(error.to_string().contains("EL0 scheduler progress"));
 
-        let replay = phase_evidence(ObmmPhaseGate::P2b, hash).replace(
-            "p2b_completion=patch replay_consumed=0 replay_mismatch=0 \
+        let replay = phase_evidence(ObmmPhaseGate::AsyncLoad, hash).replace(
+            "async_load_completion=patch replay_consumed=0 replay_mismatch=0 \
                  replay_ready_high_water=0",
-            "p2b_completion=replay replay_consumed=2 replay_mismatch=0 \
+            "async_load_completion=replay replay_consumed=2 replay_mismatch=0 \
                  replay_ready_high_water=2",
         );
-        validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &replay)
-            .expect("exact-once replay evidence must pass P2B gate");
+        validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &replay)
+            .expect("exact-once replay evidence must pass ASYNC_LOAD gate");
         let invalid_replay = replay.replace("replay_consumed=2", "replay_consumed=1");
-        let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &invalid_replay)
-            .expect_err("incomplete replay retirement must fail P2B gate");
+        let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid_replay)
+            .expect_err("incomplete replay retirement must fail ASYNC_LOAD gate");
         assert!(error.to_string().contains("exact-once replay"));
 
-        let legacy_symmetric = phase_evidence(ObmmPhaseGate::P2a, hash)
-            .replace("mode=async-poll", "mode=scheduler-core");
-        let error = validate_phase_evidence(ObmmPhaseGate::P2b, &accepted, &legacy_symmetric)
-            .expect_err("legacy symmetric aggregate evidence must not pass P2B");
-        assert!(error.to_string().contains("P2B_NODE_EVIDENCE"));
+        let legacy_symmetric = phase_evidence(ObmmPhaseGate::SubmitAwait, hash)
+            .replace("mode=async-poll", "mode=async-load");
+        let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &legacy_symmetric)
+            .expect_err("legacy symmetric aggregate evidence must not pass ASYNC_LOAD");
+        assert!(error.to_string().contains("ASYNC_LOAD_NODE_EVIDENCE"));
 
         let invalid = phase_evidence(ObmmPhaseGate::P4, hash).replace("faults=4", "faults=3");
         let error = validate_phase_evidence(ObmmPhaseGate::P4, &accepted, &invalid)
@@ -2070,13 +2085,13 @@ mod tests {
             .to_string()
             .contains("P4 faults must equal operations"));
 
-        let invalid = phase_evidence(ObmmPhaseGate::P2a, hash).replacen(
+        let invalid = phase_evidence(ObmmPhaseGate::SubmitAwait, hash).replacen(
             "OBMM_ASYNC_SUMMARY ",
             "OBMM_ASYNC_SUMMARY_MISSING ",
             1,
         );
-        let error = validate_phase_evidence(ObmmPhaseGate::P2a, &accepted, &invalid)
-            .expect_err("one P2A marker per node is required");
+        let error = validate_phase_evidence(ObmmPhaseGate::SubmitAwait, &accepted, &invalid)
+            .expect_err("one submit/await marker per node is required");
         assert!(error
             .to_string()
             .contains("marker count must equal node_count"));
@@ -2153,27 +2168,27 @@ mod tests {
         let config = ScenarioConfig::from_yaml_file(scenario_path()).expect("scenario");
         let model = build_model_manifest(&config).expect("model manifest");
         let model_path = input_dir.join("model.json");
-        let evidence_path = input_dir.join("p2a.log");
+        let evidence_path = input_dir.join("submit-await.log");
         write_pretty_json(&model_path, &model).expect("write model");
         fs::write(
             &evidence_path,
-            phase_evidence(ObmmPhaseGate::P2a, &model.manifest_hash),
+            phase_evidence(ObmmPhaseGate::SubmitAwait, &model.manifest_hash),
         )
         .expect("write evidence");
 
         run_phase_gate_cli(&ObmmPhaseGateCliArgs {
-            phase: ObmmPhaseGate::P2a,
+            phase: ObmmPhaseGate::SubmitAwait,
             scenario_path: scenario_path(),
             model_manifest_path: model_path,
             case_model_manifest_paths: Vec::new(),
             evidence_paths: vec![evidence_path],
             output_dir: output_dir.clone(),
         })
-        .expect("package P2A gate");
-        let gate = fs::read_to_string(output_dir.join("p2a.json")).expect("gate JSON");
-        assert!(gate.contains("\"phase\": \"p2a\""));
+        .expect("package submit/await gate");
+        let gate = fs::read_to_string(output_dir.join("submit-await.json")).expect("gate JSON");
+        assert!(gate.contains("\"phase\": \"submit-await\""));
         assert!(gate.contains(&model.manifest_hash));
-        assert!(output_dir.join("evidence/p2a").is_dir());
+        assert!(output_dir.join("evidence/submit-await").is_dir());
 
         fs::remove_dir_all(output_dir).expect("remove output");
         fs::remove_dir_all(input_dir).expect("remove input");
@@ -2212,11 +2227,11 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_core_spec_is_canonical_and_scenario_driven() {
+    fn async_load_spec_is_canonical_and_scenario_driven() {
         let config = ScenarioConfig::from_yaml_file(scenario_path()).expect("scenario");
 
         assert_eq!(
-            scheduler_core_model_spec(&config),
+            async_load_model_spec(&config),
             "v2|enabled=1|contexts=64|pending=64|events=128|clock_mhz=2000"
         );
     }
@@ -2253,29 +2268,40 @@ mod tests {
 
     #[test]
     fn conformance_args_validate_sink_size_contract() {
+        let removed_sink = format!("--sink={}", ["p2", "a"].concat());
+        let legacy_error = conformance_args_from([
+            "obmm-remote-backend-conformance".to_string(),
+            removed_sink,
+            "--dry-run".to_string(),
+        ])
+        .expect_err("the removed sink name must fail closed");
+        assert!(legacy_error
+            .to_string()
+            .contains("--sink must be test, submit-await, or async-load"));
+
         let args = conformance_args_from([
             "obmm-remote-backend-conformance",
-            "--sink=p2a",
+            "--sink=submit-await",
             "--case=inflight64",
             "--access-bytes=65536",
             "--seed=7",
             "--dry-run",
         ])
-        .expect("parse P2A conformance")
+        .expect("parse submit/await conformance")
         .expect("conformance args");
-        assert_eq!(args.sink, ObmmConformanceSink::P2a);
+        assert_eq!(args.sink, ObmmConformanceSink::SubmitAwait);
         assert_eq!(args.case, ObmmConformanceCase::Inflight64);
         assert_eq!(args.access_bytes, 65536);
 
         let error = conformance_args_from([
             "obmm-remote-backend-conformance",
-            "--sink=p2b",
+            "--sink=async-load",
             "--case=inline",
             "--access-bytes=64",
             "--dry-run",
         ])
-        .expect_err("P2B vector read must fail");
-        assert!(error.to_string().contains("P2B sink"));
+        .expect_err("ASYNC_LOAD vector read must fail");
+        assert!(error.to_string().contains("ASYNC_LOAD sink"));
 
         let suite = conformance_args_from([
             "obmm-remote-backend-conformance-suite",
@@ -2312,11 +2338,11 @@ mod tests {
     }
 
     #[test]
-    fn p2b_conformance_uses_the_same_provider_neutral_binary() {
+    fn async_load_conformance_uses_the_same_provider_neutral_binary() {
         let output_dir = temp_output_dir();
         let args = ObmmConformanceCliArgs {
             scenario_path: scenario_path(),
-            sink: ObmmConformanceSink::P2b,
+            sink: ObmmConformanceSink::AsyncLoad,
             case: ObmmConformanceCase::Inline,
             access_bytes: 8,
             seed: 11,
@@ -2325,11 +2351,11 @@ mod tests {
             suite: false,
         };
 
-        run_conformance_cli(&args).expect("P2B conformance dry run");
+        run_conformance_cli(&args).expect("ASYNC_LOAD conformance dry run");
         let run_text =
             fs::read_to_string(output_dir.join("run-manifest.json")).expect("run manifest");
         assert!(run_text.contains("test-ub-obmm-remote"));
-        assert!(run_text.contains("\"p2b\""));
+        assert!(run_text.contains("\"async-load\""));
         fs::remove_dir_all(output_dir).expect("remove temp output");
     }
 }

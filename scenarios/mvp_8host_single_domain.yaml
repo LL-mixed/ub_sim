@@ -31,7 +31,7 @@ remote_memory_model:
   duplicate_delay_ns: 1000
   seed: 1
 
-scheduler_core_model:
+async_load_model:
   enabled: true
   context_entries: 64
   pending_load_entries: 64

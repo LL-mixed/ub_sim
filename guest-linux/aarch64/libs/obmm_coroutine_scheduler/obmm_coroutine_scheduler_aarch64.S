@@ -3,9 +3,9 @@
     .text
     .align 4
 
-    .global obmm_scc_upcall_entry
-    .type obmm_scc_upcall_entry, %function
-obmm_scc_upcall_entry:
+    .global obmm_coroutine_scheduler_upcall_entry
+    .type obmm_coroutine_scheduler_upcall_entry, %function
+obmm_coroutine_scheduler_upcall_entry:
     sub sp, sp, #832
     stp xzr, xzr, [sp, #0]
     stp x0, x1, [sp, #16]
@@ -53,40 +53,40 @@ obmm_scc_upcall_entry:
     str x9, [sp, #816]
     str xzr, [sp, #824]
     mov x19, sp
-    bl obmm_scc_scheduler_stack_top
+    bl obmm_coroutine_scheduler_scheduler_stack_top
     cbz x0, .Lfatal
     mov sp, x0
     mov x0, x19
-    bl obmm_scc_upcall_dispatch
+    bl obmm_coroutine_scheduler_upcall_dispatch
     b .Lfatal
-    .size obmm_scc_upcall_entry, .-obmm_scc_upcall_entry
+    .size obmm_coroutine_scheduler_upcall_entry, .-obmm_coroutine_scheduler_upcall_entry
 
-    .global obmm_scc_context_bootstrap
-    .type obmm_scc_context_bootstrap, %function
-obmm_scc_context_bootstrap:
+    .global obmm_coroutine_scheduler_context_bootstrap
+    .type obmm_coroutine_scheduler_context_bootstrap, %function
+obmm_coroutine_scheduler_context_bootstrap:
     mov x0, x19
-    bl obmm_scc_context_entry_c
-    bl obmm_scc_context_finish
+    bl obmm_coroutine_scheduler_context_entry_c
+    bl obmm_coroutine_scheduler_context_finish
     b .Lfatal
-    .size obmm_scc_context_bootstrap, .-obmm_scc_context_bootstrap
+    .size obmm_coroutine_scheduler_context_bootstrap, .-obmm_coroutine_scheduler_context_bootstrap
 
-    .global obmm_scc_context_finish
-    .type obmm_scc_context_finish, %function
-obmm_scc_context_finish:
-    bl obmm_scc_scheduler_stack_top
+    .global obmm_coroutine_scheduler_context_finish
+    .type obmm_coroutine_scheduler_context_finish, %function
+obmm_coroutine_scheduler_context_finish:
+    bl obmm_coroutine_scheduler_scheduler_stack_top
     cbz x0, .Lfatal
     mov sp, x0
-    bl obmm_scc_schedule_after_exit
+    bl obmm_coroutine_scheduler_schedule_after_exit
     b .Lfatal
-    .size obmm_scc_context_finish, .-obmm_scc_context_finish
+    .size obmm_coroutine_scheduler_context_finish, .-obmm_coroutine_scheduler_context_finish
 
-    .global obmm_scc_context_resume
-    .type obmm_scc_context_resume, %function
-obmm_scc_context_resume:
+    .global obmm_coroutine_scheduler_context_resume
+    .type obmm_coroutine_scheduler_context_resume, %function
+obmm_coroutine_scheduler_context_resume:
     /* Custom simulated resume primitive: HLT #0x5343, x0 = context. */
     .inst 0xd44a6860
     b .Lfatal
-    .size obmm_scc_context_resume, .-obmm_scc_context_resume
+    .size obmm_coroutine_scheduler_context_resume, .-obmm_coroutine_scheduler_context_resume
 
 .Lfatal:
     brk #0

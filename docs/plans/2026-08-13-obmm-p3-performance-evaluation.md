@@ -1,5 +1,8 @@
 # OBMM remote-load P3 ABI v2 性能评估结果
 
+> 命名说明：当前机制名为 `async load`。文中小写 `p2b` 仅用于精确引用改名前的
+> 远端 workspace 和历史 evidence 路径。
+
 > 日期：2026-08-13；更新：2026-08-20
 >
 > 状态：**2-node formal acceptance、4/8-node 定向 scale-out、2,240-case
@@ -12,22 +15,22 @@
 
 当前可以给出五条有证据边界的结论：
 
-1. ABI v2 的 2-node formal acceptance 为 **49/49 pass**，P0、P1、P2A、P2B、P4
+1. ABI v2 的 2-node formal acceptance 为 **49/49 pass**，P0、P1、submit/await、async load、P4
    五个 phase gate 全部通过；旧 ABI v1 的 49-case 结果没有复用。
 2. 在 `1 µs remote latency + 100 µs useful compute + 4 coroutines` 的 scalar
-   基准点，P2B 相对 P2A demand 在 2/4/8-node 的 cluster throughput 分别高
+   基准点，async load 相对 submit/await demand 在 2/4/8-node 的 cluster throughput 分别高
    `29.77%`、`35.13%`、`28.21%`。
 3. 2-node coarse runtime policy 的 **2,240/2,240 canonical run 全部通过**。policy
    schema v2 按固定 guest-vCPU 下的 workload makespan 重聚合：transparent policy 为
-   `sync 48 / P2B 32`，explicit policy 为 `sync 48 / P2A 7 / P2B 25`。
+   `sync 48 / async load 32`，explicit policy 为 `sync 48 / submit/await 7 / async load 25`。
 4. fine-grained formal boundary 的 **1,960/1,960 canonical run 全部通过**。70 个
-   endpoint 的 transparent policy 为 `sync 32 / P2B 38`，explicit policy 为
-   `sync 32 / P2A 7 / P2B 31`；三个 P2B measured-fastest endpoint 因发布阈值不足
+   endpoint 的 transparent policy 为 `sync 32 / async load 38`，explicit policy 为
+   `sync 32 / submit/await 7 / async load 31`；三个 async load measured-fastest endpoint 因发布阈值不足
    fail closed 到 sync。
 5. 完整 P3 sensitivity 仍未完成。4,942-case full matrix 负责覆盖 jitter、tail、
    failure、range 和更完整的 crossing，当前保持暂停；coarse bucket 不向未测区域外推。
 
-![P2A 与 P2B 在 2、4、8 节点上的 cluster throughput 和相对收益](2026-08-13-obmm-p3-performance-results.svg)
+![submit/await 与 async load 在 2、4、8 节点上的 cluster throughput 和相对收益](2026-08-13-obmm-p3-performance-results.svg)
 
 ## 2. 评估对象与公平性
 
@@ -43,11 +46,11 @@
 | useful compute | 100 µs / op |
 | coroutines | 4 |
 | seeds | 1..7 |
-| P2A demand | `async-poll`，inflight=8，lookahead=0 |
-| P2B demand | `scheduler-core`，inflight=1，lookahead=0 |
+| submit/await demand | `async-poll`，inflight=8，lookahead=0 |
+| async load demand | `async-load`，inflight=1，lookahead=0 |
 
-P2A demand 与 P2B demand 都在真实消费点发起访问。P2A lookahead 是单列实验，不能
-并入 P2A demand 后再与 P2B 比较。
+submit/await demand 与 async load demand 都在真实消费点发起访问。submit/await lookahead 是单列实验，不能
+并入 submit/await demand 后再与 async load 比较。
 
 ### 2.2 Cluster metric
 
@@ -64,9 +67,9 @@ cluster_throughput = cluster_operations / cluster_makespan
 - `OBMM_RUN_EVIDENCE` 恰好一条且 `qemu_destroyed=1`；
 - node evidence 数量等于 topology node count；
 - 每节点 checksum、operations、seed、mode、case、drain 和 terminal counters 正确；
-- P2B 的 pending/complete 等于 operations，EL0 context/scheduler counters 为正；
-- P2B 的 QEMU-owned context 和旧 `scc_*_cycles` counters 全为零；
-- 同 seed 的 P2A/P2B checksum 相同；
+- async load 的 pending/complete 等于 operations，EL0 context/scheduler counters 为正；
+- async load 的 QEMU-owned context 和 `async_load_*_cycles` counters 全为零；
+- 同 seed 的 submit/await 与 async load checksum 相同；
 - QEMU、kernel、initramfs hash 在所有 run 中一致。
 
 任一条件不满足，报告状态为 `invalid`，该 run 不进入结论。
@@ -92,25 +95,25 @@ out/obmm-remote-load/p3-acceptance-abi-v2-20260813-r1/
 ```
 
 `validation.json` 的状态为 `pass`：49 个 raw run 全部有效，7-seed requirement 满足，
-P0/P1/P2A/P2B/P4 gate 均为 `pass`，`invalid_reasons=[]`。
+P0、P1、submit/await、async load、P4 gate 均为 `pass`，`invalid_reasons=[]`。
 
 ### 4.1 Band S：单节点 canonical summary
 
 下表沿用 evaluator 的 canonical nodeA 口径，用于与既有 `scalar.csv` 一致：
 
-| Case | Median req/s | Median makespan | 相对 P2A demand |
+| Case | Median req/s | Median makespan | 相对 submit/await demand |
 |---|---:|---:|---:|
 | S0 sync | 5,460.91 | 5.494 s | +78.22% throughput |
-| S1 P2A demand | 3,064.13 | 9.791 s | baseline |
-| S2 P2A lookahead=4 | 3,098.35 | 9.683 s | +1.12% throughput |
-| S3 P2B demand | 3,979.55 | 7.539 s | +29.88% throughput |
+| S1 submit/await demand | 3,064.13 | 9.791 s | baseline |
+| S2 submit/await lookahead=4 | 3,098.35 | 9.683 s | +1.12% throughput |
+| S3 async load demand | 3,979.55 | 7.539 s | +29.88% throughput |
 
-P2B 对 P2A demand 的 median makespan 降低约 `23.0%`。但在这个 1-µs 低延迟点，
-同步 scalar 仍比 P2B 快约 `37.2%`；异步路径的固定提交/调度开销大于可隐藏的 1-µs
-remote wait。因此该点证明的是 **P2B 优于当前 P2A demand 实现**，并不证明异步机制
+async load 对 submit/await demand 的 median makespan 降低约 `23.0%`。但在这个 1-µs 低延迟点，
+同步 scalar 仍比 async load 快约 `37.2%`；异步路径的固定提交/调度开销大于可隐藏的 1-µs
+remote wait。因此该点证明的是 **async load 优于当前 submit/await demand 实现**，并不证明异步机制
 已经越过同步路径的 break-even。
 
-P2A lookahead=4 相对 P2A demand 仅提高约 `1.12%`，对应 median makespan 减少
+submit/await lookahead=4 相对 submit/await demand 仅提高约 `1.12%`，对应 median makespan 减少
 `108.154 ms`。由于 acceptance 只测了一个 latency 点，不能从这里推导 schedule-ahead
 的完整 break-even 区间。
 
@@ -119,23 +122,23 @@ P2A lookahead=4 相对 P2A demand 仅提高约 `1.12%`，对应 median makespan 
 | Case | Median req/s | Median makespan | 相对 sync range |
 |---|---:|---:|---:|
 | R0 sync range | 3,654.05 | 71.741 s | baseline |
-| R1 P2A range | 3,842.31 | 68.226 s | +5.15% throughput |
+| R1 submit/await range | 3,842.31 | 68.226 s | +5.15% throughput |
 | R2 userfaultfd | 2,031.74 | 129.024 s | −44.40% throughput |
 
 每个 case 处理 262,144 个 4-KiB logical operation，即 1 GiB payload。该 Band 只比较
-相同 4-KiB 粒度；P2B v2 的 1/2/4/8-byte scalar load 不进入该表。
+相同 4-KiB 粒度；async load v2 的 1/2/4/8-byte scalar load 不进入该表。
 
-## 5. 2/4/8-node P2A 与 P2B scale-out
+## 5. 2/4/8-node submit/await 与 async load scale-out
 
 ### 5.1 Cluster throughput
 
-| Nodes | P2A demand ops/s | P2B demand ops/s | P2B throughput gain | P2B makespan reduction |
+| Nodes | submit/await demand ops/s | async load demand ops/s | async load throughput gain | async load makespan reduction |
 |---:|---:|---:|---:|---:|
 | 2 | 6,128.257 | 7,952.771 | +29.77% | 22.94% |
 | 4 | 11,476.680 | 15,508.576 | +35.13% | 26.00% |
 | 8 | 21,470.680 | 27,527.730 | +28.21% | 22.00% |
 
-每个 topology 的 P2A 和 P2B 都是 7/7 valid seeds；4-node 与 8-node 各有 14/14
+每个 topology 的 submit/await 和 async load 都是 7/7 valid seeds；4-node 与 8-node 各有 14/14
 有效 run。2-node cluster 行由同一个 scale reporter 从 formal acceptance JSONL 中重新
 聚合，避免 nodeA 口径与 scale-out 口径混用。
 
@@ -145,45 +148,45 @@ P2A lookahead=4 相对 P2A demand 仅提高约 `1.12%`，对应 median makespan 
 
 | Path | 4-node speedup / ideal efficiency | 8-node speedup / ideal efficiency |
 |---|---:|---:|
-| P2A demand | 1.8727× / 93.64% | 3.5036× / 87.59% |
-| P2B demand | 1.9501× / 97.50% | 3.4614× / 86.54% |
+| submit/await demand | 1.8727× / 93.64% | 3.5036× / 87.59% |
+| async load demand | 1.9501× / 97.50% | 3.4614× / 86.54% |
 
-P2B 在 2→4 节点的扩展效率更高；到 8 节点时两条路径都低于理想线性扩展。P2B 的
-绝对 throughput 仍更高，但 4→8 的边际 scale efficiency 为 88.75%，低于 P2A 的
-93.54%。这说明 P2B 的优势没有随 node count 单调扩大，不能只看 4-node 的最高
+async load 在 2→4 节点的扩展效率更高；到 8 节点时两条路径都低于理想线性扩展。async load 的
+绝对 throughput 仍更高，但 4→8 的边际 scale efficiency 为 88.75%，低于 submit/await 的
+93.54%。这说明 async load 的优势没有随 node count 单调扩大，不能只看 4-node 的最高
 `+35.13%` 就外推。
 
 ### 5.3 历史 CPU/elapsed 诊断字段
 
-| Nodes | P2A process CPU | P2B process CPU | P2B EL0 scheduler elapsed |
+| Nodes | submit/await process CPU | async load process CPU | async load EL0 scheduler elapsed |
 |---:|---:|---:|---:|
 | 2 | 18.902 s | 14.731 s | 6.354 s |
 | 4 | 37.641 s | 30.038 s | 13.211 s |
 | 8 | 80.849 s | 66.490 s | 29.964 s |
 
-P2B 不需要额外 helper vCPU，QEMU 也不保存 guest coroutine context；但 guest EL0
+async load 不需要额外 helper vCPU，QEMU 也不保存 guest coroutine context；但 guest EL0
 scheduler 与 application coroutine 共用同一个 guest core。`el0_scheduler_ns` 记录
 scheduler 区间的 elapsed time，其中可能包含等待 completion 的时间；它不能直接与
-process CPU 相加。旧报告中的 “P2B total vs P2A” 因此撤回。schema v2 不使用这些字段
-选择 sync/P2A/P2B；后续机制成本需要 scheduler active cycles 和 upcall/context-switch
+process CPU 相加。旧报告中的 “async load total vs submit/await” 因此撤回。schema v2 不使用这些字段
+选择 sync、submit/await、async load；后续机制成本需要 scheduler active cycles 和 upcall/context-switch
 cycles 才能独立核算。
 
 ## 6. Gate scenario 为什么是 10 ms，而性能点是 1 µs
 
-P2B phase gate 需要观测一个强时序事实：coroutine 0 的普通 `LDR` 进入 pending 后，
+async load phase gate 需要观测一个强时序事实：coroutine 0 的普通 `LDR` 进入 pending 后，
 EL0 scheduler 必须切到 coroutine 1，并让 coroutine 1 在 coroutine 0 complete 前发出
 自己的 `LDR`。在 100-µs gate latency 下，QEMU 的 host scheduling 抖动会让 complete
 先于第二条 `LDR`，强 gate 会正确地 fail-closed。
 
 因此五个 phase gate 使用
-`scenarios/mvp_2host_p2b_remote_10ms.yaml`，为功能时序留出确定窗口。正式 evaluator
+`scenarios/mvp_2host_async_load_remote_10ms.yaml`，为功能时序留出确定窗口。正式 evaluator
 为每个 performance case 生成独立 model manifest；acceptance 的实际 timed case 仍是
 1 µs，并没有把 10 ms 当成性能数据。gate scenario hash 与 case model hash 分开记录，
 二者不能混为一谈。
 
 ## 7. 执行异常与处理
 
-4-node seed 5 的第一次 P2A 启动遇到 serial TCP port 被远端另一个隔离 cgroup 占用，
+4-node seed 5 的第一次 submit/await 启动遇到 serial TCP port 被远端另一个隔离 cgroup 占用，
 nodeB 在 QEMU 启动前退出。该尝试没有 summary/evidence，未计入结果；遗留的 nodeA/C/D
 QEMU 按精确 PID 清理，失败日志放在 `attempts/`。重新随机选择空闲端口后，同一 seed
 通过。最终 4/8-node 运行结束后均确认无残留 `qemu-system-aarch64`。
@@ -213,28 +216,28 @@ load-to-resume p99 作为观测项保留。
 | L | C | W | Transparent policy | Explicit policy |
 |---:|---:|---:|---|---|
 | 0/1/10 µs | 2/4/8/32 | 0/10/100/1000 µs | sync | sync |
-| 100 µs | 2/4/8/32 | 0/10/100/1000 µs | P2B | P2B |
-| 1000 µs | 2 | 0/10/100/1000 µs | P2B | P2A |
-| 1000 µs | 4 | 0/10/100 µs | P2B | P2A |
-| 1000 µs | 4 | 1000 µs | P2B | P2B |
-| 1000 µs | 8/32 | 0/10/100/1000 µs | P2B | P2B |
+| 100 µs | 2/4/8/32 | 0/10/100/1000 µs | async load | async load |
+| 1000 µs | 2 | 0/10/100/1000 µs | async load | submit/await |
+| 1000 µs | 4 | 0/10/100 µs | async load | submit/await |
+| 1000 µs | 4 | 1000 µs | async load | async load |
+| 1000 µs | 8/32 | 0/10/100/1000 µs | async load | async load |
 
 完整选择表、单次 load latency 与 workload makespan 的口径、适用范围、机器可读文件和
 后续 boundary refinement 见
-[sync/P2A/P2B 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
+[sync、submit/await、async load 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
 
 ### 8.1 Fine-grained formal boundary
 
 screening 与 C/W tracing 使用 3 seeds 覆盖 224 个离散 bucket，从中识别 35 条相邻
 latency winner 翻转，并选择翻转两侧 70 个 endpoint。formal matrix 对每个 endpoint
-执行 sync、P2A demand、P2A lookahead 和 P2B 四条路径、7 个 paired seed，共
+执行 sync、submit/await demand、submit/await lookahead 和 async load 四条路径、7 个 paired seed，共
 1,960 个 run。n4-910c 完成 952 个，n4-910c1 完成 1,008 个；合并结果为
 `validation.status=pass`、0 invalid、单一 artifact fingerprint、0 formal quarantine。
 
-正式 endpoint 表明当前 QEMU PoC 的 sync/P2B crossing 位于 30--75 µs 之间，L=50 µs
+正式 endpoint 表明当前 QEMU PoC 的 sync/async load crossing 位于 30--75 µs 之间，L=50 µs
 是依赖 C/W 的混合层。formal boundary 只验证 crossing 两侧的离散点，未覆盖的 bucket
 仍回退 sync。完整表格和 SVG 见
-[sync/P2A/P2B 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
+[sync、submit/await、async load 运行时选择表](2026-08-17-obmm-runtime-policy-selection.md)。
 
 ## 9. Full matrix 的真实状态
 
@@ -281,7 +284,7 @@ range、4/8-node 或未测 latency/compute/concurrency 区间的外推结论。
 ```text
 sim-cli obmm-remote-load-eval \
   --matrix scenarios/experiments/obmm_remote_load_eval_acceptance_v1.yaml \
-  --scenario scenarios/mvp_2host_p2b_remote_10ms.yaml \
+  --scenario scenarios/mvp_2host_async_load_remote_10ms.yaml \
   --bands scalar,range \
   --seeds 1..7 \
   --gate-dir out/obmm-remote-load/gates-p3-abi-v2-10ms-20260813 \
@@ -297,7 +300,7 @@ sim-cli obmm-remote-load-scale-report \
   --manifest <run-manifest.json> \
   --raw-dir <raw-evidence-dir> \
   --output-dir <scale-summary-dir> \
-  --case-ids S1-p2a-demand,S3-p2b-demand
+  --case-ids S1-submit-await-demand,S3-async-load-demand
 ```
 
 7-seed policy 合并入口：

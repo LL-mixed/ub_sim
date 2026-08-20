@@ -79,8 +79,8 @@ OBMM_ASYNC_COROUTINE_UFFD_STATE_SRC="$ROOT_DIR/apps/obmm_async_coroutine/uffd_st
 OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC="$ROOT_DIR/common/obmm_uffd.c"
 OBMM_ASYNC_COROUTINE_LIB_SRC="$ROOT_DIR/libs/obmm_async/obmm_async.c"
 OBMM_ASYNC_COROUTINE_ASM_SRC="$ROOT_DIR/libs/obmm_async/obmm_async_aarch64.S"
-OBMM_ASYNC_COROUTINE_SCC_SRC="$ROOT_DIR/libs/obmm_scc/obmm_scc.c"
-OBMM_ASYNC_COROUTINE_SCC_ASM_SRC="$ROOT_DIR/libs/obmm_scc/obmm_scc_aarch64.S"
+OBMM_COROUTINE_SCHEDULER_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.c"
+OBMM_COROUTINE_SCHEDULER_ASM_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler_aarch64.S"
 OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine"
 GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"
 GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"
@@ -253,10 +253,10 @@ current_initramfs_signature() {
   write_signature_line "obmm_async_coroutine_uffd_wrapper_src" "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC"
   write_signature_line "obmm_async_coroutine_lib_src" "$OBMM_ASYNC_COROUTINE_LIB_SRC"
   write_signature_line "obmm_async_coroutine_asm_src" "$OBMM_ASYNC_COROUTINE_ASM_SRC"
-  write_signature_line "obmm_async_coroutine_scc_src" "$OBMM_ASYNC_COROUTINE_SCC_SRC"
+  write_signature_line "obmm_coroutine_scheduler_src" "$OBMM_COROUTINE_SCHEDULER_SRC"
   write_signature_line \
-    "obmm_async_coroutine_scc_asm_src" \
-    "$OBMM_ASYNC_COROUTINE_SCC_ASM_SRC"
+    "obmm_coroutine_scheduler_asm_src" \
+    "$OBMM_COROUTINE_SCHEDULER_ASM_SRC"
   write_signature_line "gva_direct_src" "$GVA_DIRECT_SRC"
   write_signature_line "obmm_coh_test_src" "$OBMM_COH_TEST_SRC"
   write_signature_line "obmm_gsva_src" "$OBMM_GSVA_SRC"
@@ -624,15 +624,15 @@ fi
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/apps/obmm_queue" ${=LIBOBMM_CFLAGS} "$OBMM_IMPORT_STRESS_SRC" ${=LIBOBMM_SRCS} -o "$OBMM_IMPORT_STRESS_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$OBMM_DATAPLANE_MICROBENCH_SRC" ${=LIBOBMM_SRCS} -o "$OBMM_DATAPLANE_MICROBENCH_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -Werror \
-  -I"$ROOT_DIR/libs/obmm_async" -I"$ROOT_DIR/libs/obmm_scc" \
-  -I"$ROOT_DIR/common" \
+  -I"$ROOT_DIR/libs/obmm_async" -I"$ROOT_DIR/libs/obmm_coroutine_scheduler" \
+  -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} \
   -idirafter "$ROOT_DIR/../kernel_ub/include/uapi" \
   "$OBMM_ASYNC_COROUTINE_SRC" "$OBMM_ASYNC_COROUTINE_LIB_SRC" \
-  "$OBMM_ASYNC_COROUTINE_ASM_SRC" "$OBMM_ASYNC_COROUTINE_SCC_SRC" \
-  "$OBMM_ASYNC_COROUTINE_SCC_ASM_SRC" \
+  "$OBMM_ASYNC_COROUTINE_ASM_SRC" "$OBMM_COROUTINE_SCHEDULER_SRC" \
+  "$OBMM_COROUTINE_SCHEDULER_ASM_SRC" \
   "$OBMM_ASYNC_COROUTINE_UFFD_MODE_SRC" \
   "$OBMM_ASYNC_COROUTINE_UFFD_STATE_SRC" \
-  "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC" -pthread \
+  "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC" ${=LIBOBMM_SRCS} -pthread \
   -o "$OBMM_ASYNC_COROUTINE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$GVA_DIRECT_SRC" ${=LIBOBMM_SRCS} -o "$GVA_DIRECT_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$OBMM_GSVA_SRC" ${=LIBOBMM_SRCS} -o "$OBMM_GSVA_BIN"

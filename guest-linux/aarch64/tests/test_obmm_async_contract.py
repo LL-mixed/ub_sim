@@ -9,8 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT.parents[1]
 KERNEL_ROOT = ROOT.parent / "kernel_ub"
 QEMU_ROOT = REPO_ROOT / "vendor" / "qemu_8.2.0_ub"
+OBMM_ROOT = REPO_ROOT / "vendor" / "obmm"
 LIB_DIR = ROOT / "libs" / "obmm_async"
-SCC_LIB_DIR = ROOT / "libs" / "obmm_scc"
+COROUTINE_SCHEDULER_LIB_DIR = ROOT / "libs" / "obmm_coroutine_scheduler"
 APP_DIR = ROOT / "apps" / "obmm_async_coroutine"
 
 
@@ -79,19 +80,23 @@ def test_library_and_cli_cross_compile_without_warnings():
                 "-I",
                 str(LIB_DIR),
                 "-I",
-                str(SCC_LIB_DIR),
+                str(COROUTINE_SCHEDULER_LIB_DIR),
                 "-I",
                 str(ROOT / "common"),
+                "-I",
+                str(OBMM_ROOT / "src" / "libobmm"),
                 "-idirafter",
                 str(KERNEL_ROOT / "include" / "uapi"),
                 str(APP_DIR / "obmm_async_coroutine.c"),
                 str(LIB_DIR / "obmm_async.c"),
                 str(LIB_DIR / "obmm_async_aarch64.S"),
-                str(SCC_LIB_DIR / "obmm_scc.c"),
-                str(SCC_LIB_DIR / "obmm_scc_aarch64.S"),
+                str(COROUTINE_SCHEDULER_LIB_DIR / "obmm_coroutine_scheduler.c"),
+                str(COROUTINE_SCHEDULER_LIB_DIR / "obmm_coroutine_scheduler_aarch64.S"),
                 str(APP_DIR / "uffd_mode.c"),
                 str(APP_DIR / "uffd_state.c"),
                 str(ROOT / "common" / "obmm_uffd.c"),
+                str(OBMM_ROOT / "src" / "libobmm" / "libobmm.c"),
+                str(ROOT / "common" / "obmm_vendor_adaptor_sim.c"),
                 "-pthread",
                 "-o",
                 str(output),
@@ -182,7 +187,7 @@ def test_sync_scalar_and_async_modes_share_canonical_remote_identity():
     logical = (APP_DIR / "logical_op.h").read_text()
 
     assert "remote_map && measurement && app->config.access_bytes <= 8" in app
-    assert "async_scc_scalar_load(" in app
+    assert "async_load_scalar_load(" in app
     assert "sigsetjmp(async_sync_fault_environment" in app
     assert "async_sync_fault_handler" in app
     assert "A modeled error must fail closed" in app
@@ -224,7 +229,7 @@ def test_build_run_and_launcher_contracts():
     app = (APP_DIR / "obmm_async_coroutine.c").read_text()
 
     assert 'OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine"' in builder
-    assert "OBMM_ASYNC_COROUTINE_SCC_ASM_SRC" in builder
+    assert "OBMM_COROUTINE_SCHEDULER_ASM_SRC" in builder
     assert '"$INITRAMFS_DIR/bin/obmm_async_coroutine"' in builder
     assert "zsh ./scripts/build_initramfs.sh" in guest_builder
     assert "zsh ./scripts/build_guest_artifacts.sh" in common
@@ -254,14 +259,14 @@ def test_build_run_and_launcher_contracts():
     assert "obmm_async_trace_sample_ppm" in eval_runner
     assert "obmm_async_expected_outcome" in eval_runner
     assert "obmm_async_expected_outcome" in run_app
-    assert "obmm_async_p2b_producer_consumer" in run_app
-    assert "obmm_async_p2b_completion" in run_app
+    assert "obmm_async_load_producer_consumer" in run_app
+    assert "obmm_async_load_completion" in run_app
     assert "obmm_async_producer_index" in run_app
-    assert "--p2b-completion" in eval_runner
-    assert "P2B replay mode lacks exact-once retirement evidence" in eval_runner
+    assert "--async-load-completion" in eval_runner
+    assert "ASYNC_LOAD replay mode lacks exact-once retirement evidence" in eval_runner
     assert "OBMM_OPERATION_TRACE" in eval_runner
-    assert "OBMM_P2B_NODE_EVIDENCE" in eval_runner
-    assert "--p2b-producer-consumer" in eval_runner
+    assert "OBMM_ASYNC_LOAD_NODE_EVIDENCE" in eval_runner
+    assert "--async-load-producer-consumer" in eval_runner
     assert "cross-node summary mismatch" in eval_runner
     assert "obmm.mempool_size=512M" in eval_runner
     assert "cma=64M" in eval_runner
@@ -279,7 +284,7 @@ def test_build_run_and_launcher_contracts():
     assert ') >>"$CONTROL_LOG" 2>&1 &!' in four_node_launcher
     for headless_launcher in (four_node_launcher, eight_node_launcher):
         assert "ubc.remote-memory-model-manifest=" in headless_launcher
-        assert "ubc.scheduler-core-model=" in headless_launcher
+        assert "ubc.async-load-model=" in headless_launcher
         assert "export QEMU_BIN=" in headless_launcher
         assert "export KERNEL_IMAGE=" in headless_launcher
         assert "export INITRAMFS_IMAGE=" in headless_launcher
@@ -292,7 +297,7 @@ def test_build_run_and_launcher_contracts():
     for target in (
         "tests/unit/test-ub-obmm-remote",
         "tests/unit/test-ub-obmm-remote-model",
-        "tests/unit/test-ub-scc",
+        "tests/unit/test-ub-async-load",
     ):
         assert target in qemu_builder
 
@@ -303,7 +308,7 @@ def test_diagnostic_trace_excludes_warmup_operations():
     for function in (
         "async_run_split_phase_with_warmup",
         "async_run_uffd_with_warmup",
-        "async_run_scc_with_warmup",
+        "async_run_async_load_with_warmup",
     ):
         body = app.split(f"static int {function}", 1)[1].split("\n}\n", 1)[0]
         assert "uint32_t trace_sample_ppm = app->config.trace_sample_ppm;" in body
@@ -387,21 +392,21 @@ def test_eval_runner_fails_closed_before_launch():
             common
             + [
                 "--obmm-async-args",
-                "--mode scheduler-core --iterations 1 --verify",
+                "--mode async-load --iterations 1 --verify",
             ],
             text=True,
             capture_output=True,
         )
         assert missing_scheduler.returncode == 2
-        assert "requires --scheduler-core-model" in missing_scheduler.stderr
+        assert "requires --async-load-model" in missing_scheduler.stderr
 
         wrong_producer = subprocess.run(
             common
             + [
-                "--scheduler-core-model",
+                "--async-load-model",
                 "v2|enabled=1|contexts=64|pending=64|events=128|clock_mhz=1000",
                 "--obmm-async-args",
-                "--mode scheduler-core --p2b-producer-consumer "
+                "--mode async-load --async-load-producer-consumer "
                 "--producer-index 1 --coroutines 2 --iterations 2 "
                 "--access-bytes 8 --pattern sequential --warmup 0 --verify",
             ],

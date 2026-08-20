@@ -10,7 +10,7 @@ pub struct ScenarioConfig {
     #[serde(default)]
     pub remote_memory_model: RemoteMemoryModelConfig,
     #[serde(default)]
-    pub scheduler_core_model: SchedulerCoreModelConfig,
+    pub async_load_model: AsyncLoadModelConfig,
     pub topology: TopologyConfig,
     pub ub_runtime: UbRuntimeConfig,
     pub pypto: PyptoConfig,
@@ -60,7 +60,7 @@ impl ScenarioConfig {
         }
 
         self.remote_memory_model.validate()?;
-        self.scheduler_core_model.validate()?;
+        self.async_load_model.validate()?;
 
         for domain in &self.topology.ub_domains {
             if domain.hosts.is_empty() {
@@ -246,14 +246,14 @@ impl RemoteMemoryModelConfig {
     }
 }
 
-const SCHEDULER_CORE_MAX_CONTEXT_ENTRIES: u16 = 64;
-const SCHEDULER_CORE_MAX_PENDING_LOAD_ENTRIES: u16 = 64;
-const SCHEDULER_CORE_MAX_EVENT_QUEUE_DEPTH: u16 = 128;
-const SCHEDULER_CORE_MAX_CLOCK_MHZ: u32 = 100_000;
+const ASYNC_LOAD_MAX_CONTEXT_ENTRIES: u16 = 64;
+const ASYNC_LOAD_MAX_PENDING_LOAD_ENTRIES: u16 = 64;
+const ASYNC_LOAD_MAX_EVENT_QUEUE_DEPTH: u16 = 128;
+const ASYNC_LOAD_MAX_CLOCK_MHZ: u32 = 100_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub struct SchedulerCoreModelConfig {
+pub struct AsyncLoadModelConfig {
     pub enabled: bool,
     pub context_entries: u16,
     pub pending_load_entries: u16,
@@ -261,7 +261,7 @@ pub struct SchedulerCoreModelConfig {
     pub clock_mhz: u32,
 }
 
-impl Default for SchedulerCoreModelConfig {
+impl Default for AsyncLoadModelConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -273,31 +273,31 @@ impl Default for SchedulerCoreModelConfig {
     }
 }
 
-impl SchedulerCoreModelConfig {
+impl AsyncLoadModelConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         validate_range_u32(
-            "scheduler_core_model.context_entries",
+            "async_load_model.context_entries",
             u32::from(self.context_entries),
             1,
-            u32::from(SCHEDULER_CORE_MAX_CONTEXT_ENTRIES),
+            u32::from(ASYNC_LOAD_MAX_CONTEXT_ENTRIES),
         )?;
         validate_range_u32(
-            "scheduler_core_model.pending_load_entries",
+            "async_load_model.pending_load_entries",
             u32::from(self.pending_load_entries),
             1,
-            u32::from(SCHEDULER_CORE_MAX_PENDING_LOAD_ENTRIES),
+            u32::from(ASYNC_LOAD_MAX_PENDING_LOAD_ENTRIES),
         )?;
         validate_range_u32(
-            "scheduler_core_model.event_queue_depth",
+            "async_load_model.event_queue_depth",
             u32::from(self.event_queue_depth),
             1,
-            u32::from(SCHEDULER_CORE_MAX_EVENT_QUEUE_DEPTH),
+            u32::from(ASYNC_LOAD_MAX_EVENT_QUEUE_DEPTH),
         )?;
         validate_range_u32(
-            "scheduler_core_model.clock_mhz",
+            "async_load_model.clock_mhz",
             self.clock_mhz,
             1,
-            SCHEDULER_CORE_MAX_CLOCK_MHZ,
+            ASYNC_LOAD_MAX_CLOCK_MHZ,
         )?;
         Ok(())
     }
@@ -833,8 +833,8 @@ outputs:
         assert!(!config.remote_memory_model.enabled);
         assert_eq!(config.remote_memory_model.queue_depth, 64);
         assert_eq!(config.remote_memory_model.reorder_window, 1);
-        assert!(!config.scheduler_core_model.enabled);
-        assert_eq!(config.scheduler_core_model.context_entries, 64);
+        assert!(!config.async_load_model.enabled);
+        assert_eq!(config.async_load_model.context_entries, 64);
     }
 
     #[test]
@@ -896,35 +896,35 @@ outputs:
     }
 
     #[test]
-    fn parses_and_validates_scheduler_core_model() {
+    fn parses_and_validates_async_load_model() {
         let yaml = VALID_YAML.replace(
             "topology:\n",
-            "scheduler_core_model:\n  enabled: true\n  context_entries: 8\n  pending_load_entries: 4\n  event_queue_depth: 16\n  clock_mhz: 1800\ntopology:\n",
+            "async_load_model:\n  enabled: true\n  context_entries: 8\n  pending_load_entries: 4\n  event_queue_depth: 16\n  clock_mhz: 1800\ntopology:\n",
         );
         let config = ScenarioConfig::from_yaml_str(&yaml).expect("scheduler core model");
 
-        assert!(config.scheduler_core_model.enabled);
-        assert_eq!(config.scheduler_core_model.context_entries, 8);
-        assert_eq!(config.scheduler_core_model.pending_load_entries, 4);
-        assert_eq!(config.scheduler_core_model.event_queue_depth, 16);
-        assert_eq!(config.scheduler_core_model.clock_mhz, 1_800);
+        assert!(config.async_load_model.enabled);
+        assert_eq!(config.async_load_model.context_entries, 8);
+        assert_eq!(config.async_load_model.pending_load_entries, 4);
+        assert_eq!(config.async_load_model.event_queue_depth, 16);
+        assert_eq!(config.async_load_model.clock_mhz, 1_800);
     }
 
     #[test]
-    fn rejects_invalid_or_unknown_scheduler_core_model_fields() {
+    fn rejects_invalid_or_unknown_async_load_model_fields() {
         let capacity_yaml = VALID_YAML.replace(
             "topology:\n",
-            "scheduler_core_model:\n  context_entries: 65\ntopology:\n",
+            "async_load_model:\n  context_entries: 65\ntopology:\n",
         );
         let capacity_error = ScenarioConfig::from_yaml_str(&capacity_yaml)
             .expect_err("context capacity must be bounded");
         assert!(capacity_error
             .to_string()
-            .contains("scheduler_core_model.context_entries"));
+            .contains("async_load_model.context_entries"));
 
         let unknown_yaml = VALID_YAML.replace(
             "topology:\n",
-            "scheduler_core_model:\n  save_cycle: 1\ntopology:\n",
+            "async_load_model:\n  save_cycle: 1\ntopology:\n",
         );
         let unknown_error = ScenarioConfig::from_yaml_str(&unknown_yaml)
             .expect_err("unknown scheduler model field must fail");
@@ -951,13 +951,10 @@ outputs:
             assert!(
                 config.remote_memory_model.queue_depth >= config.remote_memory_model.reorder_window
             );
-            assert!(config.scheduler_core_model.enabled, "{name}");
-            assert_eq!(config.scheduler_core_model.context_entries, 64, "{name}");
-            assert_eq!(
-                config.scheduler_core_model.pending_load_entries, 64,
-                "{name}"
-            );
-            assert_eq!(config.scheduler_core_model.event_queue_depth, 128, "{name}");
+            assert!(config.async_load_model.enabled, "{name}");
+            assert_eq!(config.async_load_model.context_entries, 64, "{name}");
+            assert_eq!(config.async_load_model.pending_load_entries, 64, "{name}");
+            assert_eq!(config.async_load_model.event_queue_depth, 128, "{name}");
         }
     }
 }

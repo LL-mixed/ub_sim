@@ -75,7 +75,7 @@ current_kernel_artifact_signature() {
       drivers/ub/ubus/sim \
       include/linux/obmm.h \
       include/uapi/asm-generic/mman-common.h \
-      include/uapi/ub/obmm_scc.h \
+      include/uapi/ub/obmm_async_load.h \
       include/uapi/ub/ub_npu.h \
       include/uapi/ub/ub_ssd.h \
       include/uapi/ub/obmm.h \

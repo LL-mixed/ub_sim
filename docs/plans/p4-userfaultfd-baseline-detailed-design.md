@@ -19,7 +19,7 @@ Linux thread，把事件交给独立 handler；handler 从 OBMM source range 读
 
 这条路径验证页粒度透明性的代价，**不能**验证“同一 kernel thread 在 faulting load
 处主动切换到另一个 EL0 coroutine”：faulting thread 已进入内核等待；要推进工作必须
-依靠另一 OS thread/vCPU。P4 因此是 P2A/P2B 的 OS 对照组，不是第三种同义实现。
+依靠另一 OS thread/vCPU。P4 因此是 submit/await 与 async load 的 OS 对照组，不是第三种同义实现。
 
 ![P4 userfaultfd 的 fault、远端页读取和 UFFDIO_COPY](p4-userfaultfd-baseline-flow.svg)
 
@@ -90,7 +90,7 @@ Linux 抢占 worker 后运行，但该结果混入 OS scheduler 行为，不能�
 
 P4 v1 source read 使用同步 remote-range helper，因为被阻塞的是 handler thread，不是
 QEMU vCPU MMIO callback 的设计对象。P3 必须把 source read service time、kernel fault
-和 `UFFDIO_COPY` 分解；未来可使用 P1/P2A 预取页，但要成为单独非 canonical case。
+和 `UFFDIO_COPY` 分解；未来可使用 P1/submit/await 预取页，但要成为单独非 canonical case。
 
 ## 5. Page fault 状态机
 
@@ -217,7 +217,7 @@ obmm_uffd_resolve operation_key=... ioctl=copy|poison status=... guest_ns=...
 - range/page alignment、offset overflow、generation 和 duplicate-event state machine；
 - `EEXIST`、short event、HUP/ERR、remote error/timeout 的 fail-closed 行为；
 - 源码/构建 contract 证明未使用 `USWAP`、`DIRECT_MAP` 或 error `ZEROPAGE`；
-- CLI 拒绝非 4096-byte/P2B-only 参数；summary/trace parser；
+- CLI 拒绝非 4096-byte/async load-only 参数；summary/trace parser；
 - shutdown/phase ordering 的 mock tests。
 
 ### 11.2 远端 guest/QEMU 验证
@@ -233,7 +233,7 @@ obmm_uffd_resolve operation_key=... ioctl=copy|poison status=... guest_ns=...
 ### 11.3 P4 退出条件
 
 1. 只使用标准 `UFFD_USER_MODE_ONLY + MISSING + UFFDIO_COPY` 主路径；
-2. 4-KiB payload/checksum 与 sync/P2A range oracle 一致；
+2. 4-KiB payload/checksum 与 sync/submit/await range oracle 一致；
 3. fault、remote read、copy/wakeup 和 handler CPU 成本可分解；
 4. failure fail closed，缺少 optional poison 时明确 fail-stop；
 5. 报告明确额外 handler vCPU 和“不能在同一 kernel thread 切 EL0 coroutine”的边界。

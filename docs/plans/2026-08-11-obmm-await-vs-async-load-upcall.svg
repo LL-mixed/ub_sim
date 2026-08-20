@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="980"
      viewBox="0 0 1500 980" role="img" aria-labelledby="title desc">
-  <title id="title">P2A submit await compared with P2B direct EL0 upcall</title>
-  <desc id="desc">Both mechanisms use a guest EL0 coroutine scheduler. P2A
-  exposes submit and await in the data plane. P2B preserves an ordinary
+  <title id="title">submit/await submit await compared with async load direct EL0 upcall</title>
+  <desc id="desc">Both mechanisms use a guest EL0 coroutine scheduler. submit/await
+  exposes submit and await in the data plane. async load preserves an ordinary
   unretired load, uses a QEMU direct EL0 upcall, and lets EL0 save, select,
   patch and resume contexts.</desc>
   <defs>
@@ -37,13 +37,13 @@
   </defs>
 
   <rect width="1500" height="980" fill="url(#bg)"/>
-  <text x="52" y="42" class="kicker">P2A vs P2B · SAME EL0 SCHEDULER, DIFFERENT SPLIT POINT</text>
+  <text x="52" y="42" class="kicker">submit/await vs async load · SAME EL0 SCHEDULER, DIFFERENT SPLIT POINT</text>
   <text x="52" y="84" class="title">关键区别不是“有没有协程”，而是 remote load 在哪里被拆分</text>
-  <text x="52" y="114" class="subtitle">两条路径的 context 保存和选择都在 guest EL0；P2B 额外要求 core 保持普通 LDR 未退休并直接 upcall。</text>
+  <text x="52" y="114" class="subtitle">两条路径的 context 保存和选择都在 guest EL0；async load 额外要求 core 保持普通 LDR 未退休并直接 upcall。</text>
 
   <g transform="translate(52 146)">
     <rect width="678" height="500" rx="22" fill="#eef6fa" stroke="#a9c8d7"/>
-    <text x="24" y="40" class="lane">P2A · 显式 submit / await</text>
+    <text x="24" y="40" class="lane">submit/await · 显式 submit / await</text>
     <text x="24" y="65" class="lane-sub">标准 Arm/Linux 软件路径；拆分点对 runtime/编译器可见</text>
 
     <g transform="translate(24 92)">
@@ -96,7 +96,7 @@
 
   <g transform="translate(770 146)">
     <rect width="678" height="500" rx="22" fill="#eef6f1" stroke="#a6cab9"/>
-    <text x="24" y="40" class="lane">P2B · 普通 LDR + direct EL0 upcall</text>
+    <text x="24" y="40" class="lane">async load · 普通 LDR + direct EL0 upcall</text>
     <text x="24" y="65" class="lane-sub">自定义 core ABI；数据面没有 submit/await，但 EL0 scheduler 仍显式存在</text>
 
     <g transform="translate(24 92)">
@@ -155,8 +155,8 @@
     <rect x="244" y="58" width="548" height="40" fill="#eaf3f8"/>
     <rect x="792" y="58" width="580" height="40" rx="8" fill="#eaf4ef"/>
     <text x="40" y="83" class="table-head">维度</text>
-    <text x="264" y="83" class="table-head">P2A submit / await</text>
-    <text x="812" y="83" class="table-head">P2B direct EL0 upcall</text>
+    <text x="264" y="83" class="table-head">submit/await submit / await</text>
+    <text x="812" y="83" class="table-head">async load direct EL0 upcall</text>
 
     <g class="table-copy">
       <text x="40" y="124">拆分点</text><text x="264" y="124">submit 已退休；await 是显式挂起点</text><text x="812" y="124">普通 LDR pending；load 保持未退休</text>

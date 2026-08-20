@@ -19,6 +19,7 @@ APP_NAMES=(
   obmm_queue
   obmm_dataplane_microbench
   obmm_import_stress
+  obmm_async_coroutine
   obmm_gsva
   obmm_coh_test
   gva_direct

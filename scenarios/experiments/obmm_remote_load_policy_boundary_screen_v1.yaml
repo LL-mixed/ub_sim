@@ -25,30 +25,30 @@ cases:
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: S1-p2a-demand
+  - id: S1-submit-await-demand
     band: scalar
     mode: async-poll
     access_bytes: 8
     issue: demand
     lookahead: 0
     extra_vcpus: 0
-  - id: S2-p2a-lookahead
+  - id: S2-submit-await-lookahead
     band: scalar
     mode: async-poll
     access_bytes: 8
     issue: lookahead
     sweep_lookahead: true
     extra_vcpus: 0
-  - id: S3-p2b-demand
+  - id: S3-async-load-demand
     band: scalar
-    mode: scheduler-core
+    mode: async-load
     access_bytes: 8
     issue: demand
     lookahead: 0
     extra_vcpus: 0
 sweeps:
   - id: policy-boundary-screen
-    cases: [S0-sync, S1-p2a-demand, S2-p2a-lookahead, S3-p2b-demand]
+    cases: [S0-sync, S1-submit-await-demand, S2-submit-await-lookahead, S3-async-load-demand]
     model_latency_us: [20, 30, 50, 75, 150, 250, 500, 750]
     jitter_profiles: [none]
     outcomes: [success]

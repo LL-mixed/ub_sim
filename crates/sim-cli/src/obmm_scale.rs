@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const SCALE_REPORT_SCHEMA: u32 = 1;
-const DEFAULT_CASE_IDS: &str = "S1-p2a-demand,S3-p2b-demand";
+const DEFAULT_CASE_IDS: &str = "S1-submit-await-demand,S3-async-load-demand";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ObmmScaleCliArgs {
@@ -100,8 +100,8 @@ struct ScaleSummary {
     kernel_sha256: Option<String>,
     initramfs_sha256: Option<String>,
     groups: Vec<ScaleGroupSummary>,
-    p2b_vs_p2a_throughput_percent: Option<f64>,
-    p2b_vs_p2a_makespan_reduction_percent: Option<f64>,
+    async_load_vs_submit_await_throughput_percent: Option<f64>,
+    async_load_vs_submit_await_makespan_reduction_percent: Option<f64>,
 }
 
 pub(crate) fn args() -> anyhow::Result<Option<ObmmScaleCliArgs>> {
@@ -242,18 +242,27 @@ pub(crate) fn run(args: &ObmmScaleCliArgs) -> anyhow::Result<()> {
         "invalid"
     };
     let groups = aggregate_groups(&validations, manifest.topology_hosts)?;
-    let p2a = groups.iter().find(|group| group.case_id == "S1-p2a-demand");
-    let p2b = groups.iter().find(|group| group.case_id == "S3-p2b-demand");
-    let throughput_comparison = p2a.zip(p2b).map(|(p2a, p2b)| {
-        (p2b.cluster_throughput_ops_per_second_median
-            / p2a.cluster_throughput_ops_per_second_median
-            - 1.0)
-            * 100.0
-    });
-    let makespan_comparison = p2a.zip(p2b).map(|(p2a, p2b)| {
-        (1.0 - p2b.cluster_makespan_ns_median as f64 / p2a.cluster_makespan_ns_median as f64)
-            * 100.0
-    });
+    let submit_await = groups
+        .iter()
+        .find(|group| group.case_id == "S1-submit-await-demand");
+    let async_load = groups
+        .iter()
+        .find(|group| group.case_id == "S3-async-load-demand");
+    let throughput_comparison = submit_await
+        .zip(async_load)
+        .map(|(submit_await, async_load)| {
+            (async_load.cluster_throughput_ops_per_second_median
+                / submit_await.cluster_throughput_ops_per_second_median
+                - 1.0)
+                * 100.0
+        });
+    let makespan_comparison = submit_await
+        .zip(async_load)
+        .map(|(submit_await, async_load)| {
+            (1.0 - async_load.cluster_makespan_ns_median as f64
+                / submit_await.cluster_makespan_ns_median as f64)
+                * 100.0
+        });
     let first_metrics = validations.iter().find_map(|run| run.metrics.as_ref());
     let summary = ScaleSummary {
         schema: SCALE_REPORT_SCHEMA,
@@ -264,8 +273,8 @@ pub(crate) fn run(args: &ObmmScaleCliArgs) -> anyhow::Result<()> {
         kernel_sha256: first_metrics.map(|metrics| metrics.kernel_sha256.clone()),
         initramfs_sha256: first_metrics.map(|metrics| metrics.initramfs_sha256.clone()),
         groups,
-        p2b_vs_p2a_throughput_percent: throughput_comparison,
-        p2b_vs_p2a_makespan_reduction_percent: makespan_comparison,
+        async_load_vs_submit_await_throughput_percent: throughput_comparison,
+        async_load_vs_submit_await_makespan_reduction_percent: makespan_comparison,
     };
     let validation = ScaleValidation {
         schema: SCALE_REPORT_SCHEMA,
@@ -351,14 +360,14 @@ fn parse_scale_log(
             ("status", "pass"),
             ("model_pending_final", "0"),
             ("backend_pending_final", "0"),
-            ("scc_pending_final", "0"),
+            ("async_load_pending_final", "0"),
             ("counter_overflow", "0"),
             ("clock_regressions", "0"),
             ("fail_closed_process_exit", "0"),
         ] {
             require_field(&summary, name, value)?;
         }
-        validate_scheduler_core(case, &summary)?;
+        validate_async_load(case, &summary)?;
         checksums.insert(required(&summary, "checksum")?.to_string());
         cluster_operations = cluster_operations
             .checked_add(parse_u64(&summary, "operations")?)
@@ -422,11 +431,11 @@ fn parse_scale_log(
     })
 }
 
-fn validate_scheduler_core(
+fn validate_async_load(
     case: &ManifestCase,
     summary: &BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
-    if case.mode != "scheduler-core" {
+    if case.mode != "async-load" {
         return Ok(());
     }
     for name in [
@@ -434,10 +443,10 @@ fn validate_scheduler_core(
         "qemu_context_restores",
         "qemu_context_switches",
         "qemu_context_bytes",
-        "scc_save_cycles",
-        "scc_schedule_cycles",
-        "scc_restore_cycles",
-        "scc_commit_cycles",
+        "async_load_save_cycles",
+        "async_load_schedule_cycles",
+        "async_load_restore_cycles",
+        "async_load_commit_cycles",
         "el0_upcalls_fault",
     ] {
         require_field(summary, name, "0")?;
@@ -450,7 +459,7 @@ fn validate_scheduler_core(
         "el0_scheduler_ns",
     ] {
         if parse_u64(summary, name)? == 0 {
-            anyhow::bail!("P2B {name} must be positive");
+            anyhow::bail!("ASYNC_LOAD {name} must be positive");
         }
     }
     require_field(summary, "el0_upcalls_pending", &case.operations.to_string())?;
@@ -460,7 +469,7 @@ fn validate_scheduler_core(
         &case.operations.to_string(),
     )?;
     if required(summary, "direct_el0_upcalls")? != required(summary, "el0_context_saves")? {
-        anyhow::bail!("P2B direct_el0_upcalls differs from el0_context_saves");
+        anyhow::bail!("ASYNC_LOAD direct_el0_upcalls differs from el0_context_saves");
     }
     Ok(())
 }
@@ -591,11 +600,11 @@ fn markdown_report(summary: &ScaleSummary, validation: &ScaleValidation) -> Stri
         ));
     }
     if let (Some(throughput), Some(makespan)) = (
-        summary.p2b_vs_p2a_throughput_percent,
-        summary.p2b_vs_p2a_makespan_reduction_percent,
+        summary.async_load_vs_submit_await_throughput_percent,
+        summary.async_load_vs_submit_await_makespan_reduction_percent,
     ) {
         report.push_str(&format!(
-            "\nP2B vs P2A demand: cluster throughput `{throughput:.2}%`; \
+            "\nASYNC_LOAD vs submit/await demand: cluster throughput `{throughput:.2}%`; \
              cluster makespan reduction `{makespan:.2}%`.\n"
         ));
     }
@@ -684,22 +693,25 @@ mod tests {
             "--manifest=run-manifest.json",
             "--raw-dir=raw",
             "--output-dir=summary",
-            "--case-ids=S3-p2b-demand,S1-p2a-demand",
+            "--case-ids=S3-async-load-demand,S1-submit-await-demand",
         ])
         .expect("arguments")
         .expect("scale arguments");
         assert_eq!(
             args.case_ids,
-            vec!["S1-p2a-demand".to_string(), "S3-p2b-demand".to_string()]
+            vec![
+                "S1-submit-await-demand".to_string(),
+                "S3-async-load-demand".to_string()
+            ]
         );
     }
 
     #[test]
-    fn p2b_scale_log_requires_guest_el0_and_forbids_qemu_context() {
+    fn async_load_scale_log_requires_guest_el0_and_forbids_qemu_context() {
         let case = ManifestCase {
             run_id: "run-1".into(),
-            case_id: "S3-p2b-demand".into(),
-            mode: "scheduler-core".into(),
+            case_id: "S3-async-load-demand".into(),
+            mode: "async-load".into(),
             seed: 1,
             operations: 10,
             outcome: "success".into(),
@@ -717,10 +729,10 @@ mod tests {
         let run = "OBMM_RUN_EVIDENCE node_count=2 scenario_sha256=2222222222222222222222222222222222222222222222222222222222222222 model_file_sha256=1111111111111111111111111111111111111111111111111111111111111111 model_contract_hash=fnv1a64:1234567890abcdef qemu_sha256=3333333333333333333333333333333333333333333333333333333333333333 kernel_sha256=4444444444444444444444444444444444444444444444444444444444444444 initramfs_sha256=5555555555555555555555555555555555555555555555555555555555555555 qemu_destroyed=1\n";
         let node = |name: &str, qemu_saves: u64| {
             format!(
-            "OBMM_NODE_EVIDENCE node={name} drained=1 summary=schema=1 mode=scheduler-core case=S3-p2b-demand seed=1 operations=10 checksum=abcd failures=0 timeouts=0 makespan_ns=100 application_cpu_ns=80 el0_scheduler_ns=20 model_pending_final=0 backend_pending_final=0 scc_pending_final=0 counter_overflow=0 clock_regressions=0 fail_closed_process_exit=0 status=pass qemu_context_saves={qemu_saves} qemu_context_restores=0 qemu_context_switches=0 qemu_context_bytes=0 scc_save_cycles=0 scc_schedule_cycles=0 scc_restore_cycles=0 scc_commit_cycles=0 el0_upcalls_fault=0 el0_upcalls_pending=10 el0_upcalls_complete=10 el0_context_saves=10 el0_context_restores=11 el0_context_switches=9 el0_context_bytes=100 el0_no_ready_waits=0 direct_el0_upcalls=10\n"
+            "OBMM_NODE_EVIDENCE node={name} drained=1 summary=schema=1 mode=async-load case=S3-async-load-demand seed=1 operations=10 checksum=abcd failures=0 timeouts=0 makespan_ns=100 application_cpu_ns=80 el0_scheduler_ns=20 model_pending_final=0 backend_pending_final=0 async_load_pending_final=0 counter_overflow=0 clock_regressions=0 fail_closed_process_exit=0 status=pass qemu_context_saves={qemu_saves} qemu_context_restores=0 qemu_context_switches=0 qemu_context_bytes=0 async_load_save_cycles=0 async_load_schedule_cycles=0 async_load_restore_cycles=0 async_load_commit_cycles=0 el0_upcalls_fault=0 el0_upcalls_pending=10 el0_upcalls_complete=10 el0_context_saves=10 el0_context_restores=11 el0_context_switches=9 el0_context_bytes=100 el0_no_ready_waits=0 direct_el0_upcalls=10\n"
         )
         };
-        let canonical = "OBMM_EVAL_SUMMARY schema=1 mode=scheduler-core case=S3-p2b-demand seed=1 operations=10 checksum=abcd makespan_ns=100\n";
+        let canonical = "OBMM_EVAL_SUMMARY schema=1 mode=async-load case=S3-async-load-demand seed=1 operations=10 checksum=abcd makespan_ns=100\n";
         let valid = format!("{run}{}{canonical}{}", node("nodeA", 0), node("nodeB", 0));
         assert!(parse_scale_log(&case, &manifest, &valid).is_ok());
 

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1480" height="760" viewBox="0 0 1480 760" role="img" aria-labelledby="title desc">
   <title id="title">OBMM remote-load P0 到 P4 当前实施与验收状态</title>
-  <desc id="desc">P0、P1、P2A、P2B 和 P4 门禁有效。P3 ABI v2 二节点正式验收、四节点八节点定向扩展、粗粒度策略与细粒度正式边界已完成，四千九百四十二次完整敏感性矩阵保持暂停。所有文字均为浅色背景上的深色字体。</desc>
+  <desc id="desc">P0、P1、submit/await、async load 和 P4 门禁有效。P3 ABI v2 二节点正式验收、四节点八节点定向扩展、粗粒度策略与细粒度正式边界已完成，四千九百四十二次完整敏感性矩阵保持暂停。所有文字均为浅色背景上的深色字体。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
@@ -35,13 +35,13 @@
   <path d="M310 213 H372" class="flow"/>
 
   <rect x="725" y="116" width="280" height="150" rx="12" class="pass"/>
-  <text x="865" y="156" text-anchor="middle" class="head">P2A · PASS</text>
+  <text x="865" y="156" text-anchor="middle" class="head">submit/await · PASS</text>
   <text x="865" y="189" text-anchor="middle" class="body">submit / await / CQ</text>
   <text x="865" y="217" text-anchor="middle" class="body">A waits → B runs → A resumes</text>
   <text x="865" y="245" text-anchor="middle" class="mono">2 / 4 / 8-node smoke</text>
 
   <rect x="725" y="326" width="280" height="150" rx="12" class="accept"/>
-  <text x="865" y="366" text-anchor="middle" class="head">P2B · 2-NODE PASS</text>
+  <text x="865" y="366" text-anchor="middle" class="head">async load · 2-NODE PASS</text>
   <text x="865" y="399" text-anchor="middle" class="body">QEMU event + direct EL0 upcall</text>
   <text x="865" y="427" text-anchor="middle" class="body">guest EL0 saves / selects / patches</text>
   <text x="865" y="455" text-anchor="middle" class="body">producer / consumer acceptance complete</text>
@@ -67,7 +67,7 @@
   <path d="M650 463 C876 566 1018 451 1082 392" class="flow"/>
 
   <rect x="60" y="606" width="1360" height="102" rx="12" class="pending"/>
-  <text x="740" y="645" text-anchor="middle" class="head">下一阶段 · runtime policy 接入与 native SCC 正式测量</text>
+  <text x="740" y="645" text-anchor="middle" class="head">下一阶段 · runtime policy 接入与 native coroutine scheduler 正式测量</text>
   <text x="740" y="676" text-anchor="middle" class="body">实现 exact-bucket loader、quiescent switching、online telemetry；真实硬件使用 paired 7-seed 重建临界面</text>
   <text x="740" y="701" text-anchor="middle" class="body">full sensitivity 恢复后再扩展 jitter / failure / range / topology，证据继续绑定完整 artifact fingerprint</text>
 </svg>

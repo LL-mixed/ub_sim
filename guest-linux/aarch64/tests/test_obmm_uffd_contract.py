@@ -6,10 +6,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parents[1]
 KERNEL_ROOT = ROOT.parent / "kernel_ub"
+OBMM_ROOT = REPO_ROOT / "vendor" / "obmm"
 APP_DIR = ROOT / "apps" / "obmm_async_coroutine"
 ASYNC_LIB_DIR = ROOT / "libs" / "obmm_async"
-SCC_LIB_DIR = ROOT / "libs" / "obmm_scc"
+COROUTINE_SCHEDULER_LIB_DIR = ROOT / "libs" / "obmm_coroutine_scheduler"
 COMMON_DIR = ROOT / "common"
 
 
@@ -55,9 +57,11 @@ def test_userfaultfd_shared_cli_cross_compiles_without_warnings():
                 "-I",
                 str(ASYNC_LIB_DIR),
                 "-I",
-                str(SCC_LIB_DIR),
+                str(COROUTINE_SCHEDULER_LIB_DIR),
                 "-I",
                 str(COMMON_DIR),
+                "-I",
+                str(OBMM_ROOT / "src" / "libobmm"),
                 "-idirafter",
                 str(KERNEL_ROOT / "include" / "uapi"),
                 str(APP_DIR / "obmm_async_coroutine.c"),
@@ -66,8 +70,10 @@ def test_userfaultfd_shared_cli_cross_compiles_without_warnings():
                 str(COMMON_DIR / "obmm_uffd.c"),
                 str(ASYNC_LIB_DIR / "obmm_async.c"),
                 str(ASYNC_LIB_DIR / "obmm_async_aarch64.S"),
-                str(SCC_LIB_DIR / "obmm_scc.c"),
-                str(SCC_LIB_DIR / "obmm_scc_aarch64.S"),
+                str(COROUTINE_SCHEDULER_LIB_DIR / "obmm_coroutine_scheduler.c"),
+                str(COROUTINE_SCHEDULER_LIB_DIR / "obmm_coroutine_scheduler_aarch64.S"),
+                str(OBMM_ROOT / "src" / "libobmm" / "libobmm.c"),
+                str(COMMON_DIR / "obmm_vendor_adaptor_sim.c"),
                 "-pthread",
                 "-o",
                 str(output),

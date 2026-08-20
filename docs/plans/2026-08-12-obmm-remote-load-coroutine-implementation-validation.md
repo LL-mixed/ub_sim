@@ -1,8 +1,12 @@
 # OBMM 远端 Load 协程 P0–P4 实施与验证报告（历史证据归档）
 
-> 状态：P0/P1/P2A/P4 证据仍有效；旧 P2B/P3 结论已作废；P2B ABI v2 功能验收、
-> 新 P3 2-node 49-case acceptance 和 4/8-node 定向 scale-out 已在 `n4-910c`
-> 完成。4,942-case full matrix 尚待完成；它不是 P2B 未完成项
+> 命名说明：当前机制名为 `async load`。文中小写 `p2b` 仅保留在改名前产生的
+> evidence 状态值、workspace、日志和 gate 文件原名中。
+
+> 状态：P0、P1、submit/await、P4 证据仍有效；旧 async load/P3 结论已作废；async load ABI v2 功能验收、
+> 新 P3 2-node 49-case acceptance、4/8-node 定向 scale-out、2,240-case coarse
+> policy 和 1,960-case fine-grained formal boundary 已完成。4,942-case full
+> matrix 按要求安全暂停；它不是 async load 未完成项
 >
 > 日期：2026-08-12
 >
@@ -10,22 +14,22 @@
 
 ## 1. 结论与边界
 
-本文原先记录的 49-case 运行绑定的是旧 P2B：QEMU 保存 coroutine context 并执行
-scheduler policy。该所有权与当前目标相反，因此其中 7 个 `S3-p2b-demand` case 以及
+本文原先记录的 49-case 运行绑定的是旧 async load：QEMU 保存 coroutine context 并执行
+scheduler policy。该所有权与当前目标相反，因此其中 7 个 `S3-async-load-demand` case 以及
 依赖它们形成的 P3 `49/49` 总结从 2026-08-12 起均视为 **invalid legacy evidence**。
-不能用旧二进制、旧 model contract 或旧 raw evidence 声明 ABI v2 P2B 已验收。
+不能用旧二进制、旧 model contract 或旧 raw evidence 声明 ABI v2 async load 已验收。
 
 当前 ABI v2 已完成实现并通过 2-node 远端 guest 验证：QEMU 只维护 RLA/PLT、投递
-direct EL0 upcall，并原子安装 EL0 指定的 context；guest EL0 coroutine scheduler core 负责完整上下文保存、
-READY/WAIT 状态、调度策略、completion patch 和恢复。这里的 scheduler core 是 guest
+direct EL0 upcall，并原子安装 EL0 指定的 context；guest EL0 coroutine scheduler 负责完整上下文保存、
+READY/WAIT 状态、调度策略、completion patch 和恢复。这里的 coroutine scheduler 是 guest
 用户态软件组件，使用独立 scheduler stack，但不占用额外 vCPU。
 
 这证明以下链路已闭环：
 
 - P0 的模型与同步基线能够形成可复现证据；
-- P1 能同时服务 test、P2A 和 P2B sink，并处理 64 in-flight 与 terminal race；
-- P2A 能在同一 guest vCPU 上执行 `A await → B 推进 → A 恢复`；
-- P2B ABI v2 的 unit/contract、ARM64 Linux 原生 build、2-node QEMU guest E2E 与
+- P1 能同时服务 test、submit/await 和 async load sink，并处理 64 in-flight 与 terminal race；
+- submit/await 能在同一 guest vCPU 上执行 `A await → B 推进 → A 恢复`；
+- async load ABI v2 的 unit/contract、ARM64 Linux 原生 build、2-node QEMU guest E2E 与
   machine-readable phase gate 已通过，当前定义的 producer/consumer 功能目标已闭环；
 - P4 能以标准 `userfaultfd` MISSING 路径提供 4-KiB 透明页访问对照；
 - P3 对 scalar、range 和 transparency 分带汇总，invalid evidence 不进入统计。
@@ -42,9 +46,9 @@ READY/WAIT 状态、调度策略、completion patch 和恢复。这里的 schedu
 |---|---|---|---|
 | P0 | strong scenario schema、四类同步基线、确定性 latency/jitter/failure 模型、三类时钟与 hash 闭环 | `obmm-remote-baseline`、`obmm-remote-phase-gate --phase p0` | pass |
 | P1 | 64 parent、child aggregation、bounded result ownership、generation-safe sink、timeout/cancel/retire/capacity | `obmm-remote-conformance`、QEMU unit model | 144/144 conformance pass；gate pass |
-| P2A | 独立 async endpoint、64-byte SQ/CQ、registered buffer、future、AArch64 EL0 stackful coroutine | `obmm_async_coroutine --mode async-poll` | 2/4/8-node gate smoke pass；正式 7 seeds pass |
-| P2B | QEMU RLA/PLT/direct upcall + guest EL0 Context Store/scheduler + atomic resume | `obmm_async_coroutine --mode scheduler-core` | 功能验收完成：ARM64 Linux build、2-node producer/consumer remote guest E2E 与 phase gate pass |
-| P3 | matrix expansion、远端 executor、raw evidence、fail-closed gate、统计、scale aggregation 与报告 | `obmm-remote-load-eval`、`obmm-remote-load-scale-report` | ABI v2 2-node 49/49 pass；4/8-node 各 14/14 pass；4,942-case full matrix 待完成 |
+| submit/await | 独立 async endpoint、64-byte SQ/CQ、registered buffer、future、AArch64 EL0 stackful coroutine | `obmm_async_coroutine --mode async-poll` | 2/4/8-node gate smoke pass；正式 7 seeds pass |
+| async load | QEMU RLA/PLT/direct upcall + guest EL0 Context Store/scheduler + atomic resume | `obmm_async_coroutine --mode async-load` | 功能验收完成：ARM64 Linux build、2-node producer/consumer remote guest E2E 与 phase gate pass |
+| P3 | matrix expansion、远端 executor、raw evidence、fail-closed gate、统计、scale aggregation、边界选择与报告 | `obmm-remote-load-eval`、`obmm-remote-load-scale-report`、`obmm-remote-load-policy-boundary-select`、`obmm-remote-load-policy-merge` | ABI v2 2-node 49/49、4/8-node 各 14/14、coarse 2,240/2,240、fine formal 1,960/1,960 pass；4,942-case full matrix 已暂停 |
 | P4 | UFFD MISSING、OBMM source/shadow range、handler vCPU、page 状态机与 phase metrics | `obmm_async_coroutine --mode userfaultfd` | 2/4/8-node gate smoke pass；正式 7 seeds pass |
 
 ## 3. 实现说明
@@ -64,14 +68,14 @@ phase gate。P0 gate 要求 case-specific model 语义、payload checksum、scen
 
 QEMU `hw/ub/ub_obmm_remote.c` 实现 parent/child lifecycle、64 项容量、result pool 和
 exactly-once terminal delivery；`hw/ub/ub_ubc.c` 把 SIM_DEC/OBMM response 路由到
-test、P2A 或 P2B adapter。provider 不持有 guest pointer，也不理解 SQ/CQ、future、
+test、submit/await 或 async load adapter。provider 不持有 guest pointer，也不理解 SQ/CQ、future、
 PLT 或目标寄存器。
 
-P1 conformance matrix 包含 3 种 sink、8 种状态/竞态 case 和 P2A/P2B 各自允许的
+P1 conformance matrix 包含 3 种 sink、8 种状态/竞态 case 和 submit/await 与 async load 各自允许的
 访问粒度，共 144 个 case；覆盖 inline、64 in-flight、reorder、duplicate、timeout、
 cancel race、retire 和 capacity full。
 
-### P2A：显式 submit/await + EL0 协程
+### submit/await：显式 submit/await + EL0 协程
 
 driver 中的独立 async endpoint 管理 queue ownership、destination registration、mmap、
 poll/IRQ 和 generation；`guest-linux/aarch64/libs/obmm_async/` 管理 SQ/CQ、future 与
@@ -79,15 +83,15 @@ AArch64 stackful context。共同 workload 位于
 `guest-linux/aarch64/apps/obmm_async_coroutine/`。
 
 `submit` 退休后，应用可以继续运行；只有 `await` 发现 future 尚未 terminal 时才切换
-协程。结果先落入 P1-owned result，再由 P2A sink 复制到 registered destination，最后
+协程。结果先落入 P1-owned result，再由 submit/await sink 复制到 registered destination，最后
 release-publish CQE。该顺序避免 stale completion 写入已复用的 destination。
 
-### P2B：普通 `LDR` + guest EL0 coroutine scheduler core
+### async load：普通 `LDR` + guest EL0 coroutine scheduler
 
 QEMU `target/arm/tcg/translate-a64.c` 和 `helper-a64.c` 只对白名单 OBMM scalar load
-插入 RLA hook。`hw/ub/ub_scc.c` 与 `ub_scc_device.c` 只管理 PLT/event、upcall delivery
+插入 RLA hook。`hw/ub/ub_async_load.c` 与 `ub_async_load_device.c` 只管理 PLT/event、upcall delivery
 和 resume 边界，不拥有 coroutine Context Store、ready queue 或 scheduler policy。
-guest 的 EL0 scheduler runtime 位于 `guest-linux/aarch64/libs/obmm_scc/`。
+guest 的 EL0 scheduler runtime 位于 `guest-linux/aarch64/libs/obmm_coroutine_scheduler/`。
 
 pending 时原 `LDR` 不退休，QEMU 将事件直接送入注册的 EL0 trampoline。trampoline
 先保存全部 ABI v2 context，再切到 scheduler stack；EL0 runtime 把当前 coroutine
@@ -105,8 +109,8 @@ invalid gate、bootstrap confidence interval 和 Band S/R/T 报告。
 重复、checksum/operation identity 不一致、case timeout 和非零退出都不能进入统计；
 已有 output directory 和 raw file 不会被静默覆盖。
 
-ABI v2 的 P0/P1/P2A/P2B/P4 gate 已作为相同 scenario/model/artifact 绑定下的新
-2-node formal acceptance 前置条件；它没有追认旧 `S3-p2b-demand` raw evidence。
+ABI v2 的 P0、P1、submit/await、async load、P4 gate 已作为相同 scenario/model/artifact 绑定下的新
+2-node formal acceptance 前置条件；它没有追认旧 `S3-async-load-demand` raw evidence。
 新 acceptance 与 4/8-node scale-out 均使用新 run ID 和当前产物。完整结果与边界见
 [2026-08-13 P3 性能评估](2026-08-13-obmm-p3-performance-evaluation.md)。
 
@@ -150,8 +154,12 @@ model contract hash。
 | 证据 | 状态 | 目录 |
 |---|---|---|
 | 2-node formal acceptance | 49/49 pass | `out/obmm-remote-load/p3-acceptance-abi-v2-20260813-r1/` |
-| 4-node P2A/P2B scale | 14/14 pass | `out/obmm-remote-load/p3-scale-4node-abi-v2-20260813-r1/` |
-| 8-node P2A/P2B scale | 14/14 pass | `out/obmm-remote-load/p3-scale-8node-abi-v2-20260813-r1/` |
+| 4-node submit/await 与 async load scale | 14/14 pass | `out/obmm-remote-load/p3-scale-4node-abi-v2-20260813-r1/` |
+| 8-node submit/await 与 async load scale | 14/14 pass | `out/obmm-remote-load/p3-scale-8node-abi-v2-20260813-r1/` |
+| 2-node coarse policy | 2,240/2,240 pass | `out/obmm-remote-load/policy-coarse-7seed-work-conserving-20260817-r5/` |
+| fine boundary screening | 1,536/1,536 pass | `out/obmm-remote-load/policy-boundary-screen-complete-20260819-r1/` |
+| fine C/W tracing | 1,152/1,152 pass | `out/obmm-remote-load/policy-boundary-trace-complete-20260819-r1/` |
+| fine formal boundary | 1,960/1,960 pass | `out/obmm-remote-load/policy-boundary-formal-merged-20260820-r2/` |
 | full matrix dry-run | 4,942 cases expanded；无 formal raw evidence | `out/obmm-remote-load/p3-full-abi-v2-dry-run-20260813-r1/` |
 
 这些目录是生成物，不提交 Git。可提交的结果、hash、比较口径和异常处理记录在
@@ -162,15 +170,15 @@ model contract hash。
 | 验证 | 结果 | 说明 |
 |---|---|---|
 | local `cargo test -p sim-cli` | 261/261 pass | 含 evaluator、ABI v2 fail-closed validation、SSH 独立连接和 scale reporter 3 项测试 |
-| guest OBMM focused contracts | 27 passed | async、SCC、UFFD build/UAPI/script contracts |
-| ABI v2 QEMU OBMM tests（本地） | 20 passed | SCC 7、remote model 7、split-phase backend 6 |
+| guest OBMM focused contracts | 27 passed | async、coroutine scheduler、UFFD build/UAPI/script contracts |
+| ABI v2 QEMU OBMM tests（本地） | 20 passed | coroutine scheduler 7、remote model 7、split-phase backend 6 |
 | ABI v2 QEMU OBMM tests（ARM64 Linux） | 20 passed | `n4-910c` 原生 QEMU build 后重复同一组测试 |
 | ARM64 Linux guest artifacts | pass | 当前 kernel Image、external driver、ABI v2 initramfs/workload 均成功构建 |
 | 2-node remote QEMU guest | pass | nodeA write/export；nodeB import；2 coroutine 各自普通 `LDR`，值与 producer 一致 |
-| ABI v2 P2B phase gate | pass | r15 `schema=1 phase=p2b status=pass`；逐事件 overlap 成立；final queues drained；`qemu_destroyed=1` |
-| 旧正式 P3 acceptance | 49 passed（已作废） | 含 7 个旧 P2B case，不能作为当前结论 |
+| ABI v2 async load phase gate | pass | r15 `schema=1 phase=p2b status=pass`；逐事件 overlap 成立；final queues drained；`qemu_destroyed=1` |
+| 旧正式 P3 acceptance | 49 passed（已作废） | 含 7 个旧 async load case，不能作为当前结论 |
 | ABI v2 正式 P3 acceptance | 49/49 pass | 7 seeds；五个 phase gate pass；invalid reasons 为空 |
-| ABI v2 4/8-node scale-out | 14/14 + 14/14 pass | 每 topology 比较 P2A/P2B demand；所有节点 evidence 和 checksum 通过 |
+| ABI v2 4/8-node scale-out | 14/14 + 14/14 pass | 每 topology 比较 submit/await 与 async load demand；所有节点 evidence 和 checksum 通过 |
 | remote `cargo test --workspace` | `sim-cli` 259 pass；2 initial failures | 一个并发 `ETXTBSY` 隔离复跑通过；Paper Engram/Simpler 测试因远端缺 `PTO_ISA_ROOT` 仍 blocked，与 OBMM 改动无关 |
 | remote Python discovery | OBMM focused tests passed；full suite blocked | 远端快照缺既有 W5 scripts、`/private/tmp` 与 zsh loadable modules |
 
@@ -197,15 +205,17 @@ model contract hash。
 nodeA 在 offset `0x1000/0x2000` 写入 `4d54ca036b700e61/4d54ca036b700e60`；nodeB
 两个 coroutine 分别读到完全相同的值。日志顺序严格满足
 `pending(c0) < resume(c1) < LDR-issue(c1) < complete(c0)`；EL0 context
-saves/restores/switches 为 2/4/3，而 QEMU context counters 全为 0。最终 SCC/backend
+saves/restores/switches 为 2/4/3，而 QEMU context counters 全为 0。最终 async-load/backend
 pending 均为 0，trace 无丢失。
 
 旧 r8 是两端对称 workload smoke，不能证明 producer/consumer 数据归属和上述逐事件
-overlap，现仅作为历史调试证据，不再作为 P2B 当前验收依据。
+overlap，现仅作为历史调试证据，不再作为 async load 当前验收依据。
 
 受环境阻塞的 full-suite 结果不能记为通过。当前 ABI v2 的详细实现与 2-node 证据见
-[P2B 实现总结](p2b-implementation-summary.md)。P3 acceptance 和定向 scale-out 可以
-标记为通过，但 full matrix 仍必须单独标记为待完成。
+[async load 实现总结](async-load-implementation-summary.md)。P3 acceptance 和定向 scale-out 可以
+标记为通过；coarse policy 与 fine formal boundary 也已完成。full matrix 仍必须单独
+标记为“按要求暂停”，不得用 70 个正式 endpoint 替代完整 jitter/tail/failure/range
+测量域。
 
 ## 6. 复现入口
 
@@ -214,7 +224,7 @@ overlap，现仅作为历史调试证据，不再作为 P2B 当前验收依据�
 ```text
 cargo run -p sim-cli -- obmm-remote-load-eval \
   --matrix scenarios/experiments/obmm_remote_load_eval_v1.yaml \
-  --scenario scenarios/mvp_2host_p2b_remote_10ms.yaml \
+  --scenario scenarios/mvp_2host_async_load_remote_10ms.yaml \
   --seeds 1..7 \
   --output-dir out/obmm-remote-load/p3-dry-run \
   --dry-run
@@ -226,7 +236,7 @@ ABI v2 P3 performance acceptance 的复现入口如下，必须在允许启动 Q
 ```text
 cargo run -p sim-cli -- obmm-remote-load-eval \
   --matrix scenarios/experiments/obmm_remote_load_eval_acceptance_v1.yaml \
-  --scenario scenarios/mvp_2host_p2b_remote_10ms.yaml \
+  --scenario scenarios/mvp_2host_async_load_remote_10ms.yaml \
   --seeds 1..7 \
   --gate-dir out/obmm-remote-load/gates-p3-abi-v2-10ms-20260813 \
   --output-dir out/obmm-remote-load/p3-acceptance-abi-v2-20260813-r1 \
@@ -234,17 +244,21 @@ cargo run -p sim-cli -- obmm-remote-load-eval \
   --remote-repo <repo>
 ```
 
-正式执行前必须先生成并通过 P0/P1/P2A/**ABI v2 P2B**/P4 gate；当前 2-node P2B gate
+正式执行前必须先生成并通过 P0、P1、submit/await、**ABI v2 async load** 和 P4 gate；当前 2-node async load gate
 只适用于与其 topology/scenario/model/artifact hash 一致的 2-node 运行。`--dry-run`
 结果始终标记为 invalid evidence，不能被 aggregate-only 重新解释为正式测量。
 
 ## 7. 下一阶段工作
 
-以下项目不属于当前 2-node P2B producer/consumer 功能验收。P3 acceptance 和定向
-scale-out 已完成，剩余必做项是：
+以下项目不属于当前 2-node async load producer/consumer 功能验收。P3 acceptance、定向
+scale-out、coarse policy 和 fine formal boundary 已完成，剩余工作是：
 
-- 执行 4,942-case 全因子性能 campaign，形成不同 latency/compute/concurrency 区间的
-  break-even 结论；
+- 将正式 `summary/policy.json` 接入 runtime loader，在 quiescent point 完成精确 bucket
+  查表、无 bucket/异常状态回退 sync、受控 probe 与 telemetry 闭环；
+- 在真实 coroutine scheduler/MMIO/upcall/resume 路径上完成 paired native path-tax 与 makespan 测量，
+  替换当前 `O_budget=2 µs` 的部署 prior；
+- 只有收到明确恢复指令后，续跑 4,942-case 全因子 campaign，补齐
+  jitter/tail/failure/range 的完整敏感性结论；
 
 以下属于额外硬化或环境认证，不阻塞 P3 基线性能结论：
 
