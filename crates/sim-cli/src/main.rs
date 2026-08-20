@@ -20391,7 +20391,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     #[test]
     fn qwen3_guest_expected_worker_counts_are_stateless_full_range_counts() {
         assert_eq!(
-            qwen3_guest_expected_worker_counts(1),
+            qwen3_guest_expected_worker_counts(1, 8),
             Qwen3GuestExpectedWorkerCounts {
                 range_forwards: 8,
                 runtime_inputs: 7,
@@ -20399,11 +20399,19 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             }
         );
         assert_eq!(
-            qwen3_guest_expected_worker_counts(16),
+            qwen3_guest_expected_worker_counts(16, 8),
             Qwen3GuestExpectedWorkerCounts {
                 range_forwards: 128,
                 runtime_inputs: 127,
                 runtime_outputs: 128,
+            }
+        );
+        assert_eq!(
+            qwen3_guest_expected_worker_counts(4, 4),
+            Qwen3GuestExpectedWorkerCounts {
+                range_forwards: 16,
+                runtime_inputs: 15,
+                runtime_outputs: 16,
             }
         );
     }
@@ -32417,7 +32425,8 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     };
     let engram_shortpath_local_policy =
         effective_engram.enabled && shortpath_execute_jump_to_terminal;
-    let worker_counts = qwen3_guest_expected_worker_counts(args.step_count);
+    let worker_counts =
+        qwen3_guest_expected_worker_counts(args.step_count, runtime.profile.tp_nodes as usize);
     let expected_runtime_forward_count = worker_counts.range_forwards;
     let expected_runtime_input_count = worker_counts.runtime_inputs;
     let expected_runtime_publish_count = worker_counts.runtime_outputs;
@@ -33015,7 +33024,9 @@ fn w5_memory_boundary_observations_recorded_line(
 }
 
 fn qwen3_guest_w5_pass_marker_present(log: &str) -> bool {
-    log.contains("eight-node w5 inference cluster validation passed")
+    log.contains("w5 inference cluster validation passed")
+        || log.contains("PASS: W5 inference cluster")
+        || log.contains("eight-node w5 inference cluster validation passed")
         || log.contains("PASS: eight-node w5 inference cluster")
 }
 
@@ -33034,9 +33045,12 @@ struct W5JumpToTerminalExpectedWorkerCounts {
     no_dispatches: usize,
 }
 
-fn qwen3_guest_expected_worker_counts(step_count: usize) -> Qwen3GuestExpectedWorkerCounts {
-    let full_range_forwards = 8 * step_count;
-    let full_runtime_outputs = 8 * step_count;
+fn qwen3_guest_expected_worker_counts(
+    step_count: usize,
+    pipeline_nodes: usize,
+) -> Qwen3GuestExpectedWorkerCounts {
+    let full_range_forwards = pipeline_nodes * step_count;
+    let full_runtime_outputs = pipeline_nodes * step_count;
 
     Qwen3GuestExpectedWorkerCounts {
         range_forwards: full_range_forwards,
@@ -34528,10 +34542,15 @@ fn qwen3_guest_dense_runtime(
         })?;
     validate_qwen3_dense_weights_path(&weights_path)?;
 
+    let tp_nodes = env::var("SIM_QWEN3_DENSE_TP_NODES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(QWEN3_DENSE_DEFAULT_TP_NODES);
     let profile = profile_from_weights_dir(
         &weights_path,
         args.model.as_deref(),
-        QWEN3_DENSE_DEFAULT_TP_NODES,
+        tp_nodes,
         QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
         QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
     )

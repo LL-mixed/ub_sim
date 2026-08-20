@@ -24,6 +24,13 @@ case "$SIM_W5_CLUSTER_NODE_COUNT" in
     NODE_IDS=(nodeA nodeB nodeC)
     NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3)
     ;;
+  4)
+    DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_four_node_full_mesh.ini"
+    DEFAULT_SCENARIO_CONFIG="$WORKSPACE_ROOT/scenarios/mvp_4host_single_domain.yaml"
+    DEFAULT_PORT_NUM=3
+    NODE_IDS=(nodeA nodeB nodeC nodeD)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
+    ;;
   8)
     DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_eight_node_full_mesh.ini"
     DEFAULT_SCENARIO_CONFIG="$WORKSPACE_ROOT/scenarios/mvp_8host_single_domain.yaml"
@@ -32,7 +39,7 @@ case "$SIM_W5_CLUSTER_NODE_COUNT" in
     NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
     ;;
   *)
-    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
+    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, 4, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
     exit 2
     ;;
 esac

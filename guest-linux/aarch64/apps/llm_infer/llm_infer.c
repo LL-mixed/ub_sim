@@ -1750,13 +1750,26 @@ static uint64_t w4_runtime_vocab_size(void)
     return llm_infer_qwen3_vocab_size();
 }
 
+static uint32_t w4_qwen3_tp_nodes(void)
+{
+    const char *env = getenv("SIM_QWEN3_DENSE_TP_NODES");
+    unsigned long value;
+
+    if (env == NULL || env[0] == '\0')
+        return 8U;
+    value = strtoul(env, NULL, 10);
+    if (value == 0 || value > 0xffffffffUL)
+        return 8U;
+    return (uint32_t)value;
+}
+
 static bool w4_runtime_range_pipeline_enabled(uint32_t cluster_node_count)
 {
     if (is_deepseek_v4_flash_profile()) {
         return cluster_node_count > 0 &&
                cluster_node_count <= mem_service_deepseek_v4_flash_layer_count();
     }
-    return is_qwen3_profile() && cluster_node_count == 8U;
+    return is_qwen3_profile() && cluster_node_count == w4_qwen3_tp_nodes();
 }
 
 static int w4_runtime_init_obmm_range_flow_request(
@@ -11329,7 +11342,7 @@ decode_round_start:
            0,
            sizeof(qwen3_pre_resolved_range_input_view));
     bool delay_decode_round_start_log =
-        is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
+        is_qwen3_profile() && enable_db_cluster && cluster_node_count == w4_qwen3_tp_nodes() &&
         guest_decode_step == 0;
     memset(&counts, 0, sizeof(counts));
     memset(&runtime_forward, 0, sizeof(runtime_forward));
@@ -11344,7 +11357,7 @@ decode_round_start:
                guest_decode_step,
                guest_decode_steps);
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U &&
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == w4_qwen3_tp_nodes() &&
         guest_decode_step > 0 && qwen3_engram_config.enabled) {
         uint64_t stage_start_ms = monotonic_ms();
 
@@ -11774,7 +11787,7 @@ decode_round_start:
     if (enable_db_cluster && guest_decode_step > 0 &&
         qwen3_terminal_token_count < guest_decode_step &&
         (is_deepseek_v4_flash_profile() ||
-         (is_qwen3_profile() && cluster_node_count == 8U &&
+         (is_qwen3_profile() && cluster_node_count == w4_qwen3_tp_nodes() &&
           qwen3_memory_decision_config.shortpath_execute))) {
         uint64_t previous_token = 0;
         int token_wait_rc = -1;
@@ -11817,7 +11830,7 @@ decode_round_start:
             qwen3_terminal_token_count = guest_decode_step;
         }
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == w4_qwen3_tp_nodes()) {
         if (qwen3_engram_config.enabled && guest_decode_step > 0 &&
             qwen3_round_history_loaded) {
             if (write_qwen3_prompt_tokens_from_history(ep_mmio,
@@ -11837,7 +11850,7 @@ decode_round_start:
                    qwen3_terminal_token_count) != 0) {
         goto out;
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == w4_qwen3_tp_nodes()) {
         qwen3_round_input_token_count =
             read_qwen3_prompt_tokens(ep_mmio,
                                      qwen3_round_input_tokens,
@@ -12253,7 +12266,7 @@ decode_round_start:
             }
         }
     }
-    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == 8U) {
+    if (is_qwen3_profile() && enable_db_cluster && cluster_node_count == w4_qwen3_tp_nodes()) {
         uint32_t dispatch_node = 0U;
         uint32_t layer_start = 0U;
         uint32_t layer_end = 0U;

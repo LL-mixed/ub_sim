@@ -21,13 +21,18 @@ case "$SIM_W5_CLUSTER_NODE_COUNT" in
     NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3)
     DEFAULT_PORT_NUM=2
     ;;
+  4)
+    NODE_IDS=(nodeA nodeB nodeC nodeD)
+    NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4)
+    DEFAULT_PORT_NUM=3
+    ;;
   8)
     NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
     NODE_IPS=(10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8)
     DEFAULT_PORT_NUM=7
     ;;
   *)
-    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
+    echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, 4, or 8: $SIM_W5_CLUSTER_NODE_COUNT" >&2
     exit 2
     ;;
 esac
@@ -1617,7 +1622,7 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_service_v0_publish kind=hidden_range_input key=hidden/qwen3[-.0-9a-z]*/node${idx}/range-input owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range input publish" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_service_v0_publish kind=hidden_range_output key=hidden/qwen3[-.0-9a-z]*/node${idx}/range-output owner=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm hidden range output publish" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_placement local=node${idx} key=placement/qwen3[-.0-9a-z]*/layer-range/node${idx} .* next=node${remote_idx} .* source=db_metadata strategy=balanced_layers status=ok" "$node_id qwen3 range forward placement" || return 1
-    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_contract local=node${idx} .* pipeline_nodes=8 total_layers=[1-9][0-9]* .* balanced=true .*placement_source=db_metadata .*backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward contract" || return 1
+    assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_contract local=node${idx} .* pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=[1-9][0-9]* .* balanced=true .*placement_source=db_metadata .*backing=obmm_pool metadata=db status=ok" "$node_id qwen3 range forward contract" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_service_v0_object_desc_put local=node${idx} objects=4 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor put" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_service_v0_object_desc_get remote=node${remote_idx} reader=node${idx} objects=4 queue=obmm_spsc .* status=ok" "$node_id obmm object descriptor get" || return 1
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage obmm_service_v0_resolve kind=weight_tile key=weights/qwen3[-.0-9a-z]*/node${remote_idx}/tile0 owner=node${remote_idx} reader=node${idx} .* backing=obmm_pool metadata=db status=ok" "$node_id obmm remote weight resolve" || return 1
@@ -1651,8 +1656,8 @@ validate_node_log() {
   assert_log_has "$log_file" "\\[w4_guest\\] step=decode_completions ok" "$node_id decode completions" || return 1
   assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_kvcache_payload_dispatch_result segment=[0-9]+ word0=${expected_dispatch_word}" "$node_id dispatch payload result" || return 1
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=8 total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_compute_contract node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* source=(dispatch_task|runtime_forward) output=(completion|metadata) status=ok" "$node_id qwen3 range compute contract" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_runtime_forward node=$((idx - 1)) layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ next=$((remote_idx - 1)) pipeline_nodes=$SIM_W5_CLUSTER_NODE_COUNT total_layers=[1-9][0-9]* hidden_bytes=[1-9][0-9]* input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ range_checksum=0x[0-9a-f]+ real_layers=[0-9]+ payload_offset=0x[0-9a-f]+ payload_bytes=[1-9][0-9]* kv_payload_offset=0x[0-9a-f]+ kv_payload_bytes=[1-9][0-9]* kv_payload_checksum=0x[0-9a-f]+ source=runtime_forward output=metadata status=ok" "$node_id qwen3 range runtime forward" || return 1
     if (( idx > 1 )); then
       assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_range_forward_runtime_input_loaded node=${idx} layers=\\[[0-9]+,[0-9]+\\) input_offset=0x[0-9a-f]+ input_checksum=0x[0-9a-f]+ bytes=[1-9][0-9]* source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0" "$node_id qwen3 runtime range input loaded" || return 1
     fi
@@ -1698,7 +1703,7 @@ validate_node_log() {
       assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage qwen3_terminal_token_result_publish local=node${engram_candidates_owner_node} target=node[0-9]+ step=[0-9]+ token=[0-9]+ runner_up=[0-9]+ margin_milli=[0-9]+ logits_checksum=0x[0-9a-f]+ text_checksum=0x[0-9a-f]+ piece_word0=0x[0-9a-f]+ piece_word1=0x[0-9a-f]+ object_key=tokens/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/decode-step[0-9]+ offset=0x[0-9a-f]+ bytes=64 checksum=0x[0-9a-f]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_pool metadata=db queue=(obmm_spsc|local_pending) status=ok" "$node_id qwen3 terminal token result publish" || return 1
     fi
     assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_range_forward_only object=range_hidden publish=0 resolve_remote=0 compute=0 storage=obmm_object metadata=db status=ok" "$node_id qwen3 range-only flow" || return 1
-    if (( idx == 8 )); then
+    if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_logits_sampling_table entries=[12] entry_words=(20|45) table_bytes=(160|360|720) vocab=[1-9][0-9]* sampled_distinct=[12] logits_checksum_nonzero=[12] text_checksum_nonzero=[12] real_logits=[01] status=ok" "$node_id qwen3 logits sampling table" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_qwen3_token_text_table entries=[12] entry_words=8 table_bytes=(64|128) total_bytes=[1-9][0-9]* piece_bytes=9 policy_kind=2 policy_hash=0x[0-9a-f]+ packed_matches=[12] checksum_matches=[12] boundary_first=1 boundary_last=1 status=ok" "$node_id qwen3 token text table" || return 1
     else
@@ -1866,7 +1871,7 @@ prepare_environment() {
     trace "prepare: model range runtime wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
   fi
   if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
-    trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-}"
+    trace "prepare: qwen3 dense profile=$SIM_UAPI_W4_CHIPBACKEND_PROFILE model_id=${SIM_QWEN3_DENSE_MODEL_ID:-} model_key=${SIM_QWEN3_DENSE_MODEL_KEY:-} layers=${SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS:-} hidden_range_bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES:-} decode_hidden_bytes=${SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES:-} tp_nodes=${SIM_QWEN3_DENSE_TP_NODES:-} node_count=$SIM_W5_CLUSTER_NODE_COUNT"
     trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
     trace "prepare: qwen3 runtime range wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
   fi

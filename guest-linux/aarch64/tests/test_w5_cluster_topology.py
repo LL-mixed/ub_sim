@@ -35,7 +35,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
         )
 
     def test_cli_selects_supported_cluster_sizes(self):
-        for node_count in (2, 3, 8):
+        for node_count in (2, 3, 4, 8):
             with self.subTest(node_count=node_count):
                 result = self.run_config(
                     "--print-env", "--nodes", str(node_count)
@@ -46,9 +46,9 @@ class W5ClusterTopologyTest(unittest.TestCase):
                 )
 
     def test_cli_rejects_unsupported_cluster_size(self):
-        result = self.run_config("--print-env", "--nodes", "4")
+        result = self.run_config("--print-env", "--nodes", "5")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("--nodes must be 2, 3, or 8: 4", result.stderr)
+        self.assertIn("--nodes must be 2, 3, 4, or 8: 5", result.stderr)
 
     def test_cli_model_overrides_deepseek_env_source(self):
         model = self.repo / "out" / "test-deepseek-v4-flash.gguf"
@@ -71,12 +71,15 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("SIM_W5_CLUSTER_NODE_COUNT", source)
         self.assertIn("ub_topology_two_node_v1_extended.ini", source)
         self.assertIn("ub_topology_three_node_full_mesh.ini", source)
+        self.assertIn("ub_topology_four_node_full_mesh.ini", source)
         self.assertIn("ub_topology_eight_node_full_mesh.ini", source)
         self.assertIn("mvp_2host_single_domain.yaml", source)
         self.assertIn("mvp_3host_single_domain.yaml", source)
+        self.assertIn("mvp_4host_single_domain.yaml", source)
         self.assertIn("mvp_8host_single_domain.yaml", source)
         self.assertIn("NODE_IDS=(nodeA nodeB)", source)
         self.assertIn("NODE_IDS=(nodeA nodeB nodeC)", source)
+        self.assertIn("NODE_IDS=(nodeA nodeB nodeC nodeD)", source)
         self.assertIn(
             'LINQU_UB_NODE_COUNT="$SIM_W5_CLUSTER_NODE_COUNT"', source
         )

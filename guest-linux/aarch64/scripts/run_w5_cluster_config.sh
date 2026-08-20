@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|8] [--steps N] [--model PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -286,11 +286,11 @@ if [[ -n "$STEPS_OVERRIDE" ]]; then
 fi
 if [[ -n "$NODES_OVERRIDE" ]]; then
   case "$NODES_OVERRIDE" in
-    2|3|8)
+    2|3|4|8)
       export SIM_W5_CLUSTER_NODE_COUNT="$NODES_OVERRIDE"
       ;;
     *)
-      echo "--nodes must be 2, 3, or 8: $NODES_OVERRIDE" >&2
+      echo "--nodes must be 2, 3, 4, or 8: $NODES_OVERRIDE" >&2
       exit 2
       ;;
   esac
@@ -482,10 +482,10 @@ validate_w5_cluster_config() {
       ;;
   esac
   case "$cluster_node_count" in
-    2|3|8)
+    2|3|4|8)
       ;;
     *)
-      echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, or 8: $cluster_node_count" >&2
+      echo "SIM_W5_CLUSTER_NODE_COUNT must be 2, 3, 4, or 8: $cluster_node_count" >&2
       return 2
       ;;
   esac
