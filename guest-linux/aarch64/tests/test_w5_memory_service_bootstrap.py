@@ -23,6 +23,14 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             / "mem_service"
         )
 
+    @staticmethod
+    def create_fake_kernel_uapi(tmp: Path) -> Path:
+        include_dir = tmp / "kernel_uapi" / "include"
+        obmm_header = include_dir / "ub" / "obmm.h"
+        obmm_header.parent.mkdir(parents=True)
+        obmm_header.write_text("#pragma once\n", encoding="utf-8")
+        return include_dir
+
     def test_runtime_refuses_memory_path_without_infra_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -157,6 +165,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             )
             fake_cargo.chmod(0o755)
             fake_cc = shutil.which("true") or "/bin/true"
+            kernel_uapi_dir = self.create_fake_kernel_uapi(tmp)
             env_file.write_text(
                 "\n".join(
                     [
@@ -174,6 +183,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
+                "KERNEL_UAPI_DIR": str(kernel_uapi_dir),
             }
 
             result = subprocess.run(
@@ -238,6 +248,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             )
             fake_cargo.chmod(0o755)
             fake_cc = shutil.which("true") or "/bin/true"
+            kernel_uapi_dir = self.create_fake_kernel_uapi(tmp)
             env_file.write_text(
                 "\n".join(
                     [
@@ -257,6 +268,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
+                "KERNEL_UAPI_DIR": str(kernel_uapi_dir),
             }
 
             subprocess.run(
@@ -299,6 +311,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             )
             fake_cargo.chmod(0o755)
             fake_cc = shutil.which("true") or "/bin/true"
+            kernel_uapi_dir = self.create_fake_kernel_uapi(tmp)
             env_file.write_text(
                 "\n".join(
                     [
@@ -317,6 +330,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
+                "KERNEL_UAPI_DIR": str(kernel_uapi_dir),
             }
 
             subprocess.run(
@@ -364,6 +378,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             )
             fake_cargo.chmod(0o755)
             fake_cc = shutil.which("true") or "/bin/true"
+            kernel_uapi_dir = self.create_fake_kernel_uapi(tmp)
             env_file.write_text(
                 "\n".join(
                     [
@@ -383,6 +398,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 "ZDOTDIR": str(tmp),
                 "AARCH64_LINUX_CC": fake_cc,
+                "KERNEL_UAPI_DIR": str(kernel_uapi_dir),
             }
 
             subprocess.run(
@@ -475,6 +491,28 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
         self.assertNotIn('"bootstrap-w5-service" =>', sim_cli_text)
         self.assertNotIn("run_lingqu_memory_bootstrap_w5_service_cli", sim_cli_text)
         self.assertIn("run_bootstrap_w5_service", mem_service_text)
+
+    def test_guest_snapshot_staging_accepts_only_bootstrap_empty_store(self) -> None:
+        guest_text = self.guest_runner.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '"$snapshot_path" == "$SIM_W5_MEMORY_OBJECT_STORE"',
+            guest_text,
+        )
+        self.assertIn(
+            '"${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}" == "1"',
+            guest_text,
+        )
+        self.assertIn("grep -q '\"records\": \\[\\]'", guest_text)
+        for stage in (
+            "stage_qwen3_object_service_snapshot",
+            "stage_flash_weight_catalog",
+            "stage_w5_memory_shortpath_stream",
+            "stage_w5_memory_shortpath_kv_stream",
+            "stage_w5_memory_prefix_cache_kv_stream",
+            "stage_w5_serving_requests_file",
+        ):
+            self.assertIn(f"{stage} || return 1", guest_text)
 
 
 if __name__ == "__main__":

@@ -286,6 +286,28 @@ detect_aarch64_linux_cc() {
   echo ""
 }
 
+aarch64_linux_cross_prefix() {
+  local cc_path="$1"
+  local cc_name=""
+  local compiler_target=""
+  local host_arch=""
+
+  compiler_target="$("$cc_path" -dumpmachine 2>/dev/null || true)"
+  host_arch="$(uname -m 2>/dev/null || true)"
+  if [[ "$(uname -s 2>/dev/null || true)" == "Linux" && \
+        "$host_arch" == (aarch64|arm64) && \
+        "$compiler_target" == aarch64* ]]; then
+    echo ""
+    return 0
+  fi
+
+  cc_name="$(basename "$cc_path")"
+  if [[ "$cc_name" != *gcc ]]; then
+    return 1
+  fi
+  echo "${cc_path%gcc}"
+}
+
 ensure_ub_guest_artifacts() {
   local guest_root="$1"
   local kernel_image="$2"

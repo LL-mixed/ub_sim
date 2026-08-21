@@ -36,6 +36,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/qemu_ub_common.sh"
 # mem_service sources live in the repository's root-level Git submodule.
 # Override MEM_SERVICE_ROOT only to validate another standalone checkout.
 MEM_SERVICE_ROOT="${MEM_SERVICE_ROOT:-$ROOT_DIR/../../mem_service}"
@@ -192,7 +193,12 @@ if [[ -z "$BUSYBOX" ]] && [[ -x "$ROOT_DIR/busybox-aarch64" ]]; then
 fi
 
 detect_make_jobs() {
-  getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8
+  local jobs
+  jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
+  if (( jobs > 32 )); then
+    jobs=32
+  fi
+  echo "$jobs"
 }
 
 hash_file() {
@@ -338,12 +344,9 @@ write_initramfs_stamp() {
 ensure_busybox_static_config() {
   local src_dir="$1"
   local cc_path="$2"
-  local cc_name=""
   local cc_prefix=""
 
-  cc_name="$(basename "$cc_path")"
-  cc_prefix="${cc_name%gcc}"
-  if [[ -z "$cc_prefix" || "$cc_prefix" == "$cc_name" ]]; then
+  if ! cc_prefix="$(aarch64_linux_cross_prefix "$cc_path")"; then
     echo "[build_initramfs] error: cannot derive CROSS_COMPILER_PREFIX from $cc_path" >&2
     return 1
   fi

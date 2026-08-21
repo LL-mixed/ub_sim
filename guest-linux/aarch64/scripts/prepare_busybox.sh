@@ -20,7 +20,12 @@ CC="${AARCH64_LINUX_CC:-$(detect_aarch64_linux_cc)}"
 REQUIRED_APPLETS=(sh ifconfig route netstat ip arp ping ping6)
 
 detect_jobs() {
-  getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8
+  local jobs
+  jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
+  if (( jobs > 32 )); then
+    jobs=32
+  fi
+  echo "$jobs"
 }
 
 busybox_has_applets() {
@@ -83,12 +88,9 @@ busybox_config_has_applets() {
 ensure_busybox_static_config() {
   local src_dir="$1"
   local cc_path="$2"
-  local cc_name=""
   local cc_prefix=""
 
-  cc_name="$(basename "$cc_path")"
-  cc_prefix="${cc_name%gcc}"
-  if [[ -z "$cc_prefix" || "$cc_prefix" == "$cc_name" ]]; then
+  if ! cc_prefix="$(aarch64_linux_cross_prefix "$cc_path")"; then
     echo "[prepare_busybox] error: cannot derive CROSS_COMPILER_PREFIX from $cc_path" >&2
     return 1
   fi

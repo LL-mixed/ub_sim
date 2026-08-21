@@ -224,7 +224,10 @@ stage_qwen3_object_service_snapshot() {
     payload_index_src="${snapshot_path}.bin"
   fi
   if [[ ! -f "$payload_index_src" ]]; then
-    if [[ ! -e "$snapshot_path" ]]; then
+    if [[ ! -e "$snapshot_path" ]] ||
+       { [[ "$snapshot_path" == "$SIM_W5_MEMORY_OBJECT_STORE" &&
+            "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}" == "1" ]] &&
+         grep -q '"records": \[\]' "$snapshot_path"; }; then
       trace "prepare: qwen3 Object Service snapshot will be created by runtime path=$snapshot_path"
       return 0
     fi
@@ -1193,20 +1196,20 @@ build_w4_initramfs() {
   local base_initramfs="$OUT_DIR/initramfs.cpio.gz"
 
   trace "prepare: build per-run initramfs image=$RUN_INITRAMFS_IMAGE"
-  ensure_ub_guest_artifacts "$ROOT_DIR" "$OUT_DIR/Image" "$base_initramfs"
+  ensure_ub_guest_artifacts "$ROOT_DIR" "$OUT_DIR/Image" "$base_initramfs" || return 1
   rm -rf "$RUN_INITRAMFS_DIR" "$RUN_INITRAMFS_IMAGE"
   mkdir -p "$RUN_INITRAMFS_DIR"
   (
     cd "$RUN_INITRAMFS_DIR"
     gzip -dc "$base_initramfs" | cpio -id --quiet
   )
-  stage_qwen3_object_service_snapshot
-  stage_flash_weight_catalog
-  stage_w5_memory_shortpath_stream
-  stage_w5_memory_shortpath_kv_stream
-  stage_w5_memory_prefix_cache_kv_stream
-  stage_w5_serving_requests_file
-  write_w4_initramfs_runner
+  stage_qwen3_object_service_snapshot || return 1
+  stage_flash_weight_catalog || return 1
+  stage_w5_memory_shortpath_stream || return 1
+  stage_w5_memory_shortpath_kv_stream || return 1
+  stage_w5_memory_prefix_cache_kv_stream || return 1
+  stage_w5_serving_requests_file || return 1
+  write_w4_initramfs_runner || return 1
   (
     cd "$RUN_INITRAMFS_DIR"
     find . -print | cpio -o -H newc --quiet | gzip -9 > "$RUN_INITRAMFS_IMAGE"

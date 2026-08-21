@@ -7,7 +7,7 @@ OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
 KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
 KERNEL_UAPI_STAMP_FILE="$OUT_DIR/.kernel_uapi.kernel_ub_head"
-KERNEL_SRC_DIR="$ROOT_DIR/../kernel_ub"
+KERNEL_SRC_DIR="$(cd "$ROOT_DIR/../kernel_ub" && pwd)"
 KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$OUT_DIR/kernel_build}"
 KERNEL_UAPI_INSTALL_DIR="${KERNEL_UAPI_INSTALL_DIR:-$OUT_DIR/kernel_uapi}"
 
@@ -63,7 +63,11 @@ have_default_artifacts() {
 }
 
 current_kernel_submodule_head() {
-  git -C "$KERNEL_SRC_DIR" rev-parse HEAD 2>/dev/null || echo ""
+  kernel_git rev-parse HEAD 2>/dev/null || echo ""
+}
+
+kernel_git() {
+  git -c safe.directory="$KERNEL_SRC_DIR" -C "$KERNEL_SRC_DIR" "$@"
 }
 
 current_kernel_artifact_signature() {
@@ -73,7 +77,7 @@ current_kernel_artifact_signature() {
   [[ -n "$current_head" ]] || return 1
 
   printf 'kernel_head=%s\n' "$current_head"
-  if git -C "$KERNEL_SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if kernel_git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     for tracked_path in \
       drivers/ub/obmm \
       drivers/ub/ubus/ub_npu.c \
@@ -86,9 +90,9 @@ current_kernel_artifact_signature() {
       include/uapi/ub/ub_ssd.h \
       include/uapi/ub/obmm.h \
       mm/mmap.c; do
-      git -C "$KERNEL_SRC_DIR" status --porcelain --untracked-files=no -- "$tracked_path" || true
-      git -C "$KERNEL_SRC_DIR" diff --binary -- "$tracked_path" || true
-      git -C "$KERNEL_SRC_DIR" diff --cached --binary -- "$tracked_path" || true
+      kernel_git status --porcelain --untracked-files=no -- "$tracked_path" || true
+      kernel_git diff --binary -- "$tracked_path" || true
+      kernel_git diff --cached --binary -- "$tracked_path" || true
     done
   fi
 }
@@ -139,13 +143,13 @@ host_is_linux() {
 
 cross_compile_prefix() {
   local cc_path="$1"
-  local cc_name=""
-  cc_name="$(basename "$cc_path")"
-  if [[ "$cc_name" != *gcc ]]; then
+  local cross_prefix=""
+
+  if ! cross_prefix="$(aarch64_linux_cross_prefix "$cc_path")"; then
     echo "[build_guest_artifacts] error: cannot derive CROSS_COMPILE from $cc_path" >&2
     return 1
   fi
-  echo "${cc_name%gcc}"
+  echo "$cross_prefix"
 }
 
 native_build_available() {
@@ -293,7 +297,16 @@ build_native_artifacts() {
     -j"$KERNEL_JOBS" Image
   build_native_required_modules "$cross_prefix"
   if [[ -d "$ROOT_DIR/driver" && -f "$ROOT_DIR/driver/Makefile" ]]; then
-    make -C "$KERNEL_BUILD_DIR" M="$ROOT_DIR/driver" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" modules
+    make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+      ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" modules_prepare
+    if [[ ! -f "$KERNEL_BUILD_DIR/vmlinux.symvers" ]]; then
+      echo "[build_guest_artifacts] error: kernel build did not produce vmlinux.symvers" >&2
+      return 1
+    fi
+    cp "$KERNEL_BUILD_DIR/vmlinux.symvers" "$KERNEL_BUILD_DIR/Module.symvers"
+    make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+      M="$ROOT_DIR/driver" ARCH="$KERNEL_ARCH" \
+      CROSS_COMPILE="$cross_prefix" modules
   fi
   cp "$KERNEL_BUILD_DIR/arch/arm64/boot/Image" "$OUT_DIR/Image"
   copy_native_modules

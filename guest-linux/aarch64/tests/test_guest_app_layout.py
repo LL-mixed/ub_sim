@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
 
 
@@ -3672,13 +3673,54 @@ def test_shared_obmm_helpers_use_app_language():
     assert "user-space demo" not in combined
 
 
-def test_arm64_native_gcc_is_accepted_for_guest_builds():
-    common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
-    w5_config = (ROOT / "scripts" / "run_w5_cluster_config.sh").read_text()
+class GuestToolchainContractTests(unittest.TestCase):
+    def test_arm64_native_gcc_is_accepted_for_guest_builds(self):
+        common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
+        guest_builder = (
+            ROOT / "scripts" / "build_guest_artifacts.sh"
+        ).read_text()
+        initramfs_builder = (ROOT / "scripts" / "build_initramfs.sh").read_text()
+        busybox_builder = (ROOT / "scripts" / "prepare_busybox.sh").read_text()
+        driver_builder = (ROOT / "scripts" / "build_driver.sh").read_text()
+        w5_config = (ROOT / "scripts" / "run_w5_cluster_config.sh").read_text()
 
-    for source in (common, w5_config):
-        assert 'native_target="$($native_cc -dumpmachine' in source
-        assert '[[ "$native_target" == aarch64* ]]' in source
+        for source in (common, w5_config):
+            self.assertIn('native_target="$($native_cc -dumpmachine', source)
+            self.assertIn('[[ "$native_target" == aarch64* ]]', source)
+
+        self.assertIn("aarch64_linux_cross_prefix()", common)
+        self.assertIn('"$(uname -s 2>/dev/null || true)" == "Linux"', common)
+        self.assertIn('"$host_arch" == (aarch64|arm64)', common)
+        self.assertIn('"$compiler_target" == aarch64*', common)
+        for source in (guest_builder, initramfs_builder, busybox_builder):
+            self.assertIn('aarch64_linux_cross_prefix "$cc_path"', source)
+        for source in (initramfs_builder, busybox_builder):
+            self.assertIn("jobs > 32", source)
+        self.assertIn(
+            'cp "$KERNEL_BUILD_DIR/vmlinux.symvers" '
+            '"$KERNEL_BUILD_DIR/Module.symvers"',
+            guest_builder,
+        )
+        self.assertIn(
+            'make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR"',
+            guest_builder,
+        )
+        self.assertIn('git -c safe.directory="$KERNEL_SRC_DIR"', guest_builder)
+        self.assertIn(
+            'KERNEL_SRC_DIR="$(cd "$ROOT_DIR/../kernel_ub" && pwd)"',
+            guest_builder,
+        )
+        self.assertIn('make -C "$KERNEL_SRC_DIR"', driver_builder)
+        self.assertIn('O="$KERNEL_BUILD_DIR"', driver_builder)
+        self.assertIn('detect_aarch64_linux_cc', driver_builder)
+        self.assertIn('aarch64_linux_cross_prefix "$CC"', driver_builder)
+        self.assertIn("modules_prepare", guest_builder)
+        self.assertIn("modules_prepare", driver_builder)
+        self.assertIn(
+            'cp "$KERNEL_BUILD_DIR/vmlinux.symvers" '
+            '"$KERNEL_BUILD_DIR/Module.symvers"',
+            driver_builder,
+        )
 
 
 def test_guest_kernel_build_only_builds_required_modules():
