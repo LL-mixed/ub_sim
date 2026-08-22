@@ -451,3 +451,140 @@ ensure_qemu_ub_binary() {
 
   echo "$bin"
 }
+
+# ---------------------------------------------------------------------------
+# openEuler guest helpers (shared by W5 openEuler engine)
+# ---------------------------------------------------------------------------
+
+oe_ensure_lvm2_staging() {
+  # $1 = openEuler qcow2 disk image; extracts LVM2 userland once into
+  # $OE_LVM2_STAGING_DIR so the initramfs can activate the root LVM volume.
+  local disk_image="$1"
+  local staging_dir="${OE_LVM2_STAGING_DIR:-/tmp/oe_lvm2_tools}"
+  local raw_img loop_dev mnt_dir bin lib cfg bin_path lib_name dep dep_src dep_dst
+
+  export OE_LVM2_STAGING_DIR="$staging_dir"
+  if [[ -r "$staging_dir/lvm" && -r "$staging_dir/vgscan" ]]; then
+    return 0
+  fi
+  [[ -f "$disk_image" ]] || { echo "openEuler disk image not found: $disk_image" >&2; return 1; }
+
+  echo "[ub_common] extracting LVM2 tools from openEuler disk..." >&2
+  rm -rf "$staging_dir"
+  mkdir -p "$staging_dir"
+
+  raw_img="/tmp/oe_lvm2_extract_$$.raw"
+  qemu-img convert -f qcow2 -O raw -S 512 "$disk_image" "$raw_img" || {
+    rm -f "$raw_img"; return 1; }
+
+  loop_dev="$(sudo losetup -f --show "$raw_img")"
+  sudo partprobe "$loop_dev"
+  sudo vgscan >/dev/null 2>&1 || true
+  sudo vgchange -ay openeuler_bogon >/dev/null 2>&1 || true
+
+  mnt_dir="/mnt/oe_lvm2_extract_$$"
+  sudo mkdir -p "$mnt_dir"
+  sudo mount /dev/mapper/openeuler_bogon-root "$mnt_dir" || {
+    sudo losetup -d "$loop_dev" 2>/dev/null || true
+    rm -f "$raw_img"; return 1; }
+
+  for bin in lvm vgscan vgchange pvscan dmsetup; do
+    if [[ -f "$mnt_dir/usr/sbin/$bin" ]]; then
+      sudo cp -L "$mnt_dir/usr/sbin/$bin" "$staging_dir/"
+    fi
+  done
+  sudo mkdir -p "$staging_dir/etc/lvm"
+  for cfg in lvm.conf lvmlocal.conf; do
+    if [[ -f "$mnt_dir/etc/lvm/$cfg" ]]; then
+      sudo cp -L "$mnt_dir/etc/lvm/$cfg" "$staging_dir/etc/lvm/"
+    fi
+  done
+  for bin_path in /usr/sbin/lvm /usr/sbin/dmsetup; do
+    [[ -f "$mnt_dir$bin_path" ]] || continue
+    sudo chroot "$mnt_dir" /usr/bin/ldd "$bin_path" 2>/dev/null \
+      | grep '=> /' | awk '{print $3}' | while read -r lib; do
+        if [[ -f "$mnt_dir$lib" ]]; then
+          sudo cp -L "$mnt_dir$lib" "$staging_dir/"
+        fi
+      done
+  done
+  for lib in "$staging_dir"/*.so*; do
+    [[ -f "$lib" ]] || continue
+    lib_name="$(basename "$lib")"
+    sudo chroot "$mnt_dir" /usr/bin/ldd "/tmp/../$lib_name" >/dev/null 2>&1 || true
+    sudo chroot "$mnt_dir" /usr/bin/ldd "$lib_name" 2>/dev/null \
+      | grep '=> /' | awk '{print $3}' | while read -r dep; do
+        dep_src="$mnt_dir$dep"
+        dep_dst="$staging_dir/$(basename "$dep")"
+        if [[ -f "$dep_src" && ! -f "$dep_dst" ]]; then
+          sudo cp -L "$dep_src" "$dep_dst"
+        fi
+      done
+  done
+  if [[ -f "$mnt_dir/lib/ld-linux-aarch64.so.1" ]]; then
+    sudo cp -L "$mnt_dir/lib/ld-linux-aarch64.so.1" "$staging_dir/"
+  elif [[ -f "$mnt_dir/lib64/ld-linux-aarch64.so.1" ]]; then
+    sudo cp -L "$mnt_dir/lib64/ld-linux-aarch64.so.1" "$staging_dir/"
+  fi
+
+  sudo chown -R "$(id -u):$(id -g)" "$staging_dir"
+  chmod +x "$staging_dir"/* 2>/dev/null || true
+
+  sudo umount "$mnt_dir" 2>/dev/null || true
+  sudo rmdir "$mnt_dir" 2>/dev/null || true
+  sudo vgchange -an openeuler_bogon >/dev/null 2>&1 || true
+  sudo losetup -d "$loop_dev" 2>/dev/null || true
+  rm -f "$raw_img"
+  echo "[ub_common] LVM2 staging ready at $staging_dir" >&2
+}
+
+oe_build_boot_skeleton() {
+  # $1 = guest-linux/aarch64 root dir (hosts initramfs/init_switch_root, out/)
+  # $2 = busybox static binary
+  # $3 = target initramfs tree; populated with busybox, /init (init_switch_root),
+  #      LVM2 tools and the UB kernel modules that ship as =m.
+  local root_dir="$1"
+  local busybox="$2"
+  local tree="$3"
+  local staging_dir="${OE_LVM2_STAGING_DIR:-/tmp/oe_lvm2_tools}"
+  local mod_src ko cmd
+
+  mkdir -p "$tree/bin" "$tree/sbin" "$tree/lib" "$tree/lib/modules" "$tree/etc"
+  cp -L "$busybox" "$tree/bin/busybox"
+  chmod +x "$tree/bin/busybox"
+  for cmd in sh echo cat mount umount mkdir sleep ls cp mv rm basename readlink insmod modprobe switch_root; do
+    ln -sf busybox "$tree/bin/$cmd" 2>/dev/null || true
+  done
+
+  cp "$root_dir/initramfs/init_switch_root" "$tree/init"
+  chmod +x "$tree/init"
+
+  if [[ -d "$staging_dir" ]]; then
+    for cmd in lvm vgscan vgchange pvscan dmsetup; do
+      if [[ -f "$staging_dir/$cmd" ]]; then
+        cp -L "$staging_dir/$cmd" "$tree/sbin/"
+      fi
+    done
+    for cmd in "$staging_dir"/*.so* "$staging_dir"/ld-linux*; do
+      [[ -f "$cmd" ]] || continue
+      cp -L "$cmd" "$tree/lib/"
+    done
+    if [[ -d "$staging_dir/etc/lvm" ]]; then
+      cp -r "$staging_dir/etc/lvm" "$tree/etc/"
+    fi
+  fi
+
+  mod_src="$root_dir/out/kernel_build"
+  for ko in \
+      "drivers/ub/ubase/ubase.ko" \
+      "drivers/ub/urma/ubcore/ubcore.ko" \
+      "drivers/ub/urma/hw/udma/udma.ko" \
+      "drivers/ub/urma/ulp/ipourma/ipourma.ko" \
+      "drivers/ub/urma/uburma/uburma.ko" \
+      "drivers/iommu/hisilicon/ummu-core/ummu-core.ko" \
+      "drivers/iommu/hisilicon/ummu.ko"; do
+    if [[ -f "$mod_src/$ko" ]]; then
+      cp "$mod_src/$ko" "$tree/lib/modules/"
+    fi
+  done
+}

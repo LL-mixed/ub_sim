@@ -36,6 +36,25 @@ case "$SIM_W5_CLUSTER_NODE_COUNT" in
     exit 2
     ;;
 esac
+SIM_W5_GUEST_ENGINE="${SIM_W5_GUEST_ENGINE:-busybox}"
+case "$SIM_W5_GUEST_ENGINE" in
+  busybox|openEuler)
+    ;;
+  *)
+    echo "SIM_W5_GUEST_ENGINE must be busybox or openEuler: $SIM_W5_GUEST_ENGINE" >&2
+    exit 2
+    ;;
+esac
+if [[ "$SIM_W5_GUEST_ENGINE" == "openEuler" ]]; then
+  if [[ -z "${SIM_W5_OE_DISK_IMAGE:-}" ]]; then
+    echo "openEuler guest engine requires SIM_W5_OE_DISK_IMAGE (openEuler qcow2 disk image)" >&2
+    exit 2
+  fi
+  if [[ ! -f "$SIM_W5_OE_DISK_IMAGE" ]]; then
+    echo "SIM_W5_OE_DISK_IMAGE not found: $SIM_W5_OE_DISK_IMAGE" >&2
+    exit 2
+  fi
+fi
 SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="${SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0}"
 
 w5_profile_default_w4_backend() {
@@ -1216,6 +1235,76 @@ build_w4_initramfs() {
   )
 }
 
+write_w5_openEuler_systemd_unit() {
+  # $1 = target dir (…/etc/systemd/system); writes ub-w5.service which runs the
+  # very same generated run_app on the openEuler rootfs via the serial console.
+  local unit_dir="$1"
+  cat > "$unit_dir/ub-w5.service" <<'UNIT'
+[Unit]
+Description=UB SIM W5 guest runner (openEuler engine)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=0
+ExecStartPre=-/usr/bin/systemctl stop firewalld
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyAMA0
+ExecStart=/bin/busybox sh /bin/run_app
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+build_w4_openEuler_initramfs() {
+  local base_initramfs="$OUT_DIR/initramfs.cpio.gz"
+  local overlay_dir
+
+  trace "prepare: build per-run openEuler initramfs image=$RUN_INITRAMFS_IMAGE"
+  ensure_ub_guest_artifacts "$ROOT_DIR" "$OUT_DIR/Image" "$base_initramfs"
+  oe_ensure_lvm2_staging "$SIM_W5_OE_DISK_IMAGE" || return 1
+  rm -rf "$RUN_INITRAMFS_DIR" "$RUN_INITRAMFS_IMAGE"
+  mkdir -p "$RUN_INITRAMFS_DIR"
+  (
+    cd "$RUN_INITRAMFS_DIR"
+    gzip -dc "$base_initramfs" | cpio -id --quiet
+  )
+  stage_qwen3_object_service_snapshot || return 1
+  stage_flash_weight_catalog || return 1
+  stage_w5_memory_shortpath_stream || return 1
+  stage_w5_memory_shortpath_kv_stream || return 1
+  stage_w5_memory_prefix_cache_kv_stream || return 1
+  stage_w5_serving_requests_file || return 1
+  write_w4_initramfs_runner || return 1
+  # openEuler boot half: /init becomes init_switch_root; add LVM2 userland and
+  # the UB modules that ship as =m on top of the unpacked base tree.
+  oe_build_boot_skeleton "$ROOT_DIR" "$RUN_INITRAMFS_DIR/bin/busybox" "$RUN_INITRAMFS_DIR" || return 1
+  # Root overlay deployed verbatim by init_switch_root: the same run_app flow,
+  # the binaries it execs at busybox-flow paths, staged /tmp payloads, and a
+  # systemd unit so openEuler starts run_app after multi-user.target.
+  overlay_dir="$RUN_INITRAMFS_DIR/ub_root_overlay"
+  mkdir -p "$overlay_dir/bin" "$overlay_dir/tmp" \
+    "$overlay_dir/etc/systemd/system/multi-user.target.wants"
+  cp -a "$RUN_INITRAMFS_DIR/bin/busybox" "$overlay_dir/bin/busybox"
+  for app_bin in "$RUN_INITRAMFS_DIR"/bin/linqu_*; do
+    [[ -f "$app_bin" ]] || continue
+    cp -a "$app_bin" "$overlay_dir/bin/"
+  done
+  cp -a "$RUN_INITRAMFS_DIR/bin/run_app" "$overlay_dir/bin/run_app"
+  cp -a "$RUN_INITRAMFS_DIR/tmp/." "$overlay_dir/tmp/" 2>/dev/null || true
+  write_w5_openEuler_systemd_unit "$overlay_dir/etc/systemd/system"
+  ln -s ../ub-w5.service \
+    "$overlay_dir/etc/systemd/system/multi-user.target.wants/ub-w5.service"
+  trace "prepare: openEuler root overlay staged dir=$overlay_dir disk=$SIM_W5_OE_DISK_IMAGE"
+  (
+    cd "$RUN_INITRAMFS_DIR"
+    find . -print | cpio -o -H newc --quiet | gzip -9 > "$RUN_INITRAMFS_IMAGE"
+  )
+}
+
 append_run_artifact_cleanup() {
   if [[ -n "${CLEANUP_SCRIPT:-}" && -f "$CLEANUP_SCRIPT" ]]; then
     cat >> "$CLEANUP_SCRIPT" <<EOF
@@ -1878,10 +1967,16 @@ prepare_environment() {
     trace "prepare: qwen3 decode round barrier timeout ms=$SIM_QWEN3_DECODE_ROUND_BARRIER_TIMEOUT_MS"
     trace "prepare: qwen3 runtime range wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
   fi
-  build_w4_initramfs
+  if [[ "$SIM_W5_GUEST_ENGINE" == "openEuler" ]]; then
+    build_w4_openEuler_initramfs
+  else
+    build_w4_initramfs
+  fi
+  trace "prepare: guest engine=$SIM_W5_GUEST_ENGINE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
   set +e
   ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" QEMU_MEM="$QEMU_MEM" UB_SIM_PORT_NUM="$PORT_NUM" \
+    SIM_W5_GUEST_ENGINE="$SIM_W5_GUEST_ENGINE" SIM_W5_OE_DISK_IMAGE="${SIM_W5_OE_DISK_IMAGE:-}" \
     INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_app" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \

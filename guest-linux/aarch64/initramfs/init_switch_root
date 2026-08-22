@@ -199,6 +199,34 @@ if [ -d /ub_apps ] && [ "$(/bin/busybox ls -A /ub_apps 2>/dev/null)" ]; then
 fi
 
 # ------------------------------------------------------------------
+# 8b. Deploy root overlay tree verbatim (e.g. W5 run_app + systemd unit)
+# ------------------------------------------------------------------
+# busybox cp -a silently skips a source directory whose destination is a
+# symlink to a directory (usrmerge /bin -> usr/bin), so walk the top level
+# and resolve symlinked destinations explicitly.
+if [ -d /ub_root_overlay ]; then
+    log "deploying root overlay..."
+    for entry in /ub_root_overlay/* /ub_root_overlay/.??*; do
+        [ -e "$entry" ] || continue
+        name="${entry##*/}"
+        dest="/newroot/$name"
+        if [ -L "$dest" ]; then
+            link_target="$(/bin/busybox readlink "$dest")"
+            case "$link_target" in
+                /*) dest="/newroot$link_target" ;;
+                *) dest="/newroot/$link_target" ;;
+            esac
+        fi
+        if [ -d "$entry" ] && [ -d "$dest" ]; then
+            /bin/busybox cp -a "$entry/." "$dest/" 2>/dev/null || true
+        else
+            /bin/busybox cp -a "$entry" "$dest" 2>/dev/null || true
+        fi
+    done
+    log "  root overlay deployed"
+fi
+
+# ------------------------------------------------------------------
 # 9. Prepare switch_root
 # ------------------------------------------------------------------
 log "preparing switch_root..."

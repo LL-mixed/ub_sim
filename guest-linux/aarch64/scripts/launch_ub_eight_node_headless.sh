@@ -234,6 +234,15 @@ start_node() {
   local qemu_pid
   local remote_model_args=()
   local async_load_args=()
+  local oe_disk_args=()
+  local append_args="console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}"
+
+  if [[ -n "${SIM_W5_OE_DISK_IMAGE:-}" ]]; then
+    oe_disk_args=(
+      -drive "file=$OE_OVERLAY_DIR/${node_id}.qcow2,format=qcow2,if=virtio"
+    )
+    append_args="console=ttyAMA0 root=/dev/mapper/openeuler_bogon-root rw init=/init enforcing=0 ${node_append_extra}"
+  fi
 
   if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
     remote_model_args=(
@@ -408,7 +417,8 @@ start_node() {
       -serial chardev:ser0 \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}" \
+      "${oe_disk_args[@]}" \
+      -append "$append_args" \
       >"$qemu_log" 2>&1 &
   qemu_pid=$!
   disown "$qemu_pid" >/dev/null 2>&1 || true
@@ -456,10 +466,11 @@ for node_id in "${NODE_IDS[@]}"; do
   rm -f "__MON_DIR__/${node_id}.__SOCKET_SUFFIX__.sock"
 done
 rm -rf "__RUNTIME_DIR__"
+rm -rf "__SHARED_DIR__/oe_overlays"
 rmdir "__QMP_DIR__" "__SERIAL_DIR__" "__MON_DIR__" 2>/dev/null || true
 echo "cleaned run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g; s#__NODE_IDS__#'"${(j: :)NODE_IDS}"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g; s#__SHARED_DIR__#'"$SHARED_DIR"'#g; s#__NODE_IDS__#'"${(j: :)NODE_IDS}"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 rm -rf "$UB_QEMU_RUNTIME_DIR"
@@ -481,6 +492,24 @@ log "async_load_model=${ASYNC_LOAD_MODEL:-disabled}"
 log "ub_sim_port_num=$PORT_NUM"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
   log "w5_profile=$SIM_UAPI_W5_PROFILE"
+fi
+if [[ -n "${SIM_W5_OE_DISK_IMAGE:-}" ]]; then
+  if ! command -v qemu-img >/dev/null 2>&1; then
+    echo "openEuler engine requires qemu-img on PATH" >&2
+    exit 1
+  fi
+  if [[ ! -f "$SIM_W5_OE_DISK_IMAGE" ]]; then
+    echo "SIM_W5_OE_DISK_IMAGE not found: $SIM_W5_OE_DISK_IMAGE" >&2
+    exit 1
+  fi
+  OE_OVERLAY_DIR="$SHARED_DIR/oe_overlays"
+  rm -rf "$OE_OVERLAY_DIR"
+  mkdir -p "$OE_OVERLAY_DIR"
+  for node_id in "${NODE_IDS[@]}"; do
+    qemu-img create -f qcow2 -b "$SIM_W5_OE_DISK_IMAGE" -F qcow2 \
+      "$OE_OVERLAY_DIR/${node_id}.qcow2" >/dev/null
+    log "openEuler overlay ${node_id}: $OE_OVERLAY_DIR/${node_id}.qcow2"
+  done
 fi
 if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense_reference" || "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "qwen3_dense" ]]; then
   log "qwen3_weights_path=${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
