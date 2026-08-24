@@ -180,7 +180,10 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
 
                 if "stage uapi_model_range_runtime_forward " in clean_line:
                     worker_events["range_forwards"] += 1
-                if "stage model_range_forward_runtime_input_loaded " in clean_line:
+                if (
+                    "stage model_range_forward_runtime_input_loaded " in clean_line
+                    or "stage deepseek_v4_flash_runtime_input_loaded " in clean_line
+                ):
                     worker_events["runtime_inputs"] += 1
                 if "stage model_range_forward_runtime_output_publish " in clean_line:
                     worker_events["runtime_outputs"] += 1

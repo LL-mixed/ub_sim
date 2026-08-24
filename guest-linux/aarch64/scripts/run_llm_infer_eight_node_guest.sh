@@ -1236,13 +1236,13 @@ build_w4_initramfs() {
 }
 
 write_w5_openEuler_systemd_unit() {
-  # $1 = target dir (…/etc/systemd/system); writes ub-w5.service which runs the
-  # very same generated run_app on the openEuler rootfs via the serial console.
+  # $1 = target dir (…/etc/systemd/system); replace the canonical guest unit
+  # so an image carrying the legacy launcher cannot start run_app a second time.
   local unit_dir="$1"
-  cat > "$unit_dir/ub-w5.service" <<'UNIT'
+  cat > "$unit_dir/linqu-w5-guest.service" <<'UNIT'
 [Unit]
 Description=UB SIM W5 guest runner (openEuler engine)
-After=multi-user.target
+After=network.target
 
 [Service]
 Type=oneshot
@@ -1296,8 +1296,8 @@ build_w4_openEuler_initramfs() {
   cp -a "$RUN_INITRAMFS_DIR/bin/run_app" "$overlay_dir/bin/run_app"
   cp -a "$RUN_INITRAMFS_DIR/tmp/." "$overlay_dir/tmp/" 2>/dev/null || true
   write_w5_openEuler_systemd_unit "$overlay_dir/etc/systemd/system"
-  ln -s ../ub-w5.service \
-    "$overlay_dir/etc/systemd/system/multi-user.target.wants/ub-w5.service"
+  ln -s ../linqu-w5-guest.service \
+    "$overlay_dir/etc/systemd/system/multi-user.target.wants/linqu-w5-guest.service"
   trace "prepare: openEuler root overlay staged dir=$overlay_dir disk=$SIM_W5_OE_DISK_IMAGE"
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -1822,7 +1822,7 @@ validate_node_log() {
       assert_log_count "$qemu_log" "deepseek-v4-flash-real-range-runtime: engine=simpler node=$((idx - 1)) nodes=$SIM_W5_CLUSTER_NODE_COUNT layers=\\[[0-9]+,[0-9]+\\) terminal_owner=[01] step=[0-9]+ history_tokens=[1-9][0-9]* executed_tokens=[1-9][0-9]* position=[0-9]+ hidden_bytes=[1-9][0-9]* kv_bytes=[1-9][0-9]* routed_layers=[1-9][0-9]* routed_expert_bytes=[1-9][0-9]* route_checksum=0x[0-9a-f]*[1-9a-f][0-9a-f]* .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek real GGUF MoE execution per step" || return 1
     fi
     if (( idx == terminal_publish_node )); then
-      assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage model_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
+      assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage model_terminal_token_result_publish local=node${idx} target=node1 step=0 token=[0-9]+ runner_up=[0-9]+ .*object_key=tokens/deepseek-v4-flash(/scope/[0-9a-f]{16})?/decode-step0 .*status=ok notification=(delivered|backpressured) publisher=terminal_node" "$node_id DeepSeek terminal token object" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_first_token node=${idx} step=0 token=[0-9]+ runner_up=[0-9]+ logits_checksum=0x[0-9a-f]+ source=terminal_logits target=stream_output status=ok" "$node_id DeepSeek first token" || return 1
       assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} step=[0-9]+ .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id DeepSeek streamed token per step" || return 1
       assert_log_has "$log_file" "\\[w4_guest\\] stage uapi_model_logits_sampling_table entries=1 .*status=ok" "$node_id DeepSeek logits sampling table" || return 1

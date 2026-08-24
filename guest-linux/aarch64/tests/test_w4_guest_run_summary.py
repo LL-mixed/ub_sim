@@ -98,6 +98,29 @@ def idle_engram_timing(node_id, node_index, step, terminal_wait_ms):
 
 
 class W4GuestRunSummaryTest(unittest.TestCase):
+    def test_counts_deepseek_runtime_input_marker(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "[w4_guest] stage deepseek_v4_flash_runtime_input_loaded "
+                "node=1 step=0 status=ok\n"
+                "[w4_guest] stage qwen3_w5_memory_terminal_logits_loaded "
+                "step=0 status=ok\n"
+                "[w4_guest] stage qwen3_w5_memory_terminal_logits_selected "
+                "step=0 status=ok\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "1", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("actual_runtime_inputs=1", result.stdout)
+
     def test_emits_worker_shortpath_summary_from_guest_logs(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
 

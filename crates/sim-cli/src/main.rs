@@ -17154,9 +17154,10 @@ mod tests {
         validate_qwen3_dense_weights_path, validate_w5_inference_profile,
         validate_w5_memory_decision_bundle_for_run, validate_w5_shortpath_run_boundary_coverage,
         w5_expected_jump_to_terminal_shortpath_hits, w5_expected_jump_to_terminal_worker_counts,
-        w5_inference_profile_spec, w5_kv_artifact_id, w5_kv_hot_object_ref_from_object_service,
-        w5_kv_logical_identity, w5_memory_boundary_observations_recorded_line,
-        w5_memory_decision_env_vars, w5_memory_decision_publication_object_service_profile,
+        w5_guest_runtime_input_count, w5_inference_profile_spec, w5_kv_artifact_id,
+        w5_kv_hot_object_ref_from_object_service, w5_kv_logical_identity,
+        w5_memory_boundary_observations_recorded_line, w5_memory_decision_env_vars,
+        w5_memory_decision_publication_object_service_profile,
         w5_memory_prefix_cache_kv_stream_env_from_refs,
         w5_memory_runtime_paths_should_publish_engram_state,
         w5_memory_shortpath_kv_stream_env_from_refs, w5_memory_shortpath_stream_env,
@@ -20514,6 +20515,17 @@ stage model_range_forward_runtime_output_publish node=2
             qwen3_guest_log_match_count(log, "stage model_range_forward_runtime_output_publish "),
             2
         );
+    }
+
+    #[test]
+    fn w5_guest_runtime_input_count_accepts_model_specific_markers() {
+        let log = "\
+stage model_range_forward_runtime_input_loaded node=2
+stage deepseek_v4_flash_runtime_input_loaded node=3
+stage uapi_model_range_runtime_forward node=2
+";
+
+        assert_eq!(w5_guest_runtime_input_count(log), 2);
     }
 
     #[test]
@@ -32489,8 +32501,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         &combined,
         "stage model_range_forward_runtime_output_publish ",
     );
-    let runtime_input_count =
-        qwen3_guest_log_match_count(&combined, "stage model_range_forward_runtime_input_loaded ");
+    let runtime_input_count = w5_guest_runtime_input_count(&combined);
     let terminal_token_count = qwen3_guest_terminal_tokens(&combined).len();
     let guest_engram_select_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_token_select ");
@@ -32811,7 +32822,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         || guest_engram_state_resolved_count != expected_guest_engram_state_resolved_count
     {
         anyhow::bail!(
-            "qwen3 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_no_dispatch={}/{} shortpath_terminal_committed={}/{} shortpath_publish_hidden_zero={}/{} shortpath_boundary_hits={}/{} shortpath_terminal_selects={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
+            "W5 guest decode worker incomplete: range_forwards={}/{} runtime_inputs={}/{} runtime_outputs={}/{} shortpath_no_dispatch={}/{} shortpath_terminal_committed={}/{} shortpath_publish_hidden_zero={}/{} shortpath_boundary_hits={}/{} shortpath_terminal_selects={}/{} terminal_tokens={}/{} engram_selects={}/{} engram_candidate_publishes={}/{} engram_candidate_waits={}/{} engram_selected_waits={}/{} engram_selected_writebacks={}/{} engram_history_waits={}/{} engram_state_waits={}/{} engram_state_resolved={}/{}",
             runtime_forward_count,
             expected_shortpath_worker_counts
                 .map(|counts| counts.range_forwards)
@@ -33080,6 +33091,15 @@ fn qwen3_prepare_engram_simt_mode_from_artifact_config(
 
 fn qwen3_guest_log_match_count(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
+}
+
+fn w5_guest_runtime_input_count(log: &str) -> usize {
+    log.lines()
+        .filter(|line| {
+            line.contains("stage model_range_forward_runtime_input_loaded ")
+                || line.contains("stage deepseek_v4_flash_runtime_input_loaded ")
+        })
+        .count()
 }
 
 fn qwen3_guest_log_line_match_count(haystack: &str, needle_a: &str, needle_b: &str) -> usize {
