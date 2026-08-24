@@ -34,7 +34,7 @@ guest 内可见 UB 设备：`/dev/ub_npu0`、`/dev/ub_ssd0`、`/dev/ubagg`；9p 
 
 ## 注意事项
 
-1. **W5 测试会覆盖 shell 模式**：W5 流程每次运行重写 `env/runner.sh`。跑过 W5 后再 `$0 up` 一次即恢复。
+1. **W5 测试会覆盖 shell 模式**：W5 流程每次运行重写 `env/runner.sh`。跑过 W5 后再执行一次 `up` 即恢复。
 2. 串口 socket 由容器内 root 创建，`up` 时已自动 `chmod a+rw`；若手工重启过 QEMU 需重做。
 3. guest 是极简镜像：无 `hostname(1)` 等工具，改主机名用 `echo NAME > /proc/sys/kernel/hostname`。
 4. n4 根分区常年 ~100%：异常时先 `df -h /`，清理 `/var/log/atop`。
