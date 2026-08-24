@@ -18403,11 +18403,12 @@ impl HostQuantizedGemmRunner {
                 .next()
                 .ok_or_else(|| "simpler_capi_quantized_gemm_dispatch_did_not_complete".to_string())
         })?;
-        if completion.status != CompletionStatus::Success {
-            return Err(format!(
-                "simpler_capi_quantized_gemm_dispatch_failed:{:?}",
-                completion.status
-            ));
+        match completion.status {
+            CompletionStatus::Success => {}
+            CompletionStatus::RetryableFailure { code } => {
+                return Err(format!("simpler_q8_dispatch_retryable:{code}"));
+            }
+            CompletionStatus::FatalFailure { code } => return Err(code),
         }
         let produced = self
             .runtime
@@ -18428,7 +18429,10 @@ impl HostQuantizedGemmRunner {
 
 /// Execute one DeepSeek Q8_0 matrix projection through the simulator's
 /// production simpler C API path.
-const HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET: usize = 12_288;
+const HOST_Q8_BLOCK_DOT_READY_QUEUE_CAPACITY: usize = 8_192;
+// Simpler uses one ready queue per resource shape. Keep headroom for runtime
+// work that can become ready while a generated Q8 graph is being admitted.
+const HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET: usize = HOST_Q8_BLOCK_DOT_READY_QUEUE_CAPACITY - 1_024;
 
 fn host_q8_block_dot_output_ranges(k: usize, n: usize) -> Result<Vec<Range<usize>>, String> {
     let blocks = k / 32;
@@ -18447,6 +18451,22 @@ fn host_q8_block_dot_output_ranges(k: usize, n: usize) -> Result<Vec<Range<usize
         .step_by(rows_per_chunk)
         .map(|start| start..(start + rows_per_chunk).min(n))
         .collect())
+}
+
+fn host_q8_block_dot_chunk_manifest_path(
+    manifest_path: &Path,
+    blocks: usize,
+    n: usize,
+) -> Result<PathBuf, String> {
+    let parent = manifest_path.parent().ok_or_else(|| {
+        format!(
+            "host_q8_block_dot_manifest_has_no_parent:{}",
+            manifest_path.display()
+        )
+    })?;
+    Ok(parent
+        .join(format!("geometry-b{blocks}-n{n}"))
+        .join("host_q8_block_dot_manifest.json"))
 }
 
 pub fn execute_deepseek_q8_projection_through_simpler(
@@ -18488,16 +18508,23 @@ pub fn execute_deepseek_q8_projection_through_simpler(
     }
 
     let mut output = Vec::with_capacity(n);
-    for range in host_q8_block_dot_output_ranges(k, n)? {
+    let ranges = host_q8_block_dot_output_ranges(k, n)?;
+    let split_projection = ranges.len() > 1;
+    for range in ranges {
         let chunk_n = range.len();
         let chunk_dimensions = [k as u64, chunk_n as u64];
         let weight_start = range.start * row_bytes;
         let weight_end = range.end * row_bytes;
         let chunk_weight = &q8_weight[weight_start..weight_end];
-        ensure_simpler_host_q8_block_dot_manifest(manifest_path, blocks as u64, chunk_n as u64)?;
+        let chunk_manifest = if split_projection {
+            host_q8_block_dot_chunk_manifest_path(manifest_path, blocks, chunk_n)?
+        } else {
+            manifest_path.to_path_buf()
+        };
+        ensure_simpler_host_q8_block_dot_manifest(&chunk_manifest, blocks as u64, chunk_n as u64)?;
         let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
             topology,
-            manifest_path,
+            &chunk_manifest,
             blocks,
             chunk_n,
             segment_base,
@@ -18510,11 +18537,18 @@ pub fn execute_deepseek_q8_projection_through_simpler(
             weight_blocks.extend_from_slice(&weight_block);
             weight_scales.extend_from_slice(&block_scales);
         }
-        let dots = runner.run(
-            task,
-            activation.values.iter().map(|value| *value as u8).collect(),
-            weight_blocks,
-        )?;
+        let dots = runner
+            .run(
+                task,
+                activation.values.iter().map(|value| *value as u8).collect(),
+                weight_blocks,
+            )
+            .map_err(|err| {
+                format!(
+                    "{err}:q8_chunk={}..{}:blocks={blocks}",
+                    range.start, range.end
+                )
+            })?;
         let mut chunk_output = vec![0.0f32; chunk_n];
         for block in 0..blocks {
             for output_index in 0..chunk_n {
@@ -32592,24 +32626,30 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_q8_output_projection_stays_below_simpler_scope_task_budget() {
-        const K: usize = 7_168;
+    fn deepseek_q8_output_projection_stays_below_simpler_ready_queue_capacity() {
         const N: usize = 129_280;
-        let blocks = K / 32;
-        let ranges = crate::host_q8_block_dot_output_ranges(K, N).expect("plan output chunks");
+        for k in [4_096, 7_168] {
+            let blocks = k / 32;
+            let ranges = crate::host_q8_block_dot_output_ranges(k, N).expect("plan output chunks");
 
-        assert!(ranges.len() > 1);
-        assert_eq!(ranges.first().map(|range| range.start), Some(0));
-        assert_eq!(ranges.last().map(|range| range.end), Some(N));
-        for pair in ranges.windows(2) {
-            assert_eq!(pair[0].end, pair[1].start);
-        }
-        for range in ranges {
-            assert_eq!(range.len() % 128, 0);
-            assert!(
-                blocks * (range.len() / 128) <= crate::HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET,
-                "range {range:?} exceeds scope task budget"
-            );
+            assert!(ranges.len() > 1);
+            assert_eq!(ranges.first().map(|range| range.start), Some(0));
+            assert_eq!(ranges.last().map(|range| range.end), Some(N));
+            for pair in ranges.windows(2) {
+                assert_eq!(pair[0].end, pair[1].start);
+            }
+            for range in ranges {
+                assert_eq!(range.len() % 128, 0);
+                let ready_tasks = blocks * (range.len() / 128);
+                assert!(
+                    ready_tasks <= crate::HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET,
+                    "range {range:?} exceeds scope task budget"
+                );
+                assert!(
+                    ready_tasks < crate::HOST_Q8_BLOCK_DOT_READY_QUEUE_CAPACITY,
+                    "range {range:?} can overflow the Simpler ready queue"
+                );
+            }
         }
     }
 
@@ -32619,6 +32659,19 @@ mod tests {
             crate::host_q8_block_dot_output_ranges(128, 128).expect("plan one chunk"),
             vec![0..128]
         );
+    }
+
+    #[test]
+    fn split_q8_projection_manifests_are_keyed_by_geometry() {
+        let base = Path::new("/tmp/output-head/host_q8_block_dot_manifest.json");
+        let first = crate::host_q8_block_dot_chunk_manifest_path(base, 128, 7_168)
+            .expect("first geometry path");
+        let tail = crate::host_q8_block_dot_chunk_manifest_path(base, 128, 256)
+            .expect("tail geometry path");
+
+        assert_ne!(first, tail);
+        assert!(first.ends_with("output-head/geometry-b128-n7168/host_q8_block_dot_manifest.json"));
+        assert!(tail.ends_with("output-head/geometry-b128-n256/host_q8_block_dot_manifest.json"));
     }
 
     #[test]

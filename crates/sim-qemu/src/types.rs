@@ -429,7 +429,7 @@ pub fn encode_completion(
     event: &CompletionEvent,
     slot_bytes: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    const QWEN3_RANGE_COMPLETION_MARKER: u64 = 0x7133_7734_7267_6330;
+    const MODEL_RANGE_COMPLETION_MARKER: u64 = 0x7133_7734_7267_6330;
 
     let mut buf = Vec::with_capacity(slot_bytes);
     write_u64(&mut buf, event.op_id);
@@ -466,7 +466,7 @@ pub fn encode_completion(
     write_u64(&mut buf, event.finished_at);
     if let Some(task) = &event.task {
         if task.scope_depth == 8 && buf.len() + 8 + (task.coord.levels.len() * 4) <= slot_bytes {
-            write_u64(&mut buf, QWEN3_RANGE_COMPLETION_MARKER);
+            write_u64(&mut buf, MODEL_RANGE_COMPLETION_MARKER);
             for level in task.coord.levels {
                 write_u32(&mut buf, level);
             }
