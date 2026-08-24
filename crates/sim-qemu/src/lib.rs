@@ -713,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_qwen3_range_dispatch_descriptor_decodes_task_contract() {
+    fn compact_model_range_dispatch_descriptor_decodes_task_contract() {
         let mut slot = vec![0u8; 64];
         let mut offset = 0usize;
 
@@ -728,9 +728,9 @@ mod tests {
             offset += 4;
         }
 
-        let desc = GuestDescriptor::decode(&slot).expect("decode compact qwen3 range dispatch");
-        let GuestDescriptor::Qwen3RangeDispatch(io) = desc else {
-            panic!("expected qwen3 range dispatch descriptor");
+        let desc = GuestDescriptor::decode(&slot).expect("decode compact model range dispatch");
+        let GuestDescriptor::ModelRangeDispatch(io) = desc else {
+            panic!("expected model range dispatch descriptor");
         };
         assert_eq!(io.op_id, 31);
         assert_eq!(io.segment.0, 7);
@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_qwen3_range_dispatch_descriptor_decodes_object_ref_sideband() {
+    fn compact_model_range_dispatch_descriptor_decodes_object_ref_sideband() {
         let mut slot = vec![0u8; 64];
         let mut offset = 0usize;
 
@@ -762,9 +762,9 @@ mod tests {
         offset += 4;
         slot[offset..offset + 4].copy_from_slice(&2u32.to_le_bytes());
 
-        let desc = GuestDescriptor::decode(&slot).expect("decode compact qwen3 range dispatch");
-        let GuestDescriptor::Qwen3RangeDispatch(io) = desc else {
-            panic!("expected qwen3 range dispatch descriptor");
+        let desc = GuestDescriptor::decode(&slot).expect("decode compact model range dispatch");
+        let GuestDescriptor::ModelRangeDispatch(io) = desc else {
+            panic!("expected model range dispatch descriptor");
         };
         assert_eq!(io.object_ref_table_offset, 0x70000);
         assert_eq!(io.object_ref_count, 2);

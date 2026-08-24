@@ -34,7 +34,7 @@ int linqu_ub_bridge_read_segment_payload(LinquUbBridge *bridge,
                                          uint8_t *out,
                                          size_t out_len);
 
-int linqu_ub_bridge_register_qwen3_runtime_object_payload(LinquUbBridge *bridge,
+int linqu_ub_bridge_register_model_runtime_object_payload(LinquUbBridge *bridge,
                                                           const uint8_t *object_ref,
                                                           size_t object_ref_len,
                                                           const uint8_t *payload,

@@ -7,7 +7,7 @@ use sim_services::{
     dfs::{DfsReadReq, DfsWriteReq},
     shmem::{ShmemGetReq, ShmemPutReq},
 };
-use sim_uapi::{Qwen3RangeDispatchReq, UapiDescriptor};
+use sim_uapi::{ModelRangeDispatchReq, UapiDescriptor};
 
 #[derive(Debug, Clone)]
 pub struct MachineProfile {
@@ -46,7 +46,7 @@ impl Default for GuestEndpointLayout {
 #[derive(Debug, Clone)]
 pub enum GuestDescriptor {
     Io(GuestIoDescriptor),
-    Qwen3RangeDispatch(GuestQwen3RangeDispatchDescriptor),
+    ModelRangeDispatch(GuestModelRangeDispatchDescriptor),
     Service(GuestServiceDescriptor),
 }
 
@@ -61,7 +61,7 @@ pub struct GuestIoDescriptor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GuestQwen3RangeDispatchDescriptor {
+pub struct GuestModelRangeDispatchDescriptor {
     pub op_id: u64,
     pub segment: SegmentHandle,
     pub task: TaskKey,
@@ -94,8 +94,8 @@ impl GuestDescriptor {
                 segment: io.segment,
                 block: io.block,
             }),
-            GuestDescriptor::Qwen3RangeDispatch(req) => {
-                UapiDescriptor::Qwen3RangeDispatch(Qwen3RangeDispatchReq {
+            GuestDescriptor::ModelRangeDispatch(req) => {
+                UapiDescriptor::ModelRangeDispatch(ModelRangeDispatchReq {
                     op_id: req.op_id,
                     segment: req.segment,
                     task: req.task,
@@ -141,7 +141,7 @@ impl GuestDescriptor {
                 encode_opt_segment(&mut buf, io.segment);
                 encode_opt_string(&mut buf, io.block.as_ref().map(|block| block.0.as_str()))?;
             }
-            GuestDescriptor::Qwen3RangeDispatch(req) => {
+            GuestDescriptor::ModelRangeDispatch(req) => {
                 write_u8(&mut buf, 9);
                 write_u64(&mut buf, req.op_id);
                 write_u64(&mut buf, req.segment.0);
@@ -281,8 +281,8 @@ impl GuestDescriptor {
                 }
                 let object_ref_table_offset = read_u32(&mut cursor).unwrap_or(0);
                 let object_ref_count = read_u32(&mut cursor).unwrap_or(0);
-                Ok(GuestDescriptor::Qwen3RangeDispatch(
-                    GuestQwen3RangeDispatchDescriptor {
+                Ok(GuestDescriptor::ModelRangeDispatch(
+                    GuestModelRangeDispatchDescriptor {
                         op_id,
                         segment,
                         task: TaskKey {
@@ -435,7 +435,7 @@ pub fn encode_completion(
     write_u64(&mut buf, event.op_id);
     /*
      * Guest CQ slots are compact. The fixed prefix carries
-     * op_id/source/status/finished_at. A Qwen3 range dispatch may append a
+     * op_id/source/status/finished_at. A model range dispatch may append a
      * tiny task sideband after finished_at so the guest can validate the
      * range contract without mutating the output tensor segment.
      */

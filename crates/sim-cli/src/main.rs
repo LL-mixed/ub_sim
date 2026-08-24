@@ -32,6 +32,7 @@ use sim_models::qwen3_dense_reference::{
     Qwen3DenseReferenceTokenizerProjection,
 };
 use sim_models::{
+    deepseek_v4_flash::{DEEPSEEK_V4_FLASH_MODEL_KEY, DEEPSEEK_V4_FLASH_PROFILE},
     engram_context::{
         PAPER_ENGRAM_CONTEXT_DEFAULT_HEADS_PER_ORDER, PAPER_ENGRAM_CONTEXT_DEFAULT_ORDERS,
     },
@@ -1908,6 +1909,14 @@ const W5_INFERENCE_PROFILE_SPECS: &[W5InferenceProfileSpec] = &[
         backend_profile: "qwen3_dense",
         engram_required: true,
     },
+    W5InferenceProfileSpec {
+        name: "deepseek_v4_flash_decode",
+        model_key: DEEPSEEK_V4_FLASH_MODEL_KEY,
+        mode: "decode",
+        nodes: 8,
+        backend_profile: "deepseek-v4-flash-simpler",
+        engram_required: false,
+    },
 ];
 
 fn w5_inference_profile_spec(value: &str) -> anyhow::Result<&'static W5InferenceProfileSpec> {
@@ -1925,6 +1934,9 @@ fn qwen3_guest_default_w5_profile(
     runtime: &Qwen3DenseGuestRuntime,
     engram: &Qwen3EngramConfig,
 ) -> String {
+    if runtime.model_key == DEEPSEEK_V4_FLASH_MODEL_KEY {
+        return "deepseek_v4_flash_decode".to_string();
+    }
     let model = if runtime.model_key == "qwen3-14b" {
         "qwen3_14b"
     } else {
@@ -7603,14 +7615,14 @@ fn w5_paper_engram_eval_evidence_from_summary(
                     backend_output_contradiction = true;
                 }
             }
-        } else if line.contains("stage qwen3_terminal_token_result_publish ") {
+        } else if line.contains("stage model_terminal_token_result_publish ") {
             let fields = parse_summary_fields(&line);
             let step = required_summary_u64(&fields, "step")?;
             let text_checksum = required_summary_u64_auto(&fields, "text_checksum")?;
             if text_checksum != 0 {
                 terminal_output_by_step.insert(step, text_checksum);
             }
-        } else if line.contains("stage qwen3_w5_terminal_logits_observation ") {
+        } else if line.contains("stage model_terminal_logits_observation ") {
             let fields = parse_summary_fields(&line);
             if fields
                 .get("source")
@@ -14395,7 +14407,7 @@ fn find_w5_terminal_logits_observation(
         let log = fs::read_to_string(&log_path)
             .with_context(|| format!("read W5 terminal guest log {}", log_path.display()))?;
         for line in log.lines() {
-            if !line.contains("stage qwen3_w5_terminal_logits_observation ") {
+            if !line.contains("stage model_terminal_logits_observation ") {
                 continue;
             }
             let fields = parse_summary_fields(line);
@@ -14414,7 +14426,7 @@ fn find_w5_terminal_logits_observation(
         }
     }
     anyhow::bail!(
-        "missing source=uapi_real_logits qwen3_w5_terminal_logits_observation for step={step} in {}",
+        "missing source=uapi_real_logits model_terminal_logits_observation for step={step} in {}",
         run_dir.display()
     )
 }
@@ -14796,7 +14808,7 @@ fn w5_kv_artifact_exports_from_summary(
                 continue;
             }
             if is_guest_log && (object_service.is_some() || object_registry_dir.is_some()) {
-                if line.contains("stage qwen3_range_kv_state_publish ") {
+                if line.contains("stage model_range_kv_state_publish ") {
                     let fields = parse_summary_fields(line);
                     let step = required_summary_u64(&fields, "step")?;
                     if step_filter.is_some_and(|steps| !steps.contains(&step)) {
@@ -15119,6 +15131,18 @@ fn w5_boundary_observations_from_summary(
 fn qwen3_runtime_model_binding(
     runtime: &Qwen3DenseGuestRuntime,
 ) -> anyhow::Result<sim_memory::InferenceModelBinding> {
+    if runtime.weights_path.is_file() {
+        let model = sim_memory::InferenceModelBinding {
+            model_id: runtime.profile.model_id.clone(),
+            model_key: runtime.model_key.clone(),
+            tokenizer_hash: qwen3_lingqu_key_hash(runtime.profile.model_id.as_str()),
+            profile_hash: qwen3_lingqu_key_hash(runtime.model_key.as_str()),
+        };
+        model
+            .validate()
+            .map_err(|err| anyhow::anyhow!("validate W5 runtime model binding: {err}"))?;
+        return Ok(model);
+    }
     let tokenizer_bytes =
         fs::read(runtime.weights_path.join("tokenizer.json")).with_context(|| {
             format!(
@@ -15167,8 +15191,13 @@ fn w5_prefix_cache_key_for_prompt_with_model(
     for token in prompt_tokens {
         token_bytes.extend_from_slice(&token.to_le_bytes());
     }
+    let model_family = if runtime.model_key == DEEPSEEK_V4_FLASH_MODEL_KEY {
+        "deepseek-v4-flash"
+    } else {
+        "qwen3"
+    };
     let layout_key = format!(
-        "qwen3-kv-layout/{}/{}/{}/{}/{}",
+        "{model_family}-kv-layout/{}/{}/{}/{}/{}",
         runtime.profile.num_hidden_layers,
         runtime.profile.num_key_value_heads,
         runtime.profile.head_dim,
@@ -15177,12 +15206,14 @@ fn w5_prefix_cache_key_for_prompt_with_model(
     );
     let key = sim_memory::PrefixCacheKey {
         model,
-        namespace: format!("w5/qwen3/{}/default", runtime.model_key),
-        chat_template_hash: qwen3_lingqu_key_hash("w5/qwen3/default-chat-template/v1"),
+        namespace: format!("w5/{model_family}/{}/default", runtime.model_key),
+        chat_template_hash: qwen3_lingqu_key_hash(&format!(
+            "w5/{model_family}/default-chat-template/v1"
+        )),
         prefix_token_hash: lingqu_object_payload_checksum(&token_bytes),
         prefix_token_count: prompt_tokens.len() as u64,
         rope_config_hash: qwen3_lingqu_key_hash(&format!(
-            "qwen3-rope/{}/{}",
+            "{model_family}-rope/{}/{}",
             runtime.profile.hidden_size, runtime.profile.num_attention_heads
         )),
         kv_layout_hash: qwen3_lingqu_key_hash(&layout_key),
@@ -15560,7 +15591,7 @@ fn w5_summary_has_terminal_logits_observation(summary: &str) -> bool {
         .any(|name| {
             fs::read_to_string(run_dir.join(name)).is_ok_and(|log| {
                 log.lines().any(|line| {
-                    line.contains("stage qwen3_w5_terminal_logits_observation ")
+                    line.contains("stage model_terminal_logits_observation ")
                         && line.contains(" source=uapi_real_logits ")
                 })
             })
@@ -17060,9 +17091,9 @@ mod tests {
         qwen3_guest_w5_pass_marker_present, qwen3_object_registry_path_in_dir,
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
         qwen3_prepare_engram_simt_mode_from_artifact_config, qwen3_range_forward_args_from,
-        qwen3_tokenizer_projection_args_from, qwen3_validate_engram_state_object_service_payload,
-        read_lingqu_memory_payload_ref, read_w5_u64,
-        rebuild_lingqu_memory_all_paper_engram_registries,
+        qwen3_runtime_model_binding, qwen3_tokenizer_projection_args_from,
+        qwen3_validate_engram_state_object_service_payload, read_lingqu_memory_payload_ref,
+        read_w5_u64, rebuild_lingqu_memory_all_paper_engram_registries,
         record_w5_runtime_boundary_observations_from_summary,
         register_w5_runtime_prefix_cache_artifact, resolve_w5_inference_profile,
         run_deepseek_v4_flash_moe_report_cli, run_deepseek_v4_flash_route_trace_manifest_cli,
@@ -17148,9 +17179,9 @@ mod tests {
         W5JumpToTerminalExpectedWorkerCounts, W5MemoryDecisionArtifactPublication,
         W5MemoryDecisionBundle, W5MemoryDecisionConfig, W5MemoryPublishedArtifactRef,
         W5MemoryPublishedKvArtifactRef, W5MemoryRuntimePaths, W5MemoryShortpathKvArtifact,
-        LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX, QWEN3_DENSE_DEFAULT_DECODE_TOKENS,
-        QWEN3_DENSE_DEFAULT_PREFILL_TOKENS, QWEN3_DENSE_DEFAULT_TP_NODES,
-        QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
+        DEEPSEEK_V4_FLASH_MODEL_KEY, LINGQU_EXTERNAL_PAYLOAD_BLOCK_PREFIX,
+        QWEN3_DENSE_DEFAULT_DECODE_TOKENS, QWEN3_DENSE_DEFAULT_PREFILL_TOKENS,
+        QWEN3_DENSE_DEFAULT_TP_NODES, QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_STATE, QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
@@ -17392,7 +17423,7 @@ mod tests {
         let runner_text_checksum = 0xddd0 + step;
         let piece_word0 = 0x41 + step;
         format!(
-            "[w4_guest] stage qwen3_w5_terminal_logits_observation local=node8 step={step} token={token} runner_up={runner_up} margin_milli=100 logits_checksum={logits_checksum:#018x} text_checksum={text_checksum:#018x} top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum={full_vocab_checksum:#018x} piece_word0={piece_word0:#018x} piece_word1=0x0000000000000000 candidate_count=2 candidate0_token={token} candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum={text_checksum:#018x} candidate0_piece_bytes=1 candidate0_piece_word0={piece_word0:#018x} candidate0_piece_word1=0x0000000000000000 candidate1_token={runner_up} candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum={runner_text_checksum:#018x} candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n"
+            "[w4_guest] stage model_terminal_logits_observation local=node8 step={step} token={token} runner_up={runner_up} margin_milli=100 logits_checksum={logits_checksum:#018x} text_checksum={text_checksum:#018x} top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum={full_vocab_checksum:#018x} piece_word0={piece_word0:#018x} piece_word1=0x0000000000000000 candidate_count=2 candidate0_token={token} candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum={text_checksum:#018x} candidate0_piece_bytes=1 candidate0_piece_word0={piece_word0:#018x} candidate0_piece_word1=0x0000000000000000 candidate1_token={runner_up} candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum={runner_text_checksum:#018x} candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n"
         )
     }
 
@@ -17407,7 +17438,7 @@ mod tests {
     ) -> String {
         let checksum = w5_runtime_tensor_payload_checksum(payload);
         format!(
-            "[w4_guest] stage qwen3_range_kv_state_publish local=node{node} step={step} layers=[{layer_start},{layer_end}) key={key} version={version} offset=0 kv_bytes={} kv_checksum={checksum:#018x} status=ok\n",
+            "[w4_guest] stage model_range_kv_state_publish local=node{node} step={step} layers=[{layer_start},{layer_end}) key={key} version={version} offset=0 kv_bytes={} kv_checksum={checksum:#018x} status=ok\n",
             payload.len()
         )
     }
@@ -18091,6 +18122,23 @@ mod tests {
         assert_eq!(args.w5_profile.as_deref(), Some("qwen3_14b_engram_decode"));
         assert!(args.engram.enabled);
         assert_eq!(args.engram.pool, Qwen3EngramPool::Obmm);
+    }
+
+    #[test]
+    fn w5_inference_cluster_args_accept_deepseek_profile() {
+        let args = qwen3_guest_decode_loop_args_from([
+            "w5-inference-cluster",
+            "--w5-profile=deepseek_v4_flash_decode",
+            "--weights-path=/models/deepseek-v4-flash.gguf",
+        ])
+        .expect("parse W5 DeepSeek inference cluster args")
+        .expect("W5 DeepSeek inference cluster args");
+
+        assert_eq!(args.w5_profile.as_deref(), Some("deepseek_v4_flash_decode"));
+        assert_eq!(
+            args.weights_path,
+            Some(PathBuf::from("/models/deepseek-v4-flash.gguf"))
+        );
     }
 
     #[test]
@@ -19192,8 +19240,63 @@ mod tests {
         assert_eq!(spec.nodes, 8);
         assert_eq!(spec.backend_profile, "qwen3_dense");
         assert!(spec.engram_required);
+        let deepseek =
+            w5_inference_profile_spec("deepseek_v4_flash_decode").expect("DeepSeek profile");
+        assert_eq!(deepseek.model_key, DEEPSEEK_V4_FLASH_MODEL_KEY);
+        assert_eq!(deepseek.backend_profile, "deepseek-v4-flash-simpler");
+        assert!(!deepseek.engram_required);
         assert!(validate_w5_inference_profile("w4_guest").is_err());
         assert!(validate_w5_inference_profile("qwen3_prefill_decode").is_err());
+    }
+
+    #[test]
+    fn w5_deepseek_runtime_uses_gguf_identity_and_geometry() {
+        let model = env::temp_dir().join(format!(
+            "DeepSeek-V4-Flash-IQ2XXS-test-{}.gguf",
+            std::process::id()
+        ));
+        fs::write(&model, b"GGUF-test-placeholder").expect("write DeepSeek GGUF placeholder");
+        let args = Qwen3GuestDecodeLoopCliArgs {
+            validate_only: true,
+            step_count: 1,
+            prompt: None,
+            prompt_token_ids: Some("1,2,3".to_string()),
+            script_path: PathBuf::from(
+                "guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh",
+            ),
+            matmul_batch: None,
+            model: None,
+            weights_path: Some(model.clone()),
+            w5_profile: Some("deepseek_v4_flash_decode".to_string()),
+            sampler: Qwen3SamplerConfig::default(),
+            engram: Qwen3EngramConfig::default(),
+            memory_runtime_paths: None,
+            memory_decisions: None,
+            memory_observation_store_path: None,
+            memory_runtime_boundary_lookup: false,
+            memory_post_run_promote: false,
+            memory_online_boundary_lookup: false,
+            shortpath_match_mode: "exact".to_string(),
+            min_match_score_milli: 850,
+            min_terminal_margin_milli: 500,
+            approximate_requires_verify: true,
+            min_source_confidence_milli: 900,
+        };
+
+        let runtime = qwen3_guest_dense_runtime(&args).expect("DeepSeek W5 runtime");
+        assert_eq!(runtime.model_key, DEEPSEEK_V4_FLASH_MODEL_KEY);
+        assert_eq!(runtime.profile.num_hidden_layers, 43);
+        assert_eq!(runtime.profile.hidden_size, 4096);
+        assert_eq!(runtime.chipbackend_profile, "deepseek-v4-flash-simpler");
+        let binding = qwen3_runtime_model_binding(&runtime).expect("DeepSeek model binding");
+        assert_eq!(binding.model_key, DEEPSEEK_V4_FLASH_MODEL_KEY);
+        let key = w5_prefix_cache_key_for_prompt(&runtime, &[1, 2, 3])
+            .expect("DeepSeek prefix key")
+            .expect("nonempty DeepSeek prefix key");
+        assert_eq!(key.layer_end, 43);
+        assert!(key.namespace.contains("deepseek-v4-flash"));
+
+        let _ = fs::remove_file(model);
     }
 
     #[test]
@@ -20393,22 +20496,22 @@ mod tests {
     #[test]
     fn qwen3_guest_log_match_count_counts_worker_markers() {
         let log = "\
-stage uapi_qwen3_range_runtime_forward node=0
-stage qwen3_range_forward_runtime_input_loaded node=2
-stage qwen3_range_forward_runtime_output_publish node=1
-stage uapi_qwen3_range_runtime_forward node=1
-stage qwen3_range_forward_runtime_output_publish node=2
+stage uapi_model_range_runtime_forward node=0
+stage model_range_forward_runtime_input_loaded node=2
+stage model_range_forward_runtime_output_publish node=1
+stage uapi_model_range_runtime_forward node=1
+stage model_range_forward_runtime_output_publish node=2
 ";
         assert_eq!(
-            qwen3_guest_log_match_count(log, "stage uapi_qwen3_range_runtime_forward "),
+            qwen3_guest_log_match_count(log, "stage uapi_model_range_runtime_forward "),
             2
         );
         assert_eq!(
-            qwen3_guest_log_match_count(log, "stage qwen3_range_forward_runtime_input_loaded "),
+            qwen3_guest_log_match_count(log, "stage model_range_forward_runtime_input_loaded "),
             1
         );
         assert_eq!(
-            qwen3_guest_log_match_count(log, "stage qwen3_range_forward_runtime_output_publish "),
+            qwen3_guest_log_match_count(log, "stage model_range_forward_runtime_output_publish "),
             2
         );
     }
@@ -20659,8 +20762,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     #[test]
     fn qwen3_guest_terminal_tokens_parse_in_step_order() {
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=38511 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=99710 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=1 token=38511 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=99710 status=ok
 ";
         assert_eq!(qwen3_guest_terminal_tokens(log), vec![99710, 38511]);
     }
@@ -20668,8 +20771,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     #[test]
     fn qwen3_guest_terminal_tokens_dedup_shortpath_publish_by_step() {
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node4 step=0 token=11 status=ok publisher=shortpath_boundary
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 status=ok publisher=terminal_node
+[w4_guest] stage model_terminal_token_result_publish local=node4 step=0 token=11 status=ok publisher=shortpath_boundary
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 status=ok publisher=terminal_node
 ";
         assert_eq!(qwen3_guest_terminal_tokens(log), vec![11]);
     }
@@ -20713,7 +20816,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     #[test]
     fn qwen3_guest_candidate_records_parse_terminal_top_and_runner_up() {
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=358 margin_milli=122 text_checksum=0xd47f6aad369a54ea status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 runner_up=358 margin_milli=122 text_checksum=0xd47f6aad369a54ea status=ok
 ";
         let records = qwen3_guest_terminal_candidate_records(log);
         assert_eq!(records.len(), 1);
@@ -20728,7 +20831,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     fn qwen3_guest_candidate_records_prefer_engram_raw_candidates() {
         let log = "\
 [w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=5 raw_token=2776 runner_up=1079 selected_token=1079 candidate_count=4 candidate2=264 candidate3=11 blocked=1 fallback=0 top_score_milli=606 runner_up_score_milli=0 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=1079 runner_up=1079 margin_milli=606 text_checksum=0xea198295636f6f11 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=1079 runner_up=1079 margin_milli=606 text_checksum=0xea198295636f6f11 status=ok
 ";
         let records = qwen3_guest_candidate_records(log);
         assert_eq!(records.len(), 1);
@@ -20750,8 +20853,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             ..Qwen3EngramConfig::default()
         };
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 text_checksum=0x2 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 text_checksum=0x2 status=ok
 ";
         let report =
             qwen3_guest_engram_report(&config, 7, &[9707, 1207], log).expect("build engram report");
@@ -21043,7 +21146,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             ..Qwen3EngramConfig::default()
         };
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
 ";
         let first =
             qwen3_guest_engram_report(&config, 7, &[9707], log).expect("first engram report");
@@ -21064,8 +21167,8 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             ..Qwen3EngramConfig::default()
         };
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 text_checksum=0x2 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 text_checksum=0x2 status=ok
 ";
         let report = qwen3_guest_engram_report(&config, 7, &[9707, 1207], log)
             .expect("build object-backed engram report");
@@ -21091,7 +21194,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             ..Qwen3EngramConfig::default()
         };
         let log = "\
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 runner_up=0 margin_milli=122 text_checksum=0x1 status=ok
 [w4_guest] stage qwen3_engram_candidates_publish local=node8 step=0 candidate_count=4 status=ok
 [w4_guest] stage qwen3_engram_candidates_wait step=0 bytes=256 status=ok
 [w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=2 selected_token=11 status=ok
@@ -21126,7 +21229,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let log = "\
 [w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=5 raw_token=2776 runner_up=1079 selected_token=1079 candidate_count=4 candidate2=264 candidate3=11 blocked=1 fallback=0 top_score_milli=606 runner_up_score_milli=101 no_repeat_ngram_size=0 repetition_penalty_milli=1000 history_window=0 candidate_checksum=0x1 source=guest_policy status=ok
 [w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=6 selected_token=1079 history_key=qwen3/session/abc/tokens/history history_version=1 selected_key=qwen3/session/abc/step/0/tokens/selected state_key=qwen3/session/abc/step/0/engram/state history_checksum=0x11 selected_checksum=0x22 state_checksum=0x33 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=1079 runner_up=1079 margin_milli=606 text_checksum=0x1 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=1079 runner_up=1079 margin_milli=606 text_checksum=0x1 status=ok
 ";
         let report = qwen3_guest_engram_report_from_guest_log(&config, 7, &[9707], log)
             .expect("guest log report");
@@ -21150,10 +21253,10 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
         let log = "\
 [w4_guest] stage qwen3_engram_token_select local=node8 step=0 history_tokens=3 raw_token=10 runner_up=11 selected_token=10 candidate_count=4 candidate2=12 candidate3=13 blocked=0 fallback=0 top_score_milli=100 runner_up_score_milli=90 no_repeat_ngram_size=0 repetition_penalty_milli=1000 history_window=0 candidate_checksum=0x1 source=guest_policy status=ok
 [w4_guest] stage qwen3_engram_decision_publish local=node8 step=0 objects=3 history_tokens=4 selected_token=10 history_key=qwen3/session/abc/tokens/history history_version=1 selected_key=qwen3/session/abc/step/0/tokens/selected state_key=qwen3/session/abc/step/0/engram/state history_checksum=0x11 selected_checksum=0x12 state_checksum=0x13 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=10 runner_up=11 margin_milli=100 text_checksum=0x1 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=10 runner_up=11 margin_milli=100 text_checksum=0x1 status=ok
 [w4_guest] stage qwen3_engram_token_select local=node8 step=1 history_tokens=4 raw_token=20 runner_up=21 selected_token=20 candidate_count=4 candidate2=22 candidate3=23 blocked=0 fallback=0 top_score_milli=100 runner_up_score_milli=90 no_repeat_ngram_size=0 repetition_penalty_milli=1000 history_window=0 candidate_checksum=0x2 source=guest_policy status=ok
 [w4_guest] stage qwen3_engram_decision_publish local=node8 step=1 objects=3 history_tokens=5 selected_token=20 history_key=qwen3/session/abc/tokens/history history_version=2 selected_key=qwen3/session/abc/step/1/tokens/selected state_key=qwen3/session/abc/step/1/engram/state history_checksum=0x21 selected_checksum=0x22 state_checksum=0x23 status=ok
-[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=1 token=20 runner_up=21 margin_milli=100 text_checksum=0x2 status=ok
+[w4_guest] stage model_terminal_token_result_publish local=node8 step=1 token=20 runner_up=21 margin_milli=100 text_checksum=0x2 status=ok
 ";
         let report = qwen3_guest_engram_report_from_guest_log(&config, 7, &[1, 2, 3], log)
             .expect("guest log report");
@@ -21200,9 +21303,9 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
     #[test]
     fn qwen3_guest_timing_summary_tracks_slowest_stages() {
         let log = "\
-[w4_guest] stage qwen3_worker_timing local=nodeA step=0 node=1 layers=[0,4) count=4 next=2 total_ms=100 terminal_gate_ms=0 setup_ms=31 obmm_stage_ms=10 cluster_ms=20 map_ms=1 seed_payload_ms=9 descriptor_ms=6 input_wait_ms=0 compute_window_ms=30 submit_ms=2 base_submit_ms=1 doorbell_submit_ms=1 max_batch_submit_ms=1 dispatch_ms=20 doorbell_log_ms=1 batch_sleep_ms=4 post_batch_ms=1 completion_decode_ms=1 compute_unaccounted_ms=1 publish_ms=4 verify_publish_ms=4 round_done_ms=1 barrier_ms=0 unaccounted_ms=19 dispatch_ms_per_layer_milli=5000
-[w4_guest] stage qwen3_worker_timing local=nodeB step=0 node=2 layers=[4,8) count=4 next=3 total_ms=250 terminal_gate_ms=0 setup_ms=2 obmm_stage_ms=0 cluster_ms=0 map_ms=1 seed_payload_ms=11 descriptor_ms=9 input_wait_ms=90 compute_window_ms=120 submit_ms=3 base_submit_ms=1 doorbell_submit_ms=2 max_batch_submit_ms=2 dispatch_ms=100 doorbell_log_ms=2 batch_sleep_ms=5 post_batch_ms=2 completion_decode_ms=6 compute_unaccounted_ms=2 publish_ms=4 verify_publish_ms=4 round_done_ms=1 barrier_ms=0 unaccounted_ms=13 dispatch_ms_per_layer_milli=25000
-[w4_guest] stage qwen3_worker_barrier_timing local=nodeB step=0 node=2 barrier_ms=77 total_with_barrier_ms=327
+[w4_guest] stage model_worker_timing local=nodeA step=0 node=1 layers=[0,4) count=4 next=2 total_ms=100 terminal_gate_ms=0 setup_ms=31 obmm_stage_ms=10 cluster_ms=20 map_ms=1 seed_payload_ms=9 descriptor_ms=6 input_wait_ms=0 compute_window_ms=30 submit_ms=2 base_submit_ms=1 doorbell_submit_ms=1 max_batch_submit_ms=1 dispatch_ms=20 doorbell_log_ms=1 batch_sleep_ms=4 post_batch_ms=1 completion_decode_ms=1 compute_unaccounted_ms=1 publish_ms=4 verify_publish_ms=4 round_done_ms=1 barrier_ms=0 unaccounted_ms=19 dispatch_ms_per_layer_milli=5000
+[w4_guest] stage model_worker_timing local=nodeB step=0 node=2 layers=[4,8) count=4 next=3 total_ms=250 terminal_gate_ms=0 setup_ms=2 obmm_stage_ms=0 cluster_ms=0 map_ms=1 seed_payload_ms=11 descriptor_ms=9 input_wait_ms=90 compute_window_ms=120 submit_ms=3 base_submit_ms=1 doorbell_submit_ms=2 max_batch_submit_ms=2 dispatch_ms=100 doorbell_log_ms=2 batch_sleep_ms=5 post_batch_ms=2 completion_decode_ms=6 compute_unaccounted_ms=2 publish_ms=4 verify_publish_ms=4 round_done_ms=1 barrier_ms=0 unaccounted_ms=13 dispatch_ms_per_layer_milli=25000
+[w4_guest] stage model_worker_barrier_timing local=nodeB step=0 node=2 barrier_ms=77 total_with_barrier_ms=327
 ";
         let summary = qwen3_guest_timing_summary(log);
 
@@ -23760,7 +23863,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             concat!(
                 "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=7 row_prefetch_hits=3 row_prefetch_requests=3 row_prefetch_hit_rate_milli=1000 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
                 "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000007001 gate_checksum=0x0000000000007002 index_checksum=0x0000000000007003 output_l1_milli=10 latency_ms=3 row_prefetch_hits=3 row_prefetch_requests=3 row_prefetch_hit_rate_milli=1000 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
-                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008001\n",
+                "stage model_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008001\n",
             ),
         )
         .expect("write paper guest log");
@@ -23778,7 +23881,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             zero_run.join("nodeA_guest.log"),
             concat!(
                 "qwen3-engram-context: node=0 layers=[0,5) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=16 output_checksum=0x0000000000006001 gate_checksum=0x0000000000006002 index_checksum=0x0000000000006003 output_l1_milli=0 latency_ms=3 row_prefetch_hits=3 row_prefetch_requests=3 row_prefetch_hit_rate_milli=1000 table_bytes_moved=1024 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=64 hidden_output_bytes=64 hidden_injection_overhead_bytes=128\n",
-                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008101\n",
+                "stage model_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008101\n",
             ),
         )
         .expect("write zero guest log");
@@ -24162,7 +24265,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             concat!(
                 "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=simpler-host-paper-object-ref table_rows=8 output_checksum=0x0000000000007101 gate_checksum=0x0000000000007102 index_checksum=0x0000000000007103 output_l1_milli=10 latency_ms=5 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
                 "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x0000000000007101 gate_checksum=0x0000000000007102 index_checksum=0x0000000000007103 output_l1_milli=10 latency_ms=2 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
-                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008201\n",
+                "stage model_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008201\n",
             ),
         )
         .expect("write paper guest log");
@@ -24180,7 +24283,7 @@ stage qwen3_w5_memory_terminal_logits_selected step=0 publish_hidden=0 status=ok
             zero_run.join("nodeA_guest.log"),
             concat!(
                 "qwen3-engram-context: node=0 layers=[0,4) total_layers=40 step=0 mode=cpu-reference-paper-object-ref table_rows=8 output_checksum=0x0000000000006101 gate_checksum=0x0000000000006102 index_checksum=0x0000000000006103 output_l1_milli=0 latency_ms=2 row_prefetch_hits=4 row_prefetch_requests=4 row_prefetch_hit_rate_milli=1000 table_bytes_moved=256 gate_weight_bytes_moved=32 indices_bytes_moved=0 hidden_input_bytes=32 hidden_output_bytes=32 hidden_injection_overhead_bytes=64\n",
-                "stage qwen3_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008301\n",
+                "stage model_terminal_token_result_publish step=0 token=11 runner_up=12 margin_milli=25 text_checksum=0x0000000000008301\n",
             ),
         )
         .expect("write zero guest log");
@@ -27065,7 +27168,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         .expect("write summary");
         fs::write(
             run_dir.join("nodeH_guest.log"),
-            "[w4_guest] stage qwen3_w5_terminal_logits_observation local=node8 step=1 token=11 runner_up=358 margin_milli=100 logits_checksum=0x000000000000aaa0 text_checksum=0x000000000000bbb0 top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum=0x000000000000ccc0 piece_word0=0x0000000000000041 piece_word1=0x0000000000000000 candidate_count=2 candidate0_token=11 candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum=0x000000000000bbb0 candidate0_piece_bytes=1 candidate0_piece_word0=0x0000000000000041 candidate0_piece_word1=0x0000000000000000 candidate1_token=358 candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum=0x000000000000ddd0 candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n",
+            "[w4_guest] stage model_terminal_logits_observation local=node8 step=1 token=11 runner_up=358 margin_milli=100 logits_checksum=0x000000000000aaa0 text_checksum=0x000000000000bbb0 top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f000000 full_vocab_checked=151936 full_vocab_checksum=0x000000000000ccc0 piece_word0=0x0000000000000041 piece_word1=0x0000000000000000 candidate_count=2 candidate0_token=11 candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum=0x000000000000bbb0 candidate0_piece_bytes=1 candidate0_piece_word0=0x0000000000000041 candidate0_piece_word1=0x0000000000000000 candidate1_token=358 candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum=0x000000000000ddd0 candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 candidate2_token=0 candidate2_logit_bits=0x0000000000000000 candidate2_text_checksum=0x0000000000000000 candidate2_piece_bytes=0 candidate2_piece_word0=0x0000000000000000 candidate2_piece_word1=0x0000000000000000 candidate3_token=0 candidate3_logit_bits=0x0000000000000000 candidate3_text_checksum=0x0000000000000000 candidate3_piece_bytes=0 candidate3_piece_word0=0x0000000000000000 candidate3_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok\n",
         )
         .expect("write guest log");
         let model_args = [
@@ -27139,7 +27242,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
     #[test]
     fn terminal_logits_artifact_allows_non_greedy_selected_candidate() {
         let fields = parse_summary_fields(
-            "[w4_guest] stage qwen3_w5_terminal_logits_observation local=node8 step=1 token=358 runner_up=11 margin_milli=0 logits_checksum=0x000000000000aaa0 text_checksum=0x000000000000ddd0 top_logit_bits=0x000000003f000000 runner_up_logit_bits=0x000000003f800000 full_vocab_checked=151936 full_vocab_checksum=0x000000000000ccc0 piece_word0=0x0000000000000042 piece_word1=0x0000000000000000 candidate_count=2 candidate0_token=11 candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum=0x000000000000bbb0 candidate0_piece_bytes=1 candidate0_piece_word0=0x0000000000000041 candidate0_piece_word1=0x0000000000000000 candidate1_token=358 candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum=0x000000000000ddd0 candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok",
+            "[w4_guest] stage model_terminal_logits_observation local=node8 step=1 token=358 runner_up=11 margin_milli=0 logits_checksum=0x000000000000aaa0 text_checksum=0x000000000000ddd0 top_logit_bits=0x000000003f800000 runner_up_logit_bits=0x000000003f800000 full_vocab_checked=151936 full_vocab_checksum=0x000000000000ccc0 piece_word0=0x0000000000000042 piece_word1=0x0000000000000000 candidate_count=2 candidate0_token=11 candidate0_logit_bits=0x000000003f800000 candidate0_text_checksum=0x000000000000bbb0 candidate0_piece_bytes=1 candidate0_piece_word0=0x0000000000000041 candidate0_piece_word1=0x0000000000000000 candidate1_token=358 candidate1_logit_bits=0x000000003f000000 candidate1_text_checksum=0x000000000000ddd0 candidate1_piece_bytes=1 candidate1_piece_word0=0x0000000000000042 candidate1_piece_word1=0x0000000000000000 source=uapi_real_logits target=lingqu_memory_execution_artifact status=ok",
         );
         let observation = parse_w5_terminal_logits_observation(&fields)
             .expect("non-greedy selected token should parse");
@@ -29131,16 +29234,16 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
             summary_path.display()
         );
         for _ in 0..8 {
-            trace.push_str("[w4_guest] stage uapi_qwen3_range_runtime_forward node=1\n");
+            trace.push_str("[w4_guest] stage uapi_model_range_runtime_forward node=1\n");
         }
         for _ in 0..7 {
-            trace.push_str("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=2\n");
+            trace.push_str("[w4_guest] stage model_range_forward_runtime_input_loaded node=2\n");
         }
         for _ in 0..8 {
-            trace.push_str("[w4_guest] stage qwen3_range_forward_runtime_output_publish node=1\n");
+            trace.push_str("[w4_guest] stage model_range_forward_runtime_output_publish node=1\n");
         }
         trace.push_str(
-            "[w4_guest] stage qwen3_terminal_token_result_publish local=node8 step=0 token=11 status=ok\n",
+            "[w4_guest] stage model_terminal_token_result_publish local=node8 step=0 token=11 status=ok\n",
         );
         fs::write(
             &script_path,
@@ -31841,7 +31944,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .context("validate W5 Memory Service decisions for this run")?;
     }
     if args.validate_only {
-        println!("qwen3_guest_decode_loop");
+        println!("w5_inference_cluster");
         println!("  validate_only: true");
         println!("  script: {}", script_path.display());
         println!("  workload: w5 inference cluster");
@@ -31922,7 +32025,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     let engram_registry_validation =
         qwen3_validate_guest_engram_state_registry(&effective_engram, &runtime.profile)?;
-    println!("qwen3_guest_decode_loop");
+    println!("w5_inference_cluster");
     println!("  script: {}", script_path.display());
     println!("  workload: w5 inference cluster");
     println!("  w5_profile: {}", w5_profile.name);
@@ -32321,6 +32424,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         .env("TRACE_FILE", &trace_file)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if runtime.model_key == DEEPSEEK_V4_FLASH_MODEL_KEY {
+        command.env("SIM_DEEPSEEK_V4_FLASH", &runtime.weights_path);
+    }
     command.env("SIM_QWEN3_DENSE_WEIGHTS_PATH", &runtime.weights_path);
     for (key, value) in qwen3_guest_engram_env_vars(&effective_engram, engram_session_id) {
         command.env(key, value);
@@ -32378,13 +32484,13 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         combined.push_str(&qwen3_guest_read_log_dir(&log_dir)?);
     }
     let runtime_forward_count =
-        qwen3_guest_log_match_count(&combined, "stage uapi_qwen3_range_runtime_forward ");
+        qwen3_guest_log_match_count(&combined, "stage uapi_model_range_runtime_forward ");
     let runtime_publish_count = qwen3_guest_log_match_count(
         &combined,
-        "stage qwen3_range_forward_runtime_output_publish ",
+        "stage model_range_forward_runtime_output_publish ",
     );
     let runtime_input_count =
-        qwen3_guest_log_match_count(&combined, "stage qwen3_range_forward_runtime_input_loaded ");
+        qwen3_guest_log_match_count(&combined, "stage model_range_forward_runtime_input_loaded ");
     let terminal_token_count = qwen3_guest_terminal_tokens(&combined).len();
     let guest_engram_select_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_token_select ");
@@ -32405,9 +32511,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let guest_engram_terminal_rewrite_count =
         qwen3_guest_log_match_count(&combined, "stage qwen3_engram_terminal_record_rewrite ");
     let shortpath_no_dispatch_count =
-        qwen3_guest_log_match_count(&combined, "stage qwen3_decode_round_scheduler_no_dispatch ");
+        qwen3_guest_log_match_count(&combined, "stage model_decode_round_scheduler_no_dispatch ");
     let shortpath_terminal_committed_count =
-        qwen3_guest_log_match_count(&combined, "stage qwen3_decode_round_terminal_committed ");
+        qwen3_guest_log_match_count(&combined, "stage model_decode_round_terminal_committed ");
     let shortpath_publish_hidden_zero_count = qwen3_guest_log_line_match_count(
         &combined,
         "stage qwen3_w5_memory_shortpath_commit ",
@@ -32505,7 +32611,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     }
     if !status.success() || !pass {
         anyhow::bail!(
-            "qwen3 guest decode worker failed: status={} pass={}",
+            "W5 inference cluster worker failed: status={} pass={}",
             status,
             pass
         );
@@ -33140,7 +33246,7 @@ fn w5_expected_jump_to_terminal_worker_counts(
 fn qwen3_guest_terminal_tokens(log: &str) -> Vec<u64> {
     let mut tokens = log
         .lines()
-        .filter(|line| line.contains("stage qwen3_terminal_token_result_publish "))
+        .filter(|line| line.contains("stage model_terminal_token_result_publish "))
         .map(|line| {
             (
                 qwen3_guest_log_u64_field(line, "step"),
@@ -33771,7 +33877,7 @@ fn print_qwen3_guest_engram_report(report: &Qwen3EngramRunReport) {
 fn qwen3_guest_terminal_candidate_records(log: &str) -> Vec<Vec<Qwen3CandidateRecord>> {
     let mut by_step = log
         .lines()
-        .filter(|line| line.contains("stage qwen3_terminal_token_result_publish "))
+        .filter(|line| line.contains("stage model_terminal_token_result_publish "))
         .map(|line| {
             let step = qwen3_guest_log_u64_field(line, "step");
             let token = qwen3_guest_log_u64_field(line, "token");
@@ -33819,7 +33925,7 @@ fn qwen3_guest_candidate_records(log: &str) -> Vec<Vec<Qwen3CandidateRecord>> {
 fn qwen3_guest_engram_candidate_records(log: &str) -> Vec<Vec<Qwen3CandidateRecord>> {
     let terminal_margins = log
         .lines()
-        .filter(|line| line.contains("stage qwen3_terminal_token_result_publish "))
+        .filter(|line| line.contains("stage model_terminal_token_result_publish "))
         .map(|line| {
             (
                 qwen3_guest_log_u64_field(line, "step"),
@@ -34547,6 +34653,66 @@ fn validate_qwen3_dense_weights_path(path: &Path) -> anyhow::Result<()> {
 fn qwen3_guest_dense_runtime(
     args: &Qwen3GuestDecodeLoopCliArgs,
 ) -> anyhow::Result<Qwen3DenseGuestRuntime> {
+    if args.w5_profile.as_deref() == Some("deepseek_v4_flash_decode") {
+        let weights_path = args
+            .weights_path
+            .clone()
+            .or_else(|| env::var_os("SIM_DEEPSEEK_V4_FLASH").map(PathBuf::from))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "DeepSeek V4 Flash W5 requires --weights-path or SIM_DEEPSEEK_V4_FLASH"
+                )
+            })?;
+        if !weights_path.is_file() {
+            anyhow::bail!(
+                "DeepSeek V4 Flash simpler model source must be a GGUF file: {}",
+                weights_path.display()
+            );
+        }
+        let backend = env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE")
+            .unwrap_or_else(|_| "deepseek-v4-flash-simpler".to_string());
+        if !matches!(
+            backend.as_str(),
+            "deepseek-v4-flash-simpler" | "deepseek_v4_flash_simpler"
+        ) {
+            anyhow::bail!(
+                "DeepSeek V4 Flash 2-bit GGUF W5 requires the simpler backend, got {backend}"
+            );
+        }
+        let shape = DEEPSEEK_V4_FLASH_PROFILE;
+        let model_id = args.model.clone().unwrap_or_else(|| {
+            weights_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("DeepSeek-V4-Flash-GGUF")
+                .to_string()
+        });
+        let tp_nodes = env::var("SIM_W5_CLUSTER_NODE_COUNT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(shape.tp_nodes);
+        return Ok(Qwen3DenseGuestRuntime {
+            profile: Qwen3DenseProfile {
+                model_id,
+                vocab_size: shape.vocab_size,
+                hidden_size: shape.hidden_size,
+                intermediate_size: shape.moe_intermediate_size,
+                num_hidden_layers: shape.num_hidden_layers,
+                num_attention_heads: shape.num_attention_heads,
+                num_key_value_heads: shape.num_key_value_heads,
+                head_dim: shape.head_dim,
+                max_position_embeddings: 1_048_576,
+                rope_theta: 160_000,
+                prefill_tokens: shape.prefill_tokens,
+                decode_tokens: shape.decode_tokens,
+                tp_nodes,
+            },
+            model_key: DEEPSEEK_V4_FLASH_MODEL_KEY.to_string(),
+            weights_path,
+            chipbackend_profile: "deepseek-v4-flash-simpler",
+        });
+    }
     let weights_path = args
         .weights_path
         .clone()
@@ -34610,7 +34776,7 @@ fn qwen3_guest_timing_summary(log: &str) -> Qwen3GuestTimingSummary {
     let mut summary = Qwen3GuestTimingSummary::default();
 
     for line in log.lines() {
-        if line.contains("stage qwen3_worker_timing ") {
+        if line.contains("stage model_worker_timing ") {
             summary.worker_count += 1;
             summary.max_total_ms = summary
                 .max_total_ms
@@ -34666,7 +34832,7 @@ fn qwen3_guest_timing_summary(log: &str) -> Qwen3GuestTimingSummary {
             summary.max_unaccounted_ms = summary
                 .max_unaccounted_ms
                 .max(qwen3_guest_log_u64_field(line, "unaccounted_ms"));
-        } else if line.contains("stage qwen3_worker_barrier_timing ") {
+        } else if line.contains("stage model_worker_barrier_timing ") {
             summary.max_barrier_ms = summary
                 .max_barrier_ms
                 .max(qwen3_guest_log_u64_field(line, "barrier_ms"));

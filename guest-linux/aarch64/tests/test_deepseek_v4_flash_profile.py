@@ -28,6 +28,7 @@ PROFILE_H = SERVICE_DIR / "mem_service_profile.h"
 PROFILE_C = SERVICE_DIR / "mem_service_profile.c"
 EIGHT_NODE_RUNNER = ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh"
 W5_RUNTIME = ROOT / "scripts" / "run_w5_inference_cluster_runtime.sh"
+SIM_CLI = ROOT.parents[1] / "crates" / "sim-cli" / "src" / "main.rs"
 SIMPLER_CONFIG = ROOT.parents[1] / "w5.deepseek-v4-flash-simpler.env"
 OFFICIAL_CONFIG = ROOT.parents[1] / "w5.deepseek-v4-flash-official.env"
 
@@ -230,7 +231,7 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
     def test_multistep_flash_uses_topology_neutral_decode_round_barrier(self):
         infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
         barrier_source = (
-            SERVICE_DIR / "mem_service_qwen3_decode_barrier.c"
+            SERVICE_DIR / "mem_service_model_decode_barrier.c"
         ).read_text()
 
         self.assertIn("guest_decode_steps > 1U", infer_source)
@@ -241,6 +242,80 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
             "cluster_node_count != (uint32_t)rt->node_count", barrier_source
         )
         self.assertNotIn("mem_service_qwen3_range_nodes()", barrier_source)
+
+    def test_flash_shared_range_path_has_no_qwen_log_contracts(self):
+        infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
+        shared_sources = [
+            SERVICE_DIR / "mem_service_model_range_wait_flow.c",
+            SERVICE_DIR / "mem_service_model_range_publish_flow.c",
+            SERVICE_DIR / "mem_service_model_range_kv_state_flow.c",
+            SERVICE_DIR / "mem_service_model_terminal_token_flow.c",
+            SERVICE_DIR / "mem_service_model_decode_barrier.c",
+        ]
+        forbidden = (
+            "qwen3 range dispatch",
+            "stage uapi_qwen3_range_",
+            "stage qwen3_range_forward_",
+            "stage qwen3_range_kv_state_",
+            "stage qwen3_terminal_token_",
+            "stage uapi_qwen3_logits_sampling_table",
+            "stage qwen3_w5_terminal_logits_observation",
+            "fail qwen3 terminal token",
+            "fail qwen3 previous range kv state",
+            "stage qwen3_decode_round_start",
+            "stage qwen3_decode_round_scheduler_no_dispatch",
+            "stage qwen3_decode_round_idle_timing",
+            "stage qwen3_decode_round_barrier_scope",
+            "stage qwen3_worker_barrier_timing",
+            "stage qwen3_work_item_scheduler_",
+            "fail qwen3 scheduler",
+            "fail qwen3 work item scheduler",
+            "stage qwen3_supernode_clock",
+            "stage qwen3_sampler_config",
+            "stage uapi_qwen3_token_text_table",
+            "stage qwen3_worker_timing",
+            "stage qwen3_compute_window_breakdown",
+            "stage qwen3_worker_handoff_timing",
+        )
+
+        for marker in forbidden:
+            self.assertNotIn(marker, infer_source)
+        for source_path in shared_sources:
+            source = source_path.read_text()
+            for marker in forbidden:
+                self.assertNotIn(marker, source, f"{marker} in {source_path.name}")
+
+        runtime_source = (SERVICE_DIR / "mem_service_qwen3_runtime.c").read_text()
+        self.assertIn("stage obmm_pool_layout", runtime_source)
+        self.assertIn("stage obmm_pool_usage", runtime_source)
+        self.assertNotIn("qwen3_obmm_pool_layout", runtime_source)
+        self.assertNotIn("qwen3_obmm_pool_usage", runtime_source)
+
+        runner = EIGHT_NODE_RUNNER.read_text()
+        self.assertNotIn("qwen3 Object Service snapshot", runner)
+        flash_start = runner.index(
+            'elif is_deepseek_v4_flash_profile '
+            '"$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then\n'
+            "    local expected_kv_restores="
+        )
+        flash_end = runner.index(
+            '\n  fi\n  assert_log_has "$log_file" '
+            '"\\\\[w4_guest\\\\] completion_sources',
+            flash_start,
+        )
+        flash_validation = runner[flash_start:flash_end]
+        self.assertIn("uapi_model_range_dispatch_descriptor", runner)
+        self.assertIn("struct llm_terminal_token_record", infer_source)
+        self.assertIn("model_read_terminal_token_record_for_step", infer_source)
+        self.assertIn("stage model_terminal_logits_observation", infer_source)
+        sim_cli = SIM_CLI.read_text()
+        self.assertIn('println!("w5_inference_cluster")', sim_cli)
+        self.assertIn("W5 inference cluster worker failed", sim_cli)
+        self.assertIn("uapi_model_range_runtime_forward", flash_validation)
+        self.assertIn("model_range_kv_state_publish", flash_validation)
+        self.assertIn("uapi_model_logits_sampling_table", flash_validation)
+        for marker in forbidden:
+            self.assertNotIn(marker, flash_validation)
 
     def test_flash_artifact_gate_does_not_require_qwen_stores(self):
         runner = EIGHT_NODE_RUNNER.read_text()

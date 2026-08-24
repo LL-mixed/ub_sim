@@ -12,3 +12,4 @@ OBMM_CFLAGS := -D__EXPORTED_HEADERS__ -I$(OBMM_SUBMODULE)/src/libobmm \
                -I$(KERNEL_UB_UAPI) -I$(KERNEL_UB_INC)
 OBMM_SRCS := $(UB_SIM_ROOT)/vendor/obmm/src/libobmm/libobmm.c \
              $(OBMM_MK_DIR)/obmm_vendor_adaptor_sim.c
+OBMM_LDLIBS := -pthread

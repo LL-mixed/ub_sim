@@ -11,7 +11,7 @@ NODE_IDS = ("nodeA", "nodeB", "nodeC", "nodeD", "nodeE", "nodeF", "nodeG", "node
 
 def worker_timing(node_id, node_index, step, total_ms, input_wait_ms, compute_window_ms):
     return (
-        "[w4_guest] stage qwen3_worker_timing "
+        "[w4_guest] stage model_worker_timing "
         f"local={node_id} step={step} node={node_index} layers=[0,1) count=1 next=1 "
         f"total_ms={total_ms} terminal_gate_ms=0 setup_ms=1 obmm_stage_ms=0 "
         f"cluster_ms=0 map_ms=0 seed_payload_ms=0 descriptor_ms=0 "
@@ -39,7 +39,7 @@ def handoff_timing(
     if source is None:
         source = max(node_index - 1, 0)
     return (
-        "[w4_guest] stage qwen3_worker_handoff_timing "
+        "[w4_guest] stage model_worker_handoff_timing "
         f"local={node_id} step={step} node={node_index} source={source} "
         f"next={node_index + 1} layers=[0,1) timebase=supernode_epoch_ms "
         "clock_offset_ms=1000000 input_wait_start_mono_ms=100 "
@@ -110,13 +110,13 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                         lines.extend(
                             [
                                 (
-                                    "[w4_guest] stage uapi_qwen3_range_runtime_forward "
+                                    "[w4_guest] stage uapi_model_range_runtime_forward "
                                     f"local={node_id} step={step} node={index} status=ok"
                                 ),
                                 worker_timing(node_id, index, step, 1000 + step, step, 900),
                                 handoff_timing(node_id, index, step, 950 + step, 0, 7),
                                 (
-                                    "[w4_guest] stage qwen3_range_forward_runtime_input_loaded "
+                                    "[w4_guest] stage model_range_forward_runtime_input_loaded "
                                     f"local={node_id} step={step} status=ok"
                                 )
                                 if step > 0
@@ -141,15 +141,15 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                         lines.extend(
                             [
                                 (
-                                    "[w4_guest] stage qwen3_decode_round_scheduler_no_dispatch "
+                                    "[w4_guest] stage model_decode_round_scheduler_no_dispatch "
                                     f"local={node_id} step={step} status=ok"
                                 ),
                                 (
-                                    "[w4_guest] stage qwen3_decode_round_terminal_committed "
+                                    "[w4_guest] stage model_decode_round_terminal_committed "
                                     f"local={node_id} step={step} terminal_observed=1 status=ok"
                                 ),
                                 (
-                                    "[w4_guest] stage qwen3_decode_round_idle_timing "
+                                    "[w4_guest] stage model_decode_round_idle_timing "
                                     f"local={node_id} step={step} node={index} terminal_observed=1 "
                                     "input_wait_ms=50 round_done_ms=1 source=shortpath status=no_work_item"
                                 ),
@@ -190,12 +190,12 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                 lines = [
                     worker_timing(node_id, index, 0, total0, 50 * index, 5 * index),
                     (
-                        "[w4_guest] stage qwen3_worker_barrier_timing "
+                        "[w4_guest] stage model_worker_barrier_timing "
                         f"local={node_id} step=0 node={index} "
                         f"barrier_ms={barrier0} total_with_barrier_ms={total0 + barrier0}"
                     ),
                     (
-                        "[w4_guest] stage qwen3_obmm_pool_usage "
+                        "[mem_service] stage obmm_pool_usage "
                         f"local=node{index} step=0 per_node_region_bytes=536870912 "
                         "cluster_region_bytes=4294967296 payload_bytes=536834048 "
                         f"payload_high_water_bytes={1048576 + index * 4096} "
@@ -208,7 +208,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     worker_timing(node_id, index, 1, total1, 70 * index, 9 * index),
                     handoff_timing(node_id, index, 1, 80 * index, 11 * index, 5 * index),
                     (
-                        "[w4_guest] stage qwen3_range_forward_runtime_ingress_publish "
+                        "[w4_guest] stage model_range_forward_runtime_ingress_publish "
                         f"local=node{index} target=node{index + 1} step=1 "
                         f"observation_id=boundary-observation/run-from-guest/step1/node{index} "
                         f"key=hidden/qwen3-0-6b/node{index + 1}/range-runtime-input/decode-step1 "
@@ -249,7 +249,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     else "",
                     engram_timing(node_id, index, 1),
                     (
-                        "[w4_guest] stage qwen3_obmm_pool_usage "
+                        "[mem_service] stage obmm_pool_usage "
                         f"local=node{index} step=1 per_node_region_bytes=536870912 "
                         "cluster_region_bytes=4294967296 payload_bytes=536834048 "
                         f"payload_high_water_bytes={2097152 + index * 8192} "
@@ -264,7 +264,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                 if node_id == "nodeH":
                     lines.insert(
                         0,
-                        "[w4_guest] stage qwen3_terminal_token_result_publish "
+                        "[w4_guest] stage model_terminal_token_result_publish "
                         "local=node8 step=0 token=11 runner_up=0 margin_milli=122 "
                         "logits_checksum=0x1 text_checksum=0x2 "
                         "piece_word0=0x000000000000002c piece_word1=0x0000000000000000 "
@@ -272,7 +272,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                     )
                     lines.insert(
                         3,
-                        "[w4_guest] stage qwen3_terminal_token_result_publish "
+                        "[w4_guest] stage model_terminal_token_result_publish "
                         "local=node8 step=1 token=358 runner_up=1128 margin_milli=1350 "
                         "logits_checksum=0x3 text_checksum=0x4 "
                         "piece_word0=0x000000000049a0c4 piece_word1=0x0000000000000000 "
@@ -654,7 +654,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                             "source=prefix_cache target=runtime_recompute status=rejected"
                         ),
                         (
-                            "[w4_guest] stage uapi_qwen3_range_runtime_forward "
+                            "[w4_guest] stage uapi_model_range_runtime_forward "
                             "local=nodeA step=1 node=1 status=ok"
                         ),
                         handoff_timing(
@@ -769,7 +769,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
                 else:
                     lines = [
                         (
-                            "[w4_guest] stage qwen3_decode_round_idle_timing "
+                            "[w4_guest] stage model_decode_round_idle_timing "
                             f"local={node_id} step=0 node={index} terminal_observed=1 "
                             "input_wait_ms=5000 round_done_ms=0 "
                             "source=decode_round_scheduler status=idle"
@@ -824,7 +824,7 @@ class W4GuestRunSummaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "obmm_pool: not_observed reason=no_qwen3_obmm_pool_usage_records "
+            "obmm_pool: not_observed reason=no_obmm_pool_usage_records "
             "active_worker_records=0 idle_worker_records=7",
             result.stdout,
         )

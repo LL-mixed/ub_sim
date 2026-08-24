@@ -146,7 +146,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                 if clean_line.startswith("[mem_service] stage "):
                     latest_status[node_id] = clean_line[len("[mem_service] ") :]
 
-                if "qwen3_terminal_token_result_publish" in clean_line:
+                if "model_terminal_token_result_publish" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -178,15 +178,15 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                     record["step"] = parse_int(fields.get("step"), -1)
                     device_records.append(record)
 
-                if "stage uapi_qwen3_range_runtime_forward " in clean_line:
+                if "stage uapi_model_range_runtime_forward " in clean_line:
                     worker_events["range_forwards"] += 1
-                if "stage qwen3_range_forward_runtime_input_loaded " in clean_line:
+                if "stage model_range_forward_runtime_input_loaded " in clean_line:
                     worker_events["runtime_inputs"] += 1
-                if "stage qwen3_range_forward_runtime_output_publish " in clean_line:
+                if "stage model_range_forward_runtime_output_publish " in clean_line:
                     worker_events["runtime_outputs"] += 1
-                if "stage qwen3_decode_round_scheduler_no_dispatch " in clean_line:
+                if "stage model_decode_round_scheduler_no_dispatch " in clean_line:
                     worker_events["shortpath_no_dispatches"] += 1
-                if "stage qwen3_decode_round_terminal_committed " in clean_line:
+                if "stage model_decode_round_terminal_committed " in clean_line:
                     worker_events["shortpath_terminal_commits"] += 1
                 if (
                     "stage qwen3_w5_memory_shortpath_commit " in clean_line
@@ -194,7 +194,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                 ):
                     worker_events["shortpath_publish_hidden_zero"] += 1
 
-                if "qwen3_range_forward_runtime_ingress_publish" in clean_line:
+                if "model_range_forward_runtime_ingress_publish" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -237,7 +237,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             }
                         )
 
-                if "qwen3_worker_timing" in clean_line:
+                if "model_worker_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -280,7 +280,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             record[key] = parse_int(fields.get(key), 0)
                         timings.append(record)
 
-                if "qwen3_decode_round_idle_timing" in clean_line:
+                if "model_decode_round_idle_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -300,7 +300,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             }
                         )
 
-                if "qwen3_worker_handoff_timing" in clean_line:
+                if "model_worker_handoff_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -402,7 +402,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             }
                         )
 
-                if "qwen3_worker_barrier_timing" in clean_line:
+                if "model_worker_barrier_timing" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -411,7 +411,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                             "total_with_barrier_ms": parse_int(fields.get("total_with_barrier_ms"), 0),
                         }
 
-                if "qwen3_obmm_pool_usage" in clean_line:
+                if "obmm_pool_usage" in clean_line:
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:
@@ -657,7 +657,7 @@ def emit_progress(run_dir, expected_steps, elapsed_s, node_ids, output):
 
 def emit_token_summary(tokens, expected_steps, output):
     if not tokens:
-        output.append("decode_output: unavailable reason=no_qwen3_terminal_token_result_publish")
+        output.append("decode_output: unavailable reason=no_model_terminal_token_result_publish")
         return
 
     ordered_steps = sorted(tokens)
@@ -684,7 +684,7 @@ def emit_token_summary(tokens, expected_steps, output):
 
 def emit_timing_summary(timings, idle_timings, barriers, expected_steps, node_ids, output):
     if not timings and not idle_timings:
-        output.append("timing: unavailable reason=no_qwen3_worker_timing_records")
+        output.append("timing: unavailable reason=no_model_worker_timing_records")
         return
 
     timings_by_step = collections.defaultdict(list)
@@ -811,7 +811,7 @@ def emit_timing_summary(timings, idle_timings, barriers, expected_steps, node_id
 
 def emit_handoff_timing_summary(handoff_timings, idle_timings, expected_steps, node_ids, output):
     if not handoff_timings and not idle_timings:
-        output.append("handoff_timing: unavailable reason=no_qwen3_worker_handoff_timing_records")
+        output.append("handoff_timing: unavailable reason=no_model_worker_handoff_timing_records")
         return
 
     def is_range_handoff_edge(record):
@@ -1573,7 +1573,7 @@ def emit_pool_usage_summary(
         active_records = len(timings or [])
         idle_records = len(idle_timings or [])
         output.append(
-            "obmm_pool: not_observed reason=no_qwen3_obmm_pool_usage_records "
+            "obmm_pool: not_observed reason=no_obmm_pool_usage_records "
             f"active_worker_records={active_records} "
             f"idle_worker_records={idle_records}"
         )

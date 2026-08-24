@@ -734,11 +734,11 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             guest_source,
         )
         self.assertIn("mem_service_obmm_service_v0_publish_runtime_range_kv_state", guest_source)
-        self.assertIn("qwen3_decode_round_scheduler_no_dispatch", guest_source)
+        self.assertIn("model_decode_round_scheduler_no_dispatch", guest_source)
         self.assertIn("work_item=none", guest_source)
         self.assertIn("dispatch=skipped status=no_dispatch", guest_source)
-        self.assertIn("qwen3_work_item_scheduler_wait", guest_source)
-        self.assertIn("qwen3_work_item_scheduler_dispatch", guest_source)
+        self.assertIn("model_work_item_scheduler_wait", guest_source)
+        self.assertIn("model_work_item_scheduler_dispatch", guest_source)
         self.assertIn("mem_service_range_flow_wait_scheduler_work_item", guest_source)
         self.assertIn("w4_runtime_init_obmm_range_flow_request", guest_source)
         self.assertIn("struct mem_service_scheduler_work_item", db_service_header)
@@ -771,7 +771,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("mode=%s backend=%s status=miss", guest_source)
         self.assertIn("qwen3_no_work_item_service_coverage:", guest_source)
         self.assertIn("qwen3_pre_resolved_range_input", guest_source)
-        self.assertIn("qwen3_decode_round_terminal_committed", db_service_source)
+        self.assertIn("model_decode_round_terminal_committed", db_service_source)
         self.assertIn(
             "allow_terminal_commit",
             db_service_source,
@@ -795,7 +795,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             guest_source,
         )
         self.assertIn("qwen3_w5_memory_shortpath_kv_lazy_resolve", guest_source)
-        self.assertNotIn("qwen3_range_kv_state_lazy_fallback", guest_source)
+        self.assertNotIn("model_range_kv_state_lazy_fallback", guest_source)
         self.assertNotIn("reason=intermediate_step_kv_absent", guest_source)
         self.assertIn("mode=exact_previous_step", guest_source)
         self.assertIn("shortpath exact kv materialize failed", guest_source)
@@ -811,14 +811,14 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             guest_source,
         )
         self.assertIn("mem_service_obmm_service_v0_try_resolve_range_kv_state_view", guest_source)
-        self.assertIn("mem_service_qwen3_format_kv_state_key", db_service_source)
+        self.assertIn("mem_service_model_format_kv_state_key", db_service_source)
         self.assertIn("kvcache/%s/scope/%016", db_service_source)
-        self.assertIn("mem_service_qwen3_format_token_result_key", db_service_source)
+        self.assertIn("mem_service_model_format_token_result_key", db_service_source)
         self.assertIn("tokens/%s/scope/%016", db_service_source)
-        self.assertIn("mem_service_qwen3_format_runtime_range_key", db_service_source)
+        self.assertIn("mem_service_model_format_runtime_range_key", db_service_source)
         self.assertIn("hidden/%s/scope/%016", db_service_source)
         self.assertNotIn("while (candidate > 0U)", guest_source)
-        self.assertIn("qwen3_decode_round_idle_timing", guest_source)
+        self.assertIn("model_decode_round_idle_timing", guest_source)
         self.assertIn('engram_range_work_item ? "ok" : "idle"', guest_source)
         self.assertIn('engram_range_work_item ? "range_or_shortpath" : "none"', guest_source)
         self.assertIn("engram_range_work_item ? input_wait_ms : 0ULL", guest_source)
@@ -831,7 +831,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertNotIn("fallback=runtime_forward_metadata", guest_source)
         self.assertNotRegex(
             guest_source,
-            r"uapi_qwen3_range_compute_contract[\s\S]{0,400}"
+            r"uapi_model_range_compute_contract[\s\S]{0,400}"
             r"source=runtime_forward output=metadata status=ok",
         )
         self.assertIn("shortpath_boundary", db_service_source)

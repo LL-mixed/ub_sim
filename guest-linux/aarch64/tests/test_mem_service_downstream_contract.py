@@ -157,15 +157,15 @@ class MemServiceDownstreamContractTests(unittest.TestCase):
         self.assertIn("parse_qwen3_memory_decision_config", source)
         self.assertIn("qwen3_memory_service_lookup_boundary", source)
 
-    def test_qwen3_guest_runtime_kv_payload_grows_past_fixed_guard(self):
+    def test_model_range_runtime_kv_payload_grows_past_fixed_guard(self):
         source = LLM_INFER_SOURCE.read_text()
 
         self.assertNotIn("W4_QWEN3_MAX_KV_PAYLOAD_BYTES", source)
         self.assertNotIn("qwen3 range kv payload too large", source)
         self.assertIn("uint8_t *kv_payload;", source)
         self.assertIn("kv_payload_capacity", source)
-        self.assertIn("qwen3_range_runtime_forward_reserve_kv", source)
-        self.assertIn("qwen3 range kv payload reserve failed", source)
+        self.assertIn("model_range_runtime_forward_reserve_kv", source)
+        self.assertIn("model range kv payload reserve failed", source)
 
     def test_w4_guest_legacy_kvcache_payload_is_not_demo_named(self):
         sim_uapi_source = SIM_UAPI_SOURCE.read_text()

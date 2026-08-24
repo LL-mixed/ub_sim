@@ -1560,11 +1560,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert 'MEM_SERVICE_RECORDS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_records.c"' in build_script
     assert 'MEM_SERVICE_QWEN3_RECORDS_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_records.c"' in build_script
     assert 'MEM_SERVICE_QWEN3_RUNTIME_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_runtime.c"' in build_script
-    assert 'MEM_SERVICE_QWEN3_DECODE_BARRIER_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_decode_barrier.c"' in build_script
-    assert 'MEM_SERVICE_QWEN3_KV_STATE_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_kv_state_flow.c"' in build_script
-    assert 'MEM_SERVICE_QWEN3_TERMINAL_TOKEN_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_terminal_token_flow.c"' in build_script
-    assert 'MEM_SERVICE_QWEN3_RUNTIME_RANGE_WAIT_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_runtime_range_wait_flow.c"' in build_script
-    assert 'MEM_SERVICE_QWEN3_RUNTIME_RANGE_PUBLISH_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_runtime_range_publish_flow.c"' in build_script
+    assert 'MEM_SERVICE_MODEL_DECODE_BARRIER_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_model_decode_barrier.c"' in build_script
+    assert 'MEM_SERVICE_MODEL_RANGE_KV_STATE_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_model_range_kv_state_flow.c"' in build_script
+    assert 'MEM_SERVICE_MODEL_TERMINAL_TOKEN_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_model_terminal_token_flow.c"' in build_script
+    assert 'MEM_SERVICE_MODEL_RANGE_WAIT_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_model_range_wait_flow.c"' in build_script
+    assert 'MEM_SERVICE_MODEL_RANGE_PUBLISH_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_model_range_publish_flow.c"' in build_script
     assert 'MEM_SERVICE_QWEN3_ENGRAM_PUBLISH_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_engram_publish_flow.c"' in build_script
     assert 'MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3_engram_wait_flow.c"' in build_script
     assert 'MEM_SERVICE_QWEN3_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_qwen3.c"' in build_script
@@ -2919,11 +2919,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert (component_dir / "mem_service_core.h").exists()
     assert (component_dir / "mem_service_qwen3_records.c").exists()
     assert (component_dir / "mem_service_qwen3_runtime.c").exists()
-    assert (component_dir / "mem_service_qwen3_decode_barrier.c").exists()
-    assert (component_dir / "mem_service_qwen3_kv_state_flow.c").exists()
-    assert (component_dir / "mem_service_qwen3_terminal_token_flow.c").exists()
-    assert (component_dir / "mem_service_qwen3_runtime_range_wait_flow.c").exists()
-    assert (component_dir / "mem_service_qwen3_runtime_range_publish_flow.c").exists()
+    assert (component_dir / "mem_service_model_decode_barrier.c").exists()
+    assert (component_dir / "mem_service_model_range_kv_state_flow.c").exists()
+    assert (component_dir / "mem_service_model_terminal_token_flow.c").exists()
+    assert (component_dir / "mem_service_model_range_wait_flow.c").exists()
+    assert (component_dir / "mem_service_model_range_publish_flow.c").exists()
     assert (component_dir / "mem_service_qwen3_engram_publish_flow.c").exists()
     assert (component_dir / "mem_service_qwen3_engram_wait_flow.c").exists()
     assert (component_dir / "mem_service_qwen3.c").exists()
@@ -2957,11 +2957,11 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert "components/mem_service/mem_service_records.c" in makefile
     assert "components/mem_service/mem_service_qwen3_records.c" in makefile
     assert "components/mem_service/mem_service_qwen3_runtime.c" in makefile
-    assert "components/mem_service/mem_service_qwen3_decode_barrier.c" in makefile
-    assert "components/mem_service/mem_service_qwen3_kv_state_flow.c" in makefile
-    assert "components/mem_service/mem_service_qwen3_terminal_token_flow.c" in makefile
-    assert "components/mem_service/mem_service_qwen3_runtime_range_wait_flow.c" in makefile
-    assert "components/mem_service/mem_service_qwen3_runtime_range_publish_flow.c" in makefile
+    assert "components/mem_service/mem_service_model_decode_barrier.c" in makefile
+    assert "components/mem_service/mem_service_model_range_kv_state_flow.c" in makefile
+    assert "components/mem_service/mem_service_model_terminal_token_flow.c" in makefile
+    assert "components/mem_service/mem_service_model_range_wait_flow.c" in makefile
+    assert "components/mem_service/mem_service_model_range_publish_flow.c" in makefile
     assert "components/mem_service/mem_service_qwen3_engram_publish_flow.c" in makefile
     assert "components/mem_service/mem_service_qwen3_engram_wait_flow.c" in makefile
     assert "components/llm_infer/llm_infer.c" in makefile

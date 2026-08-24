@@ -25,6 +25,7 @@
 #include "components/mem_service/mem_service.h"
 #include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_deepseek_v4_flash.h"
+#include "components/mem_service/mem_service_object_contract.h"
 #include "components/mem_service/mem_service_profile.h"
 #include "components/mem_service/mem_service_qwen3.h"
 #include "components/mem_service/mem_service_wire_client.h"
@@ -94,7 +95,7 @@
 #define W4_QWEN3_MARKER_LOGITS_REFERENCE_TABLE 0x713377346c6d6830ULL
 #define W4_QWEN3_MARKER_RANGE_COMPUTE_CONTRACT 0x7133773472676330ULL
 #define W4_QWEN3_MARKER_RANGE_FORWARD_TABLE 0x7133773472667430ULL
-#define W4_QWEN3_RANGE_TASK_MAGIC 0x5133060bU
+#define LLM_MODEL_RANGE_TASK_MAGIC 0x5133060bU
 #define W4_QWEN3_COMPLETION_TASK_OFFSET 19U
 #define W4_GUEST_MAYBE_UNUSED __attribute__((unused))
 #define W4_QWEN3_HIDDEN_RANGE_BYTES 262144ULL
@@ -102,7 +103,7 @@
 #define W4_QWEN3_OBJECT_REF_TABLE_OFFSET 0x0000000000070000ULL
 #define W4_QWEN3_OBJECT_REF_BYTES 64ULL
 #define W4_QWEN3_OBJECT_REF_MAX_COUNT 5U
-#define W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET 0x0000000000080000ULL
+#define LLM_MODEL_RANGE_INPUT_PAYLOAD_OFFSET 0x0000000000080000ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_OFFSET 0x0000000000280000ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_HEADER_BYTES 32ULL
 #define W4_QWEN3_PREVIOUS_KV_PAYLOAD_MARKER 0x45564b5033515750ULL
@@ -213,9 +214,9 @@
 #define W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_HEADER W4_QWEN3_TEXT_OUTPUT_TABLE_END
 #define W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_BASE \
     (W4_QWEN3_TEXT_OUTPUT_BYTES_TABLE_HEADER + 64ULL)
-#define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS 18ULL
-#define W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES \
-    (W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS * 8ULL)
+#define LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_WORDS 18ULL
+#define LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_BYTES \
+    (LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_WORDS * 8ULL)
 #define W4_QWEN3_OUTPUT_SCAN_FALLBACK_BYTES \
     (W4_QWEN3_EXPECTED_TILES * W4_QWEN3_SHARD_OUTPUT_BYTES)
 #define W4_QWEN3_OUTPUT_SCAN_MAX_BYTES (8ULL * 1024ULL * 1024ULL)
@@ -233,7 +234,7 @@ struct completion_preview {
     uint8_t status;
 };
 
-struct w4_qwen3_range_runtime_forward {
+struct llm_model_range_runtime_forward {
     uint64_t node;
     uint64_t layer_start;
     uint64_t layer_end;
@@ -266,8 +267,8 @@ static int w4_runtime_init_obmm_range_flow_request(
     uint32_t local_node,
     uint32_t cluster_node_count);
 
-static void qwen3_range_runtime_forward_release(
-    struct w4_qwen3_range_runtime_forward *runtime)
+static void model_range_runtime_forward_release(
+    struct llm_model_range_runtime_forward *runtime)
 {
     if (!runtime) {
         return;
@@ -276,8 +277,8 @@ static void qwen3_range_runtime_forward_release(
     memset(runtime, 0, sizeof(*runtime));
 }
 
-static int qwen3_range_runtime_forward_reserve_kv(
-    struct w4_qwen3_range_runtime_forward *runtime,
+static int model_range_runtime_forward_reserve_kv(
+    struct llm_model_range_runtime_forward *runtime,
     uint64_t bytes)
 {
     uint8_t *next_payload;
@@ -1224,7 +1225,7 @@ static void build_io_descriptor(uint8_t *slot, uint64_t op_id, uint8_t opcode,
     }
 }
 
-static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
+static void build_model_range_dispatch_descriptor(uint8_t *slot,
                                                   uint64_t op_id,
                                                   uint64_t segment,
                                                   uint32_t node,
@@ -1243,7 +1244,7 @@ static void build_qwen3_range_dispatch_descriptor(uint8_t *slot,
     write_u8_le(slot, &off, 9);
     write_u64_le(slot, &off, op_id);
     write_u64_le(slot, &off, segment);
-    write_u32_le(slot, &off, W4_QWEN3_RANGE_TASK_MAGIC);
+    write_u32_le(slot, &off, LLM_MODEL_RANGE_TASK_MAGIC);
     write_u32_le(slot, &off, node);
     write_u32_le(slot, &off, layer_start);
     write_u32_le(slot, &off, layer_end);
@@ -2015,7 +2016,7 @@ static bool qwen3_find_logits_table_by_scan_for_step(volatile uint8_t *ep_mmio,
     return false;
 }
 
-struct w4_qwen3_terminal_token_record {
+struct llm_terminal_token_record {
     uint64_t sampled_token;
     uint64_t runner_up_token;
     uint64_t margin_milli;
@@ -2036,10 +2037,10 @@ struct w4_qwen3_terminal_token_record {
     uint64_t candidate_piece_word1[4];
 };
 
-_Static_assert(offsetof(struct w4_qwen3_terminal_token_record, text_checksum) ==
+_Static_assert(offsetof(struct llm_terminal_token_record, text_checksum) ==
                    4ULL * sizeof(uint64_t),
                "terminal token logits fields must stay tightly packed");
-_Static_assert(offsetof(struct w4_qwen3_terminal_token_record, piece_word1) ==
+_Static_assert(offsetof(struct llm_terminal_token_record, piece_word1) ==
                    10ULL * sizeof(uint64_t),
                "terminal token text fields must stay tightly packed");
 
@@ -2066,7 +2067,7 @@ struct w4_qwen3_engram_config {
     uint64_t token_projection_count;
 };
 
-struct w4_qwen3_sampler_config {
+struct llm_sampler_config {
     uint64_t top_k;
     uint64_t top_p_milli;
     uint64_t temperature_milli;
@@ -2187,7 +2188,7 @@ struct w4_qwen3_memory_boundary_lookup_result {
     const char *decision_id;
     const char *artifact_id;
     struct lingqu_obmm_object_ref_wire terminal_logits_ref;
-    struct w4_qwen3_terminal_token_record terminal_logits_record;
+    struct llm_terminal_token_record terminal_logits_record;
     const char *match_mode;
     uint64_t match_score_milli;
     bool verify_required;
@@ -2221,14 +2222,14 @@ struct w4_qwen3_engram_step_timing {
 };
 
 static bool llm_infer_terminal_token_candidate_index(
-    const struct w4_qwen3_terminal_token_record *terminal_token,
+    const struct llm_terminal_token_record *terminal_token,
     uint64_t token,
     uint64_t *index_out);
 
-static int qwen3_read_terminal_token_record_for_step(
+static int model_read_terminal_token_record_for_step(
     volatile uint8_t *ep_mmio,
     uint64_t expected_decode_step,
-    struct w4_qwen3_terminal_token_record *record)
+    struct llm_terminal_token_record *record)
 {
     uint64_t logits_table_header = W4_QWEN3_LOGITS_TABLE_HEADER;
     uint64_t logits_table_base;
@@ -2275,7 +2276,7 @@ static int qwen3_read_terminal_token_record_for_step(
     record->candidate_count = read_segment_u64(ep_mmio, logits_table_base + 160);
     if (record->candidate_count == 0 || record->candidate_count > 4) {
         fprintf(stderr,
-                "[w4_guest] fail qwen3 terminal logits candidate_count invalid"
+                "[w4_guest] fail model terminal logits candidate_count invalid"
                 " candidate_count=%" PRIu64 "\n",
                 record->candidate_count);
         return -1;
@@ -2298,7 +2299,7 @@ static int qwen3_read_terminal_token_record_for_step(
                                                   &sampled_index) ||
             record->candidate_text_checksums[sampled_index] != record->text_checksum) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 terminal logits sampled candidate metadata invalid"
+                    "[w4_guest] fail model terminal logits sampled candidate metadata invalid"
                     " token=%" PRIu64 " candidate_count=%" PRIu64 "\n",
                     record->sampled_token,
                     record->candidate_count);
@@ -2308,10 +2309,10 @@ static int qwen3_read_terminal_token_record_for_step(
     return 0;
 }
 
-static void qwen3_log_terminal_logits_observation(
+static void model_log_terminal_logits_observation(
     uint32_t local_node,
     uint64_t decode_step,
-    const struct w4_qwen3_terminal_token_record *terminal_token,
+    const struct llm_terminal_token_record *terminal_token,
     const char *source)
 {
     if (!terminal_token) {
@@ -2320,7 +2321,7 @@ static void qwen3_log_terminal_logits_observation(
     if (!source || source[0] == '\0') {
         source = "unknown";
     }
-    printf("[w4_guest] stage qwen3_w5_terminal_logits_observation local=node%u"
+    printf("[w4_guest] stage model_terminal_logits_observation local=node%u"
            " step=%" PRIu64
            " token=%" PRIu64
            " runner_up=%" PRIu64
@@ -3042,7 +3043,7 @@ static int64_t llm_infer_logit_score_milli(uint64_t logit_bits, int64_t fallback
 }
 
 static bool llm_infer_terminal_token_candidate_index(
-    const struct w4_qwen3_terminal_token_record *terminal_token,
+    const struct llm_terminal_token_record *terminal_token,
     uint64_t token,
     uint64_t *index_out)
 {
@@ -3069,7 +3070,7 @@ static uint64_t llm_infer_sampler_mix64(uint64_t value)
 }
 
 static bool llm_infer_rewrite_terminal_token_record_for_selected_candidate(
-    struct w4_qwen3_terminal_token_record *terminal_token,
+    struct llm_terminal_token_record *terminal_token,
     uint32_t local_node,
     uint64_t decode_step,
     uint64_t raw_sampled_token,
@@ -3172,8 +3173,8 @@ static bool llm_infer_rewrite_terminal_token_record_for_selected_candidate(
 }
 
 static int llm_infer_apply_top_k_sampler(
-    const struct w4_qwen3_sampler_config *config,
-    struct w4_qwen3_terminal_token_record *terminal_token,
+    const struct llm_sampler_config *config,
+    struct llm_terminal_token_record *terminal_token,
     uint32_t local_node,
     uint64_t decode_step,
     uint64_t position,
@@ -3347,7 +3348,7 @@ static uint64_t qwen3_guest_engram_select_token(
     const struct w4_qwen3_engram_config *config,
     const uint64_t *history,
     uint64_t history_len,
-    const struct w4_qwen3_terminal_token_record *terminal_token,
+    const struct llm_terminal_token_record *terminal_token,
     bool *fallback_used,
     uint64_t *blocked_count,
     int64_t *top_score_out,
@@ -3545,7 +3546,7 @@ static uint64_t qwen3_guest_engram_select_token(
 }
 
 static bool qwen3_rewrite_terminal_token_record_for_engram_selection(
-    struct w4_qwen3_terminal_token_record *terminal_token,
+    struct llm_terminal_token_record *terminal_token,
     uint32_t local_node,
     uint64_t decode_step,
     uint64_t raw_sampled_token,
@@ -3562,7 +3563,7 @@ static bool qwen3_rewrite_terminal_token_record_for_engram_selection(
 }
 
 static uint64_t qwen3_terminal_token_candidate_text_checksum(
-    const struct w4_qwen3_terminal_token_record *terminal_token,
+    const struct llm_terminal_token_record *terminal_token,
     uint64_t token)
 {
     if (!terminal_token) {
@@ -3584,7 +3585,7 @@ static int qwen3_engram_select_and_publish_step(
     uint64_t decode_step,
     const uint64_t *history_tokens,
     uint64_t history_token_count,
-    struct w4_qwen3_terminal_token_record *terminal_token,
+    struct llm_terminal_token_record *terminal_token,
     uint64_t *selected_token_out,
     struct w4_qwen3_engram_step_timing *timing)
 {
@@ -3892,7 +3893,7 @@ static uint64_t qwen3_sample_text_checksum(uint64_t step_index, uint64_t sampled
            qwen3_rol64(piece_checksum, 3);
 }
 
-static int verify_qwen3_range_completion_contract(const uint8_t *cq,
+static int verify_model_range_completion_contract(const uint8_t *cq,
                                                   size_t slot_count,
                                                   uint32_t dispatch_node,
                                                   uint32_t layer_start,
@@ -3928,7 +3929,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
                 memcpy(code, slot + 12, code_len);
                 code[code_len] = '\0';
                 fprintf(stderr,
-                        "[w4_guest] qwen3 range dispatch completion failed status=%u code=%s\n",
+                        "[w4_guest] model range dispatch completion failed status=%u code=%s\n",
                         status,
                         code_len > 0 ? code : "missing");
                 return -1;
@@ -3953,7 +3954,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
         off += sizeof(uint32_t);
         range_hidden_bytes = read_u32_le_bytes(slot, off);
         if (marker != W4_QWEN3_MARKER_RANGE_COMPUTE_CONTRACT ||
-            task_magic != W4_QWEN3_RANGE_TASK_MAGIC ||
+            task_magic != LLM_MODEL_RANGE_TASK_MAGIC ||
             range_node != dispatch_node ||
             range_layer_start != layer_start ||
             range_layer_end != layer_end ||
@@ -3962,14 +3963,14 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
             range_total_layers != expected_total_layers ||
             range_hidden_bytes != expected_hidden_bytes) {
             fprintf(stderr,
-                    "[w4_guest] qwen3 range compute contract mismatch marker=0x%016" PRIx64
+                    "[w4_guest] model range compute contract mismatch marker=0x%016" PRIx64
                     " magic=0x%08" PRIx32 "/0x%08" PRIx32
                     " node=%" PRIu32 "/%" PRIu32 " layers=[%" PRIu32 ",%" PRIu32 ")/[%" PRIu32 ",%" PRIu32 ")"
                     " next=%" PRIu32 "/%" PRIu32 " nodes=%" PRIu32 "/%" PRIu32
                     " total_layers=%" PRIu32 "/%" PRIu64 " hidden_bytes=%" PRIu32 "/%" PRIu64 "\n",
                     marker,
                     task_magic,
-                    (uint32_t)W4_QWEN3_RANGE_TASK_MAGIC,
+                    (uint32_t)LLM_MODEL_RANGE_TASK_MAGIC,
                     range_node,
                     dispatch_node,
                     range_layer_start,
@@ -3986,7 +3987,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
                     expected_hidden_bytes);
             return -1;
         }
-        printf("[w4_guest] stage uapi_qwen3_range_compute_contract node=%" PRIu32 " layers=[%" PRIu32 ",%" PRIu32 ") count=%" PRIu32 " next=%" PRIu32 " pipeline_nodes=%" PRIu32 " total_layers=%" PRIu32 " hidden_bytes=%" PRIu32 " source=dispatch_task output=completion status=ok\n",
+        printf("[w4_guest] stage uapi_model_range_compute_contract node=%" PRIu32 " layers=[%" PRIu32 ",%" PRIu32 ") count=%" PRIu32 " next=%" PRIu32 " pipeline_nodes=%" PRIu32 " total_layers=%" PRIu32 " hidden_bytes=%" PRIu32 " source=dispatch_task output=completion status=ok\n",
                range_node,
                range_layer_start,
                range_layer_end,
@@ -3999,7 +4000,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
     }
 
     fprintf(stderr,
-            "[w4_guest] qwen3 range compute contract completion sideband missing node=%" PRIu32
+            "[w4_guest] model range compute contract completion sideband missing node=%" PRIu32
             " layers=[%" PRIu32 ",%" PRIu32 ") next=%" PRIu32 "\n",
             dispatch_node,
             layer_start,
@@ -4008,7 +4009,7 @@ static int verify_qwen3_range_completion_contract(const uint8_t *cq,
     return -1;
 }
 
-static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
+static int verify_model_range_forward_table(volatile uint8_t *ep_mmio,
                                             uint32_t dispatch_node,
                                             uint32_t layer_start,
                                             uint32_t layer_end,
@@ -4016,7 +4017,7 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
                                             uint32_t cluster_node_count,
                                             uint64_t expected_total_layers,
                                             uint64_t expected_hidden_bytes,
-                                            struct w4_qwen3_range_runtime_forward *runtime_out)
+                                            struct llm_model_range_runtime_forward *runtime_out)
 {
     uint64_t table_header = 0;
     uint64_t table_marker;
@@ -4086,9 +4087,9 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     table_output_checksum = read_segment_u64(ep_mmio, table_header + 56);
     if (table_marker != W4_QWEN3_MARKER_RANGE_FORWARD_TABLE ||
         table_count != 1ULL ||
-        entry_words != W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_WORDS ||
+        entry_words != LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_WORDS ||
         table_bytes <
-            W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + expected_hidden_bytes ||
+            LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_BYTES + expected_hidden_bytes ||
         table_checksum == 0 ||
         table_range_checksum == 0 ||
         table_input_checksum == 0 ||
@@ -4128,10 +4129,10 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
     entry_output_bytes = read_segment_u64(ep_mmio, base + 120);
     entry_kv_payload_bytes = read_segment_u64(ep_mmio, base + 128);
     entry_kv_payload_checksum = read_segment_u64(ep_mmio, base + 136);
-    payload_offset = base + W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES;
+    payload_offset = base + LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_BYTES;
     payload_bytes = entry_output_bytes;
     if (payload_bytes > W4_QWEN3_MAX_HIDDEN_RANGE_BYTES ||
-        table_bytes < W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES + payload_bytes) {
+        table_bytes < LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_BYTES + payload_bytes) {
         fprintf(stderr,
                 "[w4_guest] qwen3 range forward payload bounds mismatch bytes=%" PRIu64
                 " max=%" PRIu64 " table_bytes=%" PRIu64 "\n",
@@ -4141,7 +4142,7 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         return -1;
     }
     kv_payload_offset = payload_offset + payload_bytes;
-    kv_payload_bytes = table_bytes - W4_QWEN3_RANGE_FORWARD_TABLE_ENTRY_BYTES - payload_bytes;
+    kv_payload_bytes = table_bytes - LLM_MODEL_RANGE_FORWARD_TABLE_ENTRY_BYTES - payload_bytes;
     if (payload_bytes != expected_hidden_bytes) {
         fprintf(stderr,
                 "[w4_guest] qwen3 range forward payload size mismatch bytes=%" PRIu64
@@ -4158,10 +4159,10 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         payload_checksum =
             w4_qwen3_hidden_payload_checksum(runtime_out->output_payload,
                                              payload_bytes);
-        if (qwen3_range_runtime_forward_reserve_kv(runtime_out,
+        if (model_range_runtime_forward_reserve_kv(runtime_out,
                                                    kv_payload_bytes) != 0) {
             fprintf(stderr,
-                    "[w4_guest] qwen3 range kv payload reserve failed bytes=%" PRIu64
+                    "[w4_guest] model range kv payload reserve failed bytes=%" PRIu64
                     " capacity=%" PRIu64 "\n",
                     kv_payload_bytes,
                     runtime_out->kv_payload_capacity);
@@ -4257,7 +4258,7 @@ static int verify_qwen3_range_forward_table(volatile uint8_t *ep_mmio,
         runtime_out->kv_payload_offset = kv_payload_offset;
         runtime_out->kv_payload_bytes = kv_payload_bytes;
     }
-    printf("[w4_guest] stage uapi_qwen3_range_runtime_forward node=%" PRIu64
+    printf("[w4_guest] stage uapi_model_range_runtime_forward node=%" PRIu64
            " layers=[%" PRIu64 ",%" PRIu64 ") count=%" PRIu64
            " next=%" PRIu64 " pipeline_nodes=%" PRIu64
            " total_layers=%" PRIu64 " hidden_bytes=%" PRIu64
@@ -4293,7 +4294,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                    uint64_t segment,
                                    uint64_t decode_step,
                                    uint64_t expected_hidden_bytes,
-                                   struct w4_qwen3_range_runtime_forward *runtime_out)
+                                   struct llm_model_range_runtime_forward *runtime_out)
 {
     const bool range_profile =
         w4_runtime_range_pipeline_enabled(w4_cluster_node_count());
@@ -4409,12 +4410,12 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                             &layer_end,
                                             &next_node) != 0) {
             fprintf(stderr,
-                    "[w4_guest] qwen3 range compute contract placement unavailable role=%s nodes=%u\n",
+                    "[w4_guest] model range compute contract placement unavailable role=%s nodes=%u\n",
                     role,
                     cluster_node_count);
             return -1;
         }
-        if (verify_qwen3_range_completion_contract(cq,
+        if (verify_model_range_completion_contract(cq,
                                                    slot_count,
                                                    dispatch_node,
                                                    layer_start,
@@ -4425,7 +4426,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
                                                    expected_hidden_bytes) != 0) {
             return -1;
         }
-        if (verify_qwen3_range_forward_table(ep_mmio,
+        if (verify_model_range_forward_table(ep_mmio,
                                              dispatch_node,
                                              layer_start,
                                              layer_end,
@@ -4466,7 +4467,7 @@ static int verify_dispatch_payload(volatile uint8_t *ep_mmio,
             return -1;
         }
         if (range_only_flow) {
-            printf("[w4_guest] stage uapi_qwen3_range_forward_only"
+            printf("[w4_guest] stage uapi_model_range_forward_only"
                    " object=range_hidden publish=%" PRIu64
                    " resolve_remote=%" PRIu64 " compute=%" PRIu64
                    " storage=obmm_object metadata=db status=ok\n",
@@ -5077,7 +5078,7 @@ qwen3_logits_tables:
             qwen3_serving_effective_decode_step(decode_step);
 
         if (!terminal_logits_owner) {
-            printf("[w4_guest] stage uapi_qwen3_logits_sampling_table"
+            printf("[w4_guest] stage uapi_model_logits_sampling_table"
                    " node=%u layers=[%u,%u) terminal_owner=0 status=skipped\n",
                    dispatch_node,
                    layer_start,
@@ -5311,7 +5312,7 @@ qwen3_logits_tables:
                         real_logits_count);
                 return -1;
             }
-            printf("[w4_guest] stage uapi_qwen3_logits_sampling_table entries=%" PRIu64
+            printf("[w4_guest] stage uapi_model_logits_sampling_table entries=%" PRIu64
                    " entry_words=%" PRIu64 " table_bytes=%" PRIu64
                    " vocab=%" PRIu64 " sampled_distinct=%" PRIu64
                    " logits_checksum_nonzero=%" PRIu64
@@ -5324,7 +5325,7 @@ qwen3_logits_tables:
                    real_logits_count);
         }
         if (!terminal_logits_owner) {
-            printf("[w4_guest] stage uapi_qwen3_token_text_table"
+            printf("[w4_guest] stage uapi_model_token_text_table"
                    " node=%u layers=[%u,%u) terminal_owner=0 status=skipped\n",
                    dispatch_node,
                    layer_start,
@@ -5458,7 +5459,7 @@ qwen3_logits_tables:
                         boundary_last);
                 return -1;
             }
-            printf("[w4_guest] stage uapi_qwen3_token_text_table entries=%" PRIu64
+            printf("[w4_guest] stage uapi_model_token_text_table entries=%" PRIu64
                    " entry_words=%" PRIu64 " table_bytes=%" PRIu64
                    " total_bytes=%" PRIu64 " piece_bytes=%" PRIu64
                    " policy_kind=%" PRIu64 " policy_hash=0x%016" PRIx64
@@ -7905,7 +7906,7 @@ static int qwen3_terminal_token_record_from_logits_payload(
     const uint8_t *payload,
     uint64_t payload_len,
     uint64_t decode_step,
-    struct w4_qwen3_terminal_token_record *record)
+    struct llm_terminal_token_record *record)
 {
     uint64_t marker;
     uint64_t count;
@@ -8045,7 +8046,7 @@ static int qwen3_memory_shortpath_terminal_logits_record(
     const struct w4_qwen3_memory_decision_config *config,
     uint64_t decode_step,
     struct lingqu_obmm_object_ref_wire *ref_out,
-    struct w4_qwen3_terminal_token_record *record_out)
+    struct llm_terminal_token_record *record_out)
 {
     uint8_t *payload = NULL;
     uint64_t payload_len = 0;
@@ -8114,7 +8115,7 @@ static int qwen3_memory_shortpath_terminal_logits_record_from_ref(
     const char *artifact_id,
     uint64_t decode_step,
     struct lingqu_obmm_object_ref_wire *ref_out,
-    struct w4_qwen3_terminal_token_record *record_out)
+    struct llm_terminal_token_record *record_out)
 {
     uint8_t *payload = NULL;
     uint64_t payload_len = 0;
@@ -8660,7 +8661,7 @@ static int qwen3_memory_service_lookup_boundary(
 
 static int qwen3_boundary_controller_resolve_work_item(
     const struct w4_qwen3_memory_decision_config *memory_config,
-    const struct w4_qwen3_sampler_config *sampler_config,
+    const struct llm_sampler_config *sampler_config,
     const struct w4_qwen3_engram_config *engram_config,
     uint32_t dispatch_node,
     uint32_t cluster_node_count,
@@ -8668,7 +8669,7 @@ static int qwen3_boundary_controller_resolve_work_item(
     uint32_t layer_end,
     uint64_t decode_step,
     uint64_t position,
-    const struct w4_qwen3_range_runtime_forward *runtime_forward,
+    const struct llm_model_range_runtime_forward *runtime_forward,
     struct w4_qwen3_boundary_controller_result *result_out)
 {
     int lookup_state;
@@ -9437,10 +9438,10 @@ static int llm_infer_qwen3_serving_mem_service_publish(
         .has_placement_level = true,
         .placement_level = 2,
         .has_hot_segment_id = true,
-        .hot_segment_id = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+        .hot_segment_id = LLM_MODEL_RANGE_INPUT_PAYLOAD_OFFSET,
         .state = "filled",
         .has_result_segment_id = true,
-        .result_segment_id = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+        .result_segment_id = LLM_MODEL_RANGE_INPUT_PAYLOAD_OFFSET,
     };
     struct mem_service_client_block_entry kv = {
         .request_id = "llm-infer-serving-request",
@@ -9471,7 +9472,7 @@ static int llm_infer_qwen3_serving_mem_service_publish(
         .has_payload_kind = true,
         .payload_kind = W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
         .has_backing_offset = true,
-        .backing_offset = W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+        .backing_offset = LLM_MODEL_RANGE_INPUT_PAYLOAD_OFFSET,
         .has_backing_len = true,
         .backing_len = 0,
         .has_checksum = true,
@@ -9671,7 +9672,7 @@ int main(int argc, char **argv)
     struct mem_service_cluster_summary db_cluster_update_summary;
     struct mem_service_cluster_summary db_cluster_handoff_summary;
     struct w4_compute_roundtrip compute_roundtrip;
-    struct w4_qwen3_range_runtime_forward runtime_forward = {0};
+    struct llm_model_range_runtime_forward runtime_forward = {0};
     char remote_block_key[96];
     char remote_block_key_aux[96];
     char remote_prefix_key[96];
@@ -9685,7 +9686,7 @@ int main(int argc, char **argv)
     bool remote_metadata_ready = false;
     bool group_relationship_ready = false;
     bool cluster_observer_mode = false;
-    bool qwen3_runtime_forward_ready = false;
+    bool model_runtime_forward_ready = false;
     bool resource_assertions_enabled = false;
     uint32_t cluster_node_count = 4U;
     size_t slot = 0;
@@ -9792,7 +9793,7 @@ int main(int argc, char **argv)
     struct mem_service_object_payload_view qwen3_pre_resolved_range_input_view;
     struct w4_guest_supernode_clock supernode_clock;
     struct w4_qwen3_memory_decision_config qwen3_memory_decision_config;
-    struct w4_qwen3_sampler_config qwen3_sampler_config;
+    struct llm_sampler_config sampler_config;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -9800,7 +9801,7 @@ int main(int argc, char **argv)
     memset(&counts, 0, sizeof(counts));
     memset(&supernode_clock, 0, sizeof(supernode_clock));
     memset(&qwen3_memory_decision_config, 0, sizeof(qwen3_memory_decision_config));
-    memset(&qwen3_sampler_config, 0, sizeof(qwen3_sampler_config));
+    memset(&sampler_config, 0, sizeof(sampler_config));
     memset(qwen3_prefix_cache_replay_suffix_tokens,
            0,
            sizeof(qwen3_prefix_cache_replay_suffix_tokens));
@@ -9815,38 +9816,38 @@ int main(int argc, char **argv)
     resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
-    qwen3_sampler_config.top_k =
+    sampler_config.top_k =
         env_u64_or_default("SIM_QWEN3_SAMPLER_TOP_K", 1);
-    qwen3_sampler_config.top_p_milli =
+    sampler_config.top_p_milli =
         env_u64_or_default("SIM_QWEN3_SAMPLER_TOP_P_MILLI",
                            env_milli_decimal_or_default("SIM_QWEN3_SAMPLER_TOP_P",
                                                         1000));
-    qwen3_sampler_config.temperature_milli =
+    sampler_config.temperature_milli =
         env_u64_or_default(
             "SIM_QWEN3_SAMPLER_TEMPERATURE_MILLI",
             env_milli_decimal_or_default("SIM_QWEN3_SAMPLER_TEMPERATURE",
                                          1000));
-    qwen3_sampler_config.seed =
+    sampler_config.seed =
         env_u64_or_default("SIM_QWEN3_SAMPLER_SEED", 0);
-    if (qwen3_sampler_config.top_k > 4) {
+    if (sampler_config.top_k > 4) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 sampler top_k unsupported top_k=%" PRIu64
                 " supported=0..4 reason=terminal_logits_candidate_table\n",
-                qwen3_sampler_config.top_k);
+                sampler_config.top_k);
         return 1;
     }
-    if (qwen3_sampler_config.top_p_milli == 0 ||
-        qwen3_sampler_config.top_p_milli > 1000 ||
-        qwen3_sampler_config.temperature_milli == 0 ||
-        qwen3_sampler_config.temperature_milli > 100000) {
+    if (sampler_config.top_p_milli == 0 ||
+        sampler_config.top_p_milli > 1000 ||
+        sampler_config.temperature_milli == 0 ||
+        sampler_config.temperature_milli > 100000) {
         fprintf(stderr,
                 "[w4_guest] fail qwen3 sampler distribution unsupported"
                 " top_p_milli=%" PRIu64
                 " temperature_milli=%" PRIu64
                 " supported_top_p_milli=1..1000"
                 " supported_temperature_milli=1..100000\n",
-                qwen3_sampler_config.top_p_milli,
-                qwen3_sampler_config.temperature_milli);
+                sampler_config.top_p_milli,
+                sampler_config.temperature_milli);
         return 1;
     }
     qwen3_engram_config.enabled = env_bool_is_one("SIM_QWEN3_GUEST_ENGRAM");
@@ -10031,7 +10032,7 @@ int main(int argc, char **argv)
         }
         decode_round_scope_hash =
             (w4_hash_string(run_id) * 1099511628211ULL) ^ w4_hash_string(batch_id);
-        printf("[w4_guest] stage qwen3_decode_round_barrier_scope run_id=%s batch_id=%s"
+        printf("[w4_guest] stage model_decode_round_barrier_scope run_id=%s batch_id=%s"
                " scope_hash=0x%016" PRIx64
                " storage=per_scope_step_slot status=ok\n",
                run_id,
@@ -10049,7 +10050,7 @@ int main(int argc, char **argv)
     {
         uint32_t local_node = UINT32_MAX;
 
-        printf("[w4_guest] stage qwen3_supernode_clock local=%s node=%u"
+        printf("[w4_guest] stage model_supernode_clock local=%s node=%u"
                " bootstrap_monotonic_ms=%" PRIu64
                " bootstrap_realtime_ms=%" PRIu64
                " monotonic_to_supernode_offset_ms=%" PRId64
@@ -10061,7 +10062,7 @@ int main(int argc, char **argv)
                supernode_clock.bootstrap_monotonic_ms,
                supernode_clock.bootstrap_realtime_ms,
                supernode_clock.monotonic_to_supernode_offset_ms);
-        printf("[w4_guest] stage qwen3_sampler_config local=%s node=%u"
+        printf("[w4_guest] stage model_sampler_config local=%s node=%u"
                " policy=top_k_top_p_temperature"
                " top_k=%" PRIu64
                " top_p_milli=%" PRIu64
@@ -10072,10 +10073,10 @@ int main(int argc, char **argv)
                w4_cluster_role_index(role, cluster_node_count, &local_node) ?
                    local_node + 1U :
                    0U,
-               qwen3_sampler_config.top_k,
-               qwen3_sampler_config.top_p_milli,
-               qwen3_sampler_config.temperature_milli,
-               qwen3_sampler_config.seed);
+               sampler_config.top_k,
+               sampler_config.top_p_milli,
+               sampler_config.temperature_milli,
+               sampler_config.seed);
         if (qwen3_engram_config.context_object_refs_enabled) {
             const char *state_ref = getenv("SIM_QWEN3_GUEST_ENGRAM_STATE_REF");
             const char *table_ref = getenv("SIM_QWEN3_GUEST_ENGRAM_CONTEXT_TABLE_REF");
@@ -10200,7 +10201,7 @@ int main(int argc, char **argv)
     memset(&db_cluster_update_summary, 0, sizeof(db_cluster_update_summary));
     memset(&db_cluster_handoff_summary, 0, sizeof(db_cluster_handoff_summary));
     memset(&compute_roundtrip, 0, sizeof(compute_roundtrip));
-    qwen3_range_runtime_forward_release(&runtime_forward);
+    model_range_runtime_forward_release(&runtime_forward);
     memset(&resolved_prefix_meta, 0, sizeof(resolved_prefix_meta));
     memset(&resolved_prefix_meta_aux, 0, sizeof(resolved_prefix_meta_aux));
     memset(&resolved_prefix_group, 0, sizeof(resolved_prefix_group));
@@ -11346,13 +11347,13 @@ decode_round_start:
         guest_decode_step == 0;
     memset(&counts, 0, sizeof(counts));
     memset(&runtime_forward, 0, sizeof(runtime_forward));
-    qwen3_runtime_forward_ready = false;
+    model_runtime_forward_ready = false;
     qwen3_round_input_token_count = 0;
     qwen3_round_decode_position = 0;
     memset(qwen3_round_input_tokens, 0, sizeof(qwen3_round_input_tokens));
     round_start_ms = monotonic_ms();
     if (!delay_decode_round_start_log) {
-        printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64
+        printf("[w4_guest] stage model_decode_round_start step=%" PRIu64
                " total_steps=%" PRIu64 "\n",
                guest_decode_step,
                guest_decode_steps);
@@ -11538,7 +11539,7 @@ decode_round_start:
             struct mem_service_scheduler_work_item scheduler_item;
 
             input_wait_start_ms = scheduler_wait_start_ms;
-            printf("[w4_guest] stage qwen3_work_item_scheduler_wait"
+            printf("[w4_guest] stage model_work_item_scheduler_wait"
                    " node=%u step=%" PRIu64 " layers=[%u,%u)"
                    " source=decode_round_scheduler target=range_worker"
                    " status=waiting\n",
@@ -11571,7 +11572,7 @@ decode_round_start:
                 if (scheduler_rc != 0 ||
                     scheduler_item.kind == MEM_SERVICE_SCHEDULER_WORK_ITEM_NONE) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 work item scheduler input resolve"
+                        "[w4_guest] fail model work item scheduler input resolve"
                         " failed node=%u layers=[%u,%u)"
                         " rc=%d kind=%d"
                         " request_nodes=%u request_owner=%u"
@@ -11623,7 +11624,7 @@ decode_round_start:
                 publish_start_ms = compute_start_ms;
                 publish_ms = publish_start_ms;
                 publish_done_ms = publish_start_ms;
-                printf("[w4_guest] stage qwen3_decode_round_scheduler_no_dispatch"
+                printf("[w4_guest] stage model_decode_round_scheduler_no_dispatch"
                        " node=%u step=%" PRIu64 " layers=[%u,%u)"
                        " terminal_owner=node%u token=%" PRIu64
                        " source=decode_round_scheduler target=work_queue"
@@ -11640,7 +11641,7 @@ decode_round_start:
             if (scheduler_item.kind != MEM_SERVICE_SCHEDULER_WORK_ITEM_RANGE_FORWARD ||
                 !scheduler_item.range_input.data) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 scheduler work item invalid node=%u kind=%d\n",
+                        "[w4_guest] fail model scheduler work item invalid node=%u kind=%d\n",
                         dispatch_node + 1U,
                         (int)scheduler_item.kind);
                 goto out;
@@ -11674,14 +11675,14 @@ decode_round_start:
             if (qwen3_pre_resolved_range_input_view.payload_kind !=
                     W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 scheduler input kind invalid node=%u kind=%u bytes=%" PRIu64 "\n",
+                        "[w4_guest] fail model scheduler input kind invalid node=%u kind=%u bytes=%" PRIu64 "\n",
                         dispatch_node + 1U,
                         qwen3_pre_resolved_range_input_view.payload_kind,
                         qwen3_pre_resolved_range_input_view.len);
                 goto out;
             }
             qwen3_pre_resolved_range_input = true;
-            printf("[w4_guest] stage qwen3_work_item_scheduler_dispatch"
+            printf("[w4_guest] stage model_work_item_scheduler_dispatch"
                    " node=%u step=%" PRIu64 " layers=[%u,%u)"
                    " producer=node%u checksum=0x%016" PRIx64
                    " bytes=%" PRIu64
@@ -11697,7 +11698,7 @@ decode_round_start:
         }
     }
     if (delay_decode_round_start_log) {
-        printf("[w4_guest] stage qwen3_decode_round_start step=%" PRIu64
+        printf("[w4_guest] stage model_decode_round_start step=%" PRIu64
                " total_steps=%" PRIu64 " after=obmm_cluster_runtime_bootstrap\n",
                guest_decode_step,
                guest_decode_steps);
@@ -11922,7 +11923,7 @@ decode_round_start:
                                             &layer_end,
                                             &next_node) != 0) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 range dispatch placement unavailable role=%s nodes=%u\n",
+                    "[w4_guest] fail model range dispatch placement unavailable role=%s nodes=%u\n",
                     role,
                     cluster_node_count);
             goto out;
@@ -12033,7 +12034,7 @@ decode_round_start:
             }
             if (object_ref_count > W4_QWEN3_OBJECT_REF_MAX_COUNT) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 range dispatch object ref count too large count=%u max=%u\n",
+                        "[w4_guest] fail model range dispatch object ref count too large count=%u max=%u\n",
                         object_ref_count,
                         W4_QWEN3_OBJECT_REF_MAX_COUNT);
                 goto out;
@@ -12042,7 +12043,7 @@ decode_round_start:
                                 W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
                                 empty_object_ref_table,
                                 sizeof(empty_object_ref_table));
-            printf("[w4_guest] stage uapi_qwen3_range_dispatch_descriptor node=%u layers=[%u,%u) count=%u next=%u segment=%" PRIu64 " task_id=31 object_ref_table_offset=0x%016" PRIx64 " object_ref_count=%u source=db_metadata status=ok\n",
+            printf("[w4_guest] stage uapi_model_range_dispatch_descriptor node=%u layers=[%u,%u) count=%u next=%u segment=%" PRIu64 " task_id=31 object_ref_table_offset=0x%016" PRIx64 " object_ref_count=%u source=db_metadata status=ok\n",
                dispatch_node,
                layer_start,
                layer_end,
@@ -12051,7 +12052,7 @@ decode_round_start:
                    default_segment,
                    (uint64_t)W4_QWEN3_OBJECT_REF_TABLE_OFFSET,
                    object_ref_count);
-            build_qwen3_range_dispatch_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++),
+            build_model_range_dispatch_descriptor(queue_slot_ptr(cmdq, cmdq_depth, cmdq_slot_base, slot++),
                                                   31,
                                                   default_segment,
                                                   dispatch_node,
@@ -12120,11 +12121,11 @@ decode_round_start:
             uint32_t expected_kind =
                 layer_start > 0U ?
                     W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT :
-                    MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT;
+                    MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT;
             uint64_t expected_bytes =
                 layer_start > 0U ?
                     hidden_range_bytes :
-                    MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+                    MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES;
 
             memset(&range_input_view, 0, sizeof(range_input_view));
             if (layer_start > 0U && qwen3_pre_resolved_range_input) {
@@ -12168,7 +12169,7 @@ decode_round_start:
                                 W4_QWEN3_OBJECT_REF_BYTES);
             object_ref_write_index++;
             write_segment_bytes(ep_mmio,
-                                W4_QWEN3_RANGE_INPUT_PAYLOAD_OFFSET,
+                                LLM_MODEL_RANGE_INPUT_PAYLOAD_OFFSET,
                                 range_input_view.data,
                                 range_input_view.len);
             input_loaded_ms = monotonic_ms();
@@ -12281,7 +12282,7 @@ decode_round_start:
                                              &layer_end,
                                              &next_node) != 0) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 runtime range input placement unavailable role=%s nodes=%u\n",
+                    "[w4_guest] fail model runtime range input placement unavailable role=%s nodes=%u\n",
                     role,
                     cluster_node_count);
             goto out;
@@ -12301,7 +12302,7 @@ decode_round_start:
             input_wait_start_ms = stage_start_ms;
             if (hidden_range_bytes > W4_QWEN3_MAX_HIDDEN_RANGE_BYTES) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 runtime range input too large bytes=%" PRIu64
+                        "[w4_guest] fail model runtime range input too large bytes=%" PRIu64
                         " max=%" PRIu64 "\n",
                         hidden_range_bytes,
                         (uint64_t)W4_QWEN3_MAX_HIDDEN_RANGE_BYTES);
@@ -12372,7 +12373,7 @@ decode_round_start:
                                    &range_input_view) != 0 ||
                                !range_input_view.data) {
                         fprintf(stderr,
-                                "[w4_guest] fail qwen3 runtime range input resolve failed node=%u layers=[%u,%u)\n",
+                                "[w4_guest] fail model runtime range input resolve failed node=%u layers=[%u,%u)\n",
                                 dispatch_node + 1U,
                                 layer_start,
                                 layer_end);
@@ -12381,16 +12382,16 @@ decode_round_start:
                     token_result_input =
                         layer_start == 0U && guest_decode_step > 0 &&
                         range_input_view.payload_kind ==
-                            MEM_SERVICE_OBMM_KIND_QWEN3_TOKEN_RESULT &&
+                            MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT &&
                         range_input_view.len ==
-                            MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES;
+                            MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES;
                     hidden_range_input =
                         range_input_view.payload_kind ==
                             W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT &&
                         range_input_view.len == hidden_range_bytes;
                     if (!token_result_input && !hidden_range_input) {
                         fprintf(stderr,
-                                "[w4_guest] fail qwen3 runtime range input object invalid node=%u layers=[%u,%u) kind=%u bytes=%" PRIu64 " expected_hidden=%" PRIu64 "\n",
+                                "[w4_guest] fail model runtime range input object invalid node=%u layers=[%u,%u) kind=%u bytes=%" PRIu64 " expected_hidden=%" PRIu64 "\n",
                                 dispatch_node + 1U,
                                 layer_start,
                                 layer_end,
@@ -12407,7 +12408,7 @@ decode_round_start:
 
                         memcpy(token_words,
                                range_input_view.token_result_words,
-                               MEM_SERVICE_OBMM_QWEN3_TOKEN_RESULT_BYTES);
+                               MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES);
                         previous_step = token_words[0];
                         previous_token = token_words[1];
                         if (previous_step != guest_decode_step - 1U) {
@@ -12472,7 +12473,7 @@ decode_round_start:
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
                     input_loaded_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0 kind=%u\n",
+                    printf("[w4_guest] stage model_range_forward_runtime_input_loaded node=%u layers=[%u,%u) input_offset=0x%016" PRIx64 " input_checksum=0x%016" PRIx64 " bytes=%" PRIu64 " source=obmm_object_view target=uapi_object_ref materialize=none status=ok inline_payload=0 kind=%u\n",
                            dispatch_node + 1U,
                            layer_start,
                            layer_end,
@@ -12613,7 +12614,7 @@ decode_round_start:
                 }
                 if (previous_kv_state != 0) {
                     fprintf(stderr,
-                            "[w4_guest] fail qwen3 previous range kv state resolve failed node=%u step=%" PRIu64 " previous_step=%" PRIu64 " mode=exact_previous_step\n",
+                            "[w4_guest] fail model previous range kv state resolve failed node=%u step=%" PRIu64 " previous_step=%" PRIu64 " mode=exact_previous_step\n",
                             dispatch_node + 1U,
                             guest_decode_step,
                             requested_kv_source_step);
@@ -12629,7 +12630,7 @@ decode_round_start:
                                         W4_QWEN3_OBJECT_REF_BYTES);
                     object_ref_write_index++;
                     kv_loaded_ms = monotonic_ms();
-                    printf("[w4_guest] stage qwen3_range_kv_state_loaded node=%u step=%" PRIu64
+                    printf("[w4_guest] stage model_range_kv_state_loaded node=%u step=%" PRIu64
                            " previous_step=%" PRIu64
                            " kv_offset=0x%016" PRIx64 " kv_bytes=%" PRIu64
                            " kv_checksum=0x%016" PRIx64
@@ -12810,12 +12811,12 @@ decode_round_start:
                                 &runtime_forward) != 0) {
         goto out;
     }
-    qwen3_runtime_forward_ready =
+    model_runtime_forward_ready =
         w4_runtime_range_pipeline_enabled(cluster_node_count) &&
         runtime_forward.payload_bytes ==
             w4_runtime_handoff_hidden_bytes(guest_decode_step);
     verify_done_ms = monotonic_ms();
-    if (qwen3_runtime_forward_ready && enable_db_cluster) {
+    if (model_runtime_forward_ready && enable_db_cluster) {
         uint32_t dispatch_node = 0U;
         struct mem_service_obmm_range_flow_request range_request;
         bool memory_shortpath_engram_owner_selected = false;
@@ -12830,7 +12831,7 @@ decode_round_start:
                                                     cluster_node_count) != 0 ||
             !db_service_ready) {
             fprintf(stderr,
-                    "[w4_guest] fail qwen3 runtime range output publish unavailable role=%s\n",
+                    "[w4_guest] fail model runtime range output publish unavailable role=%s\n",
                     role);
             goto out;
         }
@@ -12838,14 +12839,14 @@ decode_round_start:
             w4_runtime_handoff_hidden_bytes(guest_decode_step);
         range_request.kv_state_bytes = runtime_forward.kv_payload_bytes;
         if (is_deepseek_v4_flash_profile()) {
-            goto qwen3_shortpath_publish_runtime_range;
+            goto model_publish_runtime_range;
         }
         {
             struct w4_qwen3_boundary_controller_result boundary_result;
 
             if (qwen3_boundary_controller_resolve_work_item(
                     &qwen3_memory_decision_config,
-                    &qwen3_sampler_config,
+                    &sampler_config,
                     &qwen3_engram_config,
                     dispatch_node,
                     cluster_node_count,
@@ -12860,7 +12861,7 @@ decode_round_start:
             if (boundary_result.action ==
                 W4_QWEN3_BOUNDARY_CONTROLLER_DEFER_TO_RANGE_FORWARD) {
                 memory_shortpath_engram_owner_selected = false;
-                goto qwen3_shortpath_publish_runtime_range;
+                goto model_publish_runtime_range;
             }
             if (boundary_result.action ==
                 W4_QWEN3_BOUNDARY_CONTROLLER_JUMP_TO_TERMINAL) {
@@ -12881,7 +12882,7 @@ decode_round_start:
                            boundary_result.lookup.match_score_milli,
                            qwen3_memory_decision_config.shortpath_lookup_mode,
                            qwen3_memory_decision_config.boundary_lookup_backend);
-                    goto qwen3_shortpath_publish_runtime_range;
+                    goto model_publish_runtime_range;
                 }
                 range_publish_start_ms = monotonic_ms();
                 if (mem_service_obmm_service_v0_publish_runtime_range_kv_state(
@@ -13018,7 +13019,7 @@ decode_round_start:
                            guest_decode_step,
                            boundary_result.lookup.terminal_logits_record.sampled_token);
                 }
-                qwen3_log_terminal_logits_observation(
+                model_log_terminal_logits_observation(
                     dispatch_node,
                     guest_decode_step,
                     &boundary_result.lookup.terminal_logits_record,
@@ -13063,10 +13064,10 @@ decode_round_start:
                        round_layer_start,
                        round_layer_end,
                        boundary_result.lookup.terminal_logits_record.sampled_token);
-                goto qwen3_after_compute_publish;
+                goto model_after_compute_publish;
             }
         }
-qwen3_shortpath_publish_runtime_range:
+model_publish_runtime_range:
         if (!qwen3_shortpath_terminal_committed) {
             range_publish_start_ms = monotonic_ms();
             if (mem_service_range_flow_publish_runtime_output(
@@ -13082,7 +13083,7 @@ qwen3_shortpath_publish_runtime_range:
                     runtime_forward.kv_payload_bytes,
                     runtime_forward.kv_payload_checksum) != 0) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 runtime range output publish failed role=%s\n",
+                        "[w4_guest] fail model runtime range output publish failed role=%s\n",
                         role);
                 goto out;
             }
@@ -13093,7 +13094,7 @@ qwen3_shortpath_publish_runtime_range:
             !memory_shortpath_engram_owner_selected &&
             dispatch_node == qwen3_engram_config.owner_node &&
             dispatch_node + 1U != cluster_node_count) {
-            struct w4_qwen3_terminal_token_record owner_candidates;
+            struct llm_terminal_token_record owner_candidates;
             struct w4_qwen3_engram_step_timing owner_engram_timing;
             uint64_t owner_selected_token = 0;
 
@@ -13121,7 +13122,7 @@ qwen3_shortpath_publish_runtime_range:
             uint64_t decode_step = guest_decode_step;
             uint64_t terminal_logits_decode_step =
                 qwen3_serving_effective_decode_step(decode_step);
-            struct w4_qwen3_terminal_token_record terminal_token;
+            struct llm_terminal_token_record terminal_token;
             uint64_t raw_sampled_token;
             uint64_t engram_selected_token;
             bool prefix_cache_suffix_replay_forced = false;
@@ -13129,18 +13130,18 @@ qwen3_shortpath_publish_runtime_range:
             if (terminal_publish_start_ms == 0) {
                 terminal_publish_start_ms = monotonic_ms();
             }
-            if (qwen3_read_terminal_token_record_for_step(ep_mmio,
+            if (model_read_terminal_token_record_for_step(ep_mmio,
                                                           terminal_logits_decode_step,
                                                           &terminal_token) != 0) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 terminal token record read failed"
+                        "[w4_guest] fail model terminal token record read failed"
                         " role=%s step=%" PRIu64 " logits_step=%" PRIu64 "\n",
                         role,
                         decode_step,
                         terminal_logits_decode_step);
                 goto out;
             }
-            if (llm_infer_apply_top_k_sampler(&qwen3_sampler_config,
+            if (llm_infer_apply_top_k_sampler(&sampler_config,
                                           &terminal_token,
                                           dispatch_node,
                                           decode_step,
@@ -13255,7 +13256,7 @@ qwen3_shortpath_publish_runtime_range:
                        terminal_token.sampled_token);
             }
 
-            qwen3_log_terminal_logits_observation(dispatch_node,
+            model_log_terminal_logits_observation(dispatch_node,
                                                   decode_step,
                                                   &terminal_token,
                                                   "uapi_real_logits");
@@ -13273,7 +13274,7 @@ qwen3_shortpath_publish_runtime_range:
                     terminal_token.piece_word0,
                     terminal_token.piece_word1) != 0) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 terminal token result publish failed role=%s\n",
+                        "[w4_guest] fail model terminal token result publish failed role=%s\n",
                         role);
                 goto out;
             }
@@ -13304,7 +13305,7 @@ qwen3_shortpath_publish_runtime_range:
             terminal_publish_done_ms = monotonic_ms();
         }
     }
-qwen3_after_compute_publish:
+model_after_compute_publish:
     publish_done_ms = monotonic_ms();
     if (terminal_publish_done_ms > terminal_publish_start_ms) {
         terminal_publish_ms = terminal_publish_done_ms - terminal_publish_start_ms;
@@ -13410,7 +13411,7 @@ qwen3_after_service_coverage:
         uint64_t unaccounted_ms = total_ms > accounted_ms ? total_ms - accounted_ms : 0ULL;
 
         if (qwen3_work_item_materialized || qwen3_shortpath_terminal_committed) {
-        printf("[w4_guest] stage qwen3_worker_timing local=%s step=%" PRIu64
+        printf("[w4_guest] stage model_worker_timing local=%s step=%" PRIu64
                " node=%u layers=[%u,%u) count=%u next=%u total_ms=%" PRIu64
                " terminal_gate_ms=%" PRIu64 " setup_ms=%" PRIu64
                " obmm_stage_ms=%" PRIu64
@@ -13459,7 +13460,7 @@ qwen3_after_service_coverage:
                barrier_ms,
                unaccounted_ms,
                ms_per_layer_milli);
-        printf("[w4_guest] stage qwen3_compute_window_breakdown local=%s"
+        printf("[w4_guest] stage model_compute_window_breakdown local=%s"
                " step=%" PRIu64 " node=%u layers=[%u,%u)"
                " compute_window_ms=%" PRIu64
                " backend_estimate_ms=%" PRIu64
@@ -13518,7 +13519,7 @@ qwen3_after_service_coverage:
                     round_done_done_ms - round_done_start_ms :
                     0;
 
-            printf("[w4_guest] stage qwen3_worker_handoff_timing local=%s step=%" PRIu64
+            printf("[w4_guest] stage model_worker_handoff_timing local=%s step=%" PRIu64
                    " node=%u source=%u next=%u layers=[%u,%u)"
                    " timebase=supernode_epoch_ms clock_offset_ms=%" PRId64
                    " input_wait_start_mono_ms=%" PRIu64
@@ -13618,7 +13619,7 @@ qwen3_after_service_coverage:
                    round_done_publish_ms);
         }
         } else {
-            printf("[w4_guest] stage qwen3_decode_round_idle_timing"
+            printf("[w4_guest] stage model_decode_round_idle_timing"
                    " local=%s step=%" PRIu64 " node=%u"
                    " terminal_observed=%u input_wait_ms=%" PRIu64
                    " round_done_ms=%" PRIu64
@@ -13681,12 +13682,12 @@ qwen3_after_service_coverage:
                                                        decode_round_scope_hash,
                                                        decode_round_barrier_timeout_ms) != 0) {
                 fprintf(stderr,
-                        "[w4_guest] fail qwen3 decode round barrier failed step=%" PRIu64 "\n",
+                        "[w4_guest] fail model decode round barrier failed step=%" PRIu64 "\n",
                         guest_decode_step);
                 goto out;
             }
             barrier_ms = monotonic_ms() - stage_start_ms;
-            printf("[w4_guest] stage qwen3_worker_barrier_timing local=%s step=%" PRIu64
+            printf("[w4_guest] stage model_worker_barrier_timing local=%s step=%" PRIu64
                    " node=%u barrier_ms=%" PRIu64 " total_with_barrier_ms=%" PRIu64 "\n",
                    role,
                    guest_decode_step,
@@ -13725,7 +13726,7 @@ out:
         qwen3_engram_config.token_projection = NULL;
         qwen3_engram_config.token_projection_count = 0;
     }
-    qwen3_range_runtime_forward_release(&runtime_forward);
+    model_range_runtime_forward_release(&runtime_forward);
     if (cq != MAP_FAILED) {
         munmap(cq, PAGE_SIZE_BYTES);
     }

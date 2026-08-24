@@ -108,18 +108,18 @@ impl LinquUbBridge {
             .map_err(|_| "read segment payload failed")
     }
 
-    fn register_qwen3_runtime_object_payload(
+    fn register_model_runtime_object_payload(
         &mut self,
         object_ref: LingquObmmObjectRefWire,
         payload: &[u8],
     ) -> Result<(), &'static str> {
         self.adapter
-            .register_qwen3_runtime_object_payload(
+            .register_model_runtime_object_payload(
                 object_ref,
                 payload.to_vec(),
                 "qemu_obmm_bridge_live_payload",
             )
-            .map_err(|_| "register qwen3 runtime object payload failed")
+            .map_err(|_| "register model runtime object payload failed")
     }
 
     fn ring_doorbell(
@@ -166,7 +166,7 @@ impl LinquUbBridge {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn linqu_ub_bridge_register_qwen3_runtime_object_payload(
+pub extern "C" fn linqu_ub_bridge_register_model_runtime_object_payload(
     ptr: *mut LinquUbBridge,
     object_ref_data: *const u8,
     object_ref_len: usize,
@@ -184,7 +184,7 @@ pub extern "C" fn linqu_ub_bridge_register_qwen3_runtime_object_payload(
     };
     match bridge_mut(ptr).and_then(|bridge| {
         bridge
-            .register_qwen3_runtime_object_payload(object_ref, payload)
+            .register_model_runtime_object_payload(object_ref, payload)
             .map(|_| 0)
             .map_err(|_| -1)
     }) {

@@ -191,7 +191,7 @@ use sim_topology::{SimTopology, TopologySnapshot};
 #[derive(Debug, Clone)]
 pub enum UapiDescriptor {
     Io(IoSubmitReq),
-    Qwen3RangeDispatch(Qwen3RangeDispatchReq),
+    ModelRangeDispatch(ModelRangeDispatchReq),
     BlockWriteback {
         block: BlockHash,
         task: Option<TaskKey>,
@@ -208,7 +208,7 @@ pub enum UapiDescriptor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Qwen3RangeDispatchReq {
+pub struct ModelRangeDispatchReq {
     pub op_id: u64,
     pub segment: SegmentHandle,
     pub task: TaskKey,
@@ -327,8 +327,8 @@ pub struct LocalGuestUapiSurface {
     db_service: DbServiceStub,
     object_service: LingquObjectServiceStub,
     segment_payloads: HashMap<SegmentHandle, Vec<u8>>,
-    qwen3_runtime_object_payloads:
-        HashMap<Qwen3RuntimeObjectCacheKey, Arc<Qwen3RuntimeObjectPayload>>,
+    model_runtime_object_payloads:
+        HashMap<ModelRuntimeObjectCacheKey, Arc<ModelRuntimeObjectPayload>>,
     block_payloads: HashMap<BlockHash, Vec<u8>>,
     next_segment_id: u64,
     next_cq_id: u32,
@@ -355,8 +355,8 @@ impl std::fmt::Debug for LocalGuestUapiSurface {
             .field("object_service", &self.object_service)
             .field("segment_payloads", &self.segment_payloads)
             .field(
-                "qwen3_runtime_object_payloads",
-                &self.qwen3_runtime_object_payloads.len(),
+                "model_runtime_object_payloads",
+                &self.model_runtime_object_payloads.len(),
             )
             .field("block_payloads", &self.block_payloads)
             .field("next_segment_id", &self.next_segment_id)
@@ -1002,7 +1002,7 @@ impl LocalGuestUapiSurface {
             db_service: DbServiceStub::new(db_profile),
             object_service: LingquObjectServiceStub::new(LingquObjectServiceProfile::default()),
             segment_payloads: HashMap::new(),
-            qwen3_runtime_object_payloads: HashMap::new(),
+            model_runtime_object_payloads: HashMap::new(),
             block_payloads: HashMap::new(),
             next_segment_id: 0,
             next_cq_id: 0,
@@ -1061,15 +1061,15 @@ impl LocalGuestUapiSurface {
         Ok(())
     }
 
-    pub fn register_qwen3_runtime_object_payload(
+    pub fn register_model_runtime_object_payload(
         &mut self,
         object_ref: LingquObmmObjectRefWire,
         bytes: Vec<u8>,
         source: impl Into<String>,
     ) -> Result<(), String> {
-        let payload = Qwen3RuntimeObjectPayload::from_live_obmm_bytes(object_ref, bytes, source)?;
-        self.qwen3_runtime_object_payloads.insert(
-            Qwen3RuntimeObjectCacheKey::from(&object_ref),
+        let payload = ModelRuntimeObjectPayload::from_live_obmm_bytes(object_ref, bytes, source)?;
+        self.model_runtime_object_payloads.insert(
+            ModelRuntimeObjectCacheKey::from(&object_ref),
             Arc::new(payload),
         );
         Ok(())
@@ -1097,14 +1097,14 @@ impl LocalGuestUapiSurface {
         Ok(())
     }
 
-    fn qwen3_runtime_object_payload_view(
+    fn model_runtime_object_payload_view(
         &self,
         object_ref: LingquObmmObjectRefWire,
-    ) -> Result<Option<Qwen3ObjectBackedOperandView>, String> {
-        self.qwen3_runtime_object_payloads
-            .get(&Qwen3RuntimeObjectCacheKey::from(&object_ref))
+    ) -> Result<Option<ModelObjectBackedOperandView>, String> {
+        self.model_runtime_object_payloads
+            .get(&ModelRuntimeObjectCacheKey::from(&object_ref))
             .cloned()
-            .map(Qwen3ObjectBackedOperandView::from_runtime_payload)
+            .map(ModelObjectBackedOperandView::from_runtime_payload)
             .transpose()
     }
 
@@ -1437,8 +1437,8 @@ impl LocalGuestUapiSurface {
                 self.bind_completion_route(CompletionSource::DbService, handle.0, cq);
                 Ok(handle.0)
             }
-            UapiDescriptor::Qwen3RangeDispatch(req) => {
-                let event = self.run_qwen3_range_dispatch(req)?;
+            UapiDescriptor::ModelRangeDispatch(req) => {
+                let event = self.run_model_range_dispatch(req)?;
                 let op_id = event.op_id;
                 self.enqueue_to_cq(cq, event)?;
                 Ok(op_id)
@@ -1698,9 +1698,9 @@ impl LocalGuestUapiSurface {
         })
     }
 
-    fn run_qwen3_range_dispatch(
+    fn run_model_range_dispatch(
         &mut self,
-        req: Qwen3RangeDispatchReq,
+        req: ModelRangeDispatchReq,
     ) -> Result<CompletionEvent, SimError> {
         let now = self.next_service_time();
         let timing_enabled = qwen3_range_stage_timing_enabled();
@@ -1724,7 +1724,7 @@ impl LocalGuestUapiSurface {
             let input = self
                 .segment_payloads
                 .get(&req.segment)
-                .ok_or_else(|| "missing_qwen3_range_dispatch_segment_payload".to_string())?;
+                .ok_or_else(|| "missing_model_range_dispatch_segment_payload".to_string())?;
             payload_lookup_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
@@ -1743,7 +1743,7 @@ impl LocalGuestUapiSurface {
 
             let started = Instant::now();
             let output =
-                run_qwen3_range_chipbackend(&self.topology, &req.task, input, operands.as_ref())?;
+                run_model_range_chipbackend(&self.topology, &req.task, input, operands.as_ref())?;
             backend_ms = qwen3_elapsed_ms(started);
             Ok(output)
         })();
@@ -1753,7 +1753,7 @@ impl LocalGuestUapiSurface {
             writeback_ms = qwen3_elapsed_ms(started);
         }
         if timing_enabled {
-            let contract = qwen3_guest_range_compute_contract(&req.task).ok().flatten();
+            let contract = model_range_compute_contract(&req.task).ok().flatten();
             let (node, layer_start, layer_end, terminal_owner) = contract
                 .map(|contract| {
                     (
@@ -1765,7 +1765,7 @@ impl LocalGuestUapiSurface {
                 })
                 .unwrap_or((0, 0, 0, false));
             eprintln!(
-                "qwen3-range-dispatch-timing: task_id={} node={} layers=[{},{}] terminal_owner={} segment={} total_ms={} payload_lookup_ms={} resolve_operands_ms={} validate_refs_ms={} backend_ms={} writeback_ms={} status={}",
+                "model-range-dispatch-timing: task_id={} node={} layers=[{},{}] terminal_owner={} segment={} total_ms={} payload_lookup_ms={} resolve_operands_ms={} validate_refs_ms={} backend_ms={} writeback_ms={} status={}",
                 req.task.task_id,
                 node,
                 layer_start,
@@ -1902,11 +1902,11 @@ fn run_deepseek_v4_flash_chipbackend(
     Ok(DISPATCH_RESULT_WORD.to_le_bytes().to_vec())
 }
 
-fn run_qwen3_range_chipbackend(
+fn run_model_range_chipbackend(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
     match std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE")
         .unwrap_or_else(|_| "host_vector".to_string())
@@ -2095,15 +2095,15 @@ pub const SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION: &str =
     "SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION";
 
 #[derive(Clone, Debug, Default)]
-struct Qwen3RangeDispatchOperands {
-    hidden_input: Option<Qwen3ObjectBackedOperandView>,
-    input_token: Option<Qwen3ObjectBackedOperandView>,
-    previous_kv: Option<Qwen3ObjectBackedOperandView>,
+struct ModelRangeDispatchOperands {
+    hidden_input: Option<ModelObjectBackedOperandView>,
+    input_token: Option<ModelObjectBackedOperandView>,
+    previous_kv: Option<ModelObjectBackedOperandView>,
     object_refs: Vec<LingquObmmObjectRefWire>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct Qwen3RuntimeObjectCacheKey {
+struct ModelRuntimeObjectCacheKey {
     object_kind: u16,
     owner_entity: u32,
     producer_entity: u32,
@@ -2114,7 +2114,7 @@ struct Qwen3RuntimeObjectCacheKey {
     payload_checksum: u64,
 }
 
-impl From<&LingquObmmObjectRefWire> for Qwen3RuntimeObjectCacheKey {
+impl From<&LingquObmmObjectRefWire> for ModelRuntimeObjectCacheKey {
     fn from(object_ref: &LingquObmmObjectRefWire) -> Self {
         Self {
             object_kind: object_ref.object_kind,
@@ -2130,13 +2130,13 @@ impl From<&LingquObmmObjectRefWire> for Qwen3RuntimeObjectCacheKey {
 }
 
 #[derive(Clone, Debug)]
-pub struct Qwen3RuntimeObjectPayload {
+pub struct ModelRuntimeObjectPayload {
     object_ref: LingquObmmObjectRefWire,
     bytes: Arc<[u8]>,
     source: String,
 }
 
-impl Qwen3RuntimeObjectPayload {
+impl ModelRuntimeObjectPayload {
     pub fn from_live_obmm_bytes(
         object_ref: LingquObmmObjectRefWire,
         bytes: Vec<u8>,
@@ -2144,10 +2144,10 @@ impl Qwen3RuntimeObjectPayload {
     ) -> Result<Self, String> {
         object_ref
             .validate()
-            .map_err(|err| format!("qwen3_runtime_object_ref_invalid:{err}"))?;
+            .map_err(|err| format!("model_runtime_object_ref_invalid:{err}"))?;
         if bytes.len() as u64 != object_ref.payload_bytes {
             return Err(format!(
-                "qwen3_runtime_object_payload_bytes_mismatch:got={}:expected={}",
+                "model_runtime_object_payload_bytes_mismatch:got={}:expected={}",
                 bytes.len(),
                 object_ref.payload_bytes
             ));
@@ -2155,7 +2155,7 @@ impl Qwen3RuntimeObjectPayload {
         let checksum = qwen3_dense_reference_range_object_payload_checksum(&bytes);
         if checksum != object_ref.payload_checksum {
             return Err(format!(
-                "qwen3_runtime_object_payload_checksum_mismatch:got={checksum:#x}:expected={:#x}",
+                "model_runtime_object_payload_checksum_mismatch:got={checksum:#x}:expected={:#x}",
                 object_ref.payload_checksum
             ));
         }
@@ -2180,22 +2180,22 @@ impl Qwen3RuntimeObjectPayload {
 }
 
 #[derive(Clone, Debug)]
-struct Qwen3ObjectBackedOperandView {
+struct ModelObjectBackedOperandView {
     object_ref: LingquObmmObjectRefWire,
-    backing: Qwen3ObjectPayloadBacking,
+    backing: ModelObjectPayloadBacking,
     payload_range: Range<usize>,
 }
 
-impl Qwen3ObjectBackedOperandView {
+impl ModelObjectBackedOperandView {
     fn from_backing(
         object_ref: LingquObmmObjectRefWire,
-        backing: Qwen3ObjectPayloadBacking,
+        backing: ModelObjectPayloadBacking,
         payload_range: Range<usize>,
     ) -> Result<Self, String> {
         let backing_len = backing.bytes().len();
         if payload_range.start > payload_range.end || payload_range.end > backing_len {
             return Err(format!(
-                "qwen3_object_backed_operand_range_invalid:start={}:end={}:backing={backing_len}",
+                "model_object_backed_operand_range_invalid:start={}:end={}:backing={backing_len}",
                 payload_range.start, payload_range.end
             ));
         }
@@ -2213,37 +2213,37 @@ impl Qwen3ObjectBackedOperandView {
     ) -> Result<Self, String> {
         Self::from_backing(
             object_ref,
-            Qwen3ObjectPayloadBacking::MappedFile(mapped_file),
+            ModelObjectPayloadBacking::MappedFile(mapped_file),
             payload_range,
         )
     }
 
-    fn from_runtime_payload(payload: Arc<Qwen3RuntimeObjectPayload>) -> Result<Self, String> {
+    fn from_runtime_payload(payload: Arc<ModelRuntimeObjectPayload>) -> Result<Self, String> {
         let len = payload.bytes().len();
         Self::from_backing(
             *payload.object_ref(),
-            Qwen3ObjectPayloadBacking::RuntimeObject(payload),
+            ModelObjectPayloadBacking::RuntimeObject(payload),
             0..len,
         )
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn is_mapped(&self) -> bool {
-        matches!(self.backing, Qwen3ObjectPayloadBacking::MappedFile(_))
+        matches!(self.backing, ModelObjectPayloadBacking::MappedFile(_))
     }
 
     fn is_object_backed(&self) -> bool {
         matches!(
             self.backing,
-            Qwen3ObjectPayloadBacking::MappedFile(_) | Qwen3ObjectPayloadBacking::RuntimeObject(_)
+            ModelObjectPayloadBacking::MappedFile(_) | ModelObjectPayloadBacking::RuntimeObject(_)
         )
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn backing_path(&self) -> Option<&Path> {
         match &self.backing {
-            Qwen3ObjectPayloadBacking::MappedFile(file) => Some(file.path()),
-            Qwen3ObjectPayloadBacking::RuntimeObject(_) => None,
+            ModelObjectPayloadBacking::MappedFile(file) => Some(file.path()),
+            ModelObjectPayloadBacking::RuntimeObject(_) => None,
         }
     }
 
@@ -2257,16 +2257,16 @@ impl Qwen3ObjectBackedOperandView {
 }
 
 #[derive(Clone, Debug)]
-enum Qwen3ObjectPayloadBacking {
+enum ModelObjectPayloadBacking {
     MappedFile(Arc<Qwen3MappedFile>),
-    RuntimeObject(Arc<Qwen3RuntimeObjectPayload>),
+    RuntimeObject(Arc<ModelRuntimeObjectPayload>),
 }
 
-impl Qwen3ObjectPayloadBacking {
+impl ModelObjectPayloadBacking {
     fn bytes(&self) -> &[u8] {
         match self {
-            Qwen3ObjectPayloadBacking::MappedFile(file) => file.bytes(),
-            Qwen3ObjectPayloadBacking::RuntimeObject(payload) => payload.bytes(),
+            ModelObjectPayloadBacking::MappedFile(file) => file.bytes(),
+            ModelObjectPayloadBacking::RuntimeObject(payload) => payload.bytes(),
         }
     }
 }
@@ -2326,17 +2326,17 @@ impl Qwen3MappedFile {
 }
 
 fn resolve_qwen3_range_dispatch_operands(
-    req: &Qwen3RangeDispatchReq,
+    req: &ModelRangeDispatchReq,
     segment_payload: &[u8],
     surface: &LocalGuestUapiSurface,
-) -> Result<Option<Qwen3RangeDispatchOperands>, String> {
+) -> Result<Option<ModelRangeDispatchOperands>, String> {
     if req.object_ref_count == 0 {
         return Ok(None);
     }
-    let contract = qwen3_guest_range_compute_contract(&req.task)?
-        .ok_or_else(|| "qwen3_range_dispatch_object_refs_require_range_contract".to_string())?;
-    let refs = qwen3_range_dispatch_object_refs(req, segment_payload)?;
-    let mut operands = Qwen3RangeDispatchOperands::default();
+    let contract = model_range_compute_contract(&req.task)?
+        .ok_or_else(|| "model_range_dispatch_object_refs_require_range_contract".to_string())?;
+    let refs = model_range_dispatch_object_refs(req, segment_payload)?;
+    let mut operands = ModelRangeDispatchOperands::default();
 
     for object_ref in refs {
         operands.object_refs.push(object_ref);
@@ -2353,7 +2353,7 @@ fn resolve_qwen3_range_dispatch_operands(
                         object_ref.payload_bytes
                     ));
                 }
-                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                let operand = model_runtime_object_payload_view(object_ref, surface)?;
                 if !operand.is_object_backed() {
                     return Err("qwen3_range_dispatch_hidden_operand_not_object_backed".to_string());
                 }
@@ -2384,7 +2384,7 @@ fn resolve_qwen3_range_dispatch_operands(
                         object_ref.payload_bytes
                     ));
                 }
-                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                let operand = model_runtime_object_payload_view(object_ref, surface)?;
                 if !operand.is_object_backed() {
                     return Err("qwen3_range_dispatch_token_operand_not_object_backed".to_string());
                 }
@@ -2404,7 +2404,7 @@ fn resolve_qwen3_range_dispatch_operands(
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let payload_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "qwen3_range_dispatch_kv_object_bytes_too_large".to_string())?;
-                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                let operand = model_runtime_object_payload_view(object_ref, surface)?;
                 if !operand.is_object_backed() {
                     return Err("qwen3_range_dispatch_kv_operand_not_object_backed".to_string());
                 }
@@ -2437,15 +2437,15 @@ fn resolve_qwen3_range_dispatch_operands(
 }
 
 fn resolve_deepseek_v4_flash_range_dispatch_operands(
-    req: &Qwen3RangeDispatchReq,
+    req: &ModelRangeDispatchReq,
     segment_payload: &[u8],
     surface: &LocalGuestUapiSurface,
-) -> Result<Option<Qwen3RangeDispatchOperands>, String> {
+) -> Result<Option<ModelRangeDispatchOperands>, String> {
     if req.object_ref_count == 0 {
         return Ok(None);
     }
-    let refs = qwen3_range_dispatch_object_refs(req, segment_payload)?;
-    let mut operands = Qwen3RangeDispatchOperands::default();
+    let refs = model_range_dispatch_object_refs(req, segment_payload)?;
+    let mut operands = ModelRangeDispatchOperands::default();
 
     for object_ref in refs {
         operands.object_refs.push(object_ref);
@@ -2455,7 +2455,7 @@ fn resolve_deepseek_v4_flash_range_dispatch_operands(
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
                 let expected_len = usize::try_from(object_ref.payload_bytes)
                     .map_err(|_| "deepseek_v4_flash_kv_operand_bytes_too_large".to_string())?;
-                let operand = qwen3_runtime_object_payload_view(object_ref, surface)?;
+                let operand = model_runtime_object_payload_view(object_ref, surface)?;
                 if !operand.is_object_backed() || operand.bytes().len() != expected_len {
                     return Err(format!(
                         "deepseek_v4_flash_kv_operand_invalid:got={}:expected={expected_len}",
@@ -2474,25 +2474,25 @@ fn resolve_deepseek_v4_flash_range_dispatch_operands(
     Ok(Some(operands))
 }
 
-fn qwen3_range_dispatch_object_refs(
-    req: &Qwen3RangeDispatchReq,
+fn model_range_dispatch_object_refs(
+    req: &ModelRangeDispatchReq,
     segment_payload: &[u8],
 ) -> Result<Vec<LingquObmmObjectRefWire>, String> {
     let table_offset = usize::try_from(req.object_ref_table_offset)
-        .map_err(|_| "qwen3_range_dispatch_object_ref_offset_too_large".to_string())?;
+        .map_err(|_| "model_range_dispatch_object_ref_offset_too_large".to_string())?;
     let ref_count = usize::try_from(req.object_ref_count)
-        .map_err(|_| "qwen3_range_dispatch_object_ref_count_too_large".to_string())?;
+        .map_err(|_| "model_range_dispatch_object_ref_count_too_large".to_string())?;
     let table_bytes = ref_count
         .checked_mul(LingquObmmObjectRefWire::BYTE_LEN)
-        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_overflow".to_string())?;
+        .ok_or_else(|| "model_range_dispatch_object_ref_table_overflow".to_string())?;
     let table_end = table_offset
         .checked_add(table_bytes)
-        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_end_overflow".to_string())?;
+        .ok_or_else(|| "model_range_dispatch_object_ref_table_end_overflow".to_string())?;
     let table = segment_payload
         .get(table_offset..table_end)
         .ok_or_else(|| {
             format!(
-                "qwen3_range_dispatch_object_ref_table_oob:offset={table_offset:#x}:count={ref_count}"
+                "model_range_dispatch_object_ref_table_oob:offset={table_offset:#x}:count={ref_count}"
             )
         })?;
     let mut refs = Vec::with_capacity(ref_count);
@@ -2501,10 +2501,10 @@ fn qwen3_range_dispatch_object_refs(
         let object_ref = LingquObmmObjectRefWire::from_le_bytes(
             &table[ref_start..ref_start + LingquObmmObjectRefWire::BYTE_LEN],
         )
-        .map_err(|err| format!("qwen3_range_dispatch_object_ref_parse:{index}:{err}"))?;
+        .map_err(|err| format!("model_range_dispatch_object_ref_parse:{index}:{err}"))?;
         object_ref
             .validate()
-            .map_err(|err| format!("qwen3_range_dispatch_object_ref_invalid:{index}:{err}"))?;
+            .map_err(|err| format!("model_range_dispatch_object_ref_invalid:{index}:{err}"))?;
         refs.push(object_ref);
     }
     Ok(refs)
@@ -2629,7 +2629,7 @@ fn qwen3_object_registry_get_from_dir(
 fn qwen3_object_registry_view_from_dir(
     registry_dir: &Path,
     object_ref: LingquObmmObjectRefWire,
-) -> Result<Qwen3ObjectBackedOperandView, String> {
+) -> Result<ModelObjectBackedOperandView, String> {
     let path = qwen3_object_registry_path_in_dir(registry_dir, &object_ref);
     let mapped_file = qwen3_map_file_read_only(&path)
         .map_err(|err| format!("qwen3_object_registry_map_failed:{}:{err}", path.display()))?;
@@ -2648,7 +2648,7 @@ fn qwen3_object_registry_view_from_dir(
             object_ref.payload_checksum
         ));
     }
-    Qwen3ObjectBackedOperandView::from_mapped_file(object_ref, mapped_file, 0..payload_len)
+    ModelObjectBackedOperandView::from_mapped_file(object_ref, mapped_file, 0..payload_len)
 }
 
 fn qwen3_map_file_read_only(path: &Path) -> Result<Arc<Qwen3MappedFile>, String> {
@@ -3253,7 +3253,7 @@ fn qwen3_object_service_snapshot_put_with_metadata(
 fn qwen3_object_service_payload_index_view_from_path(
     snapshot_path: &Path,
     object_ref: LingquObmmObjectRefWire,
-) -> Result<Qwen3ObjectBackedOperandView, String> {
+) -> Result<ModelObjectBackedOperandView, String> {
     qwen3_object_service_payload_index_view_from_path_with_version_policy(
         snapshot_path,
         object_ref,
@@ -3265,7 +3265,7 @@ fn qwen3_object_service_payload_index_view_from_path_with_version_policy(
     snapshot_path: &Path,
     object_ref: LingquObmmObjectRefWire,
     require_version_match: bool,
-) -> Result<Qwen3ObjectBackedOperandView, String> {
+) -> Result<ModelObjectBackedOperandView, String> {
     let index_path = qwen3_object_service_payload_index_path(snapshot_path);
     let mapped_file = qwen3_map_file_read_only(&index_path).map_err(|err| {
         format!(
@@ -3351,7 +3351,7 @@ fn qwen3_object_service_payload_index_view_from_path_with_version_policy(
                 object_ref.payload_checksum
             ));
         }
-        return Qwen3ObjectBackedOperandView::from_mapped_file(
+        return ModelObjectBackedOperandView::from_mapped_file(
             object_ref,
             mapped_file,
             payload_start..payload_end,
@@ -3589,13 +3589,13 @@ fn qwen3_w5_prefix_cache_kv_stream_contains_ref(object_ref: &LingquObmmObjectRef
     })
 }
 
-fn qwen3_runtime_object_payload_view(
+fn model_runtime_object_payload_view(
     object_ref: LingquObmmObjectRefWire,
     surface: &LocalGuestUapiSurface,
-) -> Result<Qwen3ObjectBackedOperandView, String> {
+) -> Result<ModelObjectBackedOperandView, String> {
     let mut snapshot_index_error: Option<String> = None;
 
-    if let Some(view) = surface.qwen3_runtime_object_payload_view(object_ref)? {
+    if let Some(view) = surface.model_runtime_object_payload_view(object_ref)? {
         return Ok(view);
     }
     if let Some(snapshot_path) = qwen3_object_service_snapshot_path() {
@@ -3637,7 +3637,7 @@ fn qwen3_runtime_object_payload_view(
         return Err(err);
     }
     Err(format!(
-        "qwen3_runtime_object_payload_view_unresolved:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:hint=register_live_obmm_payload_or_set_explicit_object_service_snapshot_or_registry",
+        "model_runtime_object_payload_view_unresolved:kind={}:version={}:key_hash={:#x}:bytes={}:checksum={:#x}:hint=register_live_obmm_payload_or_set_explicit_object_service_snapshot_or_registry",
         object_ref.object_kind,
         object_ref.object_version,
         object_ref.key_hash,
@@ -4577,7 +4577,7 @@ fn qwen3_dense_runtime_decode_step_from_guest_input(guest_input: &[u8]) -> u64 {
 
 fn qwen3_range_forward_registry_decode_step(
     model_key: &str,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
 ) -> u64 {
     static RANGE_FORWARD_STEPS: OnceLock<Mutex<HashMap<(String, u32, u32, u32, u32), u64>>> =
         OnceLock::new();
@@ -4627,7 +4627,7 @@ fn qwen3_range_forward_hidden_tensor_metadata(
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn qwen3_register_range_forward_objects(
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     _guest_input: &[u8],
     summary: &Qwen3DenseReferenceRangeForwardSummary,
 ) -> Result<Option<Qwen3RangeForwardObjectRefs>, String> {
@@ -4642,7 +4642,7 @@ fn qwen3_register_range_forward_objects(
 }
 
 fn qwen3_register_range_forward_objects_for_step(
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     summary: &Qwen3DenseReferenceRangeForwardSummary,
     decode_step: u64,
 ) -> Result<Option<Qwen3RangeForwardObjectRefs>, String> {
@@ -5062,7 +5062,7 @@ fn qwen3_w5_terminal_logits_payload(
 }
 
 fn qwen3_enqueue_w5_memory_runtime_commit(
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     refs: Qwen3RangeForwardObjectRefs,
     logits_descriptor: Option<Qwen3DenseReferenceLogitsDescriptor>,
 ) -> Result<(), String> {
@@ -5108,7 +5108,7 @@ fn qwen3_commit_w5_memory_runtime_artifacts(
     object_store_path: PathBuf,
     run_id: String,
     model: sim_memory::InferenceModelBinding,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     refs: Qwen3RangeForwardObjectRefs,
     logits_descriptor: Option<Qwen3DenseReferenceLogitsDescriptor>,
     created_at_us: u64,
@@ -5608,7 +5608,7 @@ fn qwen3_dense_profile_validate_weights_if_available(topology: &SimTopology) -> 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Qwen3GuestRangeComputeContract {
+struct ModelRangeComputeContract {
     node: u32,
     layer_start: u32,
     layer_end: u32,
@@ -5618,15 +5618,15 @@ struct Qwen3GuestRangeComputeContract {
     hidden_bytes: u32,
 }
 
-fn qwen3_guest_range_compute_contract(
+fn model_range_compute_contract(
     task: &TaskKey,
-) -> Result<Option<Qwen3GuestRangeComputeContract>, String> {
+) -> Result<Option<ModelRangeComputeContract>, String> {
     const RANGE_TASK_MAGIC: u32 = 0x5133_060b;
 
     if task.scope_depth != 8 || task.coord.levels[0] != RANGE_TASK_MAGIC {
         return Ok(None);
     }
-    let contract = Qwen3GuestRangeComputeContract {
+    let contract = ModelRangeComputeContract {
         node: task.coord.levels[1],
         layer_start: task.coord.levels[2],
         layer_end: task.coord.levels[3],
@@ -5681,7 +5681,7 @@ fn qwen3_guest_range_compute_contract(
         || contract.hidden_bytes == 0
     {
         return Err(format!(
-            "qwen3_guest_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
+            "model_range_compute_contract_invalid:node={} layers=[{},{}) next={} nodes={} total_layers={} hidden_bytes={}",
             contract.node,
             contract.layer_start,
             contract.layer_end,
@@ -5695,11 +5695,11 @@ fn qwen3_guest_range_compute_contract(
 }
 
 fn validate_qwen3_range_dispatch_object_refs(
-    req: &Qwen3RangeDispatchReq,
+    req: &ModelRangeDispatchReq,
     segment_payload: &[u8],
 ) -> Result<(), String> {
-    let contract = qwen3_guest_range_compute_contract(&req.task)?
-        .ok_or_else(|| "qwen3_range_dispatch_object_refs_require_range_contract".to_string())?;
+    let contract = model_range_compute_contract(&req.task)?
+        .ok_or_else(|| "model_range_dispatch_object_refs_require_range_contract".to_string())?;
     let previous_kv_header = segment_payload.get(
         QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
             ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
@@ -5719,20 +5719,20 @@ fn validate_qwen3_range_dispatch_object_refs(
         return Ok(());
     }
     let table_offset = usize::try_from(req.object_ref_table_offset)
-        .map_err(|_| "qwen3_range_dispatch_object_ref_offset_too_large".to_string())?;
+        .map_err(|_| "model_range_dispatch_object_ref_offset_too_large".to_string())?;
     let ref_count = usize::try_from(req.object_ref_count)
-        .map_err(|_| "qwen3_range_dispatch_object_ref_count_too_large".to_string())?;
+        .map_err(|_| "model_range_dispatch_object_ref_count_too_large".to_string())?;
     let table_bytes = ref_count
         .checked_mul(LingquObmmObjectRefWire::BYTE_LEN)
-        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_overflow".to_string())?;
+        .ok_or_else(|| "model_range_dispatch_object_ref_table_overflow".to_string())?;
     let table_end = table_offset
         .checked_add(table_bytes)
-        .ok_or_else(|| "qwen3_range_dispatch_object_ref_table_end_overflow".to_string())?;
+        .ok_or_else(|| "model_range_dispatch_object_ref_table_end_overflow".to_string())?;
     let table = segment_payload
         .get(table_offset..table_end)
         .ok_or_else(|| {
             format!(
-                "qwen3_range_dispatch_object_ref_table_oob:offset={table_offset:#x}:count={ref_count}"
+                "model_range_dispatch_object_ref_table_oob:offset={table_offset:#x}:count={ref_count}"
             )
         })?;
 
@@ -5748,10 +5748,10 @@ fn validate_qwen3_range_dispatch_object_refs(
         let object_ref = LingquObmmObjectRefWire::from_le_bytes(
             &table[ref_start..ref_start + LingquObmmObjectRefWire::BYTE_LEN],
         )
-        .map_err(|err| format!("qwen3_range_dispatch_object_ref_parse:{index}:{err}"))?;
+        .map_err(|err| format!("model_range_dispatch_object_ref_parse:{index}:{err}"))?;
         object_ref
             .validate()
-            .map_err(|err| format!("qwen3_range_dispatch_object_ref_invalid:{index}:{err}"))?;
+            .map_err(|err| format!("model_range_dispatch_object_ref_invalid:{index}:{err}"))?;
         match object_ref.object_kind {
             QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT => {
                 if contract.layer_start == 0 {
@@ -5906,7 +5906,7 @@ fn run_qwen3_dense_profile_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
     let timing_enabled = qwen3_range_stage_timing_enabled();
     let total_started = Instant::now();
@@ -5927,7 +5927,7 @@ fn run_qwen3_dense_profile_runtime(
     qwen3_dense_profile_validate_weights_if_available(topology)?;
     validate_weights_ms = qwen3_elapsed_ms(started);
     let started = Instant::now();
-    let Some(contract) = qwen3_guest_range_compute_contract(task)? else {
+    let Some(contract) = model_range_compute_contract(task)? else {
         return Err("qwen3_dense_profile_runtime_requires_range_contract".to_string());
     };
     contract_ms = qwen3_elapsed_ms(started);
@@ -6408,7 +6408,7 @@ fn run_deepseek_v4_flash_real_range_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
     run_deepseek_v4_flash_range_runtime_with_engine(
         topology,
@@ -6423,7 +6423,7 @@ fn run_deepseek_v4_flash_simpler_range_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
     run_deepseek_v4_flash_range_runtime_with_engine(
         topology,
@@ -6438,14 +6438,14 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
     engine: DeepseekRangeEngine,
 ) -> Result<Vec<u8>, String> {
     let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
     if topology.ubpus.is_empty() {
         return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
     }
-    let contract = qwen3_guest_range_compute_contract(task)?
+    let contract = model_range_compute_contract(task)?
         .ok_or_else(|| "deepseek_v4_flash_range_contract_missing".to_string())?;
     let all_token_ids = qwen3_dense_reference_guest_input_token_ids(guest_input);
     if all_token_ids.is_empty() {
@@ -6858,7 +6858,7 @@ fn deepseek_v4_flash_decode_slice_inputs(
     decode_step: u64,
     all_token_ids: &[i32],
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<(Vec<i32>, Vec<i32>, Option<Vec<u8>>, u32), String> {
     if decode_step == 0 {
         if all_token_ids.is_empty() {
@@ -7282,13 +7282,13 @@ fn run_deepseek_v4_flash_geometry_smoke_range_runtime(
     topology: &SimTopology,
     task: &TaskKey,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<Vec<u8>, String> {
     let profile = deepseek_v4_flash::DEEPSEEK_V4_FLASH_PROFILE;
     if topology.ubpus.is_empty() {
         return Err("deepseek_v4_flash_missing_ubpu_node".to_string());
     }
-    let contract = qwen3_guest_range_compute_contract(task)?
+    let contract = model_range_compute_contract(task)?
         .ok_or_else(|| "deepseek_v4_flash_range_contract_missing".to_string())?;
     let hidden_len = usize::try_from(contract.hidden_bytes)
         .map_err(|_| "deepseek_v4_flash_hidden_bytes_too_large".to_string())?;
@@ -7493,7 +7493,7 @@ fn run_deepseek_v4_flash_geometry_smoke_range_runtime(
 }
 
 fn qwen3_dense_profile_range_input_checksum(
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
 ) -> u64 {
     const RANGE_INPUT_PAYLOAD_OFFSET: usize = 0x08_0000;
@@ -7517,14 +7517,14 @@ fn qwen3_dense_profile_range_input_checksum(
 }
 
 fn qwen3_dense_profile_range_input_checksum_with_operands(
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<u64, String> {
     if contract.layer_start > 0 {
         if let Some(payload) = operands
             .and_then(|operands| operands.hidden_input.as_ref())
-            .map(Qwen3ObjectBackedOperandView::bytes)
+            .map(ModelObjectBackedOperandView::bytes)
         {
             let expected_len = usize::try_from(contract.hidden_bytes)
                 .map_err(|_| "qwen3_dense_profile_hidden_bytes_too_large".to_string())?;
@@ -7546,7 +7546,7 @@ fn qwen3_dense_profile_range_input_checksum_with_operands(
 fn qwen3_dense_profile_deterministic_payload(
     len: usize,
     seed: u64,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
 ) -> Vec<u8> {
     let mut payload = vec![0u8; len];
     let mut state = checksum_words(&[
@@ -7569,9 +7569,9 @@ fn qwen3_dense_profile_deterministic_payload(
 
 fn qwen3_dense_profile_real_range_forward(
     profile: &Qwen3DenseReferenceProfile,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
     hidden_len: usize,
     kv_state_len: usize,
 ) -> Result<Option<Qwen3DenseProfileRuntimeForward>, String> {
@@ -7792,13 +7792,13 @@ fn qwen3_dense_profile_input_sequence_from_guest_payload(
 fn qwen3_dense_profile_input_sequence_from_operands(
     profile: &Qwen3DenseReferenceProfile,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
     hidden_len: usize,
     token_count: usize,
 ) -> Result<Vec<Vec<f32>>, String> {
     if let Some(payload) = operands
         .and_then(|operands| operands.hidden_input.as_ref())
-        .map(Qwen3ObjectBackedOperandView::bytes)
+        .map(ModelObjectBackedOperandView::bytes)
     {
         if payload.len() != hidden_len {
             return Err(format!(
@@ -7922,7 +7922,7 @@ fn qwen3_dense_profile_current_hidden_from_guest_payload(
 
 fn qwen3_dense_profile_sampled_token_from_operand(
     profile: &Qwen3DenseReferenceProfile,
-    operand: &Qwen3ObjectBackedOperandView,
+    operand: &ModelObjectBackedOperandView,
 ) -> Result<u64, String> {
     let payload = operand.bytes();
     if payload.len() != 64 {
@@ -7948,12 +7948,12 @@ fn qwen3_dense_profile_sampled_token_from_operand(
 fn qwen3_dense_profile_current_hidden_from_operands(
     profile: &Qwen3DenseReferenceProfile,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
     hidden_len: usize,
 ) -> Result<Vec<f32>, String> {
     if let Some(payload) = operands
         .and_then(|operands| operands.hidden_input.as_ref())
-        .map(Qwen3ObjectBackedOperandView::bytes)
+        .map(ModelObjectBackedOperandView::bytes)
     {
         if payload.len() != hidden_len {
             return Err(format!(
@@ -7973,7 +7973,7 @@ fn qwen3_dense_profile_current_hidden_from_operands(
 
 fn qwen3_dense_profile_previous_kv_cache_from_guest_payload(
     profile: &Qwen3DenseReferenceProfile,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
 ) -> Result<Option<Vec<Qwen3DenseReferenceLayerKvCache>>, String> {
     let Some(header) = guest_input.get(
@@ -8026,13 +8026,13 @@ fn qwen3_dense_profile_previous_kv_cache_from_guest_payload(
 
 fn qwen3_dense_profile_previous_kv_cache_from_operands(
     profile: &Qwen3DenseReferenceProfile,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
-    operands: Option<&Qwen3RangeDispatchOperands>,
+    operands: Option<&ModelRangeDispatchOperands>,
 ) -> Result<Option<Vec<Qwen3DenseReferenceLayerKvCache>>, String> {
     if let Some(payload) = operands
         .and_then(|operands| operands.previous_kv.as_ref())
-        .map(Qwen3ObjectBackedOperandView::bytes)
+        .map(ModelObjectBackedOperandView::bytes)
     {
         if payload.is_empty() {
             return Ok(None);
@@ -18428,6 +18428,27 @@ impl HostQuantizedGemmRunner {
 
 /// Execute one DeepSeek Q8_0 matrix projection through the simulator's
 /// production simpler C API path.
+const HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET: usize = 12_288;
+
+fn host_q8_block_dot_output_ranges(k: usize, n: usize) -> Result<Vec<Range<usize>>, String> {
+    let blocks = k / 32;
+    let tiles_per_chunk = HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET
+        .checked_div(blocks)
+        .filter(|tiles| *tiles > 0)
+        .ok_or_else(|| {
+            format!(
+                "simpler Q8 block-dot K exceeds scope task budget:k={k}:blocks={blocks}:budget={HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET}"
+            )
+        })?;
+    let rows_per_chunk = tiles_per_chunk
+        .checked_mul(128)
+        .ok_or_else(|| "simpler Q8 block-dot chunk rows overflow".to_string())?;
+    Ok((0..n)
+        .step_by(rows_per_chunk)
+        .map(|start| start..(start + rows_per_chunk).min(n))
+        .collect())
+}
+
 pub fn execute_deepseek_q8_projection_through_simpler(
     topology: &SimTopology,
     task: &TaskKey,
@@ -18451,35 +18472,58 @@ pub fn execute_deepseek_q8_projection_through_simpler(
         ));
     }
 
-    ensure_simpler_host_q8_block_dot_manifest(manifest_path, (k / 32) as u64, n as u64)?;
     let activation = quantize_q8_0_activation(input)?;
     let blocks = k / 32;
-    let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
-        topology,
-        manifest_path,
-        blocks,
-        n,
-        segment_base,
-    )?;
-    let mut weight_blocks = Vec::with_capacity(blocks * 32 * n);
-    let mut weight_scales = Vec::with_capacity(blocks * n);
-    for block in 0..blocks {
-        let (weight_block, block_scales) = q8_0_weight_block_kxn(q8_weight, dimensions, block)?;
-        weight_blocks.extend_from_slice(&weight_block);
-        weight_scales.extend_from_slice(&block_scales);
+    let row_bytes = blocks
+        .checked_mul(34)
+        .ok_or_else(|| "simpler Q8 block-dot row bytes overflow".to_string())?;
+    let expected_weight_bytes = n
+        .checked_mul(row_bytes)
+        .ok_or_else(|| "simpler Q8 block-dot weight bytes overflow".to_string())?;
+    if q8_weight.len() != expected_weight_bytes {
+        return Err(format!(
+            "simpler Q8 block-dot weight size mismatch:actual={}:expected={expected_weight_bytes}",
+            q8_weight.len()
+        ));
     }
-    let dots = runner.run(
-        task,
-        activation.values.iter().map(|value| *value as u8).collect(),
-        weight_blocks,
-    )?;
-    let mut output = vec![0.0f32; n];
-    for block in 0..blocks {
-        for output_index in 0..n {
-            let partial = block * n + output_index;
-            output[output_index] +=
-                activation.scales[block] * weight_scales[partial] * dots[partial] as f32;
+
+    let mut output = Vec::with_capacity(n);
+    for range in host_q8_block_dot_output_ranges(k, n)? {
+        let chunk_n = range.len();
+        let chunk_dimensions = [k as u64, chunk_n as u64];
+        let weight_start = range.start * row_bytes;
+        let weight_end = range.end * row_bytes;
+        let chunk_weight = &q8_weight[weight_start..weight_end];
+        ensure_simpler_host_q8_block_dot_manifest(manifest_path, blocks as u64, chunk_n as u64)?;
+        let mut runner = HostQuantizedGemmRunner::new_q8_block_dot(
+            topology,
+            manifest_path,
+            blocks,
+            chunk_n,
+            segment_base,
+        )?;
+        let mut weight_blocks = Vec::with_capacity(blocks * 32 * chunk_n);
+        let mut weight_scales = Vec::with_capacity(blocks * chunk_n);
+        for block in 0..blocks {
+            let (weight_block, block_scales) =
+                q8_0_weight_block_kxn(chunk_weight, &chunk_dimensions, block)?;
+            weight_blocks.extend_from_slice(&weight_block);
+            weight_scales.extend_from_slice(&block_scales);
         }
+        let dots = runner.run(
+            task,
+            activation.values.iter().map(|value| *value as u8).collect(),
+            weight_blocks,
+        )?;
+        let mut chunk_output = vec![0.0f32; chunk_n];
+        for block in 0..blocks {
+            for output_index in 0..chunk_n {
+                let partial = block * chunk_n + output_index;
+                chunk_output[output_index] +=
+                    activation.scales[block] * weight_scales[partial] * dots[partial] as f32;
+            }
+        }
+        output.extend(chunk_output);
     }
     Ok(output)
 }
@@ -20436,7 +20480,7 @@ fn run_qwen3_dense_reference_prefill_runtime(
     const SEGMENTS_PER_TILE: u64 = 32;
 
     let timing_enabled = std::env::var("SIM_QWEN3_STAGE_TIMING").as_deref() == Ok("1");
-    let range_compute_contract = qwen3_guest_range_compute_contract(task)?;
+    let range_compute_contract = model_range_compute_contract(task)?;
     let timing_start = Instant::now();
     let mut timing_last = timing_start;
     macro_rules! qwen3_stage_timing_mark {
@@ -25474,7 +25518,7 @@ fn qwen3_dense_reference_engram_context_report_from_reference(
 }
 
 fn qwen3_dense_reference_engram_context_report_line(
-    contract: &Qwen3GuestRangeComputeContract,
+    contract: &ModelRangeComputeContract,
     step: u64,
     report: &Qwen3DenseReferenceEngramContextReport,
 ) -> String {
@@ -25651,7 +25695,7 @@ fn qwen3_engram_context_f32_within_ulp(got: f32, expected: f32, max_ulp: u32) ->
 
 fn qwen3_dense_reference_range_forward_summary_from_contract(
     topology: &SimTopology,
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
     real_input_embedding_hidden: Option<&[f32]>,
     result_flow_checksum: u64,
@@ -25916,7 +25960,7 @@ fn qwen3_dense_reference_range_forward_summary_from_contract(
 }
 
 fn qwen3_dense_reference_range_forward_summary_from_runtime_outputs(
-    contract: Qwen3GuestRangeComputeContract,
+    contract: ModelRangeComputeContract,
     guest_input: &[u8],
     real_input_embedding_hidden: Option<&[f32]>,
     round1_outputs: &[(Qwen3DenseReferenceShard, Vec<u8>, SegmentHandle, u64)],
@@ -28969,7 +29013,7 @@ fn bytes_to_i32s(bytes: &[u8]) -> Vec<i32> {
 fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
     match desc {
         UapiDescriptor::Io(_) => RuntimeWorkKind::GuestIo,
-        UapiDescriptor::Qwen3RangeDispatch(_) => RuntimeWorkKind::GuestIo,
+        UapiDescriptor::ModelRangeDispatch(_) => RuntimeWorkKind::GuestIo,
         UapiDescriptor::BlockWriteback { .. } => RuntimeWorkKind::BlockWriteback,
         UapiDescriptor::ShmemPut(_) => RuntimeWorkKind::ShmemPut,
         UapiDescriptor::ShmemGet(_) => RuntimeWorkKind::ShmemGet,
@@ -28987,7 +29031,7 @@ fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
 fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
     match desc {
         UapiDescriptor::Io(req) => req.task.clone(),
-        UapiDescriptor::Qwen3RangeDispatch(req) => Some(req.task.clone()),
+        UapiDescriptor::ModelRangeDispatch(req) => Some(req.task.clone()),
         UapiDescriptor::BlockWriteback { task, .. } => task.clone(),
         UapiDescriptor::ShmemPut(req) => req.task.clone(),
         UapiDescriptor::ShmemGet(req) => req.task.clone(),
@@ -29042,7 +29086,8 @@ mod tests {
         execute_sink_attention_through_simpler, execute_swiglu_through_simpler,
         execute_top_k_through_simpler, f16_bits_to_f32, f32_to_f16_bits, f32s_to_bytes,
         find_u64_marker, finish_deepseek_ffn_with_expert_slices_through_simpler,
-        kvcache_input_b_payload, prepare_deepseek_ffn_through_simpler,
+        kvcache_input_b_payload, model_runtime_object_payload_view,
+        prepare_deepseek_ffn_through_simpler,
         qwen3_dense_profile_previous_kv_cache_from_guest_payload,
         qwen3_dense_profile_range_kv_payload_from_cache,
         qwen3_dense_reference_apply_engram_context_to_terminal_sequence,
@@ -29113,8 +29158,7 @@ mod tests {
         qwen3_object_service_snapshot_hydrate_payloads, qwen3_object_service_snapshot_put,
         qwen3_obmm_object_ref_for_payload, qwen3_obmm_object_ref_wire_to_hex,
         qwen3_paper_engram_state_manifest_from_payload, qwen3_paper_engram_state_manifest_payload,
-        qwen3_register_range_forward_objects, qwen3_runtime_object_payload_view,
-        qwen3_validate_engram_state_object_service_payload,
+        qwen3_register_range_forward_objects, qwen3_validate_engram_state_object_service_payload,
         qwen3_validate_engram_state_registry_payload, read_u64_le_at, repeated_u16_le_bytes,
         resolve_qwen3_range_dispatch_operands, run_host_gemm, run_host_gemm_128,
         run_host_gemm_smoke, run_host_matmul_batched_smoke, run_host_matmul_smoke,
@@ -29127,14 +29171,13 @@ mod tests {
         DeepseekV4FlashRatio128AttentionWeights, DeepseekV4FlashRatio128LayerWeights,
         DeepseekV4FlashRatio4AttentionState, DeepseekV4FlashRatio4AttentionWeights,
         DeepseekV4LinearOutputDType, GuestUapiSurface, KvCachePayloadLayout, LocalGuestUapiSurface,
-        Qwen3DenseReferenceEngramContextReport, Qwen3DenseReferenceHiddenLayerNodeRange,
-        Qwen3DenseReferenceLayerDependencyDescriptor, Qwen3DenseReferenceLogitsDescriptor,
-        Qwen3DenseReferenceRangeForwardSummary, Qwen3DenseReferenceShard,
-        Qwen3GuestRangeComputeContract, Qwen3ObjectBackedOperandView, Qwen3PaperEngramStateGateRef,
-        Qwen3PaperEngramStateTableRef, Qwen3ProjectionKind, Qwen3RangeDispatchOperands,
-        Qwen3RangeDispatchReq, Qwen3RuntimeObjectPayload, UapiCommand, UapiDescriptor,
-        UapiResponse, QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT,
-        QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
+        ModelObjectBackedOperandView, ModelRangeComputeContract, ModelRangeDispatchOperands,
+        ModelRangeDispatchReq, ModelRuntimeObjectPayload, Qwen3DenseReferenceEngramContextReport,
+        Qwen3DenseReferenceHiddenLayerNodeRange, Qwen3DenseReferenceLayerDependencyDescriptor,
+        Qwen3DenseReferenceLogitsDescriptor, Qwen3DenseReferenceRangeForwardSummary,
+        Qwen3DenseReferenceShard, Qwen3PaperEngramStateGateRef, Qwen3PaperEngramStateTableRef,
+        Qwen3ProjectionKind, UapiCommand, UapiDescriptor, UapiResponse,
+        QWEN3_DENSE_PROFILE_OBJECT_REF_MAX_COUNT, QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_GATE_WEIGHT,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_INDICES,
         QWEN3_DENSE_PROFILE_OBMM_KIND_ENGRAM_CONTEXT_TABLE,
@@ -30642,7 +30685,7 @@ mod tests {
 
     #[test]
     fn qwen3_engram_context_report_line_includes_row_prefetch_metrics() {
-        let contract = Qwen3GuestRangeComputeContract {
+        let contract = ModelRangeComputeContract {
             node: 0,
             layer_start: 0,
             layer_end: 5,
@@ -32546,6 +32589,36 @@ mod tests {
             dimensions,
             input,
         )
+    }
+
+    #[test]
+    fn deepseek_q8_output_projection_stays_below_simpler_scope_task_budget() {
+        const K: usize = 7_168;
+        const N: usize = 129_280;
+        let blocks = K / 32;
+        let ranges = crate::host_q8_block_dot_output_ranges(K, N).expect("plan output chunks");
+
+        assert!(ranges.len() > 1);
+        assert_eq!(ranges.first().map(|range| range.start), Some(0));
+        assert_eq!(ranges.last().map(|range| range.end), Some(N));
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
+        for range in ranges {
+            assert_eq!(range.len() % 128, 0);
+            assert!(
+                blocks * (range.len() / 128) <= crate::HOST_Q8_BLOCK_DOT_SCOPE_TASK_BUDGET,
+                "range {range:?} exceeds scope task budget"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_q8_projection_remains_one_scope() {
+        assert_eq!(
+            crate::host_q8_block_dot_output_ranges(128, 128).expect("plan one chunk"),
+            vec![0..128]
+        );
     }
 
     #[test]
@@ -36122,7 +36195,7 @@ mod tests {
                         let cases = [(1, 22, 43, 0, 2, true), (1, 15, 29, 2, 3, false)];
 
                         for (node, layer_start, layer_end, next_node, nodes, terminal) in cases {
-                            let output = crate::run_qwen3_range_chipbackend(
+                            let output = crate::run_model_range_chipbackend(
                                 &topology,
                                 &TaskKey {
                                     logical_system: LogicalSystemId(1),
@@ -36178,7 +36251,7 @@ mod tests {
             "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
             "deepseek-v4-flash-simpler",
             || {
-                let contract = crate::qwen3_guest_range_compute_contract(&TaskKey {
+                let contract = crate::model_range_compute_contract(&TaskKey {
                     logical_system: LogicalSystemId(1),
                     coord: HierarchyCoord {
                         levels: [RANGE_TASK_MAGIC, 1, 22, 43, 0, 2, 43, 16_384 * 4],
@@ -36202,7 +36275,7 @@ mod tests {
             "SIM_UAPI_W4_CHIPBACKEND_PROFILE",
             "deepseek-v4-flash-official",
             || {
-                let contract = crate::qwen3_guest_range_compute_contract(&TaskKey {
+                let contract = crate::model_range_compute_contract(&TaskKey {
                     logical_system: LogicalSystemId(1),
                     coord: HierarchyCoord {
                         levels: [RANGE_TASK_MAGIC, 2, 29, 43, 0, 3, 43, 16_384 * 4],
@@ -36382,7 +36455,7 @@ mod tests {
                     QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + HIDDEN_BYTES,
                     0,
                 );
-                let first_output = crate::run_qwen3_range_chipbackend(
+                let first_output = crate::run_model_range_chipbackend(
                     &topology,
                     &TaskKey {
                         logical_system: LogicalSystemId(1),
@@ -36436,7 +36509,7 @@ mod tests {
                             + LingquObmmObjectRefWire::BYTE_LEN],
                     hidden_ref,
                 );
-                let second_output = crate::run_qwen3_range_chipbackend(
+                let second_output = crate::run_model_range_chipbackend(
                     &topology,
                     &TaskKey {
                         logical_system: LogicalSystemId(1),
@@ -36509,7 +36582,7 @@ mod tests {
                             + LingquObmmObjectRefWire::BYTE_LEN],
                     hidden_ref,
                 );
-                let output = crate::run_qwen3_range_chipbackend(
+                let output = crate::run_model_range_chipbackend(
                     &topology,
                     &TaskKey {
                         logical_system: LogicalSystemId(1),
@@ -36570,10 +36643,10 @@ mod tests {
             kv_payload.len() as u64,
             qwen3_dense_reference_range_object_payload_checksum(&kv_payload),
         );
-        let operands = Qwen3RangeDispatchOperands {
+        let operands = ModelRangeDispatchOperands {
             input_token: Some(
-                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
-                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                ModelObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    ModelRuntimeObjectPayload::from_live_obmm_bytes(
                         token_ref,
                         token_payload,
                         "deepseek_decode_token_test",
@@ -36583,8 +36656,8 @@ mod tests {
                 .expect("token operand"),
             ),
             previous_kv: Some(
-                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
-                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                ModelObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    ModelRuntimeObjectPayload::from_live_obmm_bytes(
                         kv_ref,
                         kv_payload.clone(),
                         "deepseek_decode_kv_test",
@@ -36593,7 +36666,7 @@ mod tests {
                 ))
                 .expect("KV operand"),
             ),
-            ..Qwen3RangeDispatchOperands::default()
+            ..ModelRangeDispatchOperands::default()
         };
         let mut guest_input = vec![
             0u8;
@@ -36666,10 +36739,10 @@ mod tests {
             token_payload.len() as u64,
             qwen3_dense_reference_range_object_payload_checksum(&token_payload),
         );
-        let operands = Qwen3RangeDispatchOperands {
+        let operands = ModelRangeDispatchOperands {
             input_token: Some(
-                Qwen3ObjectBackedOperandView::from_runtime_payload(Arc::new(
-                    Qwen3RuntimeObjectPayload::from_live_obmm_bytes(
+                ModelObjectBackedOperandView::from_runtime_payload(Arc::new(
+                    ModelRuntimeObjectPayload::from_live_obmm_bytes(
                         token_ref,
                         token_payload,
                         "deepseek_decode_missing_kv_test",
@@ -36678,7 +36751,7 @@ mod tests {
                 ))
                 .expect("token operand"),
             ),
-            ..Qwen3RangeDispatchOperands::default()
+            ..ModelRangeDispatchOperands::default()
         };
         let mut guest_input = vec![0u8; QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64];
         guest_input[QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
@@ -36761,7 +36834,7 @@ mod tests {
                         8,
                     )
                     .expect("DeepSeek layer range");
-                let output = crate::run_qwen3_range_chipbackend(
+                let output = crate::run_model_range_chipbackend(
                     &topology,
                     &TaskKey {
                         logical_system: LogicalSystemId(1),
@@ -37099,7 +37172,7 @@ mod tests {
                     .copy_from_slice(&payload);
                 let parsed = qwen3_dense_profile_previous_kv_cache_from_guest_payload(
                     &profile,
-                    Qwen3GuestRangeComputeContract {
+                    ModelRangeComputeContract {
                         node: 1,
                         layer_start: 2,
                         layer_end: 4,
@@ -41260,7 +41333,7 @@ mod tests {
                 ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
             object_ref,
         );
-        let req = Qwen3RangeDispatchReq {
+        let req = ModelRangeDispatchReq {
             op_id: 31,
             segment: sim_core::SegmentHandle(1),
             task,
@@ -41330,14 +41403,14 @@ mod tests {
                 ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
             paper_state_ref,
         );
-        let paper_state_req = Qwen3RangeDispatchReq {
+        let paper_state_req = ModelRangeDispatchReq {
             object_ref_count: 2,
             ..req.clone()
         };
         validate_qwen3_range_dispatch_object_refs(&paper_state_req, &segment_payload)
             .expect("paper ENGRAM_STATE sideband should validate");
 
-        let missing_ref_req = Qwen3RangeDispatchReq {
+        let missing_ref_req = ModelRangeDispatchReq {
             object_ref_count: 0,
             ..req.clone()
         };
@@ -41368,7 +41441,7 @@ mod tests {
         previous_kv_segment
             [QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8]
             .copy_from_slice(&QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER.to_le_bytes());
-        let previous_kv_req = Qwen3RangeDispatchReq {
+        let previous_kv_req = ModelRangeDispatchReq {
             op_id: 31,
             segment: sim_core::SegmentHandle(1),
             task: first_range_task,
@@ -41451,7 +41524,7 @@ mod tests {
                         ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
                     kv_ref,
                 );
-                let req = Qwen3RangeDispatchReq {
+                let req = ModelRangeDispatchReq {
                     op_id: 31,
                     segment: sim_core::SegmentHandle(1),
                     task,
@@ -41583,7 +41656,7 @@ mod tests {
                         ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
                     kv_ref,
                 );
-                let req = Qwen3RangeDispatchReq {
+                let req = ModelRangeDispatchReq {
                     op_id: 31,
                     segment: sim_core::SegmentHandle(1),
                     task,
@@ -41605,9 +41678,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_runtime_object_payload_view_allows_registry_for_dynamic_snapshot_miss() {
+    fn model_runtime_object_payload_view_allows_registry_for_dynamic_snapshot_miss() {
         run_simpler_native_test_isolated(
-            "qwen3_runtime_object_payload_view_allows_registry_for_dynamic_snapshot_miss",
+            "model_runtime_object_payload_view_allows_registry_for_dynamic_snapshot_miss",
             || {
                 let registry_dir = std::env::temp_dir().join(format!(
                     "ub_sim_dynamic_snapshot_miss_registry_{}",
@@ -41644,7 +41717,7 @@ mod tests {
                 );
                 qwen3_object_registry_put(&object_ref, &payload).expect("registry put");
 
-                let view = qwen3_runtime_object_payload_view(object_ref, &test_surface())
+                let view = model_runtime_object_payload_view(object_ref, &test_surface())
                     .expect("dynamic snapshot miss should resolve from registry");
                 assert_eq!(view.bytes(), payload.as_slice());
 
@@ -41658,9 +41731,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_runtime_object_payload_view_rejects_prefix_cache_snapshot_miss() {
+    fn model_runtime_object_payload_view_rejects_prefix_cache_snapshot_miss() {
         run_simpler_native_test_isolated(
-            "qwen3_runtime_object_payload_view_rejects_prefix_cache_snapshot_miss",
+            "model_runtime_object_payload_view_rejects_prefix_cache_snapshot_miss",
             || {
                 let registry_dir = std::env::temp_dir().join(format!(
                     "ub_sim_prefix_snapshot_miss_registry_{}",
@@ -41712,7 +41785,7 @@ mod tests {
                 )
                 .expect("write prefix stream");
 
-                let err = qwen3_runtime_object_payload_view(object_ref, &test_surface())
+                let err = model_runtime_object_payload_view(object_ref, &test_surface())
                     .expect_err("prefix-cache snapshot miss must fail closed");
                 assert!(
                     err.contains("qwen3_object_service_payload_index_ref_missing"),
@@ -41731,9 +41804,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_runtime_object_payload_view_accepts_dynamic_snapshot_version_skew() {
+    fn model_runtime_object_payload_view_accepts_dynamic_snapshot_version_skew() {
         run_simpler_native_test_isolated(
-            "qwen3_runtime_object_payload_view_accepts_dynamic_snapshot_version_skew",
+            "model_runtime_object_payload_view_accepts_dynamic_snapshot_version_skew",
             || {
                 let snapshot_path = std::env::temp_dir().join(format!(
                     "ub_sim_dynamic_snapshot_version_skew_{}.json",
@@ -41782,7 +41855,7 @@ mod tests {
                     payload.len() as u64,
                     checksum,
                 );
-                let view = qwen3_runtime_object_payload_view(object_ref, &test_surface())
+                let view = model_runtime_object_payload_view(object_ref, &test_surface())
                     .expect("dynamic snapshot version skew should resolve by checksum");
                 assert_eq!(view.bytes(), payload.as_slice());
 
@@ -41857,7 +41930,7 @@ mod tests {
                         ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
                     kv_ref,
                 );
-                let req = Qwen3RangeDispatchReq {
+                let req = ModelRangeDispatchReq {
                     op_id: 31,
                     segment: sim_core::SegmentHandle(1),
                     task,
@@ -41866,14 +41939,14 @@ mod tests {
                 };
                 let mut surface = test_surface();
                 surface
-                    .register_qwen3_runtime_object_payload(
+                    .register_model_runtime_object_payload(
                         hidden_ref,
                         hidden_payload.clone(),
                         "test_live_obmm",
                     )
                     .expect("register live hidden object");
                 surface
-                    .register_qwen3_runtime_object_payload(
+                    .register_model_runtime_object_payload(
                         kv_ref,
                         kv_payload.clone(),
                         "test_live_obmm",
@@ -41927,7 +42000,7 @@ mod tests {
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT);
 
-                let contract = Qwen3GuestRangeComputeContract {
+                let contract = ModelRangeComputeContract {
                     node: 0,
                     layer_start: 0,
                     layer_end: 4,
@@ -42097,7 +42170,7 @@ mod tests {
                 std::env::set_var(SIM_UAPI_QWEN3_OBJECT_SERVICE_SNAPSHOT, &snapshot_path);
                 std::env::remove_var(SIM_UAPI_QWEN3_OBJECT_REGISTRY_DIR);
 
-                let contract = Qwen3GuestRangeComputeContract {
+                let contract = ModelRangeComputeContract {
                     node: 0,
                     layer_start: 0,
                     layer_end: 4,
@@ -42243,7 +42316,7 @@ mod tests {
                         ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN * 2],
                     kv_ref,
                 );
-                let req = Qwen3RangeDispatchReq {
+                let req = ModelRangeDispatchReq {
                     op_id: 31,
                     segment: sim_core::SegmentHandle(1),
                     task,
@@ -42347,7 +42420,7 @@ mod tests {
                         ..OBJECT_REF_TABLE_OFFSET + LingquObmmObjectRefWire::BYTE_LEN],
                     hidden_ref,
                 );
-                let req = Qwen3RangeDispatchReq {
+                let req = ModelRangeDispatchReq {
                     op_id: 31,
                     segment: sim_core::SegmentHandle(1),
                     task,
@@ -42738,7 +42811,7 @@ mod tests {
                 let hidden_checksum =
                     qwen3_dense_reference_range_object_payload_checksum(&hidden_payload);
                 let kv_checksum = qwen3_dense_reference_range_object_payload_checksum(&kv_payload);
-                let boundary_contract = Qwen3GuestRangeComputeContract {
+                let boundary_contract = ModelRangeComputeContract {
                     node: 0,
                     layer_start: 0,
                     layer_end: 4,
@@ -42781,7 +42854,7 @@ mod tests {
                 qwen3_flush_w5_memory_runtime_commits()
                     .expect("flush boundary runtime memory commit");
 
-                let contract = Qwen3GuestRangeComputeContract {
+                let contract = ModelRangeComputeContract {
                     node: 7,
                     layer_start: 24,
                     layer_end: 28,

@@ -13,7 +13,7 @@ TOKEN_IDS_RE = re.compile(r"^decode_output: token_ids=(\[.*\])$")
 
 BAD_MARKERS = (
     "status=missing",
-    "qwen3_range_kv_state_lazy_fallback",
+    "model_range_kv_state_lazy_fallback",
     "fallback=runtime_forward_metadata",
     "obmm_pool: unavailable",
 )
