@@ -11559,6 +11559,11 @@ decode_round_start:
             }
             range_request.hidden_range_bytes =
                 w4_runtime_handoff_hidden_bytes(guest_decode_step);
+            range_request.allow_terminal_shortpath =
+                qwen3_memory_decision_config.enabled &&
+                qwen3_memory_decision_config.shortpath_execute &&
+                strcmp(qwen3_memory_decision_config.shortpath_action,
+                       "jump-to-terminal") == 0;
             memset(&scheduler_item, 0, sizeof(scheduler_item));
             {
                 int scheduler_rc =

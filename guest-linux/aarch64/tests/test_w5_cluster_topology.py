@@ -127,6 +127,20 @@ class W5ClusterTopologyTest(unittest.TestCase):
             deepseek_branch,
         )
 
+    def test_scheduler_enables_terminal_shortpath_from_request_policy(self):
+        source = self.infer_source.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "range_request.allow_terminal_shortpath =\n"
+            "                qwen3_memory_decision_config.enabled &&",
+            source,
+        )
+        self.assertIn(
+            'strcmp(qwen3_memory_decision_config.shortpath_action,\n'
+            '                       "jump-to-terminal") == 0;',
+            source,
+        )
+
     def test_three_node_assets_describe_one_consistent_topology(self):
         topology = (
             self.repo / "vendor" / "ub_topology_three_node_full_mesh.ini"
