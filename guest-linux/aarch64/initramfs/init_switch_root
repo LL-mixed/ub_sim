@@ -106,66 +106,80 @@ if [ $attempt -eq $max_attempts ]; then
 fi
 
 # ------------------------------------------------------------------
-# 5. Activate LVM
+# 5. Mount a direct root filesystem, or activate LVM as a fallback
 # ------------------------------------------------------------------
-log "activating LVM..."
-
-# Set LD_LIBRARY_PATH for our bundled libraries
-export LD_LIBRARY_PATH=/lib
-
-# Run vgscan
-log "  running vgscan..."
-if /sbin/vgscan >/tmp/vgscan.out 2>/tmp/vgscan.err; then
-    log "  vgscan ok"
-else
-    log "  vgscan failed, output:"
-    /bin/busybox cat /tmp/vgscan.err 2>/dev/null | /bin/busybox head -20
-fi
-
-# Run vgchange -ay
-log "  running vgchange -ay..."
-if /sbin/vgchange -ay >/tmp/vgchange.out 2>/tmp/vgchange.err; then
-    log "  vgchange ok"
-else
-    log "  vgchange failed, output:"
-    /bin/busybox cat /tmp/vgchange.err 2>/dev/null | /bin/busybox head -20
-    die "LVM activation failed"
-fi
-
-# ------------------------------------------------------------------
-# 6. Mount rootfs
-# ------------------------------------------------------------------
-ROOT_LV="/dev/mapper/openeuler_bogon-root"
-
-# Wait for the mapper device to appear
-attempt=0
-max_attempts=20
-while [ $attempt -lt $max_attempts ]; do
-    if [ -b "$ROOT_LV" ]; then
+ROOT_DEVICE=""
+/bin/busybox mkdir -p /newroot
+for candidate in /dev/vda /dev/vdb; do
+    if [ -b "$candidate" ] &&
+       /bin/busybox mount -t ext4 -o rw "$candidate" /newroot 2>/dev/null; then
+        ROOT_DEVICE="$candidate"
+        log "direct rootfs mounted: $ROOT_DEVICE"
         break
     fi
-    # Fallback: find any *root* mapper device
-    ROOT_LV=$(/bin/busybox ls /dev/mapper/*root* 2>/dev/null | /bin/busybox head -n1)
-    if [ -b "$ROOT_LV" ]; then
-        break
-    fi
-    # Fallback 2: /dev/dm-1 is usually the root LV in this layout
-    if [ -b /dev/dm-1 ]; then
-        ROOT_LV=/dev/dm-1
-        break
-    fi
-    sleep 0.5
-    attempt=$((attempt + 1))
 done
 
-if [ ! -b "$ROOT_LV" ]; then
-    die "root LV not found (tried /dev/mapper/openeuler_bogon-root and /dev/dm-1)"
-fi
+if [ -z "$ROOT_DEVICE" ]; then
+    log "direct rootfs not found; activating LVM..."
 
-log "mounting rootfs: $ROOT_LV"
-/bin/busybox mkdir -p /newroot
-/bin/busybox mount -t ext4 -o rw "$ROOT_LV" /newroot || die "failed to mount rootfs"
-log "  rootfs mounted"
+    # Set LD_LIBRARY_PATH for our bundled libraries
+    export LD_LIBRARY_PATH=/lib
+
+    if [ ! -x /sbin/vgscan ] || [ ! -x /sbin/vgchange ]; then
+        die "rootfs is not direct ext4 and LVM tools are unavailable"
+    fi
+
+    # Run vgscan
+    log "  running vgscan..."
+    if /sbin/vgscan >/tmp/vgscan.out 2>/tmp/vgscan.err; then
+        log "  vgscan ok"
+    else
+        log "  vgscan failed, output:"
+        /bin/busybox cat /tmp/vgscan.err 2>/dev/null | /bin/busybox head -20
+    fi
+
+    # Run vgchange -ay
+    log "  running vgchange -ay..."
+    if /sbin/vgchange -ay >/tmp/vgchange.out 2>/tmp/vgchange.err; then
+        log "  vgchange ok"
+    else
+        log "  vgchange failed, output:"
+        /bin/busybox cat /tmp/vgchange.err 2>/dev/null | /bin/busybox head -20
+        die "LVM activation failed"
+    fi
+
+    ROOT_LV="/dev/mapper/openeuler_bogon-root"
+
+    # Wait for the mapper device to appear
+    attempt=0
+    max_attempts=20
+    while [ $attempt -lt $max_attempts ]; do
+        if [ -b "$ROOT_LV" ]; then
+            break
+        fi
+        # Fallback: find any *root* mapper device
+        ROOT_LV=$(/bin/busybox ls /dev/mapper/*root* 2>/dev/null | /bin/busybox head -n1)
+        if [ -b "$ROOT_LV" ]; then
+            break
+        fi
+        # Fallback 2: /dev/dm-1 is usually the root LV in this layout
+        if [ -b /dev/dm-1 ]; then
+            ROOT_LV=/dev/dm-1
+            break
+        fi
+        sleep 0.5
+        attempt=$((attempt + 1))
+    done
+
+    if [ ! -b "$ROOT_LV" ]; then
+        die "root LV not found (tried /dev/mapper/openeuler_bogon-root and /dev/dm-1)"
+    fi
+
+    log "mounting rootfs: $ROOT_LV"
+    /bin/busybox mount -t ext4 -o rw "$ROOT_LV" /newroot || die "failed to mount rootfs"
+    ROOT_DEVICE="$ROOT_LV"
+    log "  rootfs mounted"
+fi
 
 # ------------------------------------------------------------------
 # 7. Sanitize guest fstab for virtualized environment

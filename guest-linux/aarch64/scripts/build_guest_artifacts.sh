@@ -7,6 +7,7 @@ OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
 KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
 KERNEL_UAPI_STAMP_FILE="$OUT_DIR/.kernel_uapi.kernel_ub_head"
+KERNEL_BUILD_POLICY_REV="3"
 KERNEL_SRC_DIR="$(cd "$ROOT_DIR/../kernel_ub" && pwd)"
 KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$OUT_DIR/kernel_build}"
 KERNEL_UAPI_INSTALL_DIR="${KERNEL_UAPI_INSTALL_DIR:-$OUT_DIR/kernel_uapi}"
@@ -77,6 +78,7 @@ current_kernel_artifact_signature() {
   [[ -n "$current_head" ]] || return 1
 
   printf 'kernel_head=%s\n' "$current_head"
+  printf 'build_policy=%s\n' "$KERNEL_BUILD_POLICY_REV"
   if kernel_git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     for tracked_path in \
       drivers/ub/obmm \
@@ -276,6 +278,12 @@ configure_native_kernel() {
     -e UB_UMMU \
     -e UB_UMMU_CORE \
     -e UB_UMMU_CORE_DRIVER \
+    -e VIRTIO \
+    -e VIRTIO_BLK \
+    -e VIRTIO_MMIO \
+    -e VIRTIO_PCI \
+    -e EXT4_FS \
+    -e BLK_DEV_DM \
     -d DEBUG_INFO_BTF \
     -d PAHOLE_HAS_SPLIT_BTF
   make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" olddefconfig

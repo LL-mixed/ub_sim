@@ -456,15 +456,25 @@ ensure_qemu_ub_binary() {
 # openEuler guest helpers (shared by W5 openEuler engine)
 # ---------------------------------------------------------------------------
 
+oe_privileged() {
+  if [[ "$(id -u)" == "0" ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
 oe_ensure_lvm2_staging() {
   # $1 = openEuler qcow2 disk image; extracts LVM2 userland once into
   # $OE_LVM2_STAGING_DIR so the initramfs can activate the root LVM volume.
   local disk_image="$1"
   local staging_dir="${OE_LVM2_STAGING_DIR:-/tmp/oe_lvm2_tools}"
-  local raw_img loop_dev mnt_dir bin lib cfg bin_path lib_name dep dep_src dep_dst
+  local raw_img loop_dev mnt_dir root_dev bin lib cfg bin_path lib_name dep dep_src dep_dst
+  local -a root_candidates
 
   export OE_LVM2_STAGING_DIR="$staging_dir"
-  if [[ -r "$staging_dir/lvm" && -r "$staging_dir/vgscan" ]]; then
+  if [[ -r "$staging_dir/direct-root" ||
+        ( -r "$staging_dir/lvm" && -r "$staging_dir/vgscan" ) ]]; then
     return 0
   fi
   [[ -f "$disk_image" ]] || { echo "openEuler disk image not found: $disk_image" >&2; return 1; }
@@ -477,63 +487,89 @@ oe_ensure_lvm2_staging() {
   qemu-img convert -f qcow2 -O raw -S 512 "$disk_image" "$raw_img" || {
     rm -f "$raw_img"; return 1; }
 
-  loop_dev="$(sudo losetup -f --show "$raw_img")"
-  sudo partprobe "$loop_dev"
-  sudo vgscan >/dev/null 2>&1 || true
-  sudo vgchange -ay openeuler_bogon >/dev/null 2>&1 || true
-
+  loop_dev="$(oe_privileged losetup -f --show -P "$raw_img")"
   mnt_dir="/mnt/oe_lvm2_extract_$$"
-  sudo mkdir -p "$mnt_dir"
-  sudo mount /dev/mapper/openeuler_bogon-root "$mnt_dir" || {
-    sudo losetup -d "$loop_dev" 2>/dev/null || true
+  oe_privileged mkdir -p "$mnt_dir"
+
+  if oe_privileged mount "$loop_dev" "$mnt_dir" 2>/dev/null; then
+    oe_privileged touch "$staging_dir/direct-root"
+    oe_privileged chown -R "$(id -u):$(id -g)" "$staging_dir"
+    oe_privileged umount "$mnt_dir"
+    oe_privileged rmdir "$mnt_dir"
+    oe_privileged losetup -d "$loop_dev"
+    rm -f "$raw_img"
+    echo "[ub_common] openEuler disk uses a direct root filesystem" >&2
+    return 0
+  fi
+
+  oe_privileged partprobe "$loop_dev"
+  oe_privileged pvscan >/dev/null
+  oe_privileged vgscan >/dev/null
+  oe_privileged vgchange -ay >/dev/null
+  root_dev=/dev/mapper/openeuler_bogon-root
+  if [[ ! -b "$root_dev" ]]; then
+    root_candidates=(/dev/mapper/*root*(N))
+    root_dev="${root_candidates[1]:-}"
+  fi
+  if [[ -z "$root_dev" || ! -b "$root_dev" ]]; then
+    echo "openEuler root LVM volume was not activated" >&2
+    oe_privileged vgchange -an >/dev/null 2>&1 || true
+    oe_privileged rmdir "$mnt_dir" 2>/dev/null || true
+    oe_privileged losetup -d "$loop_dev" 2>/dev/null || true
+    rm -f "$raw_img"
+    return 1
+  fi
+  oe_privileged mount "$root_dev" "$mnt_dir" || {
+    oe_privileged vgchange -an >/dev/null 2>&1 || true
+    oe_privileged losetup -d "$loop_dev" 2>/dev/null || true
     rm -f "$raw_img"; return 1; }
 
   for bin in lvm vgscan vgchange pvscan dmsetup; do
     if [[ -f "$mnt_dir/usr/sbin/$bin" ]]; then
-      sudo cp -L "$mnt_dir/usr/sbin/$bin" "$staging_dir/"
+      oe_privileged cp -L "$mnt_dir/usr/sbin/$bin" "$staging_dir/"
     fi
   done
-  sudo mkdir -p "$staging_dir/etc/lvm"
+  oe_privileged mkdir -p "$staging_dir/etc/lvm"
   for cfg in lvm.conf lvmlocal.conf; do
     if [[ -f "$mnt_dir/etc/lvm/$cfg" ]]; then
-      sudo cp -L "$mnt_dir/etc/lvm/$cfg" "$staging_dir/etc/lvm/"
+      oe_privileged cp -L "$mnt_dir/etc/lvm/$cfg" "$staging_dir/etc/lvm/"
     fi
   done
   for bin_path in /usr/sbin/lvm /usr/sbin/dmsetup; do
     [[ -f "$mnt_dir$bin_path" ]] || continue
-    sudo chroot "$mnt_dir" /usr/bin/ldd "$bin_path" 2>/dev/null \
+    oe_privileged chroot "$mnt_dir" /usr/bin/ldd "$bin_path" 2>/dev/null \
       | grep '=> /' | awk '{print $3}' | while read -r lib; do
         if [[ -f "$mnt_dir$lib" ]]; then
-          sudo cp -L "$mnt_dir$lib" "$staging_dir/"
+          oe_privileged cp -L "$mnt_dir$lib" "$staging_dir/"
         fi
       done
   done
   for lib in "$staging_dir"/*.so*; do
     [[ -f "$lib" ]] || continue
     lib_name="$(basename "$lib")"
-    sudo chroot "$mnt_dir" /usr/bin/ldd "/tmp/../$lib_name" >/dev/null 2>&1 || true
-    sudo chroot "$mnt_dir" /usr/bin/ldd "$lib_name" 2>/dev/null \
+    oe_privileged chroot "$mnt_dir" /usr/bin/ldd "/tmp/../$lib_name" >/dev/null 2>&1 || true
+    oe_privileged chroot "$mnt_dir" /usr/bin/ldd "$lib_name" 2>/dev/null \
       | grep '=> /' | awk '{print $3}' | while read -r dep; do
         dep_src="$mnt_dir$dep"
         dep_dst="$staging_dir/$(basename "$dep")"
         if [[ -f "$dep_src" && ! -f "$dep_dst" ]]; then
-          sudo cp -L "$dep_src" "$dep_dst"
+          oe_privileged cp -L "$dep_src" "$dep_dst"
         fi
       done
   done
   if [[ -f "$mnt_dir/lib/ld-linux-aarch64.so.1" ]]; then
-    sudo cp -L "$mnt_dir/lib/ld-linux-aarch64.so.1" "$staging_dir/"
+    oe_privileged cp -L "$mnt_dir/lib/ld-linux-aarch64.so.1" "$staging_dir/"
   elif [[ -f "$mnt_dir/lib64/ld-linux-aarch64.so.1" ]]; then
-    sudo cp -L "$mnt_dir/lib64/ld-linux-aarch64.so.1" "$staging_dir/"
+    oe_privileged cp -L "$mnt_dir/lib64/ld-linux-aarch64.so.1" "$staging_dir/"
   fi
 
-  sudo chown -R "$(id -u):$(id -g)" "$staging_dir"
+  oe_privileged chown -R "$(id -u):$(id -g)" "$staging_dir"
   chmod +x "$staging_dir"/* 2>/dev/null || true
 
-  sudo umount "$mnt_dir" 2>/dev/null || true
-  sudo rmdir "$mnt_dir" 2>/dev/null || true
-  sudo vgchange -an openeuler_bogon >/dev/null 2>&1 || true
-  sudo losetup -d "$loop_dev" 2>/dev/null || true
+  oe_privileged umount "$mnt_dir" 2>/dev/null || true
+  oe_privileged rmdir "$mnt_dir" 2>/dev/null || true
+  oe_privileged vgchange -an >/dev/null 2>&1 || true
+  oe_privileged losetup -d "$loop_dev" 2>/dev/null || true
   rm -f "$raw_img"
   echo "[ub_common] LVM2 staging ready at $staging_dir" >&2
 }

@@ -64,8 +64,11 @@ install_rpm_deps() {
     flex \
     glib2-devel \
     liburing-devel \
+    lvm2 \
     openssl-devel \
+    parted \
     pixman-devel \
+    qemu-img \
     zlib-devel \
     pkgconf-pkg-config \
     ninja-build \
@@ -88,7 +91,10 @@ install_deb_deps() {
     libglib2.0-dev \
     libssl-dev \
     liburing-dev \
+    lvm2 \
     libpixman-1-dev \
+    parted \
+    qemu-utils \
     zlib1g-dev \
     pkg-config \
     ninja-build \
@@ -118,7 +124,9 @@ verify_deps() {
   local tool
   local pkg
 
-  for tool in bc bison flex python3 pkg-config ninja gcc make rsync; do
+  for tool in \
+    bc bison flex python3 pkg-config ninja gcc make rsync \
+    qemu-img partprobe vgscan vgchange; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       missing+=("$tool")
     fi

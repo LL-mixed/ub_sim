@@ -325,10 +325,18 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     echo "hint: set SIM_CLI_BIN to a built sim-cli, or unset SIM_CLI_BIN so the runner builds the workspace default" >&2
     exit 2
   fi
-  if [[ -z "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" ]]; then
-    echo "W5 sim-cli orchestration path requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
-    exit 2
-  fi
+  case "$SIM_UAPI_W5_PROFILE" in
+    deepseek_v4_flash_decode)
+      model_source_path="$SIM_DEEPSEEK_V4_FLASH"
+      ;;
+    *)
+      model_source_path="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
+      if [[ -z "$model_source_path" ]]; then
+        echo "W5 Qwen3 sim-cli orchestration path requires SIM_QWEN3_DENSE_WEIGHTS_PATH" >&2
+        exit 2
+      fi
+      ;;
+  esac
   if [[ "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" == qwen3_* ]] &&
       [[ -z "${SIM_QWEN3_DENSE_TP_NODES:-}" ]]; then
     # Keep the published per-node layer ranges aligned with the cluster size
@@ -418,7 +426,7 @@ if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_re
     --script "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"
     --w5-profile "$SIM_UAPI_W5_PROFILE"
     --steps "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
-    --weights-path "$SIM_QWEN3_DENSE_WEIGHTS_PATH"
+    --weights-path "$model_source_path"
     --prompt-token-ids "$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
   )
   case "$SIM_W5_TEST_VALIDATE_ONLY" in
