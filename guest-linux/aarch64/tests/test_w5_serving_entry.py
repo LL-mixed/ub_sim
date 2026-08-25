@@ -190,7 +190,7 @@ class W5ServingEntryTest(unittest.TestCase):
         self.assertEqual(steps.stdout.strip(), "2")
 
     def test_submit_dry_run_validates_request_and_cluster_fanout(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             env_path = tmp_path / "headless.env"
             env_lines = [
@@ -226,7 +226,7 @@ class W5ServingEntryTest(unittest.TestCase):
         )
 
     def test_submit_dry_run_supports_nodea_fanout_with_cluster_wait(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             env_path = tmp_path / "headless.env"
             env_lines = [
@@ -267,7 +267,7 @@ class W5ServingEntryTest(unittest.TestCase):
 
     def test_submit_wait_done_matches_request_done_line(self):
         submit = self.load_submit_module()
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "nodeA_guest.log").write_text(
                 "\n".join(
