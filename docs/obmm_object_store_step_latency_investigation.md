@@ -392,7 +392,7 @@ hidden handoff 更适合固定深度 ring，因为 payload 大小稳定、只需
 - `guest-linux/aarch64/components/mem_service/mem_service_obmm_objects.c`：linear arena 与 OBMM record publish。
 - `guest-linux/aarch64/components/mem_service/mem_service_records.c`：固定表分配和线性 key lookup。
 - `guest-linux/aarch64/components/mem_service/mem_service_qwen3_records.c`：16-step runtime record recycler。
-- `guest-linux/aarch64/components/mem_service/mem_service_qwen3_kv_state_flow.c`：step key、KV allocation、copy、`msync`、publish/resolve。
+- `mem_service/components/mem_service/mem_service_model_range_kv_state_flow.c`：step key、KV allocation、copy、`msync`、publish/resolve。
 - `guest-linux/aarch64/components/mem_service/mem_service_qwen3_runtime.c`：KV tier span 与 pool usage telemetry。
 - `guest-linux/aarch64/apps/llm_infer/llm_infer.c`：每 token、每 layer KV bytes。
 - `crates/sim-services/src/lib.rs`：Rust Object Service records、pool clone、`latest_record`、full checksum。

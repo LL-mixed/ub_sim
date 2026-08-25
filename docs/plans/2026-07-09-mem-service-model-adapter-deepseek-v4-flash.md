@@ -65,7 +65,7 @@
 
 ### 2.2 耦合点清单（精确位置）
 
-**Qwen3 命名文件**（15 个）：`mem_service_qwen3.{c,h}`、`mem_service_qwen3_decode_barrier.c`、`mem_service_qwen3_{engram_publish,engram_wait,kv_state,runtime_range_publish,runtime_range_wait,terminal_token}_flow.c`、`mem_service_qwen3_placement.h`、`mem_service_qwen3_record_policy.h`、`mem_service_qwen3_records.{c,h}`、`mem_service_qwen3_runtime.{c,h}`。
+**Qwen3 命名文件**（15 个）：`mem_service_qwen3.{c,h}`、`mem_service_model_decode_barrier.c`、`mem_service_qwen3_{engram_publish,engram_wait,kv_state,runtime_range_publish,runtime_range_wait,terminal_token}_flow.c`、`mem_service_qwen3_placement.h`、`mem_service_qwen3_record_policy.h`、`mem_service_qwen3_records.{c,h}`、`mem_service_qwen3_runtime.{c,h}`。
 
 **名字中性但 body 内泄漏 Qwen3 的"漏文件"**（7 个，是解耦的真正难点）：
 
@@ -493,7 +493,7 @@ W5 store macOS 跨进程锁、snapshot profile 升级和 64-step artifact gate �
 - KV 系数（按层预算，非线性 token）：`components/llm_infer/llm_infer.c:123-138`
 - 对象存储预留权重 tile：`components/mem_service/mem_service_object_contract.h:45`（KIND=1）、`:5`（WEIGHT_OFFSET）
 - decode 循环（guest）：`apps/llm_infer/llm_infer.c:11046`（round_start）、`:11294`（8节点分派）、`:13170-13216`（barrier+next）
-- decode-round barrier：`components/mem_service/mem_service_qwen3_decode_barrier.c:8`（publish）、`:75`（wait-all）
+- decode-round barrier：`components/mem_service/mem_service_model_decode_barrier.c:8`（publish）、`:75`（wait-all）
 - Rust decode loop：`crates/sim-uapi/src/lib.rs:7275`（循环体）、`:11023`（层→节点）、`:7455`（object service profile）
 - Rust scenario 别名：`crates/sim-cli/src/main.rs:1867`
 - Rust 模型几何：`crates/sim-models/src/qwen3_dense.rs:63`、`qwen3_dense_reference.rs:58`
