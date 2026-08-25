@@ -84,6 +84,22 @@ class W5ClusterTopologyTest(unittest.TestCase):
             'LINQU_UB_NODE_COUNT="$SIM_W5_CLUSTER_NODE_COUNT"', source
         )
 
+    def test_launcher_uses_an_isolated_default_shared_directory(self):
+        source = self.launcher.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'SHARED_DIR="/tmp/ub-qemu-links-eight-${SOCKET_SUFFIX}"',
+            source,
+        )
+        self.assertIn('SHARED_DIR_OWNED=1', source)
+        self.assertIn('SHARED_DIR_OWNED=0', source)
+        self.assertIn('if [[ "__SHARED_DIR_OWNED__" == "1" ]]', source)
+        self.assertIn('rm -rf "__SHARED_DIR__"', source)
+        self.assertNotIn(
+            'SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"',
+            source,
+        )
+
     def test_deepseek_guest_validation_uses_active_node_count(self):
         source = self.guest_runner.read_text(encoding="utf-8")
         self.assertIn(

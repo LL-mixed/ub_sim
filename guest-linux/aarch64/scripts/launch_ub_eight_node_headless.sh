@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
+# Keep the shared path short for macOS UNIX sockets and unique per launch.
+SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
@@ -47,7 +50,13 @@ TOPOLOGY_FILE="${TOPOLOGY_FILE:-$DEFAULT_TOPOLOGY_FILE}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
 PORT_NUM="${UB_SIM_PORT_NUM:-$DEFAULT_PORT_NUM}"
-SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"
+if [[ -n "${UB_FM_SHARED_DIR:-}" ]]; then
+  SHARED_DIR="$UB_FM_SHARED_DIR"
+  SHARED_DIR_OWNED=0
+else
+  SHARED_DIR="/tmp/ub-qemu-links-eight-${SOCKET_SUFFIX}"
+  SHARED_DIR_OWNED=1
+fi
 QMP_DIR="${SHARED_DIR}/qmp"
 SERIAL_DIR="${SHARED_DIR}/serial"
 MON_DIR="${SHARED_DIR}/mon"
@@ -108,9 +117,6 @@ REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
 ASYNC_LOAD_MODEL="${ASYNC_LOAD_MODEL:-}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
-RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless8_${RANDOM}}"
-# macOS UNIX domain socket path limit is 104 bytes. Use a short suffix for socket file names.
-SOCKET_SUFFIX="${SOCKET_SUFFIX:-$$_${RANDOM}}"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-2G}"
 QEMU_SMP="${QEMU_SMP:-2}"
@@ -468,9 +474,12 @@ done
 rm -rf "__RUNTIME_DIR__"
 rm -rf "__SHARED_DIR__/oe_overlays"
 rmdir "__QMP_DIR__" "__SERIAL_DIR__" "__MON_DIR__" 2>/dev/null || true
+if [[ "__SHARED_DIR_OWNED__" == "1" ]]; then
+  rm -rf "__SHARED_DIR__"
+fi
 echo "cleaned run_id=__RUN_ID__"
 EOC
-perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g; s#__SHARED_DIR__#'"$SHARED_DIR"'#g; s#__NODE_IDS__#'"${(j: :)NODE_IDS}"'#g' "$CLEANUP_SCRIPT"
+perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g; s#__SHARED_DIR_OWNED__#'"$SHARED_DIR_OWNED"'#g; s#__SHARED_DIR__#'"$SHARED_DIR"'#g; s#__NODE_IDS__#'"${(j: :)NODE_IDS}"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
 
 rm -rf "$UB_QEMU_RUNTIME_DIR"
