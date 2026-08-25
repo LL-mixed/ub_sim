@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -60,6 +61,26 @@ class W5ClusterTopologyTest(unittest.TestCase):
             self.assertIn(f"SIM_DEEPSEEK_V4_FLASH={model}\n", result.stdout)
         finally:
             model.unlink(missing_ok=True)
+
+    def test_cli_model_overrides_qwen_env_source(self):
+        with tempfile.TemporaryDirectory() as model:
+            result = subprocess.run(
+                [
+                    str(self.config_runner),
+                    "--print-env",
+                    str(self.repo / "w5.macos.env"),
+                    "--model",
+                    model,
+                ],
+                cwd=self.repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"SIM_QWEN3_DENSE_WEIGHTS_PATH={model}\n", result.stdout)
 
     def test_deepseek_env_uses_format_neutral_model_source(self):
         config = self.deepseek_config.read_text(encoding="utf-8")

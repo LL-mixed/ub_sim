@@ -228,7 +228,11 @@ if [[ -n "$MODEL_OVERRIDE" ]]; then
   if [[ "$MODEL_OVERRIDE" != /* ]]; then
     MODEL_OVERRIDE="$PWD/$MODEL_OVERRIDE"
   fi
-  export SIM_DEEPSEEK_V4_FLASH="$MODEL_OVERRIDE"
+  if [[ "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" == "deepseek_v4_flash_decode" ]]; then
+    export SIM_DEEPSEEK_V4_FLASH="$MODEL_OVERRIDE"
+  else
+    export SIM_QWEN3_DENSE_WEIGHTS_PATH="$MODEL_OVERRIDE"
+  fi
 elif [[ -n "${SIM_DEEPSEEK_V4_FLASH:-}" && "$SIM_DEEPSEEK_V4_FLASH" != /* ]]; then
   config_dir="$(cd "$(dirname "$CONFIG_PATH")" && pwd)"
   export SIM_DEEPSEEK_V4_FLASH="$config_dir/$SIM_DEEPSEEK_V4_FLASH"
