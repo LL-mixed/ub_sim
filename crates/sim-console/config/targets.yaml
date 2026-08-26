@@ -1,0 +1,45 @@
+version: 1
+default_target: n4-910c1
+targets:
+  - id: local
+    title: Local host
+    kind: local
+    description: Build and run on the host running sim-console.
+    model_sources:
+      qwen3-0.6b: /Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
+
+  - id: n4-910c
+    title: n4-910c
+    kind: ssh
+    description: Native openEuler simulator testbed.
+    ssh_host: n4-910c
+    connect_timeout_secs: 15
+    repo_root: /home/ll/sim-console/ub_sim
+    workspace_source_repo: /home/ll/ub_sim
+    model_sources:
+      qwen3-0.6b: /home/ll/models/Qwen3-0.6B
+    submodule_mirrors:
+      - path: guest-linux/kernel_ub
+        fetch_url: https://github.com/LL-mixed/kernel.git
+        git_ref: refs/heads/ub_sim
+      - path: vendor/qemu_8.2.0_ub
+        fetch_url: https://gitcode.com/liliang_euler/qemu.git
+        git_ref: refs/heads/ub_sim
+
+  - id: n4-910c1
+    title: n4-910c1
+    kind: ssh
+    description: Native openEuler simulator testbed.
+    ssh_host: n4-910c1
+    connect_timeout_secs: 15
+    repo_root: /home/ll/sim-console/ub_sim
+    workspace_source_repo: /home/ll/ub_sim
+    model_sources:
+      qwen3-0.6b: /home/ll/models/Qwen3-0.6B
+    submodule_mirrors:
+      - path: guest-linux/kernel_ub
+        fetch_url: https://github.com/LL-mixed/kernel.git
+        git_ref: refs/heads/ub_sim
+      - path: vendor/qemu_8.2.0_ub
+        fetch_url: https://gitcode.com/liliang_euler/qemu.git
+        git_ref: refs/heads/ub_sim

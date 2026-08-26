@@ -1,0 +1,362 @@
+version: 1
+demos:
+  - id: obmm-pool-2
+    title: OBMM Pool / 2 Nodes
+    category: OBMM
+    summary: Export, import, and exercise a shared OBMM memory pool.
+    node_count: 2
+    topology: pair
+    data_plane: [OBMM, GVA]
+    tags: [memory-pool, coherence]
+    estimated_duration_secs: 180
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_dual_node_obmm_pool.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_dual_node_obmm_pool.sh]
+    controls: [stop, node_logs]
+
+  - id: obmm-pool-4
+    title: OBMM Pool / 4 Nodes
+    category: OBMM
+    summary: Validate full-mesh OBMM pool publication and remote access.
+    node_count: 4
+    topology: mesh
+    data_plane: [OBMM, GVA]
+    tags: [memory-pool, full-mesh]
+    estimated_duration_secs: 240
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_four_node_obmm_pool.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs, 32 GiB host memory]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_four_node_obmm_pool.sh]
+    controls: [stop, node_logs]
+
+  - id: obmm-pool-8
+    title: OBMM Pool / 8 Nodes
+    category: OBMM
+    summary: Exercise the eight-node OBMM pool and peer import matrix.
+    node_count: 8
+    topology: mesh
+    data_plane: [OBMM, GVA]
+    tags: [memory-pool, full-mesh]
+    estimated_duration_secs: 360
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_eight_node_obmm_pool.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs, 64 GiB host memory]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_eight_node_obmm_pool.sh]
+    controls: [stop, node_logs]
+
+  - id: urma-rpc-2
+    title: URMA RPC / 2 Nodes
+    category: URMA and RPC
+    summary: Run the dual-node UB RPC request and response flow.
+    node_count: 2
+    topology: pair
+    data_plane: [URMA, RPC]
+    tags: [request-response]
+    estimated_duration_secs: 180
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_dual_node_rpc.sh
+      args: [--run-id, "{run_id}"]
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_dual_node_rpc.sh]
+    controls: [stop, node_logs]
+
+  - id: urma-rpc-4
+    title: URMA RPC Matrix / 4 Nodes
+    category: URMA and RPC
+    summary: Run every directed RPC pair in a four-node full mesh.
+    node_count: 4
+    topology: mesh
+    data_plane: [URMA, RPC]
+    tags: [matrix, full-mesh]
+    estimated_duration_secs: 300
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_four_node_rpc_matrix.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_four_node_rpc_matrix.sh]
+    controls: [stop, node_logs]
+
+  - id: urma-rpc-8
+    title: URMA RPC Matrix / 8 Nodes
+    category: URMA and RPC
+    summary: Run every directed RPC pair in an eight-node full mesh.
+    node_count: 8
+    topology: mesh
+    data_plane: [URMA, RPC]
+    tags: [matrix, full-mesh]
+    estimated_duration_secs: 600
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_eight_node_rpc_matrix.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_eight_node_rpc_matrix.sh]
+    controls: [stop, node_logs]
+
+  - id: memory-service-smoke
+    title: Memory Service / Standalone Smoke
+    category: Memory Service
+    summary: Bootstrap the standalone service and validate its client contract.
+    node_count: 2
+    topology: service
+    data_plane: [Memory Service]
+    tags: [bootstrap, metadata]
+    estimated_duration_secs: 180
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_dual_node_mem_service.sh
+      args: [--run-id, "{run_id}"]
+    requirements: [QEMU, guest kernel, initramfs, mem_service submodule]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_ub_dual_node_mem_service.sh
+      - mem_service/components/mem_service
+    controls: [stop, node_logs]
+
+  - id: gsva-identity-2
+    title: GSVA Identity / 2 Nodes
+    category: GVA and GSVA
+    summary: Validate two-node GVA to GSVA identity and peer access.
+    node_count: 2
+    topology: pair
+    data_plane: [GVA, GSVA, OBMM]
+    tags: [addressing, identity]
+    estimated_duration_secs: 180
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_two_node_gsva_identity_test.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_two_node_gsva_identity_test.sh]
+    controls: [stop, node_logs]
+
+  - id: gsva-identity-4
+    title: GSVA Identity / 4 Nodes
+    category: GVA and GSVA
+    summary: Validate GSVA identity across four simulated nodes.
+    node_count: 4
+    topology: mesh
+    data_plane: [GVA, GSVA, OBMM]
+    tags: [addressing, identity]
+    estimated_duration_secs: 240
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_four_node_gsva_identity_test.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_four_node_gsva_identity_test.sh]
+    controls: [stop, node_logs]
+
+  - id: gsva-identity-8
+    title: GSVA Identity / 8 Nodes
+    category: GVA and GSVA
+    summary: Validate GSVA identity across the eight-node topology.
+    node_count: 8
+    topology: mesh
+    data_plane: [GVA, GSVA, OBMM]
+    tags: [addressing, identity]
+    estimated_duration_secs: 360
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_eight_node_gsva_identity_test.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_eight_node_gsva_identity_test.sh]
+    controls: [stop, node_logs]
+
+  - id: ub-ssd-gsva-2
+    title: UB-SSD GSVA / 2 Nodes
+    category: UB-SSD
+    summary: Validate GSVA-backed UB-SSD block write and read paths.
+    node_count: 2
+    topology: pair
+    data_plane: [GSVA, UB-SSD]
+    tags: [storage, block-io]
+    estimated_duration_secs: 180
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_two_node_ssd_gsva_test.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_two_node_ssd_gsva_test.sh]
+    controls: [stop, node_logs]
+
+  - id: ub-ssd-gsva-4
+    title: UB-SSD GSVA / 4 Nodes
+    category: UB-SSD
+    summary: Validate GSVA-backed UB-SSD access across four nodes.
+    node_count: 4
+    topology: mesh
+    data_plane: [GSVA, UB-SSD]
+    tags: [storage, block-io]
+    estimated_duration_secs: 240
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_four_node_ssd_gsva_test.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_four_node_ssd_gsva_test.sh]
+    controls: [stop, node_logs]
+
+  - id: ub-ssd-gsva-8
+    title: UB-SSD GSVA / 8 Nodes
+    category: UB-SSD
+    summary: Validate GSVA-backed UB-SSD access across eight nodes.
+    node_count: 8
+    topology: mesh
+    data_plane: [GSVA, UB-SSD]
+    tags: [storage, block-io]
+    estimated_duration_secs: 360
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_eight_node_ssd_gsva_test.sh
+      environment: { RUN_ID: "{run_id}" }
+    requirements: [QEMU, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_eight_node_ssd_gsva_test.sh]
+    controls: [stop, node_logs]
+
+  - id: direct-el0-upcall-2
+    title: Direct EL0 Upcall / 2 Nodes
+    category: Upcall
+    summary: Run the OBMM async-load coroutine and direct EL0 upcall flow.
+    node_count: 2
+    topology: pair
+    data_plane: [OBMM, Async Load, Direct EL0 Upcall]
+    tags: [coroutine, context-switch]
+    estimated_duration_secs: 240
+    command:
+      program: guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh
+      args: [--app, obmm_async_coroutine, --run-id, "{run_id}"]
+    requirements: [QEMU with async-load extension, guest kernel, initramfs]
+    required_paths: [guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh]
+    controls: [stop, node_logs]
+
+  - id: w5-qwen-2
+    title: W5 Qwen PP / 2 Nodes
+    category: W5 Inference
+    summary: Run Qwen streaming decode through a two-stage W5 pipeline.
+    node_count: 2
+    topology: pipeline
+    model: Qwen3
+    model_source: qwen3-0.6b
+    data_plane: [Memory Service, GSVA, KV Cache]
+    tags: [stream-infer, pipeline-parallel]
+    estimated_duration_secs: 300
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--nodes, "2", --steps, "{steps}", --gsva-kv, w5.macos.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: &w5_steps
+      - id: steps
+        label: Decode steps
+        kind: integer
+        default: "2"
+        min: 1
+        max: 64
+    requirements: [QEMU, guest artifacts, Qwen weights referenced by config]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.macos.env
+    controls: [stop, node_logs]
+
+  - id: w5-qwen-4
+    title: W5 Qwen PP / 4 Nodes
+    category: W5 Inference
+    summary: Run Qwen streaming decode through a four-stage W5 pipeline.
+    node_count: 4
+    topology: pipeline
+    model: Qwen3
+    model_source: qwen3-0.6b
+    data_plane: [Memory Service, GSVA, KV Cache]
+    tags: [stream-infer, pipeline-parallel]
+    estimated_duration_secs: 480
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--nodes, "4", --steps, "{steps}", --gsva-kv, w5.macos.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [QEMU, guest artifacts, Qwen weights referenced by config]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.macos.env
+    controls: [stop, node_logs]
+
+  - id: w5-qwen-8
+    title: W5 Qwen PP / 8 Nodes
+    category: W5 Inference
+    summary: Run Qwen streaming decode through the eight-stage W5 pipeline.
+    node_count: 8
+    topology: pipeline
+    model: Qwen3
+    model_source: qwen3-0.6b
+    data_plane: [Memory Service, GSVA, KV Cache]
+    tags: [stream-infer, pipeline-parallel]
+    estimated_duration_secs: 900
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--nodes, "8", --steps, "{steps}", --gsva-kv, w5.macos.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [QEMU, guest artifacts, Qwen weights referenced by config]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.macos.env
+    controls: [stop, node_logs]
+
+  - id: w5-deepseek-v4-flash-2
+    title: W5 DeepSeek V4 Flash PP / 2 Nodes
+    category: W5 Inference
+    summary: Run DeepSeek V4 Flash through a two-stage W5 pipeline.
+    node_count: 2
+    topology: pipeline
+    model: DeepSeek V4 Flash 2-bit GGUF
+    data_plane: [Simpler, Memory Service, GSVA, KV Cache]
+    tags: [stream-infer, pipeline-parallel, moe]
+    estimated_duration_secs: 480
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--nodes, "2", --steps, "{steps}", --gsva-kv, w5.deepseek-v4-flash-simpler-openeuler.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [Linux container, openEuler image, DeepSeek GGUF, Simpler]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.deepseek-v4-flash-simpler-openeuler.env
+    controls: [stop, node_logs]
+
+  - id: w5-deepseek-v4-flash-4
+    title: W5 DeepSeek V4 Flash PP / 4 Nodes
+    category: W5 Inference
+    summary: Run DeepSeek V4 Flash through a four-stage W5 pipeline.
+    node_count: 4
+    topology: pipeline
+    model: DeepSeek V4 Flash 2-bit GGUF
+    data_plane: [Simpler, Memory Service, GSVA, KV Cache]
+    tags: [stream-infer, pipeline-parallel, moe]
+    estimated_duration_secs: 720
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--nodes, "4", --steps, "{steps}", --gsva-kv, w5.deepseek-v4-flash-simpler-openeuler.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [Linux container, openEuler image, DeepSeek GGUF, Simpler]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.deepseek-v4-flash-simpler-openeuler.env
+    controls: [stop, node_logs]
+
+  - id: w5-deepseek-v4-flash-8
+    title: W5 DeepSeek V4 Flash PP / 8 Nodes
+    category: W5 Inference
+    summary: Run DeepSeek V4 Flash through the eight-stage W5 pipeline.
+    node_count: 8
+    topology: pipeline
+    model: DeepSeek V4 Flash 2-bit GGUF
+    data_plane: [Simpler, Memory Service, GSVA, KV Cache]
+    tags: [stream-infer, pipeline-parallel, moe]
+    estimated_duration_secs: 1200
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--nodes, "8", --steps, "{steps}", --gsva-kv, w5.deepseek-v4-flash-simpler-openeuler.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [Linux container, openEuler image, DeepSeek GGUF, Simpler]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.deepseek-v4-flash-simpler-openeuler.env
+    controls: [stop, node_logs]

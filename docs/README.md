@@ -4,6 +4,10 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current validation entry points:
 
+- [plans/2026-08-25-sim-console-unified-control-plane.md](plans/2026-08-25-sim-console-unified-control-plane.md)
+  - unified Web and CLI control plane for the simulator demo catalog, typed
+    launch configuration, 2/4/8-node topology state, process and node logs, run
+    history, and lifecycle controls
 - [2026-07-16-w5-deepseek-v4-flash-official-first-token-report.md](2026-07-16-w5-deepseek-v4-flash-official-first-token-report.md)
   - stage-5 evidence for the official position-0 prompt `[1]`, all 43 transformer layers, A5 matrix/vector production dispatch, bounded checkpoint reads/caches, exact terminal logits and top-1 token 294
 - [2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md](2026-07-14-w5-deepseek-v4-flash-official-routed-expert-production-report.md)

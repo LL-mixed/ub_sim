@@ -1,0 +1,25 @@
+version: 1
+demos:
+  - id: fixture-cluster
+    title: Fixture Cluster
+    category: Test Fixture
+    summary: Lightweight control-plane and browser lifecycle fixture.
+    node_count: 4
+    topology: mesh
+    data_plane: [Fixture]
+    tags: [no-qemu]
+    estimated_duration_secs: 1
+    requires_guest_artifacts: false
+    command:
+      program: crates/sim-console/tests/fixtures/demo_runner.py
+      args: [--run-id, "{run_id}", --nodes, "4", --delay-ms, "{delay_ms}"]
+    parameters:
+      - id: delay_ms
+        label: Step delay in milliseconds
+        kind: integer
+        default: "80"
+        min: 10
+        max: 1000
+    requirements: [Python 3]
+    required_paths: [crates/sim-console/tests/fixtures/demo_runner.py]
+    controls: [stop, node_logs]

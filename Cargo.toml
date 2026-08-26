@@ -12,6 +12,7 @@ members = [
     "crates/sim-uapi",
     "crates/sim-workloads",
     "crates/sim-cli",
+    "crates/sim-console",
     "crates/sim-chipbackend-simpler",
 ]
 resolver = "2"

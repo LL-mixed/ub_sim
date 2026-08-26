@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>UB Simulator Control</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true">UB</span>
+        <div>
+          <h1>UB Simulator Control</h1>
+          <p id="workspace-label">Repository control plane</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <span id="api-indicator" class="status-dot unknown" aria-hidden="true"></span>
+        <span id="api-status">Connecting</span>
+        <button id="refresh-button" class="icon-command" type="button" title="Refresh state" aria-label="Refresh state">Refresh</button>
+      </div>
+    </header>
+
+    <div id="feedback" class="feedback" role="status" hidden></div>
+
+    <main class="workspace">
+      <aside class="catalog-pane" aria-label="Demo catalog">
+        <div class="pane-heading">
+          <div>
+            <h2>Demo catalog</h2>
+            <span id="catalog-count">0 entries</span>
+          </div>
+        </div>
+        <label class="search-field">
+          <span>Search</span>
+          <input id="catalog-search" type="search" placeholder="Capability, model, topology">
+        </label>
+        <div id="category-tabs" class="category-tabs" role="tablist" aria-label="Capability family"></div>
+        <div id="catalog-list" class="catalog-list"></div>
+      </aside>
+
+      <section class="control-pane" aria-label="Selected demo and active run">
+        <div class="selection-band">
+          <div class="selection-copy">
+            <div id="selection-category" class="eyebrow">Select a demo</div>
+            <h2 id="selection-title">No demo selected</h2>
+            <p id="selection-summary">Choose a registered entry from the catalog.</p>
+          </div>
+          <div class="selection-actions">
+            <button id="start-button" class="primary-command" type="button" disabled>Start run</button>
+            <button id="stop-button" class="danger-command" type="button" hidden>Stop run</button>
+          </div>
+        </div>
+
+        <div class="config-band">
+          <dl class="demo-facts">
+            <div><dt>Topology</dt><dd id="fact-topology">-</dd></div>
+            <div><dt>Nodes</dt><dd id="fact-nodes">-</dd></div>
+            <div><dt>Model</dt><dd id="fact-model">-</dd></div>
+            <div><dt>Estimate</dt><dd id="fact-duration">-</dd></div>
+          </dl>
+          <label class="target-field">
+            <span>Execution target</span>
+            <select id="execution-target" aria-label="Execution target"></select>
+            <small id="target-description">Select where the cluster will build and run.</small>
+          </label>
+          <form id="parameter-form" class="parameter-form"></form>
+          <div class="requirements-block">
+            <h3>Host requirements</h3>
+            <div id="requirements" class="token-row"></div>
+          </div>
+          <div id="demo-readiness" class="readiness-banner checking">
+            Checking launch readiness...
+          </div>
+        </div>
+
+        <div class="run-band">
+          <div class="run-heading">
+            <div>
+              <span class="eyebrow">Cluster</span>
+              <h2 id="run-title">Topology preview</h2>
+            </div>
+            <div id="run-status-block" class="run-status-block">
+              <span id="run-status" class="status-badge idle">Idle</span>
+              <span id="run-elapsed">Not started</span>
+            </div>
+          </div>
+          <div id="topology" class="topology" aria-label="Cluster topology"></div>
+          <div id="node-detail" class="node-detail">
+            <span>Select a node to inspect its log.</span>
+          </div>
+        </div>
+
+        <div class="log-band">
+          <div class="log-toolbar">
+            <div>
+              <span class="eyebrow">Live output</span>
+              <h2 id="log-title">Process log</h2>
+            </div>
+            <div class="log-actions">
+              <button id="process-log" class="secondary-command log-source-command active" type="button" aria-pressed="true">Process log</button>
+              <label class="follow-control"><input id="follow-log" type="checkbox" checked> Follow</label>
+              <button id="clear-log" class="secondary-command" type="button">Clear view</button>
+            </div>
+          </div>
+          <pre id="log-output" class="log-output" tabindex="0"><code>No active run.</code></pre>
+        </div>
+      </section>
+
+      <aside class="runs-pane" aria-label="Run history">
+        <div class="pane-heading">
+          <div>
+            <h2>Run history</h2>
+            <span id="run-count">0 runs</span>
+          </div>
+        </div>
+        <div id="run-list" class="run-list"></div>
+      </aside>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
