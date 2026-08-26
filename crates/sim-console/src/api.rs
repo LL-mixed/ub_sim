@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
-use crate::domain::{LogChunk, RunRecord, StartRunRequest};
+use crate::domain::{LogChunk, NodeInputRequest, NodeInputResult, RunRecord, StartRunRequest};
 use crate::{RunManager, RunManagerError};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
@@ -60,6 +60,10 @@ pub fn router(manager: RunManager) -> Router {
         .route("/api/v1/runs", get(list_runs).post(start_run))
         .route("/api/v1/runs/{run_id}", get(get_run))
         .route("/api/v1/runs/{run_id}/logs", get(get_logs))
+        .route(
+            "/api/v1/runs/{run_id}/nodes/{node_id}/input",
+            post(send_node_input),
+        )
         .route("/api/v1/runs/{run_id}/stop", post(stop_run))
         .with_state(AppState { manager })
 }
@@ -145,6 +149,19 @@ async fn stop_run(
     Ok(Json(state.manager.stop(&run_id).await?))
 }
 
+async fn send_node_input(
+    State(state): State<AppState>,
+    Path((run_id, node_id)): Path<(String, String)>,
+    Json(request): Json<NodeInputRequest>,
+) -> Result<Json<NodeInputResult>, ApiError> {
+    Ok(Json(
+        state
+            .manager
+            .send_node_input(&run_id, &node_id, request)
+            .await?,
+    ))
+}
+
 impl From<RunManagerError> for ApiError {
     fn from(error: RunManagerError) -> Self {
         let status = match error {
@@ -156,8 +173,11 @@ impl From<RunManagerError> for ApiError {
             | RunManagerError::NotReady { .. }
             | RunManagerError::MissingRequirement(_)
             | RunManagerError::UnsafePath(_)
+            | RunManagerError::InvalidNodeInput(_)
             | RunManagerError::Domain(_) => StatusCode::BAD_REQUEST,
-            RunManagerError::ActiveRun(_) => StatusCode::CONFLICT,
+            RunManagerError::ActiveRun(_) | RunManagerError::NodeInputUnavailable(_) => {
+                StatusCode::CONFLICT
+            }
             RunManagerError::Io(_) | RunManagerError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self {
@@ -208,6 +228,7 @@ mod tests {
                 topology: TopologyKind::Pair,
                 model: None,
                 model_source: None,
+                node_input: None,
                 data_plane: vec![],
                 tags: vec![],
                 estimated_duration_secs: 1,
@@ -294,6 +315,23 @@ mod tests {
                     .uri("/api/v1/runs")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"demo_id":"arbitrary"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn exposes_node_input_only_for_a_known_run_and_node() {
+        let (_root, app) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/runs/missing/nodes/nodeA/input")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"data":"echo ready","append_newline":true}"#))
                     .unwrap(),
             )
             .await

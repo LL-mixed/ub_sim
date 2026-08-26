@@ -34,6 +34,10 @@ Simulator and guest logs remain under their existing `logs/` directories.
   stop escalation. A browser cannot address an arbitrary host PID.
 - Existing launcher scripts are adapters. New lifecycle behavior belongs in the
   control plane or a shared launcher library, not in another per-demo wrapper.
+- Node input must use a catalog-declared adapter and a run-owned endpoint. A
+  request may select a known node and provide payload bytes, but it must never
+  provide a socket path or remote command. Do not interpolate or log the input
+  payload; carry it over process stdin to the selected serial transport.
 - Remote execution must use a target from the loaded registry. Quote every
   reviewed command argument for the remote shell, keep the remote repository
   root fixed by target configuration, and identify the run with the

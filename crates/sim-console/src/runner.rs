@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
@@ -9,16 +10,21 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixStream;
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::domain::{
-    topology_nodes, DemoCatalog, DemoDefinition, DemoReadiness, LogChunk, NodeStatus,
+    topology_nodes, ControlCapability, DemoCatalog, DemoDefinition, DemoReadiness, LogChunk,
+    NodeInputDefinition, NodeInputKind, NodeInputRequest, NodeInputResult, NodeStatus,
     ReadinessIssue, ResolvedCommand, RunRecord, RunStatus, StartRunRequest,
 };
 use crate::target::{ExecutionTarget, ExecutionTargetKind, TargetRegistry};
 
 const MAX_LOG_LINES: usize = 500;
+const MAX_NODE_INPUT_BYTES: usize = 4096;
+const NODE_INPUT_TIMEOUT: Duration = Duration::from_secs(5);
 const NODE_STATUS_TAIL_BYTES: u64 = 256 * 1024;
 const STOP_REQUESTED_MARKER: &str = "stop.requested";
 const KERNEL_BUILD_POLICY_REV: &str = "3";
@@ -54,6 +60,10 @@ pub enum RunManagerError {
     TerminalRun(String),
     #[error("run {0} is already active")]
     ActiveRun(String),
+    #[error("invalid node input: {0}")]
+    InvalidNodeInput(String),
+    #[error("node input is unavailable: {0}")]
+    NodeInputUnavailable(String),
     #[error("demo {demo} is not ready: {reason}")]
     NotReady { demo: String, reason: String },
     #[error(transparent)]
@@ -78,6 +88,7 @@ struct RunManagerInner {
     stop_requested: RwLock<BTreeSet<String>>,
     start_lock: Mutex<()>,
     remote_log_sync: Mutex<()>,
+    node_input_lock: Mutex<()>,
     counter: AtomicU64,
 }
 
@@ -114,6 +125,7 @@ impl RunManager {
                 stop_requested: RwLock::new(BTreeSet::new()),
                 start_lock: Mutex::new(()),
                 remote_log_sync: Mutex::new(()),
+                node_input_lock: Mutex::new(()),
                 counter: AtomicU64::new(0),
             }),
         })
@@ -434,6 +446,65 @@ impl RunManager {
             next_cursor,
             complete: record.status.is_terminal(),
             lines,
+        })
+    }
+
+    pub async fn send_node_input(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        request: NodeInputRequest,
+    ) -> Result<NodeInputResult, RunManagerError> {
+        let _input_guard = self.inner.node_input_lock.lock().await;
+        let record = self.get(run_id).await?;
+        if record.status.is_terminal() {
+            return Err(RunManagerError::TerminalRun(run_id.to_string()));
+        }
+        if !record.nodes.iter().any(|node| node.id == node_id) {
+            return Err(RunManagerError::UnknownNode {
+                run: run_id.to_string(),
+                node: node_id.to_string(),
+            });
+        }
+        let demo = self
+            .inner
+            .catalog
+            .find(&record.demo_id)
+            .ok_or_else(|| RunManagerError::UnknownDemo(record.demo_id.clone()))?;
+        if !demo.controls.contains(&ControlCapability::NodeInput) {
+            return Err(RunManagerError::NodeInputUnavailable(format!(
+                "demo {} does not expose node input",
+                demo.id
+            )));
+        }
+        let adapter = demo.node_input.as_ref().ok_or_else(|| {
+            RunManagerError::NodeInputUnavailable(format!(
+                "demo {} has no node input adapter",
+                demo.id
+            ))
+        })?;
+        let payload = node_input_payload(request)?;
+        let manifest = resolve_node_input_manifest(adapter, run_id)?;
+        let target = self.resolve_target(Some(&record.target_id))?.clone();
+
+        let bytes_written = match target.kind {
+            ExecutionTargetKind::Local => {
+                let manifest = self.inner.repo_root.join(manifest);
+                send_local_node_input(adapter, &manifest, node_id, &payload).await?
+            }
+            ExecutionTargetKind::Ssh => {
+                send_remote_node_input(&target, adapter, &manifest, node_id, &payload).await?
+            }
+        };
+        append_node_input_event(
+            &self.inner.repo_root.join(&record.process_log_path),
+            node_id,
+            bytes_written,
+        )?;
+        Ok(NodeInputResult {
+            run_id: run_id.to_string(),
+            node_id: node_id.to_string(),
+            bytes_written,
         })
     }
 
@@ -824,6 +895,292 @@ impl RunManager {
     }
 }
 
+fn node_input_payload(request: NodeInputRequest) -> Result<Vec<u8>, RunManagerError> {
+    let mut payload = request.data.into_bytes();
+    if request.append_newline {
+        payload.push(b'\n');
+    }
+    if payload.is_empty() {
+        return Err(RunManagerError::InvalidNodeInput(
+            "input is empty and append_newline is false".to_string(),
+        ));
+    }
+    if payload.len() > MAX_NODE_INPUT_BYTES {
+        return Err(RunManagerError::InvalidNodeInput(format!(
+            "payload is {} bytes; maximum is {MAX_NODE_INPUT_BYTES}",
+            payload.len()
+        )));
+    }
+    Ok(payload)
+}
+
+fn resolve_node_input_manifest(
+    adapter: &NodeInputDefinition,
+    run_id: &str,
+) -> Result<PathBuf, RunManagerError> {
+    let value = adapter.manifest.replace("{run_id}", run_id);
+    if value.contains('{') || value.contains('}') {
+        return Err(RunManagerError::NodeInputUnavailable(
+            "node input manifest has an unresolved placeholder".to_string(),
+        ));
+    }
+    let path = PathBuf::from(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(RunManagerError::UnsafePath(path.display().to_string()));
+    }
+    Ok(path)
+}
+
+async fn send_local_node_input(
+    adapter: &NodeInputDefinition,
+    manifest: &Path,
+    node_id: &str,
+    payload: &[u8],
+) -> Result<usize, RunManagerError> {
+    match adapter.kind {
+        NodeInputKind::QemuSerialEnv => {
+            let socket = serial_socket_from_manifest(adapter, manifest, node_id)?;
+            let operation = async {
+                let mut stream = UnixStream::connect(&socket).await?;
+                stream.write_all(payload).await?;
+                stream.shutdown().await
+            };
+            tokio::time::timeout(NODE_INPUT_TIMEOUT, operation)
+                .await
+                .map_err(|_| {
+                    RunManagerError::NodeInputUnavailable(format!(
+                        "timed out writing to {}",
+                        socket.display()
+                    ))
+                })?
+                .map_err(|error| {
+                    RunManagerError::NodeInputUnavailable(format!(
+                        "failed to write {}: {error}",
+                        socket.display()
+                    ))
+                })?;
+            Ok(payload.len())
+        }
+    }
+}
+
+fn serial_socket_from_manifest(
+    adapter: &NodeInputDefinition,
+    manifest: &Path,
+    node_id: &str,
+) -> Result<PathBuf, RunManagerError> {
+    let source = fs::read_to_string(manifest).map_err(|error| {
+        RunManagerError::NodeInputUnavailable(format!(
+            "serial manifest is not ready at {}: {error}",
+            manifest.display()
+        ))
+    })?;
+    let variable = format!("{}_SERIAL_SOCKET", node_id.to_ascii_uppercase());
+    let line_prefix = format!("export {variable}='");
+    let mut matches = source.lines().filter_map(|line| {
+        line.strip_prefix(&line_prefix)
+            .and_then(|value| value.strip_suffix('\''))
+    });
+    let socket = matches.next().ok_or_else(|| {
+        RunManagerError::NodeInputUnavailable(format!(
+            "serial manifest has no endpoint for {node_id}"
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(RunManagerError::NodeInputUnavailable(format!(
+            "serial manifest has duplicate endpoints for {node_id}"
+        )));
+    }
+    let path = PathBuf::from(socket);
+    validate_serial_socket_path(&path, node_id, &adapter.socket_path_prefix)?;
+    Ok(path)
+}
+
+fn validate_serial_socket_path(
+    path: &Path,
+    node_id: &str,
+    allowed_prefix: &str,
+) -> Result<(), RunManagerError> {
+    let value = path.to_string_lossy();
+    let expected_name_prefix = format!("{node_id}.");
+    let valid_shape = value.starts_with(allowed_prefix)
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("serial")
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&expected_name_prefix) && name.ends_with(".sock"));
+    if !valid_shape {
+        return Err(RunManagerError::NodeInputUnavailable(format!(
+            "serial endpoint is outside the registered node socket namespace: {}",
+            path.display()
+        )));
+    }
+    let metadata = fs::metadata(path).map_err(|error| {
+        RunManagerError::NodeInputUnavailable(format!(
+            "serial endpoint is not ready at {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_socket() {
+        return Err(RunManagerError::NodeInputUnavailable(format!(
+            "serial endpoint is not a UNIX socket: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+const REMOTE_NODE_INPUT_WRITER: &str = r#"import os
+import socket
+import stat
+import sys
+
+manifest, node, allowed_prefix, max_bytes = sys.argv[1:]
+max_bytes = int(max_bytes)
+key = node.upper() + "_SERIAL_SOCKET"
+line_prefix = "export " + key + "='"
+matches = []
+with open(manifest, "r", encoding="utf-8") as source:
+    for raw_line in source:
+        line = raw_line.rstrip("\n")
+        if line.startswith(line_prefix) and line.endswith("'"):
+            matches.append(line[len(line_prefix):-1])
+if len(matches) != 1:
+    raise RuntimeError("serial manifest endpoint count is " + str(len(matches)))
+path = matches[0]
+name = os.path.basename(path)
+if not path.startswith(allowed_prefix):
+    raise RuntimeError("serial endpoint is outside the registered namespace")
+if os.path.basename(os.path.dirname(path)) != "serial":
+    raise RuntimeError("serial endpoint parent is not serial")
+if not name.startswith(node + ".") or not name.endswith(".sock"):
+    raise RuntimeError("serial endpoint does not match the selected node")
+if not stat.S_ISSOCK(os.stat(path).st_mode):
+    raise RuntimeError("serial endpoint is not a UNIX socket")
+payload = sys.stdin.buffer.read(max_bytes + 1)
+if not payload or len(payload) > max_bytes:
+    raise RuntimeError("invalid serial payload length")
+stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+stream.settimeout(5)
+try:
+    stream.connect(path)
+    stream.sendall(payload)
+finally:
+    stream.close()
+sys.stdout.write(str(len(payload)))
+"#;
+
+async fn send_remote_node_input(
+    target: &ExecutionTarget,
+    adapter: &NodeInputDefinition,
+    manifest: &Path,
+    node_id: &str,
+    payload: &[u8],
+) -> Result<usize, RunManagerError> {
+    match adapter.kind {
+        NodeInputKind::QemuSerialEnv => {}
+    }
+    let remote_command = remote_node_input_command(target, adapter, manifest, node_id)?;
+    let timeout = Duration::from_secs(target.connect_timeout_secs.unwrap_or(10) + 10);
+    let operation = async {
+        let mut command = ssh_command(target)?;
+        command
+            .arg(remote_command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            RunManagerError::Io(std::io::Error::other("SSH stdin was not created"))
+        })?;
+        stdin.write_all(payload).await?;
+        stdin.shutdown().await?;
+        drop(stdin);
+        Ok::<_, RunManagerError>(child.wait_with_output().await?)
+    };
+    let output = tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|_| {
+            RunManagerError::NodeInputUnavailable(format!(
+                "timed out writing {node_id} serial input on {}",
+                target.id
+            ))
+        })??;
+    if !output.status.success() {
+        return Err(RunManagerError::NodeInputUnavailable(format!(
+            "remote serial writer failed on {}: {}",
+            target.id,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let bytes_written = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| {
+            RunManagerError::NodeInputUnavailable(
+                "remote serial writer returned an invalid byte count".to_string(),
+            )
+        })?;
+    if bytes_written != payload.len() {
+        return Err(RunManagerError::NodeInputUnavailable(format!(
+            "remote serial writer reported {bytes_written} of {} bytes",
+            payload.len()
+        )));
+    }
+    Ok(bytes_written)
+}
+
+fn remote_node_input_command(
+    target: &ExecutionTarget,
+    adapter: &NodeInputDefinition,
+    manifest: &Path,
+    node_id: &str,
+) -> Result<String, RunManagerError> {
+    let repo_root = remote_repo_root(target)?;
+    let remote_manifest = format!(
+        "{}/{}",
+        repo_root.trim_end_matches('/'),
+        manifest.to_string_lossy()
+    );
+    Ok(format!(
+        "python3 -c {} {} {} {} {}",
+        shell_quote(REMOTE_NODE_INPUT_WRITER),
+        shell_quote(&remote_manifest),
+        shell_quote(node_id),
+        shell_quote(&adapter.socket_path_prefix),
+        MAX_NODE_INPUT_BYTES
+    ))
+}
+
+fn append_node_input_event(
+    process_log: &Path,
+    node_id: &str,
+    bytes_written: usize,
+) -> Result<(), RunManagerError> {
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(process_log)?;
+    writeln!(
+        log,
+        "[sim-console] node_input node={node_id} bytes={bytes_written} status=sent"
+    )?;
+    Ok(())
+}
+
 pub fn run_remote_worker(plan_path: &Path) -> Result<(), RunManagerError> {
     let plan: RemoteRunPlan = serde_json::from_slice(&fs::read(plan_path)?)?;
     let source_head = plan.source_head.clone();
@@ -1138,10 +1495,12 @@ fn remote_mirror_fetch_command(
     source_path: &str,
     expected: &str,
 ) -> String {
+    let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "target_path={target_path}; source_path={source_path}; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null && git -C \"$source_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags \"$source_path\" {expected}; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {git_ref} || true; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {expected}; fi; git -C \"$target_path\" cat-file -e {expected}^{{commit}}; ",
+        "target_path={target_path}; source_path={source_path}; mirror_ref={mirror_ref}; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null && git -C \"$source_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags \"$source_path\" {expected}:\"$mirror_ref\"; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {git_ref}:\"$mirror_ref\" || true; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {expected}:\"$mirror_ref\"; fi; git -C \"$target_path\" cat-file -e {expected}^{{commit}}; git -C \"$target_path\" update-ref \"$mirror_ref\" {expected}; ",
         target_path = shell_quote(target_path),
         source_path = shell_quote(source_path),
+        mirror_ref = shell_quote(&mirror_ref),
         expected = shell_quote(expected),
         fetch_url = shell_quote(&mirror.fetch_url),
         git_ref = shell_quote(&mirror.git_ref),
@@ -1576,11 +1935,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use tempfile::TempDir;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::UnixListener;
 
     use super::*;
     use crate::domain::{
-        CommandDefinition, ControlCapability, DemoDefinition, ParameterDefinition, ParameterKind,
-        TopologyKind,
+        CommandDefinition, ControlCapability, DemoDefinition, NodeInputDefinition, NodeInputKind,
+        NodeInputRequest, ParameterDefinition, ParameterKind, TopologyKind,
     };
 
     fn fixture_repo() -> (TempDir, RunManager) {
@@ -1606,6 +1967,11 @@ mod tests {
             topology: TopologyKind::Pair,
             model: None,
             model_source: None,
+            node_input: Some(NodeInputDefinition {
+                kind: NodeInputKind::QemuSerialEnv,
+                manifest: "crates/sim-console/tests/fixtures/serial.{run_id}.env".to_string(),
+                socket_path_prefix: "/tmp/sim-console-node-input-".to_string(),
+            }),
             data_plane: vec![],
             tags: vec![],
             estimated_duration_secs: 1,
@@ -1626,7 +1992,11 @@ mod tests {
             }],
             requirements: vec![],
             required_paths: vec!["crates/sim-console/tests/fixtures/demo_runner.py".to_string()],
-            controls: vec![ControlCapability::Stop, ControlCapability::NodeLogs],
+            controls: vec![
+                ControlCapability::Stop,
+                ControlCapability::NodeLogs,
+                ControlCapability::NodeInput,
+            ],
         };
         let manager = RunManager::new(
             root.path(),
@@ -1661,6 +2031,107 @@ mod tests {
         let logs = manager.logs(&record.id, None, 0).await.unwrap();
         assert!(logs.lines.iter().any(|line| line.contains("fixture ready")));
         assert!(logs.lines.iter().any(|line| line.contains("fixture pass")));
+    }
+
+    #[tokio::test]
+    async fn sends_exact_input_to_the_selected_node_serial_socket() {
+        let (root, manager) = fixture_repo();
+        let record = manager
+            .start(StartRunRequest {
+                demo_id: "fixture".to_string(),
+                target_id: None,
+                parameters: BTreeMap::from([("delay".to_string(), "10".to_string())]),
+            })
+            .await
+            .unwrap();
+        let runtime_dir = PathBuf::from(format!("/tmp/sim-console-node-input-{}", record.id));
+        let serial_dir = runtime_dir.join("serial");
+        fs::create_dir_all(&serial_dir).unwrap();
+        let socket = serial_dir.join("nodeA.fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let manifest = root.path().join(format!(
+            "crates/sim-console/tests/fixtures/serial.{}.env",
+            record.id
+        ));
+        fs::write(
+            manifest,
+            format!("export NODEA_SERIAL_SOCKET='{}'\n", socket.display()),
+        )
+        .unwrap();
+        let receiver = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            received
+        });
+
+        let secret = "fixture serial command";
+        let result = manager
+            .send_node_input(
+                &record.id,
+                "nodeA",
+                NodeInputRequest {
+                    data: secret.to_string(),
+                    append_newline: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.node_id, "nodeA");
+        assert_eq!(result.bytes_written, secret.len() + 1);
+        assert_eq!(receiver.await.unwrap(), b"fixture serial command\n");
+        let process_log = fs::read_to_string(
+            root.path()
+                .join("out/sim-console/runs")
+                .join(&record.id)
+                .join("process.log"),
+        )
+        .unwrap();
+        assert!(process_log.contains("node_input node=nodeA bytes=23 status=sent"));
+        assert!(!process_log.contains(secret));
+        manager.stop(&record.id).await.unwrap();
+        fs::remove_dir_all(runtime_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_or_unknown_node_input_before_socket_access() {
+        let (_root, manager) = fixture_repo();
+        let record = manager
+            .start(StartRunRequest {
+                demo_id: "fixture".to_string(),
+                target_id: None,
+                parameters: BTreeMap::from([("delay".to_string(), "10".to_string())]),
+            })
+            .await
+            .unwrap();
+
+        let oversized = manager
+            .send_node_input(
+                &record.id,
+                "nodeA",
+                NodeInputRequest {
+                    data: "x".repeat(MAX_NODE_INPUT_BYTES),
+                    append_newline: true,
+                },
+            )
+            .await;
+        assert!(matches!(
+            oversized,
+            Err(RunManagerError::InvalidNodeInput(_))
+        ));
+        let unknown = manager
+            .send_node_input(
+                &record.id,
+                "nodeZ",
+                NodeInputRequest {
+                    data: "date".to_string(),
+                    append_newline: true,
+                },
+            )
+            .await;
+        assert!(matches!(unknown, Err(RunManagerError::UnknownNode { .. })));
+        manager.stop(&record.id).await.unwrap();
     }
 
     #[tokio::test]
@@ -1890,6 +2361,21 @@ mod tests {
         let stop = remote_stop_command(&target, "sim-console-42").unwrap();
         assert!(stop.contains("kill -TERM -- \"-$pid\""));
         assert!(stop.contains("process-group.pid"));
+        let input = remote_node_input_command(
+            &target,
+            &NodeInputDefinition {
+                kind: NodeInputKind::QemuSerialEnv,
+                manifest: "out/serial.{run_id}.env".to_string(),
+                socket_path_prefix: "/tmp/ubqe_".to_string(),
+            },
+            Path::new("out/serial.sim-console-42.env"),
+            "nodeA",
+        )
+        .unwrap();
+        assert!(input.contains("/home/test/repo with space/out/serial.sim-console-42.env"));
+        assert!(input.contains("/tmp/ubqe_"));
+        assert!(input.contains("nodeA"));
+        assert!(input.contains("sys.stdin.buffer.read"));
     }
 
     #[test]
@@ -1929,12 +2415,19 @@ mod tests {
             "/source/repo/vendor/qemu_8.2.0_ub",
             "0123456789abcdef",
         );
-        assert!(command.contains("fetch --no-tags \"$source_path\" '0123456789abcdef'"));
+        assert!(command.contains(
+            "fetch --no-tags \"$source_path\" \
+             '0123456789abcdef':\"$mirror_ref\""
+        ));
+        assert!(command.contains("mirror_ref='refs/sim-console/mirrors/0123456789abcdef'"));
+        assert!(command.contains("update-ref \"$mirror_ref\" '0123456789abcdef'"));
         assert!(command.contains(
             "fetch --no-tags 'https://example.invalid/qemu.git' \
-             'refs/heads/ub_sim' || true"
+             'refs/heads/ub_sim':\"$mirror_ref\" || true"
         ));
-        assert!(command
-            .contains("fetch --no-tags 'https://example.invalid/qemu.git' '0123456789abcdef'"));
+        assert!(command.contains(
+            "fetch --no-tags 'https://example.invalid/qemu.git' \
+             '0123456789abcdef':\"$mirror_ref\""
+        ));
     }
 }

@@ -38,6 +38,8 @@ cargo run -p sim-console -- \
   run w5-deepseek-v4-flash-8 --target n4-910c --set steps=2
 cargo run -p sim-console -- status <run-id>
 cargo run -p sim-console -- logs <run-id> --node nodeA
+cargo run -p sim-console -- \
+  input <run-id> --node nodeA --text "uname -a"
 cargo run -p sim-console -- stop <run-id>
 ```
 
@@ -93,6 +95,23 @@ The managed `repo_root` must differ from `workspace_source_repo`. Sim-console
 never resets or cleans the source repository, which protects an existing dirty
 testbed checkout such as `/home/ll/ub_sim`.
 
+## Node Serial Input
+
+W5 demos declare a reviewed `qemu_serial_env` node-input adapter. Select a live
+node in the Web console to display its serial log and input line. Enter sends a
+UTF-8 line with a trailing newline to that node only. The equivalent CLI is:
+
+```bash
+cargo run -p sim-console -- \
+  input <run-id> --node nodeA --text "uname -a"
+```
+
+Use `--no-newline` when the payload must be written without Enter. Input is
+limited to 4096 bytes. The browser cannot provide a socket path, SSH host, or
+remote command: the backend resolves the selected node through the run-scoped
+serial manifest. Remote payload bytes travel through SSH stdin and are never
+interpolated into a shell command or copied into the process log.
+
 ## Lightweight Fixture
 
 Use the fixture catalog to test the control plane without QEMU or model data:
@@ -106,9 +125,10 @@ cargo run -p sim-console -- \
 ## Current Control Boundary
 
 The first implementation provides run start/stop, process logs, node discovery,
-node status, and node-specific log selection. Existing launchers do not expose
-one uniform per-node control endpoint, so node restart, pause, resume, and QMP
-commands remain disabled until adapters publish a stable node-control contract.
+node status, node-specific log selection, and serial input for demos with a
+reviewed node-input adapter. Existing launchers do not expose one uniform
+per-node lifecycle endpoint, so node restart, pause, resume, and QMP commands
+remain disabled until adapters publish a stable node-control contract.
 
 Local and reviewed SSH targets use the same catalog, run records, logs, and
 controls. Arbitrary browser-provided hosts and commands are not part of the

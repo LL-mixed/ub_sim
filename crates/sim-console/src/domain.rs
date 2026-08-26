@@ -22,6 +22,8 @@ pub struct DemoDefinition {
     #[serde(default)]
     pub model_source: Option<String>,
     #[serde(default)]
+    pub node_input: Option<NodeInputDefinition>,
+    #[serde(default)]
     pub data_plane: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -83,6 +85,20 @@ pub enum ParameterKind {
 pub enum ControlCapability {
     Stop,
     NodeLogs,
+    NodeInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeInputDefinition {
+    pub kind: NodeInputKind,
+    pub manifest: String,
+    pub socket_path_prefix: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeInputKind {
+    QemuSerialEnv,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,6 +193,20 @@ pub struct LogChunk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeInputRequest {
+    pub data: String,
+    #[serde(default = "default_append_newline")]
+    pub append_newline: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeInputResult {
+    pub run_id: String,
+    pub node_id: String,
+    pub bytes_written: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DemoReadiness {
     pub demo_id: String,
     pub target_id: String,
@@ -211,6 +241,10 @@ fn default_requires_guest_artifacts() -> bool {
 
 fn default_local_target_id() -> String {
     "local".to_string()
+}
+
+fn default_append_newline() -> bool {
+    true
 }
 
 impl DemoDefinition {
@@ -329,6 +363,7 @@ mod tests {
             topology: TopologyKind::Pair,
             model: None,
             model_source: None,
+            node_input: None,
             data_plane: vec![],
             tags: vec![],
             estimated_duration_secs: 1,

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use sim_console::api;
+use sim_console::domain::NodeInputRequest;
 use sim_console::domain::RunStatus;
 use sim_console::{DemoCatalog, RunManager, StartRunRequest, TargetRegistry};
 
@@ -17,6 +18,7 @@ const USAGE: &str = r#"Usage:
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] run DEMO [--target TARGET] [--set NAME=VALUE]
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] status RUN_ID
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] logs RUN_ID [--node NODE]
+  sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] input RUN_ID --node NODE --text TEXT [--no-newline]
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] stop RUN_ID
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] serve [--listen ADDRESS]
 "#;
@@ -96,6 +98,15 @@ async fn main() -> Result<()> {
                 println!("{line}");
             }
         }
+        "input" => {
+            let (run_id, node, request) = parse_input_args(args)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &manager.send_node_input(&run_id, &node, request).await?
+                )?
+            );
+        }
         "stop" => {
             let run_id = take_positional(&mut args, "RUN_ID")?;
             require_empty(&args)?;
@@ -165,6 +176,22 @@ async fn run_command(manager: &RunManager, mut args: Vec<String>) -> Result<()> 
     }
 }
 
+fn parse_input_args(mut args: Vec<String>) -> Result<(String, String, NodeInputRequest)> {
+    let run_id = take_positional(&mut args, "RUN_ID")?;
+    let node = take_option(&mut args, "--node")?.context("--node is required")?;
+    let data = take_option(&mut args, "--text")?.context("--text is required")?;
+    let append_newline = !take_flag(&mut args, "--no-newline");
+    require_empty(&args)?;
+    Ok((
+        run_id,
+        node,
+        NodeInputRequest {
+            data,
+            append_newline,
+        },
+    ))
+}
+
 fn take_option(args: &mut Vec<String>, name: &str) -> Result<Option<String>> {
     let Some(index) = args.iter().position(|item| item == name) else {
         return Ok(None);
@@ -182,6 +209,14 @@ fn take_positional(args: &mut Vec<String>, name: &str) -> Result<String> {
         bail!("missing {name}\n\n{USAGE}");
     }
     Ok(args.remove(0))
+}
+
+fn take_flag(args: &mut Vec<String>, name: &str) -> bool {
+    let Some(index) = args.iter().position(|item| item == name) else {
+        return false;
+    };
+    args.remove(index);
+    true
 }
 
 fn require_empty(args: &[String]) -> Result<()> {
@@ -207,5 +242,27 @@ fn absolute_from(root: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         root.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_node_input_cli_arguments_without_shell_interpretation() {
+        let (run_id, node, request) = parse_input_args(vec![
+            "run-42".to_string(),
+            "--node".to_string(),
+            "nodeC".to_string(),
+            "--text".to_string(),
+            "echo 'Huawei is'".to_string(),
+            "--no-newline".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(run_id, "run-42");
+        assert_eq!(node, "nodeC");
+        assert_eq!(request.data, "echo 'Huawei is'");
+        assert!(!request.append_newline);
     }
 }

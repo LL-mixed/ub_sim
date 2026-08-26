@@ -106,6 +106,15 @@
             </div>
           </div>
           <pre id="log-output" class="log-output" tabindex="0"><code>No active run.</code></pre>
+          <form id="node-input-form" class="node-input-form" hidden>
+            <label id="node-input-label" for="node-input">Node input</label>
+            <div class="node-input-row">
+              <span class="terminal-prompt" aria-hidden="true">&gt;</span>
+              <input id="node-input" type="text" maxlength="4095" autocomplete="off" spellcheck="false">
+              <button id="send-node-input" class="primary-command" type="submit">Send</button>
+            </div>
+            <span id="node-input-status" class="node-input-status" aria-live="polite"></span>
+          </form>
         </div>
       </section>
 

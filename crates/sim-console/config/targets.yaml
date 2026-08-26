@@ -19,6 +19,9 @@ targets:
     model_sources:
       qwen3-0.6b: /home/ll/models/Qwen3-0.6B
     submodule_mirrors:
+      - path: mem_service
+        fetch_url: https://github.com/LL-mixed/mem_service.git
+        git_ref: refs/heads/master
       - path: guest-linux/kernel_ub
         fetch_url: https://github.com/LL-mixed/kernel.git
         git_ref: refs/heads/ub_sim
@@ -37,6 +40,9 @@ targets:
     model_sources:
       qwen3-0.6b: /home/ll/models/Qwen3-0.6B
     submodule_mirrors:
+      - path: mem_service
+        fetch_url: https://github.com/LL-mixed/mem_service.git
+        git_ref: refs/heads/master
       - path: guest-linux/kernel_ub
         fetch_url: https://github.com/LL-mixed/kernel.git
         git_ref: refs/heads/ub_sim

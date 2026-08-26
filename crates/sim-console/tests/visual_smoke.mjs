@@ -23,7 +23,7 @@ const demo = {
   tags: ["w5", "deepseek", "pipeline"],
   data_plane: ["Memory Service", "GSVA", "OBMM"],
   requirements: ["QEMU", "openEuler image", "2-bit GGUF"],
-  controls: ["stop"],
+  controls: ["stop", "node_input"],
   parameters: [
     {
       id: "steps",
@@ -92,9 +92,24 @@ const mockApi = `
         "[w5] decode step=4 handoff=nodeE gsva=attached",
       ],
     })};
-    window.fetch = async (input) => {
+    window.__nodeInputRequests = [];
+    window.fetch = async (input, options = {}) => {
       const url = String(input);
       const path = url.split("?")[0];
+      if (path.includes("/nodes/") && path.endsWith("/input")) {
+        const request = JSON.parse(options.body);
+        window.__nodeInputRequests.push({ path, request });
+        const bytes = new TextEncoder().encode(request.data).length +
+          (request.append_newline ? 1 : 0);
+        return new Response(JSON.stringify({
+          run_id: "visual-run",
+          node_id: "nodeA",
+          bytes_written: bytes,
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       const payload = path.includes("/logs") ? logChunk : responses[path];
       if (payload === undefined) {
         return new Response(JSON.stringify({ error: "fixture endpoint missing" }), {
@@ -163,13 +178,14 @@ async function screenshot(width, height, output) {
     await protocol.send("Page.enable", {}, sessionId);
     await protocol.send("Page.navigate", { url: `file://${fixturePage}` }, sessionId);
     await delay(1800);
+    await assertParameterDraftSurvivesRefresh(protocol, sessionId);
     await assertProcessLogRoundTrip(protocol, sessionId);
 
     const metrics = await protocol.send(
       "Runtime.evaluate",
       {
         expression:
-          "({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, logBandBottom: document.querySelector('.log-band').getBoundingClientRect().bottom, logOutputHeight: document.querySelector('.log-output').getBoundingClientRect().height, logActionsHeight: document.querySelector('.log-actions').getBoundingClientRect().height, logActionsRight: document.querySelector('.log-actions').getBoundingClientRect().right})",
+          "({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, logBandBottom: document.querySelector('.log-band').getBoundingClientRect().bottom, logOutputHeight: document.querySelector('.log-output').getBoundingClientRect().height, logActionsHeight: document.querySelector('.log-actions').getBoundingClientRect().height, logActionsRight: document.querySelector('.log-actions').getBoundingClientRect().right, inputHidden: document.querySelector('#node-input-form').hidden, inputBottom: document.querySelector('#node-input-form').getBoundingClientRect().bottom})",
         returnByValue: true,
       },
       sessionId,
@@ -183,12 +199,14 @@ async function screenshot(width, height, output) {
     if (
       width > 820 &&
       (Math.abs(viewport.logBandBottom - viewport.height) > 1 ||
-        viewport.logOutputHeight < 120 ||
+        (viewport.inputHidden
+          ? viewport.logOutputHeight < 120
+          : viewport.logOutputHeight < 50 || viewport.inputBottom > viewport.height) ||
         viewport.logActionsHeight < 20 ||
         viewport.logActionsRight > viewport.width)
     ) {
       throw new Error(
-        `log area geometry is invalid bottom=${viewport.logBandBottom} height=${viewport.height} outputHeight=${viewport.logOutputHeight} actionsHeight=${viewport.logActionsHeight} actionsRight=${viewport.logActionsRight}`,
+        `log area geometry is invalid bottom=${viewport.logBandBottom} height=${viewport.height} outputHeight=${viewport.logOutputHeight} actionsHeight=${viewport.logActionsHeight} actionsRight=${viewport.logActionsRight} inputHidden=${viewport.inputHidden} inputBottom=${viewport.inputBottom}`,
       );
     }
 
@@ -202,6 +220,30 @@ async function screenshot(width, height, output) {
     await protocol.send("Browser.close").catch(() => {});
     await Promise.race([waitForExit(browser), delay(2000)]);
     if (browser.exitCode === null) browser.kill("SIGKILL");
+  }
+}
+
+async function assertParameterDraftSurvivesRefresh(protocol, sessionId) {
+  await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "const input = document.querySelector('[name=steps]'); input.focus(); input.value = '16'; input.dispatchEvent(new Event('input', { bubbles: true }))",
+    },
+    sessionId,
+  );
+  await delay(1200);
+  const draft = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({value: document.querySelector('[name=steps]').value, focused: document.activeElement === document.querySelector('[name=steps]')})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (draft.result.value.value !== "16" || !draft.result.value.focused) {
+    throw new Error(`parameter draft did not survive refresh: ${JSON.stringify(draft.result.value)}`);
   }
 }
 
@@ -231,6 +273,35 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
 
   await protocol.send(
     "Runtime.evaluate",
+    {
+      expression:
+        "document.querySelector('#node-input').value = 'echo ready'; document.querySelector('#node-input-form').requestSubmit()",
+    },
+    sessionId,
+  );
+  await delay(100);
+  const inputView = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({requests: window.__nodeInputRequests, value: document.querySelector('#node-input').value, status: document.querySelector('#node-input-status').textContent, hidden: document.querySelector('#node-input-form').hidden})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (
+    inputView.result.value.requests.length !== 1 ||
+    inputView.result.value.requests[0].request.data !== "echo ready" ||
+    inputView.result.value.requests[0].request.append_newline !== true ||
+    inputView.result.value.value !== "" ||
+    inputView.result.value.status !== "Sent 11 bytes to nodeA" ||
+    inputView.result.value.hidden
+  ) {
+    throw new Error(`node input failed: ${JSON.stringify(inputView.result.value)}`);
+  }
+
+  await protocol.send(
+    "Runtime.evaluate",
     { expression: "document.querySelector('#process-log').click()" },
     sessionId,
   );
@@ -239,7 +310,7 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({title: document.querySelector('#log-title').textContent, processSelected: document.querySelector('#process-log').getAttribute('aria-pressed'), selectedNodes: document.querySelectorAll('.node-tile.selected').length})",
+        "({title: document.querySelector('#log-title').textContent, processSelected: document.querySelector('#process-log').getAttribute('aria-pressed'), selectedNodes: document.querySelectorAll('.node-tile.selected').length, inputHidden: document.querySelector('#node-input-form').hidden})",
       returnByValue: true,
     },
     sessionId,
@@ -247,10 +318,17 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
   if (
     processView.result.value.title !== "Process log" ||
     processView.result.value.processSelected !== "true" ||
-    processView.result.value.selectedNodes !== 0
+    processView.result.value.selectedNodes !== 0 ||
+    !processView.result.value.inputHidden
   ) {
     throw new Error(`process log return failed: ${JSON.stringify(processView.result.value)}`);
   }
+  await protocol.send(
+    "Runtime.evaluate",
+    { expression: "document.querySelector('.node-tile').click()" },
+    sessionId,
+  );
+  await delay(100);
 }
 
 function connectDevTools(browser) {

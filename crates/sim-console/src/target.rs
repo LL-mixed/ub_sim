@@ -264,7 +264,11 @@ mod tests {
             n4.model_sources.get("qwen3-0.6b").map(String::as_str),
             Some("/home/ll/models/Qwen3-0.6B")
         );
-        assert_eq!(n4.submodule_mirrors.len(), 2);
+        assert_eq!(n4.submodule_mirrors.len(), 3);
+        assert!(n4
+            .submodule_mirrors
+            .iter()
+            .any(|mirror| mirror.path == "mem_service"));
         assert!(n4
             .submodule_mirrors
             .iter()

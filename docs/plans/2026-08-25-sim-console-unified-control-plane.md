@@ -119,8 +119,12 @@ Their observable state is derived from log evidence:
 - `failed`: failure, panic, or fatal marker observed;
 - `stopped`: run was stopped before a stronger terminal result.
 
-The first phase supports node selection and node-specific log inspection. A
-node action is enabled only when its adapter exposes a stable control endpoint.
+The first phase supports node selection, node-specific log inspection, and
+serial input where a catalog record declares a stable adapter. The request
+selects only a known run and node; socket paths remain backend-owned. Remote
+payload bytes travel through SSH stdin and are not interpolated into a shell
+command or written to the process log. Other node actions remain disabled
+unless their adapters expose stable control endpoints.
 
 ## 5. APIs And CLI
 
@@ -135,6 +139,7 @@ GET    /api/v1/runs
 POST   /api/v1/runs
 GET    /api/v1/runs/{run_id}
 GET    /api/v1/runs/{run_id}/logs?cursor=N&node=nodeA
+POST   /api/v1/runs/{run_id}/nodes/{node_id}/input
 POST   /api/v1/runs/{run_id}/stop
 ```
 
@@ -148,6 +153,7 @@ sim-console run <demo-id> [--target target-id] [--set name=value]
 sim-console runs
 sim-console status <run-id>
 sim-console logs <run-id> [--node nodeA]
+sim-console input <run-id> --node nodeA --text "uname -a"
 sim-console stop <run-id>
 sim-console serve [--listen 127.0.0.1:9080]
 ```
@@ -163,6 +169,7 @@ The first screen is an operational workspace:
 - main workspace: selected demo, topology, typed configuration, and start;
 - run workspace: topology with live node states and selected-node details;
 - lower log band: process or node log with cursor-based incremental refresh;
+- selected-node serial input for demos with a reviewed node-input adapter;
 - run history: recent status, duration, topology, and result.
 
 The page polls lightweight state and log cursors. A later phase may add SSE, but

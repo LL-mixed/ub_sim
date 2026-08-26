@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::domain::{DemoCatalog, DemoDefinition};
+use crate::domain::{ControlCapability, DemoCatalog, DemoDefinition};
 
 const DEFAULT_CATALOG: &str = include_str!("../catalog/demos.yaml");
 
@@ -99,6 +99,28 @@ fn validate_demo(demo: &DemoDefinition) -> Result<(), CatalogError> {
     validate_relative_path(&demo.command.program).map_err(|reason| fail(&reason))?;
     for path in &demo.required_paths {
         validate_relative_path(path).map_err(|reason| fail(&reason))?;
+    }
+    match &demo.node_input {
+        Some(adapter) => {
+            if !demo.controls.contains(&ControlCapability::NodeInput) {
+                return Err(fail("node_input adapter requires the node_input control"));
+            }
+            validate_relative_path(&adapter.manifest).map_err(|reason| fail(&reason))?;
+            if !adapter.manifest.contains("{run_id}") {
+                return Err(fail("node_input manifest must contain {run_id}"));
+            }
+            let unresolved = adapter.manifest.replace("{run_id}", "");
+            if unresolved.contains('{') || unresolved.contains('}') {
+                return Err(fail("node_input manifest has an unsupported placeholder"));
+            }
+            if !Path::new(&adapter.socket_path_prefix).is_absolute() {
+                return Err(fail("node_input socket_path_prefix must be absolute"));
+            }
+        }
+        None if demo.controls.contains(&ControlCapability::NodeInput) => {
+            return Err(fail("node_input control requires a node_input adapter"));
+        }
+        None => {}
     }
 
     let mut parameter_ids = BTreeSet::new();
@@ -212,6 +234,24 @@ demos:
             .replace("fixture", "../fixture");
         assert!(matches!(
             DemoCatalog::parse(&escaping),
+            Err(CatalogError::InvalidDemo { .. })
+        ));
+
+        let unbound_node_input = r#"
+version: 1
+demos:
+  - id: fixture
+    title: Fixture
+    category: Test
+    summary: Test
+    node_count: 1
+    topology: service
+    estimated_duration_secs: 1
+    command: { program: fixture }
+    controls: [node_input]
+"#;
+        assert!(matches!(
+            DemoCatalog::parse(unbound_node_input),
             Err(CatalogError::InvalidDemo { .. })
         ));
     }

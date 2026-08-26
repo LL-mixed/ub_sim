@@ -733,6 +733,77 @@ p {
   overflow-wrap: anywhere;
 }
 
+.node-input-form {
+  margin-top: 8px;
+}
+
+.node-input-form[hidden] {
+  display: none;
+}
+
+.node-input-form > label {
+  width: 1px;
+  height: 1px;
+  position: absolute;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.log-band.node-input-active .log-output {
+  min-height: 50px;
+}
+
+.node-input-row {
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  overflow: hidden;
+  color: var(--terminal-text);
+  background: var(--terminal);
+  border: 1px solid var(--terminal-line);
+  border-radius: 5px;
+}
+
+.terminal-prompt {
+  padding-left: 10px;
+  color: #65d0b7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 800;
+}
+
+.node-input-row input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  color: var(--terminal-text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.node-input-row input::placeholder {
+  color: #7f8d85;
+}
+
+.node-input-row .primary-command {
+  height: 30px;
+  min-height: 30px;
+  margin-right: 4px;
+}
+
+.node-input-status {
+  min-height: 14px;
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .run-item .status-badge {
   min-height: 20px;
   padding: 0 6px;

@@ -13,7 +13,9 @@ const state = {
   selectedNodeId: null,
   logCursor: 0,
   logLines: [],
+  parameterDrafts: {},
   refreshing: false,
+  sendingNodeInput: false,
 };
 
 const elements = {
@@ -44,11 +46,17 @@ const elements = {
   runElapsed: document.querySelector("#run-elapsed"),
   topology: document.querySelector("#topology"),
   nodeDetail: document.querySelector("#node-detail"),
+  logBand: document.querySelector(".log-band"),
   logTitle: document.querySelector("#log-title"),
   logOutput: document.querySelector("#log-output"),
   processLog: document.querySelector("#process-log"),
   followLog: document.querySelector("#follow-log"),
   clearLog: document.querySelector("#clear-log"),
+  nodeInputForm: document.querySelector("#node-input-form"),
+  nodeInputLabel: document.querySelector("#node-input-label"),
+  nodeInput: document.querySelector("#node-input"),
+  sendNodeInput: document.querySelector("#send-node-input"),
+  nodeInputStatus: document.querySelector("#node-input-status"),
   runList: document.querySelector("#run-list"),
   runCount: document.querySelector("#run-count"),
 };
@@ -188,6 +196,59 @@ function renderTargets() {
     : "No execution target is selected.";
 }
 
+function parameterDraftFor(demo) {
+  const draft = state.parameterDrafts[demo.id] || {};
+  for (const parameter of demo.parameters || []) {
+    if (!Object.hasOwn(draft, parameter.id)) draft[parameter.id] = parameter.default;
+  }
+  state.parameterDrafts[demo.id] = draft;
+  return draft;
+}
+
+function renderParameterForm(demo) {
+  const parameters = demo.parameters || [];
+  const signature = JSON.stringify(parameters);
+  if (
+    elements.parameterForm.dataset.demoId === demo.id &&
+    elements.parameterForm.dataset.signature === signature
+  ) {
+    return;
+  }
+
+  const draft = parameterDraftFor(demo);
+  elements.parameterForm.replaceChildren();
+  for (const parameter of parameters) {
+    const label = document.createElement("label");
+    label.className = "parameter-field";
+    label.textContent = parameter.label;
+    let control;
+    if (parameter.kind === "select") {
+      control = document.createElement("select");
+      for (const choice of parameter.choices) {
+        const option = document.createElement("option");
+        option.value = choice;
+        option.textContent = choice;
+        control.append(option);
+      }
+    } else {
+      control = document.createElement("input");
+      control.type = "number";
+      if (parameter.min !== null && parameter.min !== undefined) control.min = String(parameter.min);
+      if (parameter.max !== null && parameter.max !== undefined) control.max = String(parameter.max);
+      control.step = "1";
+    }
+    control.name = parameter.id;
+    control.value = draft[parameter.id];
+    control.addEventListener("input", () => {
+      draft[parameter.id] = control.value;
+    });
+    label.append(control);
+    elements.parameterForm.append(label);
+  }
+  elements.parameterForm.dataset.demoId = demo.id;
+  elements.parameterForm.dataset.signature = signature;
+}
+
 function renderSelection() {
   const demo = selectedDemo();
   const readiness = selectedDemoReadiness();
@@ -204,33 +265,7 @@ function renderSelection() {
   elements.factModel.textContent = demo.model || "Not model-specific";
   elements.factDuration.textContent = formatDuration(demo.estimated_duration_secs * 1000);
 
-  elements.parameterForm.replaceChildren();
-  for (const parameter of demo.parameters || []) {
-    const label = document.createElement("label");
-    label.className = "parameter-field";
-    label.textContent = parameter.label;
-    let control;
-    if (parameter.kind === "select") {
-      control = document.createElement("select");
-      for (const choice of parameter.choices) {
-        const option = document.createElement("option");
-        option.value = choice;
-        option.textContent = choice;
-        option.selected = choice === parameter.default;
-        control.append(option);
-      }
-    } else {
-      control = document.createElement("input");
-      control.type = "number";
-      control.value = parameter.default;
-      if (parameter.min !== null && parameter.min !== undefined) control.min = String(parameter.min);
-      if (parameter.max !== null && parameter.max !== undefined) control.max = String(parameter.max);
-      control.step = "1";
-    }
-    control.name = parameter.id;
-    label.append(control);
-    elements.parameterForm.append(label);
-  }
+  renderParameterForm(demo);
 
   elements.requirements.replaceChildren();
   for (const requirement of demo.requirements || []) {
@@ -324,6 +359,18 @@ function renderRunWorkspace() {
   elements.logTitle.textContent = node ? `${node.label} log` : "Process log";
   elements.processLog.classList.toggle("active", !node);
   elements.processLog.setAttribute("aria-pressed", String(!node));
+  const nodeInputAvailable = Boolean(
+    run &&
+      node &&
+      isLive(run.status) &&
+      (demo.controls || []).includes("node_input"),
+  );
+  elements.nodeInputForm.hidden = !nodeInputAvailable;
+  elements.logBand.classList.toggle("node-input-active", nodeInputAvailable);
+  elements.nodeInputLabel.textContent = node ? `${node.label} input` : "Node input";
+  elements.nodeInput.placeholder = node ? `Send a line to ${node.label}` : "Send a line";
+  elements.nodeInput.disabled = !nodeInputAvailable || state.sendingNodeInput;
+  elements.sendNodeInput.disabled = !nodeInputAvailable || state.sendingNodeInput;
 }
 
 function selectNode(nodeId) {
@@ -333,6 +380,7 @@ function selectNode(nodeId) {
 function selectLogSource(nodeId) {
   if (state.selectedNodeId === nodeId) return;
   state.selectedNodeId = nodeId;
+  elements.nodeInputStatus.textContent = "";
   resetLog();
   renderRunWorkspace();
   void refreshLogs();
@@ -434,6 +482,34 @@ async function stopRun() {
     showFeedback(`Stop failed: ${error.message}`);
   } finally {
     elements.stopButton.disabled = false;
+  }
+}
+
+async function sendNodeInput(event) {
+  event.preventDefault();
+  const run = selectedRun();
+  const nodeId = state.selectedNodeId;
+  if (!run || !nodeId || !isLive(run.status) || state.sendingNodeInput) return;
+  state.sendingNodeInput = true;
+  elements.nodeInput.disabled = true;
+  elements.sendNodeInput.disabled = true;
+  elements.nodeInputStatus.textContent = `Sending to ${nodeId}...`;
+  try {
+    const result = await api(
+      `/api/v1/runs/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(nodeId)}/input`,
+      {
+        method: "POST",
+        body: JSON.stringify({ data: elements.nodeInput.value, append_newline: true }),
+      },
+    );
+    elements.nodeInput.value = "";
+    elements.nodeInputStatus.textContent = `Sent ${result.bytes_written} bytes to ${nodeId}`;
+    elements.nodeInput.focus();
+  } catch (error) {
+    elements.nodeInputStatus.textContent = `Send failed: ${error.message}`;
+  } finally {
+    state.sendingNodeInput = false;
+    renderRunWorkspace();
   }
 }
 
@@ -563,6 +639,7 @@ elements.refreshButton.addEventListener("click", () => {
 elements.startButton.addEventListener("click", startRun);
 elements.stopButton.addEventListener("click", stopRun);
 elements.processLog.addEventListener("click", () => selectLogSource(null));
+elements.nodeInputForm.addEventListener("submit", sendNodeInput);
 elements.clearLog.addEventListener("click", () => {
   state.logLines = [];
   elements.logOutput.textContent = "View cleared. New output will continue from the current cursor.";

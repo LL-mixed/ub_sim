@@ -234,6 +234,10 @@ demos:
     topology: pipeline
     model: Qwen3
     model_source: qwen3-0.6b
+    node_input: &w5_node_input
+      kind: qemu_serial_env
+      manifest: guest-linux/aarch64/out/headless_eight_node_env.{run_id}.sh
+      socket_path_prefix: /tmp/ubqe_
     data_plane: [Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel]
     estimated_duration_secs: 300
@@ -252,7 +256,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.macos.env
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
 
   - id: w5-qwen-4
     title: W5 Qwen PP / 4 Nodes
@@ -262,6 +266,7 @@ demos:
     topology: pipeline
     model: Qwen3
     model_source: qwen3-0.6b
+    node_input: *w5_node_input
     data_plane: [Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel]
     estimated_duration_secs: 480
@@ -274,7 +279,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.macos.env
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
 
   - id: w5-qwen-8
     title: W5 Qwen PP / 8 Nodes
@@ -284,6 +289,7 @@ demos:
     topology: pipeline
     model: Qwen3
     model_source: qwen3-0.6b
+    node_input: *w5_node_input
     data_plane: [Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel]
     estimated_duration_secs: 900
@@ -296,7 +302,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.macos.env
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
 
   - id: w5-deepseek-v4-flash-2
     title: W5 DeepSeek V4 Flash PP / 2 Nodes
@@ -305,6 +311,7 @@ demos:
     node_count: 2
     topology: pipeline
     model: DeepSeek V4 Flash 2-bit GGUF
+    node_input: *w5_node_input
     data_plane: [Simpler, Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel, moe]
     estimated_duration_secs: 480
@@ -317,7 +324,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.deepseek-v4-flash-simpler-openeuler.env
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
 
   - id: w5-deepseek-v4-flash-4
     title: W5 DeepSeek V4 Flash PP / 4 Nodes
@@ -326,6 +333,7 @@ demos:
     node_count: 4
     topology: pipeline
     model: DeepSeek V4 Flash 2-bit GGUF
+    node_input: *w5_node_input
     data_plane: [Simpler, Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel, moe]
     estimated_duration_secs: 720
@@ -338,7 +346,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.deepseek-v4-flash-simpler-openeuler.env
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
 
   - id: w5-deepseek-v4-flash-8
     title: W5 DeepSeek V4 Flash PP / 8 Nodes
@@ -347,6 +355,7 @@ demos:
     node_count: 8
     topology: pipeline
     model: DeepSeek V4 Flash 2-bit GGUF
+    node_input: *w5_node_input
     data_plane: [Simpler, Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel, moe]
     estimated_duration_secs: 1200
@@ -359,4 +368,4 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.deepseek-v4-flash-simpler-openeuler.env
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
