@@ -38,10 +38,39 @@ Simulator and guest logs remain under their existing `logs/` directories.
   request may select a known node and provide payload bytes, but it must never
   provide a socket path or remote command. Do not interpolate or log the input
   payload; carry it over process stdin to the selected serial transport.
+- Demo lifecycle is explicit. An `automatic` demo validates its workload,
+  cleans up its guests, and exits; it must not declare `node_input`. An
+  `interactive_shell` demo remains live after workload validation until Stop;
+  it must declare `node_input` and publish a run-owned serial endpoint. A shell
+  prompt in a completed log is not sufficient evidence that a demo is
+  interactive.
 - Remote execution must use a target from the loaded registry. Quote every
   reviewed command argument for the remote shell, keep the remote repository
   root fixed by target configuration, and identify the run with the
   backend-owned run ID.
+- Target preparation may select only a registered target ID. Source and mirror
+  URLs, repository paths, tool installers, and commands remain backend-owned;
+  the browser must not supply them. Preparation is idempotent, must not replace
+  a non-Git path, and is serialized with run admission.
+- Prefer user-local build tools. A target may install only fixed, reviewed
+  system runtime and native-build packages required by repository entrypoints.
+  The openEuler set must stay aligned with
+  `scripts/prepare_w5_container_deps.sh` and uses passwordless `dnf`. Package
+  names and install commands must never come from the browser. Seed exact
+  committed submodule checkouts from reviewed mirrors. When a mirror lacks the
+  complete pinned tree, transfer a local checkout pack containing the commit,
+  trees, and blobs required for an offline checkout. Commit presence alone is
+  not readiness evidence.
+- Simpler-backed demos require CMake and a real GCC major 15 simulation-kernel
+  compiler. Readiness must verify the compiler version, not only the executable
+  name. When the target distribution does not package GCC 15, preparation may
+  install the fixed GCC 15 Conda toolchain below the target user's home and
+  expose versioned user-local compiler links. Never alias an older compiler as
+  `gcc-15` or `g++-15`.
+- Target bootstrap files must be repository-relative, reviewed in the target
+  registry, and copied from the console repository into the remote source
+  cache. Remote runs copy them into the managed worktree after checkout. The
+  browser must never select or upload an arbitrary bootstrap file.
 - Stop must terminate the remote run, not only the local SSH client. A remote
   run is not terminal until the SSH adapter exits and launcher cleanup has had
   a chance to run.

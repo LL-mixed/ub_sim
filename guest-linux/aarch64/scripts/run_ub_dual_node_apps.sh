@@ -54,6 +54,7 @@ MIN_PASS_RATE_PERCENT="${MIN_PASS_RATE_PERCENT:-100}"
 REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"
 MAX_RUNTIME="${MAX_RUNTIME:-300}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_${RANDOM}}"
+INTERACTIVE_AFTER_PASS=0
 MAIN_PID=$$
 
 usage() {
@@ -74,6 +75,8 @@ Options:
   --run-secs SECS    Per-app pass/fail wait timeout.
   --iterations N     Number of dual-node iterations.
   --max-runtime SECS Global watchdog timeout.
+  --interactive-after-pass
+                     Keep validated guests at their shells until terminated.
   --append-extra STR Extra kernel cmdline tokens to append.
   --remote-memory-model-manifest PATH
                       Canonical QEMU remote-memory model manifest.
@@ -328,6 +331,10 @@ while [[ $# -gt 0 ]]; do
       USE_QMP=1
       shift
       ;;
+    --interactive-after-pass)
+      INTERACTIVE_AFTER_PASS=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -339,6 +346,19 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$RUN_ID" || "$RUN_ID" == *[^A-Za-z0-9._-]* ]]; then
+  echo "run id must contain only ASCII letters, digits, dots, dashes, or underscores" >&2
+  exit 2
+fi
+if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 && "$ITERATIONS" != "1" ]]; then
+  echo "interactive-after-pass requires exactly one iteration" >&2
+  exit 2
+fi
+
+SERIAL_RUNTIME_DIR="/tmp/ubqe_${RUN_ID}"
+SERIAL_DIR="$SERIAL_RUNTIME_DIR/serial"
+SERIAL_ENV_FILE="$OUT_DIR/dual_node_serial_env.${RUN_ID}.sh"
 
 apply_app_selection "$APP_SELECTION"
 if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
@@ -394,14 +414,36 @@ fi
 
 timeout_watchdog() {
   local timeout_sec="$1"
-  sleep "$timeout_sec"
+  local sleep_pid=""
+
+  trap 'kill "$sleep_pid" 2>/dev/null || true; wait "$sleep_pid" 2>/dev/null || true; exit 0' TERM INT
+  sleep "$timeout_sec" &
+  sleep_pid=$!
+  wait "$sleep_pid"
+  trap - TERM INT
   echo "global timeout ${timeout_sec}s reached, terminating test" >&2
   kill -TERM "$MAIN_PID" 2>/dev/null || true
 }
 
 timeout_watchdog "$MAX_RUNTIME" &
 WATCHDOG_PID=$!
-trap 'kill "$WATCHDOG_PID" 2>/dev/null || true; cleanup_all_app_pid_files' EXIT INT TERM
+
+cleanup_watchdog() {
+  if [[ -n "${WATCHDOG_PID:-}" ]]; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+    WATCHDOG_PID=""
+  fi
+}
+
+cleanup_serial_runtime() {
+  rm -rf "$SERIAL_RUNTIME_DIR"
+  rm -f "$SERIAL_ENV_FILE"
+}
+
+trap 'cleanup_watchdog; cleanup_all_app_pid_files; cleanup_serial_runtime' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cleanup_pid() {
   local pid_file="$1"
@@ -423,6 +465,18 @@ cleanup_all_app_pid_files() {
   for pid_file in "$OUT_DIR"/ub_nodeA.apps.*.pid "$OUT_DIR"/ub_nodeB.apps.*.pid; do
     cleanup_pid "$pid_file"
   done
+}
+
+write_serial_manifest() {
+  local nodea_socket="$1"
+  local nodeb_socket="$2"
+  local temporary="${SERIAL_ENV_FILE}.tmp.$$"
+
+  {
+    printf "export NODEA_SERIAL_SOCKET='%s'\n" "$nodea_socket"
+    printf "export NODEB_SERIAL_SOCKET='%s'\n" "$nodeb_socket"
+  } > "$temporary"
+  mv "$temporary" "$SERIAL_ENV_FILE"
 }
 
 wait_for_log_pattern() {
@@ -836,11 +890,13 @@ start_node() {
   local qemu_log="$4"
   local pid_file="$5"
   local qmp_socket="$6"
-  local app_append_extra="${7-}"
+  local serial_socket="$7"
+  local app_append_extra="${8-}"
   local qemu_extra=()
   local qemu_control_args=()
   local remote_model_args=()
   local async_load_args=()
+  local serial_args=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
 
@@ -872,6 +928,16 @@ start_node() {
   fi
   mkdir -p "$(dirname "$guest_log")"
   mkdir -p "$(dirname "$qemu_log")"
+  if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 ]]; then
+    mkdir -p "$(dirname "$serial_socket")"
+    rm -f "$serial_socket"
+    serial_args=(
+      -chardev "socket,id=ser0,path=$serial_socket,server=on,wait=off,logfile=$guest_log,logappend=off"
+      -serial chardev:ser0
+    )
+  else
+    serial_args=(-serial "file:$guest_log")
+  fi
 
   env \
     UB_FM_NODE_ID="$node_id" \
@@ -892,7 +958,7 @@ start_node() {
       -nographic \
       "${remote_model_args[@]}" \
       "${async_load_args[@]}" \
-      -serial file:"$guest_log" \
+      "${serial_args[@]}" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
@@ -1122,6 +1188,8 @@ run_iteration() {
   local nodeb_pid_file="$OUT_DIR/ub_nodeB.apps.${iter}.pid"
   local nodea_qmp="$QMP_DIR/nodeA.${iter}.sock"
   local nodeb_qmp="$QMP_DIR/nodeB.${iter}.sock"
+  local nodea_serial="$SERIAL_DIR/nodeA.${iter}.sock"
+  local nodeb_serial="$SERIAL_DIR/nodeB.${iter}.sock"
   local chat_enabled=0
   local rpc_enabled=0
   local tcp_enabled=0
@@ -1275,6 +1343,10 @@ run_iteration() {
   mkdir -p "$LOG_DIR"
   mkdir -p "$iter_log_dir"
   mkdir -p "$SHARED_DIR"
+  if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 ]]; then
+    mkdir -p "$SERIAL_DIR"
+    rm -f "$nodea_serial" "$nodeb_serial" "$SERIAL_ENV_FILE"
+  fi
   if [[ "$USE_QMP" == "1" ]]; then
     mkdir -p "$QMP_DIR"
   fi
@@ -1300,7 +1372,7 @@ run_iteration() {
     echo "Starting nodeA..."
   fi
   start_node "nodeA" "nodeA" "$nodea_guest_log" "$nodea_qemu_log" \
-    "$nodea_pid_file" "$nodea_qmp" "$nodea_app_append"
+    "$nodea_pid_file" "$nodea_qmp" "$nodea_serial" "$nodea_app_append"
   sleep 0.5
   if [[ "$USE_QMP" == "1" ]]; then
     echo "Starting nodeB (paused)..."
@@ -1308,7 +1380,10 @@ run_iteration() {
     echo "Starting nodeB..."
   fi
   start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
-    "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_app_append"
+    "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_serial" "$nodeb_app_append"
+  if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 ]]; then
+    write_serial_manifest "$nodea_serial" "$nodeb_serial"
+  fi
 
   if ! check_link_early_or_fail "$nodea_qemu_log" "$nodeb_qemu_log" 10; then
     echo "iteration ${iter}: early link failure detected" >&2
@@ -1914,8 +1989,10 @@ run_iteration() {
   fi
 
   sleep 1
-  cleanup_pid "$nodea_pid_file"
-  cleanup_pid "$nodeb_pid_file"
+  if [[ "$INTERACTIVE_AFTER_PASS" -eq 0 ]]; then
+    cleanup_pid "$nodea_pid_file"
+    cleanup_pid "$nodeb_pid_file"
+  fi
 
   echo "=== nodeA guest(apps:${iter}) ==="
   tail -n 120 "$nodea_guest_log"
@@ -2008,6 +2085,17 @@ run_iteration() {
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1
 
   echo "iteration ${iter}: dual-node apps pass"
+  if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 ]]; then
+    cleanup_watchdog
+    echo "interactive shells ready; use node input or Stop to terminate"
+    echo "serial manifest: $SERIAL_ENV_FILE"
+    while kill -0 "$(cat "$nodea_pid_file" 2>/dev/null)" 2>/dev/null &&
+          kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; do
+      sleep 1
+    done
+    echo "interactive guest exited before Stop" >&2
+    return 29
+  fi
 }
 
 declare -a ITERATION_RESULTS

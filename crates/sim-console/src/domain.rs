@@ -18,6 +18,12 @@ pub struct DemoDefinition {
     pub node_count: u8,
     pub topology: TopologyKind,
     #[serde(default)]
+    pub lifecycle: DemoLifecycle,
+    #[serde(default)]
+    pub guest_engine: GuestEngine,
+    #[serde(default)]
+    pub requires_simpler_toolchain: bool,
+    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub model_source: Option<String>,
@@ -48,6 +54,22 @@ pub enum TopologyKind {
     Mesh,
     Pipeline,
     Service,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DemoLifecycle {
+    #[default]
+    Automatic,
+    InteractiveShell,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuestEngine {
+    #[default]
+    Initramfs,
+    OpenEuler,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +243,19 @@ pub struct ReadinessIssue {
     pub remedy: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TargetPreparationResult {
+    pub target_id: String,
+    pub source_repo: String,
+    pub source_revision: String,
+    pub source_repo_created: bool,
+    pub installed_tools: Vec<String>,
+    pub prepared_submodules: Vec<String>,
+    pub prepared_files: Vec<String>,
+    pub ready_demos: usize,
+    pub blocked_demos: usize,
+}
+
 #[derive(Debug, Error)]
 pub enum DomainError {
     #[error("unknown parameter: {0}")]
@@ -361,6 +396,9 @@ mod tests {
             summary: "fixture".to_string(),
             node_count: 2,
             topology: TopologyKind::Pair,
+            lifecycle: DemoLifecycle::Automatic,
+            guest_engine: GuestEngine::Initramfs,
+            requires_simpler_toolchain: false,
             model: None,
             model_source: None,
             node_input: None,

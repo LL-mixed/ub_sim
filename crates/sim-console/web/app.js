@@ -16,6 +16,8 @@ const state = {
   parameterDrafts: {},
   refreshing: false,
   sendingNodeInput: false,
+  nodeInputFeedback: "",
+  preparingTargetId: null,
 };
 
 const elements = {
@@ -253,6 +255,7 @@ function renderSelection() {
   const demo = selectedDemo();
   const readiness = selectedDemoReadiness();
   const target = selectedTarget();
+  const liveRun = state.runs.find((run) => isLive(run.status));
   if (!demo) {
     return;
   }
@@ -294,9 +297,30 @@ function renderSelection() {
       remedy.textContent = issue.remedy;
       elements.demoReadiness.append(message, remedy);
     }
+    const preparableIssueCodes = new Set([
+      "remote_source_repo_missing",
+      "remote_submodule_cache_missing",
+      "remote_tool_missing",
+      "remote_bootstrap_file_missing",
+    ]);
+    const canPrepare =
+      target?.kind === "ssh" &&
+      readiness.issues.some((issue) => preparableIssueCodes.has(issue.code));
+    if (canPrepare) {
+      const prepareButton = document.createElement("button");
+      const isPreparing = state.preparingTargetId === target.id;
+      prepareButton.type = "button";
+      prepareButton.className = "secondary-command prepare-target-command";
+      prepareButton.textContent = isPreparing ? "Preparing target farm..." : "Prepare target farm";
+      prepareButton.disabled = isPreparing || Boolean(liveRun);
+      prepareButton.title = liveRun
+        ? `Run ${liveRun.id} must finish before target preparation`
+        : `Prepare ${target.title}`;
+      prepareButton.addEventListener("click", prepareTarget);
+      elements.demoReadiness.append(prepareButton);
+    }
   }
 
-  const liveRun = state.runs.find((run) => isLive(run.status));
   elements.startButton.disabled = Boolean(liveRun) || !readiness?.ready;
   elements.startButton.title = liveRun
     ? `Run ${liveRun.id} is active`
@@ -359,16 +383,28 @@ function renderRunWorkspace() {
   elements.logTitle.textContent = node ? `${node.label} log` : "Process log";
   elements.processLog.classList.toggle("active", !node);
   elements.processLog.setAttribute("aria-pressed", String(!node));
-  const nodeInputAvailable = Boolean(
-    run &&
-      node &&
-      isLive(run.status) &&
-      (demo.controls || []).includes("node_input"),
-  );
-  elements.nodeInputForm.hidden = !nodeInputAvailable;
+  const nodeInputSupported = (demo.controls || []).includes("node_input");
+  const nodeInputAvailable = Boolean(run && node && isLive(run.status) && nodeInputSupported);
+  let nodeInputAvailability = "";
+  if (!run) {
+    nodeInputAvailability = "Start a run, then select a node.";
+  } else if (!isLive(run.status)) {
+    nodeInputAvailability = "This run has ended. Start a new run to use its node consoles.";
+  } else if (!node) {
+    nodeInputAvailability = "Select a running node above.";
+  } else {
+    nodeInputAvailability = `${node.label} serial console is ready.`;
+  }
+  elements.nodeInputForm.hidden = !nodeInputSupported;
+  elements.nodeInputForm.classList.toggle("available", nodeInputAvailable);
   elements.logBand.classList.toggle("node-input-active", nodeInputAvailable);
-  elements.nodeInputLabel.textContent = node ? `${node.label} input` : "Node input";
-  elements.nodeInput.placeholder = node ? `Send a line to ${node.label}` : "Send a line";
+  elements.nodeInputLabel.textContent = node ? `${node.label} console` : "Node console";
+  elements.nodeInput.placeholder = nodeInputAvailable
+    ? `Type a command for ${node.label}`
+    : nodeInputAvailability;
+  elements.nodeInputStatus.textContent = nodeInputAvailable
+    ? state.nodeInputFeedback || nodeInputAvailability
+    : nodeInputAvailability;
   elements.nodeInput.disabled = !nodeInputAvailable || state.sendingNodeInput;
   elements.sendNodeInput.disabled = !nodeInputAvailable || state.sendingNodeInput;
 }
@@ -380,7 +416,7 @@ function selectNode(nodeId) {
 function selectLogSource(nodeId) {
   if (state.selectedNodeId === nodeId) return;
   state.selectedNodeId = nodeId;
-  elements.nodeInputStatus.textContent = "";
+  state.nodeInputFeedback = "";
   resetLog();
   renderRunWorkspace();
   void refreshLogs();
@@ -470,6 +506,30 @@ async function startRun() {
   }
 }
 
+async function prepareTarget() {
+  const target = selectedTarget();
+  if (!target || target.kind !== "ssh" || state.preparingTargetId) return;
+  state.preparingTargetId = target.id;
+  showFeedback("");
+  renderSelection();
+  try {
+    const result = await api(`/api/v1/targets/${encodeURIComponent(target.id)}/prepare`, {
+      method: "POST",
+    });
+    state.readiness = [];
+    showFeedback(
+      `Prepared ${target.title}: ${result.ready_demos} demos ready, ${result.blocked_demos} blocked.`,
+      false,
+    );
+    await refreshAll();
+  } catch (error) {
+    showFeedback(`Target preparation failed: ${error.message}`);
+  } finally {
+    state.preparingTargetId = null;
+    renderSelection();
+  }
+}
+
 async function stopRun() {
   const run = selectedRun();
   if (!run || !isLive(run.status)) return;
@@ -491,9 +551,10 @@ async function sendNodeInput(event) {
   const nodeId = state.selectedNodeId;
   if (!run || !nodeId || !isLive(run.status) || state.sendingNodeInput) return;
   state.sendingNodeInput = true;
+  state.nodeInputFeedback = `Sending to ${nodeId}...`;
   elements.nodeInput.disabled = true;
   elements.sendNodeInput.disabled = true;
-  elements.nodeInputStatus.textContent = `Sending to ${nodeId}...`;
+  elements.nodeInputStatus.textContent = state.nodeInputFeedback;
   try {
     const result = await api(
       `/api/v1/runs/${encodeURIComponent(run.id)}/nodes/${encodeURIComponent(nodeId)}/input`,
@@ -503,10 +564,12 @@ async function sendNodeInput(event) {
       },
     );
     elements.nodeInput.value = "";
-    elements.nodeInputStatus.textContent = `Sent ${result.bytes_written} bytes to ${nodeId}`;
+    state.nodeInputFeedback = `Sent ${result.bytes_written} bytes to ${nodeId}`;
+    elements.nodeInputStatus.textContent = state.nodeInputFeedback;
     elements.nodeInput.focus();
   } catch (error) {
-    elements.nodeInputStatus.textContent = `Send failed: ${error.message}`;
+    state.nodeInputFeedback = `Send failed: ${error.message}`;
+    elements.nodeInputStatus.textContent = state.nodeInputFeedback;
   } finally {
     state.sendingNodeInput = false;
     renderRunWorkspace();

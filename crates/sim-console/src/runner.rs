@@ -16,16 +16,22 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::domain::{
-    topology_nodes, ControlCapability, DemoCatalog, DemoDefinition, DemoReadiness, LogChunk,
-    NodeInputDefinition, NodeInputKind, NodeInputRequest, NodeInputResult, NodeStatus,
+    topology_nodes, ControlCapability, DemoCatalog, DemoDefinition, DemoReadiness, GuestEngine,
+    LogChunk, NodeInputDefinition, NodeInputKind, NodeInputRequest, NodeInputResult, NodeStatus,
     ReadinessIssue, ResolvedCommand, RunRecord, RunStatus, StartRunRequest,
+    TargetPreparationResult,
 };
 use crate::target::{ExecutionTarget, ExecutionTargetKind, TargetRegistry};
 
 const MAX_LOG_LINES: usize = 500;
 const MAX_NODE_INPUT_BYTES: usize = 4096;
 const NODE_INPUT_TIMEOUT: Duration = Duration::from_secs(5);
+const NODE_INPUT_DRAIN_DELAY: Duration = Duration::from_millis(200);
+const TARGET_PREPARATION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const NODE_STATUS_TAIL_BYTES: u64 = 256 * 1024;
+const TARGET_NATIVE_TOOLS: &str = "git make cargo python3 cmake ninja pkg-config cc setsid tar curl zsh bc bison flex cpio rsync qemu-img partprobe vgscan vgchange";
+const TARGET_PKG_CONFIG_DEPS: &str = "glib-2.0 libelf liburing openssl pixman-1 zlib";
+const OPENEULER_BUILD_PACKAGES: &str = "bc bison cmake cpio curl elfutils-libelf-devel flex glib2-devel liburing-devel lvm2 openssl-devel parted pixman-devel qemu-img zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make zsh python3-pip rsync";
 const STOP_REQUESTED_MARKER: &str = "stop.requested";
 const KERNEL_BUILD_POLICY_REV: &str = "3";
 const KERNEL_SIGNATURE_PATHS: &[&str] = &[
@@ -64,6 +70,8 @@ pub enum RunManagerError {
     InvalidNodeInput(String),
     #[error("node input is unavailable: {0}")]
     NodeInputUnavailable(String),
+    #[error("target preparation is unavailable: {0}")]
+    TargetPreparationUnavailable(String),
     #[error("demo {demo} is not ready: {reason}")]
     NotReady { demo: String, reason: String },
     #[error(transparent)]
@@ -163,6 +171,125 @@ impl RunManager {
         }
     }
 
+    pub async fn prepare_target(
+        &self,
+        target_id: &str,
+    ) -> Result<TargetPreparationResult, RunManagerError> {
+        let _start_guard = self.inner.start_lock.lock().await;
+        if let Some(active_run) = self
+            .inner
+            .runs
+            .read()
+            .await
+            .values()
+            .find(|record| !record.status.is_terminal())
+        {
+            return Err(RunManagerError::ActiveRun(active_run.id.clone()));
+        }
+        let target = self.resolve_target(Some(target_id))?.clone();
+        if target.kind != ExecutionTargetKind::Ssh {
+            return Err(RunManagerError::TargetPreparationUnavailable(format!(
+                "target {} is local and does not need farm preparation",
+                target.id
+            )));
+        }
+        let source_revision = git_head(&self.inner.repo_root)?;
+        let bootstrap = run_remote_command_output(
+            &target,
+            remote_target_bootstrap_command(&target)?,
+            TARGET_PREPARATION_TIMEOUT,
+            "prepare target source and tools",
+        )
+        .await?;
+        let bootstrap_log = String::from_utf8_lossy(&bootstrap.stdout);
+        let source_repo_created = bootstrap_log
+            .lines()
+            .any(|line| line == "SOURCE_REPO_CREATED");
+        let installed_tools = bootstrap_log
+            .lines()
+            .filter_map(|line| line.strip_prefix("TOOL_INSTALLED\t"))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let preparation_root = self
+            .inner
+            .state_root
+            .parent()
+            .unwrap_or(&self.inner.state_root)
+            .join("target-preparation")
+            .join(&target.id);
+        fs::create_dir_all(&preparation_root)?;
+        let source_repo = remote_workspace_source_repo(&target)?.to_string();
+        let source_parent = Path::new(&source_repo)
+            .parent()
+            .and_then(Path::to_str)
+            .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
+        let remote_bundle_root = format!("{source_parent}/.sim-console-target-preparation");
+        let mut prepared_files = Vec::new();
+        for relative_path in &target.bootstrap_files {
+            let local_file = self.resolve_existing_path(relative_path)?;
+            if !local_file.is_file() {
+                return Err(RunManagerError::MissingRequirement(relative_path.clone()));
+            }
+            let remote_file = format!("{source_repo}/{relative_path}");
+            transfer_target_file(&target, &local_file, &remote_file).await?;
+            prepared_files.push(relative_path.clone());
+        }
+        let mut prepared_submodules = Vec::new();
+        for mirror in &target.submodule_mirrors {
+            let expected = submodule_commit_at_revision(
+                &self.inner.repo_root,
+                &source_revision,
+                &mirror.path,
+            )?;
+            let remote_repo = format!("{source_repo}/{}", mirror.path);
+            let output = run_remote_command_output(
+                &target,
+                remote_source_mirror_prepare_command(mirror, &remote_repo, &expected),
+                TARGET_PREPARATION_TIMEOUT,
+                &format!("prepare source mirror {}", mirror.path),
+            )
+            .await?;
+            if String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == "MIRROR_NEEDS_CHECKOUT_PACK")
+            {
+                let local_repo = self.inner.repo_root.join(&mirror.path);
+                let pack_path = preparation_root.join(format!("{}.pack", expected));
+                create_checkout_pack(&local_repo, &expected, &pack_path)?;
+                let remote_pack = format!("{remote_bundle_root}/{}.pack", expected);
+                transfer_target_file(&target, &pack_path, &remote_pack).await?;
+                run_remote_command_output(
+                    &target,
+                    remote_source_mirror_import_checkout_pack_command(
+                        &remote_repo,
+                        &remote_pack,
+                        &expected,
+                    ),
+                    TARGET_PREPARATION_TIMEOUT,
+                    &format!("seed source mirror {}", mirror.path),
+                )
+                .await?;
+                fs::remove_file(&pack_path).ok();
+            }
+            prepared_submodules.push(mirror.path.clone());
+        }
+
+        let readiness = self.remote_readiness(&target).await?;
+        let ready_demos = readiness.iter().filter(|item| item.ready).count();
+        Ok(TargetPreparationResult {
+            target_id: target.id,
+            source_repo,
+            source_revision,
+            source_repo_created,
+            installed_tools,
+            prepared_submodules,
+            prepared_files,
+            ready_demos,
+            blocked_demos: readiness.len() - ready_demos,
+        })
+    }
+
     pub async fn start(&self, request: StartRunRequest) -> Result<RunRecord, RunManagerError> {
         let _start_guard = self.inner.start_lock.lock().await;
         if let Some(active_run) = self
@@ -206,6 +333,7 @@ impl RunManager {
         let run_id = self.next_run_id();
         let mut resolved = demo.resolve_command(&run_id, &request.parameters)?;
         inject_target_model_source(&demo, &target, &mut resolved)?;
+        inject_target_guest_engine(&demo, &target, &mut resolved)?;
         let source_revision = match target.kind {
             ExecutionTargetKind::Local => git_head(&self.inner.repo_root).ok(),
             ExecutionTargetKind::Ssh => Some(git_head(&self.inner.repo_root)?),
@@ -570,6 +698,13 @@ impl RunManager {
         if let Some(issue) = model_source_readiness_issue(demo, target, &missing_model_sources) {
             issues.push(issue);
         }
+        let disk_image_missing = target
+            .open_euler_disk_image
+            .as_deref()
+            .is_some_and(|path| !Path::new(path).is_file());
+        if let Some(issue) = guest_engine_readiness_issue(demo, target, disk_image_missing) {
+            issues.push(issue);
+        }
         DemoReadiness {
             demo_id: demo.id.clone(),
             target_id: target.id.clone(),
@@ -583,7 +718,7 @@ impl RunManager {
         target: &ExecutionTarget,
     ) -> Result<Vec<DemoReadiness>, RunManagerError> {
         let mut command = ssh_command(target)?;
-        command.arg(remote_probe_command(target)?);
+        command.arg(remote_probe_command(target, &self.inner.repo_root)?);
         let output = match tokio::time::timeout(
             Duration::from_secs(target.connect_timeout_secs.unwrap_or(10) + 5),
             command.output(),
@@ -623,7 +758,9 @@ impl RunManager {
 
         let probe = String::from_utf8_lossy(&output.stdout);
         let mut common_issues = Vec::new();
+        let mut simpler_toolchain_issues = Vec::new();
         let mut missing_model_sources = BTreeSet::new();
+        let mut open_euler_disk_image_missing = false;
         for line in probe.lines() {
             if line == "SOURCE_REPO_MISSING" {
                 common_issues.push(ReadinessIssue {
@@ -640,12 +777,53 @@ impl RunManager {
                 common_issues.push(ReadinessIssue {
                     code: "remote_tool_missing".to_string(),
                     message: format!("Required build tool is missing on {}: {tool}", target.id),
-                    remedy: "Install the missing build tool on the target host.".to_string(),
+                    remedy: "Use Prepare target farm to install the reviewed build tools."
+                        .to_string(),
                 });
+            } else if let Some(details) = line.strip_prefix("TOOL_VERSION_MISMATCH\t") {
+                let mut fields = details.split('\t');
+                let tool = fields.next().unwrap_or("unknown");
+                let required = fields.next().unwrap_or("unknown");
+                let actual = fields.next().unwrap_or("missing");
+                simpler_toolchain_issues.push(ReadinessIssue {
+                    code: "remote_tool_version_mismatch".to_string(),
+                    message: format!(
+                        "Required build tool version is unavailable on {}: {tool} requires {required}, found {actual}",
+                        target.id
+                    ),
+                    remedy: "Use Prepare target farm to install the reviewed compiler toolchain."
+                        .to_string(),
+                });
+            } else if let Some(path) = line.strip_prefix("BOOTSTRAP_FILE_MISSING\t") {
+                common_issues.push(ReadinessIssue {
+                    code: "remote_bootstrap_file_missing".to_string(),
+                    message: format!(
+                        "Target {} is missing prepared build input: {path}",
+                        target.id
+                    ),
+                    remedy: "Prepare the target farm to seed the registered build input."
+                        .to_string(),
+                });
+            } else if let Some(details) = line.strip_prefix("SUBMODULE_CACHE_MISSING\t") {
+                if let Some((path, revision)) = details.split_once('\t') {
+                    common_issues.push(ReadinessIssue {
+                        code: "remote_submodule_cache_missing".to_string(),
+                        message: format!(
+                            "Target {} is missing submodule object {} at {}",
+                            target.id,
+                            short_revision(revision),
+                            path
+                        ),
+                        remedy: "Prepare the target farm to seed the exact committed object."
+                            .to_string(),
+                    });
+                }
             } else if let Some(details) = line.strip_prefix("MODEL_SOURCE_MISSING\t") {
                 if let Some((model_source, _)) = details.split_once('\t') {
                     missing_model_sources.insert(model_source.to_string());
                 }
+            } else if line == "OPEN_EULER_DISK_IMAGE_MISSING" {
+                open_euler_disk_image_missing = true;
             }
         }
         let submodule_issues = target
@@ -679,6 +857,9 @@ impl RunManager {
             .iter()
             .map(|demo| {
                 let mut issues = common_issues.clone();
+                if demo.requires_simpler_toolchain {
+                    issues.extend(simpler_toolchain_issues.clone());
+                }
                 if demo.requires_guest_artifacts {
                     issues.extend(submodule_issues.clone());
                 }
@@ -694,6 +875,11 @@ impl RunManager {
                 }
                 if let Some(issue) =
                     model_source_readiness_issue(demo, target, &missing_model_sources)
+                {
+                    issues.push(issue);
+                }
+                if let Some(issue) =
+                    guest_engine_readiness_issue(demo, target, open_euler_disk_image_missing)
                 {
                     issues.push(issue);
                 }
@@ -881,6 +1067,9 @@ impl RunManager {
             if let Some(path) = discovered.get(&node.id) {
                 node.log_path = Some(relative_display(&self.inner.repo_root, path));
                 node.status = classify_node_log(path)?;
+                if record.status == RunStatus::Passed && node.status != NodeStatus::Failed {
+                    node.status = NodeStatus::Passed;
+                }
             }
             if record.status == RunStatus::Stopped
                 && matches!(
@@ -952,6 +1141,7 @@ async fn send_local_node_input(
             let operation = async {
                 let mut stream = UnixStream::connect(&socket).await?;
                 stream.write_all(payload).await?;
+                tokio::time::sleep(NODE_INPUT_DRAIN_DELAY).await;
                 stream.shutdown().await
             };
             tokio::time::timeout(NODE_INPUT_TIMEOUT, operation)
@@ -1047,6 +1237,7 @@ const REMOTE_NODE_INPUT_WRITER: &str = r#"import os
 import socket
 import stat
 import sys
+import time
 
 manifest, node, allowed_prefix, max_bytes = sys.argv[1:]
 max_bytes = int(max_bytes)
@@ -1078,6 +1269,7 @@ stream.settimeout(5)
 try:
     stream.connect(path)
     stream.sendall(payload)
+    time.sleep(0.2)
 finally:
     stream.close()
 sys.stdout.write(str(len(payload)))
@@ -1254,13 +1446,34 @@ pub fn run_remote_worker(plan_path: &Path) -> Result<(), RunManagerError> {
             &expected,
         ));
     }
+    let bootstrap_file_copies = plan
+        .target
+        .bootstrap_files
+        .iter()
+        .map(|relative_path| {
+            let source_file = format!("{source_repo}/{relative_path}");
+            let target_file = format!("{repo_root}/{relative_path}");
+            format!(
+                "test -f {source_file}; mkdir -p {target_parent}; cp -f {source_file} {target_file}; ",
+                source_file = shell_quote(&source_file),
+                target_parent = shell_quote(
+                    Path::new(&target_file)
+                        .parent()
+                        .and_then(Path::to_str)
+                        .expect("validated bootstrap file has a parent")
+                ),
+                target_file = shell_quote(&target_file),
+            )
+        })
+        .collect::<String>();
     let prepare_body = format!(
-        "set -eu; source_repo={source_repo}; workspace={workspace}; bundle={bundle}; bundle_ref={bundle_ref}; head={head}; cleanup() {{ rm -f \"$bundle\"; }}; trap cleanup EXIT; git -c fetch.recurseSubmodules=false -C \"$source_repo\" fetch \"$bundle\" \"$bundle_ref\"; git -C \"$source_repo\" cat-file -e \"$head^{{commit}}\"; if git -C \"$workspace\" rev-parse --git-dir >/dev/null 2>&1; then git -C \"$workspace\" reset --hard \"$head\"; else if [ -e \"$workspace\" ]; then printf 'managed workspace exists but is not a Git worktree: %s\\n' \"$workspace\" >&2; exit 1; fi; git -C \"$source_repo\" worktree add --detach \"$workspace\" \"$head\"; fi; git -C \"$workspace\" submodule sync; git -C \"$workspace\" submodule init; git -C \"$workspace\" config --file .gitmodules --get-regexp '^submodule\\..*\\.path$' | while read -r key path; do source_path=\"$source_repo/$path\"; target_path=\"$workspace/$path\"; if ! git -C \"$target_path\" rev-parse --git-dir >/dev/null 2>&1 && git -C \"$source_path\" rev-parse --git-dir >/dev/null 2>&1; then rm -rf \"$target_path\"; mkdir -p \"$(dirname \"$target_path\")\"; git clone --local --no-checkout \"$source_path\" \"$target_path\"; fi; done; {mirror_fetches} git -C \"$workspace\" submodule update --init --force; if [ -f \"$workspace/mem_service/.gitmodules\" ]; then git -C \"$workspace/mem_service\" submodule sync; git -C \"$workspace/mem_service\" submodule init; nested_source=\"$source_repo/mem_service/vendor/obmm\"; nested_target=\"$workspace/mem_service/vendor/obmm\"; if ! git -C \"$nested_target\" rev-parse --git-dir >/dev/null 2>&1 && git -C \"$nested_source\" rev-parse --git-dir >/dev/null 2>&1; then rm -rf \"$nested_target\"; mkdir -p \"$(dirname \"$nested_target\")\"; git clone --local --no-checkout \"$nested_source\" \"$nested_target\"; fi; git -C \"$workspace/mem_service\" submodule update --init --force; fi; printf '[sim-console] target workspace ready head=%s path=%s\\n' \"$head\" \"$workspace\"",
+        "set -eu; source_repo={source_repo}; workspace={workspace}; bundle={bundle}; bundle_ref={bundle_ref}; head={head}; cleanup() {{ rm -f \"$bundle\"; }}; trap cleanup EXIT; git -c fetch.recurseSubmodules=false -C \"$source_repo\" fetch \"$bundle\" \"$bundle_ref\"; git -C \"$source_repo\" cat-file -e \"$head^{{commit}}\"; if git -C \"$workspace\" rev-parse --git-dir >/dev/null 2>&1; then git -C \"$workspace\" reset --hard \"$head\"; else if [ -e \"$workspace\" ]; then printf 'managed workspace exists but is not a Git worktree: %s\\n' \"$workspace\" >&2; exit 1; fi; git -C \"$source_repo\" worktree add --detach \"$workspace\" \"$head\"; fi; {bootstrap_file_copies} git -C \"$workspace\" submodule sync; git -C \"$workspace\" submodule init; git -C \"$workspace\" config --file .gitmodules --get-regexp '^submodule\\..*\\.path$' | while read -r key path; do source_path=\"$source_repo/$path\"; target_path=\"$workspace/$path\"; if ! git -C \"$target_path\" rev-parse --git-dir >/dev/null 2>&1 && git -C \"$source_path\" rev-parse --git-dir >/dev/null 2>&1; then rm -rf \"$target_path\"; mkdir -p \"$(dirname \"$target_path\")\"; git clone --shared --no-checkout \"$source_path\" \"$target_path\"; fi; done; {mirror_fetches} git -C \"$workspace\" submodule update --init --force; if [ -f \"$workspace/mem_service/.gitmodules\" ]; then git -C \"$workspace/mem_service\" submodule sync; git -C \"$workspace/mem_service\" submodule init; nested_source=\"$source_repo/mem_service/vendor/obmm\"; nested_target=\"$workspace/mem_service/vendor/obmm\"; if ! git -C \"$nested_target\" rev-parse --git-dir >/dev/null 2>&1 && git -C \"$nested_source\" rev-parse --git-dir >/dev/null 2>&1; then rm -rf \"$nested_target\"; mkdir -p \"$(dirname \"$nested_target\")\"; git clone --shared --no-checkout \"$nested_source\" \"$nested_target\"; fi; git -C \"$workspace/mem_service\" submodule update --init --force; fi; printf '[sim-console] target workspace ready head=%s path=%s\\n' \"$head\" \"$workspace\"",
         source_repo = shell_quote(source_repo),
         workspace = shell_quote(repo_root),
         bundle = shell_quote(&remote_bundle),
         bundle_ref = shell_quote(&bundle_ref),
         head = shell_quote(&source_head),
+        bootstrap_file_copies = bootstrap_file_copies,
         mirror_fetches = mirror_fetches,
     );
     let prepare =
@@ -1303,6 +1516,21 @@ fn run_checked(command: &mut StdCommand, action: &str) -> Result<(), RunManagerE
     }
     Err(RunManagerError::Io(std::io::Error::other(format!(
         "{action} failed with {status}"
+    ))))
+}
+
+fn run_checked_output(
+    command: &mut StdCommand,
+    action: &str,
+) -> Result<std::process::Output, RunManagerError> {
+    let output = command.output()?;
+    if output.status.success() {
+        return Ok(output);
+    }
+    Err(RunManagerError::Io(std::io::Error::other(format!(
+        "{action} failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
     ))))
 }
 
@@ -1412,7 +1640,276 @@ fn ssh_command(target: &ExecutionTarget) -> Result<Command, RunManagerError> {
     Ok(command)
 }
 
-fn remote_probe_command(target: &ExecutionTarget) -> Result<String, RunManagerError> {
+async fn run_remote_command_output(
+    target: &ExecutionTarget,
+    body: String,
+    timeout: Duration,
+    action: &str,
+) -> Result<std::process::Output, RunManagerError> {
+    let mut command = ssh_command(target)?;
+    command.arg(body);
+    let output = tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| {
+            RunManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{action} timed out on {}", target.id),
+            ))
+        })??;
+    if output.status.success() {
+        return Ok(output);
+    }
+    Err(RunManagerError::Io(std::io::Error::other(format!(
+        "{action} failed on {}: {}",
+        target.id,
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))))
+}
+
+fn remote_target_bootstrap_command(target: &ExecutionTarget) -> Result<String, RunManagerError> {
+    let source_repo = remote_workspace_source_repo(target)?;
+    let source_url = target
+        .source_repo_url
+        .as_deref()
+        .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
+    let source_parent = Path::new(source_repo)
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
+    let mut command = format!(
+        "set -eu; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; source_repo={source_repo}; source_url={source_url}; if git -C \"$source_repo\" rev-parse --git-dir >/dev/null 2>&1; then printf 'SOURCE_REPO_REUSED\\n'; elif [ -e \"$source_repo\" ]; then printf 'source path exists but is not a Git repository: %s\\n' \"$source_repo\" >&2; exit 1; else mkdir -p {source_parent}; clone_attempt=1; while ! git -c http.version=HTTP/1.1 clone --no-checkout --filter=blob:none \"$source_url\" \"$source_repo\"; do if [ \"$clone_attempt\" -ge 3 ]; then exit 1; fi; rm -rf \"$source_repo\"; clone_attempt=$((clone_attempt + 1)); sleep 2; done; printf 'SOURCE_REPO_CREATED\\n'; fi; ",
+        source_repo = shell_quote(source_repo),
+        source_url = shell_quote(source_url),
+        source_parent = shell_quote(source_parent),
+    );
+    command.push_str(
+        "if [ ! -x \"$HOME/.cargo/bin/cargo\" ]; then case \"$(uname -m)\" in aarch64|arm64) rust_arch=aarch64-unknown-linux-gnu;; x86_64) rust_arch=x86_64-unknown-linux-gnu;; *) printf 'unsupported Rust target architecture: %s\\n' \"$(uname -m)\" >&2; exit 1;; esac; rustup_dir=\"${TMPDIR:-/tmp}/sim-console-rustup.$$\"; rustup_init=\"$rustup_dir/rustup-init\"; cleanup_rustup() { rm -rf \"$rustup_dir\"; }; trap cleanup_rustup EXIT; mkdir -p \"$rustup_dir\"; rust_dist=https://mirrors.huaweicloud.com/rustup; rust_update_root=https://mirrors.huaweicloud.com/rustup/rustup; if ! curl --proto '=https' --tlsv1.2 -fsSL -o \"$rustup_init\" \"$rust_dist/rustup/dist/$rust_arch/rustup-init\"; then printf 'Huawei Cloud Rust mirror unavailable; falling back to the official source\\n' >&2; rust_dist=https://static.rust-lang.org; rust_update_root=https://static.rust-lang.org/rustup; curl --proto '=https' --tlsv1.2 -fsSL -o \"$rustup_init\" \"$rust_dist/rustup/dist/$rust_arch/rustup-init\"; fi; chmod 0700 \"$rustup_init\"; RUSTUP_DIST_SERVER=\"$rust_dist\" RUSTUP_UPDATE_ROOT=\"$rust_update_root\" \"$rustup_init\" -y --profile minimal --default-toolchain stable --no-modify-path; cleanup_rustup; trap - EXIT; printf 'TOOL_INSTALLED\\tcargo\\n'; fi; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; ",
+    );
+    command.push_str(
+        "simpler_cxx_major=missing; if command -v g++-15 >/dev/null 2>&1; then simpler_cxx_major=\"$(g++-15 -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)\"; fi; if [ \"$simpler_cxx_major\" != 15 ]; then case \"$(uname -m)\" in aarch64|arm64) mamba_arch=linux-aarch64; gcc_package=gcc_linux-aarch64; gxx_package=gxx_linux-aarch64;; x86_64) mamba_arch=linux-64; gcc_package=gcc_linux-64; gxx_package=gxx_linux-64;; *) printf 'unsupported GCC 15 target architecture: %s\\n' \"$(uname -m)\" >&2; exit 1;; esac; mkdir -p \"$HOME/.local/bin\" \"$HOME/.local/toolchains\"; micromamba=\"$HOME/.local/bin/micromamba\"; if [ ! -x \"$micromamba\" ]; then mamba_dir=\"${TMPDIR:-/tmp}/sim-console-micromamba.$$\"; rm -rf \"$mamba_dir\"; mkdir -p \"$mamba_dir\"; curl --proto '=https' --tlsv1.2 -fsSL \"https://micro.mamba.pm/api/micromamba/$mamba_arch/latest\" | tar -xj -C \"$mamba_dir\" bin/micromamba; install -m 0755 \"$mamba_dir/bin/micromamba\" \"$micromamba\"; rm -rf \"$mamba_dir\"; printf 'TOOL_INSTALLED\\tmicromamba\\n'; fi; gcc_prefix=\"$HOME/.local/toolchains/gcc15\"; \"$micromamba\" create -y --root-prefix \"$HOME/.local/share/mamba\" --prefix \"$gcc_prefix\" --channel conda-forge --override-channels \"$gcc_package=15\" \"$gxx_package=15\"; printf 'TOOL_INSTALLED\\tsimpler-gcc15\\n'; fi; gcc_prefix=\"$HOME/.local/toolchains/gcc15\"; gcc_path=\"$(find \"$gcc_prefix/bin\" -maxdepth 1 -name '*-gcc' -perm -u+x | head -n 1)\"; gxx_path=\"$(find \"$gcc_prefix/bin\" -maxdepth 1 -name '*-g++' -perm -u+x | head -n 1)\"; if [ -z \"$gcc_path\" ] || [ -z \"$gxx_path\" ]; then printf 'Conda GCC 15 compiler entrypoints are missing under %s\\n' \"$gcc_prefix\" >&2; exit 1; fi; for name in cc gcc g++ c++; do link=\"$HOME/.local/bin/$name\"; if [ -L \"$link\" ]; then target=\"$(readlink \"$link\")\"; case \"$target\" in \"$gcc_prefix\"/bin/*) rm -f \"$link\";; esac; fi; done; ln -sfn \"$gcc_path\" \"$HOME/.local/bin/gcc-15\"; ln -sfn \"$gxx_path\" \"$HOME/.local/bin/g++-15\"; simpler_cxx_major=\"$(g++-15 -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)\"; if [ \"$simpler_cxx_major\" != 15 ]; then printf 'required simpler compiler is not GCC 15 after preparation: g++-15=%s\\n' \"${simpler_cxx_major:-missing}\" >&2; exit 1; fi; ",
+    );
+    command.push_str(&format!(
+        "if ! command -v ninja >/dev/null 2>&1; then python3 -m pip install --user ninja; printf 'TOOL_INSTALLED\\tninja\\n'; fi; native_deps_ready=1; for tool in {tools}; do command -v \"$tool\" >/dev/null 2>&1 || native_deps_ready=0; done; if command -v pkg-config >/dev/null 2>&1; then for pkg in {pkg_config_deps}; do pkg-config --exists \"$pkg\" || native_deps_ready=0; done; else native_deps_ready=0; fi; if [ \"$native_deps_ready\" -eq 0 ]; then command -v dnf >/dev/null 2>&1 || {{ printf 'native build dependencies are missing and dnf is unavailable\\n' >&2; exit 1; }}; sudo -n dnf -y install {packages}; printf 'TOOL_INSTALLED\\tnative-build-deps\\n'; fi; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; for tool in {tools}; do command -v \"$tool\" >/dev/null 2>&1 || {{ printf 'required tool is still missing after preparation: %s\\n' \"$tool\" >&2; exit 1; }}; done; for pkg in {pkg_config_deps}; do pkg-config --exists \"$pkg\" || {{ printf 'required pkg-config dependency is still missing after preparation: %s\\n' \"$pkg\" >&2; exit 1; }}; done; printf 'TARGET_TOOLS_READY\\n'",
+        tools = TARGET_NATIVE_TOOLS,
+        pkg_config_deps = TARGET_PKG_CONFIG_DEPS,
+        packages = OPENEULER_BUILD_PACKAGES,
+    ));
+    Ok(command)
+}
+
+fn remote_source_mirror_prepare_command(
+    mirror: &crate::target::SubmoduleMirror,
+    remote_repo: &str,
+    expected: &str,
+) -> String {
+    let parent = Path::new(remote_repo)
+        .parent()
+        .and_then(Path::to_str)
+        .unwrap_or(remote_repo);
+    let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
+    format!(
+        "set -eu; repo={repo}; if git -C \"$repo\" rev-parse --git-dir >/dev/null 2>&1; then :; elif [ -e \"$repo\" ]; then printf 'source mirror path exists but is not a Git repository: %s\\n' \"$repo\" >&2; exit 1; else mkdir -p {parent}; git init \"$repo\"; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then fetch_ok=0; if git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --filter=blob:none --no-tags {url} {git_ref}:{git_ref}; then fetch_ok=1; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null && [ \"$fetch_ok\" -eq 1 ]; then git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --no-tags {url} {expected}:{mirror_ref} || true; fi; fi; if git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -C \"$repo\" update-ref {mirror_ref} {expected}; fi; if GIT_NO_LAZY_FETCH=1 git -C \"$repo\" checkout --detach --force {expected} >/dev/null 2>&1; then printf 'MIRROR_READY\\n'; else printf 'MIRROR_NEEDS_CHECKOUT_PACK\\n'; fi",
+        repo = shell_quote(remote_repo),
+        parent = shell_quote(parent),
+        url = shell_quote(&mirror.fetch_url),
+        git_ref = shell_quote(&mirror.git_ref),
+        expected = shell_quote(expected),
+        mirror_ref = shell_quote(&mirror_ref),
+    )
+}
+
+fn create_checkout_pack(
+    local_repo: &Path,
+    expected: &str,
+    pack_path: &Path,
+) -> Result<(), RunManagerError> {
+    if pack_path.is_file() && fs::metadata(pack_path)?.len() > 0 {
+        return Ok(());
+    }
+    run_checked(
+        StdCommand::new("git").arg("-C").arg(local_repo).args([
+            "cat-file",
+            "-e",
+            &format!("{expected}^{{commit}}"),
+        ]),
+        "locate local submodule commit",
+    )?;
+    if let Some(parent) = pack_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary_pack = pack_path.with_extension(format!("pack.tmp.{}", std::process::id()));
+    fs::remove_file(&temporary_pack).ok();
+
+    let root_tree = run_checked_output(
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(local_repo)
+            .args(["rev-parse", &format!("{expected}^{{tree}}")]),
+        "locate local submodule root tree",
+    )?;
+    let tree_listing = run_checked_output(
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(local_repo)
+            .args(["ls-tree", "-r", "-t", expected]),
+        "enumerate local submodule checkout objects",
+    )?;
+    let mut object_ids = BTreeSet::from([
+        expected.to_string(),
+        String::from_utf8_lossy(&root_tree.stdout)
+            .trim()
+            .to_string(),
+    ]);
+    for line in String::from_utf8_lossy(&tree_listing.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let _mode = fields.next();
+        let object_type = fields.next();
+        let object_id = fields.next();
+        if matches!(object_type, Some("tree" | "blob")) {
+            if let Some(object_id) = object_id {
+                object_ids.insert(object_id.to_string());
+            }
+        }
+    }
+
+    let pack_file = File::create(&temporary_pack)?;
+    let mut child = StdCommand::new("git")
+        .arg("-C")
+        .arg(local_repo)
+        .args(["pack-objects", "--stdout", "--delta-base-offset"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(pack_file))
+        .stderr(Stdio::piped())
+        .spawn()?;
+    {
+        let stdin = child.stdin.as_mut().ok_or_else(|| {
+            RunManagerError::Io(std::io::Error::other("checkout pack process has no stdin"))
+        })?;
+        for object_id in object_ids {
+            writeln!(stdin, "{object_id}")?;
+        }
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        fs::remove_file(&temporary_pack).ok();
+        return Err(RunManagerError::Io(std::io::Error::other(format!(
+            "create target checkout pack failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))));
+    }
+    fs::rename(temporary_pack, pack_path)?;
+    Ok(())
+}
+
+async fn transfer_target_file(
+    target: &ExecutionTarget,
+    local_file: &Path,
+    remote_file: &str,
+) -> Result<(), RunManagerError> {
+    let parent = Path::new(remote_file)
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
+    let local_size = fs::metadata(local_file)?.len();
+    let size_output = run_remote_command_output(
+        target,
+        remote_file_size_command(remote_file),
+        Duration::from_secs(60),
+        "inspect partial target preparation file",
+    )
+    .await?;
+    let mut remote_size = String::from_utf8_lossy(&size_output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| {
+            RunManagerError::Io(std::io::Error::other(format!(
+                "invalid remote preparation file size on {}: {error}",
+                target.id
+            )))
+        })?;
+    if remote_size > local_size {
+        run_remote_command_output(
+            target,
+            format!("set -eu; rm -f {}", shell_quote(remote_file)),
+            Duration::from_secs(60),
+            "discard oversized target preparation file",
+        )
+        .await?;
+        remote_size = 0;
+    }
+    if remote_size == local_size {
+        return Ok(());
+    }
+
+    let receive = remote_file_receive_command(parent, remote_file, remote_size, local_size);
+    let mut file = File::open(local_file)?;
+    file.seek(SeekFrom::Start(remote_size))?;
+    let mut command = ssh_command(target)?;
+    command
+        .arg(receive)
+        .stdin(Stdio::from(file))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = tokio::time::timeout(TARGET_PREPARATION_TIMEOUT, command.output())
+        .await
+        .map_err(|_| {
+            RunManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "transfer target preparation file timed out on {}",
+                    target.id
+                ),
+            ))
+        })??;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(RunManagerError::Io(std::io::Error::other(format!(
+        "transfer target preparation file failed on {}: {}",
+        target.id,
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))))
+}
+
+fn remote_file_size_command(remote_file: &str) -> String {
+    format!(
+        "set -eu; file={}; if [ -f \"$file\" ]; then stat -c %s \"$file\"; else printf '0\\n'; fi",
+        shell_quote(remote_file)
+    )
+}
+
+fn remote_file_receive_command(
+    parent: &str,
+    remote_file: &str,
+    expected_offset: u64,
+    expected_size: u64,
+) -> String {
+    format!(
+        "set -eu; mkdir -p {parent}; file={file}; actual=$(stat -c %s \"$file\" 2>/dev/null || printf '0'); [ \"$actual\" -eq {expected_offset} ] || {{ printf 'remote preparation file changed before resume: expected=%s actual=%s\\n' {expected_offset} \"$actual\" >&2; exit 1; }}; cat >> \"$file\"; actual=$(stat -c %s \"$file\"); [ \"$actual\" -eq {expected_size} ] || {{ printf 'remote preparation file has unexpected final size: expected=%s actual=%s\\n' {expected_size} \"$actual\" >&2; exit 1; }}",
+        parent = shell_quote(parent),
+        file = shell_quote(remote_file),
+    )
+}
+
+fn remote_source_mirror_import_checkout_pack_command(
+    remote_repo: &str,
+    remote_pack: &str,
+    expected: &str,
+) -> String {
+    let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
+    format!(
+        "set -eu; cleanup() {{ rm -f {pack}; }}; trap cleanup EXIT; git -C {repo} index-pack --stdin < {pack}; git -C {repo} cat-file -e {expected}^{{commit}}; git -C {repo} update-ref {mirror_ref} {expected}; GIT_NO_LAZY_FETCH=1 git -C {repo} checkout --detach --force {expected}; printf 'MIRROR_CHECKOUT_READY\\n'",
+        repo = shell_quote(remote_repo),
+        pack = shell_quote(remote_pack),
+        mirror_ref = shell_quote(&mirror_ref),
+        expected = shell_quote(expected),
+    )
+}
+
+fn remote_probe_command(
+    target: &ExecutionTarget,
+    local_repo_root: &Path,
+) -> Result<String, RunManagerError> {
     let source_repo = remote_workspace_source_repo(target)?;
     let repo_root = remote_repo_root(target)?;
     let workspace_parent = Path::new(repo_root)
@@ -1420,18 +1917,48 @@ fn remote_probe_command(target: &ExecutionTarget) -> Result<String, RunManagerEr
         .and_then(Path::to_str)
         .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
     let mut command = format!(
-        "set -eu; source_repo={}; if ! git -C \"$source_repo\" rev-parse --git-dir >/dev/null 2>&1; then printf 'SOURCE_REPO_MISSING\\n'; exit 0; fi; mkdir -p {}; ",
+        "set -eu; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; source_repo={}; if ! git -C \"$source_repo\" rev-parse --git-dir >/dev/null 2>&1; then printf 'SOURCE_REPO_MISSING\\n'; exit 0; fi; mkdir -p {}; ",
         shell_quote(source_repo),
         shell_quote(workspace_parent),
     );
+    command.push_str(&format!(
+        "for tool in {tools}; do command -v \"$tool\" >/dev/null 2>&1 || printf 'TOOL_MISSING\\t%s\\n' \"$tool\"; done; if command -v pkg-config >/dev/null 2>&1; then for pkg in {pkg_config_deps}; do pkg-config --exists \"$pkg\" || printf 'TOOL_MISSING\\tpkg-config:%s\\n' \"$pkg\"; done; fi; ",
+        tools = TARGET_NATIVE_TOOLS,
+        pkg_config_deps = TARGET_PKG_CONFIG_DEPS,
+    ));
     command.push_str(
-        "for tool in git make cargo python3 ninja pkg-config cc setsid tar; do command -v \"$tool\" >/dev/null 2>&1 || printf 'TOOL_MISSING\\t%s\\n' \"$tool\"; done; ",
+        "simpler_cxx=g++-15; simpler_cxx_major=missing; if command -v \"$simpler_cxx\" >/dev/null 2>&1; then simpler_cxx_major=\"$($simpler_cxx -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)\"; fi; if [ \"$simpler_cxx_major\" != 15 ]; then printf 'TOOL_VERSION_MISMATCH\\t%s\\tGCC-major-15\\t%s\\n' \"$simpler_cxx\" \"$simpler_cxx_major\"; fi; ",
     );
+    for relative_path in &target.bootstrap_files {
+        let remote_file = format!("{source_repo}/{relative_path}");
+        command.push_str(&format!(
+            "if [ ! -f {path} ]; then printf 'BOOTSTRAP_FILE_MISSING\\t%s\\n' {display_path}; fi; ",
+            path = shell_quote(&remote_file),
+            display_path = shell_quote(relative_path),
+        ));
+    }
     for (model_source, path) in &target.model_sources {
         command.push_str(&format!(
             "if [ ! -e {path} ]; then printf 'MODEL_SOURCE_MISSING\\t%s\\t%s\\n' {model_source} {path}; fi; ",
             model_source = shell_quote(model_source),
             path = shell_quote(path),
+        ));
+    }
+    if let Some(path) = &target.open_euler_disk_image {
+        command.push_str(&format!(
+            "if [ ! -f {path} ]; then printf 'OPEN_EULER_DISK_IMAGE_MISSING\\n'; fi; ",
+            path = shell_quote(path),
+        ));
+    }
+    for mirror in &target.submodule_mirrors {
+        let expected = submodule_commit_at_head(local_repo_root, &mirror.path)?;
+        let source_path = format!("{source_repo}/{}", mirror.path);
+        command.push_str(&format!(
+            "if ! git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null || [ \"$(git -C {path} rev-parse HEAD 2>/dev/null || true)\" != {expected} ] || ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --quiet {expected} --; then printf 'SUBMODULE_CACHE_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; fi; ",
+            path = shell_quote(&source_path),
+            expected = shell_quote(&expected),
+            display_path = shell_quote(&mirror.path),
+            display_expected = shell_quote(&expected),
         ));
     }
     command.push_str("printf 'PROBE_OK\\n'");
@@ -1454,6 +1981,26 @@ fn inject_target_model_source(
     })?;
     resolved.args.push("--model".to_string());
     resolved.args.push(path.clone());
+    Ok(())
+}
+
+fn inject_target_guest_engine(
+    demo: &DemoDefinition,
+    target: &ExecutionTarget,
+    resolved: &mut ResolvedCommand,
+) -> Result<(), RunManagerError> {
+    if demo.guest_engine != GuestEngine::OpenEuler {
+        return Ok(());
+    }
+    let path = target.open_euler_disk_image.as_ref().ok_or_else(|| {
+        RunManagerError::MissingRequirement(format!(
+            "target {} does not configure an openEuler disk image",
+            target.id
+        ))
+    })?;
+    resolved
+        .args
+        .extend(["--open-euler-disk-image".to_string(), path.clone()]);
     Ok(())
 }
 
@@ -1489,6 +2036,37 @@ fn model_source_readiness_issue(
     None
 }
 
+fn guest_engine_readiness_issue(
+    demo: &DemoDefinition,
+    target: &ExecutionTarget,
+    disk_image_missing: bool,
+) -> Option<ReadinessIssue> {
+    if demo.guest_engine != GuestEngine::OpenEuler {
+        return None;
+    }
+    let Some(path) = target.open_euler_disk_image.as_deref() else {
+        return Some(ReadinessIssue {
+            code: "open_euler_disk_image_unconfigured".to_string(),
+            message: format!(
+                "openEuler disk image is not configured for target {}",
+                target.id
+            ),
+            remedy: format!("Configure open_euler_disk_image for target {}.", target.id),
+        });
+    };
+    if disk_image_missing {
+        return Some(ReadinessIssue {
+            code: "open_euler_disk_image_missing".to_string(),
+            message: format!(
+                "openEuler disk image is missing on target {}: {path}",
+                target.id
+            ),
+            remedy: "Install or synchronize the registered openEuler disk image.".to_string(),
+        });
+    }
+    None
+}
+
 fn remote_mirror_fetch_command(
     mirror: &crate::target::SubmoduleMirror,
     target_path: &str,
@@ -1497,7 +2075,7 @@ fn remote_mirror_fetch_command(
 ) -> String {
     let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "target_path={target_path}; source_path={source_path}; mirror_ref={mirror_ref}; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null && git -C \"$source_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags \"$source_path\" {expected}:\"$mirror_ref\"; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {git_ref}:\"$mirror_ref\" || true; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {expected}:\"$mirror_ref\"; fi; git -C \"$target_path\" cat-file -e {expected}^{{commit}}; git -C \"$target_path\" update-ref \"$mirror_ref\" {expected}; ",
+        "target_path={target_path}; source_path={source_path}; mirror_ref={mirror_ref}; if git -C \"$source_path\" cat-file -e {expected}^{{commit}} 2>/dev/null && ! git -C \"$target_path\" checkout --detach --force {expected} >/dev/null 2>&1; then rm -rf \"$target_path\"; mkdir -p \"$(dirname \"$target_path\")\"; git clone --shared --no-checkout \"$source_path\" \"$target_path\"; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {git_ref}:\"$mirror_ref\" || true; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {expected}:\"$mirror_ref\"; fi; git -C \"$target_path\" cat-file -e {expected}^{{commit}}; git -C \"$target_path\" update-ref \"$mirror_ref\" {expected}; git -C \"$target_path\" checkout --detach --force {expected}; ",
         target_path = shell_quote(target_path),
         source_path = shell_quote(source_path),
         mirror_ref = shell_quote(&mirror_ref),
@@ -1527,7 +2105,7 @@ fn remote_launch_command(
     }
 
     Ok(format!(
-        "set -u; cd {repo}; run_dir={run_dir}; mkdir -p \"$run_dir\"; pid_file=\"$run_dir/process-group.pid\"; child_pid=''; cleanup() {{ rm -f \"$pid_file\"; }}; terminate() {{ trap - HUP INT TERM; if [ -n \"$child_pid\" ]; then kill -TERM -- \"-$child_pid\" 2>/dev/null || true; wait \"$child_pid\" 2>/dev/null || true; fi; exit 143; }}; trap cleanup EXIT; trap terminate HUP INT TERM; printf '[sim-console] target=%s run=%s remote_repo=%s\\n' {target_id} {run} {repo_display}; setsid {launch} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$pid_file\"; wait \"$child_pid\"; status=$?; exit \"$status\"",
+        "set -u; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; cd {repo}; run_dir={run_dir}; mkdir -p \"$run_dir\"; pid_file=\"$run_dir/process-group.pid\"; child_pid=''; cleanup() {{ rm -f \"$pid_file\"; }}; terminate() {{ trap - HUP INT TERM; if [ -n \"$child_pid\" ]; then kill -TERM -- \"-$child_pid\" 2>/dev/null || true; wait \"$child_pid\" 2>/dev/null || true; fi; exit 143; }}; trap cleanup EXIT; trap terminate HUP INT TERM; printf '[sim-console] target=%s run=%s remote_repo=%s\\n' {target_id} {run} {repo_display}; setsid {launch} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$pid_file\"; wait \"$child_pid\"; status=$?; exit \"$status\"",
         repo = shell_quote(repo_root),
         run_dir = shell_quote(&remote_state),
         target_id = shell_quote(&target.id),
@@ -1555,7 +2133,7 @@ fn remote_supervised_command(
 ) -> Result<String, RunManagerError> {
     let run_dir = remote_prepare_state_dir(target, run_id)?;
     Ok(format!(
-        "set -u; run_dir={run_dir}; mkdir -p \"$run_dir\"; pid_file=\"$run_dir/{pid_name}\"; child_pid=''; cleanup() {{ rm -f \"$pid_file\"; }}; terminate() {{ trap - HUP INT TERM; if [ -n \"$child_pid\" ]; then kill -TERM -- \"-$child_pid\" 2>/dev/null || true; wait \"$child_pid\" 2>/dev/null || true; fi; exit 143; }}; trap cleanup EXIT; trap terminate HUP INT TERM; setsid sh -c {body} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$pid_file\"; wait \"$child_pid\"; status=$?; exit \"$status\"",
+        "set -u; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; run_dir={run_dir}; mkdir -p \"$run_dir\"; pid_file=\"$run_dir/{pid_name}\"; child_pid=''; cleanup() {{ rm -f \"$pid_file\"; }}; terminate() {{ trap - HUP INT TERM; if [ -n \"$child_pid\" ]; then kill -TERM -- \"-$child_pid\" 2>/dev/null || true; wait \"$child_pid\" 2>/dev/null || true; fi; exit 143; }}; trap cleanup EXIT; trap terminate HUP INT TERM; setsid sh -c {body} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$pid_file\"; wait \"$child_pid\"; status=$?; exit \"$status\"",
         run_dir = shell_quote(&run_dir),
         pid_name = pid_name,
         body = shell_quote(body),
@@ -1878,13 +2456,18 @@ fn classify_node_log(path: &Path) -> Result<NodeStatus, RunManagerError> {
     {
         return Ok(NodeStatus::Failed);
     }
-    if ["verdict=pass", "] pass", "status=pass", "worker passed"]
-        .iter()
-        .any(|marker| lower.contains(marker))
+    if [
+        "verdict=pass",
+        "[w4_guest] pass",
+        "status=pass",
+        "worker passed",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
     {
         return Ok(NodeStatus::Passed);
     }
-    if lower.contains("ready") || lower.contains("run_app") {
+    if lower.contains("] pass") || lower.contains("ready") || lower.contains("run_app") {
         return Ok(NodeStatus::Ready);
     }
     if source.is_empty() {
@@ -1940,8 +2523,9 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        CommandDefinition, ControlCapability, DemoDefinition, NodeInputDefinition, NodeInputKind,
-        NodeInputRequest, ParameterDefinition, ParameterKind, TopologyKind,
+        CommandDefinition, ControlCapability, DemoDefinition, DemoLifecycle, GuestEngine,
+        NodeInputDefinition, NodeInputKind, NodeInputRequest, ParameterDefinition, ParameterKind,
+        TopologyKind,
     };
 
     fn fixture_repo() -> (TempDir, RunManager) {
@@ -1965,6 +2549,9 @@ mod tests {
             summary: "Fixture runner".to_string(),
             node_count: 2,
             topology: TopologyKind::Pair,
+            lifecycle: DemoLifecycle::InteractiveShell,
+            guest_engine: GuestEngine::Initramfs,
+            requires_simpler_toolchain: false,
             model: None,
             model_source: None,
             node_input: Some(NodeInputDefinition {
@@ -2343,8 +2930,11 @@ mod tests {
             connect_timeout_secs: Some(5),
             repo_root: Some("/home/test/repo with space".to_string()),
             workspace_source_repo: Some("/home/test/source".to_string()),
+            source_repo_url: Some("https://example.invalid/source.git".to_string()),
             submodule_mirrors: vec![],
+            bootstrap_files: vec!["guest-linux/aarch64/third_party/input.tar".to_string()],
             model_sources: BTreeMap::new(),
+            open_euler_disk_image: None,
         };
         let resolved = ResolvedCommand {
             program: "guest-linux/aarch64/scripts/run_fixture.sh".to_string(),
@@ -2376,34 +2966,103 @@ mod tests {
         assert!(input.contains("/tmp/ubqe_"));
         assert!(input.contains("nodeA"));
         assert!(input.contains("sys.stdin.buffer.read"));
+        assert!(input.contains("time.sleep(0.2)"));
+        let prepare = remote_target_bootstrap_command(&target).unwrap();
+        assert!(prepare.contains("SOURCE_REPO_REUSED"));
+        assert!(prepare.contains("SOURCE_REPO_CREATED"));
+        assert!(prepare.contains("https://example.invalid/source.git"));
+        assert!(prepare.contains("TOOL_INSTALLED\\tcargo"));
+        assert!(prepare.contains("TOOL_INSTALLED\\tninja"));
+        assert!(prepare.contains("TOOL_INSTALLED\\tnative-build-deps"));
+        assert!(prepare.contains("https://micro.mamba.pm/api/micromamba/"));
+        assert!(prepare.contains("gxx_linux-aarch64"));
+        assert!(prepare.contains("TOOL_INSTALLED\\tsimpler-gcc15"));
+        assert!(prepare.contains("g++-15 -dumpfullversion -dumpversion"));
+        assert!(prepare.contains("for name in cc gcc g++ c++"));
+        assert!(prepare.contains("ln -sfn \"$gcc_path\" \"$HOME/.local/bin/gcc-15\""));
+        assert!(prepare.contains("ln -sfn \"$gxx_path\" \"$HOME/.local/bin/g++-15\""));
+        assert!(!prepare.contains("ln -sfn \"$gcc_path\" \"$HOME/.local/bin/cc\""));
+        assert!(!prepare.contains("ln -sfn \"$gcc_path\" \"$HOME/.local/bin/gcc\""));
+        assert!(!prepare.contains("ln -sfn \"$gxx_path\" \"$HOME/.local/bin/g++\""));
+        assert!(!prepare.contains("ln -sfn \"$gxx_path\" \"$HOME/.local/bin/c++\""));
+        assert!(prepare.contains("http.version=HTTP/1.1"));
+        assert!(prepare.contains("clone_attempt"));
+        assert!(prepare.contains("https://mirrors.huaweicloud.com/rustup"));
+        assert!(prepare.contains("https://static.rust-lang.org"));
+        assert!(prepare.contains("RUSTUP_DIST_SERVER"));
+        assert!(prepare.contains("RUSTUP_UPDATE_ROOT"));
+        assert!(prepare.contains("$rustup_dir/rustup-init"));
+        assert!(prepare.contains("sudo -n dnf -y install bc bison cmake cpio"));
+        assert!(prepare.contains("glib2-devel"));
+        assert!(prepare.contains("pixman-devel"));
+        assert!(prepare.contains("pkg-config --exists"));
+        let probe = remote_probe_command(&target, Path::new(".")).unwrap();
+        assert!(probe.contains("simpler_cxx=g++-15"));
+        assert!(probe.contains("TOOL_VERSION_MISMATCH\\t%s\\tGCC-major-15"));
+        assert!(probe.contains("BOOTSTRAP_FILE_MISSING"));
+        assert!(probe.contains("guest-linux/aarch64/third_party/input.tar"));
+        let mirror = remote_source_mirror_prepare_command(
+            &crate::target::SubmoduleMirror {
+                path: "vendor/example".to_string(),
+                fetch_url: "https://example.invalid/example.git".to_string(),
+                git_ref: "refs/heads/main".to_string(),
+            },
+            "/home/test/source/vendor/example",
+            "0123456789abcdef0123456789abcdef01234567",
+        );
+        assert!(mirror.contains("http.lowSpeedLimit=1024"));
+        assert!(mirror.contains("http.lowSpeedTime=30"));
+        assert!(mirror.contains("fetch_ok=0"));
     }
 
     #[test]
     fn target_model_source_becomes_a_model_cli_override() {
         let catalog = DemoCatalog::load_default().unwrap();
         let targets = TargetRegistry::load_default().unwrap();
-        let demo = catalog.find("w5-qwen-8").unwrap();
         let target = targets.find("n4-910c").unwrap();
-        let mut resolved = demo
-            .resolve_command(
-                "sim-console-42",
-                &BTreeMap::from([("steps".to_string(), "2".to_string())]),
-            )
-            .unwrap();
+        for (demo_id, expected_path) in [
+            ("w5-qwen-8", "/home/ll/models/Qwen3-0.6B"),
+            (
+                "w5-deepseek-v4-flash-8",
+                "/home/ll/models/DeepSeek-V4-Flash/\
+                 DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+            ),
+        ] {
+            let demo = catalog.find(demo_id).unwrap();
+            let mut resolved = demo
+                .resolve_command(
+                    "sim-console-42",
+                    &BTreeMap::from([("steps".to_string(), "2".to_string())]),
+                )
+                .unwrap();
 
-        inject_target_model_source(demo, target, &mut resolved).unwrap();
+            inject_target_model_source(demo, target, &mut resolved).unwrap();
+            inject_target_guest_engine(demo, target, &mut resolved).unwrap();
 
-        assert!(resolved
-            .args
-            .windows(2)
-            .any(|pair| { pair == ["--model", "/home/ll/models/Qwen3-0.6B"] }));
-        let probe = remote_probe_command(target).unwrap();
+            assert!(resolved
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--model", expected_path]));
+            if demo.guest_engine == GuestEngine::OpenEuler {
+                assert!(resolved.args.windows(2).any(|pair| {
+                    pair == [
+                        "--open-euler-disk-image",
+                        "/home/ll/models/openEuler-2403/rootfs.qcow2",
+                    ]
+                }));
+            }
+        }
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let probe = remote_probe_command(target, &repo_root).unwrap();
         assert!(probe.contains("MODEL_SOURCE_MISSING"));
         assert!(probe.contains("/home/ll/models/Qwen3-0.6B"));
+        assert!(probe.contains("DeepSeek-V4-Flash-IQ2XXS"));
+        assert!(probe.contains("OPEN_EULER_DISK_IMAGE_MISSING"));
+        assert!(probe.contains("SUBMODULE_CACHE_MISSING"));
     }
 
     #[test]
-    fn remote_mirror_fetch_falls_back_to_exact_gitlink() {
+    fn remote_mirror_rebuilds_from_local_source_before_network_fallback() {
         let mirror = crate::target::SubmoduleMirror {
             path: "vendor/qemu_8.2.0_ub".to_string(),
             fetch_url: "https://example.invalid/qemu.git".to_string(),
@@ -2415,12 +3074,17 @@ mod tests {
             "/source/repo/vendor/qemu_8.2.0_ub",
             "0123456789abcdef",
         );
+        assert!(command.contains("rm -rf \"$target_path\""));
+        assert!(
+            command.contains("git clone --shared --no-checkout \"$source_path\" \"$target_path\"")
+        );
         assert!(command.contains(
-            "fetch --no-tags \"$source_path\" \
-             '0123456789abcdef':\"$mirror_ref\""
+            "! git -C \"$target_path\" checkout --detach --force \
+             '0123456789abcdef' >/dev/null 2>&1"
         ));
         assert!(command.contains("mirror_ref='refs/sim-console/mirrors/0123456789abcdef'"));
         assert!(command.contains("update-ref \"$mirror_ref\" '0123456789abcdef'"));
+        assert!(command.contains("checkout --detach --force '0123456789abcdef'"));
         assert!(command.contains(
             "fetch --no-tags 'https://example.invalid/qemu.git' \
              'refs/heads/ub_sim':\"$mirror_ref\" || true"
@@ -2429,5 +3093,120 @@ mod tests {
             "fetch --no-tags 'https://example.invalid/qemu.git' \
              '0123456789abcdef':\"$mirror_ref\""
         ));
+    }
+
+    #[test]
+    fn checkout_pack_materializes_a_complete_tree_without_history() {
+        let source = TempDir::new().unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .arg("init"),
+            "initialize checkout pack source",
+        )
+        .unwrap();
+        fs::create_dir_all(source.path().join("nested")).unwrap();
+        fs::write(source.path().join("root.txt"), "root payload\n").unwrap();
+        fs::write(source.path().join("nested/value.txt"), "nested payload\n").unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["add", "."]),
+            "stage checkout pack source",
+        )
+        .unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["-c", "user.name=Sim Console", "-c"])
+                .arg("user.email=sim-console@example.invalid")
+                .args(["commit", "-m", "fixture"]),
+            "commit checkout pack source",
+        )
+        .unwrap();
+        fs::write(source.path().join("root.txt"), "current root payload\n").unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["add", "root.txt"]),
+            "stage current checkout pack source",
+        )
+        .unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["-c", "user.name=Sim Console", "-c"])
+                .arg("user.email=sim-console@example.invalid")
+                .args(["commit", "-m", "current fixture"]),
+            "commit current checkout pack source",
+        )
+        .unwrap();
+        let expected = git_head(source.path()).unwrap();
+        let pack_path = source.path().join("checkout.pack");
+        create_checkout_pack(source.path(), &expected, &pack_path).unwrap();
+        let original_pack = fs::read(&pack_path).unwrap();
+        create_checkout_pack(source.path(), &expected, &pack_path).unwrap();
+        assert_eq!(fs::read(&pack_path).unwrap(), original_pack);
+
+        let target = TempDir::new().unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(target.path())
+                .arg("init"),
+            "initialize checkout pack target",
+        )
+        .unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(target.path())
+                .args(["index-pack", "--stdin"])
+                .stdin(Stdio::from(File::open(&pack_path).unwrap())),
+            "import checkout pack",
+        )
+        .unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(target.path())
+                .args(["checkout", "--detach", "--force", &expected]),
+            "checkout imported tree",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(target.path().join("root.txt")).unwrap(),
+            "current root payload\n"
+        );
+        assert_eq!(
+            fs::read_to_string(target.path().join("nested/value.txt")).unwrap(),
+            "nested payload\n"
+        );
+
+        let receive =
+            remote_file_receive_command("/remote/cache", "/remote/cache/checkout.pack", 4096, 8192);
+        assert!(receive.contains("cat >> \"$file\""));
+        assert!(receive.contains("-eq 4096"));
+        assert!(receive.contains("-eq 8192"));
+    }
+
+    #[test]
+    fn node_status_requires_a_worker_terminal_marker_for_passed() {
+        let root = TempDir::new().unwrap();
+        let log = root.path().join("nodeA_guest.log");
+
+        fs::write(&log, "[ub_obmm_pool] pass\nrun_app ready\n").unwrap();
+        assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Ready);
+
+        fs::write(&log, "[ub_obmm_pool] pass\n[w4_guest] pass\n").unwrap();
+        assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Passed);
+
+        fs::write(&log, "[ub_obmm_pool] pass\n[w4_guest] fail\n").unwrap();
+        assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Failed);
     }
 }

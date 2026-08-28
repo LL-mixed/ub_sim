@@ -12,34 +12,35 @@ const desktop = "/tmp/sim-console-desktop.png";
 const mobile = "/tmp/sim-console-mobile.png";
 
 const demo = {
-  id: "w5-deepseek-v4-flash-8node",
-  title: "W5 DeepSeek V4 Flash PP",
-  summary: "Eight-node W5 pipeline inference through Memory Service and GSVA.",
-  category: "W5 inference",
-  topology: "pipeline",
-  node_count: 8,
-  model: "DeepSeek V4 Flash",
-  estimated_duration_secs: 480,
-  tags: ["w5", "deepseek", "pipeline"],
-  data_plane: ["Memory Service", "GSVA", "OBMM"],
-  requirements: ["QEMU", "openEuler image", "2-bit GGUF"],
+  id: "urma-rpc-2",
+  title: "URMA RPC / 2 Nodes",
+  summary: "Dual-node RPC validation with retained interactive guest shells.",
+  category: "URMA and RPC",
+  topology: "pair",
+  lifecycle: "interactive_shell",
+  node_count: 2,
+  model: null,
+  estimated_duration_secs: 180,
+  tags: ["rpc", "interactive-shell"],
+  data_plane: ["URMA", "RPC"],
+  requirements: ["QEMU", "guest kernel", "initramfs"],
   controls: ["stop", "node_input"],
   parameters: [
     {
-      id: "steps",
-      label: "Decode steps",
+      id: "run_secs",
+      label: "Validation timeout",
       kind: "integer",
-      default: "8",
+      default: "180",
       min: 1,
-      max: 64,
+      max: 600,
     },
   ],
 };
 
-const nodes = Array.from({ length: 8 }, (_, index) => ({
+const nodes = Array.from({ length: 2 }, (_, index) => ({
   id: `node${String.fromCharCode(65 + index)}`,
   label: `Node ${String.fromCharCode(65 + index)}`,
-  status: index < 5 ? "passed" : index === 5 ? "running" : "ready",
+  status: "passed",
   log_path: `/work/logs/visual-run/node${String.fromCharCode(65 + index)}_guest.log`,
 }));
 
@@ -86,13 +87,28 @@ const mockApi = `
       next_cursor: 512,
       lines: [
         "[sim-console] run=visual-run status=running",
-        "[mem_service] ready data_plane_ready=1 provider=obmm",
-        "[w5] nodeA..nodeH pipeline bootstrap complete",
-        "[w5] prompt accepted model=deepseek-v4-flash steps=8",
-        "[w5] decode step=4 handoff=nodeE gsva=attached",
+        "[ub_rpc] nodeA request sent to nodeB",
+        "[ub_rpc] nodeB response returned to nodeA",
+        "iteration 1: dual-node apps pass",
+        "interactive shells ready; use node input or Stop to terminate",
       ],
     })};
     window.__nodeInputRequests = [];
+    window.__targetPreparationRequests = [];
+    window.__blockTargetPreparation = () => {
+      responses["/api/v1/runs"][0].status = "passed";
+      responses["/api/v1/runs"][0].finished_at_ms = Date.now();
+      responses["/api/v1/readiness"] = [{
+        demo_id: "urma-rpc-2",
+        target_id: "n4-910c1",
+        ready: false,
+        issues: [{
+          code: "remote_source_repo_missing",
+          message: "Git source repository is missing on n4-910c1 at /home/ll/ub_sim",
+          remedy: "Prepare the registered target farm.",
+        }],
+      }];
+    };
     window.fetch = async (input, options = {}) => {
       const url = String(input);
       const path = url.split("?")[0];
@@ -105,6 +121,29 @@ const mockApi = `
           run_id: "visual-run",
           node_id: "nodeA",
           bytes_written: bytes,
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.endsWith("/api/v1/targets/n4-910c1/prepare")) {
+        window.__targetPreparationRequests.push({ path, method: options.method });
+        responses["/api/v1/readiness"] = [{
+          demo_id: "urma-rpc-2",
+          target_id: "n4-910c1",
+          ready: true,
+          issues: [],
+        }];
+        return new Response(JSON.stringify({
+          target_id: "n4-910c1",
+          source_repo: "/home/ll/ub_sim",
+          source_revision: "15951308ea8fa1fbce600d434a5b8cf72e132f14",
+          source_repo_created: true,
+          installed_tools: ["cargo", "ninja"],
+          prepared_submodules: ["mem_service"],
+          prepared_files: ["guest-linux/aarch64/third_party/busybox-1.36.1.tar.bz2"],
+          ready_demos: 1,
+          blocked_demos: 0,
         }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -216,10 +255,63 @@ async function screenshot(width, height, output) {
       sessionId,
     );
     await writeFile(output, Buffer.from(captured.data, "base64"));
+    await assertTargetPreparation(protocol, sessionId);
   } finally {
     await protocol.send("Browser.close").catch(() => {});
     await Promise.race([waitForExit(browser), delay(2000)]);
     if (browser.exitCode === null) browser.kill("SIGKILL");
+  }
+}
+
+async function assertTargetPreparation(protocol, sessionId) {
+  await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "window.__blockTargetPreparation(); document.querySelector('#refresh-button').click()",
+    },
+    sessionId,
+  );
+  await delay(2500);
+  const blocked = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({button: document.querySelector('.prepare-target-command')?.textContent, disabled: document.querySelector('.prepare-target-command')?.disabled, banner: document.querySelector('#demo-readiness').textContent})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (
+    blocked.result.value.button !== "Prepare target farm" ||
+    blocked.result.value.disabled ||
+    !blocked.result.value.banner.includes("Git source repository is missing")
+  ) {
+    throw new Error(`target preparation action is unavailable: ${JSON.stringify(blocked.result.value)}`);
+  }
+  await protocol.send(
+    "Runtime.evaluate",
+    { expression: "document.querySelector('.prepare-target-command').click()" },
+    sessionId,
+  );
+  await delay(2500);
+  const prepared = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({requests: window.__targetPreparationRequests, feedback: document.querySelector('#feedback').textContent, readiness: document.querySelector('#demo-readiness').textContent, buttonCount: document.querySelectorAll('.prepare-target-command').length})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (
+    prepared.result.value.requests.length !== 1 ||
+    prepared.result.value.requests[0].method !== "POST" ||
+    prepared.result.value.feedback !== "Prepared n4-910c1: 1 demos ready, 0 blocked." ||
+    !prepared.result.value.readiness.includes("Ready to build and run") ||
+    prepared.result.value.buttonCount !== 0
+  ) {
+    throw new Error(`target preparation did not complete: ${JSON.stringify(prepared.result.value)}`);
   }
 }
 
@@ -228,7 +320,7 @@ async function assertParameterDraftSurvivesRefresh(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "const input = document.querySelector('[name=steps]'); input.focus(); input.value = '16'; input.dispatchEvent(new Event('input', { bubbles: true }))",
+        "const input = document.querySelector('[name=run_secs]'); input.focus(); input.value = '240'; input.dispatchEvent(new Event('input', { bubbles: true }))",
     },
     sessionId,
   );
@@ -237,17 +329,35 @@ async function assertParameterDraftSurvivesRefresh(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({value: document.querySelector('[name=steps]').value, focused: document.activeElement === document.querySelector('[name=steps]')})",
+        "({value: document.querySelector('[name=run_secs]').value, focused: document.activeElement === document.querySelector('[name=run_secs]')})",
       returnByValue: true,
     },
     sessionId,
   );
-  if (draft.result.value.value !== "16" || !draft.result.value.focused) {
+  if (draft.result.value.value !== "240" || !draft.result.value.focused) {
     throw new Error(`parameter draft did not survive refresh: ${JSON.stringify(draft.result.value)}`);
   }
 }
 
 async function assertProcessLogRoundTrip(protocol, sessionId) {
+  const idleConsole = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({hidden: document.querySelector('#node-input-form').hidden, disabled: document.querySelector('#node-input').disabled, label: document.querySelector('#node-input-label').textContent, status: document.querySelector('#node-input-status').textContent})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (
+    idleConsole.result.value.hidden ||
+    !idleConsole.result.value.disabled ||
+    idleConsole.result.value.label !== "Node console" ||
+    idleConsole.result.value.status !== "Select a running node above."
+  ) {
+    throw new Error(`node console entry is not discoverable: ${JSON.stringify(idleConsole.result.value)}`);
+  }
+
   await protocol.send(
     "Runtime.evaluate",
     { expression: "document.querySelector('.node-tile').click()" },
@@ -258,7 +368,7 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({title: document.querySelector('#log-title').textContent, processSelected: document.querySelector('#process-log').getAttribute('aria-pressed'), selectedNodes: document.querySelectorAll('.node-tile.selected').length})",
+        "({title: document.querySelector('#log-title').textContent, processSelected: document.querySelector('#process-log').getAttribute('aria-pressed'), selectedNodes: document.querySelectorAll('.node-tile.selected').length, consoleEnabled: !document.querySelector('#node-input').disabled, consoleLabel: document.querySelector('#node-input-label').textContent})",
       returnByValue: true,
     },
     sessionId,
@@ -266,7 +376,9 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
   if (
     nodeView.result.value.title !== "Node A log" ||
     nodeView.result.value.processSelected !== "false" ||
-    nodeView.result.value.selectedNodes !== 1
+    nodeView.result.value.selectedNodes !== 1 ||
+    !nodeView.result.value.consoleEnabled ||
+    nodeView.result.value.consoleLabel !== "Node A console"
   ) {
     throw new Error(`node log selection failed: ${JSON.stringify(nodeView.result.value)}`);
   }
@@ -310,7 +422,7 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({title: document.querySelector('#log-title').textContent, processSelected: document.querySelector('#process-log').getAttribute('aria-pressed'), selectedNodes: document.querySelectorAll('.node-tile.selected').length, inputHidden: document.querySelector('#node-input-form').hidden})",
+        "({title: document.querySelector('#log-title').textContent, processSelected: document.querySelector('#process-log').getAttribute('aria-pressed'), selectedNodes: document.querySelectorAll('.node-tile.selected').length, inputHidden: document.querySelector('#node-input-form').hidden, inputDisabled: document.querySelector('#node-input').disabled, inputStatus: document.querySelector('#node-input-status').textContent})",
       returnByValue: true,
     },
     sessionId,
@@ -319,7 +431,9 @@ async function assertProcessLogRoundTrip(protocol, sessionId) {
     processView.result.value.title !== "Process log" ||
     processView.result.value.processSelected !== "true" ||
     processView.result.value.selectedNodes !== 0 ||
-    !processView.result.value.inputHidden
+    processView.result.value.inputHidden ||
+    !processView.result.value.inputDisabled ||
+    processView.result.value.inputStatus !== "Select a running node above."
   ) {
     throw new Error(`process log return failed: ${JSON.stringify(processView.result.value)}`);
   }

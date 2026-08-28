@@ -54,15 +54,20 @@ demos:
     summary: Run the dual-node UB RPC request and response flow.
     node_count: 2
     topology: pair
+    lifecycle: interactive_shell
+    node_input:
+      kind: qemu_serial_env
+      manifest: guest-linux/aarch64/out/dual_node_serial_env.{run_id}.sh
+      socket_path_prefix: /tmp/ubqe_
     data_plane: [URMA, RPC]
     tags: [request-response]
     estimated_duration_secs: 180
     command:
       program: guest-linux/aarch64/scripts/run_ub_dual_node_rpc.sh
-      args: [--run-id, "{run_id}"]
+      args: [--run-id, "{run_id}", --interactive-after-pass]
     requirements: [QEMU, guest kernel, initramfs]
     required_paths: [guest-linux/aarch64/scripts/run_ub_dual_node_rpc.sh]
-    controls: [stop, node_logs]
+    controls: [stop, node_logs, node_input]
 
   - id: urma-rpc-4
     title: URMA RPC Matrix / 4 Nodes
@@ -232,12 +237,9 @@ demos:
     summary: Run Qwen streaming decode through a two-stage W5 pipeline.
     node_count: 2
     topology: pipeline
+    requires_simpler_toolchain: true
     model: Qwen3
     model_source: qwen3-0.6b
-    node_input: &w5_node_input
-      kind: qemu_serial_env
-      manifest: guest-linux/aarch64/out/headless_eight_node_env.{run_id}.sh
-      socket_path_prefix: /tmp/ubqe_
     data_plane: [Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel]
     estimated_duration_secs: 300
@@ -256,7 +258,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.macos.env
-    controls: [stop, node_logs, node_input]
+    controls: [stop, node_logs]
 
   - id: w5-qwen-4
     title: W5 Qwen PP / 4 Nodes
@@ -264,9 +266,9 @@ demos:
     summary: Run Qwen streaming decode through a four-stage W5 pipeline.
     node_count: 4
     topology: pipeline
+    requires_simpler_toolchain: true
     model: Qwen3
     model_source: qwen3-0.6b
-    node_input: *w5_node_input
     data_plane: [Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel]
     estimated_duration_secs: 480
@@ -279,7 +281,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.macos.env
-    controls: [stop, node_logs, node_input]
+    controls: [stop, node_logs]
 
   - id: w5-qwen-8
     title: W5 Qwen PP / 8 Nodes
@@ -287,9 +289,9 @@ demos:
     summary: Run Qwen streaming decode through the eight-stage W5 pipeline.
     node_count: 8
     topology: pipeline
+    requires_simpler_toolchain: true
     model: Qwen3
     model_source: qwen3-0.6b
-    node_input: *w5_node_input
     data_plane: [Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel]
     estimated_duration_secs: 900
@@ -302,7 +304,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.macos.env
-    controls: [stop, node_logs, node_input]
+    controls: [stop, node_logs]
 
   - id: w5-deepseek-v4-flash-2
     title: W5 DeepSeek V4 Flash PP / 2 Nodes
@@ -310,8 +312,10 @@ demos:
     summary: Run DeepSeek V4 Flash through a two-stage W5 pipeline.
     node_count: 2
     topology: pipeline
+    requires_simpler_toolchain: true
+    guest_engine: open_euler
     model: DeepSeek V4 Flash 2-bit GGUF
-    node_input: *w5_node_input
+    model_source: deepseek-v4-flash-iq2xxs
     data_plane: [Simpler, Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel, moe]
     estimated_duration_secs: 480
@@ -324,7 +328,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.deepseek-v4-flash-simpler-openeuler.env
-    controls: [stop, node_logs, node_input]
+    controls: [stop, node_logs]
 
   - id: w5-deepseek-v4-flash-4
     title: W5 DeepSeek V4 Flash PP / 4 Nodes
@@ -332,8 +336,10 @@ demos:
     summary: Run DeepSeek V4 Flash through a four-stage W5 pipeline.
     node_count: 4
     topology: pipeline
+    requires_simpler_toolchain: true
+    guest_engine: open_euler
     model: DeepSeek V4 Flash 2-bit GGUF
-    node_input: *w5_node_input
+    model_source: deepseek-v4-flash-iq2xxs
     data_plane: [Simpler, Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel, moe]
     estimated_duration_secs: 720
@@ -346,7 +352,7 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.deepseek-v4-flash-simpler-openeuler.env
-    controls: [stop, node_logs, node_input]
+    controls: [stop, node_logs]
 
   - id: w5-deepseek-v4-flash-8
     title: W5 DeepSeek V4 Flash PP / 8 Nodes
@@ -354,8 +360,10 @@ demos:
     summary: Run DeepSeek V4 Flash through the eight-stage W5 pipeline.
     node_count: 8
     topology: pipeline
+    requires_simpler_toolchain: true
+    guest_engine: open_euler
     model: DeepSeek V4 Flash 2-bit GGUF
-    node_input: *w5_node_input
+    model_source: deepseek-v4-flash-iq2xxs
     data_plane: [Simpler, Memory Service, GSVA, KV Cache]
     tags: [stream-infer, pipeline-parallel, moe]
     estimated_duration_secs: 1200
@@ -368,4 +376,4 @@ demos:
     required_paths:
       - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       - w5.deepseek-v4-flash-simpler-openeuler.env
-    controls: [stop, node_logs, node_input]
+    controls: [stop, node_logs]

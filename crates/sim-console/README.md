@@ -33,6 +33,7 @@ they do not create a run that is already known to fail.
 cargo run -p sim-console -- catalog
 cargo run -p sim-console -- targets
 cargo run -p sim-console -- readiness --target n4-910c
+cargo run -p sim-console -- prepare-target n4-910c1
 cargo run -p sim-console -- runs
 cargo run -p sim-console -- \
   run w5-deepseek-v4-flash-8 --target n4-910c --set steps=2
@@ -65,14 +66,27 @@ An SSH target declares:
 - `repo_root`: the managed worktree used only by sim-console;
 - `workspace_source_repo`: an existing repository used as the remote Git
   object cache, not as a worktree to reset or clean;
+- `source_repo_url`: the reviewed URL used only when target preparation must
+  create the source object cache;
 - `model_sources`: logical model IDs mapped to paths that exist on that target;
+- `open_euler_disk_image`: target-local base image used by demos whose catalog
+  `guest_engine` is `open_euler`;
 - `submodule_mirrors`: reviewed fetch locations for submodule commits that may
-  be absent from the remote object cache.
+  be absent from the remote object cache;
+- `bootstrap_files`: reviewed repository-relative build inputs copied into the
+  remote source cache and then into each managed run worktree.
 
-A model demo references a logical ID such as `qwen3-0.6b`, never a path copied
-from the machine hosting the Web console. Readiness checks the mapped path on
-the selected target, and the runner passes that target-local path to the model
-launcher. Sim-console does not copy model weights as part of each run.
+A model demo references a logical ID such as `qwen3-0.6b` or
+`deepseek-v4-flash-iq2xxs`, never a path copied from the machine hosting the Web
+console. Readiness checks the mapped path on the selected target, and the
+runner passes that target-local path to the model launcher. Sim-console does
+not copy model weights as part of each run.
+
+The same fail-closed rule applies to the openEuler base image. The catalog
+declares the required guest engine, readiness verifies the selected target's
+registered image, and the runner supplies it through the launcher's
+`--open-euler-disk-image` option. Config-file defaults are never treated as
+portable target paths.
 
 Mirror branches seed object discovery, but do not override the repository.
 When a branch tip is behind, sim-console fetches the exact root gitlink SHA and
@@ -95,11 +109,40 @@ The managed `repo_root` must differ from `workspace_source_repo`. Sim-console
 never resets or cleans the source repository, which protects an existing dirty
 testbed checkout such as `/home/ll/ub_sim`.
 
+When an SSH target is missing its source object cache or pinned submodule
+objects, use **Prepare target farm** in the Web readiness blocker or run
+`sim-console prepare-target <target>`. Preparation creates only a missing Git
+repository, installs current Rust and Ninja below the target user's home,
+installs the fixed openEuler native-build package set when absent, and
+materializes every registered top-level submodule at the exact root gitlink.
+The native set includes CMake. Simpler simulation kernels additionally require
+a real GCC major 15 compiler; when the target distribution does not package
+that version, preparation installs the Conda GCC 15 toolchain below
+`$HOME/.local/toolchains/gcc15` and verifies its reported major version. An
+older system compiler is never exposed under a misleading `g++-15` name.
+It also transfers registered bootstrap files such as the BusyBox source archive
+so the first run does not depend on target access to an external source site. The
+package set matches `guest-linux/aarch64/scripts/prepare_w5_container_deps.sh`;
+it is not supplied by the browser. Preparation never replaces a non-Git path or
+accepts a URL, path, package, or command from the browser. If the registered
+mirror cannot perform a complete offline
+checkout, the backend transfers a checkout pack containing the pinned commit
+and its current trees and blobs from the local committed checkout. Readiness is
+rerun after preparation and requires a clean detached checkout, so a commit
+object without its payload is not reported as ready. Missing model data remains
+a separate blocker.
+
 ## Node Serial Input
 
-W5 demos declare a reviewed `qemu_serial_env` node-input adapter. Select a live
-node in the Web console to display its serial log and input line. Enter sends a
-UTF-8 line with a trailing newline to that node only. The equivalent CLI is:
+The catalog distinguishes `automatic` demos from `interactive_shell` demos.
+Automatic demos, including W5 inference, validate their workload, clean up the
+guests, and exit; they do not expose node input. Interactive-shell demos retain
+their validated guests until Stop and publish a reviewed `qemu_serial_env`
+adapter. `URMA RPC / 2 Nodes` is the current interactive-shell demo.
+
+Select a node in a live interactive-shell run to display its serial log and
+input line. Enter sends a UTF-8 line with a trailing newline to that node only.
+The equivalent CLI is:
 
 ```bash
 cargo run -p sim-console -- \
@@ -111,6 +154,10 @@ limited to 4096 bytes. The browser cannot provide a socket path, SSH host, or
 remote command: the backend resolves the selected node through the run-scoped
 serial manifest. Remote payload bytes travel through SSH stdin and are never
 interpolated into a shell command or copied into the process log.
+
+A guest log ending at a shell prompt does not by itself make a demo
+interactive. The launcher must keep QEMU alive and keep the manifest and serial
+socket available for the whole live run.
 
 ## Lightweight Fixture
 

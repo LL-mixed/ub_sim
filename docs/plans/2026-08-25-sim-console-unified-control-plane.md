@@ -83,6 +83,7 @@ Each catalog record declares:
 - fixed executable and fixed arguments;
 - typed parameters with defaults and allowed values;
 - expected duration and required host capabilities;
+- lifecycle: `automatic` or `interactive_shell`;
 - supported controls and log discovery rules.
 
 Catalog records are reviewed source files. A request cannot add an executable,
@@ -103,6 +104,13 @@ The backend owns the run ID and process group. Stopping a run first sends
 `SIGTERM` to the process group so launcher cleanup traps can execute. A bounded
 escalation may send `SIGKILL` if the group does not exit.
 
+An `automatic` demo validates its workload, cleans up every guest, and reaches
+a terminal run state without operator input. It must not declare node input.
+An `interactive_shell` demo validates the workload and then keeps its guests,
+serial sockets, and run-scoped serial manifest alive until Stop. It must
+declare a node-input adapter. A shell prompt preserved in a log after QEMU has
+exited is historical output, not an interactive endpoint.
+
 Phase 1 admits one active run per backend. This protects shared QEMU ports,
 sockets, images, and generated artifacts even when a caller bypasses the Web UI
 and uses the HTTP API directly.
@@ -120,11 +128,12 @@ Their observable state is derived from log evidence:
 - `stopped`: run was stopped before a stronger terminal result.
 
 The first phase supports node selection, node-specific log inspection, and
-serial input where a catalog record declares a stable adapter. The request
-selects only a known run and node; socket paths remain backend-owned. Remote
-payload bytes travel through SSH stdin and are not interpolated into a shell
-command or written to the process log. Other node actions remain disabled
-unless their adapters expose stable control endpoints.
+serial input for `interactive_shell` catalog records with a stable adapter.
+`automatic` records cannot declare the control. The request selects only a
+known run and node; socket paths remain backend-owned. Remote payload bytes
+travel through SSH stdin and are not interpolated into a shell command or
+written to the process log. Other node actions remain disabled unless their
+adapters expose stable control endpoints.
 
 ## 5. APIs And CLI
 
@@ -134,6 +143,7 @@ The backend exposes versioned JSON endpoints:
 GET    /api/v1/health
 GET    /api/v1/catalog
 GET    /api/v1/targets
+POST   /api/v1/targets/{target_id}/prepare
 GET    /api/v1/readiness?target=n4-910c
 GET    /api/v1/runs
 POST   /api/v1/runs
@@ -148,6 +158,7 @@ The same backend domain is available through CLI commands:
 ```text
 sim-console catalog
 sim-console targets
+sim-console prepare-target <target-id>
 sim-console readiness [--target target-id]
 sim-console run <demo-id> [--target target-id] [--set name=value]
 sim-console runs
@@ -205,6 +216,17 @@ checks it out in a dedicated managed worktree. Top-level submodules are aligned
 to the root gitlinks before the launcher starts. The configured source
 repository is only an object cache: sim-console does not reset, clean, or run
 from that potentially dirty checkout.
+
+Target preparation bootstraps the registered source cache and user-local build
+tools, then proves that every top-level gitlink can be checked out without lazy
+network access. A reviewed remote mirror is attempted first. If it exposes only
+the commit or an incomplete promisor tree, sim-console transfers a local
+checkout pack containing the pinned commit plus its current tree and blob
+objects. Readiness requires the source mirror to be at that detached revision
+with a clean index; commit-object presence by itself is insufficient.
+Registered bootstrap files are copied into the target source cache and restored
+into every managed worktree, avoiding first-run dependence on external source
+sites such as busybox.net.
 
 ## 8. Delivery Phases
 

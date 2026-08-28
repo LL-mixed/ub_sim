@@ -14,6 +14,7 @@ const USAGE: &str = r#"Usage:
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] catalog
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] targets
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] readiness [--target TARGET]
+  sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] prepare-target TARGET
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] runs
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] run DEMO [--target TARGET] [--set NAME=VALUE]
   sim-console [--repo-root PATH] [--catalog PATH] [--targets PATH] status RUN_ID
@@ -74,6 +75,14 @@ async fn main() -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&manager.readiness(target.as_deref()).await?)?
+            );
+        }
+        "prepare-target" => {
+            let target = take_positional(&mut args, "TARGET")?;
+            require_empty(&args)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&manager.prepare_target(&target).await?)?
             );
         }
         "runs" => {
@@ -264,5 +273,10 @@ mod tests {
         assert_eq!(node, "nodeC");
         assert_eq!(request.data, "echo 'Huawei is'");
         assert!(!request.append_newline);
+    }
+
+    #[test]
+    fn advertises_target_preparation_cli() {
+        assert!(USAGE.contains("prepare-target TARGET"));
     }
 }

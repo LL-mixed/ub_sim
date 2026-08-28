@@ -7,6 +7,7 @@ targets:
     description: Build and run on the host running sim-console.
     model_sources:
       qwen3-0.6b: /Volumes/repos/qwen3_mlx_run/Qwen3-0.6B
+      deepseek-v4-flash-iq2xxs: /Volumes/repos/ds4/gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf
 
   - id: n4-910c
     title: n4-910c
@@ -16,8 +17,13 @@ targets:
     connect_timeout_secs: 15
     repo_root: /home/ll/sim-console/ub_sim
     workspace_source_repo: /home/ll/ub_sim
+    source_repo_url: https://github.com/LL-mixed/ub_sim.git
+    bootstrap_files:
+      - guest-linux/aarch64/third_party/busybox-1.36.1.tar.bz2
     model_sources:
       qwen3-0.6b: /home/ll/models/Qwen3-0.6B
+      deepseek-v4-flash-iq2xxs: /home/ll/models/DeepSeek-V4-Flash/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf
+    open_euler_disk_image: /home/ll/models/openEuler-2403/rootfs.qcow2
     submodule_mirrors:
       - path: mem_service
         fetch_url: https://github.com/LL-mixed/mem_service.git
@@ -28,17 +34,37 @@ targets:
       - path: vendor/qemu_8.2.0_ub
         fetch_url: https://gitcode.com/liliang_euler/qemu.git
         git_ref: refs/heads/ub_sim
+      - path: vendor/simpler
+        fetch_url: https://github.com/hw-native-sys/simpler.git
+        git_ref: refs/heads/main
+      - path: vendor/pto-isa
+        fetch_url: https://github.com/hw-native-sys/pto-isa.git
+        git_ref: refs/heads/main
+      - path: vendor/pypto
+        fetch_url: https://github.com/hw-native-sys/pypto.git
+        git_ref: refs/heads/main
+      - path: vendor/pypto-lib
+        fetch_url: https://github.com/hw-native-sys/pypto-lib.git
+        git_ref: refs/heads/main
+      - path: vendor/obmm
+        fetch_url: https://atomgit.com/openeuler/obmm.git
+        git_ref: refs/heads/master
 
   - id: n4-910c1
     title: n4-910c1
     kind: ssh
     description: Native openEuler simulator testbed.
     ssh_host: n4-910c1
-    connect_timeout_secs: 15
+    connect_timeout_secs: 30
     repo_root: /home/ll/sim-console/ub_sim
     workspace_source_repo: /home/ll/ub_sim
+    source_repo_url: https://github.com/LL-mixed/ub_sim.git
+    bootstrap_files:
+      - guest-linux/aarch64/third_party/busybox-1.36.1.tar.bz2
     model_sources:
       qwen3-0.6b: /home/ll/models/Qwen3-0.6B
+      deepseek-v4-flash-iq2xxs: /home/ll/models/DeepSeek-V4-Flash/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf
+    open_euler_disk_image: /home/ll/models/openEuler-2403/rootfs.qcow2
     submodule_mirrors:
       - path: mem_service
         fetch_url: https://github.com/LL-mixed/mem_service.git
@@ -49,3 +75,18 @@ targets:
       - path: vendor/qemu_8.2.0_ub
         fetch_url: https://gitcode.com/liliang_euler/qemu.git
         git_ref: refs/heads/ub_sim
+      - path: vendor/simpler
+        fetch_url: https://github.com/hw-native-sys/simpler.git
+        git_ref: refs/heads/main
+      - path: vendor/pto-isa
+        fetch_url: https://github.com/hw-native-sys/pto-isa.git
+        git_ref: refs/heads/main
+      - path: vendor/pypto
+        fetch_url: https://github.com/hw-native-sys/pypto.git
+        git_ref: refs/heads/main
+      - path: vendor/pypto-lib
+        fetch_url: https://github.com/hw-native-sys/pypto-lib.git
+        git_ref: refs/heads/main
+      - path: vendor/obmm
+        fetch_url: https://atomgit.com/openeuler/obmm.git
+        git_ref: refs/heads/master

@@ -543,6 +543,13 @@ p {
   display: block;
 }
 
+.prepare-target-command {
+  margin-top: 10px;
+  color: #713029;
+  background: #fff;
+  border-color: #c98179;
+}
+
 .readiness-banner p {
   margin-top: 4px;
   color: inherit;
@@ -735,19 +742,27 @@ p {
 
 .node-input-form {
   margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
 .node-input-form[hidden] {
   display: none;
 }
 
-.node-input-form > label {
-  width: 1px;
-  height: 1px;
-  position: absolute;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
+.node-input-heading {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.node-input-heading label {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .log-band.node-input-active .log-output {
@@ -764,6 +779,10 @@ p {
   background: var(--terminal);
   border: 1px solid var(--terminal-line);
   border-radius: 5px;
+}
+
+.node-input-form:not(.available) .node-input-row {
+  opacity: 0.62;
 }
 
 .terminal-prompt {
@@ -797,11 +816,11 @@ p {
 }
 
 .node-input-status {
-  min-height: 14px;
-  display: block;
-  margin-top: 2px;
+  min-width: 0;
   color: var(--muted);
   font-size: 10px;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .run-item .status-badge {

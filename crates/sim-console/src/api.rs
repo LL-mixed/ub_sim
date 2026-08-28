@@ -5,7 +5,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
-use crate::domain::{LogChunk, NodeInputRequest, NodeInputResult, RunRecord, StartRunRequest};
+use crate::domain::{
+    LogChunk, NodeInputRequest, NodeInputResult, RunRecord, StartRunRequest,
+    TargetPreparationResult,
+};
 use crate::{RunManager, RunManagerError};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
@@ -56,6 +59,7 @@ pub fn router(manager: RunManager) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/catalog", get(catalog))
         .route("/api/v1/targets", get(targets))
+        .route("/api/v1/targets/{target_id}/prepare", post(prepare_target))
         .route("/api/v1/readiness", get(readiness))
         .route("/api/v1/runs", get(list_runs).post(start_run))
         .route("/api/v1/runs/{run_id}", get(get_run))
@@ -99,6 +103,13 @@ async fn catalog(State(state): State<AppState>) -> Json<crate::domain::DemoCatal
 
 async fn targets(State(state): State<AppState>) -> Json<crate::target::TargetRegistry> {
     Json((*state.manager.targets()).clone())
+}
+
+async fn prepare_target(
+    State(state): State<AppState>,
+    Path(target_id): Path<String>,
+) -> Result<Json<TargetPreparationResult>, ApiError> {
+    Ok(Json(state.manager.prepare_target(&target_id).await?))
 }
 
 async fn readiness(
@@ -174,6 +185,7 @@ impl From<RunManagerError> for ApiError {
             | RunManagerError::MissingRequirement(_)
             | RunManagerError::UnsafePath(_)
             | RunManagerError::InvalidNodeInput(_)
+            | RunManagerError::TargetPreparationUnavailable(_)
             | RunManagerError::Domain(_) => StatusCode::BAD_REQUEST,
             RunManagerError::ActiveRun(_) | RunManagerError::NodeInputUnavailable(_) => {
                 StatusCode::CONFLICT
@@ -211,7 +223,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::domain::{CommandDefinition, DemoCatalog, DemoDefinition, TopologyKind};
+    use crate::domain::{
+        CommandDefinition, DemoCatalog, DemoDefinition, DemoLifecycle, GuestEngine, TopologyKind,
+    };
 
     fn test_app() -> (TempDir, Router) {
         let root = TempDir::new().unwrap();
@@ -226,6 +240,9 @@ mod tests {
                 summary: "Fixture".to_string(),
                 node_count: 2,
                 topology: TopologyKind::Pair,
+                lifecycle: DemoLifecycle::Automatic,
+                guest_engine: GuestEngine::Initramfs,
+                requires_simpler_toolchain: false,
                 model: None,
                 model_source: None,
                 node_input: None,
@@ -320,6 +337,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn rejects_target_preparation_for_the_local_target() {
+        let (_root, app) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/targets/local/prepare")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("does not need farm preparation"));
     }
 
     #[tokio::test]

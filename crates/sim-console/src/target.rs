@@ -29,9 +29,15 @@ pub struct ExecutionTarget {
     #[serde(default)]
     pub workspace_source_repo: Option<String>,
     #[serde(default)]
+    pub source_repo_url: Option<String>,
+    #[serde(default)]
     pub submodule_mirrors: Vec<SubmoduleMirror>,
     #[serde(default)]
+    pub bootstrap_files: Vec<String>,
+    #[serde(default)]
     pub model_sources: BTreeMap<String, String>,
+    #[serde(default)]
+    pub open_euler_disk_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,8 +99,11 @@ impl TargetRegistry {
                 connect_timeout_secs: None,
                 repo_root: None,
                 workspace_source_repo: None,
+                source_repo_url: None,
                 submodule_mirrors: vec![],
+                bootstrap_files: vec![],
                 model_sources: BTreeMap::new(),
+                open_euler_disk_image: None,
             }],
         }
     }
@@ -165,13 +174,20 @@ fn validate_target(target: &ExecutionTarget) -> Result<(), TargetRegistryError> 
             return Err(fail("model source paths must be absolute"));
         }
     }
+    if let Some(path) = &target.open_euler_disk_image {
+        if !Path::new(path).is_absolute() {
+            return Err(fail("openEuler disk image path must be absolute"));
+        }
+    }
     match target.kind {
         ExecutionTargetKind::Local => {
             if target.ssh_host.is_some()
                 || target.connect_timeout_secs.is_some()
                 || target.repo_root.is_some()
                 || target.workspace_source_repo.is_some()
+                || target.source_repo_url.is_some()
                 || !target.submodule_mirrors.is_empty()
+                || !target.bootstrap_files.is_empty()
             {
                 return Err(fail(
                     "local targets cannot declare SSH or remote workspace fields",
@@ -215,6 +231,20 @@ fn validate_target(target: &ExecutionTarget) -> Result<(), TargetRegistryError> 
                     "managed repo_root must differ from workspace_source_repo",
                 ));
             }
+            let source_repo_url = target
+                .source_repo_url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| fail("ssh targets require source_repo_url"))?;
+            if source_repo_url.starts_with('-')
+                || source_repo_url
+                    .bytes()
+                    .any(|byte| byte.is_ascii_whitespace())
+            {
+                return Err(fail(
+                    "source_repo_url cannot start with a dash or contain whitespace",
+                ));
+            }
             let mut mirror_paths = BTreeSet::new();
             for mirror in &target.submodule_mirrors {
                 if mirror.path.is_empty()
@@ -230,6 +260,20 @@ fn validate_target(target: &ExecutionTarget) -> Result<(), TargetRegistryError> 
                 }
                 if mirror.fetch_url.trim().is_empty() || mirror.git_ref.trim().is_empty() {
                     return Err(fail("submodule mirrors require fetch_url and git_ref"));
+                }
+            }
+            let mut bootstrap_files = BTreeSet::new();
+            for file in &target.bootstrap_files {
+                if file.is_empty()
+                    || Path::new(file).is_absolute()
+                    || Path::new(file)
+                        .components()
+                        .any(|component| matches!(component, std::path::Component::ParentDir))
+                {
+                    return Err(fail("bootstrap files must be repository-relative"));
+                }
+                if !bootstrap_files.insert(file.as_str()) {
+                    return Err(fail("bootstrap files must be unique"));
                 }
             }
         }
@@ -261,10 +305,31 @@ mod tests {
         assert_eq!(n4.connect_timeout_secs, Some(15));
         assert_eq!(n4.workspace_source_repo.as_deref(), Some("/home/ll/ub_sim"));
         assert_eq!(
+            n4.source_repo_url.as_deref(),
+            Some("https://github.com/LL-mixed/ub_sim.git")
+        );
+        assert_eq!(
             n4.model_sources.get("qwen3-0.6b").map(String::as_str),
             Some("/home/ll/models/Qwen3-0.6B")
         );
-        assert_eq!(n4.submodule_mirrors.len(), 3);
+        assert_eq!(
+            n4.model_sources
+                .get("deepseek-v4-flash-iq2xxs")
+                .map(String::as_str),
+            Some(
+                "/home/ll/models/DeepSeek-V4-Flash/\
+                 DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
+            )
+        );
+        assert_eq!(
+            n4.open_euler_disk_image.as_deref(),
+            Some("/home/ll/models/openEuler-2403/rootfs.qcow2")
+        );
+        assert_eq!(n4.submodule_mirrors.len(), 8);
+        assert_eq!(
+            n4.bootstrap_files,
+            vec!["guest-linux/aarch64/third_party/busybox-1.36.1.tar.bz2"]
+        );
         assert!(n4
             .submodule_mirrors
             .iter()

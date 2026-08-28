@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::domain::{ControlCapability, DemoCatalog, DemoDefinition};
+use crate::domain::{ControlCapability, DemoCatalog, DemoDefinition, DemoLifecycle};
 
 const DEFAULT_CATALOG: &str = include_str!("../catalog/demos.yaml");
 
@@ -100,9 +100,21 @@ fn validate_demo(demo: &DemoDefinition) -> Result<(), CatalogError> {
     for path in &demo.required_paths {
         validate_relative_path(path).map_err(|reason| fail(&reason))?;
     }
+    let has_node_input_control = demo.controls.contains(&ControlCapability::NodeInput);
+    match demo.lifecycle {
+        DemoLifecycle::Automatic if demo.node_input.is_some() || has_node_input_control => {
+            return Err(fail("automatic demos must not declare node_input"));
+        }
+        DemoLifecycle::InteractiveShell if demo.node_input.is_none() || !has_node_input_control => {
+            return Err(fail(
+                "interactive_shell demos require a node_input adapter and control",
+            ));
+        }
+        DemoLifecycle::Automatic | DemoLifecycle::InteractiveShell => {}
+    }
     match &demo.node_input {
         Some(adapter) => {
-            if !demo.controls.contains(&ControlCapability::NodeInput) {
+            if !has_node_input_control {
                 return Err(fail("node_input adapter requires the node_input control"));
             }
             validate_relative_path(&adapter.manifest).map_err(|reason| fail(&reason))?;
@@ -184,6 +196,69 @@ mod tests {
     }
 
     #[test]
+    fn default_catalog_exposes_input_only_for_live_interactive_shells() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        let interactive: Vec<_> = catalog
+            .demos
+            .iter()
+            .filter(|demo| demo.lifecycle == DemoLifecycle::InteractiveShell)
+            .map(|demo| demo.id.as_str())
+            .collect();
+
+        assert_eq!(interactive, vec!["urma-rpc-2"]);
+        for demo in &catalog.demos {
+            let has_input =
+                demo.node_input.is_some() && demo.controls.contains(&ControlCapability::NodeInput);
+            assert_eq!(
+                has_input,
+                demo.lifecycle == DemoLifecycle::InteractiveShell,
+                "node input lifecycle mismatch for {}",
+                demo.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_w5_model_demo_declares_a_logical_model_source() {
+        let catalog = DemoCatalog::load_default().unwrap();
+
+        for demo in catalog
+            .demos
+            .iter()
+            .filter(|demo| demo.category == "W5 Inference")
+        {
+            assert!(
+                demo.model_source.is_some(),
+                "W5 demo {} has no target model source",
+                demo.id
+            );
+        }
+    }
+
+    #[test]
+    fn only_w5_model_demos_require_the_simpler_toolchain() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        let simpler_demos: Vec<_> = catalog
+            .demos
+            .iter()
+            .filter(|demo| demo.requires_simpler_toolchain)
+            .map(|demo| demo.id.as_str())
+            .collect();
+
+        assert_eq!(
+            simpler_demos,
+            vec![
+                "w5-qwen-2",
+                "w5-qwen-4",
+                "w5-qwen-8",
+                "w5-deepseek-v4-flash-2",
+                "w5-deepseek-v4-flash-4",
+                "w5-deepseek-v4-flash-8",
+            ]
+        );
+    }
+
+    #[test]
     fn default_catalog_references_existing_repository_entrypoints() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -248,10 +323,33 @@ demos:
     topology: service
     estimated_duration_secs: 1
     command: { program: fixture }
+    lifecycle: interactive_shell
     controls: [node_input]
 "#;
         assert!(matches!(
             DemoCatalog::parse(unbound_node_input),
+            Err(CatalogError::InvalidDemo { .. })
+        ));
+
+        let automatic_node_input = r#"
+version: 1
+demos:
+  - id: fixture
+    title: Fixture
+    category: Test
+    summary: Test
+    node_count: 1
+    topology: service
+    estimated_duration_secs: 1
+    command: { program: fixture }
+    node_input:
+      kind: qemu_serial_env
+      manifest: out/serial.{run_id}.env
+      socket_path_prefix: /tmp/fixture-
+    controls: [node_input]
+"#;
+        assert!(matches!(
+            DemoCatalog::parse(automatic_node_input),
             Err(CatalogError::InvalidDemo { .. })
         ));
     }
