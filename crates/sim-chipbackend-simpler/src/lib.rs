@@ -739,6 +739,14 @@ impl RuntimeLibrary {
         aicore_size: usize,
     ) -> Result<(), SimplerApiError> {
         let callable_id = 0;
+        self.initialize_context(
+            ctx,
+            device_id,
+            aicpu_binary,
+            aicpu_size,
+            aicore_binary,
+            aicore_size,
+        )?;
         self.run_prepared_callable(
             ctx,
             runtime,
@@ -748,16 +756,38 @@ impl RuntimeLibrary {
             true,
             block_dim,
             aicpu_thread_num,
-            device_id,
-            aicpu_binary,
-            aicpu_size,
-            aicore_binary,
-            aicore_size,
         )?;
         unsafe {
             SimplerApiError::from_code(
                 "simpler_unregister_callable",
                 (self.unregister_callable)(ctx.as_raw(), callable_id),
+            )
+        }
+    }
+
+    pub fn initialize_context(
+        &self,
+        ctx: &DeviceContext<'_>,
+        device_id: i32,
+        aicpu_binary: *const u8,
+        aicpu_size: usize,
+        aicore_binary: *const u8,
+        aicore_size: usize,
+    ) -> Result<(), SimplerApiError> {
+        unsafe {
+            SimplerApiError::from_code(
+                "simpler_init",
+                (self.simpler_init)(
+                    ctx.as_raw(),
+                    device_id as c_int,
+                    aicpu_binary,
+                    aicpu_size,
+                    aicore_binary,
+                    aicore_size,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                ),
             )
         }
     }
@@ -773,29 +803,10 @@ impl RuntimeLibrary {
         prepare: bool,
         _block_dim: i32,
         aicpu_thread_num: i32,
-        device_id: i32,
-        aicpu_binary: *const u8,
-        aicpu_size: usize,
-        aicore_binary: *const u8,
-        aicore_size: usize,
     ) -> Result<(), SimplerApiError> {
         let config = CallConfig::new(aicpu_thread_num);
         let descriptor = next_native_run_descriptor();
         unsafe {
-            SimplerApiError::from_code(
-                "simpler_init",
-                (self.simpler_init)(
-                    ctx.as_raw(),
-                    device_id as c_int,
-                    aicpu_binary,
-                    aicpu_size,
-                    aicore_binary,
-                    aicore_size,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null(),
-                ),
-            )?;
             if prepare {
                 SimplerApiError::from_code(
                     "simpler_register_callable",

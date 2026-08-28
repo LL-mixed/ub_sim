@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -34,6 +34,7 @@ REQUESTS_OVERRIDE=""
 SERVE_REQUESTS_OVERRIDE=""
 FLASH_PAYLOAD_DIR_OVERRIDE=""
 MODEL_OVERRIDE=""
+OPEN_EULER_DISK_IMAGE_OVERRIDE=""
 NODEA_INGRESS_OVERRIDE=0
 GSVA_KV_OVERRIDE=0
 REQUIRE_PREFIX_CACHE_OVERRIDE=0
@@ -151,6 +152,19 @@ while (( $# > 0 )); do
       MODEL_OVERRIDE="${1#--model=}"
       shift
       ;;
+    --open-euler-disk-image)
+      if (( $# < 2 )); then
+        echo "--open-euler-disk-image requires a value" >&2
+        usage
+        exit 2
+      fi
+      OPEN_EULER_DISK_IMAGE_OVERRIDE="$2"
+      shift 2
+      ;;
+    --open-euler-disk-image=*)
+      OPEN_EULER_DISK_IMAGE_OVERRIDE="${1#--open-euler-disk-image=}"
+      shift
+      ;;
     --requests)
       if (( $# < 2 )); then
         echo "--requests requires a value" >&2
@@ -223,6 +237,13 @@ fi
 set -a
 source "$CONFIG_PATH"
 set +a
+
+if [[ -n "$OPEN_EULER_DISK_IMAGE_OVERRIDE" ]]; then
+  if [[ "$OPEN_EULER_DISK_IMAGE_OVERRIDE" != /* ]]; then
+    OPEN_EULER_DISK_IMAGE_OVERRIDE="$PWD/$OPEN_EULER_DISK_IMAGE_OVERRIDE"
+  fi
+  export SIM_W5_OE_DISK_IMAGE="$OPEN_EULER_DISK_IMAGE_OVERRIDE"
+fi
 
 if [[ -n "$MODEL_OVERRIDE" ]]; then
   if [[ "$MODEL_OVERRIDE" != /* ]]; then
@@ -418,6 +439,7 @@ print_w5_effective_env() {
   print_env_value RUN_ID "${RUN_ID:-}"
   print_env_value SIM_UAPI_W5_PROFILE "${SIM_UAPI_W5_PROFILE:-}"
   print_env_value SIM_W5_CLUSTER_NODE_COUNT "${SIM_W5_CLUSTER_NODE_COUNT:-8}"
+  print_env_value SIM_W5_OE_DISK_IMAGE "${SIM_W5_OE_DISK_IMAGE:-}"
   print_env_value SIM_QWEN3_GUEST_DECODE_STEPS "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   print_env_value SIM_QWEN3_DENSE_WEIGHTS_PATH "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
   print_env_value SIM_QWEN3_GUEST_ENGRAM "${SIM_QWEN3_GUEST_ENGRAM:-}"
@@ -536,6 +558,11 @@ validate_w5_cluster_config() {
      [[ -n "${SIM_DEEPSEEK_V4_FLASH:-}" ]] &&
      [[ ! -f "$SIM_DEEPSEEK_V4_FLASH" && ! -d "$SIM_DEEPSEEK_V4_FLASH" ]]; then
     echo "SIM_DEEPSEEK_V4_FLASH model source is missing: $SIM_DEEPSEEK_V4_FLASH" >&2
+    return 2
+  fi
+  if [[ "${SIM_W5_GUEST_ENGINE:-initramfs}" == "openEuler" ]] &&
+     [[ ! -f "${SIM_W5_OE_DISK_IMAGE:-}" ]]; then
+    echo "SIM_W5_OE_DISK_IMAGE is missing: ${SIM_W5_OE_DISK_IMAGE:-unset}" >&2
     return 2
   fi
   if [[ "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" == "deepseek-v4-flash-official" ||

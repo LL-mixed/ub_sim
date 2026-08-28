@@ -618,6 +618,8 @@ EOF
 for node_id in "${NODE_IDS[@]}"; do
   printf "export %s_SERIAL_SOCKET='%s/%s.%s.sock'\n" \
     "${node_id:u}" "$SERIAL_DIR" "$node_id" "$SOCKET_SUFFIX" >> "$ENV_FILE"
+  printf "export %s_QEMU_PID_FILE='%s/ub_%s.headless.%s.pid'\n" \
+    "${node_id:u}" "$OUT_DIR" "$node_id" "$RUN_ID" >> "$ENV_FILE"
 done
 
 log "env_file=$ENV_FILE"

@@ -154,7 +154,8 @@ pub fn ensure_simpler_host_fp4_gemm_manifest(
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_fp4_gemm_manifest_version"].as_u64() == Some(2)
+            if super::simpler_manifest_has_current_capi_abi(manifest_path)
+                && value["host_fp4_gemm_manifest_version"].as_u64() == Some(2)
                 && manifest.platform.as_deref() == Some("a5sim")
                 && manifest.host_fp4_gemm.as_ref().is_some_and(|geometry| {
                     geometry.m == ARTIFACT_M as u64

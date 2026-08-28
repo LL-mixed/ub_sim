@@ -95,7 +95,7 @@ ensure_busybox_static_config() {
     return 1
   fi
 
-  make -C "$src_dir" defconfig >/dev/null
+  run_gnu_make -C "$src_dir" defconfig >/dev/null
   perl -0pi -e 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/m' "$src_dir/.config"
   perl -0pi -e 's/^CONFIG_STATIC=.*$/CONFIG_STATIC=y/m' "$src_dir/.config"
   perl -0pi -e 's/^CONFIG_CROSS_COMPILER_PREFIX=.*\n//mg' "$src_dir/.config"
@@ -136,7 +136,7 @@ build_from_source_dir() {
 
   echo "[prepare_busybox] building busybox from source: $src_dir" >&2
   ensure_busybox_static_config "$src_dir" "$CC"
-  make -C "$src_dir" -j"$jobs" >/dev/null
+  run_gnu_make -C "$src_dir" -j"$jobs" >/dev/null
 
   if [[ ! -x "$src_dir/busybox" ]]; then
     echo "[prepare_busybox] error: build did not produce $src_dir/busybox" >&2

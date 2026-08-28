@@ -48,7 +48,8 @@ pub fn ensure_simpler_host_deepseek_vector_manifest(manifest_path: &Path) -> Res
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_deepseek_vector_manifest_version"].as_u64() == Some(13)
+            if super::simpler_manifest_has_current_capi_abi(manifest_path)
+                && value["host_deepseek_vector_manifest_version"].as_u64() == Some(13)
                 && manifest.platform.as_deref() == Some("a5sim")
                 && manifest.simpler_runtime.orch_function_name == "build_deepseek_vector_graph"
             {

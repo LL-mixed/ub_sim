@@ -228,7 +228,10 @@ def test_build_run_and_launcher_contracts():
     ).read_text()
     app = (APP_DIR / "obmm_async_coroutine.c").read_text()
 
-    assert 'OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine"' in builder
+    assert (
+        'OBMM_ASYNC_COROUTINE_BIN='
+        '"$OUT_DIR/obmm_async_coroutine/obmm_async_coroutine"' in builder
+    )
     assert "OBMM_COROUTINE_SCHEDULER_ASM_SRC" in builder
     assert '"$INITRAMFS_DIR/bin/obmm_async_coroutine"' in builder
     assert "zsh ./scripts/build_initramfs.sh" in guest_builder

@@ -44,11 +44,11 @@ if [[ ! -f "$KERNEL_BUILD_DIR/vmlinux.symvers" ]]; then
   echo "kernel build is missing vmlinux.symvers: $KERNEL_BUILD_DIR" >&2
   exit 1
 fi
-make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
   ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" modules_prepare
 cp "$KERNEL_BUILD_DIR/vmlinux.symvers" "$KERNEL_BUILD_DIR/Module.symvers"
 
-make -C "$KERNEL_SRC_DIR" \
+run_gnu_make -C "$KERNEL_SRC_DIR" \
   O="$KERNEL_BUILD_DIR" \
   M="$DRIVER_DIR" \
   ARCH="$ARCH" \

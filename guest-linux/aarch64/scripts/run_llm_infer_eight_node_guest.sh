@@ -497,13 +497,46 @@ validate_qwen3_runtime_object_view_source() {
   return 0
 }
 
+log_matches() {
+  local pattern="$1"
+  local file="${2:-}"
+
+  if [[ -n "$file" ]]; then
+    grep -Eq -- "$pattern" < <(tr -d '\r' < "$file")
+  else
+    grep -Eq -- "$pattern" < <(tr -d '\r')
+  fi
+}
+
+log_match_count() {
+  local pattern="$1"
+  local file="${2:-}"
+
+  if [[ -n "$file" ]]; then
+    tr -d '\r' < "$file" | grep -Ec -- "$pattern"
+  else
+    tr -d '\r' | grep -Ec -- "$pattern"
+  fi
+}
+
+log_matching_lines() {
+  local pattern="$1"
+  local file="${2:-}"
+
+  if [[ -n "$file" ]]; then
+    tr -d '\r' < "$file" | grep -E -- "$pattern"
+  else
+    tr -d '\r' | grep -E -- "$pattern"
+  fi
+}
+
 wait_for_log_pattern() {
   local file="$1"
   local pattern="$2"
   local timeout_s="$3"
   local deadline=$((SECONDS + timeout_s))
   while (( SECONDS < deadline )); do
-    if [[ -f "$file" ]] && rg -q "$pattern" "$file"; then
+    if [[ -f "$file" ]] && log_matches "$pattern" "$file"; then
       return 0
     fi
     sleep 0.2
@@ -527,12 +560,12 @@ wait_for_log_pass_or_fail_since() {
       tmp="$(tail -n "+$((start_line + 1))" "$file" 2>/dev/null || true)"
       count=0
       if [[ -n "$tmp" ]]; then
-        count="$(printf '%s\n' "$tmp" | rg -c "$pass_pattern" || true)"
+        count="$(printf '%s\n' "$tmp" | log_match_count "$pass_pattern" || true)"
       fi
       if (( count >= pass_count )); then
         return 0
       fi
-      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | rg -q "$fail_pattern"; then
+      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | log_matches "$fail_pattern"; then
         return 1
       fi
     fi
@@ -550,7 +583,7 @@ wait_for_all_logs_pass_or_fail_since() {
   local wait_start="$SECONDS"
   local progress_interval="$W4_GUEST_PROGRESS_INTERVAL_SECS"
   local next_progress=0
-  local node_id guest_log start_line tmp count all_pass
+  local node_id guest_log qemu_log pid_var pid_file qemu_pid start_line tmp count all_pass
 
   if [[ ! "$progress_interval" =~ '^[0-9]+$' ]]; then
     trace "progress: invalid ${PROGRESS_INTERVAL_ENV_NAME}=$progress_interval; using 180"
@@ -567,17 +600,31 @@ wait_for_all_logs_pass_or_fail_since() {
     all_pass=1
     for node_id in "${NODE_IDS[@]}"; do
       guest_log="$RUN_DIR/${node_id}_guest.log"
+      qemu_log="$RUN_DIR/${node_id}_qemu.log"
+      pid_var="${node_id:u}_QEMU_PID_FILE"
+      pid_file="${(P)pid_var:-}"
+      if [[ -n "$pid_file" && -f "$pid_file" ]]; then
+        qemu_pid="$(cat "$pid_file" 2>/dev/null || true)"
+        if [[ -n "$qemu_pid" ]] && ! kill -0 "$qemu_pid" 2>/dev/null; then
+          trace "FAIL: qemu process exited while waiting node=$node_id pid=$qemu_pid"
+          if [[ -f "$qemu_log" ]]; then
+            trace "qemu log tail follows path=$qemu_log"
+            tail -n 40 "$qemu_log" | sed "s/^/[w4guest8] ${node_id} qemu: /" | tee -a "$TRACE_FILE" >&2
+          fi
+          return 1
+        fi
+      fi
       start_line="${START_LINES[$node_id]}"
       count=0
       if [[ -f "$guest_log" ]]; then
         tmp="$(tail -n "+$((start_line + 1))" "$guest_log" 2>/dev/null || true)"
         if [[ -n "$tmp" ]]; then
-          if printf '%s\n' "$tmp" | rg -q "$fail_pattern"; then
+          if printf '%s\n' "$tmp" | log_matches "$fail_pattern"; then
             trace "FAIL: w4 guest fatal marker on $node_id"
-            printf '%s\n' "$tmp" | rg "$fail_pattern" | tail -n 5 >&2 || true
+            printf '%s\n' "$tmp" | log_matching_lines "$fail_pattern" | tail -n 5 >&2 || true
             return 1
           fi
-          count="$(printf '%s\n' "$tmp" | rg -c "$pass_pattern" || true)"
+          count="$(printf '%s\n' "$tmp" | log_match_count "$pass_pattern" || true)"
         fi
       fi
       if (( count < pass_count )); then
@@ -626,7 +673,7 @@ assert_log_has() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if ! rg -q "$pattern" "$file"; then
+  if ! log_matches "$pattern" "$file"; then
     echo "missing log marker: $label in $file" >&2
     return 1
   fi
@@ -636,7 +683,7 @@ assert_log_absent() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if rg -q "$pattern" "$file"; then
+  if log_matches "$pattern" "$file"; then
     echo "unexpected log marker: $label in $file" >&2
     return 1
   fi
@@ -649,7 +696,7 @@ assert_log_count() {
   local label="$4"
   local count
 
-  count="$(rg -c "$pattern" "$file" || true)"
+  count="$(log_match_count "$pattern" "$file" || true)"
   if [[ -z "$count" ]]; then
     count="0"
   fi
@@ -1399,7 +1446,7 @@ validate_w5_engram_context_summary() {
     trace "FAIL: qwen3 engram context object-ref summary missing path=$RUN_SUMMARY_FILE"
     return 1
   fi
-  if ! rg -q "engram_context_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} modes=[^ ]*object-ref" "$RUN_SUMMARY_FILE"; then
+  if ! log_matches "engram_context_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} modes=[^ ]*object-ref" "$RUN_SUMMARY_FILE"; then
     trace "FAIL: qwen3 engram context summary missing object-ref mode path=$RUN_SUMMARY_FILE"
     return 1
   fi
@@ -1424,36 +1471,36 @@ validate_w5_boundary_observation_summary() {
   if w5_shortpath_execution_armed; then
     idle_expected=$((SIM_QWEN3_GUEST_DECODE_STEPS * (${#NODE_IDS[@]} - 1)))
     stale_summary_pattern="timing_node: node=node[BCDEFGH] steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} status=missing|handoff_node: node=node[BCDEFGH] steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} status=missing|model_range_kv_state_lazy_fallback|fallback=runtime_forward_metadata|w5_shortpath_decision:|payload_bytes=[0-9]+,[0-9]+|checksums=0x|obmm_pool: unavailable"
-    if rg -q "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
-      rg -q "memory_service_summary: .*qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
-      rg -q "memory_service_summary: .*lookup_hits=${SIM_QWEN3_GUEST_DECODE_STEPS}( |$)" "$RUN_SUMMARY_FILE" &&
-      rg -q "memory_service_summary: .*actions=jump-to-terminal .*artifact_kinds=logits" "$RUN_SUMMARY_FILE" &&
-      ! rg -q "memory_service_summary: .*shortpath_ids=none" "$RUN_SUMMARY_FILE" &&
-      ! rg -q "memory_service_summary: .*support_ids=none" "$RUN_SUMMARY_FILE" &&
-      ! rg -q "memory_service_summary: .*artifact_kinds=none" "$RUN_SUMMARY_FILE"; then
-      if ! rg -q "summary: .*worker_timing_records=${SIM_QWEN3_GUEST_DECODE_STEPS} .*idle_timing_records=${idle_expected}" "$RUN_SUMMARY_FILE"; then
+    if log_matches "memory_service_summary: .*qwen3_w5_memory_shortpath_commit:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
+      log_matches "memory_service_summary: .*qwen3_w5_memory_terminal_logits_selected:${SIM_QWEN3_GUEST_DECODE_STEPS}(,| )" "$RUN_SUMMARY_FILE" &&
+      log_matches "memory_service_summary: .*lookup_hits=${SIM_QWEN3_GUEST_DECODE_STEPS}( |$)" "$RUN_SUMMARY_FILE" &&
+      log_matches "memory_service_summary: .*actions=jump-to-terminal .*artifact_kinds=logits" "$RUN_SUMMARY_FILE" &&
+      ! log_matches "memory_service_summary: .*shortpath_ids=none" "$RUN_SUMMARY_FILE" &&
+      ! log_matches "memory_service_summary: .*support_ids=none" "$RUN_SUMMARY_FILE" &&
+      ! log_matches "memory_service_summary: .*artifact_kinds=none" "$RUN_SUMMARY_FILE"; then
+      if ! log_matches "summary: .*worker_timing_records=${SIM_QWEN3_GUEST_DECODE_STEPS} .*idle_timing_records=${idle_expected}" "$RUN_SUMMARY_FILE"; then
         trace "FAIL: W5 shortpath timing record counts are incomplete expected_active=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_idle=${idle_expected} path=$RUN_SUMMARY_FILE"
         return 1
       fi
       for node_id in "${NODE_IDS[@]:1}"; do
-        if ! rg -q "timing_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
+        if ! log_matches "timing_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
           trace "FAIL: W5 shortpath downstream timing is not idle-only node=$node_id path=$RUN_SUMMARY_FILE"
           return 1
         fi
-        if ! rg -q "handoff_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
+        if ! log_matches "handoff_node: node=${node_id} steps=0/${SIM_QWEN3_GUEST_DECODE_STEPS} idle_steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*status=idle_no_work_item" "$RUN_SUMMARY_FILE"; then
           trace "FAIL: W5 shortpath downstream handoff is not idle-only node=$node_id path=$RUN_SUMMARY_FILE"
           return 1
         fi
       done
-      if ! rg -q "obmm_pool: not_observed reason=no_obmm_pool_usage_records active_worker_records=${SIM_QWEN3_GUEST_DECODE_STEPS} idle_worker_records=${idle_expected}" "$RUN_SUMMARY_FILE"; then
+      if ! log_matches "obmm_pool: not_observed reason=no_obmm_pool_usage_records active_worker_records=${SIM_QWEN3_GUEST_DECODE_STEPS} idle_worker_records=${idle_expected}" "$RUN_SUMMARY_FILE"; then
         trace "FAIL: W5 shortpath pool usage summary is ambiguous path=$RUN_SUMMARY_FILE"
         return 1
       fi
-      if ! rg -q "guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} terminal_selects=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_range_forwards=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_runtime_inputs=$((SIM_QWEN3_GUEST_DECODE_STEPS - 1)) actual_runtime_outputs=0 shortpath_no_dispatch=${idle_expected} shortpath_terminal_commits=${idle_expected} shortpath_publish_hidden_zero=${SIM_QWEN3_GUEST_DECODE_STEPS} full_pipeline_range_forwards=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]})) full_pipeline_runtime_inputs=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]} - 1)) full_pipeline_runtime_outputs=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]}))" "$RUN_SUMMARY_FILE"; then
+      if ! log_matches "guest_worker_shortpath_summary: action=jump-to-terminal boundary_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} terminal_selects=${SIM_QWEN3_GUEST_DECODE_STEPS} expected_hits=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_range_forwards=${SIM_QWEN3_GUEST_DECODE_STEPS} actual_runtime_inputs=$((SIM_QWEN3_GUEST_DECODE_STEPS - 1)) actual_runtime_outputs=0 shortpath_no_dispatch=${idle_expected} shortpath_terminal_commits=${idle_expected} shortpath_publish_hidden_zero=${SIM_QWEN3_GUEST_DECODE_STEPS} full_pipeline_range_forwards=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]})) full_pipeline_runtime_inputs=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]} - 1)) full_pipeline_runtime_outputs=$((SIM_QWEN3_GUEST_DECODE_STEPS * ${#NODE_IDS[@]}))" "$RUN_SUMMARY_FILE"; then
         trace "FAIL: W5 shortpath worker summary does not prove reduced range pipeline path=$RUN_SUMMARY_FILE"
         return 1
       fi
-      if rg -q "$stale_summary_pattern" "$RUN_SUMMARY_FILE"; then
+      if log_matches "$stale_summary_pattern" "$RUN_SUMMARY_FILE"; then
         trace "FAIL: W5 shortpath summary contains stale fallback/missing/ambiguous markers path=$RUN_SUMMARY_FILE"
         return 1
       fi
@@ -1462,11 +1509,11 @@ validate_w5_boundary_observation_summary() {
     trace "FAIL: W5 shortpath execution summary incomplete or unauditable expected_steps=$SIM_QWEN3_GUEST_DECODE_STEPS path=$RUN_SUMMARY_FILE"
     return 1
   fi
-  if ! rg -q "memory_boundary_observation_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*source=w5_guest_range_exit hidden_backend=obmm_shmem" "$RUN_SUMMARY_FILE"; then
+  if ! log_matches "memory_boundary_observation_summary: records=[1-9][0-9]* steps=${SIM_QWEN3_GUEST_DECODE_STEPS}/${SIM_QWEN3_GUEST_DECODE_STEPS} .*source=w5_guest_range_exit hidden_backend=obmm_shmem" "$RUN_SUMMARY_FILE"; then
     trace "FAIL: W5 boundary observation summary incomplete path=$RUN_SUMMARY_FILE"
     return 1
   fi
-  if ! rg -q "memory_boundary_observation: phase=range_exit observation_id=boundary-observation/${RUN_ID_BASE}/step[0-9]+/node[1-7] .*backing=obmm_shmem metadata=lingqu_object_service .*status=ok" "$RUN_SUMMARY_FILE"; then
+  if ! log_matches "memory_boundary_observation: phase=range_exit observation_id=boundary-observation/${RUN_ID_BASE}/step[0-9]+/node[1-7] .*backing=obmm_shmem metadata=lingqu_object_service .*status=ok" "$RUN_SUMMARY_FILE"; then
     trace "FAIL: W5 boundary observation ids missing guest run id run_id=$RUN_ID_BASE path=$RUN_SUMMARY_FILE"
     return 1
   fi
@@ -1690,13 +1737,13 @@ validate_node_log() {
   fi
 
   if [[ -n "$SIM_UAPI_W5_PROFILE" ]] &&
-    rg -q "\\[w4_guest\\] stage model_decode_round_scheduler_no_dispatch .* work_item=none .* status=no_dispatch" "$log_file"; then
+    log_matches "\\[w4_guest\\] stage model_decode_round_scheduler_no_dispatch .* work_item=none .* status=no_dispatch" "$log_file"; then
     assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
     assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
     return 0
   fi
   if [[ -n "$SIM_UAPI_W5_PROFILE" ]] &&
-    rg -q "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_commit .* publish_hidden=0 status=ok" "$log_file"; then
+    log_matches "\\[w4_guest\\] stage qwen3_w5_memory_shortpath_commit .* publish_hidden=0 status=ok" "$log_file"; then
     assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
     assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id fail" || return 1
     return 0
@@ -1764,7 +1811,7 @@ validate_node_log() {
     fi
     assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage model_range_kv_state_publish local=node${idx} step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ slot_bytes=[1-9][0-9]* block_bytes=[1-9][0-9]* blocks=[1-9][0-9]* reserved_bytes=[1-9][0-9]* producer_publish_ms=[0-9]+ epoch=[0-9]+ seq=[0-9]+ backing=obmm_shmem metadata=lingqu_object_service status=ok" "$node_id model range kv state publish" || return 1
     if (( SIM_QWEN3_GUEST_DECODE_STEPS > 1 )); then
-      if ! rg -q "\\[w4_guest\\] stage qwen3_w5_memory_prefix_cache_kv_loaded node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ .* status=ok" "$log_file"; then
+      if ! log_matches "\\[w4_guest\\] stage qwen3_w5_memory_prefix_cache_kv_loaded node=${idx} step=[1-9][0-9]* previous_step=[0-9]+ .* status=ok" "$log_file"; then
         assert_log_has "$log_file" "\\[(w4_guest|mem_service)\\] stage model_range_kv_state_resolve local=node${idx} kv_step=[0-9]+ key=kvcache/qwen3[-.0-9a-z]*(/scope/[0-9a-f]{16})?/node${idx}/layers-[0-9]+-[0-9]+/decode-step[0-9]+ key_hash=0x[0-9a-f]+ version=[0-9]+ layers=\\[[0-9]+,[0-9]+\\) count=[0-9]+ kv_bytes=[1-9][0-9]* kv_checksum=0x[0-9a-f]+ offset=0x[0-9a-f]+ validation=object_ref_metadata source=obmm_object_view backing=(obmm_shmem|ub_ssd_gsva) metadata=lingqu_object_service target=(mapped_view|local_backend_read_buffer) status=ok" "$node_id model range kv state resolve" || return 1
       fi
       if [[ "$SIM_QWEN3_GUEST_ENGRAM" == "1" ]]; then

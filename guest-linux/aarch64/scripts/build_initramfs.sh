@@ -82,7 +82,7 @@ OBMM_ASYNC_COROUTINE_LIB_SRC="$ROOT_DIR/libs/obmm_async/obmm_async.c"
 OBMM_ASYNC_COROUTINE_ASM_SRC="$ROOT_DIR/libs/obmm_async/obmm_async_aarch64.S"
 OBMM_COROUTINE_SCHEDULER_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.c"
 OBMM_COROUTINE_SCHEDULER_ASM_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler_aarch64.S"
-OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine"
+OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine/obmm_async_coroutine"
 GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"
 GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"
 OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"
@@ -352,7 +352,7 @@ ensure_busybox_static_config() {
     return 1
   fi
 
-  make -C "$src_dir" defconfig >/dev/null
+  run_gnu_make -C "$src_dir" defconfig >/dev/null
 
   perl -0pi -e 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/m' "$src_dir/.config"
   perl -0pi -e 's/^CONFIG_STATIC=.*$/CONFIG_STATIC=y/m' "$src_dir/.config"
@@ -372,7 +372,7 @@ build_busybox_from_source_dir() {
   echo "[build_initramfs] building busybox from source: $src_dir" >&2
 
   ensure_busybox_static_config "$src_dir" "$cc_path"
-  make -C "$src_dir" -j"$jobs" >/dev/null
+  run_gnu_make -C "$src_dir" -j"$jobs" >/dev/null
 
   if [[ ! -x "$src_dir/busybox" ]]; then
     echo "[build_initramfs] error: busybox build did not produce $src_dir/busybox" >&2
@@ -620,6 +620,8 @@ if initramfs_stamp_matches; then
   echo "$INITRAMFS_IMG"
   exit 0
 fi
+
+mkdir -p "${OBMM_ASYNC_COROUTINE_BIN:h}"
 
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$PROBE_SRC" -o "$PROBE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$URMA_DP_SRC" -o "$URMA_DP_BIN"

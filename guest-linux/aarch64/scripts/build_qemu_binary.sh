@@ -2,14 +2,22 @@
 set -euo pipefail
 
 BUILD_OBMM_TESTS=0
-if [[ "${1:-}" == "--with-obmm-tests" ]]; then
-  BUILD_OBMM_TESTS=1
+RECONFIGURE="${RECONFIGURE:-0}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-obmm-tests)
+      BUILD_OBMM_TESTS=1
+      ;;
+    --reconfigure)
+      RECONFIGURE=1
+      ;;
+    *)
+      echo "usage: $0 [--with-obmm-tests] [--reconfigure]" >&2
+      exit 2
+      ;;
+  esac
   shift
-fi
-if [[ $# -ne 0 ]]; then
-  echo "usage: $0 [--with-obmm-tests]" >&2
-  exit 2
-fi
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -27,11 +35,25 @@ if (( DEFAULT_QEMU_BUILD_JOBS > 32 )); then
 fi
 JOBS="${QEMU_BUILD_JOBS:-$DEFAULT_QEMU_BUILD_JOBS}"
 CONFIGURE_ARGS="${QEMU_CONFIGURE_ARGS:---disable-werror}"
-RECONFIGURE="${RECONFIGURE:-0}"
 STAMP_FILE="$BUILD_DIR/.qemu_build.stamp"
 SIM_QEMU_STATICLIB="${SIM_QEMU_STATICLIB:-}"
 BUILD_HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
 STAT_BIN="${STAT_BIN:-$(command -v stat 2>/dev/null || echo stat)}"
+
+resolve_cargo_binary() {
+  if command -v cargo >/dev/null 2>&1; then
+    command -v cargo
+    return 0
+  fi
+  if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+    echo "$HOME/.cargo/bin/cargo"
+    return 0
+  fi
+  echo "[build_qemu_binary] error: cargo is unavailable" >&2
+  return 1
+}
+
+CARGO_BIN="$(resolve_cargo_binary)"
 
 file_signature() {
   local file_path="$1"
@@ -426,7 +448,7 @@ find_sim_qemu_staticlib() {
 build_sim_qemu_staticlib() {
   (
     cd "$REPO_ROOT"
-    cargo build --release -p sim-qemu
+    "$CARGO_BIN" build --release -p sim-qemu
   )
 }
 
@@ -532,7 +554,7 @@ fi
 echo "[build_qemu_binary] building ${BUILD_TARGETS[*]}" >&2
 (
   cd "$BUILD_DIR"
-  ninja -j"$JOBS" "${BUILD_TARGETS[@]}"
+  ninja -j"$JOBS" "${BUILD_TARGETS[@]}" >&2
 )
 
 if [[ ! -x "$BIN" ]]; then

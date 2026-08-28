@@ -2967,7 +2967,7 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert "components/llm_infer/llm_infer.c" in makefile
     assert "-I$(ROOT)/libs/obmm_queue" in makefile
     assert "-I$(ROOT)/apps/obmm_queue" in makefile
-    assert "$^ $(OBMM_SRCS) -lm -o $@" in makefile
+    assert "$^ $(OBMM_SRCS) $(OBMM_LDLIBS) -lm -o $@" in makefile
     assert "$(MEM_SERVICE_CLIENT)" in makefile
     assert "$(MEM_SERVICE_WIRE_CLIENT)" in makefile
     assert "components/llm_infer/" in readme
@@ -3689,6 +3689,10 @@ class GuestToolchainContractTests(unittest.TestCase):
             self.assertIn('[[ "$native_target" == aarch64* ]]', source)
 
         self.assertIn("aarch64_linux_cross_prefix()", common)
+        self.assertIn("run_gnu_make()", common)
+        self.assertIn("command -v gmake", common)
+        self.assertIn('command gmake "$@"', common)
+        self.assertIn('command make "$@"', common)
         self.assertIn('"$(uname -s 2>/dev/null || true)" == "Linux"', common)
         self.assertIn('"$host_arch" == (aarch64|arm64)', common)
         self.assertIn('"$compiler_target" == aarch64*', common)
@@ -3702,7 +3706,7 @@ class GuestToolchainContractTests(unittest.TestCase):
             guest_builder,
         )
         self.assertIn(
-            'make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR"',
+            'run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR"',
             guest_builder,
         )
         self.assertIn('git -c safe.directory="$KERNEL_SRC_DIR"', guest_builder)
@@ -3710,7 +3714,7 @@ class GuestToolchainContractTests(unittest.TestCase):
             'KERNEL_SRC_DIR="$(cd "$ROOT_DIR/../kernel_ub" && pwd)"',
             guest_builder,
         )
-        self.assertIn('make -C "$KERNEL_SRC_DIR"', driver_builder)
+        self.assertIn('run_gnu_make -C "$KERNEL_SRC_DIR"', driver_builder)
         self.assertIn('O="$KERNEL_BUILD_DIR"', driver_builder)
         self.assertIn('detect_aarch64_linux_cc', driver_builder)
         self.assertIn('aarch64_linux_cross_prefix "$CC"', driver_builder)
@@ -3721,6 +3725,13 @@ class GuestToolchainContractTests(unittest.TestCase):
             '"$KERNEL_BUILD_DIR/Module.symvers"',
             driver_builder,
         )
+        for source in (
+            initramfs_builder,
+            busybox_builder,
+            driver_builder,
+        ):
+            self.assertNotRegex(source, r"(?m)^\s*make -C ")
+        self.assertEqual(guest_builder.count('\n    make -C '), 1)
 
 
 def test_guest_kernel_build_only_builds_required_modules():
@@ -3729,6 +3740,10 @@ def test_guest_kernel_build_only_builds_required_modules():
     assert '-j"$KERNEL_JOBS" Image modules' not in builder
     assert 'build_native_required_modules "$cross_prefix"' in builder
     assert 'INSTALL_HDR_PATH="$KERNEL_UAPI_INSTALL_DIR" headers_install' in builder
+    assert "install_kernel_uapi_headers_from_remote()" in builder
+    assert 'INSTALL_HDR_PATH=\'$remote_install_dir\' headers_install' in builder
+    assert '"tar -C \'$remote_install_dir\' -cf - include"' in builder
+    assert 'if [[ "$ARTIFACT_SOURCE" == "remote" ]]' in builder
     assert "DEFAULT_KERNEL_JOBS > 32" in builder
     assert 'KERNEL_JOBS="${KERNEL_JOBS:-$DEFAULT_KERNEL_JOBS}"' in builder
     for module_target in (
@@ -3750,9 +3765,16 @@ def test_guest_kernel_build_only_builds_required_modules():
 def test_qemu_build_default_parallelism_is_bounded():
     builder = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
 
+    assert "resolve_cargo_binary()" in builder
+    assert 'command -v cargo' in builder
+    assert '[[ -x "$HOME/.cargo/bin/cargo" ]]' in builder
+    assert '"$CARGO_BIN" build --release -p sim-qemu' in builder
     assert "DEFAULT_QEMU_BUILD_JOBS > 32" in builder
     assert 'JOBS="${QEMU_BUILD_JOBS:-$DEFAULT_QEMU_BUILD_JOBS}"' in builder
     assert "BUILD_OBMM_TESTS == 0" in builder
+    assert "--reconfigure)" in builder
+    assert "RECONFIGURE=1" in builder
+    assert 'ninja -j"$JOBS" "${BUILD_TARGETS[@]}" >&2' in builder
 
 
 def test_obmm_async_coroutine_builds_against_pinned_libobmm():

@@ -4,15 +4,152 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-SIMPLER_CAPI_ABI_VERSION = 3
+SIMPLER_CAPI_ABI_VERSION = 5
+SIM_AICORE_TLS_ADAPTER_VERSION = 1
+HOST_TOOLCHAIN_MARKER = ".sim-host-toolchain.json"
+HOST_ARTIFACT_LOCK = ".sim-host-artifacts.lock"
+
+SIM_AICORE_TLS_HEADER = r"""#pragma once
+
+#include <pthread.h>
+
+#if defined(__GNUC__)
+#define UB_SIM_HIDDEN __attribute__((visibility("hidden")))
+#else
+#define UB_SIM_HIDDEN
+#endif
+
+extern "C" UB_SIM_HIDDEN int ub_sim_pthread_key_create(
+    pthread_key_t *key, void (*destructor)(void *));
+
+#define pthread_key_create ub_sim_pthread_key_create
+"""
+
+SIM_AICORE_TLS_SOURCE = r"""#include <array>
+#include <cerrno>
+#include <cstddef>
+#include <pthread.h>
+
+#undef pthread_key_create
+
+namespace {
+constexpr std::size_t kMaxTrackedKeys = 64;
+std::array<pthread_key_t, kMaxTrackedKeys> g_keys{};
+std::size_t g_key_count = 0;
+pthread_mutex_t g_key_lock = PTHREAD_MUTEX_INITIALIZER;
+}
+
+extern "C" __attribute__((visibility("hidden"))) int
+ub_sim_pthread_key_create(
+    pthread_key_t *key, void (*destructor)(void *)) {
+    const int rc = pthread_key_create(key, destructor);
+    if (rc != 0) return rc;
+
+    pthread_mutex_lock(&g_key_lock);
+    if (g_key_count == g_keys.size()) {
+        pthread_mutex_unlock(&g_key_lock);
+        pthread_key_delete(*key);
+        return EAGAIN;
+    }
+    g_keys[g_key_count++] = *key;
+    pthread_mutex_unlock(&g_key_lock);
+    return 0;
+}
+
+__attribute__((destructor)) static void release_tracked_keys() {
+    pthread_mutex_lock(&g_key_lock);
+    while (g_key_count > 0) {
+        pthread_key_delete(g_keys[--g_key_count]);
+    }
+    pthread_mutex_unlock(&g_key_lock);
+}
+"""
+
+
+def atomic_write_bytes(path: Path, contents: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(contents)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, contents: str) -> None:
+    atomic_write_bytes(path, contents.encode())
+
+
+def resolve_sim_kernel_compiler(compiler_name: str | None) -> Path | None:
+    if not compiler_name:
+        return None
+    resolved = shutil.which(compiler_name)
+    if resolved is not None:
+        return Path(resolved)
+    if Path(compiler_name).is_absolute():
+        return None
+    for candidate in (
+        Path.home() / ".local/bin" / compiler_name,
+        Path.home() / ".local/toolchains/gcc15/bin" / compiler_name,
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+@contextmanager
+def artifact_build_lock(simpler_root: Path):
+    lock_path = simpler_root / "build" / HOST_ARTIFACT_LOCK
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def host_toolchain_fingerprint() -> dict[str, str]:
+    compiler = shutil.which("g++")
+    if compiler is None:
+        raise SystemExit("Simpler host compiler is unavailable: g++")
+    version = subprocess.run(
+        [compiler, "-dumpfullversion", "-dumpversion"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return {"compiler": str(Path(compiler).resolve()), "version": version}
+
+
+def invalidate_stale_host_toolchain_cache(
+    simpler_root: Path, fingerprint: dict[str, str]
+) -> bool:
+    build_root = simpler_root / "build"
+    marker = build_root / HOST_TOOLCHAIN_MARKER
+    try:
+        current = json.loads(marker.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        current = None
+    if current == fingerprint:
+        return False
+
+    for generated in (build_root / "cache", build_root / "lib"):
+        if generated.exists():
+            shutil.rmtree(generated)
+    build_root.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(marker, json.dumps(fingerprint, sort_keys=True) + "\n")
+    return True
 
 
 @dataclass(frozen=True)
@@ -355,7 +492,7 @@ def configure_sim_kernel_libgcc(
 
     toolchain = getattr(kernel_compiler, "gxx15", None)
     compiler_name = getattr(toolchain, "cxx_path", None)
-    compiler_path = shutil.which(compiler_name) if compiler_name else None
+    compiler_path = resolve_sim_kernel_compiler(compiler_name)
     if compiler_path is None:
         raise SystemExit(
             "simpler simulation kernel compiler is unavailable: "
@@ -367,11 +504,92 @@ def configure_sim_kernel_libgcc(
     wrapper_path = wrapper_dir / "g++-15-static-libgcc"
     wrapper_path.write_text(
         "#!/bin/sh\n"
-        f"exec {shlex.quote(compiler_path)} -static-libgcc \"$@\"\n"
+        f"exec {shlex.quote(str(compiler_path))} "
+        "-static-libgcc -static-libstdc++ \"$@\"\n"
     )
     wrapper_path.chmod(0o755)
     toolchain.cxx_path = str(wrapper_path)
     return wrapper_path
+
+
+def sim_aicore_arch(platform: str) -> str | None:
+    if not platform.endswith("sim"):
+        return None
+    if platform.startswith("a2a3"):
+        return "a2a3"
+    if platform.startswith("a5"):
+        return "a5"
+    raise ValueError(f"unsupported simpler simulation platform: {platform}")
+
+
+def sim_aicore_tls_policy(simpler_root: Path, platform: str) -> str:
+    arch = sim_aicore_arch(platform)
+    if arch is None:
+        return "not-applicable"
+    kernel_source = (
+        simpler_root / f"src/{arch}/platform/sim/aicore/kernel.cpp"
+    )
+    source = kernel_source.read_text()
+    if "delete_tls_keys" in source and "pthread_key_delete" in source:
+        return "simpler-native"
+    return f"ub-sim-adapter-v{SIM_AICORE_TLS_ADAPTER_VERSION}"
+
+
+def write_sim_aicore_tls_adapter(build_dir: Path) -> tuple[Path, Path]:
+    adapter_dir = build_dir / "sim_aicore_tls_adapter"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    header = adapter_dir / "sim_aicore_tls_adapter.h"
+    source = adapter_dir / "sim_aicore_tls_adapter.cpp"
+    atomic_write_text(header, SIM_AICORE_TLS_HEADER)
+    atomic_write_text(source, SIM_AICORE_TLS_SOURCE)
+    return adapter_dir, header
+
+
+class SimAicoreRuntimeCompilerAdapter:
+    def __init__(self, delegate, source_dir: Path, forced_include: Path):
+        self._delegate = delegate
+        self._source_dir = source_dir
+        self._forced_include = forced_include
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+    def compile(self, target_platform, include_dirs, source_dirs, **kwargs):
+        if target_platform != "aicore":
+            return self._delegate.compile(
+                target_platform, include_dirs, source_dirs, **kwargs
+            )
+
+        cmake_defines = dict(kwargs.get("cmake_defines") or {})
+        existing_flags = cmake_defines.get("CMAKE_CXX_FLAGS", "").strip()
+        forced_include = f"-include {shlex.quote(str(self._forced_include))}"
+        cmake_defines["CMAKE_CXX_FLAGS"] = " ".join(
+            part for part in (existing_flags, forced_include) if part
+        )
+        kwargs["cmake_defines"] = cmake_defines
+        return self._delegate.compile(
+            target_platform,
+            include_dirs,
+            [*source_dirs, str(self._source_dir)],
+            **kwargs,
+        )
+
+
+def configure_sim_aicore_tls_adapter(
+    builder, build_dir: Path, simpler_root: Path, platform: str
+) -> str:
+    policy = sim_aicore_tls_policy(simpler_root, platform)
+    if not policy.startswith("ub-sim-adapter-"):
+        return policy
+
+    source_dir, forced_include = write_sim_aicore_tls_adapter(build_dir)
+    runtime_compiler = getattr(builder, "_runtime_compiler", None)
+    if runtime_compiler is None:
+        raise RuntimeError("Simpler RuntimeBuilder has no runtime compiler")
+    builder._runtime_compiler = SimAicoreRuntimeCompilerAdapter(
+        runtime_compiler, source_dir, forced_include
+    )
+    return policy
 
 
 def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: Path):
@@ -395,6 +613,18 @@ def read_runtime_binaries(builder, api_kind: str, runtime_name: str, build_dir: 
     return host_binary, aicpu_binary, aicore_binary, None, None
 
 
+def runtime_binaries_for_manifest(
+    builder,
+    api_kind: str,
+    runtime_name: str,
+    build_dir: Path,
+    reuse_runtime: dict | None,
+):
+    if reuse_runtime is not None:
+        return None, None, None, None, None
+    return read_runtime_binaries(builder, api_kind, runtime_name, build_dir)
+
+
 def load_reuse_runtime_manifest(path: Path) -> dict:
     manifest = json.loads(path.read_text())
     abi_version = manifest.get("simpler_capi_abi_version")
@@ -405,9 +635,14 @@ def load_reuse_runtime_manifest(path: Path) -> dict:
             f"path={path}"
         )
     try:
-        return manifest["simpler_runtime"]
+        runtime = manifest["simpler_runtime"]
     except KeyError as err:
         raise SystemExit(f"reuse runtime manifest is incomplete: {path}") from err
+    if not runtime.get("sim_aicore_tls_policy"):
+        raise SystemExit(
+            f"reuse runtime manifest has no AICore TLS policy: {path}"
+        )
+    return runtime
 
 
 def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, tile_cols: int) -> Path | None:
@@ -2523,8 +2758,24 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         shutil.rmtree(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
 
+    tls_policy = (
+        reuse_runtime["sim_aicore_tls_policy"]
+        if reuse_runtime is not None
+        else sim_aicore_tls_policy(simpler_root, args.platform)
+    )
+    toolchain_fingerprint = host_toolchain_fingerprint()
+    toolchain_fingerprint["sim_aicore_tls_policy"] = tls_policy
+    if reuse_runtime is None:
+        invalidate_stale_host_toolchain_cache(simpler_root, toolchain_fingerprint)
+
     RuntimeBuilder, KernelCompiler, api_kind = load_simpler_build_api(simpler_root)
     builder = RuntimeBuilder(platform=args.platform)
+    if reuse_runtime is None:
+        configured_tls_policy = configure_sim_aicore_tls_adapter(
+            builder, build_dir, simpler_root, args.platform
+        )
+        if configured_tls_policy != tls_policy:
+            raise RuntimeError("Simpler AICore TLS policy changed during build")
     kernel_compiler = (
         KernelCompiler(platform=args.platform)
         if api_kind == "setup"
@@ -2535,8 +2786,14 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     )
 
     runtime_name = "host_build_graph"
-    host_binary, aicpu_binary, aicore_binary, sim_context_binary, simpler_log_binary = read_runtime_binaries(
-        builder, api_kind, runtime_name, build_dir
+    (
+        host_binary,
+        aicpu_binary,
+        aicore_binary,
+        sim_context_binary,
+        simpler_log_binary,
+    ) = runtime_binaries_for_manifest(
+        builder, api_kind, runtime_name, build_dir, reuse_runtime
     )
     orch_source = example_root / spec.orch_source
     if args.profile == "host_gemm":
@@ -2674,7 +2931,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             build_dir=str(build_dir),
         )
         out_path = output_dir / f"kernel_func_{kernel.func_id}.bin"
-        out_path.write_bytes(blob)
+        atomic_write_bytes(out_path, blob)
         kernel_entries.append(
             {
                 "func_id": kernel.func_id,
@@ -2692,19 +2949,23 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     orch_path = output_dir / "orchestration.so"
     sim_context_path = output_dir / "libcpu_sim_context.so"
     simpler_log_path = output_dir / "libsimpler_log.so"
-    host_path.write_bytes(host_binary)
-    aicpu_path.write_bytes(aicpu_binary)
-    aicore_path.write_bytes(aicore_binary)
-    orch_path.write_bytes(orch_binary)
+    if reuse_runtime is None:
+        assert host_binary is not None
+        assert aicpu_binary is not None
+        assert aicore_binary is not None
+        atomic_write_bytes(host_path, host_binary)
+        atomic_write_bytes(aicpu_path, aicpu_binary)
+        atomic_write_bytes(aicore_path, aicore_binary)
+    atomic_write_bytes(orch_path, orch_binary)
 
     runtime_env = dict(reuse_runtime.get("runtime_env", {})) if reuse_runtime is not None else {}
     # Load libsimpler_log.so FIRST with RTLD_GLOBAL so libcpu_sim_context.so can resolve
     # unified_log_* symbols against the single process-wide HostLogger instance.
     if reuse_runtime is None and simpler_log_binary is not None:
-        simpler_log_path.write_bytes(simpler_log_binary)
+        atomic_write_bytes(simpler_log_path, simpler_log_binary)
         runtime_env["SIMPLER_LOG_LIBRARY"] = str(simpler_log_path)
     if reuse_runtime is None and sim_context_binary is not None:
-        sim_context_path.write_bytes(sim_context_binary)
+        atomic_write_bytes(sim_context_path, sim_context_binary)
         runtime_env["SIMPLER_SIM_CONTEXT_LIBRARY"] = str(sim_context_path)
     args_template = list(spec.args_template)
     if args.profile == "host_matmul":
@@ -2712,12 +2973,14 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
 
     manifest = {
         "simpler_capi_abi_version": SIMPLER_CAPI_ABI_VERSION,
+        "host_toolchain": toolchain_fingerprint,
         "profile": spec.profile,
         "platform": args.platform,
         "runtime_variant": "HostBuildGraph",
         "callable_hint": spec.callable_hint,
         "sim_kernel_libgcc": args.sim_kernel_libgcc,
         "simpler_runtime": {
+            "sim_aicore_tls_policy": tls_policy,
             "host_runtime_library": reuse_runtime["host_runtime_library"]
             if reuse_runtime is not None
             else {
@@ -2824,7 +3087,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         manifest["host_deepseek_vector_manifest_version"] = 13
 
     manifest_path = output_dir / spec.manifest_name
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    atomic_write_text(manifest_path, json.dumps(manifest, indent=2, sort_keys=True))
     print(manifest_path)
     return 0
 
@@ -2862,7 +3125,8 @@ def main() -> int:
 
     if args.describe:
         return describe(args, simpler_root, pto_isa_root)
-    return build(args, simpler_root, pto_isa_root)
+    with artifact_build_lock(simpler_root):
+        return build(args, simpler_root, pto_isa_root)
 
 
 if __name__ == "__main__":

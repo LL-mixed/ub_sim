@@ -1,5 +1,13 @@
 #!/bin/zsh
 
+run_gnu_make() {
+  if command -v gmake >/dev/null 2>&1; then
+    command gmake "$@"
+    return
+  fi
+  command make "$@"
+}
+
 ensure_sim_kernel_append_defaults() {
   local append_extra="${1:-}"
 

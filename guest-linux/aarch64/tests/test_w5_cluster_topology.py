@@ -24,6 +24,9 @@ class W5ClusterTopologyTest(unittest.TestCase):
             / "mem_service_cluster_runtime.c"
         )
         self.deepseek_config = self.repo / "w5.deepseek-v4-flash-simpler.env"
+        self.deepseek_openeuler_config = (
+            self.repo / "w5.deepseek-v4-flash-simpler-openeuler.env"
+        )
 
     def run_config(self, *args):
         return subprocess.run(
@@ -82,6 +85,32 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"SIM_QWEN3_DENSE_WEIGHTS_PATH={model}\n", result.stdout)
 
+    def test_cli_overrides_target_open_euler_disk_image(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model = Path(temp_dir) / "deepseek.gguf"
+            disk_image = Path(temp_dir) / "rootfs.qcow2"
+            model.write_bytes(b"GGUFtest")
+            disk_image.write_bytes(b"QFItest")
+            result = subprocess.run(
+                [
+                    str(self.config_runner),
+                    "--print-env",
+                    "--model",
+                    str(model),
+                    "--open-euler-disk-image",
+                    str(disk_image),
+                    str(self.deepseek_openeuler_config),
+                ],
+                cwd=self.repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"SIM_W5_OE_DISK_IMAGE={disk_image}\n", result.stdout)
+
     def test_deepseek_env_uses_format_neutral_model_source(self):
         config = self.deepseek_config.read_text(encoding="utf-8")
         self.assertIn("SIM_DEEPSEEK_V4_FLASH=", config)
@@ -104,6 +133,51 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn(
             'LINQU_UB_NODE_COUNT="$SIM_W5_CLUSTER_NODE_COUNT"', source
         )
+        self.assertIn('%s_QEMU_PID_FILE=', source)
+
+    def test_guest_wait_fails_when_a_qemu_process_exits(self):
+        source = self.guest_runner.read_text(encoding="utf-8")
+        helpers = source.split("log_matches() {", 1)[1].split(
+            "emit_w4_wait_progress() {", 1
+        )[0]
+        helpers = "log_matches() {" + helpers
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            pid_file = run_dir / "nodeA.pid"
+            pid_file.write_text("99999999\n", encoding="utf-8")
+            (run_dir / "nodeA_guest.log").write_text("booting\n", encoding="utf-8")
+            (run_dir / "nodeA_qemu.log").write_text(
+                "fatal host runtime exit\n", encoding="utf-8"
+            )
+            result = subprocess.run(
+                [
+                    "/bin/zsh",
+                    "-c",
+                    "trace() { print -r -- \"$*\" >&2; }\n"
+                    + helpers
+                    + "\nNODE_IDS=(nodeA)\n"
+                    + "typeset -A START_LINES\n"
+                    + "START_LINES[nodeA]=0\n"
+                    + "RUN_DIR=$1\n"
+                    + "TRACE_FILE=$1/trace.log\n"
+                    + "W4_GUEST_PROGRESS_INTERVAL_SECS=0\n"
+                    + "NODEA_QEMU_PID_FILE=$2\n"
+                    + "wait_for_all_logs_pass_or_fail_since '^pass$' '^fail$' 2 1\n",
+                    "qemu-liveness-test",
+                    str(run_dir),
+                    str(pid_file),
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("qemu process exited while waiting", result.stderr)
+        self.assertIn("fatal host runtime exit", result.stderr)
 
     def test_launcher_uses_an_isolated_default_shared_directory(self):
         source = self.launcher.read_text(encoding="utf-8")
@@ -147,6 +221,40 @@ class W5ClusterTopologyTest(unittest.TestCase):
             infer_source,
         )
         self.assertIn("pipeline_start_barrier", runtime_source)
+
+    def test_guest_launcher_log_matching_does_not_require_ripgrep(self):
+        source = self.guest_runner.read_text(encoding="utf-8")
+        helpers = source.split("log_matches() {", 1)[1].split(
+            "wait_for_log_pass_or_fail_since() {", 1
+        )[0]
+        helpers = "log_matches() {" + helpers
+
+        self.assertNotRegex(source, r"(^|\s)rg(?:\s|$)")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "guest.log"
+            log_file.write_bytes(
+                b"booting\r\n[w4_guest] pass\r\n"
+                + b"serial log padding\r\n" * 32768
+            )
+            result = subprocess.run(
+                [
+                    "/bin/zsh",
+                    "-c",
+                    helpers
+                    + "\nlog_matches '^\\\\[w4_guest\\\\] pass\\\\r?$' \"$1\"\n"
+                    + "[[ $(log_match_count 'pass' \"$1\") == 1 ]]\n"
+                    + "wait_for_log_pattern \"$1\" 'pass' 1\n",
+                    "log-matcher-test",
+                    str(log_file),
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_deepseek_runtime_input_uses_model_neutral_range_request(self):
         source = self.infer_source.read_text(encoding="utf-8")

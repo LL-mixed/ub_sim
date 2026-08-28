@@ -1,7 +1,10 @@
 import importlib.util
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -27,7 +30,50 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
 
     def test_manifest_marks_current_simpler_capi_abi(self):
         producer = load_producer()
-        self.assertEqual(producer.SIMPLER_CAPI_ABI_VERSION, 3)
+        self.assertEqual(producer.SIMPLER_CAPI_ABI_VERSION, 5)
+
+    def test_manifest_records_host_toolchain_fingerprint(self):
+        source = PRODUCER.read_text()
+        self.assertIn('"host_toolchain": toolchain_fingerprint', source)
+
+    def test_host_toolchain_change_invalidates_simpler_runtime_cache(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            simpler_root = Path(temp_dir)
+            cache = simpler_root / "build/cache"
+            library = simpler_root / "build/lib"
+            cache.mkdir(parents=True)
+            library.mkdir(parents=True)
+            (cache / "stale").write_text("old")
+            (library / "stale.so").write_text("old")
+
+            changed = producer.invalidate_stale_host_toolchain_cache(
+                simpler_root,
+                {"compiler": "/toolchains/gcc-15", "version": "15.3.0"},
+            )
+
+            self.assertTrue(changed)
+            self.assertFalse(cache.exists())
+            self.assertFalse(library.exists())
+            self.assertFalse(
+                producer.invalidate_stale_host_toolchain_cache(
+                    simpler_root,
+                    {"compiler": "/toolchains/gcc-15", "version": "15.3.0"},
+                )
+            )
+
+    def test_artifact_lock_does_not_dirty_simpler_root(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            simpler_root = Path(temp_dir)
+
+            with producer.artifact_build_lock(simpler_root):
+                lock = simpler_root / "build" / producer.HOST_ARTIFACT_LOCK
+                self.assertTrue(lock.is_file())
+
+            self.assertFalse(
+                (simpler_root / producer.HOST_ARTIFACT_LOCK).exists()
+            )
 
     def test_reuse_manifest_rejects_stale_simpler_capi_abi(self):
         producer = load_producer()
@@ -38,6 +84,163 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(SystemExit, "stale simpler C API ABI"):
                 producer.load_reuse_runtime_manifest(manifest_path)
+
+    def test_reuse_manifest_requires_aicore_tls_policy(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "manifest.json"
+            manifest_path.write_text(
+                '{"simpler_capi_abi_version": 5, "simpler_runtime": {}}'
+            )
+            with self.assertRaisesRegex(SystemExit, "no AICore TLS policy"):
+                producer.load_reuse_runtime_manifest(manifest_path)
+
+    def test_aicore_tls_adapter_is_owned_by_artifact_producer(self):
+        producer = load_producer()
+
+        class RuntimeCompiler:
+            def __init__(self):
+                self.calls = []
+
+            def compile(self, target, include_dirs, source_dirs, **kwargs):
+                self.calls.append((target, include_dirs, source_dirs, kwargs))
+                return target
+
+        class RuntimeBuilder:
+            def __init__(self, compiler):
+                self._runtime_compiler = compiler
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            kernel = root / "simpler/src/a2a3/platform/sim/aicore/kernel.cpp"
+            kernel.parent.mkdir(parents=True)
+            kernel.write_text("pthread_key_create(&key, nullptr);\n")
+            compiler = RuntimeCompiler()
+            builder = RuntimeBuilder(compiler)
+
+            policy = producer.configure_sim_aicore_tls_adapter(
+                builder, root / "build", root / "simpler", "a2a3sim"
+            )
+            result = builder._runtime_compiler.compile(
+                "aicore",
+                ["include"],
+                ["source"],
+                cmake_defines={"EXISTING": "value"},
+            )
+
+            self.assertEqual(policy, "ub-sim-adapter-v1")
+            self.assertEqual(result, "aicore")
+            target, _, sources, kwargs = compiler.calls[-1]
+            self.assertEqual(target, "aicore")
+            self.assertEqual(kwargs["cmake_defines"]["EXISTING"], "value")
+            self.assertIn("-include", kwargs["cmake_defines"]["CMAKE_CXX_FLAGS"])
+            adapter_dir = root / "build/sim_aicore_tls_adapter"
+            self.assertIn(str(adapter_dir), sources)
+            self.assertIn(
+                "#define pthread_key_create ub_sim_pthread_key_create",
+                (adapter_dir / "sim_aicore_tls_adapter.h").read_text(),
+            )
+            adapter_source = (
+                adapter_dir / "sim_aicore_tls_adapter.cpp"
+            ).read_text()
+            self.assertIn("pthread_key_delete", adapter_source)
+            self.assertIn("__attribute__((destructor))", adapter_source)
+
+    def test_aicore_tls_adapter_defers_to_simpler_cleanup(self):
+        producer = load_producer()
+
+        class RuntimeBuilder:
+            def __init__(self):
+                self._runtime_compiler = object()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            kernel = root / "simpler/src/a5/platform/sim/aicore/kernel.cpp"
+            kernel.parent.mkdir(parents=True)
+            kernel.write_text(
+                "void delete_tls_keys() { pthread_key_delete(key); }\n"
+            )
+            builder = RuntimeBuilder()
+
+            policy = producer.configure_sim_aicore_tls_adapter(
+                builder, root / "build", root / "simpler", "a5sim"
+            )
+
+            self.assertEqual(policy, "simpler-native")
+            self.assertIs(type(builder._runtime_compiler), object)
+
+    def test_aicore_tls_adapter_compiles_as_shared_object(self):
+        producer = load_producer()
+        compiler = shutil.which("c++")
+        if compiler is None:
+            self.skipTest("C++ compiler is unavailable")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir, header = producer.write_sim_aicore_tls_adapter(root)
+            probe = root / "probe.cpp"
+            probe.write_text(
+                '#include <pthread.h>\n'
+                'extern "C" int create_probe_key() {\n'
+                '  pthread_key_t key;\n'
+                '  return pthread_key_create(&key, nullptr);\n'
+                '}\n'
+            )
+            output = root / "probe.so"
+
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++17",
+                    "-shared",
+                    "-fPIC",
+                    "-include",
+                    str(header),
+                    str(source_dir / "sim_aicore_tls_adapter.cpp"),
+                    str(probe),
+                    "-o",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertTrue(output.is_file())
+
+    def test_reuse_manifest_does_not_rebuild_runtime_binaries(self):
+        producer = load_producer()
+
+        class RuntimeBuilder:
+            def get_binaries(self, *_args, **_kwargs):
+                self.fail("runtime binaries must be reused")
+
+            def build(self, *_args, **_kwargs):
+                self.fail("runtime binaries must be reused")
+
+            def fail(self, message):
+                raise AssertionError(message)
+
+        binaries = producer.runtime_binaries_for_manifest(
+            RuntimeBuilder(),
+            "setup",
+            "host_build_graph",
+            Path("unused"),
+            {"host_runtime_library": {}},
+        )
+
+        self.assertEqual(binaries, (None, None, None, None, None))
+
+    def test_atomic_output_replaces_existing_file(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "runtime.bin"
+            output.write_bytes(b"old")
+
+            producer.atomic_write_bytes(output, b"new")
+
+            self.assertEqual(output.read_bytes(), b"new")
+            self.assertEqual(list(output.parent.glob(".*.tmp")), [])
 
     def test_producer_uses_simpler_runtime_incore_include_contract(self):
         source = PRODUCER.read_text()
@@ -71,7 +274,24 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
             wrapper_text = wrapper.read_text()
             self.assertIn(str(compiler_path), wrapper_text)
             self.assertIn("-static-libgcc", wrapper_text)
+            self.assertIn("-static-libstdc++", wrapper_text)
             self.assertEqual(compiler.gxx15.cxx_path, str(wrapper))
+
+    def test_sim_kernel_compiler_resolves_prepared_user_toolchain(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            compiler = home / ".local/bin/g++-15"
+            compiler.parent.mkdir(parents=True)
+            compiler.write_text("#!/bin/sh\nexit 0\n")
+            compiler.chmod(0o755)
+
+            with mock.patch.object(producer.shutil, "which", return_value=None), mock.patch.object(
+                producer.Path, "home", return_value=home
+            ):
+                resolved = producer.resolve_sim_kernel_compiler("g++-15")
+
+            self.assertEqual(resolved, compiler)
 
     def test_shared_libgcc_mode_preserves_simpler_toolchain(self):
         producer = load_producer()

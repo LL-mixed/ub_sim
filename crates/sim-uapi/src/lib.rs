@@ -16466,13 +16466,52 @@ fn simpler_manifest_has_current_capi_abi(manifest_path: &Path) -> bool {
     else {
         return false;
     };
-    manifest["simpler_capi_abi_version"].as_u64() == Some(3)
+    manifest["simpler_capi_abi_version"].as_u64() == Some(5)
+        && manifest["simpler_runtime"]["sim_aicore_tls_policy"]
+            .as_str()
+            .is_some_and(|policy| !policy.is_empty())
         && simpler_manifest_uses_portable_sim_kernel(&manifest)
+        && simpler_manifest_host_toolchain_matches_current(&manifest)
         && simpler_manifest_runtime_matches_current_build(&manifest)
 }
 
 fn simpler_manifest_uses_portable_sim_kernel(manifest: &serde_json::Value) -> bool {
     manifest["sim_kernel_libgcc"].as_str() == Some("static")
+}
+
+fn simpler_manifest_host_toolchain_matches_current(manifest: &serde_json::Value) -> bool {
+    let Some((compiler, version)) = current_host_toolchain_fingerprint() else {
+        return false;
+    };
+    simpler_manifest_host_toolchain_matches(manifest, &compiler, &version)
+}
+
+fn simpler_manifest_host_toolchain_matches(
+    manifest: &serde_json::Value,
+    compiler: &Path,
+    version: &str,
+) -> bool {
+    manifest["host_toolchain"]["compiler"].as_str() == compiler.to_str()
+        && manifest["host_toolchain"]["version"].as_str() == Some(version)
+}
+
+fn current_host_toolchain_fingerprint() -> Option<(PathBuf, String)> {
+    let compiler = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join("g++"))
+        .find(|candidate| candidate.is_file())?
+        .canonicalize()
+        .ok()?;
+    let output = std::process::Command::new(&compiler)
+        .args(["-dumpfullversion", "-dumpversion"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!version.is_empty()).then_some((compiler, version))
 }
 
 fn simpler_manifest_runtime_matches_current_build(manifest: &serde_json::Value) -> bool {
@@ -16660,7 +16699,8 @@ pub fn ensure_simpler_host_gemm_manifest(
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_gemm_manifest_version"].as_u64() == Some(3)
+            if simpler_manifest_has_current_capi_abi(manifest_path)
+                && value["host_gemm_manifest_version"].as_u64() == Some(3)
                 && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest.host_gemm.as_ref().is_some_and(|geometry| {
@@ -16738,7 +16778,8 @@ pub fn ensure_simpler_host_fp32_gemm_manifest(
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_gemm_manifest_version"].as_u64() == Some(4)
+            if simpler_manifest_has_current_capi_abi(manifest_path)
+                && value["host_gemm_manifest_version"].as_u64() == Some(4)
                 && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest.host_gemm.as_ref().is_some_and(|geometry| {
@@ -16816,7 +16857,8 @@ pub fn ensure_simpler_host_quantized_gemm_manifest(
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_quantized_gemm_manifest_version"].as_u64() == Some(2)
+            if simpler_manifest_has_current_capi_abi(manifest_path)
+                && value["host_quantized_gemm_manifest_version"].as_u64() == Some(2)
                 && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest
@@ -16901,7 +16943,8 @@ pub fn ensure_simpler_host_q8_block_dot_manifest(
             serde_json::from_str::<SimplerRuntimeManifestEnvelope>(&text),
             serde_json::from_str::<serde_json::Value>(&text),
         ) {
-            if value["host_q8_block_dot_manifest_version"].as_u64() == Some(3)
+            if simpler_manifest_has_current_capi_abi(manifest_path)
+                && value["host_q8_block_dot_manifest_version"].as_u64() == Some(3)
                 && simpler_manifest_uses_portable_sim_kernel(&value)
                 && value["simpler_runtime"]["host_runtime_library"] == *base_runtime_library
                 && manifest.host_q8_block_dot.as_ref().is_some_and(|geometry| {
@@ -18117,11 +18160,16 @@ fn run_host_gemm(
             .next()
             .ok_or_else(|| "simpler_capi_gemm_dispatch_did_not_complete".to_string())
     })?;
-    if completion.status != CompletionStatus::Success {
-        return Err(format!(
-            "simpler_capi_gemm_dispatch_failed:{:?}",
-            completion.status
-        ));
+    match completion.status {
+        CompletionStatus::Success => {}
+        CompletionStatus::RetryableFailure { code } => {
+            eprintln!("sim-uapi host GEMM dispatch retryable failure: {code}");
+            return Err(format!("gemm_retryable:{code}"));
+        }
+        CompletionStatus::FatalFailure { code } => {
+            eprintln!("sim-uapi host GEMM dispatch fatal failure: {code}");
+            return Err(format!("gemm_fatal:{code}"));
+        }
     }
     let produced = runtime
         .host_segment_payload(host_node, output_c)
@@ -29350,6 +29398,32 @@ mod tests {
             &host_bound
         ));
         assert!(!super::simpler_manifest_uses_portable_sim_kernel(&legacy));
+    }
+
+    #[test]
+    fn simpler_manifest_cache_requires_matching_host_toolchain() {
+        let manifest = serde_json::json!({
+            "host_toolchain": {
+                "compiler": "/toolchains/gcc-15/bin/g++",
+                "version": "15.3.0"
+            }
+        });
+
+        assert!(super::simpler_manifest_host_toolchain_matches(
+            &manifest,
+            Path::new("/toolchains/gcc-15/bin/g++"),
+            "15.3.0"
+        ));
+        assert!(!super::simpler_manifest_host_toolchain_matches(
+            &manifest,
+            Path::new("/usr/bin/g++"),
+            "10.3.1"
+        ));
+        assert!(!super::simpler_manifest_host_toolchain_matches(
+            &serde_json::json!({}),
+            Path::new("/toolchains/gcc-15/bin/g++"),
+            "15.3.0"
+        ));
     }
 
     #[cfg(unix)]

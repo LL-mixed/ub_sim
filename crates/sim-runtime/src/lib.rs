@@ -536,6 +536,15 @@ struct SharedSimplerDeviceContext {
     runtime_buffer: Option<simpler_capi::RuntimeBuffer>,
     callable_ids: HashMap<String, i32>,
     next_callable_id: i32,
+    executor_fingerprint: Option<SimplerExecutorFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SimplerExecutorFingerprint {
+    aicpu_bytes: usize,
+    aicpu_hash: u64,
+    aicore_bytes: usize,
+    aicore_hash: u64,
 }
 
 struct EnvGuard {
@@ -763,6 +772,7 @@ fn with_simpler_device_context<T>(
                 runtime_buffer: None,
                 callable_ids: HashMap::new(),
                 next_callable_id: 0,
+                executor_fingerprint: None,
             },
         );
     }
@@ -2295,7 +2305,41 @@ impl LocalRuntimeEngine {
             }
 
             let detail_started = Instant::now();
-            with_simpler_device_context(simpler_capi, 0, |api, worker| {
+            let executor_fingerprint = SimplerExecutorFingerprint {
+                aicpu_bytes: aicpu_binary.len(),
+                aicpu_hash: simpler_binary_fingerprint(&aicpu_binary),
+                aicore_bytes: aicore_binary.len(),
+                aicore_hash: simpler_binary_fingerprint(&aicore_binary),
+            };
+            let device_id = runtime_artifacts.launch.device_id as i32;
+            with_simpler_device_context(simpler_capi, device_id, |api, worker| {
+                match worker.executor_fingerprint {
+                    None => {
+                        api.initialize_context(
+                            &worker.context,
+                            device_id,
+                            if aicpu_binary.is_empty() {
+                                std::ptr::null()
+                            } else {
+                                aicpu_binary.as_ptr()
+                            },
+                            aicpu_binary.len(),
+                            if aicore_binary.is_empty() {
+                                std::ptr::null()
+                            } else {
+                                aicore_binary.as_ptr()
+                            },
+                            aicore_binary.len(),
+                        )
+                        .map_err(|err| format!("simpler_capi_init_failed:{err}"))?;
+                        worker.executor_fingerprint = Some(executor_fingerprint);
+                    }
+                    Some(existing) if existing != executor_fingerprint => {
+                        return Err("simpler_capi_executor_changed_after_init".to_string());
+                    }
+                    Some(_) => {}
+                }
+
                 let runtime_started = Instant::now();
                 if worker.runtime_buffer.is_none() {
                     worker.runtime_buffer = Some(
@@ -2327,19 +2371,6 @@ impl LocalRuntimeEngine {
                     prepare,
                     runtime_artifacts.launch.block_dim as i32,
                     runtime_artifacts.launch.aicpu_thread_num as i32,
-                    runtime_artifacts.launch.device_id as i32,
-                    if aicpu_binary.is_empty() {
-                        std::ptr::null()
-                    } else {
-                        aicpu_binary.as_ptr()
-                    },
-                    aicpu_binary.len(),
-                    if aicore_binary.is_empty() {
-                        std::ptr::null()
-                    } else {
-                        aicore_binary.as_ptr()
-                    },
-                    aicore_binary.len(),
                 )
                 .map_err(|err| format!("simpler_capi_run_callable_failed:{err}"))?;
                 if prepare {

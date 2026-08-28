@@ -21,6 +21,8 @@ BUILD_LINQU_DRIVER_ON_REMOTE="${BUILD_LINQU_DRIVER_ON_REMOTE:-0}"
 SYNC_KERNEL_SRC_TO_REMOTE="${SYNC_KERNEL_SRC_TO_REMOTE:-0}"
 ALLOW_REMOTE_LINUX_ARTIFACTS="${ALLOW_REMOTE_LINUX_ARTIFACTS:-0}"
 REMOTE_TMPDIR="${REMOTE_TMPDIR:-}"
+REMOTE_ARCH="${REMOTE_ARCH:-arm64}"
+REMOTE_CROSS_COMPILE="${REMOTE_CROSS_COMPILE-aarch64-linux-gnu-}"
 LOCAL_KERNEL_IMAGE="${LOCAL_KERNEL_IMAGE:-}"
 LOCAL_MODULES_DIR="${LOCAL_MODULES_DIR:-}"
 KERNEL_DEFCONFIG="${KERNEL_DEFCONFIG:-openeuler_defconfig}"
@@ -158,7 +160,7 @@ native_build_available() {
   host_is_linux || return 1
   [[ -d "$KERNEL_SRC_DIR" ]] || return 1
   [[ -x "$KERNEL_SRC_DIR/scripts/config" ]] || return 1
-  command -v make >/dev/null 2>&1 || return 1
+  command -v gmake >/dev/null 2>&1 || command -v make >/dev/null 2>&1 || return 1
   [[ -n "$CC" ]] || return 1
 }
 
@@ -203,7 +205,7 @@ build_native_module_if_enabled() {
   local cross_prefix="$3"
 
   if grep -q "^${config_key}=m$" "$KERNEL_BUILD_DIR/.config"; then
-    make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+    run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
       ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" \
       -j"$KERNEL_JOBS" "$module_target"
   fi
@@ -239,9 +241,45 @@ build_native_required_modules() {
 install_kernel_uapi_headers() {
   local cross_prefix="$1"
 
-  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+  run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
     ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" \
     INSTALL_HDR_PATH="$KERNEL_UAPI_INSTALL_DIR" headers_install
+  current_kernel_artifact_signature > "$KERNEL_UAPI_STAMP_FILE"
+}
+
+install_kernel_uapi_headers_from_remote() {
+  local remote_install_dir="${REMOTE_KERNEL_UAPI_INSTALL_DIR:-$REMOTE_KERNEL_BUILD/uapi_headers}"
+  local remote_tmpdir="${REMOTE_TMPDIR:-${REMOTE_KERNEL_BUILD%/*}/tmp}"
+  local local_staging_dir="$KERNEL_UAPI_INSTALL_DIR.tmp.$$"
+
+  if [[ -z "${REMOTE_LINUX_HOST:-}" || -z "${REMOTE_KERNEL_SRC:-}" || -z "${REMOTE_KERNEL_BUILD:-}" ]]; then
+    echo "[build_guest_artifacts] error: remote UAPI install requires REMOTE_LINUX_HOST, REMOTE_KERNEL_SRC, and REMOTE_KERNEL_BUILD" >&2
+    return 1
+  fi
+  ssh "$REMOTE_LINUX_HOST" "
+    set -euo pipefail
+    rm -rf '$remote_install_dir'
+    mkdir -p '$remote_install_dir' '$remote_tmpdir'
+    export TMPDIR='$remote_tmpdir'
+    make -C '$REMOTE_KERNEL_SRC' O='$REMOTE_KERNEL_BUILD' \
+      ARCH='$REMOTE_ARCH' CROSS_COMPILE='$REMOTE_CROSS_COMPILE' \
+      INSTALL_HDR_PATH='$remote_install_dir' headers_install
+  "
+  rm -rf "$local_staging_dir"
+  mkdir -p "$local_staging_dir"
+  if ! ssh "$REMOTE_LINUX_HOST" \
+    "tar -C '$remote_install_dir' -cf - include" | \
+    tar -C "$local_staging_dir" -xf -; then
+    rm -rf "$local_staging_dir"
+    return 1
+  fi
+  if [[ ! -f "$local_staging_dir/include/ub/obmm.h" ]]; then
+    rm -rf "$local_staging_dir"
+    echo "[build_guest_artifacts] error: remote UAPI install did not provide include/ub/obmm.h" >&2
+    return 1
+  fi
+  rm -rf "$KERNEL_UAPI_INSTALL_DIR"
+  mv "$local_staging_dir" "$KERNEL_UAPI_INSTALL_DIR"
   current_kernel_artifact_signature > "$KERNEL_UAPI_STAMP_FILE"
 }
 
@@ -259,7 +297,7 @@ kernel_uapi_stamp_matches() {
 configure_native_kernel() {
   local cross_prefix="$1"
   mkdir -p "$KERNEL_BUILD_DIR"
-  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" "$KERNEL_DEFCONFIG"
+  run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" "$KERNEL_DEFCONFIG"
   "$KERNEL_SRC_DIR/scripts/config" --file "$KERNEL_BUILD_DIR/.config" \
     -e UB \
     -e UB_UBUS \
@@ -286,7 +324,7 @@ configure_native_kernel() {
     -e BLK_DEV_DM \
     -d DEBUG_INFO_BTF \
     -d PAHOLE_HAS_SPLIT_BTF
-  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" olddefconfig
+  run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" olddefconfig
 }
 
 build_native_artifacts() {
@@ -300,19 +338,19 @@ build_native_artifacts() {
   ensure_dirs
   reset_module_artifacts
   configure_native_kernel "$cross_prefix"
-  make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" \
+  run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" ARCH="$KERNEL_ARCH" \
     CROSS_COMPILE="$cross_prefix" KALLSYMS_EXTRA_PASS=1 \
     -j"$KERNEL_JOBS" Image
   build_native_required_modules "$cross_prefix"
   if [[ -d "$ROOT_DIR/driver" && -f "$ROOT_DIR/driver/Makefile" ]]; then
-    make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+    run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
       ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" modules_prepare
     if [[ ! -f "$KERNEL_BUILD_DIR/vmlinux.symvers" ]]; then
       echo "[build_guest_artifacts] error: kernel build did not produce vmlinux.symvers" >&2
       return 1
     fi
     cp "$KERNEL_BUILD_DIR/vmlinux.symvers" "$KERNEL_BUILD_DIR/Module.symvers"
-    make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+    run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
       M="$ROOT_DIR/driver" ARCH="$KERNEL_ARCH" \
       CROSS_COMPILE="$cross_prefix" modules
   fi
@@ -343,6 +381,8 @@ sync_from_remote_linux() {
     REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-}" \
     REMOTE_KERNEL_BUILD="${REMOTE_KERNEL_BUILD:-}" \
     REMOTE_TMPDIR="${REMOTE_TMPDIR}" \
+    REMOTE_ARCH="$REMOTE_ARCH" \
+    REMOTE_CROSS_COMPILE="$REMOTE_CROSS_COMPILE" \
     REMOTE_LINQU_DRIVER_DIR="${REMOTE_LINQU_DRIVER_DIR:-}" \
     REMOTE_LINQU_MODULE_PATH="${REMOTE_LINQU_MODULE_PATH:-}" \
     REMOTE_REUSE_KERNEL_CONFIG="${REMOTE_REUSE_KERNEL_CONFIG:-0}" \
@@ -426,7 +466,11 @@ case "$ARTIFACT_SOURCE" in
 esac
 
 if ! kernel_uapi_stamp_matches; then
-  install_kernel_uapi_headers "$(cross_compile_prefix "$CC")"
+  if [[ "$ARTIFACT_SOURCE" == "remote" ]]; then
+    install_kernel_uapi_headers_from_remote
+  else
+    install_kernel_uapi_headers "$(cross_compile_prefix "$CC")"
+  fi
 fi
 
 echo "[build_guest_artifacts] rebuilding initramfs" >&2
