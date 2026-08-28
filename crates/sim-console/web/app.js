@@ -108,9 +108,10 @@ function setHealth(ok, message) {
   elements.apiStatus.textContent = message;
 }
 
-function showFeedback(message, error = true) {
+function showFeedback(message, error = true, source = "") {
   elements.feedback.hidden = !message;
   elements.feedback.textContent = message || "";
+  elements.feedback.dataset.source = message ? source : "";
   elements.feedback.style.color = error ? "#713029" : "#075f50";
   elements.feedback.style.background = error ? "#fbe5e2" : "#dff1ec";
 }
@@ -299,7 +300,9 @@ function renderSelection() {
     }
     const preparableIssueCodes = new Set([
       "remote_source_repo_missing",
-      "remote_submodule_cache_missing",
+      "remote_submodule_object_missing",
+      "remote_submodule_head_mismatch",
+      "remote_submodule_checkout_dirty",
       "remote_tool_missing",
       "remote_bootstrap_file_missing",
     ]);
@@ -590,8 +593,9 @@ async function refreshLogs() {
       if (elements.followLog.checked) elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
     }
     state.logCursor = chunk.next_cursor;
+    if (elements.feedback.dataset.source === "log-refresh") showFeedback("");
   } catch (error) {
-    showFeedback(`Log refresh failed: ${error.message}`);
+    showFeedback(`Log refresh failed: ${error.message}`, true, "log-refresh");
   }
 }
 

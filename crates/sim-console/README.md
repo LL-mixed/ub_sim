@@ -124,13 +124,17 @@ It also transfers registered bootstrap files such as the BusyBox source archive
 so the first run does not depend on target access to an external source site. The
 package set matches `guest-linux/aarch64/scripts/prepare_w5_container_deps.sh`;
 it is not supplied by the browser. Preparation never replaces a non-Git path or
-accepts a URL, path, package, or command from the browser. If the registered
-mirror cannot perform a complete offline
+accepts a URL, path, package, or command from the browser. A registered
+submodule path whose `.git` file still identifies it as a checkout, but whose
+referenced Git metadata is missing, is repaired in place as a source cache. A
+plain directory without that Git marker remains protected and preparation
+fails closed. If the registered mirror cannot perform a complete offline
 checkout, the backend transfers a checkout pack containing the pinned commit
 and its current trees and blobs from the local committed checkout. Readiness is
-rerun after preparation and requires a clean detached checkout, so a commit
-object without its payload is not reported as ready. Missing model data remains
-a separate blocker.
+rerun after preparation and requires the exact detached HEAD with no tracked
+file changes. Nested vendor submodule and untracked build state do not make the
+top-level source cache look like a missing object. Missing model data remains a
+separate blocker.
 
 ## Node Serial Input
 

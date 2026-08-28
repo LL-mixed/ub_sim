@@ -804,10 +804,10 @@ impl RunManager {
                     remedy: "Prepare the target farm to seed the registered build input."
                         .to_string(),
                 });
-            } else if let Some(details) = line.strip_prefix("SUBMODULE_CACHE_MISSING\t") {
+            } else if let Some(details) = line.strip_prefix("SUBMODULE_OBJECT_MISSING\t") {
                 if let Some((path, revision)) = details.split_once('\t') {
                     common_issues.push(ReadinessIssue {
-                        code: "remote_submodule_cache_missing".to_string(),
+                        code: "remote_submodule_object_missing".to_string(),
                         message: format!(
                             "Target {} is missing submodule object {} at {}",
                             target.id,
@@ -815,6 +815,37 @@ impl RunManager {
                             path
                         ),
                         remedy: "Prepare the target farm to seed the exact committed object."
+                            .to_string(),
+                    });
+                }
+            } else if let Some(details) = line.strip_prefix("SUBMODULE_HEAD_MISMATCH\t") {
+                let mut fields = details.split('\t');
+                let path = fields.next().unwrap_or("unknown");
+                let expected = fields.next().unwrap_or("unknown");
+                let actual = fields.next().unwrap_or("missing");
+                common_issues.push(ReadinessIssue {
+                    code: "remote_submodule_head_mismatch".to_string(),
+                    message: format!(
+                        "Target {} submodule {} is at {}, expected {}",
+                        target.id,
+                        path,
+                        short_revision(actual),
+                        short_revision(expected)
+                    ),
+                    remedy: "Prepare the target farm to select the exact committed object."
+                        .to_string(),
+                });
+            } else if let Some(details) = line.strip_prefix("SUBMODULE_CHECKOUT_DIRTY\t") {
+                if let Some((path, revision)) = details.split_once('\t') {
+                    common_issues.push(ReadinessIssue {
+                        code: "remote_submodule_checkout_dirty".to_string(),
+                        message: format!(
+                            "Target {} submodule checkout has tracked changes at {} ({})",
+                            target.id,
+                            path,
+                            short_revision(revision)
+                        ),
+                        remedy: "Prepare the target farm to restore the committed checkout."
                             .to_string(),
                     });
                 }
@@ -989,8 +1020,7 @@ impl RunManager {
                 "failed to extract mirrored remote node logs",
             )));
         }
-        fs::remove_dir_all(&destination).ok();
-        fs::rename(staging, destination)?;
+        install_mirrored_logs(&staging, &destination)?;
         Ok(())
     }
 
@@ -1708,7 +1738,7 @@ fn remote_source_mirror_prepare_command(
         .unwrap_or(remote_repo);
     let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "set -eu; repo={repo}; if git -C \"$repo\" rev-parse --git-dir >/dev/null 2>&1; then :; elif [ -e \"$repo\" ]; then printf 'source mirror path exists but is not a Git repository: %s\\n' \"$repo\" >&2; exit 1; else mkdir -p {parent}; git init \"$repo\"; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then fetch_ok=0; if git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --filter=blob:none --no-tags {url} {git_ref}:{git_ref}; then fetch_ok=1; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null && [ \"$fetch_ok\" -eq 1 ]; then git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --no-tags {url} {expected}:{mirror_ref} || true; fi; fi; if git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -C \"$repo\" update-ref {mirror_ref} {expected}; fi; if GIT_NO_LAZY_FETCH=1 git -C \"$repo\" checkout --detach --force {expected} >/dev/null 2>&1; then printf 'MIRROR_READY\\n'; else printf 'MIRROR_NEEDS_CHECKOUT_PACK\\n'; fi",
+        "set -eu; repo={repo}; if git -C \"$repo\" rev-parse --git-dir >/dev/null 2>&1; then :; elif [ -f \"$repo/.git\" ] && grep -q '^gitdir: ' \"$repo/.git\"; then rm -f \"$repo/.git\"; git init \"$repo\"; printf 'MIRROR_METADATA_REPAIRED\\n'; elif [ -e \"$repo\" ]; then printf 'source mirror path exists but is not a recoverable Git checkout: %s\\n' \"$repo\" >&2; exit 1; else mkdir -p {parent}; git init \"$repo\"; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then fetch_ok=0; if git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --filter=blob:none --no-tags {url} {git_ref}:{git_ref}; then fetch_ok=1; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null && [ \"$fetch_ok\" -eq 1 ]; then git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --no-tags {url} {expected}:{mirror_ref} || true; fi; fi; if git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -C \"$repo\" update-ref {mirror_ref} {expected}; fi; if GIT_NO_LAZY_FETCH=1 git -C \"$repo\" checkout --detach --force {expected} >/dev/null 2>&1 && GIT_NO_LAZY_FETCH=1 git -C \"$repo\" diff-index --ignore-submodules=all --quiet {expected} --; then printf 'MIRROR_READY\\n'; else printf 'MIRROR_NEEDS_CHECKOUT_PACK\\n'; fi",
         repo = shell_quote(remote_repo),
         parent = shell_quote(parent),
         url = shell_quote(&mirror.fetch_url),
@@ -1898,7 +1928,7 @@ fn remote_source_mirror_import_checkout_pack_command(
 ) -> String {
     let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "set -eu; cleanup() {{ rm -f {pack}; }}; trap cleanup EXIT; git -C {repo} index-pack --stdin < {pack}; git -C {repo} cat-file -e {expected}^{{commit}}; git -C {repo} update-ref {mirror_ref} {expected}; GIT_NO_LAZY_FETCH=1 git -C {repo} checkout --detach --force {expected}; printf 'MIRROR_CHECKOUT_READY\\n'",
+        "set -eu; cleanup() {{ rm -f {pack}; }}; trap cleanup EXIT; git -C {repo} index-pack --stdin < {pack}; git -C {repo} cat-file -e {expected}^{{commit}}; git -C {repo} update-ref {mirror_ref} {expected}; GIT_NO_LAZY_FETCH=1 git -C {repo} checkout --detach --force {expected}; [ \"$(git -C {repo} rev-parse HEAD)\" = {expected} ]; GIT_NO_LAZY_FETCH=1 git -C {repo} diff-index --ignore-submodules=all --quiet {expected} --; printf 'MIRROR_CHECKOUT_READY\\n'",
         repo = shell_quote(remote_repo),
         pack = shell_quote(remote_pack),
         mirror_ref = shell_quote(&mirror_ref),
@@ -1954,7 +1984,7 @@ fn remote_probe_command(
         let expected = submodule_commit_at_head(local_repo_root, &mirror.path)?;
         let source_path = format!("{source_repo}/{}", mirror.path);
         command.push_str(&format!(
-            "if ! git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null || [ \"$(git -C {path} rev-parse HEAD 2>/dev/null || true)\" != {expected} ] || ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --quiet {expected} --; then printf 'SUBMODULE_CACHE_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; fi; ",
+            "if ! git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null; then printf 'SUBMODULE_OBJECT_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; else actual=$(git -C {path} rev-parse HEAD 2>/dev/null || true); if [ \"$actual\" != {expected} ]; then printf 'SUBMODULE_HEAD_MISMATCH\\t%s\\t%s\\t%s\\n' {display_path} {display_expected} \"${{actual:-missing}}\"; elif ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --ignore-submodules=all --quiet {expected} --; then printf 'SUBMODULE_CHECKOUT_DIRTY\\t%s\\t%s\\n' {display_path} {display_expected}; fi; fi; ",
             path = shell_quote(&source_path),
             expected = shell_quote(&expected),
             display_path = shell_quote(&mirror.path),
@@ -2478,10 +2508,13 @@ fn classify_node_log(path: &Path) -> Result<NodeStatus, RunManagerError> {
 }
 
 fn read_log_chunk(path: &Path, cursor: usize) -> Result<(Vec<String>, usize), RunManagerError> {
-    if !path.is_file() {
-        return Ok((Vec::new(), 0));
-    }
-    let file = File::open(path)?;
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), cursor));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let length = file.metadata()?.len() as usize;
     let effective_cursor = if cursor > length { 0 } else { cursor };
     let mut reader = BufReader::new(file);
@@ -2496,6 +2529,19 @@ fn read_log_chunk(path: &Path, cursor: usize) -> Result<(Vec<String>, usize), Ru
     }
     let next_cursor = reader.stream_position()? as usize;
     Ok((lines, next_cursor))
+}
+
+fn install_mirrored_logs(staging: &Path, destination: &Path) -> Result<(), RunManagerError> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(staging)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        fs::rename(entry.path(), destination.join(entry.file_name()))?;
+    }
+    fs::remove_dir_all(staging)?;
+    Ok(())
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -2920,6 +2966,39 @@ mod tests {
     }
 
     #[test]
+    fn missing_log_preserves_the_reader_cursor() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("not-created.log");
+        let (lines, next_cursor) = read_log_chunk(&path, 4096).unwrap();
+        assert!(lines.is_empty());
+        assert_eq!(next_cursor, 4096);
+    }
+
+    #[test]
+    fn mirrored_logs_are_replaced_per_file_without_clearing_other_nodes() {
+        let root = TempDir::new().unwrap();
+        let staging = root.path().join("remote-node-logs.tmp");
+        let destination = root.path().join("remote-node-logs");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(staging.join("nodeA_guest.log"), "nodeA new\n").unwrap();
+        fs::write(destination.join("nodeA_guest.log"), "nodeA old\n").unwrap();
+        fs::write(destination.join("nodeB_guest.log"), "nodeB retained\n").unwrap();
+
+        install_mirrored_logs(&staging, &destination).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("nodeA_guest.log")).unwrap(),
+            "nodeA new\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("nodeB_guest.log")).unwrap(),
+            "nodeB retained\n"
+        );
+        assert!(!staging.exists());
+    }
+
+    #[test]
     fn remote_commands_are_run_scoped_and_shell_quoted() {
         let target = ExecutionTarget {
             id: "remote-fixture".to_string(),
@@ -3058,7 +3137,78 @@ mod tests {
         assert!(probe.contains("/home/ll/models/Qwen3-0.6B"));
         assert!(probe.contains("DeepSeek-V4-Flash-IQ2XXS"));
         assert!(probe.contains("OPEN_EULER_DISK_IMAGE_MISSING"));
-        assert!(probe.contains("SUBMODULE_CACHE_MISSING"));
+        assert!(probe.contains("SUBMODULE_OBJECT_MISSING"));
+        assert!(probe.contains("SUBMODULE_HEAD_MISMATCH"));
+        assert!(probe.contains("SUBMODULE_CHECKOUT_DIRTY"));
+        assert!(probe.contains("--ignore-submodules=all"));
+    }
+
+    #[test]
+    fn source_mirror_repairs_a_broken_submodule_gitdir() {
+        let source = TempDir::new().unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .arg("init"),
+            "initialize mirror repair source",
+        )
+        .unwrap();
+        fs::write(source.path().join("payload.txt"), "prepared payload\n").unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["add", "payload.txt"]),
+            "stage mirror repair source",
+        )
+        .unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["-c", "user.name=Sim Console", "-c"])
+                .arg("user.email=sim-console@example.invalid")
+                .args(["commit", "-m", "fixture"]),
+            "commit mirror repair source",
+        )
+        .unwrap();
+        run_checked(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(source.path())
+                .args(["branch", "-M", "main"]),
+            "name mirror repair source branch",
+        )
+        .unwrap();
+        let expected = git_head(source.path()).unwrap();
+
+        let target = TempDir::new().unwrap();
+        fs::write(target.path().join(".git"), "gitdir: ../missing-module\n").unwrap();
+        let mirror = crate::target::SubmoduleMirror {
+            path: "vendor/example".to_string(),
+            fetch_url: source.path().to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+        };
+        let command = remote_source_mirror_prepare_command(
+            &mirror,
+            target.path().to_str().unwrap(),
+            &expected,
+        );
+        let output = run_checked_output(
+            StdCommand::new("sh").arg("-c").arg(command),
+            "repair broken source mirror",
+        )
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(stdout.contains("MIRROR_METADATA_REPAIRED"));
+        assert!(stdout.contains("MIRROR_READY"));
+        assert_eq!(git_head(target.path()).unwrap(), expected);
+        assert_eq!(
+            fs::read_to_string(target.path().join("payload.txt")).unwrap(),
+            "prepared payload\n"
+        );
     }
 
     #[test]

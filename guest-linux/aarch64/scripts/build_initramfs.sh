@@ -83,6 +83,7 @@ OBMM_ASYNC_COROUTINE_ASM_SRC="$ROOT_DIR/libs/obmm_async/obmm_async_aarch64.S"
 OBMM_COROUTINE_SCHEDULER_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler.c"
 OBMM_COROUTINE_SCHEDULER_ASM_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler_aarch64.S"
 OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine/obmm_async_coroutine"
+OBMM_ASYNC_COROUTINE_BUILD_DIR="${OBMM_ASYNC_COROUTINE_BIN:h}"
 GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"
 GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"
 OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"
@@ -621,7 +622,17 @@ if initramfs_stamp_matches; then
   exit 0
 fi
 
-mkdir -p "${OBMM_ASYNC_COROUTINE_BIN:h}"
+if [[ -L "$OBMM_ASYNC_COROUTINE_BUILD_DIR" ]]; then
+  echo "[build_initramfs] error: refusing symlinked output directory: $OBMM_ASYNC_COROUTINE_BUILD_DIR" >&2
+  exit 1
+elif [[ -f "$OBMM_ASYNC_COROUTINE_BUILD_DIR" ]]; then
+  echo "[build_initramfs] migrating legacy output file: $OBMM_ASYNC_COROUTINE_BUILD_DIR" >&2
+  rm -f "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
+elif [[ -e "$OBMM_ASYNC_COROUTINE_BUILD_DIR" && ! -d "$OBMM_ASYNC_COROUTINE_BUILD_DIR" ]]; then
+  echo "[build_initramfs] error: output path is not a directory: $OBMM_ASYNC_COROUTINE_BUILD_DIR" >&2
+  exit 1
+fi
+mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
 
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$PROBE_SRC" -o "$PROBE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra "$URMA_DP_SRC" -o "$URMA_DP_BIN"

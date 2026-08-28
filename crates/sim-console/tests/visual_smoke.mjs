@@ -219,6 +219,7 @@ async function screenshot(width, height, output) {
     await delay(1800);
     await assertParameterDraftSurvivesRefresh(protocol, sessionId);
     await assertProcessLogRoundTrip(protocol, sessionId);
+    await assertLogRefreshFeedbackClears(protocol, sessionId);
 
     const metrics = await protocol.send(
       "Runtime.evaluate",
@@ -260,6 +261,26 @@ async function screenshot(width, height, output) {
     await protocol.send("Browser.close").catch(() => {});
     await Promise.race([waitForExit(browser), delay(2000)]);
     if (browser.exitCode === null) browser.kill("SIGKILL");
+  }
+}
+
+async function assertLogRefreshFeedbackClears(protocol, sessionId) {
+  const recovered = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "(async () => { showFeedback('Log refresh failed: fixture', true, 'log-refresh'); await refreshLogs(); return {hidden: document.querySelector('#feedback').hidden, text: document.querySelector('#feedback').textContent, source: document.querySelector('#feedback').dataset.source}; })()",
+      awaitPromise: true,
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (
+    !recovered.result.value.hidden ||
+    recovered.result.value.text !== "" ||
+    recovered.result.value.source !== ""
+  ) {
+    throw new Error(`log refresh feedback did not recover: ${JSON.stringify(recovered.result.value)}`);
   }
 }
 
