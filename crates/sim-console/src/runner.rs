@@ -512,10 +512,7 @@ impl RunManager {
             b"stop requested\n",
         )?;
 
-        let result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
-        if result != 0 {
-            return Err(RunManagerError::Io(std::io::Error::last_os_error()));
-        }
+        signal_process_group(pid, libc::SIGTERM)?;
         {
             let mut runs = self.inner.runs.write().await;
             if let Some(current) = runs.get_mut(run_id) {
@@ -1112,6 +1109,18 @@ impl RunManager {
         }
         Ok(())
     }
+}
+
+fn signal_process_group(pid: u32, signal: i32) -> Result<(), RunManagerError> {
+    let result = unsafe { libc::kill(-(pid as i32), signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(RunManagerError::Io(error))
 }
 
 fn node_input_payload(request: NodeInputRequest) -> Result<Vec<u8>, RunManagerError> {
@@ -2838,6 +2847,11 @@ mod tests {
             manager.get(&record.id).await.unwrap().status,
             RunStatus::Stopped
         );
+    }
+
+    #[test]
+    fn stopping_an_exited_process_group_is_idempotent() {
+        signal_process_group(1_500_000_000, libc::SIGTERM).unwrap();
     }
 
     #[tokio::test]
