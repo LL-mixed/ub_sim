@@ -37,6 +37,8 @@
 #define MEM_SERVICE_BIN "/bin/linqu_mem_service"
 #define MEM_SERVICE_SOCKET_PATH "/tmp/linqu_mem_service_ub_ssd_gsva.sock"
 #define MEM_SERVICE_STORE_PATH "/tmp/linqu_mem_service_ub_ssd_gsva.store"
+#define MEM_SERVICE_READY_ATTEMPTS 20
+#define MEM_SERVICE_READY_TIMEOUT_MS "1000"
 
 static int obmm_fd = -1;
 static int ssd_fd = -1;
@@ -279,21 +281,22 @@ static void stop_mem_service_daemon(void)
 
 static int wait_mem_service_ready(const char *socket_spec)
 {
-    for (int i = 0; i < 80; i++) {
-        char *const argv[] = {
-            (char *)"linqu_mem_service",
-            (char *)"ready",
-            (char *)"--connect",
-            (char *)socket_spec,
-            (char *)"--timeout-ms",
-            (char *)"50",
-            NULL,
-        };
+    char *const argv[] = {
+        (char *)"linqu_mem_service",
+        (char *)"ready",
+        (char *)"--connect",
+        (char *)socket_spec,
+        (char *)"--timeout-ms",
+        (char *)MEM_SERVICE_READY_TIMEOUT_MS,
+        NULL,
+    };
 
+    for (int i = 0; i < MEM_SERVICE_READY_ATTEMPTS; i++) {
         if (run_mem_service_argv_quiet(argv) == 0)
             return 0;
         usleep(50000);
     }
+    (void)run_mem_service_argv(argv);
     fprintf(stderr, TAG "mem_service daemon did not become ready\n");
     return -1;
 }
