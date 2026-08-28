@@ -34,7 +34,7 @@ wait_for_log_pattern() {
   local timeout_s="$3"
   local deadline=$((SECONDS + timeout_s))
   while (( SECONDS < deadline )); do
-    if [[ -f "$file" ]] && rg -q "$pattern" "$file"; then
+    if [[ -f "$file" ]] && grep -Eq -- "$pattern" "$file"; then
       return 0
     fi
     sleep 0.2
@@ -54,10 +54,10 @@ wait_for_log_pass_or_fail_since() {
   while (( SECONDS < deadline )); do
     if [[ -f "$file" ]]; then
       tmp="$(tail -n "+$((start_line + 1))" "$file" 2>/dev/null || true)"
-      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | rg -q "$pass_pattern"; then
+      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | grep -Eq -- "$pass_pattern"; then
         return 0
       fi
-      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | rg -q "$fail_pattern"; then
+      if [[ -n "$tmp" ]] && printf '%s\n' "$tmp" | grep -Eq -- "$fail_pattern"; then
         return 1
       fi
     fi
@@ -70,7 +70,7 @@ assert_log_has() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if ! rg -q "$pattern" "$file"; then
+  if ! grep -Eq -- "$pattern" "$file"; then
     echo "missing log marker: $label in $file" >&2
     return 1
   fi
@@ -80,7 +80,7 @@ assert_log_absent() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if rg -q "$pattern" "$file"; then
+  if grep -Eq -- "$pattern" "$file"; then
     echo "unexpected log marker: $label in $file" >&2
     return 1
   fi

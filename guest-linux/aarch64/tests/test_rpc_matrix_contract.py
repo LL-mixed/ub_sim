@@ -14,3 +14,17 @@ def test_four_node_rpc_uses_launcher_serial_ports():
         assert f'${{{variable}:-$((port_base + {offset}))}}' in runner
 
     assert "port_base + 31 + idx" not in runner
+
+
+def test_web_obmm_and_rpc_matrix_entries_use_base_host_tools():
+    scripts = (
+        "run_ub_four_node_obmm_pool.sh",
+        "run_ub_eight_node_obmm_pool.sh",
+        "run_ub_four_node_rpc_matrix.sh",
+        "run_ub_eight_node_rpc_matrix.sh",
+    )
+
+    for script in scripts:
+        source = (ROOT / "scripts" / script).read_text()
+        assert "grep -Eq --" in source
+        assert "rg -q" not in source
