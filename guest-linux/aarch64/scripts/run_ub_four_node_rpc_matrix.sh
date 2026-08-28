@@ -149,8 +149,13 @@ node_ip() {
 node_serial_port() {
   local node_id="$1"
   local port_base="$2"
-  local idx="$(node_index "$node_id")"
-  echo $((port_base + 31 + idx))
+  case "$node_id" in
+    nodeA) echo "${NODEA_SERIAL_PORT:-$((port_base + 16))}" ;;
+    nodeB) echo "${NODEB_SERIAL_PORT:-$((port_base + 17))}" ;;
+    nodeC) echo "${NODEC_SERIAL_PORT:-$((port_base + 18))}" ;;
+    nodeD) echo "${NODED_SERIAL_PORT:-$((port_base + 19))}" ;;
+    *) return 1 ;;
+  esac
 }
 
 send_serial_block() {
