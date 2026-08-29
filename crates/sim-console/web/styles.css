@@ -21,6 +21,22 @@
   --terminal: #111714;
   --terminal-line: #27312c;
   --terminal-text: #d9e3dd;
+  --ansi-black: #202824;
+  --ansi-red: #e06c63;
+  --ansi-green: #65c78d;
+  --ansi-yellow: #d7b75b;
+  --ansi-blue: #6fa8dc;
+  --ansi-magenta: #c58bc7;
+  --ansi-cyan: #63c5c5;
+  --ansi-white: #cdd6d0;
+  --ansi-bright-black: #7f8d85;
+  --ansi-bright-red: #ff8178;
+  --ansi-bright-green: #7ee3a7;
+  --ansi-bright-yellow: #f1d06d;
+  --ansi-bright-blue: #8ec5f4;
+  --ansi-bright-magenta: #dfa6e1;
+  --ansi-bright-cyan: #7ee1e1;
+  --ansi-bright-white: #f4f7f5;
 }
 
 * {

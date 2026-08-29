@@ -85,6 +85,168 @@ function isLive(status) {
   return ["queued", "starting", "running"].includes(status);
 }
 
+const ANSI_COLORS = [
+  "var(--ansi-black)",
+  "var(--ansi-red)",
+  "var(--ansi-green)",
+  "var(--ansi-yellow)",
+  "var(--ansi-blue)",
+  "var(--ansi-magenta)",
+  "var(--ansi-cyan)",
+  "var(--ansi-white)",
+  "var(--ansi-bright-black)",
+  "var(--ansi-bright-red)",
+  "var(--ansi-bright-green)",
+  "var(--ansi-bright-yellow)",
+  "var(--ansi-bright-blue)",
+  "var(--ansi-bright-magenta)",
+  "var(--ansi-bright-cyan)",
+  "var(--ansi-bright-white)",
+];
+
+const ANSI_SEQUENCE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][\s\S]*?\x1b\\|.)/g;
+
+function defaultAnsiStyle() {
+  return {
+    foreground: null,
+    background: null,
+    bold: false,
+    faint: false,
+    italic: false,
+    underline: false,
+    inverse: false,
+    concealed: false,
+    strike: false,
+  };
+}
+
+function renderLogText(text) {
+  const fragment = document.createDocumentFragment();
+  const style = defaultAnsiStyle();
+  let cursor = 0;
+
+  ANSI_SEQUENCE.lastIndex = 0;
+  for (let match = ANSI_SEQUENCE.exec(text); match; match = ANSI_SEQUENCE.exec(text)) {
+    appendAnsiText(fragment, text.slice(cursor, match.index), style);
+    if (match[0].startsWith("\x1b[") && match[0].endsWith("m")) {
+      applyAnsiSgr(style, match[0].slice(2, -1));
+    }
+    cursor = match.index + match[0].length;
+  }
+  appendAnsiText(fragment, text.slice(cursor), style);
+  elements.logOutput.replaceChildren(fragment);
+}
+
+function appendAnsiText(fragment, text, style) {
+  const visibleText = text
+    .replace(/\r(?!\n)/g, "\n")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  if (!visibleText) return;
+
+  const decorations = [];
+  if (style.underline) decorations.push("underline");
+  if (style.strike) decorations.push("line-through");
+  const foreground = style.inverse
+    ? style.background || "var(--terminal)"
+    : style.foreground;
+  const background = style.inverse
+    ? style.foreground || "var(--terminal-text)"
+    : style.background;
+  if (
+    !foreground &&
+    !background &&
+    !style.bold &&
+    !style.faint &&
+    !style.italic &&
+    !style.concealed &&
+    !decorations.length
+  ) {
+    fragment.append(document.createTextNode(visibleText));
+    return;
+  }
+
+  const span = document.createElement("span");
+  span.textContent = visibleText;
+  if (foreground) span.style.color = foreground;
+  if (background) span.style.backgroundColor = background;
+  if (style.bold) span.style.fontWeight = "700";
+  if (style.faint) span.style.opacity = "0.65";
+  if (style.italic) span.style.fontStyle = "italic";
+  if (style.concealed) span.style.visibility = "hidden";
+  if (decorations.length) span.style.textDecoration = decorations.join(" ");
+  fragment.append(span);
+}
+
+function applyAnsiSgr(style, parameters) {
+  const codes = parameters === ""
+    ? [0]
+    : parameters.split(";").map((value) => Number.parseInt(value || "0", 10));
+  for (let index = 0; index < codes.length; index += 1) {
+    const code = Number.isFinite(codes[index]) ? codes[index] : 0;
+    if (code === 0) Object.assign(style, defaultAnsiStyle());
+    else if (code === 1) style.bold = true;
+    else if (code === 2) style.faint = true;
+    else if (code === 3) style.italic = true;
+    else if (code === 4 || code === 21) style.underline = true;
+    else if (code === 7) style.inverse = true;
+    else if (code === 8) style.concealed = true;
+    else if (code === 9) style.strike = true;
+    else if (code === 22) {
+      style.bold = false;
+      style.faint = false;
+    } else if (code === 23) style.italic = false;
+    else if (code === 24) style.underline = false;
+    else if (code === 27) style.inverse = false;
+    else if (code === 28) style.concealed = false;
+    else if (code === 29) style.strike = false;
+    else if (code >= 30 && code <= 37) style.foreground = ANSI_COLORS[code - 30];
+    else if (code >= 40 && code <= 47) style.background = ANSI_COLORS[code - 40];
+    else if (code >= 90 && code <= 97) style.foreground = ANSI_COLORS[code - 90 + 8];
+    else if (code >= 100 && code <= 107) style.background = ANSI_COLORS[code - 100 + 8];
+    else if (code === 39) style.foreground = null;
+    else if (code === 49) style.background = null;
+    else if (code === 38 || code === 48) {
+      const extended = ansiExtendedColor(codes, index + 1);
+      if (extended.color) {
+        if (code === 38) style.foreground = extended.color;
+        else style.background = extended.color;
+      }
+      index += extended.consumed;
+    }
+  }
+}
+
+function ansiExtendedColor(codes, start) {
+  if (codes[start] === 5 && Number.isInteger(codes[start + 1])) {
+    return { color: ansi256Color(codes[start + 1]), consumed: 2 };
+  }
+  const rgbComponents = codes.slice(start + 1, start + 4);
+  if (
+    codes[start] === 2 &&
+    rgbComponents.length === 3 &&
+    rgbComponents.every((value) => Number.isInteger(value))
+  ) {
+    const rgb = rgbComponents.map((value) => Math.max(0, Math.min(255, value)));
+    return { color: `rgb(${rgb.join(", ")})`, consumed: 4 };
+  }
+  return { color: null, consumed: 0 };
+}
+
+function ansi256Color(index) {
+  const color = Math.max(0, Math.min(255, index));
+  if (color < ANSI_COLORS.length) return ANSI_COLORS[color];
+  if (color >= 232) {
+    const level = 8 + (color - 232) * 10;
+    return `rgb(${level}, ${level}, ${level})`;
+  }
+  const cube = color - 16;
+  const levels = [0, 95, 135, 175, 215, 255];
+  const red = levels[Math.floor(cube / 36)];
+  const green = levels[Math.floor((cube % 36) / 6)];
+  const blue = levels[cube % 6];
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -473,7 +635,7 @@ function selectRun(runId) {
 function resetLog() {
   state.logCursor = 0;
   state.logLines = [];
-  elements.logOutput.textContent = state.selectedRunId ? "Waiting for output..." : "No active run.";
+  renderLogText(state.selectedRunId ? "Waiting for output..." : "No active run.");
 }
 
 async function startRun() {
@@ -589,7 +751,7 @@ async function refreshLogs() {
     if (chunk.lines.length) {
       state.logLines.push(...chunk.lines);
       if (state.logLines.length > 2000) state.logLines.splice(0, state.logLines.length - 2000);
-      elements.logOutput.textContent = state.logLines.join("\n");
+      renderLogText(state.logLines.join("\n"));
       if (elements.followLog.checked) elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
     }
     state.logCursor = chunk.next_cursor;
@@ -709,7 +871,7 @@ elements.processLog.addEventListener("click", () => selectLogSource(null));
 elements.nodeInputForm.addEventListener("submit", sendNodeInput);
 elements.clearLog.addEventListener("click", () => {
   state.logLines = [];
-  elements.logOutput.textContent = "View cleared. New output will continue from the current cursor.";
+  renderLogText("View cleared. New output will continue from the current cursor.");
 });
 
 void refreshAll();

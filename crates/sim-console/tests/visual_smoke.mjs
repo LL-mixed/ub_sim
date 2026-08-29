@@ -91,6 +91,8 @@ const mockApi = `
         "[ub_rpc] nodeB response returned to nodeA",
         "iteration 1: dual-node apps pass",
         "interactive shells ready; use node input or Stop to terminate",
+        "\u001b[1;34mbin\u001b[0m \u001b[32mready\u001b[0m <node-output>",
+        "\u001b[38;5;208mindexed\u001b[0m \u001b[38;2;10;20;30mrgb\u001b[0m",
       ],
     })};
     window.__nodeInputRequests = [];
@@ -219,6 +221,7 @@ async function screenshot(width, height, output) {
     await delay(1800);
     await assertParameterDraftSurvivesRefresh(protocol, sessionId);
     await assertProcessLogRoundTrip(protocol, sessionId);
+    await assertAnsiLogRendering(protocol, sessionId);
     await assertLogRefreshFeedbackClears(protocol, sessionId);
 
     const metrics = await protocol.send(
@@ -281,6 +284,31 @@ async function assertLogRefreshFeedbackClears(protocol, sessionId) {
     recovered.result.value.source !== ""
   ) {
     throw new Error(`log refresh feedback did not recover: ${JSON.stringify(recovered.result.value)}`);
+  }
+}
+
+async function assertAnsiLogRendering(protocol, sessionId) {
+  const rendered = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "(() => { const output = document.querySelector('#log-output'); const spans = [...output.querySelectorAll('span')]; const bin = spans.find((span) => span.textContent === 'bin'); const indexed = spans.find((span) => span.textContent === 'indexed'); const rgb = spans.find((span) => span.textContent === 'rgb'); return {text: output.textContent, rawEscape: output.textContent.includes('\\u001b') || output.textContent.includes('[1;34m'), injectedElement: Boolean(output.querySelector('node-output')), binWeight: bin ? getComputedStyle(bin).fontWeight : null, binColor: bin ? getComputedStyle(bin).color : null, indexedColor: indexed ? getComputedStyle(indexed).color : null, rgbColor: rgb ? getComputedStyle(rgb).color : null, baseColor: getComputedStyle(output).color}; })()",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const view = rendered.result.value;
+  if (
+    !view.text.includes("bin ready <node-output>") ||
+    view.rawEscape ||
+    view.injectedElement ||
+    Number.parseInt(view.binWeight, 10) < 700 ||
+    !view.binColor ||
+    view.binColor === view.baseColor ||
+    view.indexedColor !== "rgb(255, 135, 0)" ||
+    view.rgbColor !== "rgb(10, 20, 30)"
+  ) {
+    throw new Error(`ANSI node log rendering failed: ${JSON.stringify(view)}`);
   }
 }
 
