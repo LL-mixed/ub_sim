@@ -526,12 +526,9 @@ static int run_consumer(const struct pto_direct_config *config,
         fprintf(stderr, "[lingqu_shmem_pto] consumer no_import_pa\n");
         goto out;
     }
-    submit_rc = obmm_do_import_v2(
+    submit_rc = obmm_do_import(
         obmm_fd, &meta, local_cna, local_pas[0], config->token_value,
-        OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM,
-        OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA,
-        OBMM_SIM_DEC_CACHE_POLICY_NC,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, &import_mem_id);
+        &import_mem_id);
     if (submit_rc != 0) {
         fprintf(stderr, "[lingqu_shmem_pto] consumer import error=%s\n",
                 strerror(errno));

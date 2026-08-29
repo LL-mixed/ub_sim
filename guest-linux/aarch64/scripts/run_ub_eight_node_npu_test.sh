@@ -205,7 +205,7 @@ prepare_environment() {
   mkdir -p "$RUN_DIR"
   : > "$TRACE_FILE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP"
-  if ! ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" \
+  if ! ENV_FILE="$OUT_DIR/headless_eight_node_env.${RUN_ID_BASE}.sh" PORT_BASE="$PORT_BASE" RUN_ID="$RUN_ID_BASE" QEMU_MEM="$QEMU_MEM" QEMU_SMP="$QEMU_SMP" APPEND_EXTRA="$APPEND_BASE" UB_SIM_EXPERIMENTAL_FEATURES=npu \
     "$SCRIPT_DIR/launch_ub_eight_node_headless.sh" >/dev/null; then
     trace "FAIL: launch headless env failed"
     return 1

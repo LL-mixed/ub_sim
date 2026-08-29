@@ -67,6 +67,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         )
         self.assertNotIn("NPU_OP_PTO_DISPATCH", source)
         self.assertNotIn("MAP_GSVA", source)
+        self.assertIn("obmm_do_import(", source)
+        self.assertNotIn("obmm_do_import_v2(", source)
+        self.assertNotIn("OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA", source)
 
     def test_initramfs_builds_and_installs_workload(self):
         build = BUILD_INITRAMFS.read_text()
@@ -101,6 +104,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("QEMU_UB_GM_STORE", runner)
         self.assertIn("QEMU_UB_GM_FENCE", runner)
         self.assertIn("segment_payload_staging_bytes=0", runner)
+        self.assertIn("experimental NPU/GVA/GSVA leakage", runner)
+        self.assertIn("UB_NPU: created|SIM_DEC: GVA_MAP", runner)
 
     def test_dedicated_runner_derives_fingerprint_and_preserves_evidence(self):
         runner = PTO_RUNNER.read_text()

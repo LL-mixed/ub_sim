@@ -1027,6 +1027,9 @@ validate_lingqu_shmem_pto_qemu_log() {
   assert_log_absent "$log_file" \
     "QEMU_UB_GM_(DISPATCH_REJECT|METADATA_CRC_FAIL)" \
     "$node_name PTO dispatch rejection" || return 1
+  assert_log_absent "$log_file" \
+    "UB_NPU: created|SIM_DEC: GVA_MAP|GVA_S3_MAP|GVA_ROUTE_DUMP|GSVA_" \
+    "$node_name experimental NPU/GVA/GSVA leakage" || return 1
   if [[ "$node_name" == "nodeA" ]]; then
     assert_log_absent "$log_file" \
       "QEMU_UB_GM_(LOAD|STORE|FENCE|UNBIND) " \
@@ -1199,6 +1202,7 @@ start_node() {
   local serial_socket="$7"
   local app_append_extra="${8-}"
   local qemu_extra=()
+  local experimental_features="${UB_SIM_EXPERIMENTAL_FEATURES:-}"
   local qemu_control_args=()
   local remote_model_args=()
   local async_load_args=()
@@ -1247,6 +1251,18 @@ start_node() {
         ;;
     esac
   fi
+  if [[ "$APPEND_EXTRA" == *"linqu_npu_test=1"* ]]; then
+    if [[ ",${experimental_features}," != *",npu,"* ]]; then
+      experimental_features="${experimental_features:+${experimental_features},}npu"
+    fi
+  elif [[ "$APPEND_EXTRA" == *"linqu_obmm_gsva=1"* ||
+          "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ||
+          "$APPEND_EXTRA" == *"linqu_gsva_query=1"* ||
+          "$APPEND_EXTRA" == *"linqu_ssd_gsva_test=1"* ]]; then
+    if [[ ",${experimental_features}," != *",gsva,"* ]]; then
+      experimental_features="${experimental_features:+${experimental_features},}gsva"
+    fi
+  fi
   mkdir -p "$(dirname "$guest_log")"
   mkdir -p "$(dirname "$qemu_log")"
   if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 ]]; then
@@ -1265,6 +1281,7 @@ start_node() {
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
     UB_FM_SHARED_DIR="$SHARED_DIR" \
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
+    UB_SIM_EXPERIMENTAL_FEATURES="$experimental_features" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     SIMPLER_HOST_VECTOR_MANIFEST="$SIMPLER_HOST_VECTOR_MANIFEST" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \

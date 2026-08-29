@@ -44,7 +44,7 @@ class UbDeviceInstantiationContractTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("virt` machine instantiates one `ub-npu`", npu_doc)
+        self.assertIn("UB_SIM_EXPERIMENTAL_FEATURES=npu", npu_doc)
         self.assertIn("UB_SIM_SKIP_DEVICES=npu", npu_doc)
         self.assertNotIn("-device ub-npu", npu_doc)
 
@@ -52,16 +52,33 @@ class UbDeviceInstantiationContractTest(unittest.TestCase):
         self.assertIn("UB_SIM_SKIP_DEVICES=ssd", ssd_doc)
         self.assertNotIn("-device ub-ssd", ssd_doc)
 
-    def test_virt_machine_auto_creates_devices_with_skip_control(self):
+    def test_virt_machine_requires_explicit_npu_feature_and_keeps_ssd_default(self):
         virt = (REPO_ROOT / "vendor/qemu_8.2.0_ub/hw/arm/virt.c").read_text(
             encoding="utf-8"
         )
 
         self.assertIn('g_getenv("UB_SIM_SKIP_DEVICES")', virt)
+        self.assertIn('g_getenv("UB_SIM_EXPERIMENTAL_FEATURES")', virt)
+        self.assertIn('ub_sim_experimental_feature_enabled("npu")', virt)
         self.assertIn('qdev_new("ub-npu")', virt)
         self.assertIn('qdev_new("ub-ssd")', virt)
         self.assertIn('strstr(skip_devices, "npu")', virt)
         self.assertIn('strstr(skip_devices, "ssd")', virt)
+
+    def test_npu_runners_explicitly_enable_experimental_features(self):
+        runner_features = {
+            "run_ub_two_node_npu_test.sh": "npu",
+            "run_ub_two_node_npu_gsva_test.sh": "npu,gsva",
+            "run_ub_four_node_npu_gsva_test.sh": "npu,gsva",
+            "run_ub_eight_node_npu_gsva_test.sh": "npu,gsva",
+            "run_ub_eight_node_npu_test.sh": "npu",
+        }
+        scripts = REPO_ROOT / "guest-linux/aarch64/scripts"
+        for name, features in runner_features.items():
+            source = (scripts / name).read_text(encoding="utf-8")
+            self.assertIn(
+                f"UB_SIM_EXPERIMENTAL_FEATURES={features}", source, name
+            )
 
     def test_qemu_build_stamp_tracks_ub_device_instantiation_sources(self):
         builder = (

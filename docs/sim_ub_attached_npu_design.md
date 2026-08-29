@@ -1,5 +1,11 @@
 # UB-Attached Semantic NPU Simulation Design
 
+> Status: experimental, optional, and disabled by default. Enable this model
+> explicitly with `UB_SIM_EXPERIMENTAL_FEATURES=npu`; tests that require the
+> implicit OBMM-to-GSVA bootstrap route use
+> `UB_SIM_EXPERIMENTAL_FEATURES=npu,gsva`. The default PTO `UB_GM` path has no
+> dependency on this device, GVA, or GSVA.
+
 ## Goal
 
 This document defines the first simulator design for a UB-attached NPU endpoint.
@@ -74,10 +80,12 @@ Reason:
 - V1 does not need PCI enumeration, BAR sizing, MSI-X, or config space;
 - SysBus MMIO keeps the first kernel driver and QEMU model small.
 
-The `virt` machine instantiates one `ub-npu` device per QEMU node during board
-initialization. V1 does not expose `ub-npu` as a user-created `-device`, because
-dynamic SysBus devices are created after the board FDT is built and would not be
-discoverable by the guest platform driver without a second dynamic-FDT path.
+When `UB_SIM_EXPERIMENTAL_FEATURES=npu` is present, the `virt` machine
+instantiates one `ub-npu` device per QEMU node during board initialization.
+Without that feature token the device and its FDT node are absent. V1 does not
+expose `ub-npu` as a user-created `-device`, because dynamic SysBus devices are
+created after the board FDT is built and would not be discoverable by the guest
+platform driver without a second dynamic-FDT path.
 
 The machine-created device is configured with QOM properties equivalent to:
 
@@ -85,8 +93,9 @@ The machine-created device is configured with QOM properties equivalent to:
 node-id=0,cna=0xc4c21000,ubc=/machine/peripheral/ubcdev0
 ```
 
-`UB_SIM_SKIP_DEVICES=npu` suppresses NPU instantiation for negative discovery
-tests. The `ubc` property is a link to the local `BusControllerDev`. QEMU
+`UB_SIM_SKIP_DEVICES=npu` remains a negative override for discovery tests after
+the experimental feature is enabled. The `ubc` property is a link to the local
+`BusControllerDev`. QEMU
 realization fails if the linked UBC device is missing or not GSVA-capable. The
 NPU does not create its own route table; it calls the GSVA route/coherence
 helpers owned by the local UBC device.

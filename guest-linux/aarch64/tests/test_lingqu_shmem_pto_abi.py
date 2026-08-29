@@ -9,6 +9,7 @@ HEADER = ROOT / "crates" / "sim-qemu" / "include" / "linqu_shmem_pto_abi.h"
 BRIDGE_HEADER = ROOT / "crates" / "sim-qemu" / "include" / "linqu_ub_bridge.h"
 QEMU_UBC_HEADER = ROOT / "vendor" / "qemu_8.2.0_ub" / "include" / "hw" / "ub" / "ub_ubc.h"
 QEMU_UBC_SOURCE = ROOT / "vendor" / "qemu_8.2.0_ub" / "hw" / "ub" / "ub_ubc.c"
+QEMU_VIRT_SOURCE = ROOT / "vendor" / "qemu_8.2.0_ub" / "hw" / "arm" / "virt.c"
 QEMU_ABI_HEADER = (
     ROOT
     / "vendor"
@@ -115,6 +116,19 @@ int main(void)
         self.assertIn(
             'DEFINE_PROP_UINT32("pto-device-cna", BusControllerDev, pto_device_cna, 0)',
             source,
+        )
+
+    def test_qemu_experimental_npu_and_implicit_gsva_are_default_disabled(self):
+        virt = QEMU_VIRT_SOURCE.read_text()
+        ubc = QEMU_UBC_SOURCE.read_text()
+        self.assertIn('g_getenv("UB_SIM_EXPERIMENTAL_FEATURES")', virt)
+        self.assertIn('ub_sim_experimental_feature_enabled("npu")', virt)
+        self.assertIn("experimental_gsva_enabled", ubc)
+        self.assertIn(
+            "if (g_sim_decoder->experimental_gsva_enabled)", ubc
+        )
+        self.assertIn(
+            'g_strv_contains((const gchar *const *)features, "gsva")', ubc
         )
 
     def test_qemu_mirror_header_compiles_and_matches_wire_contract(self):
