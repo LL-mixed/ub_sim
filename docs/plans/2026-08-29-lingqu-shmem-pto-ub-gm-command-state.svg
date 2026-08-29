@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1000" viewBox="0 0 1680 1000" role="img" aria-labelledby="title desc">
+  <title id="title">IoOpcode Dispatch v2 的 UB_GM 安全执行状态机</title>
+  <desc id="desc">展示 QEMU UBC 在进入现有 sim-qemu bridge 之前读取 metadata、校验并完成 backend authorization，随后沿 ChipBackend 主链同步执行 PTO，最后 fence、unbind 和发布原有 CQ completion。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#dc2626"/>
+    </marker>
+    <style>
+      .title { font: 700 31px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .lane-title { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .state-title { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .state-text { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .edge-text { font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .error-text { font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #991b1b; }
+      .note { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #7c2d12; }
+      .mono { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="1000" fill="#f8fafc"/>
+  <text x="60" y="54" class="title">IoOpcode::Dispatch v2 + UB_GM：现有 bridge 的安全执行状态机</text>
+  <text x="60" y="84" class="subtitle">QEMU UBC 在 submit_slot/ring_doorbell 前完成所有可能 pending 的 backend authorization；PTO callback 只执行同步 load/store/fence。</text>
+
+  <rect x="45" y="115" width="1590" height="300" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="72" y="153" class="lane-title">QEMU UBC preflight：尚未进入 Rust bridge</text>
+
+  <g>
+    <rect x="70" y="205" width="205" height="125" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="172" y="238" text-anchor="middle" class="state-title">1. Read metadata</text>
+    <text x="172" y="263" text-anchor="middle" class="state-text">64-byte ring slot</text>
+    <text x="172" y="286" text-anchor="middle" class="state-text">v2 control/memref table</text>
+    <text x="172" y="309" text-anchor="middle" class="state-text">snapshot request_id</text>
+
+    <rect x="320" y="205" width="205" height="125" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="422" y="238" text-anchor="middle" class="state-title">2. Validate</text>
+    <text x="422" y="263" text-anchor="middle" class="state-text">ABI / callable / count</text>
+    <text x="422" y="286" text-anchor="middle" class="state-text">mapping / lifetime / bounds</text>
+    <text x="422" y="309" text-anchor="middle" class="state-text">shape / stride / access</text>
+
+    <rect x="570" y="205" width="205" height="125" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="672" y="238" text-anchor="middle" class="state-title">3. Authorize inputs</text>
+    <text x="672" y="263" text-anchor="middle" class="state-text">all input ranges</text>
+    <text x="672" y="286" text-anchor="middle" class="state-text">PTO device CNA</text>
+    <text x="672" y="309" text-anchor="middle" class="state-text">save memref cursor</text>
+
+    <rect x="820" y="205" width="205" height="125" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="922" y="238" text-anchor="middle" class="state-title">4. Authorize outputs</text>
+    <text x="922" y="263" text-anchor="middle" class="state-text">output / inout ranges</text>
+    <text x="922" y="286" text-anchor="middle" class="state-text">ownership / permission</text>
+    <text x="922" y="309" text-anchor="middle" class="state-text">save memref cursor</text>
+
+    <rect x="1070" y="205" width="225" height="125" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+    <text x="1182" y="238" text-anchor="middle" class="state-title">5. Register bindings</text>
+    <text x="1182" y="263" text-anchor="middle" class="state-text">request-scoped registry</text>
+    <text x="1182" y="286" text-anchor="middle" class="state-text">synthetic aperture</text>
+    <text x="1182" y="309" text-anchor="middle" class="state-text">authorized UB GM mapping</text>
+
+    <rect x="1340" y="205" width="260" height="125" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+    <text x="1470" y="238" text-anchor="middle" class="state-title">6. Enter existing bridge</text>
+    <text x="1470" y="263" text-anchor="middle" class="mono">submit_slot()</text>
+    <text x="1470" y="286" text-anchor="middle" class="mono">ring_doorbell()</text>
+    <text x="1470" y="309" text-anchor="middle" class="state-text">IoOpcode::Dispatch</text>
+  </g>
+
+  <path d="M275 267 H310" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M525 267 H560" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M775 267 H810" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1025 267 H1060" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1295 267 H1330" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="500" y="455" width="690" height="125" rx="20" fill="#fff7ed" stroke="#fb923c" stroke-width="2.5"/>
+  <text x="845" y="490" text-anchor="middle" class="state-title">Authorization pending：保留当前 CMDQ slot，不推进 head</text>
+  <text x="845" y="520" text-anchor="middle" class="state-text">保存 control table snapshot、memref cursor 与 pending sequence；当前尚未注册 binding</text>
+  <text x="845" y="548" text-anchor="middle" class="state-text">QEMU timer / BH / backend completion 到达后，从保存的 cursor 重试</text>
+
+  <path d="M672 330 V445" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <text x="692" y="391" class="edge-text">pending</text>
+  <path d="M922 330 V445" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <text x="942" y="391" class="edge-text">pending</text>
+  <path d="M500 518 H270 V175 H672 V195" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <text x="468" y="168" text-anchor="middle" class="edge-text">backend completion / retry saved cursor</text>
+
+  <rect x="45" y="620" width="1590" height="220" rx="22" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="72" y="658" class="lane-title">现有 Rust/ChipBackend/Simpler 主链：同步执行</text>
+
+  <rect x="100" y="700" width="340" height="95" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="270" y="731" text-anchor="middle" class="state-title">7. Dispatch through existing route</text>
+  <text x="270" y="756" text-anchor="middle" class="state-text">sim-qemu → sim-uapi → sim-runtime</text>
+  <text x="270" y="779" text-anchor="middle" class="state-text">→ sim-chipbackend-simpler</text>
+
+  <rect x="505" y="700" width="320" height="95" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="665" y="731" text-anchor="middle" class="state-title">8. Simpler/PTO callable</text>
+  <text x="665" y="756" text-anchor="middle" class="state-text">ChipTensor(AddressSpace::UB_GM)</text>
+  <text x="665" y="779" text-anchor="middle" class="state-text">TLOAD → compute → TSTORE</text>
+
+  <rect x="890" y="700" width="310" height="95" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="1045" y="731" text-anchor="middle" class="state-title">9. Synchronous callbacks</text>
+  <text x="1045" y="756" text-anchor="middle" class="state-text">UB GM load / store</text>
+  <text x="1045" y="779" text-anchor="middle" class="state-text">no authorization wait</text>
+
+  <rect x="1265" y="700" width="315" height="95" rx="14" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
+  <text x="1422" y="731" text-anchor="middle" class="state-title">10. Fence / unbind / CQ</text>
+  <text x="1422" y="756" text-anchor="middle" class="state-text">fence all dirty bindings</text>
+  <text x="1422" y="779" text-anchor="middle" class="state-text">existing completion path</text>
+
+  <path d="M1470 330 V605 H270 V690" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M440 747 H495" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M825 747 H880" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1200 747 H1255" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="70" y="875" width="980" height="88" rx="16" fill="#fef2f2" stroke="#f87171" stroke-width="2"/>
+  <text x="560" y="909" text-anchor="middle" class="state-title">Terminal error</text>
+  <text x="560" y="936" text-anchor="middle" class="state-text">bad metadata / mapping / lifetime / OOB / access / timeout / callback / PTO failure → cleanup once → FatalFailure { code }</text>
+  <path d="M560 840 V865" stroke="#dc2626" stroke-width="2.3" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="580" y="858" class="error-text">任一步骤失败</text>
+
+  <rect x="1100" y="875" width="510" height="88" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+  <text x="1355" y="902" text-anchor="middle" class="note">硬约束：同步 PTO dispatch 开始后，</text>
+  <text x="1355" y="925" text-anchor="middle" class="note">callback 不等待 backend authorization，不回退 host copy；</text>
+  <text x="1355" y="948" text-anchor="middle" class="note">sim_npu / GVA / GSVA：experimental optional，default disabled。</text>
+</svg>

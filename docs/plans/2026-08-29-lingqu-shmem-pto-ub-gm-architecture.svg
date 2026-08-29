@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1160" viewBox="0 0 1680 1160" role="img" aria-labelledby="title desc">
+  <title id="title">现有 ChipBackend bridge 上的 PTO UB_GM 目标架构</title>
+  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、当前 host payload staging、目标 UB_GM 参数路径、通用 QEMU UB GM 数据循环，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#c2410c"/>
+    </marker>
+    <style>
+      .title { font: 700 31px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .lane-title { font: 700 21px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .box-title { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .box-title-small { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .box-text { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .edge-text { font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .current-title { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #9a3412; }
+      .target-title { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #166534; }
+      .note { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .mono { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="1160" fill="#f8fafc"/>
+  <text x="60" y="54" class="title">lingqu_shmem → PTO UB_GM：复用现有 ChipBackend bridge</text>
+  <text x="60" y="84" class="subtitle">现有控制/执行路径已经贯通；目标改动位于参数 materialization 与 PTO TLOAD/TSTORE 的 UB GM memory interface。</text>
+
+  <rect x="45" y="112" width="1590" height="270" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="72" y="149" class="lane-title">A. 已实现并保留的控制与执行主链</text>
+
+  <g>
+    <rect x="70" y="194" width="185" height="118" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="162" y="226" text-anchor="middle" class="box-title">Guest application</text>
+    <text x="162" y="251" text-anchor="middle" class="box-text">IoOpcode::Dispatch</text>
+    <text x="162" y="273" text-anchor="middle" class="box-text">64-byte ring slot</text>
+    <text x="162" y="295" text-anchor="middle" class="box-text">existing CMDQ/CQ</text>
+
+    <rect x="290" y="194" width="190" height="118" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="385" y="226" text-anchor="middle" class="box-title">QEMU UBC</text>
+    <text x="385" y="251" text-anchor="middle" class="box-text">linqu_uapi_kick()</text>
+    <text x="385" y="273" text-anchor="middle" class="box-text">submit slot</text>
+    <text x="385" y="295" text-anchor="middle" class="box-text">ring doorbell</text>
+
+    <rect x="515" y="194" width="180" height="118" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="605" y="226" text-anchor="middle" class="box-title">sim-qemu</text>
+    <text x="605" y="251" text-anchor="middle" class="box-text">LinquUbBridge FFI</text>
+    <text x="605" y="273" text-anchor="middle" class="box-text">QemuBackendAdapter</text>
+    <text x="605" y="295" text-anchor="middle" class="box-text">poll completion</text>
+
+    <rect x="730" y="194" width="180" height="118" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="820" y="226" text-anchor="middle" class="box-title">sim-uapi</text>
+    <text x="820" y="251" text-anchor="middle" class="box-text">run_chipbackend_</text>
+    <text x="820" y="273" text-anchor="middle" class="box-text">dispatch()</text>
+    <text x="820" y="295" text-anchor="middle" class="box-text">host_vector route</text>
+
+    <rect x="945" y="194" width="180" height="118" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="1035" y="226" text-anchor="middle" class="box-title">sim-runtime</text>
+    <text x="1035" y="251" text-anchor="middle" class="box-text">LocalRuntimeEngine</text>
+    <text x="1035" y="273" text-anchor="middle" class="box-text">artifact/callable</text>
+    <text x="1035" y="295" text-anchor="middle" class="box-text">dispatch lifecycle</text>
+
+    <rect x="1160" y="194" width="215" height="118" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="1267" y="226" text-anchor="middle" class="box-title-small">sim-chipbackend-simpler</text>
+    <text x="1267" y="251" text-anchor="middle" class="box-text">ChipTensor args</text>
+    <text x="1267" y="273" text-anchor="middle" class="box-text">Simpler C API</text>
+    <text x="1267" y="295" text-anchor="middle" class="box-text">run_prepared_callable</text>
+
+    <rect x="1410" y="194" width="190" height="118" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+    <text x="1505" y="226" text-anchor="middle" class="box-title">Simpler / PTO</text>
+    <text x="1505" y="251" text-anchor="middle" class="box-text">real callable</text>
+    <text x="1505" y="273" text-anchor="middle" class="box-text">TLOAD / compute</text>
+    <text x="1505" y="295" text-anchor="middle" class="box-text">TSTORE</text>
+  </g>
+
+  <path d="M255 253 H280" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M480 253 H505" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M695 253 H720" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M910 253 H935" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1125 253 H1150" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1375 253 H1400" stroke="#334155" stroke-width="2.4" fill="none" marker-end="url(#arrow)"/>
+  <text x="835" y="344" text-anchor="middle" class="note">这条链已经存在；UB_GM 方案不创建第二套 PTO ingress。</text>
+
+  <rect x="45" y="410" width="770" height="300" rx="22" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+  <text x="72" y="448" class="current-title">B. 当前 host_vector 参数路径：已执行 PTO，存在 staging</text>
+
+  <rect x="82" y="498" width="195" height="120" rx="14" fill="#ffedd5" stroke="#f97316" stroke-width="2"/>
+  <text x="179" y="530" text-anchor="middle" class="box-title">sim-uapi</text>
+  <text x="179" y="555" text-anchor="middle" class="mono">segment_payloads</text>
+  <text x="179" y="578" text-anchor="middle" class="box-text">guest input bytes</text>
+  <text x="179" y="600" text-anchor="middle" class="box-text">payload mirror</text>
+
+  <rect x="320" y="498" width="205" height="120" rx="14" fill="#ffedd5" stroke="#f97316" stroke-width="2"/>
+  <text x="422" y="530" text-anchor="middle" class="box-title">sim-runtime</text>
+  <text x="422" y="555" text-anchor="middle" class="mono">HostPayloadRegistry</text>
+  <text x="422" y="578" text-anchor="middle" class="box-text">Vec&lt;u8&gt;</text>
+  <text x="422" y="600" text-anchor="middle" class="box-text">seed_host_segment()</text>
+
+  <rect x="568" y="498" width="205" height="120" rx="14" fill="#ffedd5" stroke="#f97316" stroke-width="2"/>
+  <text x="670" y="530" text-anchor="middle" class="box-title">ChipTensor(HOST)</text>
+  <text x="670" y="555" text-anchor="middle" class="mono">Vec.as_ptr()</text>
+  <text x="670" y="578" text-anchor="middle" class="box-text">host pointer</text>
+  <text x="670" y="600" text-anchor="middle" class="box-text">PTO direct dereference</text>
+
+  <path d="M277 558 H310" stroke="#c2410c" stroke-width="2.5" fill="none" marker-end="url(#arrow-orange)"/>
+  <path d="M525 558 H558" stroke="#c2410c" stroke-width="2.5" fill="none" marker-end="url(#arrow-orange)"/>
+  <text x="427" y="664" text-anchor="middle" class="note">控制/执行链正确；数据仍由 Rust host payload 承载。</text>
+
+  <rect x="850" y="410" width="785" height="300" rx="22" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="877" y="448" class="target-title">C. 目标 UB_GM 参数路径：沿同一 dispatch 去掉 payload staging</text>
+
+  <rect x="885" y="498" width="215" height="120" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="992" y="530" text-anchor="middle" class="box-title-small">lingqu_shmem_memref</text>
+  <text x="992" y="555" text-anchor="middle" class="box-text">view/control metadata</text>
+  <text x="992" y="578" text-anchor="middle" class="box-text">opaque mapping reference</text>
+  <text x="992" y="600" text-anchor="middle" class="box-text">payload 留在 shmem backing</text>
+
+  <rect x="1140" y="498" width="215" height="120" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="1247" y="530" text-anchor="middle" class="box-title">dispatch-local binding</text>
+  <text x="1247" y="555" text-anchor="middle" class="box-text">synthetic aperture</text>
+  <text x="1247" y="578" text-anchor="middle" class="box-text">UB GM addr / access</text>
+  <text x="1247" y="600" text-anchor="middle" class="box-text">request-scoped lifetime</text>
+
+  <rect x="1395" y="498" width="205" height="120" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="1497" y="530" text-anchor="middle" class="box-title">ChipTensor(UB_GM)</text>
+  <text x="1497" y="555" text-anchor="middle" class="box-text">AddressSpace::UB_GM</text>
+  <text x="1497" y="578" text-anchor="middle" class="box-text">no H2D / D2H</text>
+  <text x="1497" y="600" text-anchor="middle" class="box-text">no host dereference</text>
+
+  <path d="M1100 558 H1130" stroke="#15803d" stroke-width="2.5" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M1355 558 H1385" stroke="#15803d" stroke-width="2.5" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="1242" y="664" text-anchor="middle" class="note">control metadata 可复制；tensor payload 不进入 segment_payloads 或 HostPayloadRegistry。</text>
+
+  <rect x="45" y="742" width="1590" height="260" rx="22" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="72" y="780" class="lane-title">D. 目标数据循环：PTO callback 回到 QEMU UB GM interface，再访问 lingqu_shmem backing</text>
+
+  <rect x="95" y="835" width="240" height="110" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="215" y="868" text-anchor="middle" class="box-title">Simpler / PTO</text>
+  <text x="215" y="894" text-anchor="middle" class="box-text">TLOAD / TSTORE</text>
+  <text x="215" y="918" text-anchor="middle" class="box-text">tile/range granularity</text>
+
+  <rect x="410" y="835" width="270" height="110" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="545" y="868" text-anchor="middle" class="box-title">PtoSimUbGmAccessOpsV1</text>
+  <text x="545" y="894" text-anchor="middle" class="box-text">binding_id + UB GM addr</text>
+  <text x="545" y="918" text-anchor="middle" class="box-text">read / write / fence</text>
+
+  <rect x="755" y="835" width="300" height="110" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="905" y="868" text-anchor="middle" class="box-title">QEMU UB GM memory interface</text>
+  <text x="905" y="894" text-anchor="middle" class="box-text">device CNA + authorized mapping</text>
+  <text x="905" y="918" text-anchor="middle" class="box-text">load / store / fence</text>
+
+  <rect x="1130" y="835" width="260" height="110" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="1260" y="868" text-anchor="middle" class="box-title">lingqu_shmem backing</text>
+  <text x="1260" y="894" text-anchor="middle" class="box-text">Node A exported region</text>
+  <text x="1260" y="918" text-anchor="middle" class="box-text">original bytes</text>
+
+  <rect x="1465" y="835" width="120" height="110" rx="14" fill="#ecfdf5" stroke="#22c55e" stroke-width="2"/>
+  <text x="1525" y="870" text-anchor="middle" class="box-title">Result</text>
+  <text x="1525" y="896" text-anchor="middle" class="box-text">producer</text>
+  <text x="1525" y="918" text-anchor="middle" class="box-text">verifies</text>
+
+  <path d="M335 890 H400" stroke="#15803d" stroke-width="2.7" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M680 890 H745" stroke="#15803d" stroke-width="2.7" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M1055 890 H1120" stroke="#15803d" stroke-width="2.7" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M1390 890 H1455" stroke="#15803d" stroke-width="2.7" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M1260 945 V975 H215 V955" stroke="#334155" stroke-width="2" stroke-dasharray="7 5" fill="none" marker-end="url(#arrow)"/>
+  <text x="740" y="968" text-anchor="middle" class="edge-text">read response / write completion；同步 callback 内不等待 authorization</text>
+
+  <rect x="45" y="1030" width="1590" height="92" rx="18" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
+  <text x="72" y="1064" class="lane-title">EXPERIMENTAL / OPTIONAL / DEFAULT DISABLED：sim_npu + GVA/GSVA</text>
+  <text x="650" y="1097" text-anchor="middle" class="mono">NPU_OP_VECTOR_ADD_U32 / ubc_gsva_device_*：独立实验与 regression</text>
+  <text x="1500" y="1097" text-anchor="end" class="note">不属于默认 feature set；不连接 Simpler/PTO；不作为默认验收前提。</text>
+</svg>

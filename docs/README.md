@@ -49,6 +49,13 @@ Current validation entry points:
   - Chinese cross-repository review of Lingqu DataSystem, covering the original four-service model, current Object/Memory Service architecture, implementation map, maturity, gaps, and SVG diagrams
 - [2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)
   - audited current-state report for the relationship between `ub_sim` and Lingqu DataSystem, completed capabilities, evidence boundaries, full-PoC gaps, risks, and an estimated delivery path
+- [plans/2026-08-29-lingqu-shmem-pto-ub-gm-direct-access-design.md](plans/2026-08-29-lingqu-shmem-pto-ub-gm-direct-access-design.md)
+  - audited target architecture and phased implementation plan for materializing
+    `lingqu_shmem_memref` as PTO `AddressSpace::UB_GM`, reusing the existing
+    QEMU UBC → sim-qemu → ChipBackend → Simpler/PTO dispatch path and issuing
+    direct `TLOAD/TSTORE` through a generic QEMU UB GM memory interface without
+    payload staging; `sim_npu`, GVA, and GSVA are recorded as experimental,
+    optional, default-disabled features outside the default acceptance path
 - [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
   - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with async load, direct EL0 upcall, a pending-load table, and a guest EL0 coroutine scheduler
 - [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)
