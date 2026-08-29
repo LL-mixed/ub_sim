@@ -164,6 +164,10 @@ def test_qemu_endpoint_is_routed_and_uses_registered_buffers():
     assert "obmm_remote_retire_map(" in endpoint
     assert ".map_id = map->resolved.map_id" in endpoint
     assert ".map_generation = map->resolved.map_generation" in endpoint
+    assert "ub_obmm_async_resolve_mapping_ref(" in endpoint
+    assert "lingqu_pto_obmm_mapping_ref_map_id(mapping_ref)" in endpoint
+    assert "lingqu_pto_obmm_mapping_ref_generation(mapping_ref)" in endpoint
+    assert "current.map_generation != map->resolved.map_generation" in endpoint
     assert "QemuMutex tx_lock;" in link_header
     assert '#include "qemu/lockable.h"' in link
     assert "qemu_mutex_init(&s->tx_lock);" in link

@@ -1,5 +1,6 @@
 import pathlib
 import subprocess
+import tempfile
 import unittest
 
 
@@ -56,6 +57,51 @@ class LingquShmemPtoAbiTest(unittest.TestCase):
         self.assertNotIn("external_memref", source)
         self.assertNotIn("NPU_OP_", source)
 
+    def test_obmm_mapping_reference_round_trips_without_route_identity(self):
+        source = r"""
+#include <stdint.h>
+#include "linqu_shmem_pto_abi.h"
+
+int main(void)
+{
+    uint64_t ref = lingqu_pto_obmm_mapping_ref_encode(
+        UINT64_C(64), UINT64_C(0x00123456789abc));
+
+    if (ref == 0 ||
+        lingqu_pto_obmm_mapping_ref_map_id(ref) != UINT64_C(64) ||
+        lingqu_pto_obmm_mapping_ref_generation(ref) !=
+            UINT64_C(0x00123456789abc) ||
+        lingqu_pto_obmm_mapping_ref_encode(0, 1) != 0 ||
+        lingqu_pto_obmm_mapping_ref_encode(1, 0) != 0 ||
+        lingqu_pto_obmm_mapping_ref_encode(256, 1) != 0 ||
+        lingqu_pto_obmm_mapping_ref_encode(
+            1, LINGQU_PTO_OBMM_MAP_GENERATION_MAX + 1) != 0) {
+        return 1;
+    }
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = pathlib.Path(directory) / "mapping_ref.c"
+            binary_path = pathlib.Path(directory) / "mapping_ref"
+            source_path.write_text(source)
+            subprocess.run(
+                [
+                    "cc",
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(HEADER.parent),
+                    str(source_path),
+                    "-o",
+                    str(binary_path),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary_path)], check=True)
+
     def test_qemu_bridge_exposes_authorized_v2_submission(self):
         source = BRIDGE_HEADER.read_text()
         self.assertIn("linqu_ub_bridge_query_ub_gm_callable_v1", source)
@@ -83,6 +129,10 @@ class LingquShmemPtoAbiTest(unittest.TestCase):
             "#define LINGQU_PTO_DISPATCH_SLOT_OP_ID_OFFSET 1u",
             "#define LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET 9u",
             "#define LINGQU_PTO_DISPATCH_SLOT_RESERVED_OFFSET 17u",
+            "#define LINGQU_PTO_OBMM_MAP_ID_BITS 8u",
+            "lingqu_pto_obmm_mapping_ref_encode",
+            "lingqu_pto_obmm_mapping_ref_map_id",
+            "lingqu_pto_obmm_mapping_ref_generation",
             "sizeof(LingquPtoDispatchControlV2) == 64",
             "sizeof(LingquShmemMemrefV1) == 80",
             "sizeof(LingquPtoScalarV1) == 24",
@@ -107,8 +157,7 @@ class LingquShmemPtoAbiTest(unittest.TestCase):
             "linqu_ub_bridge_query_ub_gm_callable_v1",
             "linqu_uapi_decode_memref",
             "linqu_uapi_validate_contiguous_memref",
-            "ubc_obmm_resolve_async_map",
-            "resolved.map_generation != memref->opaque_mapping_ref",
+            "ub_obmm_async_resolve_mapping_ref",
             "linqu_ub_gm_register_dispatch",
             "linqu_ub_bridge_submit_ub_gm_v2",
         )
@@ -139,8 +188,8 @@ class LingquShmemPtoAbiTest(unittest.TestCase):
         )
         mapping_check_end = source.index("\n}\n", mapping_check_start) + 3
         mapping_check = source[mapping_check_start:mapping_check_end]
-        self.assertIn("ubc_obmm_resolve_async_map", mapping_check)
-        self.assertIn("resolved->map_generation == binding->mapping_ref", mapping_check)
+        self.assertIn("ub_obmm_async_resolve_mapping_ref", mapping_check)
+        self.assertNotIn("resolved->map_generation == binding->mapping_ref", mapping_check)
         self.assertIn("binding->remote_base > UINT64_MAX - offset", mapping_check)
 
         resolver_start = source.index("bool ubc_obmm_resolve_async_map")

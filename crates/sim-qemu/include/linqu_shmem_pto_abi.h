@@ -26,6 +26,41 @@
 #define LINGQU_PTO_DTYPE_MAX 14u
 #define LINGQU_PTO_CNA_MAX 0x00ffffffu
 
+/*
+ * The simulator adaptor turns an active OBMM map registration into one opaque
+ * 64-bit reference for the dispatch wire ABI.  The low byte identifies one of
+ * the 64 endpoint map slots and the remaining 56 bits preserve its generation.
+ * Applications receive the encoded value from the Lingqu shmem adaptor and
+ * must not interpret either component.
+ */
+#define LINGQU_PTO_OBMM_MAP_ID_BITS 8u
+#define LINGQU_PTO_OBMM_MAP_ID_MASK UINT64_C(0xff)
+#define LINGQU_PTO_OBMM_MAP_GENERATION_MAX \
+    (UINT64_MAX >> LINGQU_PTO_OBMM_MAP_ID_BITS)
+
+static inline uint64_t lingqu_pto_obmm_mapping_ref_encode(
+    uint64_t map_id, uint64_t map_generation)
+{
+    if (map_id == 0 || map_id > LINGQU_PTO_OBMM_MAP_ID_MASK ||
+        map_generation == 0 ||
+        map_generation > LINGQU_PTO_OBMM_MAP_GENERATION_MAX) {
+        return 0;
+    }
+    return (map_generation << LINGQU_PTO_OBMM_MAP_ID_BITS) | map_id;
+}
+
+static inline uint64_t lingqu_pto_obmm_mapping_ref_map_id(
+    uint64_t mapping_ref)
+{
+    return mapping_ref & LINGQU_PTO_OBMM_MAP_ID_MASK;
+}
+
+static inline uint64_t lingqu_pto_obmm_mapping_ref_generation(
+    uint64_t mapping_ref)
+{
+    return mapping_ref >> LINGQU_PTO_OBMM_MAP_ID_BITS;
+}
+
 enum LingquPtoMemrefRole {
     LINGQU_PTO_MEMREF_INPUT = 1,
     LINGQU_PTO_MEMREF_OUTPUT = 2,

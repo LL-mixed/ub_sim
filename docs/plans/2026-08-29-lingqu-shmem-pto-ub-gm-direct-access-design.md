@@ -126,7 +126,7 @@ revision 均为已经提交的阶段性代码，本文状态更新不把尚未�
 | P2 | `vendor/simpler` | `6cf285cb` | 跨 DSO 传播 UB GM worker-local run context |
 | P2 | `ub_sim` | `70fb8b5`、`0903675` | Simpler callback adaptor 与 authorized bridge dispatch |
 | P2 | `ub_sim` | `3b7945f`、`6eb8c22` | tag-10 slot ABI 与 QEMU ingress contract tests |
-| P2 | `vendor/qemu_8.2.0_ub` | `0da2a94a` | tag-10 ingress、同步 OBMM authorization、request-scoped callback/binding |
+| P2 | `vendor/qemu_8.2.0_ub` | `0da2a94a`、`dc8d9633` | tag-10 ingress、同步 OBMM authorization、opaque OBMM map handle 与 request-scoped callback/binding |
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -165,9 +165,11 @@ P2 已把 QEMU access callback 注册到现有 Rust bridge，并通过既有
 Simpler/ChipBackend adaptor 把 request-scoped run context 传播到执行 PTO callable 的
 worker。`linqu_uapi_kick()` 能识别 tag-10 slot，DMA 读取 control/memref/scalar/shape/
 stride table，校验 ABI、CRC、callable fingerprint、requester CNA、layout、bounds、
-access 和 OBMM mapping generation，再注册 binding 并进入现有 bridge。每次
-`TLOAD/TSTORE/fence` callback 都重新解析当前 OBMM mapping；completion、bridge
-submission failure 和 doorbell failure 会执行 unbind。
+access 和 opaque OBMM mapping reference，再注册 binding 并进入现有 bridge。
+mapping reference 绑定到 EL0 已注册的 OBMM endpoint map；QEMU 先校验 map slot 与
+generation，再解析其私有 SIM_DEC route。每次 `TLOAD/TSTORE/fence` callback 都重新
+校验 endpoint map 和底层 route；completion、bridge submission failure 和 doorbell
+failure 会执行 unbind。
 
 上述 QEMU 代码已在 n4-910c Arm64 上通过项目 wrapper 完整编译，目标文件进入最终
 `qemu-system-aarch64`。当前 guest 尚未生成 tag-10 control table，也没有双节点
@@ -317,6 +319,13 @@ lingqu_pto_dispatch_submit(&dispatch);
 
 公共对象不暴露 QEMU host pointer，也不包含 GVA/GSVA key、token 或 epoch。
 版本化 control table 只传递 opaque mapping reference、UB GM address/view metadata、access 和 callable metadata；QEMU adaptor 自行解析其私有 mapping state。
+
+simulator adaptor 当前把一个有效的 `obmm_async_map` slot 与 generation 编码成
+64-bit mapping reference。编码仅用于 guest/QEMU 的 simulator wire ABI；
+`lingqu_shmem_memref` API 返回 opaque 值，应用不读取 slot 或 generation。QEMU 必须
+在提交时和每次 PTO access 时验证该 reference 仍对应同一个活动 OBMM map，并核对其
+底层 route identity、range、token、peer CNA 和权限。map unregister 或 generation
+变化会使旧 reference 立即失效。
 
 ### 5.2 PTO kernel 与 `UB_GM` 参数
 
@@ -1045,13 +1054,17 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 - `vendor/qemu_8.2.0_ub@0da2a94a` 已实现 tag-10 decode、CRC/metadata 验证、
   synchronous OBMM mapping authorization、request-scoped binding registry、
   read/write/fence callback 和完成/错误 cleanup；
+- `vendor/qemu_8.2.0_ub@dc8d9633` 把 wire mapping reference 绑定到已注册的
+  OBMM endpoint map，并在每次 callback 中同时重校验 endpoint generation 和底层
+  route identity；
 - QEMU diff-only `checkpatch` 的代码项为 0 error/0 warning；n4-910c 使用
   `guest-linux/aarch64/scripts/build_qemu_binary.sh` 完整构建成功；
 - 远程验证工作树为
-  `/home/ll/pto_ub_gm_p2_bridge_20260830-r1`；三份 QEMU 源文件的 SHA-256 与
-  `0da2a94a` 内容一致，生成的 Arm64 `qemu-system-aarch64` SHA-256 为
-  `01268f02b6a758441742596625eb8b400d8c8a499f07a34866223b219d51aad6`；
-- `sim-qemu` 35 个 unit tests 与 7 个 ABI/QEMU contract tests 通过；
+  `/home/ll/pto_ub_gm_p2_bridge_20260830-r1`；五份 QEMU 候选源文件的 SHA-256 与
+  本地内容一致，生成的 Arm64 `qemu-system-aarch64` SHA-256 为
+  `57bb74b667de6cb38ab9a28f3890941e8f2572a8e9db8c45714698e78d9b53e3`；
+- `sim-qemu` 35 个 unit tests、8 个 ABI/QEMU contract tests，以及远程 QEMU
+  `obmm-remote` 6 个、`obmm-remote-model` 7 个、`async-load` 9 个 unit cases 通过；
 - authorization pending 的 slot snapshot/暂停/恢复、guest producer、单节点运行时
   acceptance 和双节点 E2E 仍待完成。
 
@@ -1263,7 +1276,7 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | Dispatch v2/callback/binding/counter ABI | P0 已实现 header、Rust mirror、malformed metadata validators 与 contract CLI |
 | `pto_device_cna` | P0 已加入 scenario config 与 default-disabled property；P2 已按非零 CNA 注册 callback |
 | PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests |
-| existing bridge 的 UB GM authorization/binding | P2 已实现同步 OBMM authorization、逐次重校验与 completion cleanup；pending/resume 待完成 |
+| existing bridge 的 UB GM authorization/binding | P2 已实现同步 OBMM authorization、opaque endpoint-map reference、底层 route 逐次重校验与 completion cleanup；pending/resume 待完成 |
 | 两节点 PTO direct-access acceptance | 未实现 |
 | no-staging 结构化证明 | P1 已证明 runtime/Simpler 不走 host staging；QEMU callback counters 已实现，guest E2E 证据待 P3 |
 
