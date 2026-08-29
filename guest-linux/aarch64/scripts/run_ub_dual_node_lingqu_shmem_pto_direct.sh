@@ -19,6 +19,7 @@ NODEA_CNA=0xf001
 NODEB_CNA=0xf002
 AUTHORIZATION_DELAY_NS=0
 AUTHORIZATION_TIMEOUT_NS=1000000000
+EXPECT="success"
 RUN_SECS=180
 MAX_RUNTIME=300
 RUN_ID="lingqu-shmem-pto-$(date +%Y%m%dT%H%M%S)-${RANDOM}"
@@ -46,6 +47,7 @@ Options:
                          Per-memref QEMU authorization delay; zero is sync.
   --authorization-timeout-ns N
                          Dispatch-wide authorization timeout.
+  --expect OUTCOME       Expected result: success or authorization-timeout.
   --run-secs N           Harness per-app timeout.
   --max-runtime N        Harness global watchdog timeout.
   --run-id ID            Stable evidence and log identifier.
@@ -155,6 +157,11 @@ while [[ $# -gt 0 ]]; do
       AUTHORIZATION_TIMEOUT_NS="$2"
       shift 2
       ;;
+    --expect)
+      require_value "$1" "$#"
+      EXPECT="$2"
+      shift 2
+      ;;
     --run-secs)
       require_value "$1" "$#"
       RUN_SECS="$2"
@@ -196,6 +203,14 @@ if [[ -z "$RUN_ID" || "$RUN_ID" == *[^A-Za-z0-9._-]* ]]; then
   echo "run id must contain only ASCII letters, digits, dots, dashes, or underscores" >&2
   exit 2
 fi
+case "$EXPECT" in
+  success|authorization-timeout)
+    ;;
+  *)
+    echo "expected result must be success or authorization-timeout" >&2
+    exit 2
+    ;;
+esac
 if [[ ! -x "$SIM_CLI_BIN" &&
       "$SIM_CLI_BIN" == "$WORKSPACE_ROOT/target/release/sim-cli" &&
       -x "$WORKSPACE_ROOT/target/debug/sim-cli" ]]; then
@@ -274,6 +289,7 @@ set +e
   --pto-nodeb-cna "$NODEB_CNA" \
   --pto-authorization-delay-ns "$AUTHORIZATION_DELAY_NS" \
   --pto-authorization-timeout-ns "$AUTHORIZATION_TIMEOUT_NS" \
+  --pto-expect "$EXPECT" \
   > "$HARNESS_LOG" 2>&1
 RUNNER_RC=$?
 set -e
@@ -356,6 +372,7 @@ fi
   echo "nodeb_cna=$NODEB_CNA"
   echo "authorization_delay_ns=$AUTHORIZATION_DELAY_NS"
   echo "authorization_timeout_ns=$AUTHORIZATION_TIMEOUT_NS"
+  echo "expected_result=$EXPECT"
 } > "$EVIDENCE_DIR/validation.status"
 
 echo "PTO UB_GM evidence: $EVIDENCE_DIR"

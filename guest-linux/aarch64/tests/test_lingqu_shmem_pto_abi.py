@@ -226,6 +226,12 @@ int main(void)
         timer_end = source.index("\n}\n", timer_start) + 3
         timer = source[timer_start:timer_end]
         self.assertIn("authorization->completion_ready = true", timer)
+        self.assertIn(
+            "authorization->ready_ns > authorization->deadline_ns", timer
+        )
+        self.assertIn(
+            "LINGQU_PTO_UB_GM_AUTHORIZATION_TIMEOUT", timer
+        )
         self.assertIn("linqu_uapi_schedule_kick", timer)
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", timer)
 
@@ -238,6 +244,39 @@ int main(void)
         self.assertLess(stop, advance)
         self.assertIn("memcpy(slot, authorization->slot", kick)
         self.assertIn("authorization->cmdq_slot != head", kick)
+        reject = kick.index("linqu_uapi_publish_ub_gm_failure")
+        self.assertLess(reject, advance)
+
+        submit_timeout = submit.index("QEMU_UB_GM_AUTHORIZATION_TIMEOUT")
+        submit_binding = submit.index("linqu_ub_gm_register_dispatch")
+        self.assertLess(submit_timeout, submit_binding)
+        self.assertIn("linqu_uapi_authorization_discard", submit)
+
+        error_map_start = source.index(
+            "static const char *linqu_uapi_ub_gm_error_code"
+        )
+        error_map_end = source.index(
+            "static bool linqu_uapi_publish_ub_gm_failure", error_map_start
+        )
+        error_map = source[error_map_start:error_map_end]
+        self.assertIn('"pto_ub_gm_authorization_timeout"', error_map)
+
+        publish_start = source.index(
+            "static bool linqu_uapi_publish_ub_gm_failure"
+        )
+        publish_end = source.index(
+            "static int linqu_uapi_poll_completion", publish_start
+        )
+        publish = source[publish_start:publish_end]
+        write = publish.index("linqu_uapi_write_slot")
+        advance_tail = publish.index("linqu_uapi_cq_tail =", write)
+        exact_once_log = publish.index(
+            "QEMU_UB_GM_FAILURE_COMPLETION", advance_tail
+        )
+        reject_log = publish.index("QEMU_UB_GM_DISPATCH_REJECT")
+        self.assertLess(write, advance_tail)
+        self.assertLess(advance_tail, exact_once_log)
+        self.assertLess(exact_once_log, reject_log)
 
         properties = source[source.index("static Property ub_bus_controller_dev_properties"):]
         self.assertIn('"pto-authorization-delay-ns"', properties)

@@ -99,6 +99,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA", runner)
         self.assertIn("--pto-authorization-delay-ns", runner)
         self.assertIn("--pto-authorization-timeout-ns", runner)
+        self.assertIn("--pto-expect", runner)
+        self.assertIn("LINGQU_SHMEM_PTO_EXPECT", runner)
         self.assertIn(
             "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS",
             runner,
@@ -112,6 +114,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_PENDING", runner)
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", runner)
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_TIMEOUT", runner)
+        self.assertIn("pto_ub_gm_authorization_timeout", runner)
+        self.assertIn("consumer exact-once timeout CQ completion", runner)
+        self.assertIn("consumer retained CMDQ head while pending", runner)
+        self.assertIn("consumer data access after authorization timeout", runner)
         self.assertIn("QEMU_UB_GM_INPUT_AUTHORIZE", runner)
         self.assertIn("QEMU_UB_GM_LOAD", runner)
         self.assertIn("QEMU_UB_GM_STORE", runner)
@@ -141,6 +147,27 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--manifest PATH", result.stdout)
         self.assertIn("--authorization-delay-ns N", result.stdout)
         self.assertIn("--authorization-timeout-ns N", result.stdout)
+        self.assertIn("--expect OUTCOME", result.stdout)
+
+    def test_dedicated_runner_rejects_unknown_expected_result(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--expect",
+                "silent-fallback",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "expected result must be success or authorization-timeout",
+            result.stdout,
+        )
 
     def test_dedicated_runner_preserves_command_path_during_canonicalization(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -236,6 +263,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             validation = (evidence / "validation.status").read_text()
             self.assertIn("authorization_delay_ns=250000", validation)
             self.assertIn("authorization_timeout_ns=10000000", validation)
+            self.assertIn("expected_result=success", validation)
 
 
 if __name__ == "__main__":

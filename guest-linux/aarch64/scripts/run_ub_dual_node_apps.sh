@@ -56,6 +56,7 @@ LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
 LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS:-0}"
 LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS:-1000000000}"
+LINGQU_SHMEM_PTO_EXPECT="${LINGQU_SHMEM_PTO_EXPECT:-success}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -111,6 +112,8 @@ Options:
                       Per-memref QEMU authorization delay; zero is sync.
   --pto-authorization-timeout-ns N
                       Dispatch-wide authorization timeout.
+  --pto-expect OUTCOME
+                      Expected PTO result: success or authorization-timeout.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
@@ -324,6 +327,21 @@ validate_lingqu_shmem_pto_config() {
     echo "PTO authorization timeout must be nonzero" >&2
     exit 2
   fi
+  case "$LINGQU_SHMEM_PTO_EXPECT" in
+    success)
+      ;;
+    authorization-timeout)
+      if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS <=
+            LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS )); then
+        echo "authorization-timeout requires delay-ns greater than timeout-ns" >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "PTO expected result must be success or authorization-timeout" >&2
+      exit 2
+      ;;
+  esac
   if printf '%s\n' "$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" |
      grep -Eq '^(0[xX]0+|0+)$'; then
     echo "PTO artifact fingerprint must be nonzero" >&2
@@ -570,6 +588,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="$2"
+      shift 2
+      ;;
+    --pto-expect)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-expect requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_EXPECT="$2"
       shift 2
       ;;
     --use-qmp)
@@ -1019,9 +1045,6 @@ validate_lingqu_shmem_pto_guest_log() {
   local role="$1"
   local log_file="$2"
 
-  assert_log_absent "$log_file" \
-    "LINGQU_SHMEM_PTO_RESULT role=$role status=fail" \
-    "$role PTO UB_GM failure" || return 1
   assert_log_has "$log_file" \
     "LINGQU_SHMEM_PTO role=$role stage=start .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
     "$role PTO UB_GM start contract" || return 1
@@ -1029,6 +1052,15 @@ validate_lingqu_shmem_pto_guest_log() {
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=producer stage=published .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
       "producer exported source region" || return 1
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
+      assert_log_absent "$log_file" \
+        "LINGQU_SHMEM_PTO role=producer producer_verify=pass" \
+        "producer write after rejected dispatch" || return 1
+      assert_log_has "$log_file" \
+        "LINGQU_SHMEM_PTO_RESULT role=producer status=fail reason=verify_timeout index=0 .*actual=0x7fc00001" \
+        "producer unchanged output after authorization timeout" || return 1
+      return 0
+    fi
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=producer producer_verify=pass elements=$LINGQU_SHMEM_PTO_ELEMENTS" \
       "producer original-mapping verification" || return 1
@@ -1036,10 +1068,22 @@ validate_lingqu_shmem_pto_guest_log() {
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=consumer stage=prepared .*map_id=[1-9][0-9]* .*map_generation=[1-9][0-9]* .*mapping_ref=0x[1-9a-f][0-9a-f]* .*requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA .*fingerprint=0x[1-9a-f][0-9a-f]*" \
       "consumer opaque map-ref dispatch" || return 1
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=3 error=pto_ub_gm_authorization_timeout" 1 \
+        "consumer exact-once authorization timeout completion" || return 1
+      assert_log_has "$log_file" \
+        "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail reason=completion error=pto_ub_gm_authorization_timeout" \
+        "consumer expected authorization timeout result" || return 1
+      return 0
+    fi
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=1 error=none" \
       "consumer successful completion" || return 1
   fi
+  assert_log_absent "$log_file" \
+    "LINGQU_SHMEM_PTO_RESULT role=$role status=fail" \
+    "$role PTO UB_GM failure" || return 1
   assert_log_has "$log_file" \
     "LINGQU_SHMEM_PTO_RESULT role=$role status=pass" \
     "$role PTO UB_GM result" || return 1
@@ -1054,9 +1098,8 @@ validate_lingqu_shmem_pto_qemu_log() {
   if [[ "$node_name" == "nodeB" ]]; then
     expected_cna="$LINGQU_SHMEM_PTO_NODEB_CNA"
   fi
-  assert_log_absent "$log_file" \
-    "QEMU_UB_GM_(DISPATCH_REJECT|METADATA_CRC_FAIL)" \
-    "$node_name PTO dispatch rejection" || return 1
+  assert_log_absent "$log_file" "QEMU_UB_GM_METADATA_CRC_FAIL" \
+    "$node_name PTO metadata CRC failure" || return 1
   assert_log_absent "$log_file" \
     "UB_NPU: created|SIM_DEC: GVA_MAP|GVA_S3_MAP|GVA_ROUTE_DUMP|GSVA_" \
     "$node_name experimental NPU/GVA/GSVA leakage" || return 1
@@ -1070,6 +1113,39 @@ validate_lingqu_shmem_pto_qemu_log() {
     return 0
   fi
 
+  assert_log_has "$log_file" \
+    "QEMU_UB_GM_ACCESS_REGISTER pto_device_cna=$expected_cna" \
+    "$node_name PTO access registration" || return 1
+  if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=0 .*sequence=[1-9][0-9]* .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 1 \
+      "consumer first-range pending authorization" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_RESUME .*cursor=0 .*sequence=[1-9][0-9]* status=timeout" 1 \
+      "consumer timeout resume" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_TIMEOUT .*cursor=0 .*sequence=[1-9][0-9]*" 1 \
+      "consumer authorization timeout" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_DISPATCH_REJECT .*code=pto_ub_gm_authorization_timeout" 1 \
+      "consumer exact-once rejected dispatch" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_FAILURE_COMPLETION .*cq_slot=0 cq_tail=1 status=3 code=pto_ub_gm_authorization_timeout" 1 \
+      "consumer exact-once timeout CQ completion" || return 1
+    assert_log_count "$log_file" \
+      "linqu-uapi kick ring queued=0 consumed=0 pending_head=0 tail=1" 1 \
+      "consumer retained CMDQ head while pending" || return 1
+    assert_log_count "$log_file" \
+      "linqu-uapi kick ring queued=0 consumed=1 pending_head=1 tail=1" 1 \
+      "consumer advanced CMDQ head after timeout completion" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_(INPUT_AUTHORIZE|OUTPUT_AUTHORIZE|INOUT_AUTHORIZE|LOAD|STORE|FENCE|UNBIND)|SIM_QEMU_UB_GM_BIND_REGISTER" \
+      "consumer data access after authorization timeout" || return 1
+    return 0
+  fi
+
+  assert_log_absent "$log_file" "QEMU_UB_GM_DISPATCH_REJECT" \
+    "consumer PTO dispatch rejection" || return 1
   assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_TIMEOUT" \
     "consumer PTO authorization timeout" || return 1
   if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
@@ -1085,9 +1161,6 @@ validate_lingqu_shmem_pto_qemu_log() {
       "consumer resumed authorization ranges" || return 1
   fi
 
-  assert_log_has "$log_file" \
-    "QEMU_UB_GM_ACCESS_REGISTER pto_device_cna=$expected_cna" \
-    "$node_name PTO access registration" || return 1
   assert_log_count "$log_file" "QEMU_UB_GM_INPUT_AUTHORIZE " 2 \
     "consumer input authorizations" || return 1
   assert_log_count "$log_file" "QEMU_UB_GM_OUTPUT_AUTHORIZE " 1 \
@@ -1828,9 +1901,20 @@ run_iteration() {
   fi
 
   if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
+    local nodea_expected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=pass"
+    local nodea_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=fail"
+    local nodeb_expected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=pass"
+    local nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail"
+
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
+      nodea_expected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=fail reason=verify_timeout"
+      nodea_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=pass"
+      nodeb_expected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail reason=completion error=pto_ub_gm_authorization_timeout"
+      nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=pass"
+    fi
+
     if wait_for_log_pass_or_fail "$nodea_guest_log" \
-         "LINGQU_SHMEM_PTO_RESULT role=producer status=pass" \
-         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail" "$RUN_SECS"; then
+         "$nodea_expected_result" "$nodea_unexpected_result" "$RUN_SECS"; then
       wait_status=0
     else
       wait_status=$?
@@ -1838,7 +1922,7 @@ run_iteration() {
     case "$wait_status" in
       0) ;;
       1)
-        echo "iteration ${iter}: PTO producer reported failure" >&2
+        echo "iteration ${iter}: PTO producer reported unexpected result" >&2
         return 30
         ;;
       *)
@@ -1848,8 +1932,7 @@ run_iteration() {
     esac
 
     if wait_for_log_pass_or_fail "$nodeb_guest_log" \
-         "LINGQU_SHMEM_PTO_RESULT role=consumer status=pass" \
-         "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail" "$RUN_SECS"; then
+         "$nodeb_expected_result" "$nodeb_unexpected_result" "$RUN_SECS"; then
       wait_status=0
     else
       wait_status=$?
@@ -1857,7 +1940,7 @@ run_iteration() {
     case "$wait_status" in
       0) ;;
       1)
-        echo "iteration ${iter}: PTO consumer reported failure" >&2
+        echo "iteration ${iter}: PTO consumer reported unexpected result" >&2
         return 30
         ;;
       *)
@@ -2608,6 +2691,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_nodeb_cna=${LINGQU_SHMEM_PTO_NODEB_CNA}"
     echo "lingqu_shmem_pto_authorization_delay_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS}"
     echo "lingqu_shmem_pto_authorization_timeout_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS}"
+    echo "lingqu_shmem_pto_expect=${LINGQU_SHMEM_PTO_EXPECT}"
   fi
   echo "passed=${passed}"
   echo "failed=${failed}"
