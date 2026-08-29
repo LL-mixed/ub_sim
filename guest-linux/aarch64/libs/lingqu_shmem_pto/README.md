@@ -22,3 +22,7 @@ The current lifetime API is single-threaded; concurrent create/destroy and
 multiple in-flight dispatches remain part of the P4 concurrency gate. The
 caller must keep the underlying mapping and OBMM registration active until
 all in-flight objects have been finished and every memref has been destroyed.
+
+The P3 two-node acceptance workload contract is documented under
+`apps/lingqu_shmem_pto_direct/`. Its implementation consumes the public memref
+API and keeps simulator identities inside `lingqu_shmem_sim_region_desc`.
