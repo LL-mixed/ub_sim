@@ -347,6 +347,8 @@ SOURCE_HASH_FILE="$EVIDENCE_DIR/source-sha256.txt"
 {
   hash_file "$GENERIC_RUNNER"
   hash_file "$0"
+  hash_file "$GUEST_ROOT/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c"
+  hash_file "$GUEST_ROOT/initramfs/run_app"
   hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c"
   hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/include/hw/ub/ub_ubc.h"
 } > "$SOURCE_HASH_FILE"

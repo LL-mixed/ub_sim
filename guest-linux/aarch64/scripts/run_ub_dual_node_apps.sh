@@ -371,6 +371,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_generation=$LINGQU_SHMEM_PTO_GENERATION"
   append_cmdline_if_missing "lingqu_shmem_pto_token_value=$LINGQU_SHMEM_PTO_TOKEN_VALUE"
   append_cmdline_if_missing "lingqu_shmem_pto_timeout_ms=$LINGQU_SHMEM_PTO_TIMEOUT_MS"
+  append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
   append_cmdline_if_missing \
     "lingqu_shmem_pto_artifact_fingerprint=$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT"
 }
@@ -1057,8 +1058,11 @@ validate_lingqu_shmem_pto_guest_log() {
         "LINGQU_SHMEM_PTO role=producer producer_verify=pass" \
         "producer write after rejected dispatch" || return 1
       assert_log_has "$log_file" \
-        "LINGQU_SHMEM_PTO_RESULT role=producer status=fail reason=verify_timeout index=0 .*actual=0x7fc00001" \
+        "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=authorization-timeout observed=verify_timeout output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
         "producer unchanged output after authorization timeout" || return 1
+      assert_log_absent "$log_file" \
+        "LINGQU_SHMEM_PTO_RESULT role=producer status=fail" \
+        "producer unexpected authorization-timeout result" || return 1
       return 0
     fi
     assert_log_has "$log_file" \
@@ -1073,8 +1077,11 @@ validate_lingqu_shmem_pto_guest_log() {
         "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=3 error=pto_ub_gm_authorization_timeout" 1 \
         "consumer exact-once authorization timeout completion" || return 1
       assert_log_has "$log_file" \
-        "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail reason=completion error=pto_ub_gm_authorization_timeout" \
+        "LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=authorization-timeout observed=completion error=pto_ub_gm_authorization_timeout" \
         "consumer expected authorization timeout result" || return 1
+      assert_log_absent "$log_file" \
+        "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail" \
+        "consumer unexpected authorization-timeout result" || return 1
       return 0
     fi
     assert_log_has "$log_file" \
@@ -1907,10 +1914,10 @@ run_iteration() {
     local nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail"
 
     if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
-      nodea_expected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=fail reason=verify_timeout"
-      nodea_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=pass"
-      nodeb_expected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail reason=completion error=pto_ub_gm_authorization_timeout"
-      nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=pass"
+      nodea_expected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=authorization-timeout observed=verify_timeout"
+      nodea_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=fail"
+      nodeb_expected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=authorization-timeout observed=completion error=pto_ub_gm_authorization_timeout"
+      nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail"
     fi
 
     if wait_for_log_pass_or_fail "$nodea_guest_log" \

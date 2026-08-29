@@ -62,6 +62,15 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             "lingqu_shmem_sim_phys_for_virt(imported.addr", source
         )
         self.assertIn("PTO_DIRECT_HOST_VECTOR_ELEMENTS", source)
+        self.assertIn("--expect OUTCOME", source)
+        self.assertIn("PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT", source)
+        self.assertIn("output_is_sentinel", source)
+        self.assertIn("output_unchanged=1", source)
+        self.assertIn(
+            'strcmp(completion.error_code,\n'
+            '                   "pto_ub_gm_authorization_timeout") == 0',
+            source,
+        )
         self.assertIn(
             "config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS", source
         )
@@ -87,6 +96,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_pto_role", run_app)
         self.assertIn("lingqu_shmem_pto_requester_cna", run_app)
         self.assertIn("lingqu_shmem_pto_artifact_fingerprint", run_app)
+        self.assertIn("lingqu_shmem_pto_expect success", run_app)
+        self.assertIn("--expect $(cmdline_value", run_app)
         self.assertIn("linqu_shmem_pto_direct=1", run_app)
         self.assertIn("/bin/lingqu_shmem_pto_direct", run_app)
         self.assertIn("lingqu_shmem_pto_elements 16384", run_app)
@@ -101,6 +112,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--pto-authorization-timeout-ns", runner)
         self.assertIn("--pto-expect", runner)
         self.assertIn("LINGQU_SHMEM_PTO_EXPECT", runner)
+        self.assertIn(
+            "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT", runner
+        )
+        self.assertIn("status=pass expected=authorization-timeout", runner)
         self.assertIn(
             "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS",
             runner,
@@ -134,6 +149,11 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("callable-fingerprint.json", runner)
         self.assertIn("artifact-paths.txt", runner)
         self.assertIn("source-sha256.txt", runner)
+        self.assertIn(
+            "apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c",
+            runner,
+        )
+        self.assertIn("initramfs/run_app", runner)
         self.assertIn("qemu-system-aarch64", runner)
         self.assertIn("qemu-leftovers.txt", runner)
         self.assertIn("pgrep -af '[q]emu-system-aarch64'", runner)

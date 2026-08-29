@@ -28,11 +28,17 @@
 #define PTO_DIRECT_ALIGNMENT 64u
 #define PTO_DIRECT_OUTPUT_SENTINEL UINT32_C(0x7fc00001)
 #define PTO_DIRECT_CALLABLE_ID UINT64_C(1)
+#define PTO_DIRECT_COMPLETION_FAILED 3u
 
 enum pto_direct_role {
     PTO_DIRECT_ROLE_UNSET,
     PTO_DIRECT_ROLE_PRODUCER,
     PTO_DIRECT_ROLE_CONSUMER,
+};
+
+enum pto_direct_expectation {
+    PTO_DIRECT_EXPECT_SUCCESS,
+    PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT,
 };
 
 struct pto_direct_config {
@@ -45,6 +51,7 @@ struct pto_direct_config {
     uint64_t generation;
     uint64_t artifact_fingerprint;
     uint64_t timeout_ms;
+    enum pto_direct_expectation expectation;
 };
 
 struct pto_direct_layout {
@@ -107,7 +114,8 @@ static void usage(FILE *stream)
             "  --token-value N           OBMM import token value\n"
             "  --timeout-ms N            producer/dispatch deadline\n"
             "  --requester-cna N         required for consumer\n"
-            "  --artifact-fingerprint N  required for consumer\n");
+            "  --artifact-fingerprint N  required for consumer\n"
+            "  --expect OUTCOME          success or authorization-timeout\n");
 }
 
 static int parse_args(int argc, char **argv, struct pto_direct_config *config)
@@ -144,6 +152,22 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                 config->role = PTO_DIRECT_ROLE_CONSUMER;
             } else {
                 fprintf(stderr, "invalid role: %s\n", role);
+                return -EINVAL;
+            }
+            continue;
+        }
+        if (strcmp(option, "--expect") == 0) {
+            const char *expectation = argv[++index];
+
+            if (strcmp(expectation, "success") == 0) {
+                config->expectation = PTO_DIRECT_EXPECT_SUCCESS;
+            } else if (strcmp(expectation,
+                              "authorization-timeout") == 0) {
+                config->expectation =
+                    PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT;
+            } else {
+                fprintf(stderr, "invalid expected outcome: %s\n",
+                        expectation);
                 return -EINVAL;
             }
             continue;
@@ -336,6 +360,32 @@ static bool output_matches(const void *address,
     return true;
 }
 
+static bool output_is_sentinel(const void *address,
+                               const struct pto_direct_layout *layout,
+                               uint32_t elements,
+                               uint32_t *mismatch_index,
+                               uint32_t *actual_bits)
+{
+    const volatile uint32_t *output =
+        (const volatile uint32_t *)((const uint8_t *)address +
+                                    layout->output_offset);
+    uint32_t index;
+
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    for (index = 0; index < elements; index++) {
+        if (output[index] != PTO_DIRECT_OUTPUT_SENTINEL) {
+            if (mismatch_index) {
+                *mismatch_index = index;
+            }
+            if (actual_bits) {
+                *actual_bits = output[index];
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 static int run_producer(const struct pto_direct_config *config,
                         const struct pto_direct_layout *layout,
                         uint32_t local_cna)
@@ -401,6 +451,14 @@ static int run_producer(const struct pto_direct_config *config,
 
         if (output_matches(region.addr, layout, config->elements,
                            &mismatch_index, &expected_bits, &actual_bits)) {
+            if (config->expectation ==
+                PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT) {
+                fprintf(stderr,
+                        "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
+                        "reason=unexpected_success "
+                        "expected=authorization-timeout\n");
+                goto out;
+            }
             printf("LINGQU_SHMEM_PTO role=producer producer_verify=pass "
                    "elements=%u output_offset=%" PRIu64
                    " elapsed_ms=%" PRIu64 "\n",
@@ -419,6 +477,28 @@ static int run_producer(const struct pto_direct_config *config,
 
         (void)output_matches(region.addr, layout, config->elements,
                              &mismatch_index, &expected_bits, &actual_bits);
+        if (config->expectation ==
+            PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT) {
+            uint32_t changed_index = 0;
+            uint32_t changed_bits = PTO_DIRECT_OUTPUT_SENTINEL;
+
+            if (output_is_sentinel(region.addr, layout, config->elements,
+                                   &changed_index, &changed_bits)) {
+                printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass "
+                       "expected=authorization-timeout "
+                       "observed=verify_timeout output_unchanged=1 "
+                       "elements=%u sentinel=0x%08x\n",
+                       config->elements, PTO_DIRECT_OUTPUT_SENTINEL);
+                rc = 0;
+                goto out;
+            }
+            fprintf(stderr,
+                    "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
+                    "reason=output_changed_after_authorization_timeout "
+                    "index=%u actual=0x%08x\n",
+                    changed_index, changed_bits);
+            goto out;
+        }
         fprintf(stderr,
                 "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
                 "reason=verify_timeout index=%u expected=0x%08x "
@@ -637,10 +717,29 @@ static int run_consumer(const struct pto_direct_config *config,
            completion.error_code[0] ? completion.error_code : "none",
            completion.finished_at);
     if (!lingqu_shmem_pto_completion_succeeded(&completion)) {
+        if (config->expectation ==
+                PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT &&
+            completion.status == PTO_DIRECT_COMPLETION_FAILED &&
+            strcmp(completion.error_code,
+                   "pto_ub_gm_authorization_timeout") == 0) {
+            printf("LINGQU_SHMEM_PTO_RESULT role=consumer status=pass "
+                   "expected=authorization-timeout "
+                   "observed=completion error=%s\n",
+                   completion.error_code);
+            rc = 0;
+            goto out;
+        }
         fprintf(stderr,
                 "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail "
                 "reason=completion error=%s\n",
                 completion.error_code[0] ? completion.error_code : "unknown");
+        goto out;
+    }
+    if (config->expectation ==
+        PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT) {
+        fprintf(stderr,
+                "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail "
+                "reason=unexpected_success expected=authorization-timeout\n");
         goto out;
     }
     printf("LINGQU_SHMEM_PTO_RESULT role=consumer status=pass "
@@ -692,11 +791,14 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("LINGQU_SHMEM_PTO role=%s stage=start node_id=%u node_count=%u "
-           "local_cna=0x%x elements=%u generation=%" PRIu64 "\n",
+           "local_cna=0x%x elements=%u generation=%" PRIu64
+           " expected=%s\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            config.node_id, config.node_count, local_cna,
-           config.elements, config.generation);
+           config.elements, config.generation,
+           config.expectation == PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT ?
+               "authorization-timeout" : "success");
     if (config.role == PTO_DIRECT_ROLE_PRODUCER) {
         return run_producer(&config, &layout, local_cna);
     }

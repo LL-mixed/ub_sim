@@ -41,6 +41,16 @@ lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
   --requester-cna 0xf002 --artifact-fingerprint 0x1234
 ```
 
+The default `--expect success` mode exits successfully only after the producer
+observes the transformed output and the consumer receives a successful PTO
+completion. `--expect authorization-timeout` is an explicit negative-test
+mode. In that mode the producer requires the complete output tensor to retain
+the `0x7fc00001` sentinel, while the consumer requires completion status 3 and
+the exact `pto_ub_gm_authorization_timeout` code. When those conditions hold,
+both roles report the expected failure as a passing test outcome and return
+zero, so the PID 1 guest launcher stays healthy. Any changed output, successful
+dispatch, or different completion error remains a test failure.
+
 Callable 1 currently identifies the frozen host-vector artifact whose PTO
 kernel executes one `128 x 128` `f32` tile. For each element it computes
 `c = a + b`, followed by `f = (c + 1) * (c + 2)`. The producer verifies this
