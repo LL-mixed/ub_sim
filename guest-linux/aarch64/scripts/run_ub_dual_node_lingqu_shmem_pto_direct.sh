@@ -322,12 +322,18 @@ for path in paths:
 PY
 
 HASH_FILE="$EVIDENCE_DIR/sha256.txt"
+QEMU_BINARY="$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64"
 {
   hash_file "$MANIFEST"
   hash_file "$SCENARIO"
   hash_file "$SIM_CLI_BIN"
   hash_file "$KERNEL_IMAGE"
   hash_file "$INITRAMFS_IMAGE"
+  if [[ -f "$QEMU_BINARY" ]]; then
+    hash_file "$QEMU_BINARY"
+  else
+    echo "MISSING  $QEMU_BINARY"
+  fi
   while IFS= read -r artifact; do
     if [[ -f "$artifact" ]]; then
       hash_file "$artifact"
@@ -336,6 +342,14 @@ HASH_FILE="$EVIDENCE_DIR/sha256.txt"
     fi
   done < "$ARTIFACT_LIST"
 } > "$HASH_FILE"
+
+SOURCE_HASH_FILE="$EVIDENCE_DIR/source-sha256.txt"
+{
+  hash_file "$GENERIC_RUNNER"
+  hash_file "$0"
+  hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c"
+  hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/include/hw/ub/ub_ubc.h"
+} > "$SOURCE_HASH_FILE"
 
 {
   echo "root_commit=$(git -C "$WORKSPACE_ROOT" rev-parse HEAD)"
@@ -373,6 +387,7 @@ fi
   echo "authorization_delay_ns=$AUTHORIZATION_DELAY_NS"
   echo "authorization_timeout_ns=$AUTHORIZATION_TIMEOUT_NS"
   echo "expected_result=$EXPECT"
+  echo "qemu_binary=$QEMU_BINARY"
 } > "$EVIDENCE_DIR/validation.status"
 
 echo "PTO UB_GM evidence: $EVIDENCE_DIR"

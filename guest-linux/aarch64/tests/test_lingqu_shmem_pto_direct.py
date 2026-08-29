@@ -133,6 +133,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("evidence directory already exists", runner)
         self.assertIn("callable-fingerprint.json", runner)
         self.assertIn("artifact-paths.txt", runner)
+        self.assertIn("source-sha256.txt", runner)
+        self.assertIn("qemu-system-aarch64", runner)
         self.assertIn("qemu-leftovers.txt", runner)
         self.assertIn("pgrep -af '[q]emu-system-aarch64'", runner)
         self.assertNotIn("pgrep -af qemu-system-aarch64", runner)
@@ -264,6 +266,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             self.assertIn("authorization_delay_ns=250000", validation)
             self.assertIn("authorization_timeout_ns=10000000", validation)
             self.assertIn("expected_result=success", validation)
+            self.assertIn("qemu_binary=", validation)
+            self.assertTrue((evidence / "source-sha256.txt").is_file())
 
 
 if __name__ == "__main__":
