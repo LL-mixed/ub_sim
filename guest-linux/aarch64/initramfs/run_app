@@ -451,6 +451,47 @@ run_obmm_async_coroutine() {
   return "$rc"
 }
 
+run_lingqu_shmem_pto_direct() {
+  local node_id=""
+  local node_count=""
+  local role=""
+  local args=""
+  local requester_cna=""
+  local artifact_fingerprint=""
+
+  node_id="$(cmdline_value linqu_node_idx 0)"
+  node_count="$(cmdline_value linqu_node_count 2)"
+  role="$(cmdline_value lingqu_shmem_pto_role '')"
+  if [ -z "$role" ]; then
+    case "$node_id" in
+      0) role="producer" ;;
+      1) role="consumer" ;;
+      *)
+        log "lingqu_shmem_pto_direct requires node 0 or 1"
+        return 2
+        ;;
+    esac
+  fi
+  args="--role $role --node-id $node_id --node-count $node_count"
+  args="$args --elements $(cmdline_value lingqu_shmem_pto_elements 1024)"
+  args="$args --generation $(cmdline_value lingqu_shmem_pto_generation 1)"
+  args="$args --token-value $(cmdline_value lingqu_shmem_pto_token_value 0)"
+  args="$args --timeout-ms $(cmdline_value lingqu_shmem_pto_timeout_ms 120000)"
+
+  requester_cna="$(cmdline_value lingqu_shmem_pto_requester_cna '')"
+  artifact_fingerprint="$(cmdline_value lingqu_shmem_pto_artifact_fingerprint '')"
+  if [ -n "$requester_cna" ]; then
+    args="$args --requester-cna $requester_cna"
+  fi
+  if [ -n "$artifact_fingerprint" ]; then
+    args="$args --artifact-fingerprint $artifact_fingerprint"
+  fi
+
+  # Values come from validated kernel cmdline key=value tokens.
+  run_binary "lingqu_shmem_pto_direct" \
+    /bin/lingqu_shmem_pto_direct $args
+}
+
 run_obmm_coh_test() {
   local args=""
   local token=""
@@ -897,6 +938,11 @@ run_default_actions() {
     ran_any="1"
   fi
 
+  if has_flag "linqu_shmem_pto_direct=1"; then
+    run_lingqu_shmem_pto_direct || rc=$?
+    ran_any="1"
+  fi
+
   if has_flag "linqu_obmm_import_stress=1"; then
     run_obmm_import_stress || rc=$?
     ran_any="1"
@@ -1053,6 +1099,9 @@ run_single_action() {
       ;;
     obmm_async_coroutine)
       run_obmm_async_coroutine
+      ;;
+    lingqu_shmem_pto_direct)
+      run_lingqu_shmem_pto_direct
       ;;
     obmm_coh_test)
       run_obmm_coh_test

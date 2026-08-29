@@ -84,6 +84,11 @@ OBMM_COROUTINE_SCHEDULER_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_corou
 OBMM_COROUTINE_SCHEDULER_ASM_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_coroutine_scheduler_aarch64.S"
 OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine/obmm_async_coroutine"
 OBMM_ASYNC_COROUTINE_BUILD_DIR="${OBMM_ASYNC_COROUTINE_BIN:h}"
+LINGQU_SHMEM_PTO_DIRECT_SRC="$ROOT_DIR/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c"
+LINGQU_SHMEM_PTO_DIRECT_LIB_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem.c"
+LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem_pto_guest.c"
+LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.c"
+LINGQU_SHMEM_PTO_DIRECT_BIN="$OUT_DIR/lingqu_shmem_pto_direct"
 GVA_DIRECT_SRC="$ROOT_DIR/apps/gva_direct/gva_direct.c"
 GVA_DIRECT_BIN="$OUT_DIR/linqu_gva_direct"
 OBMM_GSVA_SRC="$ROOT_DIR/apps/obmm_gsva/obmm_gsva.c"
@@ -266,6 +271,21 @@ current_initramfs_signature() {
   write_signature_line \
     "obmm_coroutine_scheduler_asm_src" \
     "$OBMM_COROUTINE_SCHEDULER_ASM_SRC"
+  write_signature_line \
+    "lingqu_shmem_pto_direct_src" \
+    "$LINGQU_SHMEM_PTO_DIRECT_SRC"
+  write_signature_line \
+    "lingqu_shmem_pto_direct_lib_src" \
+    "$LINGQU_SHMEM_PTO_DIRECT_LIB_SRC"
+  write_signature_line \
+    "lingqu_shmem_pto_direct_wire_src" \
+    "$LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC"
+  write_signature_line \
+    "lingqu_shmem_pto_direct_endpoint_src" \
+    "$LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC"
+  for applet in "$ROOT_DIR"/libs/lingqu_shmem_pto/*.h(N); do
+    write_signature_line "lingqu_shmem_pto_header" "$applet"
+  done
   write_signature_line "gva_direct_src" "$GVA_DIRECT_SRC"
   write_signature_line "obmm_coh_test_src" "$OBMM_COH_TEST_SRC"
   write_signature_line "obmm_gsva_src" "$OBMM_GSVA_SRC"
@@ -658,6 +678,20 @@ mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
   "$OBMM_ASYNC_COROUTINE_UFFD_STATE_SRC" \
   "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC" ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} \
   -o "$OBMM_ASYNC_COROUTINE_BIN"
+"$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -Werror -std=gnu11 \
+  -I"$ROOT_DIR/common" \
+  -I"$ROOT_DIR/libs/lingqu_shmem_pto" \
+  -I"$ROOT_DIR/libs/obmm_async" \
+  -I"$ROOT_DIR/../../crates/sim-qemu/include" \
+  ${=LIBOBMM_CFLAGS} \
+  "$LINGQU_SHMEM_PTO_DIRECT_SRC" \
+  "$LINGQU_SHMEM_PTO_DIRECT_LIB_SRC" \
+  "$LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC" \
+  "$LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC" \
+  "$OBMM_ASYNC_COROUTINE_LIB_SRC" \
+  "$OBMM_ASYNC_COROUTINE_ASM_SRC" \
+  ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} \
+  -o "$LINGQU_SHMEM_PTO_DIRECT_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$GVA_DIRECT_SRC" ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} -o "$GVA_DIRECT_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/common" ${=LIBOBMM_CFLAGS} "$OBMM_GSVA_SRC" ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} -o "$OBMM_GSVA_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -I"$ROOT_DIR/kernel_ub/include/uapi" -I"$ROOT_DIR/common" -I"$ROOT_DIR/libs/obmm_queue" ${=LIBOBMM_CFLAGS} "$GVA_MANAGER_SRC" ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} -o "$GVA_MANAGER_BIN"
@@ -698,6 +732,8 @@ cp "$OBMM_QUEUE_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue"
 cp "$OBMM_IMPORT_STRESS_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_import_stress"
 cp "$OBMM_DATAPLANE_MICROBENCH_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench"
 cp "$OBMM_ASYNC_COROUTINE_BIN" "$INITRAMFS_DIR/bin/obmm_async_coroutine"
+cp "$LINGQU_SHMEM_PTO_DIRECT_BIN" \
+  "$INITRAMFS_DIR/bin/lingqu_shmem_pto_direct"
 cp "$GVA_DIRECT_BIN" "$INITRAMFS_DIR/bin/linqu_gva_direct"
 cp "$OBMM_GSVA_BIN" "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva"
 cp "$GVA_MANAGER_BIN" "$INITRAMFS_DIR/bin/linqu_gva_manager"
@@ -727,6 +763,7 @@ chmod +x \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_queue" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_dataplane_microbench" \
   "$INITRAMFS_DIR/bin/obmm_async_coroutine" \
+  "$INITRAMFS_DIR/bin/lingqu_shmem_pto_direct" \
   "$INITRAMFS_DIR/bin/linqu_gva_direct" \
   "$INITRAMFS_DIR/bin/linqu_ub_obmm_gsva" \
   "$INITRAMFS_DIR/bin/linqu_gva_manager" \

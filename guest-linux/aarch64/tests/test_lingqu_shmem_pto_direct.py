@@ -7,6 +7,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 APP_DIR = ROOT / "guest-linux" / "aarch64" / "apps" / "lingqu_shmem_pto_direct"
+BUILD_INITRAMFS = ROOT / "guest-linux" / "aarch64" / "scripts" / "build_initramfs.sh"
+RUN_APP = ROOT / "guest-linux" / "aarch64" / "initramfs" / "run_app"
 
 
 class LingquShmemPtoDirectTest(unittest.TestCase):
@@ -43,6 +45,25 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("producer_verify=pass", source)
         self.assertNotIn("NPU_OP_PTO_DISPATCH", source)
         self.assertNotIn("MAP_GSVA", source)
+
+    def test_initramfs_builds_and_installs_workload(self):
+        build = BUILD_INITRAMFS.read_text()
+        self.assertIn("LINGQU_SHMEM_PTO_DIRECT_SRC=", build)
+        self.assertIn('"$LINGQU_SHMEM_PTO_DIRECT_SRC"', build)
+        self.assertIn('"$LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC"', build)
+        self.assertIn('"$LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC"', build)
+        self.assertIn(
+            '"$INITRAMFS_DIR/bin/lingqu_shmem_pto_direct"', build
+        )
+
+    def test_run_app_maps_cmdline_to_workload_cli(self):
+        run_app = RUN_APP.read_text()
+        self.assertIn("run_lingqu_shmem_pto_direct()", run_app)
+        self.assertIn("lingqu_shmem_pto_role", run_app)
+        self.assertIn("lingqu_shmem_pto_requester_cna", run_app)
+        self.assertIn("lingqu_shmem_pto_artifact_fingerprint", run_app)
+        self.assertIn("linqu_shmem_pto_direct=1", run_app)
+        self.assertIn("/bin/lingqu_shmem_pto_direct", run_app)
 
 
 if __name__ == "__main__":
