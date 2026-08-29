@@ -9,6 +9,16 @@
 #define LINGQU_PTO_SCALAR_ABI_V1 1u
 #define PTO_SIM_UB_GM_ACCESS_ABI_V1 1u
 
+/*
+ * Existing Lingqu guest descriptors use byte 0 as a transport tag. Tag 10
+ * carries an IoOpcode::Dispatch v2 control-table reference; it does not add a
+ * new semantic NPU opcode. Multi-byte fields are little-endian byte arrays so
+ * the 64-byte wire layout has no host-ABI padding or alignment dependency.
+ */
+#define LINGQU_PTO_DISPATCH_SLOT_TAG_V2 10u
+#define LINGQU_PTO_DISPATCH_SLOT_OP_ID_OFFSET 1u
+#define LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET 9u
+
 #define LINGQU_PTO_MAX_MEMREFS 256u
 #define LINGQU_PTO_MAX_SCALARS 128u
 #define LINGQU_PTO_MAX_RANK 5u
@@ -51,6 +61,13 @@ enum LingquPtoUbGmError {
     "pto_ub_gm_authorization_timeout"
 #define LINGQU_PTO_UB_GM_CODE_CALLBACK_FAILED "pto_ub_gm_callback_failed"
 #define LINGQU_PTO_UB_GM_CODE_EXECUTION_FAILED "pto_ub_gm_execution_failed"
+
+typedef struct LingquPtoDispatchSlotV2 {
+    uint8_t descriptor_tag;
+    uint8_t op_id_le[8];
+    uint8_t control_table_iova_le[8];
+    uint8_t reserved[47];
+} LingquPtoDispatchSlotV2;
 
 typedef struct LingquPtoDispatchControlV2 {
     uint32_t abi_version;
@@ -171,6 +188,15 @@ typedef struct LingquPtoUbGmCountersV1 {
 #endif
 
 LINQU_PTO_STATIC_ASSERT(sizeof(void *) == 8, "Lingqu PTO ABI requires 64-bit pointers");
+LINQU_PTO_STATIC_ASSERT(sizeof(LingquPtoDispatchSlotV2) == 64,
+                        "LingquPtoDispatchSlotV2 must stay 64 bytes");
+LINQU_PTO_STATIC_ASSERT(offsetof(LingquPtoDispatchSlotV2, op_id_le) ==
+                            LINGQU_PTO_DISPATCH_SLOT_OP_ID_OFFSET,
+                        "Lingqu PTO dispatch slot op_id offset changed");
+LINQU_PTO_STATIC_ASSERT(offsetof(LingquPtoDispatchSlotV2,
+                                 control_table_iova_le) ==
+                            LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET,
+                        "Lingqu PTO dispatch slot control IOVA offset changed");
 LINQU_PTO_STATIC_ASSERT(sizeof(LingquPtoDispatchControlV2) == 64,
                         "LingquPtoDispatchControlV2 must stay 64 bytes");
 LINQU_PTO_STATIC_ASSERT(sizeof(LingquShmemMemrefV1) == 80,

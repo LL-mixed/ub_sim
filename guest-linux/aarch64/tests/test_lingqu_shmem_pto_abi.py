@@ -35,6 +35,10 @@ class LingquShmemPtoAbiTest(unittest.TestCase):
 
     def test_uses_the_default_ub_gm_contract(self):
         source = HEADER.read_text()
+        self.assertIn("LingquPtoDispatchSlotV2", source)
+        self.assertIn("LINGQU_PTO_DISPATCH_SLOT_TAG_V2 10u", source)
+        self.assertIn("LINGQU_PTO_DISPATCH_SLOT_OP_ID_OFFSET 1u", source)
+        self.assertIn("LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET 9u", source)
         self.assertIn("LingquPtoDispatchControlV2", source)
         self.assertIn("LingquShmemMemrefV1", source)
         self.assertIn("PtoSimUbGmAccessOpsV1", source)

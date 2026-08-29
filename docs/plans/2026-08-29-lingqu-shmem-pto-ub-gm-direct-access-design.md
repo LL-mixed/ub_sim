@@ -719,6 +719,7 @@ P0 将最终 byte layout 固定在
 
 | ABI 对象 | 固定尺寸 | 用途 |
 | --- | ---: | --- |
+| `LingquPtoDispatchSlotV2` | 64 bytes | ring 中现有 Dispatch v2 的 control-table reference |
 | `LingquPtoDispatchControlV2` | 64 bytes | ring slot 引用的 dispatch control |
 | `LingquShmemMemrefV1` | 80 bytes | 一个 `lingqu_shmem_memref` wire view |
 | `LingquPtoScalarV1` | 24 bytes | 一个 scalar 参数 |
@@ -743,6 +744,14 @@ struct LingquPtoDispatchControlV2 {
     uint32_t requester_cna;
 };
 ```
+
+ring slot 使用 transport tag `10` 表示现有 `IoOpcode::Dispatch` 的 v2
+control-table 形式。byte 0 为 tag，byte 1..8 为 little-endian `op_id`，byte
+9..16 为 little-endian `control_table_iova`，byte 17..63 必须为零。该 tag 只区分
+64-byte descriptor 的 wire layout，不增加 NPU opcode，也不改变 dispatch 的
+ChipBackend/Simpler/PTO 生命周期。精确布局由
+`LingquPtoDispatchSlotV2`、`LINGQU_PTO_DISPATCH_SLOT_OP_ID_OFFSET` 和
+`LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET` 固定。
 
 `metadata_crc32` 使用 IEEE CRC-32。计算时先把 control 中该字段清零，然后按 wire
 顺序拼接 control、memref table、scalar table，再按 memref table 顺序拼接各 memref
