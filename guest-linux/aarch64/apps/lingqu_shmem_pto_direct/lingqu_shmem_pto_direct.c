@@ -364,9 +364,19 @@ static int run_producer(const struct pto_direct_config *config,
     }
     seed_region(region.addr, layout, config->elements);
     if (msync(region.addr, layout->used_bytes, MS_SYNC) != 0) {
-        fprintf(stderr, "[lingqu_shmem_pto] producer msync error=%s\n",
-                strerror(errno));
-        goto out;
+        if (errno != EINVAL) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] producer msync error=%s\n",
+                    strerror(errno));
+            goto out;
+        }
+        printf("LINGQU_SHMEM_PTO role=producer stage=seeded "
+               "msync_unsupported=1 bytes=%" PRIu64 "\n",
+               layout->used_bytes);
+    } else {
+        printf("LINGQU_SHMEM_PTO role=producer stage=seeded "
+               "msync_unsupported=0 bytes=%" PRIu64 "\n",
+               layout->used_bytes);
     }
     if (obmm_bootstrap_publish(obmm_fd, config->node_id,
                                config->node_count, config->generation,

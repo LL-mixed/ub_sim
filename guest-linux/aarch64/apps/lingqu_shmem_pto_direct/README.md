@@ -15,6 +15,13 @@ The artifact fingerprint and PTO requester CNA are required command-line
 inputs. The host runner derives them from the selected artifact manifest and
 QEMU device configuration; the guest does not guess either identity.
 
+Input publication is ordered by the release fence in `seed_region()` before
+the bootstrap record is published. The workload also attempts `msync()` when
+the mapping provider supports it. Linux device/PFN mappings can return
+`EINVAL` because they have no filesystem writeback operation; the workload
+records `msync_unsupported=1` and continues in that case. Any other `msync()`
+error remains fatal.
+
 Example guest invocations:
 
 ```text
