@@ -18,6 +18,7 @@
 #define LINGQU_PTO_DISPATCH_SLOT_TAG_V2 10u
 #define LINGQU_PTO_DISPATCH_SLOT_OP_ID_OFFSET 1u
 #define LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET 9u
+#define LINGQU_PTO_DISPATCH_SLOT_RESERVED_OFFSET 17u
 
 #define LINGQU_PTO_MAX_MEMREFS 256u
 #define LINGQU_PTO_MAX_SCALARS 128u
@@ -197,6 +198,9 @@ LINQU_PTO_STATIC_ASSERT(offsetof(LingquPtoDispatchSlotV2,
                                  control_table_iova_le) ==
                             LINGQU_PTO_DISPATCH_SLOT_CONTROL_IOVA_OFFSET,
                         "Lingqu PTO dispatch slot control IOVA offset changed");
+LINQU_PTO_STATIC_ASSERT(offsetof(LingquPtoDispatchSlotV2, reserved) ==
+                            LINGQU_PTO_DISPATCH_SLOT_RESERVED_OFFSET,
+                        "Lingqu PTO dispatch slot reserved offset changed");
 LINQU_PTO_STATIC_ASSERT(sizeof(LingquPtoDispatchControlV2) == 64,
                         "LingquPtoDispatchControlV2 must stay 64 bytes");
 LINQU_PTO_STATIC_ASSERT(sizeof(LingquShmemMemrefV1) == 80,
