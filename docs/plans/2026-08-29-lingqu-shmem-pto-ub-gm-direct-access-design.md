@@ -99,7 +99,7 @@ Upstream 设计 [`linqu_data_system.md`](https://github.com/xwhu/pypto_workspace
 
 ## 3. 当前实现审计
 
-### 3.1 审计输入
+### 3.1 审计与实施输入
 
 | 仓库或 submodule | Revision |
 | --- | --- |
@@ -111,7 +111,18 @@ Upstream 设计 [`linqu_data_system.md`](https://github.com/xwhu/pypto_workspace
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录本次审计输入，不代表本文方案已经落地。
+这些 revision 记录最初审计输入。随后完成的 P0/P1 实施证据如下；表中的 root
+revision 均为已经提交的阶段性代码，本文状态更新不把尚未贯通的 P2/P3 记为完成。
+
+| 阶段 | 仓库 | Revision | 已提交内容 |
+| --- | --- | --- | --- |
+| P0 | `ub_sim` | `a05ca02` | `AddressSpace::UB_GM` C++/Rust ABI 与 layout contract |
+| P0 | `ub_sim` | `ff25e17` | dispatch v2、memref、callback、binding、counter ABI |
+| P0 | `vendor/simpler` | `d31717be` | `UB_GM = 2` C++ tensor address space |
+| P0 | `vendor/qemu_8.2.0_ub` | `ace22c26` | default-disabled `pto-device-cna` property |
+| P1 | `vendor/simpler` | `70350b51` | UB_GM tensor host-staging bypass |
+| P1 | `ub_sim` | `0c52386` | UB_GM runtime arg、view、binding materialization 与 fail-closed tests |
+| P1 | `vendor/pto-isa` | `594817f2` | CPU `TLOAD/TSTORE` checked callback 与 mock vector-add tests |
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -132,15 +143,24 @@ Upstream 设计 [`linqu_data_system.md`](https://github.com/xwhu/pypto_workspace
 
 ### 3.3 当前主链的数据 staging
 
-执行链贯通以后，数据参数仍停留在 host memory：
+既有 `host_vector` 继续使用 host memory：
 
 1. `sim-uapi::run_chipbackend_dispatch()` 从 `segment_payloads` 取得 guest input；
 2. `run_host_vector_chipbackend()` 构造 `input_a_bytes`、`input_b_bytes`，并通过`seed_host_segment()` 写入 runtime 的 host segment；
 3. `sim-runtime::prepare_simpler_capi_args()` 从 `HostPayloadRegistry` 取得`Vec<u8>`；
 4. `Tensor::new()` 接收该 `Vec` 的 `as_ptr()`/`as_mut_ptr()`；
-5. Simpler 当前 `AddressSpace` 只有 `HOST` 和 `DEVICE`。
+5. Simpler 以普通 HOST tensor 执行 callable。
 
-因此，当前 `host_vector` 证明了控制路径与执行路径，尚未证明 PTO 能直接访问`lingqu_shmem`。目标改动集中在参数 materialization 和 `TLOAD/TSTORE` 的内存访问层。
+P1 已增加独立的 UB_GM materialization 分支。该分支构造 synthetic aperture pointer、
+`AddressSpace::UB_GM` tensor 和 dispatch-local binding，不读取 `HostPayloadRegistry`，
+Simpler 也不执行 H2D/D2H copy。PTO CPU `TLOAD/TSTORE` 已能通过 mock byte-array
+callback 访问这一地址，并在 OOB、权限冲突、callback 失败和 unbind 后访问时
+fail-closed。
+
+QEMU 尚未向当前 Simpler worker 安装真实 run context 和 access callbacks。根仓库运行时
+因此在进入完整 QEMU 执行前确定返回 `pto_ub_gm_unbound`。当前状态证明 P1 的
+no-staging materialization 与 PTO callback 机制，尚未证明 PTO 已经访问两节点
+`lingqu_shmem` backing；后一个结论需要 P2/P3 端到端证据。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
 
@@ -175,10 +195,10 @@ Upstream 设计 [`linqu_data_system.md`](https://github.com/xwhu/pypto_workspace
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | 未实现 | 新增 opaque view 与 materialization |
-| `AddressSpace::UB_GM` | 未实现 | C++/Rust ABI 同值增加 `2` |
-| PTO CPU UB GM hook | 未实现 | 增加 dispatch-local aperture/binding |
-| QEMU UBC access callback | 未实现 | 扩展现有 `linqu_ub_bridge` FFI |
+| `lingqu_shmem_memref` | ABI/type 与 runtime view 已实现 | P2/P3 从 guest control table 填充真实 mapping |
+| `AddressSpace::UB_GM` | P0/P1 已实现 C++/Rust 同值 `2` 与 Simpler pass-through | P2 接入真实 run context |
+| PTO CPU UB GM hook | P1 已实现 contiguous ND、tail、range callback 与 fail-closed | P4 扩展复杂 layout |
+| QEMU UBC access callback | ABI 已冻结，行为未接线 | P2 扩展现有 `linqu_ub_bridge` FFI |
 | backend authorization 后进入 bridge | 未实现 | 扩展 `linqu_uapi_kick()` 状态机 |
 | 两节点 PTO direct E2E | 未实现 | 新 guest workload 与统一 CLI |
 
@@ -556,26 +576,30 @@ resolver 必须按以下顺序处理地址：
 
 1. 地址完整落入当前 request 的 UB GM binding：执行 callback；
 2. 地址落入保留的 synthetic aperture 区域，但当前 request 没有 matching binding：
-   返回 `pto_ub_gm_binding_missing`，禁止直接解引用；
+   返回 `pto_ub_gm_unbound`，禁止直接解引用；
 3. 地址属于 HOST/DEVICE 参数：进入对应的现有实现；
 4. range 跨 binding、越界、权限不符、callback 缺失或 lifetime 已失效：失败并清理
    当前 dispatch。
 
-截至本文审计基线，上述 `UB_GM` 生效链尚未实现：Simpler `AddressSpace` 只有
-`HOST/DEVICE`，Rust `Tensor::new()` 生成 HOST tensor，
-`prepare_simpler_capi_args()` 从 `HostPayloadRegistry` 取得真实 host pointer，PTO CPU
-`TLOAD/TSTORE` 直接解引用 `GlobalTensor::data()`。因此，本文示例描述的是目标 API
-和必须实现的执行语义，不能当作当前代码已经支持 `UB_GM` 的证据。
-
-对应的当前代码证据为：
+P1 已实现 synthetic aperture 到 PTO callback 的 mock/CPU 生效链。对应代码证据为：
 
 | 文件 | 当前行为 |
 | --- | --- |
-| `vendor/simpler/src/common/task_interface/data_type.h` | `AddressSpace` 只有 `HOST` 和 `DEVICE` |
-| `crates/sim-chipbackend-simpler/src/lib.rs` | `Tensor::new()` / `from_shape()` 只能通过 `device_memory: bool` 生成 HOST 或 DEVICE descriptor |
-| `crates/sim-runtime/src/lib.rs` | `prepare_simpler_capi_args()` 从 `HostPayloadRegistry` 取得 `Vec` pointer 并调用 `Tensor::new()` |
-| `vendor/pto-isa/include/pto/cpu/TLoad.hpp` | `TLOAD_TILE_IMPL()` 把 `src.data()` 交给现有 CPU loader |
-| `vendor/pto-isa/include/pto/cpu/TStore.hpp` | `TSTORE_IMPL()` 把 `dst.data()` 交给现有 CPU store implementation |
+| `vendor/simpler/src/common/task_interface/data_type.h` | `AddressSpace` 定义 `HOST = 0`、`DEVICE = 1`、`UB_GM = 2` |
+| `crates/sim-chipbackend-simpler/src/lib.rs` | `Tensor::from_ub_gm()` 构造保留区 pointer、shape、stride、dtype 和 `UB_GM` descriptor |
+| `crates/sim-runtime/src/lib.rs` | UB_GM arg 校验 request/binding/access/bounds 后 materialize；该分支不访问 `HostPayloadRegistry` |
+| `vendor/simpler` HBG/TMRB runtime | HOST 沿用 copy；DEVICE/UB_GM 直接传递 descriptor pointer，不做 H2D/D2H |
+| `vendor/pto-isa/include/pto/cpu/ub_gm_access.hpp` | 从当前 run context 解析 binding、权限、range 与 callback，保留区未绑定时 fail-closed |
+| `vendor/pto-isa/include/pto/cpu/TLoad.hpp` | 在 pointer dereference 前识别 synthetic address；contiguous ND 按 range read 到 scratch |
+| `vendor/pto-isa/include/pto/cpu/TStore.hpp` | 在 pointer dereference 前识别 synthetic address；contiguous ND 从 scratch 按 range write |
+
+P1 测试使用 mock byte-array backend 运行真实 PTO `TLOAD → TADD → TSTORE`，覆盖
+64×64、3×5 tail tile、OOB、read-only output、callback failure 和 unbind-after-use。
+ASan 下 6 个 UB_GM 用例全部通过；普通 HOST 64×64 vector-add 回归也通过。
+
+真实 QEMU callback 注册、worker-local run context、authorization 和 completion cleanup
+仍属于 P2。当前根运行时遇到尚未接线的 UB_GM dispatch 会返回
+`pto_ub_gm_unbound`，不会回退到 host staging 或直接解引用 synthetic pointer。
 
 ## 6. ABI 与内部数据结构
 
@@ -781,7 +805,7 @@ if (resolution.matched) {
 }
 
 if (pto_sim_is_reserved_ub_gm_aperture(global_address, requested_ranges)) {
-    fail("pto_ub_gm_binding_missing");
+    fail("pto_ub_gm_unbound");
 }
 
 cpu_local_tload(tile, global_address, valid_region);
@@ -791,11 +815,11 @@ cpu_local_tload(tile, global_address, valid_region);
 access 或 lifetime 检查失败时返回确定错误；地址只要落入 synthetic aperture 保留区，
 代码就禁止继续走普通 pointer dereference。
 
-现有 `TLOAD_TILE_IMPL()` 直接把 `src.data()` 传给 CPU layout loader，现有
-`TSTORE_IMPL()` 直接把 `dst.data()` 传给 CPU store loop。P1 必须在这两个直接解引用
-发生之前增加统一 memory-access dispatch；只在 resolver 判定为普通 HOST/DEVICE GM
-后才能进入原实现。不能只在某一个 ND fast path 中打补丁，否则 stride、DN、NZ、tail
-或其他 layout 分支可能绕过 UB GM callback。
+P1 已在 `TLOAD_TILE_IMPL()` 和 `TSTORE_IMPL()` 的公共入口、任何 pointer dereference
+之前增加保留区检查。普通 HOST/DEVICE 地址继续进入原实现；synthetic UB_GM 地址先
+解析当前 run context。V1 支持 contiguous ND 和 tail tile；synthetic 地址遇到 DN、NZ、
+stride 或 atomic store 时返回 `pto_ub_gm_bad_memref`，不会绕回普通 pointer 路径。
+P4 再扩展这些 layout，而 fail-closed 分派边界从 P1 起保持不变。
 
 ### 8.2 callback 粒度
 
@@ -900,7 +924,7 @@ producer_verify == pass
 
 ## 10. 分阶段实施计划
 
-### P0：冻结 ABI、device identity 与验收契约
+### P0：冻结 ABI、device identity 与验收契约（已完成）
 
 改动：
 
@@ -921,7 +945,7 @@ producer_verify == pass
 
 预计工作量：2–3 个工程日。
 
-### P1：PTO/Simpler mock `UB_GM`
+### P1：PTO/Simpler mock `UB_GM`（已完成）
 
 主要改动位置：
 
@@ -949,6 +973,19 @@ producer_verify == pass
 - callback 以 tile/range 为粒度；
 - 既有 HOST/DEVICE vector tests 通过；
 - sanitizer 证明 synthetic address 没有被直接解引用。
+
+完成证据：
+
+- `vendor/simpler@70350b51`：HBG/TMRB 的 A2A3/A5 路径均把 UB_GM descriptor
+  直接传给 callable， focused pass-through tests 通过；
+- `ub_sim@0c52386`：runtime arg/view/binding materialization、zero host staging、
+  bounds/access fail-closed unit tests 通过；
+- `vendor/pto-isa@594817f2`：真实 PTO CPU `TLOAD → TADD → TSTORE` 在 mock
+  UB_GM backend 上通过，6 个 UB_GM tests 与 HOST vector-add regression 通过；
+- 同一 6 个 UB_GM tests 在 AddressSanitizer 构建下通过。
+
+这里的“已完成”限定为 P1 mock/CPU 范围。QEMU callback、真实 run context 和
+`lingqu_shmem` backing 尚未接线，归入 P2/P3。
 
 预计工作量：5–8 个工程日。
 
@@ -1181,14 +1218,14 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | 已实现 |
 | ChipBackend `host_vector` bridge/PTO E2E | 已实现，数据为 host staging |
 | experimental `sim_npu` + GVA/GSVA oracle | 已有实验实现；optional、default disabled |
-| `lingqu_shmem_memref` | 未实现 |
-| `AddressSpace::UB_GM` | P0 已实现 C++/Rust ABI 值与 128-byte layout tests；resolver 待 P1 |
+| `lingqu_shmem_memref` | P0/P1 已实现 ABI、runtime view 与 materialization；guest/QEMU 实例化待 P2/P3 |
+| `AddressSpace::UB_GM` | P0/P1 已实现 C++/Rust/Simpler ABI、128-byte layout tests 与 pass-through |
 | Dispatch v2/callback/binding/counter ABI | P0 已实现 header、Rust mirror、malformed metadata validators 与 contract CLI |
 | `pto_device_cna` | P0 已加入 scenario config 与 QEMU UBC default-disabled property；callback 注册待 P2 |
-| PTO CPU UB GM callback | 未实现 |
+| PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests |
 | existing bridge 的 UB GM authorization/binding | 未实现 |
 | 两节点 PTO direct-access acceptance | 未实现 |
-| no-staging 结构化证明 | 未实现 |
+| no-staging 结构化证明 | P1 已证明 runtime/Simpler 不走 host staging；QEMU E2E counters 待 P2/P3 |
 
 P0–P3 完成后才形成最小可信 PoC；P4–P5 决定其稳健性、布局覆盖和运行时可用性。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
