@@ -35,6 +35,11 @@ class ObmmSubmoduleContractTest(unittest.TestCase):
         self.assertIn("vendor/obmm/src/libobmm/libobmm.c", text)
         self.assertIn("obmm_vendor_adaptor_sim.c", text)
         self.assertIn("kernel_ub/include/uapi", text)
+        self.assertIn("-idirafter $(KERNEL_UB_UAPI)", text)
+        self.assertIn("-idirafter $(KERNEL_UB_INC)", text)
+        self.assertIn("-pthread", text)
+        self.assertNotIn("-I$(KERNEL_UB_UAPI)", text)
+        self.assertNotIn("-I$(KERNEL_UB_INC)", text)
 
     def test_sim_adaptor_implements_vendor_seam(self):
         text = SIM_ADAPTOR.read_text()
