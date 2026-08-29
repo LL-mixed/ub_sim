@@ -315,7 +315,8 @@ static bool output_matches(const void *address,
 
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     for (index = 0; index < elements; index++) {
-        float expected = (float)(3u * index + 1u);
+        float sum = (float)(3u * index + 1u);
+        float expected = (sum + 1.0f) * (sum + 2.0f);
         uint32_t bits;
 
         memcpy(&bits, &expected, sizeof(bits));

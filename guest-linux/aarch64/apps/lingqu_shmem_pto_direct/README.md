@@ -42,6 +42,8 @@ lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
 ```
 
 Callable 1 currently identifies the frozen host-vector artifact whose PTO
-kernel executes one `128 x 128` `f32` tile. The workload rejects any other
-element count before exporting or importing memory, so a shorter memref cannot
-reach the kernel and fail during its fixed-size `TLOAD`.
+kernel executes one `128 x 128` `f32` tile. For each element it computes
+`c = a + b`, followed by `f = (c + 1) * (c + 2)`. The producer verifies this
+callable-specific result in its original export mapping. The workload rejects
+any other element count before exporting or importing memory, so a shorter
+memref cannot reach the kernel and fail during its fixed-size `TLOAD`.
