@@ -7,6 +7,7 @@ mod memory;
 mod mmio;
 mod obmm_remote_model;
 mod types;
+mod ub_gm_abi;
 
 pub use adapter::QemuBackendAdapter;
 pub use device::{LinquDeviceModel, MmioDevice};
@@ -20,6 +21,12 @@ pub use types::{
     DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite, EndpointId,
     GuestDescriptor, GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor,
     GuestServiceDescriptor, MachineProfile, MmioRegisterMap,
+};
+pub use ub_gm_abi::{
+    LingquPtoDispatchControlV2, LingquPtoMemrefRole, LingquPtoScalarV1, LingquPtoUbGmCountersV1,
+    LingquPtoUbGmError, LingquShmemMemrefV1, PtoSimUbGmAccessOpsV1, PtoSimUbGmBindingV1,
+    LINGQU_PTO_DISPATCH_ABI_V2, LINGQU_PTO_MAX_MEMREFS, LINGQU_PTO_MAX_RANK,
+    LINGQU_PTO_MAX_SCALARS, LINGQU_SHMEM_MEMREF_ABI_V1, PTO_SIM_UB_GM_ACCESS_ABI_V1,
 };
 
 #[cfg(test)]

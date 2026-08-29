@@ -123,12 +123,16 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 mod dataplane_microbench;
+mod lingqu_shmem_pto;
 mod obmm_eval;
 mod obmm_remote;
 mod obmm_scale;
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(args) = lingqu_shmem_pto::args()? {
+        return lingqu_shmem_pto::run(args);
+    }
     if let Some(args) = obmm_scale::args()? {
         return obmm_scale::run(&args);
     }

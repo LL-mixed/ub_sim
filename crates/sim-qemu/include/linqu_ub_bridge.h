@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "linqu_shmem_pto_abi.h"
+
 typedef struct LinquUbBridge LinquUbBridge;
 
 LinquUbBridge *linqu_ub_bridge_new_from_yaml(const char *path);
@@ -12,6 +14,12 @@ void linqu_ub_bridge_free(LinquUbBridge *bridge);
 int linqu_ub_bridge_register_endpoint(LinquUbBridge *bridge,
                                       uint16_t endpoint_id,
                                       uint32_t entity_id);
+
+int linqu_ub_bridge_register_ub_gm_access_v1(
+    LinquUbBridge *bridge,
+    const PtoSimUbGmAccessOpsV1 *ops,
+    void *qemu_context,
+    uint32_t pto_device_cna);
 
 int linqu_ub_bridge_get_default_segment(LinquUbBridge *bridge,
                                         uint16_t endpoint_id,

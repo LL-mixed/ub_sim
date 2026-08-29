@@ -58,6 +58,16 @@ impl ScenarioConfig {
                 "pypto.scope_runtime.max_scope_depth",
             ));
         }
+        if let Some(pto_device_cna) = self.platform.pto_device_cna {
+            if pto_device_cna == 0 || pto_device_cna > 0x00ff_ffff {
+                return Err(ConfigError::ValueOutOfRange {
+                    field: "platform.pto_device_cna",
+                    value: u64::from(pto_device_cna),
+                    min: 1,
+                    max: 0x00ff_ffff,
+                });
+            }
+        }
 
         self.remote_memory_model.validate()?;
         self.async_load_model.validate()?;
@@ -375,6 +385,8 @@ pub struct PlatformConfig {
     pub cpu_model: String,
     pub memory_model: String,
     pub device_model_mode: DeviceModelMode,
+    #[serde(default)]
+    pub pto_device_cna: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -835,6 +847,26 @@ outputs:
         assert_eq!(config.remote_memory_model.reorder_window, 1);
         assert!(!config.async_load_model.enabled);
         assert_eq!(config.async_load_model.context_entries, 64);
+    }
+
+    #[test]
+    fn pto_device_cna_is_optional_and_validated_as_a_24_bit_cna() {
+        let config = ScenarioConfig::from_yaml_str(VALID_YAML).expect("default config");
+        assert_eq!(config.platform.pto_device_cna, None);
+
+        let configured = VALID_YAML.replace(
+            "  device_model_mode: mixed",
+            "  device_model_mode: mixed\n  pto_device_cna: 65537",
+        );
+        let config = ScenarioConfig::from_yaml_str(&configured).expect("configured PTO CNA");
+        assert_eq!(config.platform.pto_device_cna, Some(65537));
+
+        let invalid = VALID_YAML.replace(
+            "  device_model_mode: mixed",
+            "  device_model_mode: mixed\n  pto_device_cna: 16777216",
+        );
+        let error = ScenarioConfig::from_yaml_str(&invalid).expect_err("CNA above 24 bits");
+        assert!(error.to_string().contains("platform.pto_device_cna"));
     }
 
     #[test]

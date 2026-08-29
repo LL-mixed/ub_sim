@@ -689,7 +689,20 @@ experimental GSVA adaptor 可以在其私有实现中调用 `ubc_gsva_device_rea
 
 现有 ring slot 为 64 bytes，不适合内嵌任意数量的 memref。P0 增加 versioned dispatch control table；ring slot 继续表达 `IoOpcode::Dispatch` 和 control table reference。
 
-建议的逻辑内容如下，最终 byte layout 由 P0 ABI header 固定：
+P0 将最终 byte layout 固定在
+`crates/sim-qemu/include/linqu_shmem_pto_abi.h`。C/C++ 和 Rust mirror 使用下列
+尺寸：
+
+| ABI 对象 | 固定尺寸 | 用途 |
+| --- | ---: | --- |
+| `LingquPtoDispatchControlV2` | 64 bytes | ring slot 引用的 dispatch control |
+| `LingquShmemMemrefV1` | 80 bytes | 一个 `lingqu_shmem_memref` wire view |
+| `LingquPtoScalarV1` | 24 bytes | 一个 scalar 参数 |
+| `PtoSimUbGmBindingV1` | 64 bytes | QEMU 授权后的 dispatch-local binding |
+| `PtoSimUbGmAccessOpsV1` | 32 bytes | QEMU UBC callback table |
+| `LingquPtoUbGmCountersV1` | 96 bytes | no-staging 和 byte accounting |
+
+control 的精确字段为：
 
 ```c
 struct LingquPtoDispatchControlV2 {
@@ -702,10 +715,21 @@ struct LingquPtoDispatchControlV2 {
     uint64_t memref_table_iova;
     uint64_t scalar_table_iova;
     uint64_t artifact_fingerprint;
+    uint32_t metadata_crc32;
+    uint32_t requester_cna;
 };
 ```
 
-每个 memref entry 包含 role、dtype、shape/stride table reference、opaque mapping reference、UB GM address、length 和 access。QEMU DMA 读取 control table，完成 bounds、version、count、mapping 和权限校验。QEMU 只把经过授权的 binding metadata 注册给 Rust bridge；payload bytes 留在 `lingqu_shmem` backing。
+`metadata_crc32` 使用 IEEE CRC-32。计算时先把 control 中该字段清零，然后按 wire
+顺序拼接 control、memref table、scalar table，再按 memref table 顺序拼接各 memref
+的 `rank * sizeof(uint32_t)` shape 和 stride table。合法 CRC 值可以为零，QEMU 必须
+计算后比较，不能把非零检查当作 CRC 校验。
+
+每个 80-byte memref entry 固定包含 ABI version/size、opaque mapping reference、
+UB GM address、byte offset/length、shape/stride table IOVA、argument index、rank、
+dtype、role、access、flags 和两个必须为零的 reserved fields。QEMU DMA 读取 control
+table，完成 bounds、version、count、CRC、mapping 和权限校验。QEMU 只把经过授权的
+binding metadata 注册给 Rust bridge；payload bytes 留在 `lingqu_shmem` backing。
 
 Rust 内部可以增加 `UapiDescriptor::DispatchUbGmV2`，但它必须进入现有 `run_chipbackend_dispatch()`/ChipBackend lifecycle。该类型表示现有 semantic opcode 的版本化参数，不形成新的 NPU command family。
 
@@ -1158,7 +1182,9 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | ChipBackend `host_vector` bridge/PTO E2E | 已实现，数据为 host staging |
 | experimental `sim_npu` + GVA/GSVA oracle | 已有实验实现；optional、default disabled |
 | `lingqu_shmem_memref` | 未实现 |
-| `AddressSpace::UB_GM` | 未实现 |
+| `AddressSpace::UB_GM` | P0 已实现 C++/Rust ABI 值与 128-byte layout tests；resolver 待 P1 |
+| Dispatch v2/callback/binding/counter ABI | P0 已实现 header、Rust mirror、malformed metadata validators 与 contract CLI |
+| `pto_device_cna` | P0 已加入 scenario config 与 QEMU UBC default-disabled property；callback 注册待 P2 |
 | PTO CPU UB GM callback | 未实现 |
 | existing bridge 的 UB GM authorization/binding | 未实现 |
 | 两节点 PTO direct-access acceptance | 未实现 |

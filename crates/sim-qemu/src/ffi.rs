@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
@@ -7,6 +8,7 @@ use sim_services::object::LingquObmmObjectRefWire;
 use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
 
+use crate::ub_gm_abi::{LingquPtoUbGmError, PtoSimUbGmAccessOpsV1, LINGQU_PTO_CNA_MAX};
 use crate::{GuestDescriptor, GuestEndpointSession, QemuBackendAdapter};
 
 const DEFAULT_SEGMENT_BYTES_FALLBACK: u64 = DEFAULT_MAX_SEGMENT_BYTES;
@@ -27,6 +29,14 @@ fn default_segment_bytes() -> u64 {
 pub struct LinquUbBridge {
     adapter: QemuBackendAdapter,
     sessions: HashMap<u16, BridgeEndpointSession>,
+    ub_gm_access: Option<RegisteredUbGmAccessV1>,
+}
+
+#[derive(Clone, Copy)]
+struct RegisteredUbGmAccessV1 {
+    _ops: PtoSimUbGmAccessOpsV1,
+    _qemu_context: *mut c_void,
+    _pto_device_cna: u32,
 }
 
 #[derive(Clone)]
@@ -42,6 +52,7 @@ impl LinquUbBridge {
         Ok(Self {
             adapter: QemuBackendAdapter::new(topology),
             sessions: HashMap::new(),
+            ub_gm_access: None,
         })
     }
 
@@ -69,6 +80,24 @@ impl LinquUbBridge {
             .get(&endpoint_id)
             .map(|session| session.default_segment)
             .ok_or("unknown endpoint")
+    }
+
+    fn register_ub_gm_access_v1(
+        &mut self,
+        ops: PtoSimUbGmAccessOpsV1,
+        qemu_context: *mut c_void,
+        pto_device_cna: u32,
+    ) -> Result<(), LingquPtoUbGmError> {
+        ops.validate()?;
+        if qemu_context.is_null() || pto_device_cna == 0 || pto_device_cna > LINGQU_PTO_CNA_MAX {
+            return Err(LingquPtoUbGmError::BadControlTable);
+        }
+        self.ub_gm_access = Some(RegisteredUbGmAccessV1 {
+            _ops: ops,
+            _qemu_context: qemu_context,
+            _pto_device_cna: pto_device_cna,
+        });
+        Ok(())
     }
 
     fn submit_slot(&mut self, endpoint_id: u16, slot: &[u8]) -> Result<(), &'static str> {
@@ -237,6 +266,25 @@ pub extern "C" fn linqu_ub_bridge_register_endpoint(
     }) {
         Ok(code) => code,
         Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_register_ub_gm_access_v1(
+    ptr: *mut LinquUbBridge,
+    ops: *const PtoSimUbGmAccessOpsV1,
+    qemu_context: *mut c_void,
+    pto_device_cna: u32,
+) -> c_int {
+    let Some(ops) = (unsafe { ops.as_ref() }).copied() else {
+        return LingquPtoUbGmError::CallbackFailed.ffi_status();
+    };
+    match bridge_mut(ptr)
+        .map_err(|_| LingquPtoUbGmError::BadControlTable)
+        .and_then(|bridge| bridge.register_ub_gm_access_v1(ops, qemu_context, pto_device_cna))
+    {
+        Ok(()) => 0,
+        Err(error) => error.ffi_status(),
     }
 }
 
