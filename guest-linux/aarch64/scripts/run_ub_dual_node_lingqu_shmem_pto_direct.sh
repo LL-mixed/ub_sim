@@ -61,22 +61,24 @@ require_value() {
 
 canonical_file() {
   local label="$1"
-  local path="$2"
+  local input_path="$2"
 
-  if [[ ! -f "$path" ]]; then
-    echo "$label does not exist: $path" >&2
+  if [[ ! -f "$input_path" ]]; then
+    echo "$label does not exist: $input_path" >&2
     exit 2
   fi
-  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd)" "$(basename "$path")"
+  printf '%s/%s\n' \
+    "$(cd "$(dirname "$input_path")" && pwd)" \
+    "$(basename "$input_path")"
 }
 
 hash_file() {
-  local path="$1"
+  local input_path="$1"
 
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$path"
+    sha256sum "$input_path"
   else
-    shasum -a 256 "$path"
+    shasum -a 256 "$input_path"
   fi
 }
 

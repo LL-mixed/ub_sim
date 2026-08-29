@@ -1,3 +1,4 @@
+import json
 import pathlib
 import shutil
 import subprocess
@@ -111,6 +112,94 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             text=True,
         )
         self.assertIn("--manifest PATH", result.stdout)
+
+    def test_dedicated_runner_preserves_command_path_during_canonicalization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            artifacts = []
+            for name in (
+                "runtime_host.so",
+                "orchestration.so",
+                "runtime_aicpu.bin",
+                "runtime_aicore.bin",
+                "kernel_0.bin",
+            ):
+                artifact = root / name
+                artifact.write_bytes(name.encode("ascii"))
+                artifacts.append(artifact)
+
+            manifest = root / "host_vector_manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "simpler_runtime": {
+                            "host_runtime_library": {
+                                "source": str(artifacts[0])
+                            },
+                            "orch_shared_object": {
+                                "source": str(artifacts[1])
+                            },
+                            "aicpu_binary": {"source": str(artifacts[2])},
+                            "aicore_binary": {"source": str(artifacts[3])},
+                            "kernels": [
+                                {"binary": {"source": str(artifacts[4])}}
+                            ],
+                        }
+                    }
+                )
+            )
+            scenario = root / "scenario.yaml"
+            scenario.write_text("schema_version: 1\n")
+            kernel = root / "Image"
+            kernel.write_bytes(b"kernel")
+            initramfs = root / "initramfs.cpio.gz"
+            initramfs.write_bytes(b"initramfs")
+            sim_cli = root / "sim-cli"
+            sim_cli.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' '{\"command\":\"lingqu-shmem-pto-e2e\","
+                "\"implementation_phase\":\"p3_guest_runtime\","
+                "\"callable_id\":1,\"artifact_fingerprint\":1,"
+                "\"artifact_fingerprint_hex\":\"0x0000000000000001\"}'\n"
+            )
+            sim_cli.chmod(0o755)
+            evidence = root / "evidence"
+
+            result = subprocess.run(
+                [
+                    str(PTO_RUNNER),
+                    "--manifest",
+                    str(manifest),
+                    "--scenario",
+                    str(scenario),
+                    "--sim-cli-bin",
+                    str(sim_cli),
+                    "--kernel-image",
+                    str(kernel),
+                    "--initramfs-image",
+                    str(initramfs),
+                    "--elements",
+                    "1",
+                    "--run-id",
+                    "canonical-path-contract",
+                    "--evidence-dir",
+                    str(evidence),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertNotIn("command not found", result.stdout)
+            self.assertNotIn("permission denied", result.stdout)
+            self.assertIn("PTO callable 1 requires exactly 16384", result.stdout)
+            self.assertTrue((evidence / "sha256.txt").is_file())
+            self.assertIn(
+                "validation.status=fail",
+                (evidence / "validation.status").read_text(),
+            )
 
 
 if __name__ == "__main__":
