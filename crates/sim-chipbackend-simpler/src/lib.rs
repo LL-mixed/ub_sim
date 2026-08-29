@@ -186,6 +186,24 @@ pub struct OwnedRuntime {
     ptr: NonNull<c_void>,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddressSpace {
+    Host = 0,
+    Device = 1,
+    UbGm = 2,
+}
+
+impl From<bool> for AddressSpace {
+    fn from(device_memory: bool) -> Self {
+        if device_memory {
+            Self::Device
+        } else {
+            Self::Host
+        }
+    }
+}
+
 impl OwnedRuntime {
     pub fn as_raw(self) -> RuntimeHandle {
         self.ptr.as_ptr()
@@ -259,7 +277,7 @@ impl Tensor {
             dtype,
             manual_dep: 0,
             is_contiguous: 1,
-            address_space: u8::from(device_memory),
+            address_space: AddressSpace::from(device_memory) as u8,
             shapes,
             extent_elem_cache: elements,
             strides,
@@ -275,6 +293,15 @@ impl Tensor {
         child_memory: bool,
     ) -> Result<Self, SimplerApiError> {
         Self::from_shape(data, bytes, shape, dtype, child_memory)
+    }
+
+    pub fn address_space(&self) -> AddressSpace {
+        match self.address_space {
+            0 => AddressSpace::Host,
+            1 => AddressSpace::Device,
+            2 => AddressSpace::UbGm,
+            value => panic!("invalid Tensor address space {value}"),
+        }
     }
 }
 
@@ -929,12 +956,26 @@ const _: () = assert!(std::mem::align_of::<NativeRunDescriptor>() == 8);
 #[cfg(test)]
 mod tests {
     use super::{
-        make_chip_callable, next_native_run_descriptor, ArgDirection, ChipStorageTaskArgs,
-        DataType, KernelCallableInput, Tensor, CALLABLE_CHILD_ALIGN,
+        make_chip_callable, next_native_run_descriptor, AddressSpace, ArgDirection,
+        ChipStorageTaskArgs, DataType, KernelCallableInput, Tensor, CALLABLE_CHILD_ALIGN,
         CHIP_CALLABLE_BINARY_SIZE_OFFSET, CHIP_CALLABLE_CHILD_COUNT_OFFSET,
         CHIP_CALLABLE_CHILD_OFFSETS_OFFSET, CHIP_CALLABLE_HEADER_SIZE,
         CHIP_CALLABLE_SIG_COUNT_OFFSET, CHIP_MAX_TENSOR_ARGS,
     };
+
+    #[test]
+    fn tensor_address_space_values_and_layout_are_frozen() {
+        assert_eq!(AddressSpace::Host as u8, 0);
+        assert_eq!(AddressSpace::Device as u8, 1);
+        assert_eq!(AddressSpace::UbGm as u8, 2);
+        assert_eq!(std::mem::size_of::<Tensor>(), 128);
+        assert_eq!(std::mem::align_of::<Tensor>(), 64);
+        assert_eq!(std::mem::offset_of!(Tensor, address_space), 43);
+
+        let tensor =
+            Tensor::from_shape(0x1000, 64, &[16], DataType::Float32, false).expect("host tensor");
+        assert_eq!(tensor.address_space(), AddressSpace::Host);
+    }
 
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {
         u32::from_ne_bytes(bytes[offset..offset + 4].try_into().expect("u32 field"))
