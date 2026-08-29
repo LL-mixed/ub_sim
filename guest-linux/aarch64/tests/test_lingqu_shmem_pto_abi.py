@@ -128,7 +128,13 @@ int main(void)
             "if (g_sim_decoder->experimental_gsva_enabled)", ubc
         )
         self.assertIn(
-            'g_strv_contains((const gchar *const *)features, "gsva")', ubc
+            "g_strv_contains((const gchar *const *)entries, feature)", ubc
+        )
+        self.assertIn(
+            'sim_dec_experimental_feature_enabled("gsva")', ubc
+        )
+        self.assertNotIn(
+            "cached = (!mode || mode[0] == '\\0' ||", ubc
         )
 
     def test_qemu_mirror_header_compiles_and_matches_wire_contract(self):
