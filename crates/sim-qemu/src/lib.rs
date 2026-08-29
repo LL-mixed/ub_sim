@@ -11,6 +11,12 @@ mod ub_gm_abi;
 
 pub use adapter::QemuBackendAdapter;
 pub use device::{LinquDeviceModel, MmioDevice};
+pub use ffi::{
+    linqu_ub_bridge_free, linqu_ub_bridge_new_from_yaml, linqu_ub_bridge_poll_completion,
+    linqu_ub_bridge_query_ub_gm_callable_v1, linqu_ub_bridge_register_endpoint,
+    linqu_ub_bridge_register_ub_gm_access_v1, linqu_ub_bridge_ring_doorbell,
+    linqu_ub_bridge_submit_ub_gm_v2, LinquUbBridge,
+};
 pub use mmio::QemuMmioHandler;
 pub use obmm_remote_model::{
     decide as decide_obmm_remote_model, operation_key as obmm_operation_key,
@@ -18,32 +24,72 @@ pub use obmm_remote_model::{
     ObmmRemoteLatencyModel, ObmmRemoteModelDecision, ObmmRemoteOutcome,
 };
 pub use types::{
-    DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite, EndpointId,
-    GuestDescriptor, GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor,
+    decode_completion, DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite,
+    EndpointId, GuestDescriptor, GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor,
     GuestServiceDescriptor, MachineProfile, MmioRegisterMap,
 };
 pub use ub_gm_abi::{
-    LingquPtoDispatchControlV2, LingquPtoMemrefRole, LingquPtoScalarV1, LingquPtoUbGmCountersV1,
-    LingquPtoUbGmError, LingquShmemMemrefV1, PtoSimUbGmAccessOpsV1, PtoSimUbGmBindingV1,
-    LINGQU_PTO_DISPATCH_ABI_V2, LINGQU_PTO_MAX_MEMREFS, LINGQU_PTO_MAX_RANK,
-    LINGQU_PTO_MAX_SCALARS, LINGQU_SHMEM_MEMREF_ABI_V1, PTO_SIM_UB_GM_ACCESS_ABI_V1,
+    authorized_metadata_crc32, LingquPtoDispatchControlV2, LingquPtoMemrefRole, LingquPtoScalarV1,
+    LingquPtoUbGmCountersV1, LingquPtoUbGmError, LingquShmemMemrefV1, PtoSimUbGmAccessOpsV1,
+    PtoSimUbGmAuthorizedMemrefV1, PtoSimUbGmBindingV1, LINGQU_PTO_DISPATCH_ABI_V2,
+    LINGQU_PTO_MAX_MEMREFS, LINGQU_PTO_MAX_RANK, LINGQU_PTO_MAX_SCALARS, LINGQU_PTO_SCALAR_ABI_V1,
+    LINGQU_PTO_UB_GM_READ, LINGQU_PTO_UB_GM_READ_WRITE, LINGQU_PTO_UB_GM_WRITE,
+    LINGQU_SHMEM_MEMREF_ABI_V1, PTO_SIM_UB_GM_ACCESS_ABI_V1,
 };
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::c_void;
+
     use super::{
         DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, GuestDescriptor,
         GuestIoDescriptor, GuestServiceDescriptor, LinquDeviceModel, QemuBackendAdapter,
         QemuMmioHandler,
     };
     use sim_config::ScenarioConfig;
-    use sim_core::{BlockHash, CompletionSource, IoOpcode};
+    use sim_core::{
+        BlockHash, CompletionSource, CompletionStatus, IoOpcode, PtoUbGmAccessRegistration,
+    };
     use sim_services::{
         db::{DbGetReq, DbPutReq},
         dfs::{DfsReadReq, DfsWriteReq},
         shmem::{ShmemGetReq, ShmemPutReq, DEFAULT_MAX_SEGMENT_BYTES},
     };
     use sim_topology::SimTopology;
+    use sim_uapi::PtoUbGmDispatchV2Req;
+
+    unsafe extern "C" fn ub_gm_read(
+        _: *mut c_void,
+        _: u64,
+        _: u64,
+        _: u64,
+        _: *mut c_void,
+        _: u64,
+    ) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn ub_gm_write(
+        _: *mut c_void,
+        _: u64,
+        _: u64,
+        _: u64,
+        _: *const c_void,
+        _: u64,
+    ) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn ub_gm_fence(
+        _: *mut c_void,
+        _: u64,
+        _: u64,
+        _: u64,
+        _: u64,
+        _: u32,
+    ) -> i32 {
+        0
+    }
 
     fn test_adapter() -> QemuBackendAdapter {
         let scenario_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -51,6 +97,49 @@ mod tests {
         let config = ScenarioConfig::from_yaml_file(&scenario_path).expect("valid config");
         let topology = SimTopology::from_config(&config).expect("topology");
         QemuBackendAdapter::new(topology)
+    }
+
+    #[test]
+    fn qemu_backend_adapter_propagates_ub_gm_registration_to_uapi() {
+        let mut adapter = test_adapter();
+        let session = adapter.register_endpoint(0).expect("register endpoint");
+        let backend_context = Box::into_raw(Box::new(0u8)) as usize;
+        adapter
+            .register_pto_ub_gm_access(PtoUbGmAccessRegistration {
+                read: ub_gm_read,
+                write: ub_gm_write,
+                fence: ub_gm_fence,
+                backend_context,
+                pto_device_cna: 0x10001,
+            })
+            .expect("register UB_GM access");
+        adapter
+            .enqueue_pto_ub_gm_dispatch(
+                &session,
+                PtoUbGmDispatchV2Req {
+                    op_id: 73,
+                    request_id: 42,
+                    callable_id: 1,
+                    artifact_fingerprint: 1,
+                    requester_cna: 0x10002,
+                    args: Vec::new(),
+                },
+            )
+            .expect("enqueue UB_GM dispatch");
+        adapter
+            .ring_doorbell(&session, Some(1))
+            .expect("ring doorbell");
+        let (events, _) = adapter.poll_cq(&session, Some(1)).expect("poll CQ");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].status,
+            CompletionStatus::FatalFailure {
+                code: "pto_ub_gm_access_denied".to_string()
+            }
+        );
+        unsafe {
+            drop(Box::from_raw(backend_context as *mut u8));
+        }
     }
 
     #[test]

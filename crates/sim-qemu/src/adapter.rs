@@ -1,10 +1,14 @@
-use sim_core::{CompletionEvent, EntityId, HealthStatus, SegmentHandle, SimError};
+use sim_core::{
+    CompletionEvent, EntityId, HealthStatus, PtoUbGmAccessRegistration, SegmentHandle, SimError,
+};
 use sim_services::{
     block::BlockServiceProfile, db::DbServiceProfile, dfs::DfsServiceProfile,
     object::LingquObmmObjectRefWire, shmem::ShmemServiceProfile,
 };
 use sim_topology::{SimTopology, TopologySnapshot};
-use sim_uapi::{LocalGuestUapiSurface, UapiCommand, UapiResponse};
+use sim_uapi::{
+    LocalGuestUapiSurface, PtoUbGmDispatchV2Req, UapiCommand, UapiDescriptor, UapiResponse,
+};
 
 use crate::types::{GuestDescriptor, GuestEndpointSession, MachineProfile};
 
@@ -111,15 +115,38 @@ impl QemuBackendAdapter {
             .map_err(|_| SimError::InvalidInput("invalid model runtime object payload"))
     }
 
+    pub fn register_pto_ub_gm_access(
+        &mut self,
+        access: PtoUbGmAccessRegistration,
+    ) -> Result<(), SimError> {
+        self.surface.register_pto_ub_gm_access(access)
+    }
+
     pub fn enqueue_descriptor(
         &mut self,
         session: &GuestEndpointSession,
         desc: GuestDescriptor,
     ) -> Result<(usize, usize), SimError> {
+        self.enqueue_uapi_descriptor(session, desc.to_uapi_descriptor())
+    }
+
+    pub fn enqueue_pto_ub_gm_dispatch(
+        &mut self,
+        session: &GuestEndpointSession,
+        req: PtoUbGmDispatchV2Req,
+    ) -> Result<(usize, usize), SimError> {
+        self.enqueue_uapi_descriptor(session, UapiDescriptor::DispatchUbGmV2(req))
+    }
+
+    fn enqueue_uapi_descriptor(
+        &mut self,
+        session: &GuestEndpointSession,
+        desc: UapiDescriptor,
+    ) -> Result<(usize, usize), SimError> {
         match self.surface.execute(UapiCommand::EnqueueCmd {
             cmdq: session.cmdq,
             owner: session.entity,
-            desc: desc.to_uapi_descriptor(),
+            desc,
         })? {
             UapiResponse::CommandEnqueued {
                 depth,

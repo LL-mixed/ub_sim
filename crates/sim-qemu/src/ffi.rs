@@ -4,11 +4,20 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 use sim_config::ScenarioConfig;
+use sim_core::PtoUbGmAccessRegistration;
 use sim_services::object::LingquObmmObjectRefWire;
 use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
+use sim_uapi::{
+    pto_ub_gm_host_vector_callable_fingerprint, PtoUbGmDispatchV2Req,
+    PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+};
 
-use crate::ub_gm_abi::{LingquPtoUbGmError, PtoSimUbGmAccessOpsV1, LINGQU_PTO_CNA_MAX};
+use crate::ub_gm_abi::{
+    materialize_authorized_dispatch_args, LingquPtoDispatchControlV2, LingquPtoScalarV1,
+    LingquPtoUbGmError, PtoSimUbGmAccessOpsV1, PtoSimUbGmAuthorizedMemrefV1, LINGQU_PTO_CNA_MAX,
+    LINGQU_PTO_MAX_MEMREFS, LINGQU_PTO_MAX_SCALARS,
+};
 use crate::{GuestDescriptor, GuestEndpointSession, QemuBackendAdapter};
 
 const DEFAULT_SEGMENT_BYTES_FALLBACK: u64 = DEFAULT_MAX_SEGMENT_BYTES;
@@ -36,7 +45,7 @@ pub struct LinquUbBridge {
 struct RegisteredUbGmAccessV1 {
     _ops: PtoSimUbGmAccessOpsV1,
     _qemu_context: *mut c_void,
-    _pto_device_cna: u32,
+    pto_device_cna: u32,
 }
 
 #[derive(Clone)]
@@ -92,11 +101,71 @@ impl LinquUbBridge {
         if qemu_context.is_null() || pto_device_cna == 0 || pto_device_cna > LINGQU_PTO_CNA_MAX {
             return Err(LingquPtoUbGmError::BadControlTable);
         }
+        self.adapter
+            .register_pto_ub_gm_access(PtoUbGmAccessRegistration {
+                read: ops.read.ok_or(LingquPtoUbGmError::CallbackFailed)?,
+                write: ops.write.ok_or(LingquPtoUbGmError::CallbackFailed)?,
+                fence: ops.fence.ok_or(LingquPtoUbGmError::CallbackFailed)?,
+                backend_context: qemu_context as usize,
+                pto_device_cna,
+            })
+            .map_err(|_| LingquPtoUbGmError::BadControlTable)?;
         self.ub_gm_access = Some(RegisteredUbGmAccessV1 {
             _ops: ops,
             _qemu_context: qemu_context,
-            _pto_device_cna: pto_device_cna,
+            pto_device_cna,
         });
+        Ok(())
+    }
+
+    fn query_ub_gm_callable_v1(&self, callable_id: u64) -> Result<u64, LingquPtoUbGmError> {
+        if callable_id != PTO_UB_GM_HOST_VECTOR_CALLABLE_ID {
+            return Err(LingquPtoUbGmError::UnsupportedCallable);
+        }
+        pto_ub_gm_host_vector_callable_fingerprint()
+            .map_err(|_| LingquPtoUbGmError::ExecutionFailed)
+    }
+
+    fn submit_ub_gm_v2(
+        &mut self,
+        endpoint_id: u16,
+        op_id: u64,
+        control: LingquPtoDispatchControlV2,
+        memrefs: &[PtoSimUbGmAuthorizedMemrefV1],
+        scalars: &[LingquPtoScalarV1],
+    ) -> Result<(), LingquPtoUbGmError> {
+        if op_id == 0 {
+            return Err(LingquPtoUbGmError::BadControlTable);
+        }
+        let access = self.ub_gm_access.ok_or(LingquPtoUbGmError::Unbound)?;
+        let expected_fingerprint = self.query_ub_gm_callable_v1(control.callable_id)?;
+        let args = materialize_authorized_dispatch_args(
+            &control,
+            memrefs,
+            scalars,
+            PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+            expected_fingerprint,
+            access.pto_device_cna,
+        )?;
+        let session = self
+            .sessions
+            .get(&endpoint_id)
+            .ok_or(LingquPtoUbGmError::BadControlTable)?
+            .session
+            .clone();
+        self.adapter
+            .enqueue_pto_ub_gm_dispatch(
+                &session,
+                PtoUbGmDispatchV2Req {
+                    op_id,
+                    request_id: control.request_id,
+                    callable_id: control.callable_id,
+                    artifact_fingerprint: control.artifact_fingerprint,
+                    requester_cna: control.requester_cna,
+                    args,
+                },
+            )
+            .map_err(|_| LingquPtoUbGmError::ExecutionFailed)?;
         Ok(())
     }
 
@@ -282,6 +351,71 @@ pub extern "C" fn linqu_ub_bridge_register_ub_gm_access_v1(
     match bridge_mut(ptr)
         .map_err(|_| LingquPtoUbGmError::BadControlTable)
         .and_then(|bridge| bridge.register_ub_gm_access_v1(ops, qemu_context, pto_device_cna))
+    {
+        Ok(()) => 0,
+        Err(error) => error.ffi_status(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_query_ub_gm_callable_v1(
+    ptr: *mut LinquUbBridge,
+    callable_id: u64,
+    fingerprint_out: *mut u64,
+) -> c_int {
+    if fingerprint_out.is_null() {
+        return LingquPtoUbGmError::BadControlTable.ffi_status();
+    }
+    match bridge_mut(ptr)
+        .map_err(|_| LingquPtoUbGmError::BadControlTable)
+        .and_then(|bridge| bridge.query_ub_gm_callable_v1(callable_id))
+    {
+        Ok(fingerprint) => {
+            unsafe {
+                *fingerprint_out = fingerprint;
+            }
+            0
+        }
+        Err(error) => error.ffi_status(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_submit_ub_gm_v2(
+    ptr: *mut LinquUbBridge,
+    endpoint_id: u16,
+    op_id: u64,
+    control: *const LingquPtoDispatchControlV2,
+    memrefs: *const PtoSimUbGmAuthorizedMemrefV1,
+    memref_count: u32,
+    scalars: *const LingquPtoScalarV1,
+    scalar_count: u32,
+) -> c_int {
+    let Some(control) = (unsafe { control.as_ref() }).copied() else {
+        return LingquPtoUbGmError::BadControlTable.ffi_status();
+    };
+    if memref_count > LINGQU_PTO_MAX_MEMREFS || scalar_count > LINGQU_PTO_MAX_SCALARS {
+        return LingquPtoUbGmError::BadControlTable.ffi_status();
+    }
+    let memrefs = if memref_count == 0 {
+        &[]
+    } else {
+        if memrefs.is_null() {
+            return LingquPtoUbGmError::BadControlTable.ffi_status();
+        }
+        unsafe { std::slice::from_raw_parts(memrefs, memref_count as usize) }
+    };
+    let scalars = if scalar_count == 0 {
+        &[]
+    } else {
+        if scalars.is_null() {
+            return LingquPtoUbGmError::BadControlTable.ffi_status();
+        }
+        unsafe { std::slice::from_raw_parts(scalars, scalar_count as usize) }
+    };
+    match bridge_mut(ptr)
+        .map_err(|_| LingquPtoUbGmError::BadControlTable)
+        .and_then(|bridge| bridge.submit_ub_gm_v2(endpoint_id, op_id, control, memrefs, scalars))
     {
         Ok(()) => 0,
         Err(error) => error.ffi_status(),

@@ -2,7 +2,10 @@
 
 mod pto_ub_gm;
 
-pub use pto_ub_gm::{run_host_vector_ub_gm_dispatch, HostVectorUbGmDispatchReport};
+pub use pto_ub_gm::{
+    run_host_vector_ub_gm_bridge_dispatch, run_host_vector_ub_gm_dispatch,
+    HostVectorUbGmDispatchReport,
+};
 
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};

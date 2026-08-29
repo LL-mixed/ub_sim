@@ -11,6 +11,7 @@ serde_json.workspace = true
 sim-config = { path = "../sim-config" }
 sim-core = { path = "../sim-core" }
 sim-report = { path = "../sim-report" }
+sim-qemu = { path = "../sim-qemu" }
 sim-runtime = { path = "../sim-runtime" }
 sim-services = { path = "../sim-services" }
 sim-topology = { path = "../sim-topology" }

@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{c_void, CString, OsString};
 use std::path::Path;
 use std::ptr;
 use std::sync::Mutex;
@@ -25,6 +25,37 @@ const PTO_DEVICE_CNA: u32 = 0x0001_0001;
 const INPUT_A_BINDING: u64 = 1;
 const INPUT_B_BINDING: u64 = 2;
 const OUTPUT_BINDING: u64 = 3;
+static BRIDGE_MOCK_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct BridgeHandle(*mut sim_qemu::LinquUbBridge);
+
+impl Drop for BridgeHandle {
+    fn drop(&mut self) {
+        sim_qemu::linqu_ub_bridge_free(self.0);
+    }
+}
+
+struct EnvRestore {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvRestore {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HostVectorUbGmDispatchReport {
@@ -402,18 +433,253 @@ pub fn run_host_vector_ub_gm_dispatch(
         .ok_or(SimError::InvalidInput("pto_ub_gm_mock_output_missing"))?;
     let values = bytes_to_f32s(output);
     let all_match_expected = values.iter().all(|value| (*value - 42.0).abs() < 1e-5);
+    let counters = backend.counters;
+    drop(backend);
     Ok(HostVectorUbGmDispatchReport {
         platform: platform.to_string(),
         elems,
         first_values: values.into_iter().take(8).collect(),
         all_match_expected,
         completion_status: completion.status,
-        read_calls: backend.counters.read_calls,
-        read_bytes: backend.counters.read_bytes,
-        write_calls: backend.counters.write_calls,
-        write_bytes: backend.counters.write_bytes,
-        fence_calls: backend.counters.fence_calls,
+        read_calls: counters.read_calls,
+        read_bytes: counters.read_bytes,
+        write_calls: counters.write_calls,
+        write_bytes: counters.write_bytes,
+        fence_calls: counters.fence_calls,
         segment_payload_staging_bytes,
+    })
+}
+
+fn authorized_memref(
+    binding_id: u64,
+    slot: u64,
+    byte_length: u64,
+    elems: u64,
+    role: sim_qemu::LingquPtoMemrefRole,
+    access: u8,
+    arg_index: u32,
+) -> Result<sim_qemu::PtoSimUbGmAuthorizedMemrefV1, SimError> {
+    let shape_elems = u32::try_from(elems)
+        .map_err(|_| SimError::InvalidInput("pto_ub_gm_bridge_element_count_too_large"))?;
+    Ok(sim_qemu::PtoSimUbGmAuthorizedMemrefV1 {
+        memref: sim_qemu::LingquShmemMemrefV1 {
+            abi_version: sim_qemu::LINGQU_SHMEM_MEMREF_ABI_V1,
+            struct_bytes: std::mem::size_of::<sim_qemu::LingquShmemMemrefV1>() as u32,
+            opaque_mapping_ref: binding_id,
+            ub_gm_addr: UB_GM_BACKEND_BASE + slot * UB_GM_BACKEND_SLOT,
+            byte_offset: 0,
+            byte_length,
+            shape_table_iova: 0x1000 + slot * 0x100,
+            stride_table_iova: 0x1800 + slot * 0x100,
+            arg_index,
+            rank: 1,
+            dtype: 0,
+            role: role as u8,
+            access,
+            flags: 0,
+            reserved0: 0,
+            reserved1: 0,
+        },
+        binding: sim_qemu::PtoSimUbGmBindingV1 {
+            request_id: REQUEST_ID,
+            binding_id,
+            aperture_base: UB_GM_APERTURE_BASE + slot * UB_GM_APERTURE_SLOT,
+            aperture_length: byte_length,
+            ub_gm_base: UB_GM_BACKEND_BASE + slot * UB_GM_BACKEND_SLOT,
+            mapped_length: byte_length,
+            access: u32::from(access),
+            flags: 0,
+            backend_cookie: binding_id,
+        },
+        shape: [shape_elems, 0, 0, 0, 0],
+        strides: [1, 0, 0, 0, 0],
+        reserved: 0,
+    })
+}
+
+pub fn run_host_vector_ub_gm_bridge_dispatch(
+    scenario_path: &Path,
+    manifest_path: &Path,
+    platform: &str,
+    elems: u64,
+) -> Result<HostVectorUbGmDispatchReport, SimError> {
+    if !matches!(platform, "a2a3sim" | "a5sim") {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_mock_platform_must_be_a2a3sim_or_a5sim",
+        ));
+    }
+    if elems != 128 * 128 {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_host_vector_requires_16384_elements",
+        ));
+    }
+    let manifest_text = std::fs::read_to_string(manifest_path)
+        .map_err(|_| SimError::NotFound("host_vector_manifest"))?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_text)
+        .map_err(|_| SimError::InvalidInput("invalid_host_vector_manifest"))?;
+    let manifest_platform = manifest_json["platform"].as_str().unwrap_or("a2a3sim");
+    if manifest_platform != platform {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_bridge_manifest_platform_mismatch",
+        ));
+    }
+    let _env_lock = BRIDGE_MOCK_ENV_LOCK
+        .lock()
+        .map_err(|_| SimError::InvalidInput("pto_ub_gm_bridge_env_lock_poisoned"))?;
+    let _manifest_env = EnvRestore::set("SIMPLER_HOST_VECTOR_MANIFEST", manifest_path);
+    let _scenario_env = EnvRestore::set("SIM_UAPI_SCENARIO_CONFIG", scenario_path);
+    let scenario_c = CString::new(
+        scenario_path
+            .to_str()
+            .ok_or(SimError::InvalidInput("pto_ub_gm_bridge_non_utf8_scenario"))?,
+    )
+    .map_err(|_| SimError::InvalidInput("pto_ub_gm_bridge_invalid_scenario_path"))?;
+    let bridge = BridgeHandle(sim_qemu::linqu_ub_bridge_new_from_yaml(scenario_c.as_ptr()));
+    if bridge.0.is_null() {
+        return Err(SimError::InvalidInput("pto_ub_gm_bridge_create_failed"));
+    }
+    if sim_qemu::linqu_ub_bridge_register_endpoint(bridge.0, 1, 0) != 0 {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_bridge_register_endpoint_failed",
+        ));
+    }
+
+    let backend = Box::new(Mutex::new(MockBackend::new(elems)?));
+    let backend_context = (&*backend as *const Mutex<MockBackend>).cast_mut().cast();
+    let ops = sim_qemu::PtoSimUbGmAccessOpsV1 {
+        abi_version: sim_qemu::PTO_SIM_UB_GM_ACCESS_ABI_V1,
+        struct_bytes: std::mem::size_of::<sim_qemu::PtoSimUbGmAccessOpsV1>() as u32,
+        read: Some(mock_read),
+        write: Some(mock_write),
+        fence: Some(mock_fence),
+    };
+    if sim_qemu::linqu_ub_bridge_register_ub_gm_access_v1(
+        bridge.0,
+        &ops,
+        backend_context,
+        PTO_DEVICE_CNA,
+    ) != 0
+    {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_bridge_register_access_failed",
+        ));
+    }
+    let mut artifact_fingerprint = 0u64;
+    if sim_qemu::linqu_ub_bridge_query_ub_gm_callable_v1(
+        bridge.0,
+        sim_uapi::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+        &mut artifact_fingerprint,
+    ) != 0
+        || artifact_fingerprint == 0
+    {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_bridge_query_callable_failed",
+        ));
+    }
+
+    let byte_length = elems * std::mem::size_of::<f32>() as u64;
+    let memrefs = [
+        authorized_memref(
+            INPUT_A_BINDING,
+            0,
+            byte_length,
+            elems,
+            sim_qemu::LingquPtoMemrefRole::Input,
+            sim_qemu::LINGQU_PTO_UB_GM_READ,
+            0,
+        )?,
+        authorized_memref(
+            INPUT_B_BINDING,
+            1,
+            byte_length,
+            elems,
+            sim_qemu::LingquPtoMemrefRole::Input,
+            sim_qemu::LINGQU_PTO_UB_GM_READ,
+            1,
+        )?,
+        authorized_memref(
+            OUTPUT_BINDING,
+            2,
+            byte_length,
+            elems,
+            sim_qemu::LingquPtoMemrefRole::Output,
+            sim_qemu::LINGQU_PTO_UB_GM_WRITE,
+            2,
+        )?,
+    ];
+    let mut control = sim_qemu::LingquPtoDispatchControlV2 {
+        abi_version: sim_qemu::LINGQU_PTO_DISPATCH_ABI_V2,
+        struct_bytes: std::mem::size_of::<sim_qemu::LingquPtoDispatchControlV2>() as u32,
+        request_id: REQUEST_ID,
+        callable_id: sim_uapi::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+        memref_count: memrefs.len() as u32,
+        scalar_count: 0,
+        memref_table_iova: 0x2000,
+        scalar_table_iova: 0,
+        artifact_fingerprint,
+        metadata_crc32: 0,
+        requester_cna: PTO_DEVICE_CNA,
+    };
+    control.metadata_crc32 = sim_qemu::authorized_metadata_crc32(&control, &memrefs, &[])
+        .map_err(|_| SimError::InvalidInput("pto_ub_gm_bridge_crc_failed"))?;
+    if sim_qemu::linqu_ub_bridge_submit_ub_gm_v2(
+        bridge.0,
+        1,
+        1,
+        &control,
+        memrefs.as_ptr(),
+        memrefs.len() as u32,
+        ptr::null(),
+        0,
+    ) != 0
+    {
+        return Err(SimError::InvalidInput("pto_ub_gm_bridge_submit_failed"));
+    }
+    let mut submitted = 0u32;
+    let mut pending = 0u32;
+    if sim_qemu::linqu_ub_bridge_ring_doorbell(bridge.0, 1, 1, &mut submitted, &mut pending) != 0
+        || submitted != 1
+        || pending != 0
+    {
+        return Err(SimError::InvalidInput("pto_ub_gm_bridge_doorbell_failed"));
+    }
+    let mut completion_slot = [0u8; 64];
+    if sim_qemu::linqu_ub_bridge_poll_completion(
+        bridge.0,
+        1,
+        completion_slot.as_mut_ptr(),
+        completion_slot.len(),
+    ) != 0
+    {
+        return Err(SimError::InvalidInput(
+            "pto_ub_gm_bridge_completion_missing",
+        ));
+    }
+    let completion = sim_qemu::decode_completion(&completion_slot)
+        .map_err(|_| SimError::InvalidInput("pto_ub_gm_bridge_bad_completion"))?;
+    let backend = backend
+        .lock()
+        .map_err(|_| SimError::InvalidInput("pto_ub_gm_mock_backend_poisoned"))?;
+    let output = backend
+        .output()
+        .ok_or(SimError::InvalidInput("pto_ub_gm_mock_output_missing"))?;
+    let values = bytes_to_f32s(output);
+    let all_match_expected = values.iter().all(|value| (*value - 42.0).abs() < 1e-5);
+    let counters = backend.counters;
+    drop(backend);
+    drop(bridge);
+    Ok(HostVectorUbGmDispatchReport {
+        platform: platform.to_string(),
+        elems,
+        first_values: values.into_iter().take(8).collect(),
+        all_match_expected,
+        completion_status: completion.status,
+        read_calls: counters.read_calls,
+        read_bytes: counters.read_bytes,
+        write_calls: counters.write_calls,
+        write_bytes: counters.write_bytes,
+        fence_calls: counters.fence_calls,
+        segment_payload_staging_bytes: 0,
     })
 }
 

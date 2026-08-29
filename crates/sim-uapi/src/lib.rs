@@ -104,10 +104,11 @@ use sim_core::{
     BackendDispatchOperation, BackendExecutionRequest, BinaryArtifactRef, BlockHash, BufferUsage,
     CmdQueueHandle, CompletionEvent, CompletionSource, CompletionStatus, CqHandle,
     DispatchBackendProfile, DispatchBackendSpec, DispatchBufferBinding, DispatchLaunchParams,
-    DispatchRuntimeVariant, EntityId, ExecutionContextRef, ExecutionLifecycle, FunctionLabel,
-    HealthStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId, MemoryEndpoint, PlLevel,
-    RequestCorrelation, SegmentHandle, SimError, SimplerKernelArtifact, SimplerRuntimeArg,
-    SimplerRuntimeArtifacts, TaskKey, TensorDType, TensorLayout,
+    DispatchRequest, DispatchRuntimeVariant, EntityId, ExecutionContextRef, ExecutionLifecycle,
+    FunctionLabel, HealthStatus, HierarchyCoord, IoOpcode, IoSubmitReq, LogicalSystemId,
+    MemoryEndpoint, PlLevel, PtoUbGmAccessRegistration, RequestCorrelation, SegmentHandle,
+    SimError, SimplerKernelArtifact, SimplerRuntimeArg, SimplerRuntimeArtifacts, TaskKey,
+    TensorDType, TensorLayout,
 };
 use sim_memory::PaperEngramTableRowPrefetchPlan;
 use sim_models::deepseek_v4_flash;
@@ -191,6 +192,7 @@ use sim_topology::{SimTopology, TopologySnapshot};
 #[derive(Debug, Clone)]
 pub enum UapiDescriptor {
     Io(IoSubmitReq),
+    DispatchUbGmV2(PtoUbGmDispatchV2Req),
     ModelRangeDispatch(ModelRangeDispatchReq),
     BlockWriteback {
         block: BlockHash,
@@ -206,6 +208,18 @@ pub enum UapiDescriptor {
     ObjectResolve(LingquObjectResolveReq),
     ObjectAppend(LingquObjectAppendReq),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PtoUbGmDispatchV2Req {
+    pub op_id: u64,
+    pub request_id: u64,
+    pub callable_id: u64,
+    pub artifact_fingerprint: u64,
+    pub requester_cna: u32,
+    pub args: Vec<SimplerRuntimeArg>,
+}
+
+pub const PTO_UB_GM_HOST_VECTOR_CALLABLE_ID: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRangeDispatchReq {
@@ -326,6 +340,7 @@ pub struct LocalGuestUapiSurface {
     dfs_service: DfsServiceStub,
     db_service: DbServiceStub,
     object_service: LingquObjectServiceStub,
+    pto_ub_gm_access: Option<PtoUbGmAccessRegistration>,
     segment_payloads: HashMap<SegmentHandle, Vec<u8>>,
     model_runtime_object_payloads:
         HashMap<ModelRuntimeObjectCacheKey, Arc<ModelRuntimeObjectPayload>>,
@@ -353,6 +368,7 @@ impl std::fmt::Debug for LocalGuestUapiSurface {
             .field("dfs_service", &self.dfs_service)
             .field("db_service", &self.db_service)
             .field("object_service", &self.object_service)
+            .field("pto_ub_gm_access", &self.pto_ub_gm_access.is_some())
             .field("segment_payloads", &self.segment_payloads)
             .field(
                 "model_runtime_object_payloads",
@@ -1001,6 +1017,7 @@ impl LocalGuestUapiSurface {
             dfs_service: DfsServiceStub::new(dfs_profile),
             db_service: DbServiceStub::new(db_profile),
             object_service: LingquObjectServiceStub::new(LingquObjectServiceProfile::default()),
+            pto_ub_gm_access: None,
             segment_payloads: HashMap::new(),
             model_runtime_object_payloads: HashMap::new(),
             block_payloads: HashMap::new(),
@@ -1037,6 +1054,20 @@ impl LocalGuestUapiSurface {
             runtime_max_retries,
         );
         self
+    }
+
+    pub fn register_pto_ub_gm_access(
+        &mut self,
+        access: PtoUbGmAccessRegistration,
+    ) -> Result<(), SimError> {
+        if access.backend_context == 0
+            || access.pto_device_cna == 0
+            || access.pto_device_cna > 0x00ff_ffff
+        {
+            return Err(SimError::InvalidInput("pto_ub_gm_bad_control_table"));
+        }
+        self.pto_ub_gm_access = Some(access);
+        Ok(())
     }
 
     pub fn write_segment_payload(
@@ -1377,6 +1408,12 @@ impl LocalGuestUapiSurface {
     ) -> Result<u64, SimError> {
         match desc {
             UapiDescriptor::Io(req) => self.submit_io_to_cq(req, cq),
+            UapiDescriptor::DispatchUbGmV2(req) => {
+                let event = self.run_pto_ub_gm_dispatch_v2(req)?;
+                let op_id = event.op_id;
+                self.enqueue_to_cq(cq, event)?;
+                Ok(op_id)
+            }
             UapiDescriptor::BlockWriteback { block, task } => {
                 let now = self.next_service_time();
                 let handle = self.block_service.submit_writeback(block, task, now)?;
@@ -1692,6 +1729,36 @@ impl LocalGuestUapiSurface {
             source: CompletionSource::ChipBackend,
             status: match result {
                 Ok(_) => CompletionStatus::Success,
+                Err(code) => CompletionStatus::FatalFailure { code },
+            },
+            finished_at: now,
+        })
+    }
+
+    fn run_pto_ub_gm_dispatch_v2(
+        &mut self,
+        req: PtoUbGmDispatchV2Req,
+    ) -> Result<CompletionEvent, SimError> {
+        let now = self.next_service_time();
+        let task = TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord { levels: [0; 8] },
+            scope_depth: 0,
+            task_id: req.request_id,
+        };
+        let result = match self.pto_ub_gm_access {
+            None => Err("pto_ub_gm_unbound".to_string()),
+            Some(access) if access.pto_device_cna != req.requester_cna => {
+                Err("pto_ub_gm_access_denied".to_string())
+            }
+            Some(access) => run_host_vector_ub_gm_chipbackend(&self.topology, &task, &req, access),
+        };
+        Ok(CompletionEvent {
+            op_id: req.op_id,
+            task: Some(task),
+            source: CompletionSource::ChipBackend,
+            status: match result {
+                Ok(()) => CompletionStatus::Success,
                 Err(code) => CompletionStatus::FatalFailure { code },
             },
             finished_at: now,
@@ -15923,6 +15990,123 @@ fn run_host_vector_chipbackend(
     Ok(produced)
 }
 
+fn run_host_vector_ub_gm_chipbackend(
+    topology: &SimTopology,
+    task: &TaskKey,
+    req: &PtoUbGmDispatchV2Req,
+    access: PtoUbGmAccessRegistration,
+) -> Result<(), String> {
+    validate_host_vector_ub_gm_args(req)?;
+    let manifest_path = simpler_manifest_path()?;
+    let manifest = load_simpler_runtime_manifest(&manifest_path)?;
+    let expected_fingerprint = pto_ub_gm_callable_fingerprint(&manifest)?;
+    if req.callable_id != PTO_UB_GM_HOST_VECTOR_CALLABLE_ID
+        || req.artifact_fingerprint != expected_fingerprint
+    {
+        return Err("pto_ub_gm_unsupported_callable".to_string());
+    }
+    let platform = host_vector_manifest_platform(&manifest)?;
+    let scenario_config = scenario_config_for_chipbackend()?;
+    let ubpu_node = topology
+        .ubpus
+        .first()
+        .map(|ubpu| ubpu.node_id)
+        .ok_or_else(|| "missing_ubpu_node".to_string())?;
+    let backend_spec =
+        host_vector_backend_spec_from_manifest_envelope(manifest, platform, req.args.clone());
+    let _dispatch_lock = host_vector_dispatch_lock_guard()?;
+    let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
+    runtime
+        .register_pto_ub_gm_access(access)
+        .map_err(str::to_string)?;
+    let mut sink = VecEventSink::default();
+    let run_result = (|| {
+        runtime
+            .submit_dispatch(
+                DispatchRequest {
+                    task: task.clone(),
+                    function: FunctionLabel {
+                        name: "host_vector_ub_gm_v2".into(),
+                        level: PlLevel::L2,
+                    },
+                    backend_spec: Some(backend_spec),
+                    request: None,
+                    target_level: PlLevel::L2,
+                    target_node: ubpu_node,
+                    input_segments: Vec::new(),
+                },
+                &mut sink,
+            )
+            .map_err(|err| err.to_string())?;
+        let complete_at = scenario_config
+            .pypto
+            .simpler_boundary
+            .dispatch_latency_us
+            .unwrap_or(15);
+        runtime.advance_to(complete_at, &mut sink);
+        let mut completions = runtime.poll_completions(complete_at, &mut sink);
+        if completions.len() != 1 {
+            return Err(format!(
+                "pto_ub_gm_completion_count_mismatch:got={}:expected=1",
+                completions.len()
+            ));
+        }
+        match completions.remove(0).status {
+            CompletionStatus::Success => Ok(()),
+            CompletionStatus::RetryableFailure { code }
+            | CompletionStatus::FatalFailure { code } => Err(code),
+        }
+    })();
+    runtime.clear_pto_ub_gm_access();
+    if runtime.host_payload_bytes() != 0 {
+        return Err("pto_ub_gm_payload_staging_detected".to_string());
+    }
+    run_result
+}
+
+fn validate_host_vector_ub_gm_args(req: &PtoUbGmDispatchV2Req) -> Result<(), String> {
+    if req.request_id == 0 || req.args.len() != 3 {
+        return Err("pto_ub_gm_bad_control_table".to_string());
+    }
+    let expected_usages = [BufferUsage::Input, BufferUsage::Input, BufferUsage::Output];
+    for (arg, expected_usage) in req.args.iter().zip(expected_usages) {
+        let SimplerRuntimeArg::UbGmMemref {
+            binding,
+            view,
+            usage,
+        } = arg
+        else {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        };
+        if binding.request_id != req.request_id
+            || *usage != expected_usage
+            || view.dtype != 0
+            || view.shape.is_empty()
+            || view.shape.len() > 5
+            || view.strides.len() != view.shape.len()
+            || view.shape.iter().any(|dim| *dim == 0)
+        {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        }
+        let mut expected_stride = 1u64;
+        for (dim, stride) in view.shape.iter().zip(&view.strides).rev() {
+            if u64::from(*stride) != expected_stride {
+                return Err("pto_ub_gm_bad_memref".to_string());
+            }
+            expected_stride = expected_stride
+                .checked_mul(u64::from(*dim))
+                .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
+        }
+        let expected_bytes = expected_stride
+            .checked_mul(std::mem::size_of::<f32>() as u64)
+            .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
+        if expected_bytes != view.byte_length {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        }
+    }
+    Ok(())
+}
+
 const W4_LEGACY_KVCACHE_PAYLOAD_BYTES: usize = 8192;
 const W4_QWEN3_GUEST_INPUT_PAYLOAD_BYTES: usize = 8192;
 const W4_KVCACHE_BLOCKS: usize = 4;
@@ -16373,6 +16557,12 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
         ));
     }
     Ok(path)
+}
+
+pub fn pto_ub_gm_host_vector_callable_fingerprint() -> Result<u64, String> {
+    let manifest_path = simpler_manifest_path()?;
+    let manifest = load_simpler_runtime_manifest(&manifest_path)?;
+    pto_ub_gm_callable_fingerprint(&manifest)
 }
 
 fn ensure_simpler_host_vector_manifest(manifest_path: &Path) -> Result<(), String> {
@@ -17120,6 +17310,49 @@ fn host_vector_backend_spec_from_manifest(
             bytes: size_bytes,
         },
     ];
+    let platform = host_vector_manifest_platform(&manifest)?;
+    Ok(host_vector_backend_spec_from_manifest_envelope(
+        manifest, platform, args,
+    ))
+}
+
+fn load_simpler_runtime_manifest(
+    manifest_path: &Path,
+) -> Result<SimplerRuntimeManifestEnvelope, String> {
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "read_simpler_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })?;
+    serde_json::from_str(&manifest_text).map_err(|err| {
+        format!(
+            "parse_simpler_manifest_failed:{}:{err}",
+            manifest_path.display()
+        )
+    })
+}
+
+fn host_vector_manifest_platform(
+    manifest: &SimplerRuntimeManifestEnvelope,
+) -> Result<String, String> {
+    let platform = manifest
+        .platform
+        .clone()
+        .unwrap_or_else(|| "a2a3sim".to_string());
+    if !matches!(platform.as_str(), "a2a3sim" | "a5sim") {
+        return Err(format!(
+            "unsupported_simpler_host_vector_platform:{platform}"
+        ));
+    }
+    Ok(platform)
+}
+
+fn host_vector_backend_spec_from_manifest_envelope(
+    manifest: SimplerRuntimeManifestEnvelope,
+    platform: String,
+    args: Vec<SimplerRuntimeArg>,
+) -> DispatchBackendSpec {
     let runtime = SimplerRuntimeArtifacts {
         host_runtime_library: manifest.simpler_runtime.host_runtime_library,
         orch_shared_object: manifest.simpler_runtime.orch_shared_object,
@@ -17131,14 +17364,83 @@ fn host_vector_backend_spec_from_manifest(
         runtime_env: manifest.simpler_runtime.runtime_env,
         args,
     };
-    Ok(DispatchBackendSpec {
+    DispatchBackendSpec {
         profile: DispatchBackendProfile::HostVector,
-        platform: "a2a3sim".to_string(),
+        platform,
         runtime_variant: DispatchRuntimeVariant::HostBuildGraph,
         callable_hint: Some("host_vector_example".to_string()),
         simpler_runtime: Some(runtime),
         context: None,
-    })
+    }
+}
+
+fn pto_ub_gm_callable_fingerprint(
+    manifest: &SimplerRuntimeManifestEnvelope,
+) -> Result<u64, String> {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.host_vector.v1");
+    fingerprint_field(
+        &mut hash,
+        manifest.platform.as_deref().unwrap_or("a2a3sim").as_bytes(),
+    );
+    fingerprint_field(
+        &mut hash,
+        manifest.simpler_runtime.orch_function_name.as_bytes(),
+    );
+    fingerprint_artifact(&mut hash, &manifest.simpler_runtime.host_runtime_library)?;
+    fingerprint_artifact(&mut hash, &manifest.simpler_runtime.orch_shared_object)?;
+    fingerprint_optional_artifact(&mut hash, manifest.simpler_runtime.aicpu_binary.as_ref())?;
+    fingerprint_optional_artifact(&mut hash, manifest.simpler_runtime.aicore_binary.as_ref())?;
+    fingerprint_field(
+        &mut hash,
+        &(manifest.simpler_runtime.kernels.len() as u64).to_le_bytes(),
+    );
+    for kernel in &manifest.simpler_runtime.kernels {
+        fingerprint_field(&mut hash, &kernel.func_id.to_le_bytes());
+        fingerprint_artifact(&mut hash, &kernel.binary)?;
+    }
+    let launch = &manifest.simpler_runtime.launch;
+    for value in [
+        launch.aicpu_thread_num,
+        launch.block_dim,
+        launch.device_id,
+        launch.orch_thread_num,
+    ] {
+        fingerprint_field(&mut hash, &value.to_le_bytes());
+    }
+    Ok(hash)
+}
+
+fn fingerprint_optional_artifact(
+    hash: &mut u64,
+    artifact: Option<&BinaryArtifactRef>,
+) -> Result<(), String> {
+    match artifact {
+        Some(artifact) => {
+            fingerprint_field(hash, &[1]);
+            fingerprint_artifact(hash, artifact)
+        }
+        None => {
+            fingerprint_field(hash, &[0]);
+            Ok(())
+        }
+    }
+}
+
+fn fingerprint_artifact(hash: &mut u64, artifact: &BinaryArtifactRef) -> Result<(), String> {
+    fingerprint_field(hash, artifact.id.as_bytes());
+    fingerprint_field(hash, artifact.format.as_bytes());
+    let bytes = std::fs::read(&artifact.source)
+        .map_err(|err| format!("artifact_read_failed:{}:{err}", artifact.source))?;
+    fingerprint_field(hash, &bytes);
+    Ok(())
+}
+
+fn fingerprint_field(hash: &mut u64, bytes: &[u8]) {
+    for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
 }
 
 fn host_matmul_backend_spec_from_manifest(
@@ -29094,7 +29396,7 @@ fn bytes_to_i32s(bytes: &[u8]) -> Vec<i32> {
 
 fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
     match desc {
-        UapiDescriptor::Io(_) => RuntimeWorkKind::GuestIo,
+        UapiDescriptor::Io(_) | UapiDescriptor::DispatchUbGmV2(_) => RuntimeWorkKind::GuestIo,
         UapiDescriptor::ModelRangeDispatch(_) => RuntimeWorkKind::GuestIo,
         UapiDescriptor::BlockWriteback { .. } => RuntimeWorkKind::BlockWriteback,
         UapiDescriptor::ShmemPut(_) => RuntimeWorkKind::ShmemPut,
@@ -29113,6 +29415,12 @@ fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
 fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
     match desc {
         UapiDescriptor::Io(req) => req.task.clone(),
+        UapiDescriptor::DispatchUbGmV2(req) => Some(TaskKey {
+            logical_system: LogicalSystemId(1),
+            coord: HierarchyCoord { levels: [0; 8] },
+            scope_depth: 0,
+            task_id: req.request_id,
+        }),
         UapiDescriptor::ModelRangeDispatch(req) => Some(req.task.clone()),
         UapiDescriptor::BlockWriteback { task, .. } => task.clone(),
         UapiDescriptor::ShmemPut(req) => req.task.clone(),
@@ -44257,5 +44565,80 @@ outputs:
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    fn ub_gm_vector_arg(
+        request_id: u64,
+        binding_id: u64,
+        slot: u64,
+        access: sim_core::SimplerUbGmAccess,
+        usage: sim_core::BufferUsage,
+    ) -> sim_core::SimplerRuntimeArg {
+        sim_core::SimplerRuntimeArg::UbGmMemref {
+            binding: sim_core::SimplerUbGmBinding {
+                request_id,
+                binding_id,
+                aperture_base: 0x7000_0000_0000 + slot * 0x20000,
+                aperture_length: 65536,
+                ub_gm_base: 0x100000 + slot * 0x20000,
+                mapped_length: 65536,
+                access,
+                flags: 0,
+                backend_cookie: binding_id,
+            },
+            view: sim_core::SimplerUbGmView {
+                aperture_offset: 0,
+                byte_length: 65536,
+                shape: vec![128, 128],
+                strides: vec![128, 1],
+                dtype: 0,
+            },
+            usage,
+        }
+    }
+
+    #[test]
+    fn host_vector_ub_gm_v2_args_require_exact_request_and_contiguous_f32_views() {
+        let request_id = 42;
+        let mut req = super::PtoUbGmDispatchV2Req {
+            op_id: 7,
+            request_id,
+            callable_id: super::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+            artifact_fingerprint: 9,
+            requester_cna: 0x10001,
+            args: vec![
+                ub_gm_vector_arg(
+                    request_id,
+                    1,
+                    0,
+                    sim_core::SimplerUbGmAccess::Read,
+                    sim_core::BufferUsage::Input,
+                ),
+                ub_gm_vector_arg(
+                    request_id,
+                    2,
+                    1,
+                    sim_core::SimplerUbGmAccess::Read,
+                    sim_core::BufferUsage::Input,
+                ),
+                ub_gm_vector_arg(
+                    request_id,
+                    3,
+                    2,
+                    sim_core::SimplerUbGmAccess::Write,
+                    sim_core::BufferUsage::Output,
+                ),
+            ],
+        };
+        assert_eq!(super::validate_host_vector_ub_gm_args(&req), Ok(()));
+
+        let sim_core::SimplerRuntimeArg::UbGmMemref { binding, .. } = &mut req.args[0] else {
+            panic!("expected UB_GM memref");
+        };
+        binding.request_id += 1;
+        assert_eq!(
+            super::validate_host_vector_ub_gm_args(&req),
+            Err("pto_ub_gm_bad_memref".to_string())
+        );
     }
 }

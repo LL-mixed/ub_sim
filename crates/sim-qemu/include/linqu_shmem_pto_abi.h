@@ -106,6 +106,18 @@ typedef struct PtoSimUbGmBindingV1 {
     uint64_t backend_cookie;
 } PtoSimUbGmBindingV1;
 
+/*
+ * QEMU-to-Rust bridge object. QEMU has already DMA-read shape/stride tables
+ * and authorized the mapping before this object crosses the bridge.
+ */
+typedef struct PtoSimUbGmAuthorizedMemrefV1 {
+    LingquShmemMemrefV1 memref;
+    PtoSimUbGmBindingV1 binding;
+    uint32_t shape[LINGQU_PTO_MAX_RANK];
+    uint32_t strides[LINGQU_PTO_MAX_RANK];
+    uint64_t reserved;
+} PtoSimUbGmAuthorizedMemrefV1;
+
 typedef int (*PtoSimUbGmReadV1)(void *qemu_context,
                                 uint64_t request_id,
                                 uint64_t binding_id,
@@ -167,6 +179,8 @@ LINQU_PTO_STATIC_ASSERT(sizeof(LingquPtoScalarV1) == 24,
                         "LingquPtoScalarV1 must stay 24 bytes");
 LINQU_PTO_STATIC_ASSERT(sizeof(PtoSimUbGmBindingV1) == 64,
                         "PtoSimUbGmBindingV1 must stay 64 bytes");
+LINQU_PTO_STATIC_ASSERT(sizeof(PtoSimUbGmAuthorizedMemrefV1) == 192,
+                        "PtoSimUbGmAuthorizedMemrefV1 must stay 192 bytes");
 LINQU_PTO_STATIC_ASSERT(sizeof(PtoSimUbGmAccessOpsV1) == 32,
                         "PtoSimUbGmAccessOpsV1 must stay 32 bytes");
 LINQU_PTO_STATIC_ASSERT(sizeof(LingquPtoUbGmCountersV1) == 96,

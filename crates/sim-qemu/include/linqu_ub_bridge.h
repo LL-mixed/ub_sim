@@ -21,6 +21,20 @@ int linqu_ub_bridge_register_ub_gm_access_v1(
     void *qemu_context,
     uint32_t pto_device_cna);
 
+int linqu_ub_bridge_query_ub_gm_callable_v1(LinquUbBridge *bridge,
+                                             uint64_t callable_id,
+                                             uint64_t *fingerprint_out);
+
+int linqu_ub_bridge_submit_ub_gm_v2(
+    LinquUbBridge *bridge,
+    uint16_t endpoint_id,
+    uint64_t op_id,
+    const LingquPtoDispatchControlV2 *control,
+    const PtoSimUbGmAuthorizedMemrefV1 *memrefs,
+    uint32_t memref_count,
+    const LingquPtoScalarV1 *scalars,
+    uint32_t scalar_count);
+
 int linqu_ub_bridge_get_default_segment(LinquUbBridge *bridge,
                                         uint16_t endpoint_id,
                                         uint64_t *segment_out);
