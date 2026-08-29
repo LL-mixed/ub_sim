@@ -16,8 +16,8 @@ use sim_core::{
     BlockPlacement, CompletionEvent, CompletionSource, CompletionStatus, CopyDirection,
     CopyRequest, DispatchBackendProfile, DispatchBackendSpec, DispatchBufferBinding,
     DispatchHandle, DispatchRequest, DispatchRuntimeVariant, ExecutionContextCommand,
-    MemoryEndpoint, NodeId, OpId, PlLevel, RouteDecision, RouteReason, ServiceOpHandle, SimEvent,
-    SimTimestamp, SimplerRuntimeArg, TaskKey, TransferHandle,
+    MemoryEndpoint, NodeId, OpId, PlLevel, PtoUbGmAccessRegistration, RouteDecision, RouteReason,
+    ServiceOpHandle, SimEvent, SimTimestamp, SimplerRuntimeArg, TaskKey, TransferHandle,
 };
 use sim_topology::SimTopology;
 
@@ -394,6 +394,7 @@ pub struct LocalRuntimeEngine {
     completed: VecDeque<CompletionEvent>,
     simpler_capi: SimplerCapiBackendState,
     host_payloads: HostPayloadRegistry,
+    pto_ub_gm_access: Option<PtoUbGmAccessRegistration>,
     execution_contexts: ExecutionContextRegistry,
 }
 
@@ -1744,6 +1745,7 @@ impl LocalRuntimeEngine {
             completed: VecDeque::new(),
             simpler_capi: SimplerCapiBackendState::default(),
             host_payloads: HostPayloadRegistry::default(),
+            pto_ub_gm_access: None,
             execution_contexts: ExecutionContextRegistry::default(),
         }
     }
@@ -1770,6 +1772,32 @@ impl LocalRuntimeEngine {
             .segments
             .get(&(node, segment))
             .map(Vec::as_slice)
+    }
+
+    pub fn host_payload_bytes(&self) -> u64 {
+        self.host_payloads
+            .segments
+            .values()
+            .map(|payload| payload.len() as u64)
+            .sum()
+    }
+
+    pub fn register_pto_ub_gm_access(
+        &mut self,
+        access: PtoUbGmAccessRegistration,
+    ) -> Result<(), &'static str> {
+        if access.backend_context == 0
+            || access.pto_device_cna == 0
+            || access.pto_device_cna > 0x00ff_ffff
+        {
+            return Err("pto_ub_gm_bad_control_table");
+        }
+        self.pto_ub_gm_access = Some(access);
+        Ok(())
+    }
+
+    pub fn clear_pto_ub_gm_access(&mut self) {
+        self.pto_ub_gm_access = None;
     }
 
     pub fn device_context_snapshot(&self, id: &str) -> Option<DeviceContextSnapshot> {
@@ -2280,6 +2308,7 @@ impl LocalRuntimeEngine {
     fn simpler_dispatch_completion(
         simpler_capi: &mut SimplerCapiBackendState,
         host_payloads: &mut HostPayloadRegistry,
+        pto_ub_gm_access: Option<PtoUbGmAccessRegistration>,
         op: &RuntimeOpRecord,
         now: SimTimestamp,
     ) -> CompletionEvent {
@@ -2353,9 +2382,55 @@ impl LocalRuntimeEngine {
                 &runtime_artifacts.args,
                 host_payloads,
             )?;
-            if !prepared.ub_gm_bindings.is_empty() {
-                return Err("pto_ub_gm_unbound".to_string());
+            let pto_ub_gm_bindings = prepared
+                .ub_gm_bindings
+                .iter()
+                .map(|binding| simpler_capi::PtoUbGmBinding {
+                    request_id: binding.request_id,
+                    binding_id: binding.binding_id,
+                    aperture_base: binding.aperture_base,
+                    aperture_length: binding.aperture_length,
+                    ub_gm_base: binding.ub_gm_base,
+                    mapped_length: binding.mapped_length,
+                    access: binding.access as u32,
+                    flags: binding.flags,
+                    backend_cookie: binding.backend_cookie,
+                })
+                .collect::<Vec<_>>();
+            let pto_ub_gm_request_id = pto_ub_gm_bindings.first().map(|binding| binding.request_id);
+            if let Some(request_id) = pto_ub_gm_request_id {
+                if request_id == 0
+                    || pto_ub_gm_bindings
+                        .iter()
+                        .any(|binding| binding.request_id != request_id)
+                {
+                    return Err("pto_ub_gm_bad_memref".to_string());
+                }
             }
+            let pto_ub_gm_ops = pto_ub_gm_access.map(|access| simpler_capi::PtoUbGmAccessOps {
+                read: access.read,
+                write: access.write,
+                fence: access.fence,
+            });
+            let pto_ub_gm_run_context = match (
+                pto_ub_gm_request_id,
+                pto_ub_gm_ops.as_ref(),
+                pto_ub_gm_access,
+            ) {
+                (None, _, _) => None,
+                (Some(_), None, _) | (Some(_), _, None) => {
+                    return Err("pto_ub_gm_unbound".to_string())
+                }
+                (Some(request_id), Some(ops), Some(access)) => Some(
+                    simpler_capi::PtoUbGmRunContext::new(
+                        request_id,
+                        &pto_ub_gm_bindings,
+                        ops,
+                        access.backend_context as *mut _,
+                    )
+                    .map_err(|_| "pto_ub_gm_bad_memref".to_string())?,
+                ),
+            };
             detail_prepare_args_ms = detail_started.elapsed().as_millis();
             let kernel_inputs: Vec<simpler_capi::KernelCallableInput<'_>> = runtime_artifacts
                 .kernels
@@ -2462,8 +2537,13 @@ impl LocalRuntimeEngine {
                     prepare,
                     runtime_artifacts.launch.block_dim as i32,
                     runtime_artifacts.launch.aicpu_thread_num as i32,
+                    pto_ub_gm_run_context.as_ref(),
                 )
-                .map_err(|err| format!("simpler_capi_run_callable_failed:{err}"))?;
+                .map_err(|err| {
+                    err.pto_ub_gm_code()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("simpler_capi_run_callable_failed:{err}"))
+                })?;
                 if prepare {
                     worker
                         .callable_ids
@@ -2658,6 +2738,7 @@ impl LocalRuntimeEngine {
         let dispatch_latency_us = self.dispatch_latency_us;
         let copy_latency_us = self.copy_latency_us;
         let timeout_us = self.timeout_us;
+        let pto_ub_gm_access = self.pto_ub_gm_access;
 
         let _ =
             self.submission_queue.drive_ready(now, |ready| {
@@ -2699,6 +2780,7 @@ impl LocalRuntimeEngine {
                             Ok(()) => Self::simpler_dispatch_completion(
                                 &mut self.simpler_capi,
                                 &mut self.host_payloads,
+                                pto_ub_gm_access,
                                 op,
                                 now,
                             ),

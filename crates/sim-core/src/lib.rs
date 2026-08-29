@@ -1,6 +1,7 @@
 //! Core shared types for the simulator workspace.
 
 use std::collections::BTreeMap;
+use std::ffi::c_void;
 
 use serde::{Deserialize, Serialize};
 
@@ -349,6 +350,42 @@ pub enum SimplerUbGmAccess {
     Read = 1,
     Write = 2,
     ReadWrite = 3,
+}
+
+pub type PtoUbGmReadFn = unsafe extern "C" fn(
+    backend_context: *mut c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    dst: *mut c_void,
+    length: u64,
+) -> i32;
+
+pub type PtoUbGmWriteFn = unsafe extern "C" fn(
+    backend_context: *mut c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    src: *const c_void,
+    length: u64,
+) -> i32;
+
+pub type PtoUbGmFenceFn = unsafe extern "C" fn(
+    backend_context: *mut c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    length: u64,
+    flags: u32,
+) -> i32;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PtoUbGmAccessRegistration {
+    pub read: PtoUbGmReadFn,
+    pub write: PtoUbGmWriteFn,
+    pub fence: PtoUbGmFenceFn,
+    pub backend_context: usize,
+    pub pto_device_cna: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

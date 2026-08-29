@@ -49,6 +49,8 @@ type SimplerPrepareRunFn = unsafe extern "C" fn(
     *const CallConfig,
     *const NativeRunDescriptor,
 ) -> c_int;
+type SimplerBindPtoUbGmRunContextFn =
+    unsafe extern "C" fn(DeviceContextHandle, RuntimeHandle, *const c_void) -> c_int;
 type SimplerRunPhaseFn = unsafe extern "C" fn(DeviceContextHandle, RuntimeHandle) -> c_int;
 type SimplerUnregisterCallableFn = unsafe extern "C" fn(DeviceContextHandle, i32) -> c_int;
 type FinalizeDeviceFn = unsafe extern "C" fn(DeviceContextHandle) -> c_int;
@@ -107,6 +109,89 @@ struct NativeRunDescriptor {
 }
 
 static NEXT_NATIVE_RUN_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+pub type PtoUbGmReadFn = unsafe extern "C" fn(
+    backend_context: *mut c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    dst: *mut c_void,
+    length: u64,
+) -> c_int;
+
+pub type PtoUbGmWriteFn = unsafe extern "C" fn(
+    backend_context: *mut c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    src: *const c_void,
+    length: u64,
+) -> c_int;
+
+pub type PtoUbGmFenceFn = unsafe extern "C" fn(
+    backend_context: *mut c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    length: u64,
+    flags: u32,
+) -> c_int;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PtoUbGmBinding {
+    pub request_id: u64,
+    pub binding_id: u64,
+    pub aperture_base: u64,
+    pub aperture_length: u64,
+    pub ub_gm_base: u64,
+    pub mapped_length: u64,
+    pub access: u32,
+    pub flags: u32,
+    pub backend_cookie: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PtoUbGmAccessOps {
+    pub read: PtoUbGmReadFn,
+    pub write: PtoUbGmWriteFn,
+    pub fence: PtoUbGmFenceFn,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PtoUbGmRunContext {
+    request_id: u64,
+    bindings: *const PtoUbGmBinding,
+    binding_count: usize,
+    ops: *const PtoUbGmAccessOps,
+    backend_context: *mut c_void,
+}
+
+impl PtoUbGmRunContext {
+    pub fn new(
+        request_id: u64,
+        bindings: &[PtoUbGmBinding],
+        ops: &PtoUbGmAccessOps,
+        backend_context: *mut c_void,
+    ) -> Result<Self, SimplerApiError> {
+        if request_id == 0 || bindings.is_empty() || backend_context.is_null() {
+            return Err(SimplerApiError::InvalidUbGmRunContext);
+        }
+        Ok(Self {
+            request_id,
+            bindings: bindings.as_ptr(),
+            binding_count: bindings.len(),
+            ops,
+            backend_context,
+        })
+    }
+
+    fn as_ptr(&self) -> *const c_void {
+        self as *const Self as *const c_void
+    }
+}
 
 fn next_native_run_descriptor() -> NativeRunDescriptor {
     let run_epoch = NEXT_NATIVE_RUN_EPOCH.fetch_add(1, Ordering::Relaxed);
@@ -643,6 +728,8 @@ pub enum SimplerApiError {
     InvalidSymbolName,
     #[error("invalid tensor shape")]
     InvalidTensorShape,
+    #[error("invalid PTO UB GM run context")]
+    InvalidUbGmRunContext,
     #[error("invalid tensor data type {0}")]
     InvalidDataType(u16),
     #[error("too many simpler runtime args")]
@@ -669,6 +756,20 @@ impl SimplerApiError {
             Err(Self::ApiFailure { operation, code })
         }
     }
+
+    pub fn pto_ub_gm_code(&self) -> Option<&'static str> {
+        let Self::ApiFailure { code, .. } = self else {
+            return None;
+        };
+        match *code {
+            -3 => Some("pto_ub_gm_bad_memref"),
+            -4 => Some("pto_ub_gm_unbound"),
+            -5 => Some("pto_ub_gm_access_denied"),
+            -7 => Some("pto_ub_gm_callback_failed"),
+            -8 => Some("pto_ub_gm_execution_failed"),
+            _ => None,
+        }
+    }
 }
 
 pub struct RuntimeLibrary {
@@ -686,6 +787,7 @@ pub struct RuntimeLibrary {
     simpler_init: SimplerInitFn,
     register_callable: SimplerRegisterCallableFn,
     prepare_run: SimplerPrepareRunFn,
+    bind_pto_ub_gm_run_context: Option<SimplerBindPtoUbGmRunContextFn>,
     launch_run: SimplerRunPhaseFn,
     wait_run: SimplerRunPhaseFn,
     finalize_run: SimplerRunPhaseFn,
@@ -793,6 +895,10 @@ impl RuntimeLibrary {
                     b"simpler_register_callable\0",
                 )?,
                 prepare_run: *load_symbol::<SimplerPrepareRunFn>(&lib, b"simpler_prepare_run\0")?,
+                bind_pto_ub_gm_run_context: load_optional_symbol::<SimplerBindPtoUbGmRunContextFn>(
+                    &lib,
+                    b"simpler_bind_pto_ub_gm_run_context\0",
+                ),
                 launch_run: *load_symbol::<SimplerRunPhaseFn>(&lib, b"simpler_launch_run\0")?,
                 wait_run: *load_symbol::<SimplerRunPhaseFn>(&lib, b"simpler_wait_run\0")?,
                 finalize_run: *load_symbol::<SimplerRunPhaseFn>(&lib, b"simpler_finalize_run\0")?,
@@ -900,6 +1006,7 @@ impl RuntimeLibrary {
             true,
             block_dim,
             aicpu_thread_num,
+            None,
         )?;
         unsafe {
             SimplerApiError::from_code(
@@ -947,6 +1054,7 @@ impl RuntimeLibrary {
         prepare: bool,
         _block_dim: i32,
         aicpu_thread_num: i32,
+        ub_gm_run_context: Option<&PtoUbGmRunContext>,
     ) -> Result<(), SimplerApiError> {
         let config = CallConfig::new(aicpu_thread_num);
         let descriptor = next_native_run_descriptor();
@@ -968,6 +1076,21 @@ impl RuntimeLibrary {
                     &descriptor,
                 ),
             )?;
+            if let Some(run_context) = ub_gm_run_context {
+                let bind_result = match self.bind_pto_ub_gm_run_context {
+                    Some(bind) => SimplerApiError::from_code(
+                        "simpler_bind_pto_ub_gm_run_context",
+                        bind(ctx.as_raw(), runtime.as_raw(), run_context.as_ptr()),
+                    ),
+                    None => Err(SimplerApiError::MissingSymbol(
+                        "simpler_bind_pto_ub_gm_run_context",
+                    )),
+                };
+                if let Err(error) = bind_result {
+                    let _ = (self.finalize_run)(ctx.as_raw(), runtime.as_raw());
+                    return Err(error);
+                }
+            }
             let launch_code = (self.launch_run)(ctx.as_raw(), runtime.as_raw());
             let wait_code = if launch_code == 0 {
                 (self.wait_run)(ctx.as_raw(), runtime.as_raw())
@@ -1009,6 +1132,10 @@ unsafe fn load_symbol<T>(
     lib.get::<T>(symbol).map_err(|_| {
         SimplerApiError::MissingSymbol(std::str::from_utf8(symbol).unwrap_or("invalid_symbol"))
     })
+}
+
+unsafe fn load_optional_symbol<T: Copy>(lib: &Library, symbol: &'static [u8]) -> Option<T> {
+    lib.get::<T>(symbol).ok().map(|symbol| *symbol)
 }
 
 fn write_i32(bytes: &mut [u8], offset: usize, value: i32) {
@@ -1069,16 +1196,54 @@ const _: () = assert!(std::mem::size_of::<RuntimeEnv>() == 96);
 const _: () = assert!(std::mem::size_of::<CallConfig>() == 1144);
 const _: () = assert!(std::mem::size_of::<NativeRunDescriptor>() == 56);
 const _: () = assert!(std::mem::align_of::<NativeRunDescriptor>() == 8);
+const _: () = assert!(std::mem::size_of::<PtoUbGmBinding>() == 64);
+const _: () = assert!(std::mem::size_of::<PtoUbGmAccessOps>() == 24);
+const _: () = assert!(std::mem::size_of::<PtoUbGmRunContext>() == 40);
 
 #[cfg(test)]
 mod tests {
     use super::{
         make_chip_callable, next_native_run_descriptor, AddressSpace, ArgDirection,
-        ChipStorageTaskArgs, DataType, KernelCallableInput, Tensor, CALLABLE_CHILD_ALIGN,
+        ChipStorageTaskArgs, DataType, KernelCallableInput, PtoUbGmAccessOps, PtoUbGmBinding,
+        PtoUbGmRunContext, SimplerApiError, Tensor, CALLABLE_CHILD_ALIGN,
         CHIP_CALLABLE_BINARY_SIZE_OFFSET, CHIP_CALLABLE_CHILD_COUNT_OFFSET,
         CHIP_CALLABLE_CHILD_OFFSETS_OFFSET, CHIP_CALLABLE_HEADER_SIZE,
         CHIP_CALLABLE_SIG_COUNT_OFFSET, CHIP_MAX_TENSOR_ARGS,
     };
+    use std::ffi::{c_int, c_void};
+
+    unsafe extern "C" fn test_ub_gm_read(
+        _backend_context: *mut c_void,
+        _request_id: u64,
+        _binding_id: u64,
+        _ub_gm_addr: u64,
+        _dst: *mut c_void,
+        _length: u64,
+    ) -> c_int {
+        0
+    }
+
+    unsafe extern "C" fn test_ub_gm_write(
+        _backend_context: *mut c_void,
+        _request_id: u64,
+        _binding_id: u64,
+        _ub_gm_addr: u64,
+        _src: *const c_void,
+        _length: u64,
+    ) -> c_int {
+        0
+    }
+
+    unsafe extern "C" fn test_ub_gm_fence(
+        _backend_context: *mut c_void,
+        _request_id: u64,
+        _binding_id: u64,
+        _ub_gm_addr: u64,
+        _length: u64,
+        _flags: u32,
+    ) -> c_int {
+        0
+    }
 
     #[test]
     fn tensor_address_space_values_and_layout_are_frozen() {
@@ -1133,6 +1298,51 @@ mod tests {
         assert_eq!(first.run_id, first.run_epoch);
         assert_eq!(first.dispatch_id, first.run_epoch);
         assert!(first.accepted_state.is_null());
+    }
+
+    #[test]
+    fn pto_ub_gm_run_context_preserves_c_abi_pointers() {
+        let binding = PtoUbGmBinding {
+            request_id: 91,
+            binding_id: 7,
+            aperture_base: 0x7000_0000_0000,
+            aperture_length: 4096,
+            ub_gm_base: 0x20_0000,
+            mapped_length: 4096,
+            access: 3,
+            flags: 0,
+            backend_cookie: 11,
+        };
+        let ops = PtoUbGmAccessOps {
+            read: test_ub_gm_read,
+            write: test_ub_gm_write,
+            fence: test_ub_gm_fence,
+        };
+        let context = PtoUbGmRunContext::new(91, &[binding], &ops, 1usize as *mut c_void)
+            .expect("valid context");
+
+        assert_eq!(context.request_id, 91);
+        assert_eq!(context.binding_count, 1);
+        assert!(!context.bindings.is_null());
+        assert_eq!(context.ops, &ops);
+        assert_eq!(context.backend_context as usize, 1);
+    }
+
+    #[test]
+    fn pto_ub_gm_errors_map_to_stable_completion_codes() {
+        for (raw, expected) in [
+            (-3, "pto_ub_gm_bad_memref"),
+            (-4, "pto_ub_gm_unbound"),
+            (-5, "pto_ub_gm_access_denied"),
+            (-7, "pto_ub_gm_callback_failed"),
+            (-8, "pto_ub_gm_execution_failed"),
+        ] {
+            let error = SimplerApiError::ApiFailure {
+                operation: "simpler_wait_run",
+                code: raw,
+            };
+            assert_eq!(error.pto_ub_gm_code(), Some(expected));
+        }
     }
 
     #[test]

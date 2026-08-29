@@ -1,5 +1,9 @@
 //! Workload harness entry points.
 
+mod pto_ub_gm;
+
+pub use pto_ub_gm::{run_host_vector_ub_gm_dispatch, HostVectorUbGmDispatchReport};
+
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -57,6 +61,8 @@ struct SimplerRuntimeManifest {
     aicore_binary: Option<BinaryArtifactRef>,
     kernels: Vec<SimplerKernelArtifact>,
     launch: DispatchLaunchParams,
+    #[serde(default)]
+    runtime_env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +89,7 @@ pub fn load_host_vector_runtime_artifacts(
         aicore_binary: manifest.simpler_runtime.aicore_binary,
         kernels: manifest.simpler_runtime.kernels,
         launch: manifest.simpler_runtime.launch,
-        runtime_env: BTreeMap::new(),
+        runtime_env: manifest.simpler_runtime.runtime_env,
         args,
     })
 }
@@ -4124,6 +4130,7 @@ mod tests {
         block_for_request, host_vector_backend_spec_from_manifest, host_vector_manifest_path,
         run_minimal_workload, run_rust_llm_mvp_smoke, rust_llm_profile, tmrb_vector_manifest_path,
         w4_step_kind, w4_tmrb_vector_runtime_artifacts, RustLlmMvpSmokeConfig,
+        SimplerRuntimeManifestEnvelope,
     };
     use sim_config::ScenarioConfig;
     use sim_core::{
@@ -4396,6 +4403,56 @@ outputs:
                 f32::from_le_bytes(arr)
             })
             .collect()
+    }
+
+    #[test]
+    fn simpler_runtime_manifest_preserves_required_runtime_libraries() {
+        let manifest: SimplerRuntimeManifestEnvelope = serde_json::from_value(serde_json::json!({
+            "simpler_runtime": {
+                "host_runtime_library": {
+                    "id": "host",
+                    "format": "shared-object",
+                    "source": "/tmp/host.so"
+                },
+                "orch_shared_object": {
+                    "id": "orch",
+                    "format": "shared-object",
+                    "source": "/tmp/orch.so"
+                },
+                "orch_function_name": "entry",
+                "aicpu_binary": null,
+                "aicore_binary": null,
+                "kernels": [],
+                "launch": {
+                    "aicpu_thread_num": 1,
+                    "block_dim": 1,
+                    "device_id": 0,
+                    "orch_thread_num": 0
+                },
+                "runtime_env": {
+                    "SIMPLER_LOG_LIBRARY": "/tmp/libsimpler_log.so",
+                    "SIMPLER_SIM_CONTEXT_LIBRARY": "/tmp/libcpu_sim_context.so"
+                }
+            }
+        }))
+        .expect("manifest");
+
+        assert_eq!(
+            manifest
+                .simpler_runtime
+                .runtime_env
+                .get("SIMPLER_LOG_LIBRARY")
+                .map(String::as_str),
+            Some("/tmp/libsimpler_log.so")
+        );
+        assert_eq!(
+            manifest
+                .simpler_runtime
+                .runtime_env
+                .get("SIMPLER_SIM_CONTEXT_LIBRARY")
+                .map(String::as_str),
+            Some("/tmp/libcpu_sim_context.so")
+        );
     }
 
     #[test]
