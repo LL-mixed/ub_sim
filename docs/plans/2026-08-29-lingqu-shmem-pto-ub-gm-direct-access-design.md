@@ -123,6 +123,10 @@ revision 均为已经提交的阶段性代码，本文状态更新不把尚未�
 | P1 | `vendor/simpler` | `70350b51` | UB_GM tensor host-staging bypass |
 | P1 | `ub_sim` | `0c52386` | UB_GM runtime arg、view、binding materialization 与 fail-closed tests |
 | P1 | `vendor/pto-isa` | `594817f2` | CPU `TLOAD/TSTORE` checked callback 与 mock vector-add tests |
+| P2 | `vendor/simpler` | `6cf285cb` | 跨 DSO 传播 UB GM worker-local run context |
+| P2 | `ub_sim` | `70fb8b5`、`0903675` | Simpler callback adaptor 与 authorized bridge dispatch |
+| P2 | `ub_sim` | `3b7945f`、`6eb8c22` | tag-10 slot ABI 与 QEMU ingress contract tests |
+| P2 | `vendor/qemu_8.2.0_ub` | `0da2a94a` | tag-10 ingress、同步 OBMM authorization、request-scoped callback/binding |
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -157,10 +161,19 @@ Simpler 也不执行 H2D/D2H copy。PTO CPU `TLOAD/TSTORE` 已能通过 mock byt
 callback 访问这一地址，并在 OOB、权限冲突、callback 失败和 unbind 后访问时
 fail-closed。
 
-QEMU 尚未向当前 Simpler worker 安装真实 run context 和 access callbacks。根仓库运行时
-因此在进入完整 QEMU 执行前确定返回 `pto_ub_gm_unbound`。当前状态证明 P1 的
-no-staging materialization 与 PTO callback 机制，尚未证明 PTO 已经访问两节点
-`lingqu_shmem` backing；后一个结论需要 P2/P3 端到端证据。
+P2 已把 QEMU access callback 注册到现有 Rust bridge，并通过既有
+Simpler/ChipBackend adaptor 把 request-scoped run context 传播到执行 PTO callable 的
+worker。`linqu_uapi_kick()` 能识别 tag-10 slot，DMA 读取 control/memref/scalar/shape/
+stride table，校验 ABI、CRC、callable fingerprint、requester CNA、layout、bounds、
+access 和 OBMM mapping generation，再注册 binding 并进入现有 bridge。每次
+`TLOAD/TSTORE/fence` callback 都重新解析当前 OBMM mapping；completion、bridge
+submission failure 和 doorbell failure 会执行 unbind。
+
+上述 QEMU 代码已在 n4-910c Arm64 上通过项目 wrapper 完整编译，目标文件进入最终
+`qemu-system-aarch64`。当前 guest 尚未生成 tag-10 control table，也没有双节点
+producer/consumer 运行证据；因此仍未证明 PTO 已经访问两节点 `lingqu_shmem`
+backing。pending authorization 的暂停/恢复、reset/cancel 和写入 fence 的端到端语义
+也需要 P2/P3 后续验证。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
 
@@ -195,11 +208,11 @@ no-staging materialization 与 PTO callback 机制，尚未证明 PTO 已经访�
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | ABI/type 与 runtime view 已实现 | P2/P3 从 guest control table 填充真实 mapping |
-| `AddressSpace::UB_GM` | P0/P1 已实现 C++/Rust 同值 `2` 与 Simpler pass-through | P2 接入真实 run context |
+| `lingqu_shmem_memref` | ABI/type、runtime view 与 QEMU control-table parser 已实现 | P3 由 guest 填充真实 mapping |
+| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through 与 worker run context 已实现 | P3 真实 guest E2E |
 | PTO CPU UB GM hook | P1 已实现 contiguous ND、tail、range callback 与 fail-closed | P4 扩展复杂 layout |
-| QEMU UBC access callback | ABI 已冻结，行为未接线 | P2 扩展现有 `linqu_ub_bridge` FFI |
-| backend authorization 后进入 bridge | 未实现 | 扩展 `linqu_uapi_kick()` 状态机 |
+| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup | P3 真实 guest E2E 与失败矩阵 |
+| backend authorization 后进入 bridge | 同步 OBMM authorization 已实现 | P2 补 pending authorization 暂停/恢复 |
 | 两节点 PTO direct E2E | 未实现 | 新 guest workload 与统一 CLI |
 
 ## 4. 修正后的目标架构
@@ -597,9 +610,11 @@ P1 测试使用 mock byte-array backend 运行真实 PTO `TLOAD → TADD → TST
 64×64、3×5 tail tile、OOB、read-only output、callback failure 和 unbind-after-use。
 ASan 下 6 个 UB_GM 用例全部通过；普通 HOST 64×64 vector-add 回归也通过。
 
-真实 QEMU callback 注册、worker-local run context、authorization 和 completion cleanup
-仍属于 P2。当前根运行时遇到尚未接线的 UB_GM dispatch 会返回
-`pto_ub_gm_unbound`，不会回退到 host staging 或直接解引用 synthetic pointer。
+P2 已实现真实 QEMU callback 注册、worker-local run context、同步 OBMM
+authorization 和 completion cleanup。callback 缺失、binding 过期、mapping
+generation 改变、range 越界或权限冲突时继续 fail-closed，不会回退到 host staging
+或直接解引用 synthetic pointer。n4-910c 已证明候选 QEMU 能完整编译；真实 guest
+尚未提交 tag-10 descriptor，因此本节仍缺少 local/two-node runtime acceptance。
 
 ## 6. ABI 与内部数据结构
 
@@ -993,8 +1008,9 @@ producer_verify == pass
   UB_GM backend 上通过，6 个 UB_GM tests 与 HOST vector-add regression 通过；
 - 同一 6 个 UB_GM tests 在 AddressSanitizer 构建下通过。
 
-这里的“已完成”限定为 P1 mock/CPU 范围。QEMU callback、真实 run context 和
-`lingqu_shmem` backing 尚未接线，归入 P2/P3。
+这里的“已完成”限定为 P1 mock/CPU 范围。P2 随后接入 QEMU callback、真实 run
+context 和同步 OBMM authorization；`lingqu_shmem` 双节点 backing 的运行证据归入
+P3。
 
 预计工作量：5–8 个工程日。
 
@@ -1023,6 +1039,21 @@ producer_verify == pass
 - 增加 no-staging 与通用 UB GM byte counters。
 
 P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_OP_PTO_DISPATCH`。
+
+当前实施状态：
+
+- `vendor/qemu_8.2.0_ub@0da2a94a` 已实现 tag-10 decode、CRC/metadata 验证、
+  synchronous OBMM mapping authorization、request-scoped binding registry、
+  read/write/fence callback 和完成/错误 cleanup；
+- QEMU diff-only `checkpatch` 的代码项为 0 error/0 warning；n4-910c 使用
+  `guest-linux/aarch64/scripts/build_qemu_binary.sh` 完整构建成功；
+- 远程验证工作树为
+  `/home/ll/pto_ub_gm_p2_bridge_20260830-r1`；三份 QEMU 源文件的 SHA-256 与
+  `0da2a94a` 内容一致，生成的 Arm64 `qemu-system-aarch64` SHA-256 为
+  `01268f02b6a758441742596625eb8b400d8c8a499f07a34866223b219d51aad6`；
+- `sim-qemu` 35 个 unit tests 与 7 个 ABI/QEMU contract tests 通过；
+- authorization pending 的 slot snapshot/暂停/恢复、guest producer、单节点运行时
+  acceptance 和双节点 E2E 仍待完成。
 
 退出条件：
 
@@ -1227,14 +1258,14 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | 已实现 |
 | ChipBackend `host_vector` bridge/PTO E2E | 已实现，数据为 host staging |
 | experimental `sim_npu` + GVA/GSVA oracle | 已有实验实现；optional、default disabled |
-| `lingqu_shmem_memref` | P0/P1 已实现 ABI、runtime view 与 materialization；guest/QEMU 实例化待 P2/P3 |
+| `lingqu_shmem_memref` | ABI、runtime view、materialization 与 QEMU parser 已实现；guest 实例化待 P3 |
 | `AddressSpace::UB_GM` | P0/P1 已实现 C++/Rust/Simpler ABI、128-byte layout tests 与 pass-through |
 | Dispatch v2/callback/binding/counter ABI | P0 已实现 header、Rust mirror、malformed metadata validators 与 contract CLI |
-| `pto_device_cna` | P0 已加入 scenario config 与 QEMU UBC default-disabled property；callback 注册待 P2 |
+| `pto_device_cna` | P0 已加入 scenario config 与 default-disabled property；P2 已按非零 CNA 注册 callback |
 | PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests |
-| existing bridge 的 UB GM authorization/binding | 未实现 |
+| existing bridge 的 UB GM authorization/binding | P2 已实现同步 OBMM authorization、逐次重校验与 completion cleanup；pending/resume 待完成 |
 | 两节点 PTO direct-access acceptance | 未实现 |
-| no-staging 结构化证明 | P1 已证明 runtime/Simpler 不走 host staging；QEMU E2E counters 待 P2/P3 |
+| no-staging 结构化证明 | P1 已证明 runtime/Simpler 不走 host staging；QEMU callback counters 已实现，guest E2E 证据待 P3 |
 
 P0–P3 完成后才形成最小可信 PoC；P4–P5 决定其稳健性、布局覆盖和运行时可用性。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该

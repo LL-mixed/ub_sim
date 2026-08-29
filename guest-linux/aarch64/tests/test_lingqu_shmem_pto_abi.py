@@ -143,6 +143,12 @@ class LingquShmemPtoAbiTest(unittest.TestCase):
         self.assertIn("resolved->map_generation == binding->mapping_ref", mapping_check)
         self.assertIn("binding->remote_base > UINT64_MAX - offset", mapping_check)
 
+        resolver_start = source.index("bool ubc_obmm_resolve_async_map")
+        resolver_end = source.index("\n}\n", resolver_start) + 3
+        resolver = source[resolver_start:resolver_end]
+        self.assertIn("entry->remote_uba > UINT64_MAX - offset", resolver)
+        self.assertIn("entry->remote_uba + offset > UINT64_MAX - length", resolver)
+
         self.assertIn('"completion_success"', source)
         self.assertIn('"completion_failure"', source)
         self.assertIn('"doorbell_failed"', source)
