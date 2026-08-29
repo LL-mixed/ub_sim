@@ -19,9 +19,9 @@
 
 当前仓库中存在两条名称接近、语义不同的 vector 路径，分别为：
 
-| 路径 | 当前真实执行链 | 已经证明 | 仍未证明 |
+| 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable | 参数仍来自 host payload；没有直接访问 `lingqu_shmem` UB GM backing |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing | 传统 `host_vector` 参数继续使用 host payload staging；UB GM 分支的 pending/resume 与扩展验证仍待完成 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -40,7 +40,7 @@
 
 目标架构如下。
 
-![现有 ChipBackend bridge 上的 PTO UB_GM 目标架构](2026-08-29-lingqu-shmem-pto-ub-gm-architecture.svg)
+![现有 ChipBackend bridge 上已贯通的 PTO UB_GM 架构](2026-08-29-lingqu-shmem-pto-ub-gm-architecture.svg)
 
 ## 2. 上位目标与“直接访问”的验收口径
 
@@ -95,7 +95,11 @@ Upstream 设计 [`linqu_data_system.md`](https://github.com/xwhu/pypto_workspace
 | GVA | experimental、optional | 不包含，default disabled | 可选地址映射实验 |
 | GSVA | experimental、optional | 不包含，default disabled | 可选 QEMU/OBMM adaptor 实验 |
 
-这是一项设计与 feature-scope 记录。本轮不修改 Cargo feature、QEMU build option、启动脚本或实际默认运行配置；后续实现不得把上述 experimental features 作为默认路径的隐式依赖。
+该 classification 已进入实际默认配置：`vendor/qemu_8.2.0_ub@76942965`
+要求显式 `UB_SIM_EXPERIMENTAL_FEATURES=npu` 才创建设备，隐式 GSVA route 同样需要
+`gsva` token；`vendor/qemu_8.2.0_ub@3f54db3b` 进一步关闭默认 GSVA ARM-MMU
+mode。专用 NPU/GSVA regression runner 会显式传入对应 token，普通 PTO UB GM
+acceptance 不设置这些 token。
 
 ## 3. 当前实现审计
 
@@ -111,8 +115,9 @@ Upstream 设计 [`linqu_data_system.md`](https://github.com/xwhu/pypto_workspace
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录最初审计输入。随后完成的 P0/P1 实施证据如下；表中的 root
-revision 均为已经提交的阶段性代码，本文状态更新不把尚未贯通的 P2/P3 记为完成。
+这些 revision 记录最初审计输入。随后完成的 P0–P3 同步路径实施证据如下；表中的
+revision 均为已经提交的阶段性代码。P2 的异步 authorization pending/resume 和
+P4/P5 继续保持未完成状态。
 
 | 阶段 | 仓库 | Revision | 已提交内容 |
 | --- | --- | --- | --- |
@@ -127,6 +132,12 @@ revision 均为已经提交的阶段性代码，本文状态更新不把尚未�
 | P2 | `ub_sim` | `70fb8b5`、`0903675` | Simpler callback adaptor 与 authorized bridge dispatch |
 | P2 | `ub_sim` | `3b7945f`、`6eb8c22` | tag-10 slot ABI 与 QEMU ingress contract tests |
 | P2 | `vendor/qemu_8.2.0_ub` | `0da2a94a`、`dc8d9633` | tag-10 ingress、同步 OBMM authorization、opaque OBMM map handle 与 request-scoped callback/binding |
+| P2 | `vendor/qemu_8.2.0_ub` | `001eb084` | PTO worker callback 执行期间释放 QEMU BQL |
+| P3 | `ub_sim` | `5f88743`、`bc69fa1`、`81b157e` | guest dispatch builder、queue endpoint、opaque memref 与 lifetime |
+| P3 | `ub_sim` | `504f411`、`18f55b2`、`c3bbe93` | 两节点 workload、initramfs wiring 与 acceptance CLI |
+| P3 | `ub_sim` | `0770b01`、`f3a7e3f`、`182ef9b`、`b2abe0d` | import aperture、mapping sync、BQL callback 安全与 callable-1 对齐 |
+| P3 | `vendor/qemu_8.2.0_ub` | `76942965`、`3f54db3b` | experimental NPU/GSVA 与 GSVA ARM-MMU 默认关闭 |
+| P3 | `ub_sim` | `4f33311`、`53fd476` | 默认路径与 GVA/GSVA 解耦、契约 gate 与最终 QEMU pin |
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -171,11 +182,23 @@ generation，再解析其私有 SIM_DEC route。每次 `TLOAD/TSTORE/fence` call
 校验 endpoint map 和底层 route；completion、bridge submission failure 和 doorbell
 failure 会执行 unbind。
 
-上述 QEMU 代码已在 n4-910c Arm64 上通过项目 wrapper 完整编译，目标文件进入最终
-`qemu-system-aarch64`。当前 guest 尚未生成 tag-10 control table，也没有双节点
-producer/consumer 运行证据；因此仍未证明 PTO 已经访问两节点 `lingqu_shmem`
-backing。pending authorization 的暂停/恢复、reset/cancel 和写入 fence 的端到端语义
-也需要 P2/P3 后续验证。
+P3 已补齐 guest tag-10 control table、opaque map reference、producer/consumer workload
+与统一 acceptance runner。2026-08-30 的 r9 在 n4-910c 和 n4-910c1 分别从精确
+`ub_sim@53fd476a`、`QEMU@3f54db3b` worktree 完整重建并通过两节点 acceptance：
+
+- Node A 从原始 export mapping 验证 16,384 个 `u32` 输出；
+- Node B 沿既有 bridge 执行 callable 1，日志包含两次 65,536-byte load、一次
+  65,536-byte store 和一次 fence；
+- completion unbind 记录 `load_bytes=131072`、`store_bytes=65536`、`fences=1`、
+  `segment_payload_staging_bytes=0`；
+- 两台机器的默认日志均没有 `UB_NPU: created`、`SIM_DEC: GVA_MAP`、
+  `GVA_S3_MAP`、`GVA_ROUTE_DUMP`、`GSVA_MODE` 或 `GSVA_`；
+- 两份 `validation.status` 均为 `pass`，`runner_exit_code=0`，结束后没有 QEMU
+  进程残留。
+
+这组证据证明了同步 OBMM authorization 路径的 PTO direct access。异步
+authorization pending 的 slot snapshot/恢复、reset/cancel 和系统化负向矩阵仍归入
+P2 尾项与 P4。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
 
@@ -210,12 +233,12 @@ backing。pending authorization 的暂停/恢复、reset/cancel 和写入 fence 
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | ABI/type、runtime view 与 QEMU control-table parser 已实现 | P3 由 guest 填充真实 mapping |
-| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through 与 worker run context 已实现 | P3 真实 guest E2E |
+| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E | P4 扩展负向/lifetime 矩阵 |
+| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context 与真实 guest E2E 已实现 | P4 扩展复杂 layout |
 | PTO CPU UB GM hook | P1 已实现 contiguous ND、tail、range callback 与 fail-closed | P4 扩展复杂 layout |
-| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup | P3 真实 guest E2E 与失败矩阵 |
+| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步 E2E 通过 | P4 失败矩阵与并发 |
 | backend authorization 后进入 bridge | 同步 OBMM authorization 已实现 | P2 补 pending authorization 暂停/恢复 |
-| 两节点 PTO direct E2E | 未实现 | 新 guest workload 与统一 CLI |
+| 两节点 PTO direct E2E | n4-910c、n4-910c1 r9 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展负向、layout 与并发 coverage |
 
 ## 4. 修正后的目标架构
 
@@ -622,8 +645,9 @@ ASan 下 6 个 UB_GM 用例全部通过；普通 HOST 64×64 vector-add 回归�
 P2 已实现真实 QEMU callback 注册、worker-local run context、同步 OBMM
 authorization 和 completion cleanup。callback 缺失、binding 过期、mapping
 generation 改变、range 越界或权限冲突时继续 fail-closed，不会回退到 host staging
-或直接解引用 synthetic pointer。n4-910c 已证明候选 QEMU 能完整编译；真实 guest
-尚未提交 tag-10 descriptor，因此本节仍缺少 local/two-node runtime acceptance。
+或直接解引用 synthetic pointer。P3 guest 已提交真实 tag-10 descriptor；n4-910c 和
+n4-910c1 r9 两节点 runtime acceptance 均通过，并在同一个 request 中观察到
+`TLOAD/TSTORE` 对应的 QEMU UB GM load/store/fence callback。
 
 ## 6. ABI 与内部数据结构
 
@@ -904,42 +928,43 @@ Node B consumer：
 
 ### 9.2 关联日志
 
-同一 `request_id` 至少出现：
+当前 r9 acceptance 对同一 `op_id`/`request_id` 检查以下实际日志契约：
 
 ```text
-LINGQU_SHMEM_EXPORT
-LINGQU_SHMEM_IMPORT
-LINGQU_SHMEM_MEMREF_CREATE
-UAPI_CHIPBACKEND_DISPATCH_BEGIN
+LINGQU_SHMEM_PTO role=producer stage=published
+LINGQU_SHMEM_PTO role=consumer stage=prepared ... mapping_ref=...
+QEMU_UB_GM_ACCESS_REGISTER pto_device_cna=...
 QEMU_UB_GM_INPUT_AUTHORIZE
 QEMU_UB_GM_OUTPUT_AUTHORIZE
 SIM_QEMU_UB_GM_BIND_REGISTER
-PTO_SIM_UB_GM_BIND
-PTO_TLOAD_UB_GM
+name=simpler_run.bind
 QEMU_UB_GM_LOAD
-PTO_TSTORE_UB_GM
 QEMU_UB_GM_STORE
 QEMU_UB_GM_FENCE
-UAPI_CHIPBACKEND_DISPATCH_COMPLETE
-LINGQU_SHMEM_PRODUCER_VERIFY_PASS
+QEMU_UB_GM_UNBIND ... segment_payload_staging_bytes=0
+LINGQU_SHMEM_PTO role=consumer stage=completion ... completion_status=1
+LINGQU_SHMEM_PTO role=producer producer_verify=pass
 ```
+
+`QEMU_UB_GM_LOAD/STORE/FENCE` 由执行 callable 的 PTO worker callback 产生；紧邻的
+`simpler_run.*` spans 证明 callback 位于现有 Simpler/PTO 执行窗口内。acceptance 还会
+拒绝 `UB_NPU: created`、GVA mapping/route 和任意 `GSVA_`/`GSVA_MODE` 日志。
 
 ### 9.3 machine-checkable counters
 
-```json
-{
-  "request_id": 42,
-  "h2d_bytes": 0,
-  "d2h_bytes": 0,
-  "segment_payload_staging_bytes": 0,
-  "pto_ub_gm_read_bytes": 8192,
-  "pto_ub_gm_write_bytes": 4096,
-  "qemu_ub_gm_load_bytes": 8192,
-  "qemu_ub_gm_store_bytes": 4096,
-  "qemu_ub_gm_fence_count": 1,
-  "producer_verify": "pass"
-}
-```
+对 16,384 个 `u32` 元素，r9 的 machine-checkable 实际值为：
+
+| 指标 | n4-910c | n4-910c1 | 断言 |
+| --- | ---: | ---: | --- |
+| input authorization | 2 | 2 | 每个 65,536 bytes |
+| output authorization | 1 | 1 | 65,536 bytes |
+| QEMU UB GM load | 2 | 2 | 合计 131,072 bytes |
+| QEMU UB GM store | 1 | 1 | 合计 65,536 bytes |
+| QEMU UB GM fence | 1 | 1 | output range 65,536 bytes |
+| `segment_payload_staging_bytes` | 0 | 0 | 必须为 0 |
+| producer original-mapping verify | pass | pass | 必须为 pass |
+| experimental path leakage | 0 | 0 | 必须为 0 |
+| QEMU leftovers | 0 | 0 | 必须为 0 |
 
 验收断言：
 
@@ -952,6 +977,30 @@ pto_ub_gm_write_bytes == qemu_ub_gm_store_bytes
 qemu_ub_gm_fence_count >= 1
 producer_verify == pass
 ```
+
+P1 的 Simpler pass-through tests 独立证明 UB_GM tensor 不触发 H2D/D2H；r9 进一步
+证明实际 guest dispatch 的 `segment_payload_staging_bytes` 为零。当前结构化 unbind
+记录尚未单独输出 `h2d_bytes`/`d2h_bytes` 字段，P5 会把这些路径级 counters 汇总到
+同一报告。
+
+### 9.4 r9 双机证据
+
+| 项目 | n4-910c | n4-910c1 |
+| --- | --- | --- |
+| run id | `pto-ub-gm-p3-e2e-n4-20260830-r9` | `pto-ub-gm-p3-e2e-n4c1-20260830-r9` |
+| root revision | `53fd476af2e974cf83648231b1602b987cb82495` | 同左 |
+| QEMU revision | `3f54db3bc3c993420b76d69459689d672e2971a9` | 同左 |
+| callable fingerprint | `0x46fb4d59b4d3e5ce` | 同左 |
+| manifest SHA-256 | `04820fadd8032b31ad193361ff1b398121a9f0ff9b1390f72207f52fbcb6038d` | 同左 |
+| Image SHA-256 | `bfde80c070846d146d7360112e14b66457bde3e3423f9798d7f5330410f623f1` | `21c97eaa3b6d7853db325bc3c1238595f49574ec6ab092448997fba752d15fe2` |
+| initramfs SHA-256 | `547b3b685fa01b95830dcb2c62c466cbd7d522e5cb320a8fa87566d578b3fa52` | `06571305a976638ac7018080db32edec525e6d4e074f360d343d789c90b5d2c7` |
+| QEMU SHA-256 | `56567aa53a4d077081a86caeb05b76e30f6c87fe7e81658eb56fd38c78c033d4` | `16a0f420a18ef47084a8573d18fb955980be816e5bb5db329644c9f5105e63cd` |
+| `validation.status` | pass | pass |
+
+完整 evidence 已保存到仓库外的远端 worktree，并复制到本地忽略目录
+`out/lingqu-shmem-pto-e2e/<run-id>/`。r8 失败 evidence 保持只读；其唯一失败原因是
+默认 `GSVA_MODE arm_mmu` 日志泄漏，数据路径本身已经完成。r9 修正后重新完整构建，
+没有覆盖或混用 r8 文件。
 
 当显式启用 experimental GSVA adaptor 时，可以额外输出 `qemu_gsva_device_*` diagnostics；这些字段不进入默认验收契约。
 
@@ -1057,6 +1106,10 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 - `vendor/qemu_8.2.0_ub@dc8d9633` 把 wire mapping reference 绑定到已注册的
   OBMM endpoint map，并在每次 callback 中同时重校验 endpoint generation 和底层
   route identity；
+- `vendor/qemu_8.2.0_ub@001eb084` 在 PTO worker callback 期间释放 BQL，避免跨
+  QEMU/Rust/Simpler/PTO 同步调用形成 BQL 自锁；
+- `vendor/qemu_8.2.0_ub@76942965`、`3f54db3b` 使 NPU、隐式 GSVA route 与
+  GSVA ARM-MMU mode 都成为显式 opt-in；
 - QEMU diff-only `checkpatch` 的代码项为 0 error/0 warning；n4-910c 使用
   `guest-linux/aarch64/scripts/build_qemu_binary.sh` 完整构建成功；
 - 远程验证工作树为
@@ -1065,8 +1118,8 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
   `57bb74b667de6cb38ab9a28f3890941e8f2572a8e9db8c45714698e78d9b53e3`；
 - `sim-qemu` 35 个 unit tests、8 个 ABI/QEMU contract tests，以及远程 QEMU
   `obmm-remote` 6 个、`obmm-remote-model` 7 个、`async-load` 9 个 unit cases 通过；
-- authorization pending 的 slot snapshot/暂停/恢复、guest producer、单节点运行时
-  acceptance 和双节点 E2E 仍待完成。
+- 同步 OBMM authorization、guest producer/consumer 和双节点 E2E 已完成；
+  authorization pending 的 slot snapshot/暂停/恢复仍待实现。
 
 退出条件：
 
@@ -1079,7 +1132,7 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 
 预计工作量：5–8 个工程日。
 
-### P3：`lingqu_shmem_memref` 与双节点 OBMM E2E
+### P3：`lingqu_shmem_memref` 与双节点 OBMM E2E（同步路径已完成）
 
 主要改动位置：
 
@@ -1099,6 +1152,19 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 - 汇总结构化日志、counters 和 artifact fingerprints；
 - 失败后清理 guest、QEMU、mapping 和临时 evidence。
 
+当前实施状态：
+
+- `5f88743`、`bc69fa1`、`81b157e` 已实现 guest v2 materialization、queue
+  endpoint、opaque memref 与 region/view/in-flight lifetime；
+- `504f411`、`18f55b2`、`c3bbe93` 已实现 producer/consumer workload、guest image
+  wiring 和 `run_ub_dual_node_lingqu_shmem_pto_direct.sh` acceptance CLI；
+- `0770b01`、`f3a7e3f`、`182ef9b`、`b2abe0d` 已修正映射同步、OBMM import
+  aperture、BQL callback 和实际 callable-1 ABI；
+- `4f33311`、`53fd476` 把默认 PTO path 与 NPU/GVA/GSVA 解耦并固定最终 QEMU
+  revision；
+- n4-910c 与 n4-910c1 r9 均以 `validation.status=pass`、
+  `runner_exit_code=0` 结束，退出条件中的 positive synchronous path 全部满足。
+
 退出条件：
 
 - 两节点 producer/consumer 实跑通过；
@@ -1110,7 +1176,7 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 
 预计工作量：5–8 个工程日。
 
-### P4：负向、layout 与并发验证
+### P4：负向、layout 与并发验证（待完成）
 
 | 类别 | Cases |
 | --- | --- |
@@ -1133,7 +1199,7 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 
 预计工作量：5–8 个工程日。
 
-### P5：性能与上层集成
+### P5：性能与上层集成（待完成）
 
 工作内容：
 
@@ -1250,8 +1316,8 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 
 ## 14. 工作量与完成度
 
-现有 bridge 与 ChipBackend/PTO 执行链已经贯通，修正后的最小可信 PoC 预计为
-4–6 周单人连续投入：
+现有 bridge、ChipBackend/PTO、guest memref 和双节点同步数据路径已经贯通。原始
+工作量估算保留如下，实际状态以其后的能力表为准：
 
 | 范围 | 预计工作量 |
 | --- | ---: |
@@ -1271,16 +1337,17 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | 已实现 |
 | ChipBackend `host_vector` bridge/PTO E2E | 已实现，数据为 host staging |
 | experimental `sim_npu` + GVA/GSVA oracle | 已有实验实现；optional、default disabled |
-| `lingqu_shmem_memref` | ABI、runtime view、materialization 与 QEMU parser 已实现；guest 实例化待 P3 |
+| `lingqu_shmem_memref` | ABI、runtime view、guest materialization、QEMU parser 和两节点 lifetime 已实现 |
 | `AddressSpace::UB_GM` | P0/P1 已实现 C++/Rust/Simpler ABI、128-byte layout tests 与 pass-through |
 | Dispatch v2/callback/binding/counter ABI | P0 已实现 header、Rust mirror、malformed metadata validators 与 contract CLI |
 | `pto_device_cna` | P0 已加入 scenario config 与 default-disabled property；P2 已按非零 CNA 注册 callback |
 | PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests |
 | existing bridge 的 UB GM authorization/binding | P2 已实现同步 OBMM authorization、opaque endpoint-map reference、底层 route 逐次重校验与 completion cleanup；pending/resume 待完成 |
-| 两节点 PTO direct-access acceptance | 未实现 |
-| no-staging 结构化证明 | P1 已证明 runtime/Simpler 不走 host staging；QEMU callback counters 已实现，guest E2E 证据待 P3 |
+| 两节点 PTO direct-access acceptance | n4-910c 与 n4-910c1 r9 均通过；默认 acceptance 无 NPU/GVA/GSVA 依赖 |
+| no-staging 结构化证明 | P1 pass-through tests 与 P3 r9 `segment_payload_staging_bytes=0` 共同覆盖；P5 统一 H2D/D2H counters 待完成 |
 
-P0–P3 完成后才形成最小可信 PoC；P4–P5 决定其稳健性、布局覆盖和运行时可用性。
+P0、P1 和 P3 同步正向路径已完成。P2 的 authorization pending/resume 仍是最小
+可信 PoC 的未闭环项；P4/P5 决定负向稳健性、布局覆盖、性能和运行时可用性。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 

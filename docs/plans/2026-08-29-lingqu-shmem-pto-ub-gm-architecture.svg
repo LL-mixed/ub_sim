@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1160" viewBox="0 0 1680 1160" role="img" aria-labelledby="title desc">
-  <title id="title">现有 ChipBackend bridge 上的 PTO UB_GM 目标架构</title>
-  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、当前 host payload staging、目标 UB_GM 参数路径、通用 QEMU UB GM 数据循环，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
+  <title id="title">现有 ChipBackend bridge 上已贯通的 PTO UB_GM 架构</title>
+  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、传统 host payload staging、P3 已验证的 UB_GM 参数与数据路径，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
@@ -29,7 +29,7 @@
 
   <rect width="1680" height="1160" fill="#f8fafc"/>
   <text x="60" y="54" class="title">lingqu_shmem → PTO UB_GM：复用现有 ChipBackend bridge</text>
-  <text x="60" y="84" class="subtitle">现有控制/执行路径已经贯通；目标改动位于参数 materialization 与 PTO TLOAD/TSTORE 的 UB GM memory interface。</text>
+  <text x="60" y="84" class="subtitle">P3 r9 已在 n4-910c / n4-910c1 验证同一主链：2×64 KiB load、1×64 KiB store、1×fence、零 payload staging。</text>
 
   <rect x="45" y="112" width="1590" height="270" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
   <text x="72" y="149" class="lane-title">A. 已实现并保留的控制与执行主链</text>
@@ -112,7 +112,7 @@
   <text x="427" y="664" text-anchor="middle" class="note">控制/执行链正确；数据仍由 Rust host payload 承载。</text>
 
   <rect x="850" y="410" width="785" height="300" rx="22" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
-  <text x="877" y="448" class="target-title">C. 目标 UB_GM 参数路径：沿同一 dispatch 去掉 payload staging</text>
+  <text x="877" y="448" class="target-title">C. P3 已实现的 UB_GM 参数路径：沿同一 dispatch 去掉 payload staging</text>
 
   <rect x="885" y="498" width="215" height="120" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
   <text x="992" y="530" text-anchor="middle" class="box-title-small">lingqu_shmem_memref</text>
@@ -137,7 +137,7 @@
   <text x="1242" y="664" text-anchor="middle" class="note">control metadata 可复制；tensor payload 不进入 segment_payloads 或 HostPayloadRegistry。</text>
 
   <rect x="45" y="742" width="1590" height="260" rx="22" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="2"/>
-  <text x="72" y="780" class="lane-title">D. 目标数据循环：PTO callback 回到 QEMU UB GM interface，再访问 lingqu_shmem backing</text>
+  <text x="72" y="780" class="lane-title">D. P3 已验证的数据循环：PTO callback 回到 QEMU UB GM interface，再访问 lingqu_shmem backing</text>
 
   <rect x="95" y="835" width="240" height="110" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
   <text x="215" y="868" text-anchor="middle" class="box-title">Simpler / PTO</text>
