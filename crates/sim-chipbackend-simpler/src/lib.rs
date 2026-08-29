@@ -168,6 +168,31 @@ impl DataType {
     }
 }
 
+impl TryFrom<u16> for DataType {
+    type Error = SimplerApiError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Float32),
+            1 => Ok(Self::Float16),
+            2 => Ok(Self::Int32),
+            3 => Ok(Self::Int16),
+            4 => Ok(Self::Int8),
+            5 => Ok(Self::Uint8),
+            6 => Ok(Self::Bfloat16),
+            7 => Ok(Self::Int64),
+            8 => Ok(Self::Uint64),
+            9 => Ok(Self::Uint16),
+            10 => Ok(Self::Uint32),
+            11 => Ok(Self::Bool),
+            12 => Ok(Self::Fp8E4M3Fn),
+            13 => Ok(Self::Fp8E8M0),
+            14 => Ok(Self::Fp4E2M1),
+            _ => Err(SimplerApiError::InvalidDataType(value)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DevicePtr(NonNull<c_void>);
 
@@ -250,23 +275,91 @@ impl Tensor {
         if shape.is_empty() || shape.len() > 5 || shape.contains(&0) {
             return Err(SimplerApiError::InvalidTensorShape);
         }
-        let mut shapes = [0u32; 5];
-        let mut strides = [0u32; 5];
+        let mut row_major_strides = vec![0u32; shape.len()];
         let mut elements = 1u64;
         for (index, dimension) in shape.iter().copied().enumerate().rev() {
-            strides[index] =
+            row_major_strides[index] =
                 u32::try_from(elements).map_err(|_| SimplerApiError::InvalidTensorShape)?;
             elements = elements
                 .checked_mul(u64::from(dimension))
                 .ok_or(SimplerApiError::InvalidTensorShape)?;
-            shapes[index] = dimension;
         }
-        let required_bytes = elements
+        Self::from_shape_and_strides(
+            data,
+            bytes,
+            shape,
+            &row_major_strides,
+            dtype,
+            AddressSpace::from(device_memory),
+        )
+    }
+
+    pub fn from_ub_gm(
+        aperture_addr: u64,
+        bytes: u64,
+        shape: &[u32],
+        strides: &[u32],
+        dtype: DataType,
+    ) -> Result<Self, SimplerApiError> {
+        if aperture_addr == 0 || bytes == 0 || aperture_addr.checked_add(bytes).is_none() {
+            return Err(SimplerApiError::InvalidTensorShape);
+        }
+        Self::from_shape_and_strides(
+            aperture_addr,
+            bytes,
+            shape,
+            strides,
+            dtype,
+            AddressSpace::UbGm,
+        )
+    }
+
+    fn from_shape_and_strides(
+        data: u64,
+        bytes: u64,
+        shape: &[u32],
+        strides: &[u32],
+        dtype: DataType,
+        address_space: AddressSpace,
+    ) -> Result<Self, SimplerApiError> {
+        if shape.is_empty()
+            || shape.len() > 5
+            || shape.len() != strides.len()
+            || shape.contains(&0)
+            || strides.contains(&0)
+        {
+            return Err(SimplerApiError::InvalidTensorShape);
+        }
+
+        let mut shapes = [0u32; 5];
+        let mut tensor_strides = [0u32; 5];
+        let mut extent_elements = 1u64;
+        let mut expected_stride = 1u64;
+        let mut contiguous = true;
+        for index in (0..shape.len()).rev() {
+            let dimension = u64::from(shape[index]);
+            let stride = u64::from(strides[index]);
+            shapes[index] = shape[index];
+            tensor_strides[index] = strides[index];
+            contiguous &= stride == expected_stride;
+            extent_elements = extent_elements
+                .checked_add(
+                    (dimension - 1)
+                        .checked_mul(stride)
+                        .ok_or(SimplerApiError::InvalidTensorShape)?,
+                )
+                .ok_or(SimplerApiError::InvalidTensorShape)?;
+            expected_stride = expected_stride
+                .checked_mul(dimension)
+                .ok_or(SimplerApiError::InvalidTensorShape)?;
+        }
+        let required_bytes = extent_elements
             .checked_mul(dtype.element_size() as u64)
             .ok_or(SimplerApiError::InvalidTensorShape)?;
         if required_bytes > bytes {
             return Err(SimplerApiError::InvalidTensorShape);
         }
+
         Ok(Self {
             buffer_addr: data,
             buffer_size: bytes,
@@ -276,11 +369,11 @@ impl Tensor {
             ndims: shape.len() as u32,
             dtype,
             manual_dep: 0,
-            is_contiguous: 1,
-            address_space: AddressSpace::from(device_memory) as u8,
+            is_contiguous: u8::from(contiguous),
+            address_space: address_space as u8,
             shapes,
-            extent_elem_cache: elements,
-            strides,
+            extent_elem_cache: extent_elements,
+            strides: tensor_strides,
             _pad_cl2: [0; 36],
         })
     }
@@ -302,6 +395,18 @@ impl Tensor {
             2 => AddressSpace::UbGm,
             value => panic!("invalid Tensor address space {value}"),
         }
+    }
+
+    pub fn buffer_addr(&self) -> u64 {
+        self.buffer_addr
+    }
+
+    pub fn buffer_size(&self) -> u64 {
+        self.buffer_size
+    }
+
+    pub fn is_contiguous(&self) -> bool {
+        self.is_contiguous != 0
     }
 }
 
@@ -353,6 +458,16 @@ impl ChipStorageTaskArgs {
         out.tensors[..tensors.len()].copy_from_slice(tensors);
         out.scalars[..scalars.len()].copy_from_slice(scalars);
         Ok(out)
+    }
+
+    pub fn tensor_count(&self) -> usize {
+        self.tensor_count as usize
+    }
+
+    pub fn tensor(&self, index: usize) -> Option<&Tensor> {
+        self.tensors
+            .get(index)
+            .filter(|_| index < self.tensor_count())
     }
 }
 
@@ -528,6 +643,8 @@ pub enum SimplerApiError {
     InvalidSymbolName,
     #[error("invalid tensor shape")]
     InvalidTensorShape,
+    #[error("invalid tensor data type {0}")]
+    InvalidDataType(u16),
     #[error("too many simpler runtime args")]
     TooManyArgs,
     #[error("callable binary too large")]
@@ -975,6 +1092,30 @@ mod tests {
         let tensor =
             Tensor::from_shape(0x1000, 64, &[16], DataType::Float32, false).expect("host tensor");
         assert_eq!(tensor.address_space(), AddressSpace::Host);
+    }
+
+    #[test]
+    fn ub_gm_tensor_preserves_synthetic_aperture_without_host_allocation() {
+        let tensor = Tensor::from_ub_gm(
+            0x7000_0000_1000,
+            16_384,
+            &[64, 64],
+            &[64, 1],
+            DataType::Float32,
+        )
+        .expect("UB GM tensor");
+
+        assert_eq!(tensor.address_space(), AddressSpace::UbGm);
+        assert_eq!(tensor.buffer_addr(), 0x7000_0000_1000);
+        assert_eq!(tensor.buffer_size(), 16_384);
+        assert!(tensor.is_contiguous());
+    }
+
+    #[test]
+    fn ub_gm_tensor_rejects_invalid_dtype_and_out_of_bounds_view() {
+        assert!(DataType::try_from(15).is_err());
+        assert!(Tensor::from_ub_gm(0x7000_0000_1000, 16, &[8], &[1], DataType::Float32,).is_err());
+        assert!(Tensor::from_ub_gm(0, 32, &[8], &[1], DataType::Float32).is_err());
     }
 
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {

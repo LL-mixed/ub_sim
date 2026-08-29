@@ -783,6 +783,7 @@ fn with_simpler_device_context<T>(
 struct PreparedSimplerCapiArgs {
     task_args: simpler_capi::ChipStorageTaskArgs,
     signature: Vec<simpler_capi::ArgDirection>,
+    ub_gm_bindings: Vec<sim_core::SimplerUbGmBinding>,
 }
 
 fn prepare_simpler_capi_args(
@@ -815,13 +816,16 @@ fn prepare_simpler_capi_args(
                     return Err("simpler_capi_input_payload_too_short".to_string());
                 }
             }
-            SimplerRuntimeArg::ScalarU64(_) => {}
+            SimplerRuntimeArg::ScalarU64(_) | SimplerRuntimeArg::UbGmMemref { .. } => {}
         }
     }
 
     let mut tensors = Vec::new();
     let mut scalars = Vec::new();
     let mut signature = Vec::new();
+    let mut ub_gm_bindings = Vec::new();
+    let mut ub_gm_request_id = None;
+    let mut ub_gm_binding_ids = HashSet::new();
     for arg in runtime_args {
         match arg {
             SimplerRuntimeArg::ScalarU64(value) => {
@@ -881,6 +885,46 @@ fn prepare_simpler_capi_args(
                 );
                 signature.push(simpler_capi::ArgDirection::Inout);
             }
+            SimplerRuntimeArg::UbGmMemref {
+                binding,
+                view,
+                usage,
+            } => {
+                validate_ub_gm_binding(binding, view, *usage)?;
+                if let Some(request_id) = ub_gm_request_id {
+                    if request_id != binding.request_id {
+                        return Err("pto_ub_gm_bad_memref".to_string());
+                    }
+                } else {
+                    ub_gm_request_id = Some(binding.request_id);
+                }
+                if !ub_gm_binding_ids.insert(binding.binding_id) {
+                    return Err("pto_ub_gm_bad_memref".to_string());
+                }
+                let aperture_addr = binding
+                    .aperture_base
+                    .checked_add(view.aperture_offset)
+                    .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
+                let dtype = simpler_capi::DataType::try_from(view.dtype)
+                    .map_err(|_| "pto_ub_gm_bad_memref".to_string())?;
+                tensors.push(
+                    simpler_capi::Tensor::from_ub_gm(
+                        aperture_addr,
+                        view.byte_length,
+                        &view.shape,
+                        &view.strides,
+                        dtype,
+                    )
+                    .map_err(|_| "pto_ub_gm_bad_memref".to_string())?,
+                );
+                signature.push(match usage {
+                    sim_core::BufferUsage::Input => simpler_capi::ArgDirection::In,
+                    sim_core::BufferUsage::Output => simpler_capi::ArgDirection::Out,
+                    sim_core::BufferUsage::Inout => simpler_capi::ArgDirection::Inout,
+                    _ => return Err("pto_ub_gm_access_denied".to_string()),
+                });
+                ub_gm_bindings.push(binding.clone());
+            }
         }
     }
     signature.extend(std::iter::repeat(simpler_capi::ArgDirection::Scalar).take(scalars.len()));
@@ -889,7 +933,49 @@ fn prepare_simpler_capi_args(
     Ok(PreparedSimplerCapiArgs {
         task_args,
         signature,
+        ub_gm_bindings,
     })
+}
+
+fn validate_ub_gm_binding(
+    binding: &sim_core::SimplerUbGmBinding,
+    view: &sim_core::SimplerUbGmView,
+    usage: sim_core::BufferUsage,
+) -> Result<(), String> {
+    let expected_access = match usage {
+        sim_core::BufferUsage::Input => sim_core::SimplerUbGmAccess::Read,
+        sim_core::BufferUsage::Output => sim_core::SimplerUbGmAccess::Write,
+        sim_core::BufferUsage::Inout => sim_core::SimplerUbGmAccess::ReadWrite,
+        _ => return Err("pto_ub_gm_access_denied".to_string()),
+    };
+    if binding.access != expected_access {
+        return Err("pto_ub_gm_access_denied".to_string());
+    }
+    let view_end = view
+        .aperture_offset
+        .checked_add(view.byte_length)
+        .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
+    if binding.request_id == 0
+        || binding.binding_id == 0
+        || binding.aperture_base == 0
+        || binding.aperture_length == 0
+        || binding.ub_gm_base == 0
+        || binding.mapped_length < binding.aperture_length
+        || binding.flags != 0
+        || binding
+            .aperture_base
+            .checked_add(binding.aperture_length)
+            .is_none()
+        || binding
+            .ub_gm_base
+            .checked_add(binding.aperture_length)
+            .is_none()
+        || view.byte_length == 0
+        || view_end > binding.aperture_length
+    {
+        return Err("pto_ub_gm_bad_memref".to_string());
+    }
+    Ok(())
 }
 
 fn simpler_tensor_dtype(
@@ -1004,7 +1090,9 @@ fn validate_simpler_capi_dispatch_spec(
                     *bytes,
                     matches!(binding.usage, sim_core::BufferUsage::Inout),
                 ),
-                SimplerRuntimeArg::ScalarU64(_) => unreachable!(),
+                SimplerRuntimeArg::ScalarU64(_) | SimplerRuntimeArg::UbGmMemref { .. } => {
+                    unreachable!()
+                }
             };
             if !usage_ok {
                 return Err(format!("binding_usage_mismatch:{}", binding.name));
@@ -2265,6 +2353,9 @@ impl LocalRuntimeEngine {
                 &runtime_artifacts.args,
                 host_payloads,
             )?;
+            if !prepared.ub_gm_bindings.is_empty() {
+                return Err("pto_ub_gm_unbound".to_string());
+            }
             detail_prepare_args_ms = detail_started.elapsed().as_millis();
             let kernel_inputs: Vec<simpler_capi::KernelCallableInput<'_>> = runtime_artifacts
                 .kernels
@@ -2927,11 +3018,12 @@ impl SimBlockStore for InMemoryBlockStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        simpler_binary_fingerprint, ContextState, EvictionPlan, InMemoryBlockStore,
-        LocalRuntimeEngine, PromotionPlan, RecursiveRoutePlanner, RoutePlanner, RouteRequest,
-        RuntimeCompletionTracker, RuntimeOpKind, RuntimeOpState, SharedRuntimeQueue, SimBlockStore,
-        VecEventSink,
+        prepare_simpler_capi_args, simpler_binary_fingerprint, ContextState, EvictionPlan,
+        HostPayloadRegistry, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan,
+        RecursiveRoutePlanner, RoutePlanner, RouteRequest, RuntimeCompletionTracker, RuntimeOpKind,
+        RuntimeOpState, SharedRuntimeQueue, SimBlockStore, VecEventSink,
     };
+    use sim_chipbackend_simpler::{AddressSpace, ArgDirection};
     use sim_config::ScenarioConfig;
     use sim_core::{
         BackendDispatchOperation, BackendExecutionRequest, BlockHash, BufferUsage, CompletionEvent,
@@ -2939,7 +3031,8 @@ mod tests {
         DispatchBufferBinding, DispatchRequest, ExecutionContextCommand, ExecutionContextRef,
         ExecutionLifecycle, ExecutionPlanRef, ExecutionStepKind, FunctionLabel, HierarchyCoord,
         LogicalSystemId, MemoryEndpoint, PlLevel, RequestCorrelation, SegmentHandle, SimEvent,
-        TaskKey, TensorDType, TensorLayout,
+        SimplerRuntimeArg, SimplerUbGmAccess, SimplerUbGmBinding, SimplerUbGmView, TaskKey,
+        TensorDType, TensorLayout,
     };
     use sim_topology::SimTopology;
 
@@ -3050,6 +3143,84 @@ outputs:
             simpler_binary_fingerprint(b"same-path-geometry-a"),
             simpler_binary_fingerprint(b"same-path-geometry-b")
         );
+    }
+
+    fn test_ub_gm_binding(access: SimplerUbGmAccess) -> SimplerUbGmBinding {
+        SimplerUbGmBinding {
+            request_id: 9001,
+            binding_id: 41,
+            aperture_base: 0x7000_0000_0000,
+            aperture_length: 16_384,
+            ub_gm_base: 0x20_0000,
+            mapped_length: 16_384,
+            access,
+            flags: 0,
+            backend_cookie: 7,
+        }
+    }
+
+    fn test_ub_gm_view() -> SimplerUbGmView {
+        SimplerUbGmView {
+            aperture_offset: 0,
+            byte_length: 16_384,
+            shape: vec![64, 64],
+            strides: vec![64, 1],
+            dtype: 0,
+        }
+    }
+
+    #[test]
+    fn simpler_ub_gm_arg_materializes_without_host_payload_staging() {
+        let mut host_payloads = HostPayloadRegistry::default();
+        let prepared = prepare_simpler_capi_args(
+            sim_core::DispatchBackendProfile::HostVector,
+            &[SimplerRuntimeArg::UbGmMemref {
+                binding: test_ub_gm_binding(SimplerUbGmAccess::Read),
+                view: test_ub_gm_view(),
+                usage: BufferUsage::Input,
+            }],
+            &mut host_payloads,
+        )
+        .expect("UB GM materialization");
+
+        assert!(host_payloads.segments.is_empty());
+        assert_eq!(prepared.ub_gm_bindings.len(), 1);
+        assert_eq!(prepared.signature, vec![ArgDirection::In]);
+        let tensor = prepared.task_args.tensor(0).expect("tensor");
+        assert_eq!(tensor.address_space(), AddressSpace::UbGm);
+        assert_eq!(tensor.buffer_addr(), 0x7000_0000_0000);
+        assert_eq!(tensor.buffer_size(), 16_384);
+    }
+
+    #[test]
+    fn simpler_ub_gm_arg_fails_closed_on_access_or_bounds_mismatch() {
+        let mut host_payloads = HostPayloadRegistry::default();
+        let access_error = prepare_simpler_capi_args(
+            sim_core::DispatchBackendProfile::HostVector,
+            &[SimplerRuntimeArg::UbGmMemref {
+                binding: test_ub_gm_binding(SimplerUbGmAccess::Read),
+                view: test_ub_gm_view(),
+                usage: BufferUsage::Output,
+            }],
+            &mut host_payloads,
+        )
+        .expect_err("read-only output must fail");
+        assert_eq!(access_error, "pto_ub_gm_access_denied");
+
+        let mut view = test_ub_gm_view();
+        view.aperture_offset = 4;
+        let bounds_error = prepare_simpler_capi_args(
+            sim_core::DispatchBackendProfile::HostVector,
+            &[SimplerRuntimeArg::UbGmMemref {
+                binding: test_ub_gm_binding(SimplerUbGmAccess::Read),
+                view,
+                usage: BufferUsage::Input,
+            }],
+            &mut host_payloads,
+        )
+        .expect_err("out-of-bounds view must fail");
+        assert_eq!(bounds_error, "pto_ub_gm_bad_memref");
+        assert!(host_payloads.segments.is_empty());
     }
 
     fn test_task() -> TaskKey {

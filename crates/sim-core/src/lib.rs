@@ -343,6 +343,36 @@ pub struct DispatchLaunchParams {
     pub orch_thread_num: u32,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SimplerUbGmAccess {
+    Read = 1,
+    Write = 2,
+    ReadWrite = 3,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplerUbGmBinding {
+    pub request_id: u64,
+    pub binding_id: u64,
+    pub aperture_base: u64,
+    pub aperture_length: u64,
+    pub ub_gm_base: u64,
+    pub mapped_length: u64,
+    pub access: SimplerUbGmAccess,
+    pub flags: u32,
+    pub backend_cookie: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplerUbGmView {
+    pub aperture_offset: u64,
+    pub byte_length: u64,
+    pub shape: Vec<u32>,
+    pub strides: Vec<u32>,
+    pub dtype: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SimplerRuntimeArg {
     ScalarU64(u64),
@@ -357,6 +387,11 @@ pub enum SimplerRuntimeArg {
     InoutSegment {
         endpoint: MemoryEndpoint,
         bytes: u64,
+    },
+    UbGmMemref {
+        binding: SimplerUbGmBinding,
+        view: SimplerUbGmView,
+        usage: BufferUsage,
     },
 }
 
