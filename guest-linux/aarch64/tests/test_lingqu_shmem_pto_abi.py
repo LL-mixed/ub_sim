@@ -179,6 +179,7 @@ int main(void)
             start = source.index(f"static int {name}")
             end = source.index("\n}\n", start) + 3
             callback = source[start:end]
+            self.assertIn("QEMU_IOTHREAD_LOCK_GUARD", callback)
             self.assertIn("linqu_ub_gm_binding_snapshot", callback)
             self.assertIn("linqu_ub_gm_mapping_still_authorized", callback)
             self.assertIn(backend_call, callback)
@@ -212,6 +213,26 @@ int main(void)
             "pto_ub_gm_execution_failed",
         ):
             self.assertIn(code, source)
+
+    def test_qemu_releases_bql_while_waiting_for_pto_worker_callbacks(self):
+        source = QEMU_UBC_SOURCE.read_text()
+        poll_start = source.index("static int linqu_uapi_poll_completion")
+        poll_end = source.index("\n}\n", poll_start) + 3
+        poll = source[poll_start:poll_end]
+        ordered_calls = (
+            "g_assert(qemu_mutex_iothread_locked())",
+            "qemu_mutex_unlock_iothread()",
+            "linqu_ub_bridge_poll_completion",
+            "qemu_mutex_lock_iothread()",
+        )
+        positions = [poll.index(call) for call in ordered_calls]
+        self.assertEqual(positions, sorted(positions))
+
+        flush_start = source.index("static void linqu_uapi_flush_cq")
+        flush_end = source.index("\n}\n", flush_start) + 3
+        flush = source[flush_start:flush_end]
+        self.assertIn("linqu_uapi_poll_completion(ubc_dev, slot)", flush)
+        self.assertNotIn("linqu_ub_bridge_poll_completion", flush)
 
 
 if __name__ == "__main__":
