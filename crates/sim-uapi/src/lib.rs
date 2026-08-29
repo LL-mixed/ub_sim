@@ -16561,7 +16561,13 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
 
 pub fn pto_ub_gm_host_vector_callable_fingerprint() -> Result<u64, String> {
     let manifest_path = simpler_manifest_path()?;
-    let manifest = load_simpler_runtime_manifest(&manifest_path)?;
+    pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest_path)
+}
+
+pub fn pto_ub_gm_host_vector_callable_fingerprint_from_manifest(
+    manifest_path: &Path,
+) -> Result<u64, String> {
+    let manifest = load_simpler_runtime_manifest(manifest_path)?;
     pto_ub_gm_callable_fingerprint(&manifest)
 }
 
@@ -44640,5 +44646,90 @@ outputs:
             super::validate_host_vector_ub_gm_args(&req),
             Err("pto_ub_gm_bad_memref".to_string())
         );
+    }
+
+    #[test]
+    fn host_vector_callable_fingerprint_uses_manifest_artifact_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "ub_sim_pto_ub_gm_fingerprint_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create fingerprint fixture directory");
+
+        let artifact_names = [
+            "runtime_host.bin",
+            "orchestration.so",
+            "runtime_aicpu.bin",
+            "runtime_aicore.bin",
+            "kernel_0.bin",
+        ];
+        for (index, name) in artifact_names.iter().enumerate() {
+            std::fs::write(root.join(name), [index as u8, 0xa5])
+                .expect("write fingerprint artifact");
+        }
+        let source = |name: &str| root.join(name).display().to_string();
+        let manifest_path = root.join("host_vector_manifest.json");
+        let manifest = serde_json::json!({
+            "platform": "a2a3sim",
+            "simpler_runtime": {
+                "host_runtime_library": {
+                    "id": "host-runtime",
+                    "format": "shared-object",
+                    "source": source("runtime_host.bin")
+                },
+                "orch_shared_object": {
+                    "id": "orchestration",
+                    "format": "shared-object",
+                    "source": source("orchestration.so")
+                },
+                "orch_function_name": "aicpu_orchestration_entry",
+                "aicpu_binary": {
+                    "id": "aicpu-runtime",
+                    "format": "runtime-binary",
+                    "source": source("runtime_aicpu.bin")
+                },
+                "aicore_binary": {
+                    "id": "aicore-runtime",
+                    "format": "runtime-binary",
+                    "source": source("runtime_aicore.bin")
+                },
+                "kernels": [{
+                    "func_id": 0,
+                    "binary": {
+                        "id": "kernel-0",
+                        "format": "raw-binary",
+                        "source": source("kernel_0.bin")
+                    }
+                }],
+                "launch": {
+                    "aicpu_thread_num": 3,
+                    "block_dim": 3,
+                    "device_id": 0,
+                    "orch_thread_num": 0
+                }
+            }
+        });
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("serialize fingerprint manifest"),
+        )
+        .expect("write fingerprint manifest");
+
+        let first = super::pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest_path)
+            .expect("fingerprint manifest");
+        let repeated =
+            super::pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest_path)
+                .expect("repeat fingerprint manifest");
+        assert_eq!(first, repeated);
+
+        std::fs::write(root.join("kernel_0.bin"), [0xff, 0xa5])
+            .expect("mutate fingerprint artifact");
+        let changed =
+            super::pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest_path)
+                .expect("fingerprint mutated artifact");
+        assert_ne!(first, changed);
+
+        std::fs::remove_dir_all(&root).expect("remove fingerprint fixture directory");
     }
 }

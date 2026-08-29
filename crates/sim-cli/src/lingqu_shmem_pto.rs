@@ -19,6 +19,9 @@ pub struct LingquShmemPtoArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LingquShmemPtoMode {
     ContractOnly,
+    P3Fingerprint {
+        manifest: PathBuf,
+    },
     P2Mock {
         manifest: PathBuf,
         platform: String,
@@ -55,6 +58,16 @@ struct LingquShmemPtoMockEnvelope<'a> {
     report: &'a HostVectorUbGmDispatchReport,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct LingquShmemPtoFingerprintEnvelope {
+    command: &'static str,
+    implementation_phase: &'static str,
+    manifest: String,
+    callable_id: u64,
+    artifact_fingerprint: u64,
+    artifact_fingerprint_hex: String,
+}
+
 pub fn args() -> anyhow::Result<Option<LingquShmemPtoArgs>> {
     args_from(std::env::args_os().skip(1))
 }
@@ -73,14 +86,23 @@ where
     }
 
     let mut contract_only = false;
+    let mut fingerprint_manifest = None;
     let mut manifest = None;
     let mut bridge_manifest = None;
     let mut platform = "a2a3sim".to_string();
     let mut scenario = PathBuf::from("scenarios/mvp_2host_single_domain.yaml");
     let mut execution_option_seen = false;
+    let mut p2_modifier_seen = false;
     while let Some(arg) = args.next() {
         match arg.to_string_lossy().as_ref() {
             "--contract-only" => contract_only = true,
+            "--fingerprint-manifest" => {
+                let value = args
+                    .next()
+                    .context("--fingerprint-manifest requires a path")?;
+                fingerprint_manifest = Some(PathBuf::from(value));
+                execution_option_seen = true;
+            }
             "--mock-runtime-manifest" => {
                 let value = args
                     .next()
@@ -99,11 +121,13 @@ where
                 let value = args.next().context("--platform requires a value")?;
                 platform = value.to_string_lossy().into_owned();
                 execution_option_seen = true;
+                p2_modifier_seen = true;
             }
             "--scenario" => {
                 let value = args.next().context("--scenario requires a path")?;
                 scenario = PathBuf::from(value);
                 execution_option_seen = true;
+                p2_modifier_seen = true;
             }
             option => anyhow::bail!("unknown lingqu-shmem-pto-e2e option: {option}"),
         }
@@ -116,29 +140,36 @@ where
             mode: LingquShmemPtoMode::ContractOnly,
         }));
     }
-    if manifest.is_some() && bridge_manifest.is_some() {
+    let selected_execution_modes = usize::from(fingerprint_manifest.is_some())
+        + usize::from(manifest.is_some())
+        + usize::from(bridge_manifest.is_some());
+    if selected_execution_modes > 1 {
         anyhow::bail!(
-            "--mock-runtime-manifest and --bridge-runtime-manifest are mutually exclusive"
+            "--fingerprint-manifest, --mock-runtime-manifest, and --bridge-runtime-manifest are mutually exclusive"
         );
+    }
+    if fingerprint_manifest.is_some() && p2_modifier_seen {
+        anyhow::bail!("--fingerprint-manifest cannot be combined with P2 execution options");
     }
     if !matches!(platform.as_str(), "a2a3sim" | "a5sim") {
         anyhow::bail!("--platform must be a2a3sim or a5sim");
     }
-    let mode = match (manifest, bridge_manifest) {
-        (Some(manifest), None) => LingquShmemPtoMode::P2Mock {
+    let mode = match (fingerprint_manifest, manifest, bridge_manifest) {
+        (Some(manifest), None, None) => LingquShmemPtoMode::P3Fingerprint { manifest },
+        (None, Some(manifest), None) => LingquShmemPtoMode::P2Mock {
             manifest,
             platform,
             scenario,
         },
-        (None, Some(manifest)) => LingquShmemPtoMode::P2BridgeMock {
+        (None, None, Some(manifest)) => LingquShmemPtoMode::P2BridgeMock {
             manifest,
             platform,
             scenario,
         },
-        (None, None) => anyhow::bail!(
-            "select --contract-only, --mock-runtime-manifest, or --bridge-runtime-manifest"
+        (None, None, None) => anyhow::bail!(
+            "select --contract-only, --fingerprint-manifest, --mock-runtime-manifest, or --bridge-runtime-manifest"
         ),
-        (Some(_), Some(_)) => unreachable!(),
+        _ => unreachable!(),
     };
     Ok(Some(LingquShmemPtoArgs { mode }))
 }
@@ -146,6 +177,7 @@ where
 pub fn run(args: LingquShmemPtoArgs) -> anyhow::Result<()> {
     match args.mode {
         LingquShmemPtoMode::ContractOnly => run_contract(),
+        LingquShmemPtoMode::P3Fingerprint { manifest } => run_p3_fingerprint(manifest),
         LingquShmemPtoMode::P2Mock {
             manifest,
             platform,
@@ -157,6 +189,25 @@ pub fn run(args: LingquShmemPtoArgs) -> anyhow::Result<()> {
             scenario,
         } => run_p2_bridge_mock(manifest, platform, scenario),
     }
+}
+
+fn run_p3_fingerprint(manifest: PathBuf) -> anyhow::Result<()> {
+    let manifest = std::fs::canonicalize(&manifest)
+        .with_context(|| format!("failed to resolve manifest {}", manifest.display()))?;
+    let artifact_fingerprint =
+        sim_uapi::pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest)
+            .map_err(anyhow::Error::msg)
+            .context("failed to fingerprint PTO UB_GM callable artifacts")?;
+    let envelope = LingquShmemPtoFingerprintEnvelope {
+        command: "lingqu-shmem-pto-e2e",
+        implementation_phase: "p3_guest_runtime",
+        manifest: manifest.display().to_string(),
+        callable_id: sim_uapi::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+        artifact_fingerprint,
+        artifact_fingerprint_hex: format!("0x{artifact_fingerprint:016x}"),
+    };
+    println!("{}", serde_json::to_string_pretty(&envelope)?);
+    Ok(())
 }
 
 fn run_contract() -> anyhow::Result<()> {
@@ -279,6 +330,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_p3_fingerprint_command() {
+        let args = args_from([
+            "lingqu-shmem-pto-e2e",
+            "--fingerprint-manifest",
+            "/tmp/manifest.json",
+        ])
+        .expect("valid args")
+        .expect("recognized command");
+        assert_eq!(
+            args.mode,
+            LingquShmemPtoMode::P3Fingerprint {
+                manifest: PathBuf::from("/tmp/manifest.json"),
+            }
+        );
+    }
+
+    #[test]
     fn parses_the_p2_authorized_bridge_runtime_command() {
         let args = args_from([
             "lingqu-shmem-pto-e2e",
@@ -331,5 +399,31 @@ mod tests {
         ])
         .expect_err("runtime modes must be exclusive");
         assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn rejects_fingerprint_and_p2_runtime_modes_together() {
+        let error = args_from([
+            "lingqu-shmem-pto-e2e",
+            "--fingerprint-manifest",
+            "/tmp/fingerprint.json",
+            "--bridge-runtime-manifest",
+            "/tmp/bridge.json",
+        ])
+        .expect_err("runtime modes must be exclusive");
+        assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn rejects_fingerprint_and_p2_modifiers_together() {
+        let error = args_from([
+            "lingqu-shmem-pto-e2e",
+            "--fingerprint-manifest",
+            "/tmp/fingerprint.json",
+            "--platform",
+            "a5sim",
+        ])
+        .expect_err("fingerprint query must not accept P2 modifiers");
+        assert!(error.to_string().contains("cannot be combined"));
     }
 }

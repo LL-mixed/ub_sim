@@ -47,6 +47,13 @@ SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
 SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_4host_single_domain.yaml}"
+LINGQU_SHMEM_PTO_ELEMENTS="${LINGQU_SHMEM_PTO_ELEMENTS:-16384}"
+LINGQU_SHMEM_PTO_GENERATION="${LINGQU_SHMEM_PTO_GENERATION:-101}"
+LINGQU_SHMEM_PTO_TOKEN_VALUE="${LINGQU_SHMEM_PTO_TOKEN_VALUE:-0}"
+LINGQU_SHMEM_PTO_TIMEOUT_MS="${LINGQU_SHMEM_PTO_TIMEOUT_MS:-120000}"
+LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
+LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
+LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -69,12 +76,16 @@ Options:
                       obmm_coh_test, gva_direct, gsva_query, npu_test, ssd_test,
                       ssd_gsva_test, mem_service,
                       mem_service_obmm_provider_conformance, llm_infer,
-                      llm_infer_mem_service, pretraining_client_mem_service.
+                      llm_infer_mem_service, pretraining_client_mem_service,
+                      lingqu_shmem_pto_direct.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
   --iterations N     Number of dual-node iterations.
   --max-runtime SECS Global watchdog timeout.
+  --report-file PATH Validation report output path.
+  --kernel-image PATH Arm64 guest kernel image.
+  --initramfs-image PATH Guest initramfs containing selected apps.
   --interactive-after-pass
                      Keep validated guests at their shells until terminated.
   --append-extra STR Extra kernel cmdline tokens to append.
@@ -84,7 +95,19 @@ Options:
                       Canonical v2 event/upcall capacity spec.
   --obmm-async-args STR
                       Arguments for obmm_async_coroutine.
+  --pto-manifest PATH Simpler host-vector manifest for PTO UB_GM dispatch.
+  --pto-scenario PATH Two-host simulator scenario used by the Rust bridge.
+  --pto-artifact-fingerprint N
+                      Callable fingerprint computed from that manifest.
+  --pto-elements N    Host-vector element count; callable 1 requires 16384.
+  --pto-generation N  OBMM bootstrap generation.
+  --pto-token-value N OBMM import token value.
+  --pto-timeout-ms N  Producer verification and dispatch timeout.
+  --pto-nodea-cna N   QEMU PTO device CNA for nodeA.
+  --pto-nodeb-cna N   QEMU PTO device CNA and guest requester CNA for nodeB.
   --use-qmp          Start guests paused and resume them through QMP.
+  --use-prebuilt-qemu
+                     Require the QEMU binary already built by the wrapper.
   -h, --help         Show this help.
 USAGE
 }
@@ -153,6 +176,9 @@ append_app_selection() {
       ;;
     pretraining_client_mem_service)
       flag="linqu_pretraining_client_mem_service=1"
+      ;;
+    lingqu_shmem_pto_direct)
+      flag="linqu_shmem_pto_direct=1"
       ;;
     "")
       return 0
@@ -227,6 +253,96 @@ append_obmm_async_args() {
   done
 }
 
+require_pto_unsigned_value() {
+  local label="$1"
+  local value="$2"
+
+  if ! printf '%s\n' "$value" | grep -Eq '^(0[xX][0-9a-fA-F]+|[0-9]+)$'; then
+    echo "$label must be an unsigned decimal or hexadecimal integer" >&2
+    exit 2
+  fi
+}
+
+validate_lingqu_shmem_pto_config() {
+  local value=""
+
+  if [[ ! -f "$SIMPLER_HOST_VECTOR_MANIFEST" ]]; then
+    echo "PTO host-vector manifest does not exist: $SIMPLER_HOST_VECTOR_MANIFEST" >&2
+    exit 2
+  fi
+  SIMPLER_HOST_VECTOR_MANIFEST="$(
+    cd "$(dirname "$SIMPLER_HOST_VECTOR_MANIFEST")" && pwd
+  )/$(basename "$SIMPLER_HOST_VECTOR_MANIFEST")"
+  if [[ ! -f "$SIM_UAPI_SCENARIO_CONFIG" ]]; then
+    echo "PTO simulator scenario does not exist: $SIM_UAPI_SCENARIO_CONFIG" >&2
+    exit 2
+  fi
+  SIM_UAPI_SCENARIO_CONFIG="$(
+    cd "$(dirname "$SIM_UAPI_SCENARIO_CONFIG")" && pwd
+  )/$(basename "$SIM_UAPI_SCENARIO_CONFIG")"
+  if [[ -z "$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" ]]; then
+    echo "lingqu_shmem_pto_direct requires --pto-artifact-fingerprint" >&2
+    exit 2
+  fi
+
+  for value in \
+    "elements:$LINGQU_SHMEM_PTO_ELEMENTS" \
+    "generation:$LINGQU_SHMEM_PTO_GENERATION" \
+    "token-value:$LINGQU_SHMEM_PTO_TOKEN_VALUE" \
+    "timeout-ms:$LINGQU_SHMEM_PTO_TIMEOUT_MS" \
+    "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
+    "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
+    "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA"; do
+    require_pto_unsigned_value "${value%%:*}" "${value#*:}"
+  done
+  if (( LINGQU_SHMEM_PTO_ELEMENTS != 16384 )); then
+    echo "PTO callable 1 requires exactly 16384 elements" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_GENERATION == 0 ||
+        LINGQU_SHMEM_PTO_GENERATION > 281474976710655 )); then
+    echo "PTO generation must be in 1..281474976710655" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_TOKEN_VALUE > 4294967295 )); then
+    echo "PTO token value exceeds uint32" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_TIMEOUT_MS == 0 )); then
+    echo "PTO timeout must be nonzero" >&2
+    exit 2
+  fi
+  if printf '%s\n' "$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" |
+     grep -Eq '^(0[xX]0+|0+)$'; then
+    echo "PTO artifact fingerprint must be nonzero" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_NODEA_CNA == 0 ||
+        LINGQU_SHMEM_PTO_NODEA_CNA > 0x00ffffff ||
+        LINGQU_SHMEM_PTO_NODEB_CNA == 0 ||
+        LINGQU_SHMEM_PTO_NODEB_CNA > 0x00ffffff )); then
+    echo "PTO device CNA must be in 1..0x00ffffff" >&2
+    exit 2
+  fi
+
+  LINGQU_SHMEM_PTO_ELEMENTS=$((LINGQU_SHMEM_PTO_ELEMENTS))
+  LINGQU_SHMEM_PTO_GENERATION=$((LINGQU_SHMEM_PTO_GENERATION))
+  LINGQU_SHMEM_PTO_TOKEN_VALUE=$((LINGQU_SHMEM_PTO_TOKEN_VALUE))
+  LINGQU_SHMEM_PTO_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_TIMEOUT_MS))
+  printf -v LINGQU_SHMEM_PTO_NODEA_CNA '0x%x' \
+    "$((LINGQU_SHMEM_PTO_NODEA_CNA))"
+  printf -v LINGQU_SHMEM_PTO_NODEB_CNA '0x%x' \
+    "$((LINGQU_SHMEM_PTO_NODEB_CNA))"
+
+  append_cmdline_if_missing "linqu_node_count=2"
+  append_cmdline_if_missing "lingqu_shmem_pto_elements=$LINGQU_SHMEM_PTO_ELEMENTS"
+  append_cmdline_if_missing "lingqu_shmem_pto_generation=$LINGQU_SHMEM_PTO_GENERATION"
+  append_cmdline_if_missing "lingqu_shmem_pto_token_value=$LINGQU_SHMEM_PTO_TOKEN_VALUE"
+  append_cmdline_if_missing "lingqu_shmem_pto_timeout_ms=$LINGQU_SHMEM_PTO_TIMEOUT_MS"
+  append_cmdline_if_missing \
+    "lingqu_shmem_pto_artifact_fingerprint=$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT"
+}
+
 apply_app_selection() {
   local selection="$1"
   local app=""
@@ -294,6 +410,33 @@ while [[ $# -gt 0 ]]; do
       MAX_RUNTIME="$2"
       shift 2
       ;;
+    --report-file)
+      if [[ $# -lt 2 ]]; then
+        echo "--report-file requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      REPORT_FILE="$2"
+      shift 2
+      ;;
+    --kernel-image)
+      if [[ $# -lt 2 ]]; then
+        echo "--kernel-image requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      KERNEL_IMAGE="$2"
+      shift 2
+      ;;
+    --initramfs-image)
+      if [[ $# -lt 2 ]]; then
+        echo "--initramfs-image requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      INITRAMFS_IMAGE="$2"
+      shift 2
+      ;;
     --append-extra)
       if [[ $# -lt 2 ]]; then
         echo "--append-extra requires a value" >&2
@@ -327,8 +470,84 @@ while [[ $# -gt 0 ]]; do
       OBMM_ASYNC_ARGS="$2"
       shift 2
       ;;
+    --pto-manifest)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-manifest requires a value" >&2
+        exit 2
+      fi
+      SIMPLER_HOST_VECTOR_MANIFEST="$2"
+      shift 2
+      ;;
+    --pto-scenario)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-scenario requires a value" >&2
+        exit 2
+      fi
+      SIM_UAPI_SCENARIO_CONFIG="$2"
+      shift 2
+      ;;
+    --pto-artifact-fingerprint)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-artifact-fingerprint requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="$2"
+      shift 2
+      ;;
+    --pto-elements)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-elements requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_ELEMENTS="$2"
+      shift 2
+      ;;
+    --pto-generation)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-generation requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_GENERATION="$2"
+      shift 2
+      ;;
+    --pto-token-value)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-token-value requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_TOKEN_VALUE="$2"
+      shift 2
+      ;;
+    --pto-timeout-ms)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-timeout-ms requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_TIMEOUT_MS="$2"
+      shift 2
+      ;;
+    --pto-nodea-cna)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-nodea-cna requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_NODEA_CNA="$2"
+      shift 2
+      ;;
+    --pto-nodeb-cna)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-nodeb-cna requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_NODEB_CNA="$2"
+      shift 2
+      ;;
     --use-qmp)
       USE_QMP=1
+      shift
+      ;;
+    --use-prebuilt-qemu)
+      UB_USE_PREBUILT_QEMU=1
       shift
       ;;
     --interactive-after-pass)
@@ -361,6 +580,9 @@ SERIAL_DIR="$SERIAL_RUNTIME_DIR/serial"
 SERIAL_ENV_FILE="$OUT_DIR/dual_node_serial_env.${RUN_ID}.sh"
 
 apply_app_selection "$APP_SELECTION"
+if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+  validate_lingqu_shmem_pto_config
+fi
 if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
   append_cmdline_if_missing "linqu_node_count=2"
   if [[ -z "$OBMM_ASYNC_ARGS" ]]; then
@@ -530,6 +752,20 @@ assert_log_absent() {
   local label="$3"
   if grep -qE "$pattern" "$file"; then
     echo "unexpected log marker: $label in $file" >&2
+    return 1
+  fi
+}
+
+assert_log_count() {
+  local file="$1"
+  local pattern="$2"
+  local expected="$3"
+  local label="$4"
+  local actual=""
+
+  actual="$(grep -cE "$pattern" "$file" || true)"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "unexpected log marker count: $label expected=$expected actual=$actual in $file" >&2
     return 1
   fi
 }
@@ -749,6 +985,76 @@ validate_obmm_coh_test_log() {
     "${node_name} obmm coh test binary pass" || return 1
 }
 
+validate_lingqu_shmem_pto_guest_log() {
+  local role="$1"
+  local log_file="$2"
+
+  assert_log_absent "$log_file" \
+    "LINGQU_SHMEM_PTO_RESULT role=$role status=fail" \
+    "$role PTO UB_GM failure" || return 1
+  assert_log_has "$log_file" \
+    "LINGQU_SHMEM_PTO role=$role stage=start .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
+    "$role PTO UB_GM start contract" || return 1
+  if [[ "$role" == "producer" ]]; then
+    assert_log_has "$log_file" \
+      "LINGQU_SHMEM_PTO role=producer stage=published .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
+      "producer exported source region" || return 1
+    assert_log_has "$log_file" \
+      "LINGQU_SHMEM_PTO role=producer producer_verify=pass elements=$LINGQU_SHMEM_PTO_ELEMENTS" \
+      "producer original-mapping verification" || return 1
+  else
+    assert_log_has "$log_file" \
+      "LINGQU_SHMEM_PTO role=consumer stage=prepared .*map_id=[1-9][0-9]* .*map_generation=[1-9][0-9]* .*mapping_ref=0x[1-9a-f][0-9a-f]* .*requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA .*fingerprint=0x[1-9a-f][0-9a-f]*" \
+      "consumer opaque map-ref dispatch" || return 1
+    assert_log_has "$log_file" \
+      "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=1 error=none" \
+      "consumer successful completion" || return 1
+  fi
+  assert_log_has "$log_file" \
+    "LINGQU_SHMEM_PTO_RESULT role=$role status=pass" \
+    "$role PTO UB_GM result" || return 1
+}
+
+validate_lingqu_shmem_pto_qemu_log() {
+  local node_name="$1"
+  local log_file="$2"
+  local expected_cna="$LINGQU_SHMEM_PTO_NODEA_CNA"
+  local tensor_bytes=$((LINGQU_SHMEM_PTO_ELEMENTS * 4))
+
+  if [[ "$node_name" == "nodeB" ]]; then
+    expected_cna="$LINGQU_SHMEM_PTO_NODEB_CNA"
+  fi
+  assert_log_absent "$log_file" \
+    "QEMU_UB_GM_(DISPATCH_REJECT|METADATA_CRC_FAIL)" \
+    "$node_name PTO dispatch rejection" || return 1
+  if [[ "$node_name" == "nodeA" ]]; then
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_(LOAD|STORE|FENCE|UNBIND) " \
+      "producer host-side PTO data access" || return 1
+    return 0
+  fi
+
+  assert_log_has "$log_file" \
+    "QEMU_UB_GM_ACCESS_REGISTER pto_device_cna=$expected_cna" \
+    "$node_name PTO access registration" || return 1
+  assert_log_count "$log_file" "QEMU_UB_GM_INPUT_AUTHORIZE " 2 \
+    "consumer input authorizations" || return 1
+  assert_log_count "$log_file" "QEMU_UB_GM_OUTPUT_AUTHORIZE " 1 \
+    "consumer output authorization" || return 1
+  assert_log_has "$log_file" \
+    "SIM_QEMU_UB_GM_BIND_REGISTER .*bindings=3 requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA" \
+    "consumer three-memref binding" || return 1
+  assert_log_count "$log_file" "QEMU_UB_GM_LOAD request=.*length=$tensor_bytes " 2 \
+    "consumer PTO TLOAD callbacks" || return 1
+  assert_log_count "$log_file" "QEMU_UB_GM_STORE request=.*length=$tensor_bytes " 1 \
+    "consumer PTO TSTORE callback" || return 1
+  assert_log_count "$log_file" "QEMU_UB_GM_FENCE request=.*length=$tensor_bytes" 1 \
+    "consumer PTO write fence" || return 1
+  assert_log_has "$log_file" \
+    "QEMU_UB_GM_UNBIND .*reason=completion_success bindings=3 load_bytes=$((tensor_bytes * 2)) store_bytes=$tensor_bytes fences=1 segment_payload_staging_bytes=0" \
+    "consumer zero-staging completion unbind" || return 1
+}
+
 validate_mem_service_obmm_provider_log() {
   local node_name="$1"
   local log_file="$2"
@@ -896,6 +1202,7 @@ start_node() {
   local qemu_control_args=()
   local remote_model_args=()
   local async_load_args=()
+  local pto_ub_gm_args=()
   local serial_args=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
@@ -925,6 +1232,20 @@ start_node() {
     async_load_args=(
       -global "ubc.async-load-model=$ASYNC_LOAD_MODEL"
     )
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+    case "$role" in
+      nodeA)
+        pto_ub_gm_args=(-global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEA_CNA")
+        ;;
+      nodeB)
+        pto_ub_gm_args=(-global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA")
+        ;;
+      *)
+        echo "unknown PTO UB_GM node role: $role" >&2
+        return 2
+        ;;
+    esac
   fi
   mkdir -p "$(dirname "$guest_log")"
   mkdir -p "$(dirname "$qemu_log")"
@@ -958,6 +1279,7 @@ start_node() {
       -nographic \
       "${remote_model_args[@]}" \
       "${async_load_args[@]}" \
+      "${pto_ub_gm_args[@]}" \
       "${serial_args[@]}" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
@@ -1209,6 +1531,7 @@ run_iteration() {
   local mem_service_enabled=0
   local w4_guest_enabled=0
   local pretraining_client_mem_service_enabled=0
+  local lingqu_shmem_pto_enabled=0
   local nodea_obmm_coh_test_append=""
   local nodeb_obmm_coh_test_append=""
   local nodea_mem_service_obmm_provider_append=""
@@ -1217,8 +1540,11 @@ run_iteration() {
   local nodeb_ssd_gsva_test_append=""
   local nodea_w4_guest_append=""
   local nodeb_w4_guest_append=""
+  local nodea_lingqu_shmem_pto_append=""
+  local nodeb_lingqu_shmem_pto_append=""
   local nodea_app_append=""
   local nodeb_app_append=""
+  local wait_status=0
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -1278,6 +1604,9 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_pretraining_client_mem_service=1"* ]]; then
     pretraining_client_mem_service_enabled=1
   fi
+  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+    lingqu_shmem_pto_enabled=1
+  fi
 
   if [[ "$obmm_gsva_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "obmm_gsva_mode=${OBMM_GSVA_MODE}"
@@ -1328,10 +1657,14 @@ run_iteration() {
     nodea_w4_guest_append="linqu_w4_role=nodeA linqu_w4_local_ip=10.0.0.1"
     nodeb_w4_guest_append="linqu_w4_role=nodeB linqu_w4_local_ip=10.0.0.2"
   fi
-  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_mem_service_obmm_provider_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append}"
+  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
+    nodea_lingqu_shmem_pto_append="linqu_node_idx=0 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEA_CNA"
+    nodeb_lingqu_shmem_pto_append="linqu_node_idx=1 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA"
+  fi
+  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_mem_service_obmm_provider_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append} ${nodea_lingqu_shmem_pto_append}"
   nodea_app_append="${nodea_app_append#"${nodea_app_append%%[![:space:]]*}"}"
   nodea_app_append="${nodea_app_append%"${nodea_app_append##*[![:space:]]}"}"
-  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_mem_service_obmm_provider_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append}"
+  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_mem_service_obmm_provider_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append} ${nodeb_lingqu_shmem_pto_append}"
   nodeb_app_append="${nodeb_app_append#"${nodeb_app_append%%[![:space:]]*}"}"
   nodeb_app_append="${nodeb_app_append%"${nodeb_app_append##*[![:space:]]}"}"
 
@@ -1419,6 +1752,46 @@ run_iteration() {
   if ! kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; then
     echo "iteration ${iter}: nodeB died after resume" >&2
     return 1
+  fi
+
+  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
+    if wait_for_log_pass_or_fail "$nodea_guest_log" \
+         "LINGQU_SHMEM_PTO_RESULT role=producer status=pass" \
+         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail" "$RUN_SECS"; then
+      wait_status=0
+    else
+      wait_status=$?
+    fi
+    case "$wait_status" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: PTO producer reported failure" >&2
+        return 30
+        ;;
+      *)
+        echo "iteration ${iter}: PTO producer did not finish within ${RUN_SECS}s" >&2
+        return 30
+        ;;
+    esac
+
+    if wait_for_log_pass_or_fail "$nodeb_guest_log" \
+         "LINGQU_SHMEM_PTO_RESULT role=consumer status=pass" \
+         "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail" "$RUN_SECS"; then
+      wait_status=0
+    else
+      wait_status=$?
+    fi
+    case "$wait_status" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: PTO consumer reported failure" >&2
+        return 30
+        ;;
+      *)
+        echo "iteration ${iter}: PTO consumer did not finish within ${RUN_SECS}s" >&2
+        return 30
+        ;;
+    esac
   fi
 
   if [[ "$chat_enabled" -eq 1 ]]; then
@@ -2081,6 +2454,16 @@ run_iteration() {
     validate_w4_guest_log "nodeA" "$nodea_guest_log" || return 1
     validate_w4_guest_log "nodeB" "$nodeb_guest_log" || return 1
   fi
+  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
+    validate_lingqu_shmem_pto_guest_log \
+      "producer" "$nodea_guest_log" || return 1
+    validate_lingqu_shmem_pto_guest_log \
+      "consumer" "$nodeb_guest_log" || return 1
+    validate_lingqu_shmem_pto_qemu_log \
+      "nodeA" "$nodea_qemu_log" || return 1
+    validate_lingqu_shmem_pto_qemu_log \
+      "nodeB" "$nodeb_qemu_log" || return 1
+  fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1
 
@@ -2143,6 +2526,14 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
   echo "logs_dir=${LOG_DIR}"
   echo "min_pass_rate_percent=${MIN_PASS_RATE_PERCENT}"
   echo "max_runtime=${MAX_RUNTIME}"
+  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+    echo "lingqu_shmem_pto_manifest=${SIMPLER_HOST_VECTOR_MANIFEST}"
+    echo "lingqu_shmem_pto_artifact_fingerprint=${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT}"
+    echo "lingqu_shmem_pto_elements=${LINGQU_SHMEM_PTO_ELEMENTS}"
+    echo "lingqu_shmem_pto_generation=${LINGQU_SHMEM_PTO_GENERATION}"
+    echo "lingqu_shmem_pto_nodea_cna=${LINGQU_SHMEM_PTO_NODEA_CNA}"
+    echo "lingqu_shmem_pto_nodeb_cna=${LINGQU_SHMEM_PTO_NODEB_CNA}"
+  fi
   echo "passed=${passed}"
   echo "failed=${failed}"
   echo "pass_rate_percent=${pass_rate}"

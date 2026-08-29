@@ -20,8 +20,10 @@
 #include "lingqu_shmem_sim.h"
 
 #define PTO_DIRECT_EXPORT_BYTES (2u * 1024u * 1024u)
-#define PTO_DIRECT_DEFAULT_ELEMENTS 1024u
-#define PTO_DIRECT_MAX_ELEMENTS 131072u
+#define PTO_DIRECT_HOST_VECTOR_ROWS 128u
+#define PTO_DIRECT_HOST_VECTOR_COLUMNS 128u
+#define PTO_DIRECT_HOST_VECTOR_ELEMENTS \
+    (PTO_DIRECT_HOST_VECTOR_ROWS * PTO_DIRECT_HOST_VECTOR_COLUMNS)
 #define PTO_DIRECT_DEFAULT_TIMEOUT_MS 120000u
 #define PTO_DIRECT_ALIGNMENT 64u
 #define PTO_DIRECT_OUTPUT_SENTINEL UINT32_C(0x7fc00001)
@@ -99,7 +101,8 @@ static void usage(FILE *stream)
             "--node-id N --node-count N [options]\n"
             "\n"
             "options:\n"
-            "  --elements N              contiguous f32 elements\n"
+            "  --elements N              f32 elements; callable 1 requires "
+            "16384\n"
             "  --generation N            OBMM bootstrap generation\n"
             "  --token-value N           OBMM import token value\n"
             "  --timeout-ms N            producer/dispatch deadline\n"
@@ -116,7 +119,7 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
     }
     *config = (struct pto_direct_config) {
         .node_count = 2,
-        .elements = PTO_DIRECT_DEFAULT_ELEMENTS,
+        .elements = PTO_DIRECT_HOST_VECTOR_ELEMENTS,
         .generation = 1,
         .timeout_ms = PTO_DIRECT_DEFAULT_TIMEOUT_MS,
     };
@@ -177,7 +180,7 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
     }
     if (config->role == PTO_DIRECT_ROLE_UNSET || config->node_count != 2 ||
         config->node_id >= config->node_count || config->elements == 0 ||
-        config->elements > PTO_DIRECT_MAX_ELEMENTS ||
+        config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS ||
         config->generation == 0 ||
         config->generation > (UINT64_MAX >> 16) ||
         config->timeout_ms == 0 ||
@@ -196,7 +199,7 @@ static int build_layout(uint32_t elements, struct pto_direct_layout *layout)
     uint64_t tensor_bytes;
 
     if (!layout || elements == 0 ||
-        elements > PTO_DIRECT_MAX_ELEMENTS) {
+        elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS) {
         return -EINVAL;
     }
     tensor_bytes = (uint64_t)elements * sizeof(float);

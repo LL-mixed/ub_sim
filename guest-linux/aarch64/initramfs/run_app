@@ -473,7 +473,7 @@ run_lingqu_shmem_pto_direct() {
     esac
   fi
   args="--role $role --node-id $node_id --node-count $node_count"
-  args="$args --elements $(cmdline_value lingqu_shmem_pto_elements 1024)"
+  args="$args --elements $(cmdline_value lingqu_shmem_pto_elements 16384)"
   args="$args --generation $(cmdline_value lingqu_shmem_pto_generation 1)"
   args="$args --token-value $(cmdline_value lingqu_shmem_pto_token_value 0)"
   args="$args --timeout-ms $(cmdline_value lingqu_shmem_pto_timeout_ms 120000)"

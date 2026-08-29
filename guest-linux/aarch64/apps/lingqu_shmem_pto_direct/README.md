@@ -19,9 +19,14 @@ Example guest invocations:
 
 ```text
 lingqu_shmem_pto_direct --role producer --node-id 0 --node-count 2 \
-  --elements 1024 --generation 101 --timeout-ms 120000
+  --elements 16384 --generation 101 --timeout-ms 120000
 
 lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
-  --elements 1024 --generation 101 --timeout-ms 120000 \
+  --elements 16384 --generation 101 --timeout-ms 120000 \
   --requester-cna 0xf002 --artifact-fingerprint 0x1234
 ```
+
+Callable 1 currently identifies the frozen host-vector artifact whose PTO
+kernel executes one `128 x 128` `f32` tile. The workload rejects any other
+element count before exporting or importing memory, so a shorter memref cannot
+reach the kernel and fail during its fixed-size `TLOAD`.
