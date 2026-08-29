@@ -97,8 +97,21 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn('flag="linqu_shmem_pto_direct=1"', runner)
         self.assertIn("--pto-artifact-fingerprint", runner)
         self.assertIn("ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA", runner)
+        self.assertIn("--pto-authorization-delay-ns", runner)
+        self.assertIn("--pto-authorization-timeout-ns", runner)
+        self.assertIn(
+            "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS",
+            runner,
+        )
+        self.assertIn(
+            "ubc.pto-authorization-timeout-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS",
+            runner,
+        )
         self.assertIn("LINGQU_SHMEM_PTO_RESULT role=producer status=pass", runner)
         self.assertIn("LINGQU_SHMEM_PTO_RESULT role=consumer status=pass", runner)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_PENDING", runner)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", runner)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_TIMEOUT", runner)
         self.assertIn("QEMU_UB_GM_INPUT_AUTHORIZE", runner)
         self.assertIn("QEMU_UB_GM_LOAD", runner)
         self.assertIn("QEMU_UB_GM_STORE", runner)
@@ -115,6 +128,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("callable-fingerprint.json", runner)
         self.assertIn("artifact-paths.txt", runner)
         self.assertIn("qemu-leftovers.txt", runner)
+        self.assertIn("pgrep -af '[q]emu-system-aarch64'", runner)
+        self.assertNotIn("pgrep -af qemu-system-aarch64", runner)
         self.assertIn("validation.status=pass", runner)
         result = subprocess.run(
             [str(PTO_RUNNER), "--help"],
@@ -124,6 +139,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             text=True,
         )
         self.assertIn("--manifest PATH", result.stdout)
+        self.assertIn("--authorization-delay-ns N", result.stdout)
+        self.assertIn("--authorization-timeout-ns N", result.stdout)
 
     def test_dedicated_runner_preserves_command_path_during_canonicalization(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -192,6 +209,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
                     str(initramfs),
                     "--elements",
                     "1",
+                    "--authorization-delay-ns",
+                    "250000",
+                    "--authorization-timeout-ns",
+                    "10000000",
                     "--run-id",
                     "canonical-path-contract",
                     "--evidence-dir",
@@ -212,6 +233,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
                 "validation.status=fail",
                 (evidence / "validation.status").read_text(),
             )
+            validation = (evidence / "validation.status").read_text()
+            self.assertIn("authorization_delay_ns=250000", validation)
+            self.assertIn("authorization_timeout_ns=10000000", validation)
 
 
 if __name__ == "__main__":

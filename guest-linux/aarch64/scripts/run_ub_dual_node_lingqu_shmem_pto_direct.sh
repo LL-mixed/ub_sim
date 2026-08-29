@@ -17,6 +17,8 @@ TOKEN_VALUE=0
 TIMEOUT_MS=120000
 NODEA_CNA=0xf001
 NODEB_CNA=0xf002
+AUTHORIZATION_DELAY_NS=0
+AUTHORIZATION_TIMEOUT_NS=1000000000
 RUN_SECS=180
 MAX_RUNTIME=300
 RUN_ID="lingqu-shmem-pto-$(date +%Y%m%dT%H%M%S)-${RANDOM}"
@@ -40,6 +42,10 @@ Options:
   --timeout-ms N         Guest producer/dispatch timeout.
   --nodea-cna N          QEMU PTO device CNA for nodeA.
   --nodeb-cna N          QEMU PTO device/requester CNA for nodeB.
+  --authorization-delay-ns N
+                         Per-memref QEMU authorization delay; zero is sync.
+  --authorization-timeout-ns N
+                         Dispatch-wide authorization timeout.
   --run-secs N           Harness per-app timeout.
   --max-runtime N        Harness global watchdog timeout.
   --run-id ID            Stable evidence and log identifier.
@@ -137,6 +143,16 @@ while [[ $# -gt 0 ]]; do
     --nodeb-cna)
       require_value "$1" "$#"
       NODEB_CNA="$2"
+      shift 2
+      ;;
+    --authorization-delay-ns)
+      require_value "$1" "$#"
+      AUTHORIZATION_DELAY_NS="$2"
+      shift 2
+      ;;
+    --authorization-timeout-ns)
+      require_value "$1" "$#"
+      AUTHORIZATION_TIMEOUT_NS="$2"
       shift 2
       ;;
     --run-secs)
@@ -255,7 +271,10 @@ set +e
   --pto-token-value "$TOKEN_VALUE" \
   --pto-timeout-ms "$TIMEOUT_MS" \
   --pto-nodea-cna "$NODEA_CNA" \
-  --pto-nodeb-cna "$NODEB_CNA" > "$HARNESS_LOG" 2>&1
+  --pto-nodeb-cna "$NODEB_CNA" \
+  --pto-authorization-delay-ns "$AUTHORIZATION_DELAY_NS" \
+  --pto-authorization-timeout-ns "$AUTHORIZATION_TIMEOUT_NS" \
+  > "$HARNESS_LOG" 2>&1
 RUNNER_RC=$?
 set -e
 cat "$HARNESS_LOG"
@@ -313,7 +332,7 @@ HASH_FILE="$EVIDENCE_DIR/sha256.txt"
 } > "$EVIDENCE_DIR/revisions.txt"
 
 QEMU_LEFTOVERS="$EVIDENCE_DIR/qemu-leftovers.txt"
-pgrep -af qemu-system-aarch64 > "$QEMU_LEFTOVERS" 2>/dev/null || true
+pgrep -af '[q]emu-system-aarch64' > "$QEMU_LEFTOVERS" 2>/dev/null || true
 if [[ -s "$QEMU_LEFTOVERS" && "$RUNNER_RC" -eq 0 ]]; then
   echo "QEMU processes remain after validation; preserving them for audit" >&2
   RUNNER_RC=31
@@ -335,6 +354,8 @@ fi
   echo "generation=$GENERATION"
   echo "nodea_cna=$NODEA_CNA"
   echo "nodeb_cna=$NODEB_CNA"
+  echo "authorization_delay_ns=$AUTHORIZATION_DELAY_NS"
+  echo "authorization_timeout_ns=$AUTHORIZATION_TIMEOUT_NS"
 } > "$EVIDENCE_DIR/validation.status"
 
 echo "PTO UB_GM evidence: $EVIDENCE_DIR"

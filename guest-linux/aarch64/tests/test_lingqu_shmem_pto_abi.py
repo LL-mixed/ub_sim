@@ -188,6 +188,61 @@ int main(void)
         self.assertIn("SIM_DEC_GVA_ACCESS_READ_ONLY", submit)
         self.assertIn('"bridge_submit_failed"', submit)
 
+    def test_qemu_v2_authorization_can_suspend_without_consuming_cmdq_slot(self):
+        source = QEMU_UBC_SOURCE.read_text()
+        state_start = source.index("typedef struct LinquPtoAuthorizationState")
+        state_end = source.index("} LinquPtoAuthorizationState;", state_start)
+        state = source[state_start:state_end]
+        for snapshot in (
+            "slot[LINQU_UAPI_DESC_BYTES]",
+            "control_wire[LINQU_PTO_CONTROL_WIRE_BYTES]",
+            "*memref_wire",
+            "*scalar_wire",
+            "*shape_stride_wire",
+            "cmdq_slot",
+            "memref_cursor",
+            "sequence",
+        ):
+            self.assertIn(snapshot, state)
+
+        submit_start = source.index("static int linqu_uapi_submit_ub_gm_v2")
+        submit_end = source.index(
+            "static const char *linqu_uapi_ub_gm_error_code", submit_start
+        )
+        submit = source[submit_start:submit_end]
+        crc_check = submit.index("control.metadata_crc32")
+        pending_start = submit.index("linqu_uapi_authorization_start_range")
+        register = submit.index("linqu_ub_gm_register_dispatch")
+        bridge = submit.index("linqu_ub_bridge_submit_ub_gm_v2")
+        self.assertLess(crc_check, pending_start)
+        self.assertLess(pending_start, register)
+        self.assertLess(register, bridge)
+        self.assertIn("authorization->memref_cursor++", submit)
+        self.assertIn("authorization->range_authorized[index]", submit)
+
+        timer_start = source.index(
+            "static void linqu_uapi_authorization_timer(void *opaque)"
+        )
+        timer_end = source.index("\n}\n", timer_start) + 3
+        timer = source[timer_start:timer_end]
+        self.assertIn("authorization->completion_ready = true", timer)
+        self.assertIn("linqu_uapi_schedule_kick", timer)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", timer)
+
+        kick_start = source.index("static void linqu_uapi_kick(")
+        kick_end = source.index("static void linqu_uapi_kick_bh", kick_start)
+        kick = source[kick_start:kick_end]
+        pending = kick.index("rc == LINQU_PTO_UB_GM_INTERNAL_PENDING")
+        stop = kick.index("break;", pending)
+        advance = kick.index("head = (head + 1)", pending)
+        self.assertLess(stop, advance)
+        self.assertIn("memcpy(slot, authorization->slot", kick)
+        self.assertIn("authorization->cmdq_slot != head", kick)
+
+        properties = source[source.index("static Property ub_bus_controller_dev_properties"):]
+        self.assertIn('"pto-authorization-delay-ns"', properties)
+        self.assertIn('"pto-authorization-timeout-ns"', properties)
+
     def test_qemu_callbacks_revalidate_and_unbind_request_scoped_mappings(self):
         source = QEMU_UBC_SOURCE.read_text()
         callback_contracts = {

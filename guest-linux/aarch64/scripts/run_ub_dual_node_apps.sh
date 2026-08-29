@@ -54,6 +54,8 @@ LINGQU_SHMEM_PTO_TIMEOUT_MS="${LINGQU_SHMEM_PTO_TIMEOUT_MS:-120000}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
 LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
+LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS:-0}"
+LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS:-1000000000}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -105,6 +107,10 @@ Options:
   --pto-timeout-ms N  Producer verification and dispatch timeout.
   --pto-nodea-cna N   QEMU PTO device CNA for nodeA.
   --pto-nodeb-cna N   QEMU PTO device CNA and guest requester CNA for nodeB.
+  --pto-authorization-delay-ns N
+                      Per-memref QEMU authorization delay; zero is sync.
+  --pto-authorization-timeout-ns N
+                      Dispatch-wide authorization timeout.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
@@ -292,7 +298,9 @@ validate_lingqu_shmem_pto_config() {
     "timeout-ms:$LINGQU_SHMEM_PTO_TIMEOUT_MS" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
     "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
-    "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA"; do
+    "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA" \
+    "authorization-delay-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS" \
+    "authorization-timeout-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS"; do
     require_pto_unsigned_value "${value%%:*}" "${value#*:}"
   done
   if (( LINGQU_SHMEM_PTO_ELEMENTS != 16384 )); then
@@ -312,6 +320,10 @@ validate_lingqu_shmem_pto_config() {
     echo "PTO timeout must be nonzero" >&2
     exit 2
   fi
+  if (( LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS == 0 )); then
+    echo "PTO authorization timeout must be nonzero" >&2
+    exit 2
+  fi
   if printf '%s\n' "$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" |
      grep -Eq '^(0[xX]0+|0+)$'; then
     echo "PTO artifact fingerprint must be nonzero" >&2
@@ -329,6 +341,8 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_GENERATION=$((LINGQU_SHMEM_PTO_GENERATION))
   LINGQU_SHMEM_PTO_TOKEN_VALUE=$((LINGQU_SHMEM_PTO_TOKEN_VALUE))
   LINGQU_SHMEM_PTO_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_TIMEOUT_MS))
+  LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
+  LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS))
   printf -v LINGQU_SHMEM_PTO_NODEA_CNA '0x%x' \
     "$((LINGQU_SHMEM_PTO_NODEA_CNA))"
   printf -v LINGQU_SHMEM_PTO_NODEB_CNA '0x%x' \
@@ -540,6 +554,22 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       LINGQU_SHMEM_PTO_NODEB_CNA="$2"
+      shift 2
+      ;;
+    --pto-authorization-delay-ns)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-authorization-delay-ns requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS="$2"
+      shift 2
+      ;;
+    --pto-authorization-timeout-ns)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-authorization-timeout-ns requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="$2"
       shift 2
       ;;
     --use-qmp)
@@ -1034,7 +1064,25 @@ validate_lingqu_shmem_pto_qemu_log() {
     assert_log_absent "$log_file" \
       "QEMU_UB_GM_(LOAD|STORE|FENCE|UNBIND) " \
       "producer host-side PTO data access" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME|TIMEOUT)" \
+      "producer PTO authorization activity" || return 1
     return 0
+  fi
+
+  assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_TIMEOUT" \
+    "consumer PTO authorization timeout" || return 1
+  if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME)" \
+      "synchronous PTO authorization delay" || return 1
+  else
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=[0-2] .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 3 \
+      "consumer pending authorization ranges" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_RESUME .*cursor=[0-2] .*status=ready" 3 \
+      "consumer resumed authorization ranges" || return 1
   fi
 
   assert_log_has "$log_file" \
@@ -1240,10 +1288,18 @@ start_node() {
   if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
     case "$role" in
       nodeA)
-        pto_ub_gm_args=(-global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEA_CNA")
+        pto_ub_gm_args=(
+          -global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEA_CNA"
+          -global "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS"
+          -global "ubc.pto-authorization-timeout-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS"
+        )
         ;;
       nodeB)
-        pto_ub_gm_args=(-global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA")
+        pto_ub_gm_args=(
+          -global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA"
+          -global "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS"
+          -global "ubc.pto-authorization-timeout-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS"
+        )
         ;;
       *)
         echo "unknown PTO UB_GM node role: $role" >&2
@@ -2550,6 +2606,8 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_generation=${LINGQU_SHMEM_PTO_GENERATION}"
     echo "lingqu_shmem_pto_nodea_cna=${LINGQU_SHMEM_PTO_NODEA_CNA}"
     echo "lingqu_shmem_pto_nodeb_cna=${LINGQU_SHMEM_PTO_NODEB_CNA}"
+    echo "lingqu_shmem_pto_authorization_delay_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS}"
+    echo "lingqu_shmem_pto_authorization_timeout_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS}"
   fi
   echo "passed=${passed}"
   echo "failed=${failed}"
