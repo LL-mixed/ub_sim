@@ -500,7 +500,6 @@ static int run_consumer(const struct pto_direct_config *config,
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = { false };
     uint64_t import_mem_id = 0;
     uint64_t mapping_ref = 0;
-    uint64_t mapped_physical = 0;
     uint8_t *metadata = MAP_FAILED;
     uint64_t metadata_iova = 0;
     uint32_t index;
@@ -545,15 +544,10 @@ static int run_consumer(const struct pto_direct_config *config,
                 strerror(errno));
         goto out;
     }
-    if (lingqu_shmem_sim_phys_for_virt(imported.addr,
-                                       &mapped_physical) != 0 ||
-        mapped_physical != local_pas[0]) {
-        fprintf(stderr,
-                "[lingqu_shmem_pto] consumer physical_mismatch expected=0x%"
-                PRIx64 " actual=0x%" PRIx64 "\n",
-                local_pas[0], mapped_physical);
-        goto out;
-    }
+    printf("LINGQU_SHMEM_PTO role=consumer stage=import_mapped "
+           "import_mem_id=%" PRIu64 " local_pa=0x%" PRIx64
+           " bytes=%" PRIu64 "\n",
+           import_mem_id, local_pas[0], meta.size);
     submit_rc = obmm_async_open(&async_runtime, &async_options);
     if (submit_rc != 0) {
         fprintf(stderr,
@@ -581,7 +575,7 @@ static int run_consumer(const struct pto_direct_config *config,
     region_desc = (struct lingqu_shmem_sim_region_desc) {
         .mapped_addr = imported.addr,
         .mapped_length = meta.size,
-        .ub_gm_addr = mapped_physical,
+        .ub_gm_addr = local_pas[0],
         .opaque_mapping_ref = mapping_ref,
     };
     if (lingqu_shmem_sim_region_create(&region_desc, &region) != 0 ||
@@ -626,7 +620,7 @@ static int run_consumer(const struct pto_direct_config *config,
            " metadata_iova=0x%" PRIx64 " metadata_bytes=%zu crc=0x%08x"
            " requester_cna=0x%x fingerprint=0x%" PRIx64
            " resource=%s\n",
-           import_mem_id, mapped_physical, async_map.id,
+           import_mem_id, local_pas[0], async_map.id,
            async_map.generation, mapping_ref, metadata_iova,
            wire_result.metadata_bytes, wire_result.metadata_crc32,
            config->requester_cna, config->artifact_fingerprint,

@@ -56,6 +56,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("producer_verify=pass", source)
         self.assertIn("msync_unsupported=1", source)
         self.assertIn("errno != EINVAL", source)
+        self.assertIn(".ub_gm_addr = local_pas[0]", source)
+        self.assertNotIn(
+            "lingqu_shmem_sim_phys_for_virt(imported.addr", source
+        )
         self.assertIn("PTO_DIRECT_HOST_VECTOR_ELEMENTS", source)
         self.assertIn(
             "config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS", source

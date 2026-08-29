@@ -22,6 +22,14 @@ the mapping provider supports it. Linux device/PFN mappings can return
 records `msync_unsupported=1` and continues in that case. Any other `msync()`
 error remains fatal.
 
+The consumer uses the import aperture address returned by
+`obmm_alloc_import_pas()` as the memref's simulator UB GM address. That value
+is also passed to the OBMM import operation and QEMU mapping table. Device/PFN
+VMAs do not expose a usable PFN through `/proc/self/pagemap`, so the workload
+does not attempt to reconstruct the import aperture from its userspace virtual
+mapping. Ordinary anonymous metadata pages still use pagemap translation for
+the dispatch DMA address.
+
 Example guest invocations:
 
 ```text
