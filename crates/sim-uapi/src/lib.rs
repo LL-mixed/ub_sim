@@ -16547,7 +16547,14 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
         "/tmp/simpler-host-vector-artifacts/host_vector_manifest.json".to_string()
     });
     let path = PathBuf::from(path);
-    if !simpler_manifest_has_current_capi_abi(&path) {
+    let immutable = std::env::var("SIMPLER_HOST_VECTOR_MANIFEST_IMMUTABLE").as_deref() == Ok("1");
+    if immutable && !simpler_manifest_has_compatible_capi_abi(&path) {
+        return Err(format!(
+            "incompatible_immutable_simpler_host_vector_manifest:{}",
+            path.display()
+        ));
+    }
+    if !immutable && !simpler_manifest_has_current_capi_abi(&path) {
         ensure_simpler_host_vector_manifest(&path)?;
     }
     if !path.exists() {
@@ -16662,13 +16669,24 @@ fn simpler_manifest_has_current_capi_abi(manifest_path: &Path) -> bool {
     else {
         return false;
     };
+    simpler_manifest_has_compatible_capi_abi_value(&manifest)
+        && simpler_manifest_host_toolchain_matches_current(&manifest)
+        && simpler_manifest_runtime_matches_current_build(&manifest)
+}
+
+fn simpler_manifest_has_compatible_capi_abi(manifest_path: &Path) -> bool {
+    std::fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|manifest| simpler_manifest_has_compatible_capi_abi_value(&manifest))
+}
+
+fn simpler_manifest_has_compatible_capi_abi_value(manifest: &serde_json::Value) -> bool {
     manifest["simpler_capi_abi_version"].as_u64() == Some(5)
         && manifest["simpler_runtime"]["sim_aicore_tls_policy"]
             .as_str()
             .is_some_and(|policy| !policy.is_empty())
-        && simpler_manifest_uses_portable_sim_kernel(&manifest)
-        && simpler_manifest_host_toolchain_matches_current(&manifest)
-        && simpler_manifest_runtime_matches_current_build(&manifest)
+        && simpler_manifest_uses_portable_sim_kernel(manifest)
 }
 
 fn simpler_manifest_uses_portable_sim_kernel(manifest: &serde_json::Value) -> bool {
@@ -29741,6 +29759,41 @@ mod tests {
             Path::new("/toolchains/gcc-15/bin/g++"),
             "15.3.0"
         ));
+    }
+
+    #[test]
+    fn immutable_manifest_compatibility_ignores_cache_freshness() {
+        let root = std::env::temp_dir().join(format!(
+            "sim-uapi-immutable-manifest-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create manifest fixture");
+        let manifest_path = root.join("host_vector_manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "simpler_capi_abi_version": 5,
+                "sim_kernel_libgcc": "static",
+                "host_toolchain": {
+                    "compiler": "/intentionally/different/g++",
+                    "version": "0"
+                },
+                "simpler_runtime": {
+                    "sim_aicore_tls_policy": "ub-sim-adapter-v1"
+                }
+            }))
+            .expect("serialize manifest fixture"),
+        )
+        .expect("write manifest fixture");
+
+        assert!(super::simpler_manifest_has_compatible_capi_abi(
+            &manifest_path
+        ));
+        assert!(!super::simpler_manifest_has_current_capi_abi(
+            &manifest_path
+        ));
+        std::fs::remove_dir_all(root).expect("remove manifest fixture");
     }
 
     #[cfg(unix)]

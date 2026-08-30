@@ -1069,6 +1069,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             "--skip-guest-artifact-preparation", dedicated_source
         )
         self.assertIn(
+            "SIMPLER_HOST_VECTOR_MANIFEST_IMMUTABLE=1",
+            dedicated_source,
+        )
+        self.assertIn(
             "SKIP_GUEST_ARTIFACT_PREPARATION=1", generic_source
         )
         self.assertIn(

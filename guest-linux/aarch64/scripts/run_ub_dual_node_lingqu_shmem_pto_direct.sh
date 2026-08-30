@@ -431,6 +431,7 @@ MANIFEST="$($ARTIFACT_SNAPSHOTTER \
   --manifest "$SOURCE_MANIFEST" \
   --output-dir "$ARTIFACT_SNAPSHOT_DIR")"
 MANIFEST="$(canonical_file "PTO artifact snapshot" "$MANIFEST")"
+export SIMPLER_HOST_VECTOR_MANIFEST_IMMUTABLE=1
 SNAPSHOT_ACCESS_FAULT="$(validate_artifact_manifest \
   "$MANIFEST" "$LAYOUT" "$ELEMENTS" "PTO artifact snapshot")"
 if [[ "$SNAPSHOT_ACCESS_FAULT" != "$MANIFEST_ACCESS_FAULT" ]]; then
