@@ -23,6 +23,8 @@
   <rect width="1280" height="760" fill="#ffffff"/>
   <text x="50" y="48" class="title">P4F retired-segment：确定性双 guest 生命周期协议</text>
   <text x="50" y="77" class="subtitle">提交只发生在 producer unexport 已完成并发布 shared tombstone 之后</text>
+  <rect x="1020" y="25" width="200" height="48" rx="24" class="consumer"/>
+  <text x="1120" y="55" text-anchor="middle" class="step">n4 / n4c1 verified</text>
 
   <rect x="40" y="105" width="360" height="575" rx="14" class="lane"/>
   <rect x="460" y="105" width="360" height="575" rx="14" class="lane"/>
@@ -62,9 +64,9 @@
 
   <rect x="910" y="450" width="300" height="105" rx="10" class="provider"/>
   <text x="928" y="475" class="step">shared lifetime registry</text>
-  <text x="928" y="500" class="body">key: owner CNA + UBA + token</text>
-  <text x="928" y="522" class="body">atomic tombstone publication</text>
-  <text x="928" y="544" class="small">visible to every node QEMU</text>
+  <text x="928" y="500" class="body">owner CNA + UBA + token</text>
+  <text x="928" y="522" class="body">generation + export mem ID</text>
+  <text x="928" y="544" class="small">atomic; visible to peer QEMU</text>
   <path d="M370 502 L910 502" class="arrow"/>
 
   <rect x="70" y="590" width="300" height="65" rx="10" class="producer"/>

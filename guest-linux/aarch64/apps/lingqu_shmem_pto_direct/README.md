@@ -92,6 +92,10 @@ They must be paired with one test-only `--fault-case` value:
   and before submission;
 - `released-import` unmaps and unimports the consumer's OBMM import after
   materialization while preserving the registered endpoint-map reference;
+- `retired-segment` uses a separate OBMM control export to wait until the
+  producer unexports the payload segment, while preserving the consumer
+  import, endpoint map, and prepared wire metadata.  The control export is
+  one 2 MiB OBMM memseg; only its fixed-size header carries the handshake;
 - `wrong-requester` replaces the validated requester CNA with a different,
   syntactically valid CNA;
 - `oob` moves the output view one byte beyond the registered map;
@@ -101,6 +105,18 @@ They must be paired with one test-only `--fault-case` value:
   stores its result through the normal read-only `a` input binding;
 - `tload-on-write` selects a test-only HostVector artifact whose final kernel
   loads through the normal write-only `f` output binding.
+
+The retired-segment protocol binds a map to the complete source export
+lifetime identity: `{owner_cna, remote_uba, token_id, generation,
+export_mem_id}`.  The acceptance workload supplies `generation` and
+`export_mem_id` through the simulator-private OBMM import ABI v3 and its
+independent `SIM_DEC_OP_OBMM_MAP_V2` operation.  The ordinary import ABI v1
+remains the default for callers that do not request lifetime tracking.  On
+unexport, the kernel calls the simulator provider before releasing the
+producer backing; a missing provider or failed tombstone publication makes
+unexport fail closed.  Every consumer mapping revalidation checks the exact
+five-part shared tombstone, so later reuse of the same UBA or token does not
+retire a different export generation.
 
 All metadata mutations happen after the public
 `lingqu_shmem_pto_dispatch_prepare()` call and remain inside this acceptance
