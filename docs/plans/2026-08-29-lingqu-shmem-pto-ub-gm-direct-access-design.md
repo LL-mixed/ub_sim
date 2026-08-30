@@ -21,7 +21,7 @@
 
 | 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization pending/resume 已在同一两节点路径通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 负向、layout、并发和 P5 性能/上层集成仍待完成 |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization pending/resume 正向路径和 timeout fail-closed 路径已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 reset/cancel、其余负向、layout、并发和 P5 性能/上层集成仍待完成 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -115,9 +115,9 @@ acceptance 不设置这些 token。
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录最初审计输入。随后完成的 P0–P3 实施证据如下；表中的 revision
+这些 revision 记录最初审计输入。随后完成的 P0–P4A 实施证据如下；表中的 revision
 均为已经提交的阶段性代码。P2 的同步与可恢复 authorization 正向路径已经完成，
-P4/P5 继续保持未完成状态。
+P4A authorization timeout 已完成双机验证；P4 其余范围与 P5 继续保持未完成状态。
 
 | 阶段 | 仓库 | Revision | 已提交内容 |
 | --- | --- | --- | --- |
@@ -140,6 +140,8 @@ P4/P5 继续保持未完成状态。
 | P3 | `ub_sim` | `0770b01`、`f3a7e3f`、`182ef9b`、`b2abe0d` | import aperture、mapping sync、BQL callback 安全与 callable-1 对齐 |
 | P3 | `vendor/qemu_8.2.0_ub` | `76942965`、`3f54db3b` | experimental NPU/GSVA 与 GSVA ARM-MMU 默认关闭 |
 | P3 | `ub_sim` | `4f33311`、`53fd476` | 默认路径与 GVA/GSVA 解耦、契约 gate 与最终 QEMU pin |
+| P4A | `vendor/qemu_8.2.0_ub` | `5059f33` | fail-closed CQ failure completion 的精确结构化日志 |
+| P4A | `ub_sim` | `b5960a6`、`bad2e0b`、`90d6658` | authorization-timeout expected-result CLI、严格门禁、source hashes 与 guest 健康退出 |
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -209,8 +211,9 @@ CMDQ head 不变；timer completion 到达后重新校验 mapping identity，从
 对三个 memref 各注入 1,000,000 ns authorization delay。两台机器均观测到 3 次
 pending、3 次 ready resume 和 3 次 `pending_head=0 tail=1`；sequence 固定为
 `0:1,1:2,2:3`，全部授权完成后 head 才推进到 1。后续两次 load、一次 store、一次
-fence、producer original-mapping verify 和零 payload staging 全部通过。reset、cancel、
-timeout 的系统化负向验证与并发矩阵归入 P4。
+fence、producer original-mapping verify 和零 payload staging 全部通过。P4A 随后完成
+authorization timeout 的双机 fail-closed 验证；reset、cancel、迟到/重复 completion
+与并发矩阵继续归入 P4 后续阶段。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
 
@@ -245,12 +248,12 @@ timeout 的系统化负向验证与并发矩阵归入 P4。
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E | P4 扩展负向/lifetime 矩阵 |
+| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout 保持原输出不变 | P4 扩展其余负向/lifetime 矩阵 |
 | `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context 与真实 guest E2E 已实现 | P4 扩展复杂 layout |
 | PTO CPU UB GM hook | P1 已实现 contiguous ND、tail、range callback 与 fail-closed | P4 扩展复杂 layout |
-| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步 E2E 通过 | P4 失败矩阵与并发 |
-| backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume 正向路径 | P4 补 timeout、reset、cancel 和并发负向矩阵 |
-| 两节点 PTO direct E2E | n4-910c、n4-910c1 r9 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展负向、layout 与并发 coverage |
+| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步 E2E 与 P4A timeout fail-closed E2E 通过 | P4 补 reset/cancel、其余失败矩阵与并发 |
+| backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume 正向路径；P4A 已验证 timeout exact-once failure completion | P4 补 reset、cancel、迟到/重复 completion 和并发负向矩阵 |
+| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready 与 timeout 路径均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展其余负向、layout 与并发 coverage |
 
 ## 4. 修正后的目标架构
 
@@ -1059,6 +1062,53 @@ working-tree modifications。远程 worktree 的实现源内容随后分别归�
 把外层 SSH 命令行中的 QEMU 字符串误判为残留而失败；修正后的 r2 使用
 `pgrep -af '[q]emu-system-aarch64'` 并在两台机器得到空 leftover 文件。
 
+### 9.6 P4A authorization timeout 双机证据
+
+P4A 使用 `authorization_delay_ns=1,000,000` 和
+`authorization_timeout_ns=100,000`，让第一个 memref 的 backend authorization
+确定性超过 dispatch deadline。正式 r2 结果如下：
+
+| 项目 | n4-910c | n4-910c1 |
+| --- | --- | --- |
+| run id | `pto-ub-gm-p4a-auth-timeout-n4-20260830-r2` | `pto-ub-gm-p4a-auth-timeout-n4c1-20260830-r2` |
+| 对应实现 commit | `ub_sim@90d6658`、`QEMU@5059f33` | 同左 |
+| callable fingerprint | `0x46fb4d59b4d3e5ce` | 同左 |
+| manifest SHA-256 | `04820fadd8032b31ad193361ff1b398121a9f0ff9b1390f72207f52fbcb6038d` | 同左 |
+| initramfs SHA-256 | `72c26818006bf35617f25276d8a3326914146052ed3e8df7fc0fda59ebec8f47` | `81478ae4e067321da27205755263219343cc4cd3d8be6afb9f3d4ea05006ffed` |
+| QEMU SHA-256 | `c2e7b5ffaa95d25bcd25d16bd84d435749ee6504acab07e4bd89652c65c66f4a` | `bcb558200770c9c21374531fd6ea0a347992e53c0444acbecf7ad431aa4337d5` |
+| pending / timeout resume | 1 / 1 | 1 / 1 |
+| timeout / failure CQ / dispatch reject | 1 / 1 / 1 | 1 / 1 / 1 |
+| input/output authorization、load/store/fence | 全部 0 | 全部 0 |
+| producer 输出 | 16,384 个元素全部保持 `0x7fc00001` sentinel | 同左 |
+| consumer completion | status 3，`pto_ub_gm_authorization_timeout` | 同左 |
+| guest panic / warning / call trace | 0 / 0 / 0 | 0 / 0 / 0 |
+| `validation.status` / QEMU leftovers | pass / 0 | pass / 0 |
+
+这组结果证明 timeout 在 binding 注册和 PTO callable 执行前 fail-closed：CMDQ head
+在 pending 时保持 0，timeout completion 发布后推进到 1；CQ 只产生一个 status 3
+completion，且没有 input/output authorization、`TLOAD`、`TSTORE` 或 fence。producer
+对完整输出 tensor 扫描 sentinel，排除 partial store。
+
+同一 initramfs 随后在两台机器各运行一组 delay=0 的同步回归：
+
+| 项目 | n4-910c | n4-910c1 |
+| --- | --- | --- |
+| run id | `pto-ub-gm-p4a-sync-regression-n4-20260830-r1` | `pto-ub-gm-p4a-sync-regression-n4c1-20260830-r1` |
+| producer / consumer | pass / pass | pass / pass |
+| input/output authorization | 2 / 1 | 2 / 1 |
+| load / store / fence | 2 / 1 / 1 | 2 / 1 / 1 |
+| timeout markers / payload staging | 0 / 0 | 0 / 0 |
+| `validation.status` / QEMU leftovers | pass / 0 | pass / 0 |
+
+最初的 timeout r1 保留为诊断证据。r1 已正确产生 fail-closed completion，但 guest
+workload 把预期错误作为进程失败返回；它作为 PID 1 退出后触发 Linux
+`Attempted to kill init` panic，健康门禁据此拒绝证据。`ub_sim@90d6658` 增加
+`--expect authorization-timeout`：producer 仅在完整输出保持 sentinel 时成功，consumer
+仅在 status 3 和精确错误码同时匹配时成功。r2 因而保留严格错误判断，同时让 guest
+正常进入 idle shell。r1、r2 和同步回归均已复制到本地忽略目录
+`out/lingqu-shmem-pto-e2e/<run-id>/`；两台远端结束后均无 QEMU 残留，n4-910c 上
+暂停的 P3 PID `419618` 始终保持 `Tl`。
+
 ## 10. 分阶段实施计划
 
 ### P0：冻结 ABI、device identity 与验收契约（已完成）
@@ -1196,8 +1246,8 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 
 上述退出条件已经满足。P2 的“仿真正向路径已完成”覆盖同步 fast path，以及由显式
 QEMU delay 确定性触发的可恢复 authorization 正向路径。真实异步 provider 将来仍需
-接入相同状态机；timeout、reset、cancel、重复 completion 与多 dispatch 竞争的
-fail-closed 验证归入 P4。
+接入相同状态机；P4A 已完成 timeout fail-closed 验证。reset、cancel、迟到/重复
+completion 与多 dispatch 竞争继续归入 P4 后续阶段。
 
 预计工作量：5–8 个工程日。
 
@@ -1245,18 +1295,29 @@ fail-closed 验证归入 P4。
 
 预计工作量：5–8 个工程日。
 
-### P4：负向、layout 与并发验证（待完成）
+### P4：负向、layout 与并发验证（P4A timeout 已完成，其余待完成）
 
-| 类别 | Cases |
-| --- | --- |
-| Mapping | bad handle、stale mapping、wrong requester |
-| Lifecycle | retired segment、released import、dispatch 中途取消 |
-| Bounds | OOB、整数溢出、shape/stride extent 超界、跨 segment |
-| Access | READ memref 上 TSTORE、WRITE memref 上 TLOAD、role 不匹配 |
-| Ordering | timeout、remote holder、重复 completion、write fence |
-| Layout | tail、cross-page、unaligned、stride、DN、NZ |
-| Concurrency | 多 dispatch、多 binding、相同 object 不同 view、读写竞争 |
-| Recovery | callback failure、PTO exception、QEMU reset、guest exit |
+| 类别 | Cases | 当前状态 |
+| --- | --- | --- |
+| Mapping | bad handle、stale mapping、wrong requester | 待完成 |
+| Lifecycle | retired segment、released import、dispatch 中途取消 | 待完成 |
+| Bounds | OOB、整数溢出、shape/stride extent 超界、跨 segment | 待完成 |
+| Access | READ memref 上 TSTORE、WRITE memref 上 TLOAD、role 不匹配 | 待完成 |
+| Ordering | authorization timeout | P4A 双机通过 |
+| Ordering | remote holder、迟到/重复 completion、write fence failure | 待完成 |
+| Layout | tail、cross-page、unaligned、stride、DN、NZ | 待完成 |
+| Concurrency | 多 dispatch、多 binding、相同 object 不同 view、读写竞争 | 待完成 |
+| Recovery | callback failure、PTO exception、QEMU reset、guest exit | 待完成 |
+
+P4A 当前实施状态：
+
+- `QEMU@5059f33` 为 fail-closed CQ completion 增加 exact-once 可审计日志；
+- `ub_sim@b5960a6` 增加 `authorization-timeout` expected-result CLI 与 QEMU/guest
+  严格门禁，`bad2e0b` 将 QEMU binary 和关键源文件 hashes 纳入 evidence；
+- `ub_sim@90d6658` 让 guest workload 在精确观测预期 timeout 时健康返回，同时要求
+  producer 完整 sentinel 扫描、consumer status 3 与错误码精确匹配；
+- n4-910c、n4-910c1 的 timeout r2 与同步回归均通过，证据见 9.6 节；
+- P4A 未覆盖 reset、cancel、迟到/重复 completion、其他负向、layout 或 concurrency。
 
 退出条件：
 
@@ -1365,9 +1426,10 @@ PTO CPU `GlobalTensor` 依赖 pointer arithmetic。synthetic aperture 能保留�
 和 control metadata snapshot，并在 timer completion 到达后按 memref cursor 恢复。
 binding 只在全部 range 授权成功后注册，进入 PTO callback 后没有 authorization wait。
 
-当前剩余难点集中在 P4 failure semantics：timeout、reset、cancel 和迟到/重复
-completion 需要统一销毁 snapshot、撤销已创建资源，并保证 CMDQ/CQ 只完成一次；
-多 dispatch 并发还需要证明不同 slot、binding 和 sequence 不串扰。
+P4A 已证明 timeout 会销毁 pending snapshot、发布一次 failure CQ、推进 CMDQ head，
+并阻止 binding 和数据访问。当前剩余难点集中在 reset、cancel 和迟到/重复
+completion：这些事件需要统一销毁 snapshot、撤销已创建资源，并保证 CMDQ/CQ 只
+完成一次；多 dispatch 并发还需要证明不同 slot、binding 和 sequence 不串扰。
 
 experimental GSVA adaptor 可以把该内部过程实现成 acquire/ACK；默认状态机和公开接口不使用 GSVA 名称。
 
@@ -1419,11 +1481,12 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests |
 | existing bridge 的 UB GM authorization/binding | P2 已实现同步 fast path、pending slot snapshot/resume、opaque endpoint-map reference、resume/callback mapping 重校验与 completion cleanup |
 | 两节点 PTO direct-access acceptance | n4-910c 与 n4-910c1 r9 均通过；默认 acceptance 无 NPU/GVA/GSVA 依赖 |
+| authorization timeout fail-closed | P4A 已在 n4-910c 与 n4-910c1 通过；exact-once status 3 completion、零数据访问、完整 sentinel 和健康 guest 均有 evidence |
 | no-staging 结构化证明 | P1 pass-through tests 与 P3 r9 `segment_payload_staging_bytes=0` 共同覆盖；P5 统一 H2D/D2H counters 待完成 |
 
-P0、P1、P2 仿真正向路径和 P3 已完成，最小可信 direct-access PoC 已闭环。P4/P5 决定
-负向稳健性、布局覆盖、性能和上层运行时可用性，因此当前仍不能声明第 15 节的
-完整目标已经完成。
+P0、P1、P2 仿真正向路径、P3 和 P4A timeout 已完成，最小可信 direct-access PoC
+已闭环。P4 其余范围与 P5 决定完整负向稳健性、布局覆盖、性能和上层运行时可用性，
+因此当前仍不能声明第 15 节的完整目标已经完成。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 

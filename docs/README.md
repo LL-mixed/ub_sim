@@ -54,10 +54,10 @@ Current validation entry points:
     `lingqu_shmem_memref` as PTO `AddressSpace::UB_GM`, reusing the existing
     QEMU UBC → sim-qemu → ChipBackend → Simpler/PTO dispatch path and issuing
     direct `TLOAD/TSTORE` through a generic QEMU UB GM memory interface without
-    payload staging; synchronous and resumable authorization positive paths
-    are verified on n4-910c and n4-910c1; `sim_npu`, GVA, and GSVA are recorded
-    as experimental, optional, default-disabled features outside the default
-    acceptance path
+    payload staging; synchronous and resumable authorization positive paths,
+    plus the fail-closed authorization-timeout path, are verified on n4-910c
+    and n4-910c1; `sim_npu`, GVA, and GSVA are recorded as experimental,
+    optional, default-disabled features outside the default acceptance path
 - [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
   - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with async load, direct EL0 upcall, a pending-load table, and a guest EL0 coroutine scheduler
 - [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)

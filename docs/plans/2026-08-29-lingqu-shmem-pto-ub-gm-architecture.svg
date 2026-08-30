@@ -29,7 +29,7 @@
 
   <rect width="1680" height="1160" fill="#f8fafc"/>
   <text x="60" y="54" class="title">lingqu_shmem → PTO UB_GM：复用现有 ChipBackend bridge</text>
-  <text x="60" y="84" class="subtitle">P3 r9 同步路径与 P2 r2 delay 注入的可恢复 authorization 已在 n4-910c / n4-910c1 验证：2×64 KiB load、1×64 KiB store、1×fence、零 payload staging。</text>
+  <text x="60" y="84" class="subtitle">P3 同步、P2 delayed-ready 与 P4A timeout fail-closed 均已在 n4-910c / n4-910c1 验证；成功路径 2×64 KiB load、1×64 KiB store、1×fence、零 payload staging。</text>
 
   <rect x="45" y="112" width="1590" height="270" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
   <text x="72" y="149" class="lane-title">A. 已实现并保留的控制与执行主链</text>
