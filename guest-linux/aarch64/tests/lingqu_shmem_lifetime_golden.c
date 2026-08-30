@@ -59,6 +59,35 @@ int main(void)
           -EINVAL);
     spec.strides[0] = 1;
 
+    spec.rank = 2;
+    spec.shape[0] = 3;
+    spec.shape[1] = 5;
+    spec.strides[0] = 8;
+    spec.strides[1] = 1;
+    spec.byte_length = 84;
+    CHECK(lingqu_shmem_memref_create(region, &spec, &memrefs[0]) == 0);
+    CHECK(lingqu_shmem_memref_destroy(memrefs[0]) == 0);
+    memrefs[0] = NULL;
+
+    spec.strides[0] = 1;
+    spec.strides[1] = 3;
+    spec.byte_length = 60;
+    CHECK(lingqu_shmem_memref_create(region, &spec, &memrefs[0]) == 0);
+    CHECK(lingqu_shmem_memref_destroy(memrefs[0]) == 0);
+    memrefs[0] = NULL;
+
+    spec.strides[0] = 1;
+    spec.strides[1] = 2;
+    CHECK(lingqu_shmem_memref_create(region, &spec, &memrefs[0]) ==
+          -EINVAL);
+
+    spec.rank = 1;
+    spec.shape[0] = 16;
+    spec.shape[1] = 0;
+    spec.strides[0] = 1;
+    spec.strides[1] = 0;
+    spec.byte_length = 64;
+
     for (index = 0; index < 3; index++) {
         spec.byte_offset = (uint64_t)index * 64;
         spec.access = index < 2 ? LINGQU_SHMEM_ACCESS_READ :

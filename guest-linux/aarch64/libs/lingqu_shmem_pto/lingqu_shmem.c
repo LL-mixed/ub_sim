@@ -79,12 +79,16 @@ static bool access_valid(uint8_t access)
            access == LINGQU_SHMEM_ACCESS_READ_WRITE;
 }
 
-static bool contiguous_spec_valid(
+static bool strided_spec_valid(
     const struct lingqu_shmem_memref_spec *spec)
 {
-    uint64_t elements = 1;
-    uint64_t expected_stride = 1;
+    struct {
+        uint64_t stride;
+        uint32_t dimension;
+    } active_dims[LINGQU_SHMEM_MAX_RANK];
+    uint64_t extent_elements = 1;
     uint64_t element_bytes;
+    uint32_t active_count = 0;
     uint32_t index;
 
     if (!spec || spec->rank == 0 || spec->rank > LINGQU_SHMEM_MAX_RANK ||
@@ -95,19 +99,41 @@ static bool contiguous_spec_valid(
     if (element_bytes == 0) {
         return false;
     }
-    for (index = spec->rank; index > 0; index--) {
-        uint32_t dimension = spec->shape[index - 1];
+    for (index = 0; index < spec->rank; index++) {
+        uint32_t dimension = spec->shape[index];
+        uint64_t stride = spec->strides[index];
+        uint32_t insert_at;
 
-        if (dimension == 0 ||
-            spec->strides[index - 1] != expected_stride ||
-            elements > UINT64_MAX / dimension) {
+        if (dimension == 0 || stride == 0) {
             return false;
         }
-        elements *= dimension;
-        expected_stride = elements;
+        if (dimension == 1) {
+            continue;
+        }
+        insert_at = active_count;
+        while (insert_at > 0 &&
+               active_dims[insert_at - 1].stride > stride) {
+            active_dims[insert_at] = active_dims[insert_at - 1];
+            insert_at--;
+        }
+        active_dims[insert_at].stride = stride;
+        active_dims[insert_at].dimension = dimension;
+        active_count++;
     }
-    return elements <= UINT64_MAX / element_bytes &&
-           elements * element_bytes == spec->byte_length;
+    for (index = 0; index < active_count; index++) {
+        uint64_t stride = active_dims[index].stride;
+        uint64_t dimension_span =
+            (uint64_t)active_dims[index].dimension - 1;
+
+        if (stride < extent_elements ||
+            dimension_span >
+                (UINT64_MAX - extent_elements) / stride) {
+            return false;
+        }
+        extent_elements += dimension_span * stride;
+    }
+    return extent_elements <= UINT64_MAX / element_bytes &&
+           extent_elements * element_bytes == spec->byte_length;
 }
 
 static uint8_t role_from_access(uint8_t access)
@@ -206,7 +232,7 @@ int lingqu_shmem_memref_create(
     struct lingqu_shmem_memref *memref;
 
     if (!region || !spec || !memref_out ||
-        !contiguous_spec_valid(spec) ||
+        !strided_spec_valid(spec) ||
         spec->byte_offset > region->mapped_length ||
         spec->byte_length > region->mapped_length - spec->byte_offset ||
         region->ub_gm_addr > UINT64_MAX - spec->byte_offset ||

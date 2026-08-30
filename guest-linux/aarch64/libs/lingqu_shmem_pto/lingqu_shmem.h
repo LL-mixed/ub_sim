@@ -23,11 +23,13 @@ enum lingqu_shmem_access {
 
 struct lingqu_shmem_memref_spec {
     uint64_t byte_offset;
+    /* Storage span covered by shape/strides, including any padding holes. */
     uint64_t byte_length;
     uint32_t rank;
     uint16_t dtype;
     uint8_t access;
     uint32_t shape[LINGQU_SHMEM_MAX_RANK];
+    /* Element strides; overlapping multi-element dimensions are rejected. */
     uint32_t strides[LINGQU_SHMEM_MAX_RANK];
 };
 
