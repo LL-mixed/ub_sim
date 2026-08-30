@@ -29,6 +29,7 @@
 #define PTO_DIRECT_OUTPUT_SENTINEL UINT32_C(0x7fc00001)
 #define PTO_DIRECT_CALLABLE_ID UINT64_C(1)
 #define PTO_DIRECT_COMPLETION_FAILED 3u
+#define PTO_DIRECT_METADATA_BYTES 4096u
 
 enum pto_direct_role {
     PTO_DIRECT_ROLE_UNSET,
@@ -40,6 +41,18 @@ enum pto_direct_expectation {
     PTO_DIRECT_EXPECT_SUCCESS,
     PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT,
     PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED,
+    PTO_DIRECT_EXPECT_BAD_MEMREF,
+    PTO_DIRECT_EXPECT_ACCESS_DENIED,
+};
+
+enum pto_direct_fault_case {
+    PTO_DIRECT_FAULT_NONE,
+    PTO_DIRECT_FAULT_BAD_MAPPING_REF,
+    PTO_DIRECT_FAULT_STALE_MAPPING,
+    PTO_DIRECT_FAULT_WRONG_REQUESTER,
+    PTO_DIRECT_FAULT_OOB,
+    PTO_DIRECT_FAULT_ADDRESS_OVERFLOW,
+    PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH,
 };
 
 struct pto_direct_config {
@@ -54,6 +67,7 @@ struct pto_direct_config {
     uint64_t timeout_ms;
     uint64_t cancel_after_ms;
     enum pto_direct_expectation expectation;
+    enum pto_direct_fault_case fault_case;
 };
 
 struct pto_direct_layout {
@@ -112,8 +126,45 @@ static const char *expectation_name(enum pto_direct_expectation expectation)
         return "authorization-timeout";
     case PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED:
         return "authorization-cancelled";
+    case PTO_DIRECT_EXPECT_BAD_MEMREF:
+        return "bad-memref";
+    case PTO_DIRECT_EXPECT_ACCESS_DENIED:
+        return "access-denied";
     }
     return "unknown";
+}
+
+static const char *fault_case_name(enum pto_direct_fault_case fault_case)
+{
+    switch (fault_case) {
+    case PTO_DIRECT_FAULT_NONE:
+        return "none";
+    case PTO_DIRECT_FAULT_BAD_MAPPING_REF:
+        return "bad-mapping-ref";
+    case PTO_DIRECT_FAULT_STALE_MAPPING:
+        return "stale-mapping";
+    case PTO_DIRECT_FAULT_WRONG_REQUESTER:
+        return "wrong-requester";
+    case PTO_DIRECT_FAULT_OOB:
+        return "oob";
+    case PTO_DIRECT_FAULT_ADDRESS_OVERFLOW:
+        return "address-overflow";
+    case PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH:
+        return "role-access-mismatch";
+    }
+    return "unknown";
+}
+
+static enum pto_direct_expectation fault_case_expectation(
+    enum pto_direct_fault_case fault_case)
+{
+    if (fault_case == PTO_DIRECT_FAULT_WRONG_REQUESTER) {
+        return PTO_DIRECT_EXPECT_ACCESS_DENIED;
+    }
+    if (fault_case != PTO_DIRECT_FAULT_NONE) {
+        return PTO_DIRECT_EXPECT_BAD_MEMREF;
+    }
+    return PTO_DIRECT_EXPECT_SUCCESS;
 }
 
 static const char *expectation_error_code(
@@ -124,6 +175,10 @@ static const char *expectation_error_code(
         return LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_TIMEOUT;
     case PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED:
         return LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED;
+    case PTO_DIRECT_EXPECT_BAD_MEMREF:
+        return LINGQU_PTO_UB_GM_CODE_BAD_MEMREF;
+    case PTO_DIRECT_EXPECT_ACCESS_DENIED:
+        return LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED;
     case PTO_DIRECT_EXPECT_SUCCESS:
         break;
     }
@@ -147,7 +202,10 @@ static void usage(FILE *stream)
             "  --requester-cna N         required for consumer\n"
             "  --artifact-fingerprint N  required for consumer\n"
             "  --expect OUTCOME          success, authorization-timeout, "
-            "or authorization-cancelled\n");
+            "authorization-cancelled, bad-memref, or access-denied\n"
+            "  --fault-case CASE         none, bad-mapping-ref, "
+            "stale-mapping, wrong-requester, oob, address-overflow, "
+            "or role-access-mismatch\n");
 }
 
 static int parse_args(int argc, char **argv, struct pto_direct_config *config)
@@ -201,9 +259,38 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                               "authorization-cancelled") == 0) {
                 config->expectation =
                     PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED;
+            } else if (strcmp(expectation, "bad-memref") == 0) {
+                config->expectation = PTO_DIRECT_EXPECT_BAD_MEMREF;
+            } else if (strcmp(expectation, "access-denied") == 0) {
+                config->expectation = PTO_DIRECT_EXPECT_ACCESS_DENIED;
             } else {
                 fprintf(stderr, "invalid expected outcome: %s\n",
                         expectation);
+                return -EINVAL;
+            }
+            continue;
+        }
+        if (strcmp(option, "--fault-case") == 0) {
+            const char *fault_case = argv[++index];
+
+            if (strcmp(fault_case, "none") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_NONE;
+            } else if (strcmp(fault_case, "bad-mapping-ref") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_BAD_MAPPING_REF;
+            } else if (strcmp(fault_case, "stale-mapping") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_STALE_MAPPING;
+            } else if (strcmp(fault_case, "wrong-requester") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_WRONG_REQUESTER;
+            } else if (strcmp(fault_case, "oob") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_OOB;
+            } else if (strcmp(fault_case, "address-overflow") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_ADDRESS_OVERFLOW;
+            } else if (strcmp(fault_case,
+                              "role-access-mismatch") == 0) {
+                config->fault_case =
+                    PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH;
+            } else {
+                fprintf(stderr, "invalid fault case: %s\n", fault_case);
                 return -EINVAL;
             }
             continue;
@@ -251,6 +338,11 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
           config->cancel_after_ms >= config->timeout_ms)) ||
         (config->expectation != PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED &&
          config->cancel_after_ms != 0) ||
+        (config->fault_case == PTO_DIRECT_FAULT_NONE &&
+         (config->expectation == PTO_DIRECT_EXPECT_BAD_MEMREF ||
+          config->expectation == PTO_DIRECT_EXPECT_ACCESS_DENIED)) ||
+        (config->fault_case != PTO_DIRECT_FAULT_NONE &&
+         config->expectation != fault_case_expectation(config->fault_case)) ||
         (config->role == PTO_DIRECT_ROLE_PRODUCER && config->node_id != 0) ||
         (config->role == PTO_DIRECT_ROLE_CONSUMER &&
          (config->node_id != 1 || config->requester_cna == 0 ||
@@ -596,6 +688,208 @@ static int create_memrefs(
     return 0;
 }
 
+static uint32_t pto_direct_crc32_ieee_update(uint32_t crc,
+                                             const uint8_t *bytes,
+                                             size_t length)
+{
+    size_t index;
+
+    for (index = 0; index < length; index++) {
+        uint32_t value = crc ^ bytes[index];
+        uint32_t bit;
+
+        for (bit = 0; bit < 8; bit++) {
+            value = (value >> 1) ^
+                    (UINT32_C(0xedb88320) &
+                     (0u - (value & UINT32_C(1))));
+        }
+        crc = value;
+    }
+    return crc;
+}
+
+static bool metadata_span(uint64_t metadata_iova,
+                          size_t metadata_capacity,
+                          uint64_t span_iova,
+                          size_t span_bytes,
+                          size_t *offset_out)
+{
+    uint64_t offset;
+
+    if (!offset_out || span_iova < metadata_iova) {
+        return false;
+    }
+    offset = span_iova - metadata_iova;
+    if (offset > metadata_capacity ||
+        span_bytes > metadata_capacity - (size_t)offset) {
+        return false;
+    }
+    *offset_out = (size_t)offset;
+    return true;
+}
+
+static int refresh_fault_metadata_crc(
+    uint8_t *metadata,
+    size_t metadata_capacity,
+    uint64_t metadata_iova,
+    struct lingqu_shmem_pto_wire_result *wire_result)
+{
+    LingquPtoDispatchControlV2 *control;
+    LingquShmemMemrefV1 *wire_memrefs;
+    size_t memref_offset;
+    size_t memref_bytes;
+    uint32_t crc = UINT32_C(0xffffffff);
+    uint32_t index;
+
+    if (!metadata || !wire_result ||
+        metadata_capacity < sizeof(*control)) {
+        return -EINVAL;
+    }
+    control = (LingquPtoDispatchControlV2 *)metadata;
+    if (control->memref_count != 3 || control->scalar_count != 0) {
+        return -EPROTO;
+    }
+    memref_bytes = (size_t)control->memref_count *
+                   sizeof(*wire_memrefs);
+    if (!metadata_span(metadata_iova, metadata_capacity,
+                       control->memref_table_iova, memref_bytes,
+                       &memref_offset)) {
+        return -EPROTO;
+    }
+    wire_memrefs = (LingquShmemMemrefV1 *)(metadata + memref_offset);
+
+    control->metadata_crc32 = 0;
+    crc = pto_direct_crc32_ieee_update(
+        crc, metadata, sizeof(*control));
+    crc = pto_direct_crc32_ieee_update(
+        crc, (const uint8_t *)wire_memrefs, memref_bytes);
+    for (index = 0; index < control->memref_count; index++) {
+        const LingquShmemMemrefV1 *memref = &wire_memrefs[index];
+        size_t shape_offset;
+        size_t stride_offset;
+        size_t view_bytes;
+
+        if (memref->rank == 0 || memref->rank > LINGQU_PTO_MAX_RANK) {
+            return -EPROTO;
+        }
+        view_bytes = (size_t)memref->rank * sizeof(uint32_t);
+        if (!metadata_span(metadata_iova, metadata_capacity,
+                           memref->shape_table_iova, view_bytes,
+                           &shape_offset) ||
+            !metadata_span(metadata_iova, metadata_capacity,
+                           memref->stride_table_iova, view_bytes,
+                           &stride_offset)) {
+            return -EPROTO;
+        }
+        crc = pto_direct_crc32_ieee_update(
+            crc, metadata + shape_offset, view_bytes);
+        crc = pto_direct_crc32_ieee_update(
+            crc, metadata + stride_offset, view_bytes);
+    }
+    control->metadata_crc32 = crc ^ UINT32_C(0xffffffff);
+    wire_result->metadata_crc32 = control->metadata_crc32;
+    return 0;
+}
+
+static int inject_fault_case(
+    const struct pto_direct_config *config,
+    uint8_t *metadata,
+    size_t metadata_capacity,
+    uint64_t metadata_iova,
+    uint64_t mapping_bytes,
+    struct lingqu_shmem_pto_wire_result *wire_result,
+    struct obmm_async *async_runtime,
+    struct obmm_async_map *async_map)
+{
+    LingquPtoDispatchControlV2 *control;
+    LingquShmemMemrefV1 *wire_memrefs;
+    size_t memref_offset;
+    int rc;
+
+    if (!config || config->fault_case == PTO_DIRECT_FAULT_NONE) {
+        return 0;
+    }
+    if (!metadata || !wire_result || !async_runtime || !async_map) {
+        return -EINVAL;
+    }
+    control = (LingquPtoDispatchControlV2 *)metadata;
+    if (control->memref_count != 3 ||
+        !metadata_span(metadata_iova, metadata_capacity,
+                       control->memref_table_iova,
+                       3 * sizeof(*wire_memrefs), &memref_offset)) {
+        return -EPROTO;
+    }
+    wire_memrefs = (LingquShmemMemrefV1 *)(metadata + memref_offset);
+
+    if (config->fault_case == PTO_DIRECT_FAULT_STALE_MAPPING) {
+        uint64_t map_id = async_map->id;
+        uint64_t map_generation = async_map->generation;
+
+        rc = obmm_async_map_unregister(async_runtime, async_map);
+        if (rc != 0) {
+            return rc;
+        }
+        printf("LINGQU_SHMEM_PTO role=consumer stage=fault_injected "
+               "fault=%s expected=%s map_id=%" PRIu64
+               " map_generation=%" PRIu64 " map_active=0\n",
+               fault_case_name(config->fault_case),
+               expectation_name(config->expectation), map_id,
+               map_generation);
+        return 0;
+    }
+
+    switch (config->fault_case) {
+    case PTO_DIRECT_FAULT_BAD_MAPPING_REF: {
+        uint64_t mapping_ref = wire_memrefs[0].opaque_mapping_ref;
+        uint64_t map_id = lingqu_pto_obmm_mapping_ref_map_id(mapping_ref);
+        uint64_t generation =
+            lingqu_pto_obmm_mapping_ref_generation(mapping_ref);
+        uint64_t bad_generation =
+            generation == LINGQU_PTO_OBMM_MAP_GENERATION_MAX ?
+            generation - 1 : generation + 1;
+
+        wire_memrefs[0].opaque_mapping_ref =
+            lingqu_pto_obmm_mapping_ref_encode(map_id, bad_generation);
+        if (wire_memrefs[0].opaque_mapping_ref == 0 ||
+            wire_memrefs[0].opaque_mapping_ref == mapping_ref) {
+            return -ERANGE;
+        }
+        break;
+    }
+    case PTO_DIRECT_FAULT_WRONG_REQUESTER:
+        control->requester_cna = config->requester_cna == 1 ? 2 : 1;
+        break;
+    case PTO_DIRECT_FAULT_OOB:
+        if (wire_memrefs[2].byte_length >= mapping_bytes) {
+            return -ERANGE;
+        }
+        wire_memrefs[2].byte_offset =
+            mapping_bytes - wire_memrefs[2].byte_length + 1;
+        break;
+    case PTO_DIRECT_FAULT_ADDRESS_OVERFLOW:
+        wire_memrefs[0].ub_gm_addr =
+            UINT64_MAX - wire_memrefs[0].byte_length + 1;
+        break;
+    case PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH:
+        wire_memrefs[2].access = LINGQU_PTO_UB_GM_READ;
+        break;
+    case PTO_DIRECT_FAULT_NONE:
+    case PTO_DIRECT_FAULT_STALE_MAPPING:
+        return -EINVAL;
+    }
+    rc = refresh_fault_metadata_crc(
+        metadata, metadata_capacity, metadata_iova, wire_result);
+    if (rc != 0) {
+        return rc;
+    }
+    printf("LINGQU_SHMEM_PTO role=consumer stage=fault_injected "
+           "fault=%s expected=%s metadata_crc32=0x%08x map_active=1\n",
+           fault_case_name(config->fault_case),
+           expectation_name(config->expectation),
+           wire_result->metadata_crc32);
+    return 0;
+}
+
 static int run_consumer(const struct pto_direct_config *config,
                         const struct pto_direct_layout *layout,
                         uint32_t local_cna)
@@ -705,12 +999,13 @@ static int run_consumer(const struct pto_direct_config *config,
         fprintf(stderr, "[lingqu_shmem_pto] consumer memref_create failed\n");
         goto out;
     }
-    metadata = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+    metadata = mmap(NULL, PTO_DIRECT_METADATA_BYTES,
+                    PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (metadata == MAP_FAILED) {
         goto out;
     }
-    memset(metadata, 0, 4096);
+    memset(metadata, 0, PTO_DIRECT_METADATA_BYTES);
     if (lingqu_shmem_sim_phys_for_virt(metadata, &metadata_iova) != 0) {
         goto out;
     }
@@ -724,7 +1019,8 @@ static int run_consumer(const struct pto_direct_config *config,
         .memref_count = 3,
     };
     if (lingqu_shmem_pto_dispatch_prepare(
-            &request, metadata, 4096, metadata_iova, &slot,
+            &request, metadata, PTO_DIRECT_METADATA_BYTES, metadata_iova,
+            &slot,
             &wire_result, &inflight) != 0) {
         fprintf(stderr, "[lingqu_shmem_pto] consumer prepare failed\n");
         goto out;
@@ -747,6 +1043,16 @@ static int run_consumer(const struct pto_direct_config *config,
            wire_result.metadata_bytes, wire_result.metadata_crc32,
            config->requester_cna, config->artifact_fingerprint,
            endpoint_info.resource_path);
+    submit_rc = inject_fault_case(
+        config, metadata, PTO_DIRECT_METADATA_BYTES, metadata_iova,
+        meta.size, &wire_result, async_runtime, &async_map);
+    if (submit_rc != 0) {
+        fprintf(stderr,
+                "[lingqu_shmem_pto] consumer fault_injection "
+                "fault=%s error=%d\n",
+                fault_case_name(config->fault_case), submit_rc);
+        goto out;
+    }
     if (config->expectation == PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED) {
         submit_rc = lingqu_shmem_pto_endpoint_submit_cancel_after(
             endpoint, &slot, config->timeout_ms, config->cancel_after_ms,
@@ -815,7 +1121,7 @@ out:
     }
     obmm_async_close(async_runtime);
     if (metadata != MAP_FAILED) {
-        munmap(metadata, 4096);
+        munmap(metadata, PTO_DIRECT_METADATA_BYTES);
     }
     obmm_unmap_region(&imported);
     if (import_mem_id != 0) {
@@ -844,12 +1150,13 @@ int main(int argc, char **argv)
     }
     printf("LINGQU_SHMEM_PTO role=%s stage=start node_id=%u node_count=%u "
            "local_cna=0x%x elements=%u generation=%" PRIu64
-           " expected=%s cancel_after_ms=%" PRIu64 "\n",
+           " expected=%s fault_case=%s cancel_after_ms=%" PRIu64 "\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            config.node_id, config.node_count, local_cna,
            config.elements, config.generation,
-           expectation_name(config.expectation), config.cancel_after_ms);
+           expectation_name(config.expectation),
+           fault_case_name(config.fault_case), config.cancel_after_ms);
     if (config.role == PTO_DIRECT_ROLE_PRODUCER) {
         return run_producer(&config, &layout, local_cna);
     }

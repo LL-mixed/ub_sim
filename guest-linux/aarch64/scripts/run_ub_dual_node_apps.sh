@@ -61,6 +61,7 @@ LINGQU_SHMEM_PTO_RESET_ON_PENDING="${LINGQU_SHMEM_PTO_RESET_ON_PENDING:-0}"
 LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION="${LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION:-0}"
 LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION="${LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION:-0}"
 LINGQU_SHMEM_PTO_EXPECT="${LINGQU_SHMEM_PTO_EXPECT:-success}"
+LINGQU_SHMEM_PTO_FAULT_CASE="${LINGQU_SHMEM_PTO_FAULT_CASE:-none}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 QMP_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-dual}/qmp"
@@ -126,7 +127,11 @@ Options:
                       Inject a completion after cancel/reset cleanup.
   --pto-expect OUTCOME
                       Expected PTO result: success, authorization-timeout,
-                      or authorization-cancelled.
+                      authorization-cancelled, bad-memref, or access-denied.
+  --pto-fault-case CASE
+                      Test-only wire fault: none, bad-mapping-ref,
+                      stale-mapping, wrong-requester, oob, address-overflow,
+                      or role-access-mismatch.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
@@ -287,6 +292,7 @@ require_pto_unsigned_value() {
 
 validate_lingqu_shmem_pto_config() {
   local cancel_after_ns=0
+  local fault_expected=""
   local value=""
 
   if [[ ! -f "$SIMPLER_HOST_VECTOR_MANIFEST" ]]; then
@@ -352,16 +358,32 @@ validate_lingqu_shmem_pto_config() {
     exit 2
   fi
   cancel_after_ns=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS * 1000000))
+  case "$LINGQU_SHMEM_PTO_FAULT_CASE" in
+    none)
+      ;;
+    wrong-requester)
+      fault_expected="access-denied"
+      ;;
+    bad-mapping-ref|stale-mapping|oob|address-overflow|role-access-mismatch)
+      fault_expected="bad-memref"
+      ;;
+    *)
+      echo "unsupported PTO fault case: $LINGQU_SHMEM_PTO_FAULT_CASE" >&2
+      exit 2
+      ;;
+  esac
   case "$LINGQU_SHMEM_PTO_EXPECT" in
     success)
-      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 )); then
-        echo "PTO success requires cancel-after-ms=0" >&2
+      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 )) ||
+         [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]]; then
+        echo "PTO success requires fault-case=none and cancel-after-ms=0" >&2
         exit 2
       fi
       ;;
     authorization-timeout)
-      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 )); then
-        echo "authorization-timeout requires cancel-after-ms=0" >&2
+      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 )) ||
+         [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]]; then
+        echo "authorization-timeout requires fault-case=none and cancel-after-ms=0" >&2
         exit 2
       fi
       if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS <=
@@ -371,10 +393,11 @@ validate_lingqu_shmem_pto_config() {
       fi
       ;;
     authorization-cancelled)
-      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS == 0 ||
+      if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]] ||
+         (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS == 0 ||
             LINGQU_SHMEM_PTO_CANCEL_AFTER_MS >=
               LINGQU_SHMEM_PTO_TIMEOUT_MS )); then
-        echo "authorization-cancelled requires cancel-after-ms in 1..timeout-ms-1" >&2
+        echo "authorization-cancelled requires fault-case=none and cancel-after-ms in 1..timeout-ms-1" >&2
         exit 2
       fi
       if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS <= cancel_after_ns ||
@@ -383,8 +406,23 @@ validate_lingqu_shmem_pto_config() {
         exit 2
       fi
       ;;
+    bad-memref|access-denied)
+      if [[ -z "$fault_expected" ||
+            "$LINGQU_SHMEM_PTO_EXPECT" != "$fault_expected" ]]; then
+        echo "PTO fault case $LINGQU_SHMEM_PTO_FAULT_CASE requires expected result ${fault_expected:-success}" >&2
+        exit 2
+      fi
+      if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS != 0 ||
+            LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 ||
+            LINGQU_SHMEM_PTO_RESET_ON_PENDING != 0 ||
+            LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 ||
+            LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
+        echo "PTO wire faults require synchronous authorization without lifecycle injections" >&2
+        exit 2
+      fi
+      ;;
     *)
-      echo "PTO expected result must be success, authorization-timeout, or authorization-cancelled" >&2
+      echo "PTO expected result must be success, authorization-timeout, authorization-cancelled, bad-memref, or access-denied" >&2
       exit 2
       ;;
   esac
@@ -449,6 +487,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_timeout_ms=$LINGQU_SHMEM_PTO_TIMEOUT_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_cancel_after_ms=$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
+  append_cmdline_if_missing "lingqu_shmem_pto_fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE"
   append_cmdline_if_missing \
     "lingqu_shmem_pto_artifact_fingerprint=$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT"
 }
@@ -706,6 +745,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       LINGQU_SHMEM_PTO_EXPECT="$2"
+      shift 2
+      ;;
+    --pto-fault-case)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-fault-case requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_FAULT_CASE="$2"
       shift 2
       ;;
     --use-qmp)
@@ -1163,10 +1210,16 @@ validate_lingqu_shmem_pto_guest_log() {
     authorization-cancelled)
       expected_error="pto_ub_gm_authorization_cancelled"
       ;;
+    bad-memref)
+      expected_error="pto_ub_gm_bad_memref"
+      ;;
+    access-denied)
+      expected_error="pto_ub_gm_access_denied"
+      ;;
   esac
 
   assert_log_has "$log_file" \
-    "LINGQU_SHMEM_PTO role=$role stage=start .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
+    "LINGQU_SHMEM_PTO role=$role stage=start .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION expected=$LINGQU_SHMEM_PTO_EXPECT fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE" \
     "$role PTO UB_GM start contract" || return 1
   if [[ "$role" == "producer" ]]; then
     assert_log_has "$log_file" \
@@ -1181,7 +1234,7 @@ validate_lingqu_shmem_pto_guest_log() {
         "producer unchanged output after expected authorization failure" || return 1
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail" \
-        "producer unexpected authorization failure result" || return 1
+        "producer unexpected failure result" || return 1
       return 0
     fi
     assert_log_has "$log_file" \
@@ -1192,15 +1245,20 @@ validate_lingqu_shmem_pto_guest_log() {
       "LINGQU_SHMEM_PTO role=consumer stage=prepared .*map_id=[1-9][0-9]* .*map_generation=[1-9][0-9]* .*mapping_ref=0x[1-9a-f][0-9a-f]* .*requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA .*fingerprint=0x[1-9a-f][0-9a-f]*" \
       "consumer opaque map-ref dispatch" || return 1
     if [[ -n "$expected_error" ]]; then
+      if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]]; then
+        assert_log_count "$log_file" \
+          "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=$LINGQU_SHMEM_PTO_FAULT_CASE expected=$LINGQU_SHMEM_PTO_EXPECT " 1 \
+          "consumer exact-once requested wire fault" || return 1
+      fi
       assert_log_count "$log_file" \
         "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=3 error=$expected_error" 1 \
-        "consumer exact-once expected authorization failure completion" || return 1
+        "consumer exact-once expected failure completion" || return 1
       assert_log_has "$log_file" \
         "LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=$LINGQU_SHMEM_PTO_EXPECT observed=completion error=$expected_error" \
         "consumer expected authorization failure result" || return 1
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail" \
-        "consumer unexpected authorization failure result" || return 1
+        "consumer unexpected failure result" || return 1
       return 0
     fi
     assert_log_has "$log_file" \
@@ -1300,6 +1358,30 @@ validate_lingqu_shmem_pto_qemu_log() {
   assert_log_has "$log_file" \
     "QEMU_UB_GM_ACCESS_REGISTER pto_device_cna=$expected_cna" \
     "$node_name PTO access registration" || return 1
+  if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "bad-memref" ||
+        "$LINGQU_SHMEM_PTO_EXPECT" == "access-denied" ]]; then
+    local expected_error="pto_ub_gm_bad_memref"
+
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "access-denied" ]]; then
+      expected_error="pto_ub_gm_access_denied"
+    fi
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_DISPATCH_REJECT .*error=[0-9]+ code=$expected_error" 1 \
+      "consumer exact-once wire-fault rejection" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_FAILURE_COMPLETION .*cq_slot=0 cq_tail=1 status=3 code=$expected_error" 1 \
+      "consumer exact-once wire-fault CQ completion" || return 1
+    assert_log_count "$log_file" \
+      "linqu-uapi kick ring queued=0 consumed=1 pending_head=1 tail=1" 1 \
+      "consumer immediate wire-fault CMDQ retirement" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME|TIMEOUT|CANCEL|COMPLETION_IGNORED)" \
+      "consumer authorization activity after synchronous wire fault" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_(INPUT_AUTHORIZE|OUTPUT_AUTHORIZE|INOUT_AUTHORIZE|LOAD|STORE|FENCE|UNBIND)|SIM_QEMU_UB_GM_BIND_REGISTER" \
+      "consumer data access after wire fault" || return 1
+    return 0
+  fi
   if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
     assert_log_count "$log_file" \
       "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=0 .*sequence=[1-9][0-9]* .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 1 \
@@ -3074,6 +3156,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_inject_duplicate_completion=${LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION}"
     echo "lingqu_shmem_pto_inject_late_completion=${LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION}"
     echo "lingqu_shmem_pto_expect=${LINGQU_SHMEM_PTO_EXPECT}"
+    echo "lingqu_shmem_pto_fault_case=${LINGQU_SHMEM_PTO_FAULT_CASE}"
   fi
   echo "passed=${passed}"
   echo "failed=${failed}"

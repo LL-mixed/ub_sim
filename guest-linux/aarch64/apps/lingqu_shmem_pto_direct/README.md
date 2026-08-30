@@ -2,7 +2,7 @@
 
 This directory defines the guest-side two-node acceptance workload for PTO
 `AddressSpace::UB_GM` access to `lingqu_shmem`. The source, runner, and runtime
-evidence are delivered and validated as part of P3.
+evidence cover the P3 happy path and the P4 lifecycle and fault gates.
 
 - The producer exports one OBMM region, writes two contiguous `f32` inputs,
   initializes the output, publishes bootstrap metadata, and verifies the
@@ -82,6 +82,30 @@ and retain the monotonic authorization sequence. The rebooted consumer then
 submits the workload again and must finish through the ordinary success path.
 This makes reset cleanup, stale-event rejection, and post-reset recovery one
 end-to-end gate; the guest workload ABI has no reset-specific option.
+
+P4C adds explicit negative-test outcomes `bad-memref` and `access-denied`.
+They must be paired with one test-only `--fault-case` value:
+
+- `bad-mapping-ref` changes the generation encoded in the first opaque map
+  reference while preserving a valid wire encoding;
+- `stale-mapping` retires the registered endpoint map after materialization
+  and before submission;
+- `wrong-requester` replaces the validated requester CNA with a different,
+  syntactically valid CNA;
+- `oob` moves the output view one byte beyond the registered map;
+- `address-overflow` makes the first UB GM range overflow `uint64_t`;
+- `role-access-mismatch` declares the output role with read-only access.
+
+All metadata mutations happen after the public
+`lingqu_shmem_pto_dispatch_prepare()` call and remain inside this acceptance
+application. The workload recomputes the ABI CRC over the complete control,
+memref, shape, and stride metadata before submission. Consequently, QEMU must
+reject the intended mapping, requester, bounds, or role/access violation; a
+CRC failure cannot accidentally satisfy the test. The host gate requires one
+status-3 completion with the exact expected error, immediate retirement of the
+command slot, no binding or PTO data callback, and an unchanged producer
+sentinel. Public `lingqu_shmem` callers still cannot construct these invalid
+wire objects through the ordinary memref API.
 
 Callable 1 currently identifies the frozen host-vector artifact whose PTO
 kernel executes one `128 x 128` `f32` tile. For each element it computes

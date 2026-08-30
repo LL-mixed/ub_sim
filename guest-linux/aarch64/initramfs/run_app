@@ -479,6 +479,7 @@ run_lingqu_shmem_pto_direct() {
   args="$args --timeout-ms $(cmdline_value lingqu_shmem_pto_timeout_ms 120000)"
   args="$args --cancel-after-ms $(cmdline_value lingqu_shmem_pto_cancel_after_ms 0)"
   args="$args --expect $(cmdline_value lingqu_shmem_pto_expect success)"
+  args="$args --fault-case $(cmdline_value lingqu_shmem_pto_fault_case none)"
 
   requester_cna="$(cmdline_value lingqu_shmem_pto_requester_cna '')"
   artifact_fingerprint="$(cmdline_value lingqu_shmem_pto_artifact_fingerprint '')"

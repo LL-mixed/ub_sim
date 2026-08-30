@@ -46,6 +46,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(data[:4], b"\x7fELF")
         self.assertIn(b"LINGQU_SHMEM_PTO_RESULT", data)
         self.assertIn(b"--artifact-fingerprint", data)
+        self.assertIn(b"--fault-case", data)
 
     def test_workload_uses_public_memrefs_and_producer_verification(self):
         source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
@@ -71,6 +72,14 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("output_unchanged=1", source)
         self.assertIn("expectation_error_code(config->expectation)", source)
         self.assertIn("LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED", source)
+        self.assertIn("PTO_DIRECT_FAULT_BAD_MAPPING_REF", source)
+        self.assertIn("PTO_DIRECT_FAULT_STALE_MAPPING", source)
+        self.assertIn("PTO_DIRECT_FAULT_WRONG_REQUESTER", source)
+        self.assertIn("PTO_DIRECT_FAULT_OOB", source)
+        self.assertIn("PTO_DIRECT_FAULT_ADDRESS_OVERFLOW", source)
+        self.assertIn("PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH", source)
+        self.assertIn("refresh_fault_metadata_crc", source)
+        self.assertIn("stage=fault_injected", source)
         self.assertIn(
             "config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS", source
         )
@@ -99,6 +108,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_pto_expect success", run_app)
         self.assertIn("--expect $(cmdline_value", run_app)
         self.assertIn("lingqu_shmem_pto_cancel_after_ms 0", run_app)
+        self.assertIn("lingqu_shmem_pto_fault_case none", run_app)
+        self.assertIn("--fault-case $(cmdline_value", run_app)
         self.assertIn("linqu_shmem_pto_direct=1", run_app)
         self.assertIn("/bin/lingqu_shmem_pto_direct", run_app)
         self.assertIn("lingqu_shmem_pto_elements 16384", run_app)
@@ -116,7 +127,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--pto-inject-duplicate-completion", runner)
         self.assertIn("--pto-inject-late-completion", runner)
         self.assertIn("--pto-expect", runner)
+        self.assertIn("--pto-fault-case", runner)
         self.assertIn("LINGQU_SHMEM_PTO_EXPECT", runner)
+        self.assertIn("LINGQU_SHMEM_PTO_FAULT_CASE", runner)
         self.assertIn(
             "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT", runner
         )
@@ -136,6 +149,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_TIMEOUT", runner)
         self.assertIn("pto_ub_gm_authorization_timeout", runner)
         self.assertIn("pto_ub_gm_authorization_cancelled", runner)
+        self.assertIn("pto_ub_gm_bad_memref", runner)
+        self.assertIn("pto_ub_gm_access_denied", runner)
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_CANCEL", runner)
         self.assertIn("QEMU_UB_GM_RESET authorization_pending=1", runner)
         self.assertIn("source=cancel-late-injection reason=no_pending", runner)
@@ -192,6 +207,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--inject-duplicate-completion 0|1", result.stdout)
         self.assertIn("--inject-late-completion 0|1", result.stdout)
         self.assertIn("--expect OUTCOME", result.stdout)
+        self.assertIn("--fault-case CASE", result.stdout)
 
     def test_dedicated_runner_rejects_unknown_expected_result(self):
         result = subprocess.run(
@@ -209,7 +225,61 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
-            "expected result must be success, authorization-timeout, or authorization-cancelled",
+            "expected result must be success, authorization-timeout, authorization-cancelled, bad-memref, or access-denied",
+            result.stdout,
+        )
+
+    def test_dedicated_runner_rejects_unknown_fault_case(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--fault-case",
+                "invented-corruption",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "unsupported PTO fault case: invented-corruption",
+            result.stdout,
+        )
+
+    def test_generic_runner_rejects_fault_expectation_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "manifest.json"
+            scenario = root / "scenario.yaml"
+            manifest.write_text("{}\n")
+            scenario.write_text("schema_version: 1\n")
+            result = subprocess.run(
+                [
+                    str(DUAL_NODE_RUNNER),
+                    "--app",
+                    "lingqu_shmem_pto_direct",
+                    "--pto-manifest",
+                    str(manifest),
+                    "--pto-scenario",
+                    str(scenario),
+                    "--pto-artifact-fingerprint",
+                    "1",
+                    "--pto-fault-case",
+                    "wrong-requester",
+                    "--pto-expect",
+                    "bad-memref",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "PTO fault case wrong-requester requires expected result access-denied",
             result.stdout,
         )
 
@@ -346,6 +416,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             self.assertIn("inject_duplicate_completion=0", validation)
             self.assertIn("inject_late_completion=0", validation)
             self.assertIn("expected_result=success", validation)
+            self.assertIn("fault_case=none", validation)
             self.assertIn("qemu_binary=", validation)
             self.assertTrue((evidence / "source-sha256.txt").is_file())
 

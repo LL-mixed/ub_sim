@@ -24,6 +24,7 @@ RESET_ON_PENDING=0
 INJECT_DUPLICATE_COMPLETION=0
 INJECT_LATE_COMPLETION=0
 EXPECT="success"
+FAULT_CASE="none"
 RUN_SECS=180
 MAX_RUNTIME=300
 RUN_ID="lingqu-shmem-pto-$(date +%Y%m%dT%H%M%S)-${RANDOM}"
@@ -59,7 +60,11 @@ Options:
   --inject-late-completion 0|1
                          Inject a completion after cancel cleanup.
   --expect OUTCOME       Expected result: success, authorization-timeout,
-                         or authorization-cancelled.
+                         authorization-cancelled, bad-memref, or
+                         access-denied.
+  --fault-case CASE      Test-only wire fault: none, bad-mapping-ref,
+                         stale-mapping, wrong-requester, oob,
+                         address-overflow, or role-access-mismatch.
   --run-secs N           Harness per-app timeout.
   --max-runtime N        Harness global watchdog timeout.
   --run-id ID            Stable evidence and log identifier.
@@ -194,6 +199,11 @@ while [[ $# -gt 0 ]]; do
       EXPECT="$2"
       shift 2
       ;;
+    --fault-case)
+      require_value "$1" "$#"
+      FAULT_CASE="$2"
+      shift 2
+      ;;
     --run-secs)
       require_value "$1" "$#"
       RUN_SECS="$2"
@@ -236,10 +246,34 @@ if [[ -z "$RUN_ID" || "$RUN_ID" == *[^A-Za-z0-9._-]* ]]; then
   exit 2
 fi
 case "$EXPECT" in
-  success|authorization-timeout|authorization-cancelled)
+  success|authorization-timeout|authorization-cancelled|bad-memref|access-denied)
     ;;
   *)
-    echo "expected result must be success, authorization-timeout, or authorization-cancelled" >&2
+    echo "expected result must be success, authorization-timeout, authorization-cancelled, bad-memref, or access-denied" >&2
+    exit 2
+    ;;
+esac
+case "$FAULT_CASE" in
+  none)
+    if [[ "$EXPECT" == "bad-memref" || "$EXPECT" == "access-denied" ]]; then
+      echo "fault-case=none cannot expect $EXPECT" >&2
+      exit 2
+    fi
+    ;;
+  wrong-requester)
+    if [[ "$EXPECT" != "access-denied" ]]; then
+      echo "fault case wrong-requester requires expected result access-denied" >&2
+      exit 2
+    fi
+    ;;
+  bad-mapping-ref|stale-mapping|oob|address-overflow|role-access-mismatch)
+    if [[ "$EXPECT" != "bad-memref" ]]; then
+      echo "fault case $FAULT_CASE requires expected result bad-memref" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "unsupported PTO fault case: $FAULT_CASE" >&2
     exit 2
     ;;
 esac
@@ -330,6 +364,7 @@ set +e
   --pto-inject-duplicate-completion "$INJECT_DUPLICATE_COMPLETION" \
   --pto-inject-late-completion "$INJECT_LATE_COMPLETION" \
   --pto-expect "$EXPECT" \
+  --pto-fault-case "$FAULT_CASE" \
   "${QMP_ARGS[@]}" \
   > "$HARNESS_LOG" 2>&1
 RUNNER_RC=$?
@@ -438,6 +473,7 @@ fi
   echo "inject_duplicate_completion=$INJECT_DUPLICATE_COMPLETION"
   echo "inject_late_completion=$INJECT_LATE_COMPLETION"
   echo "expected_result=$EXPECT"
+  echo "fault_case=$FAULT_CASE"
   echo "qemu_binary=$QEMU_BINARY"
 } > "$EVIDENCE_DIR/validation.status"
 
