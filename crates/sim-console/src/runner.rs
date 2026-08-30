@@ -459,10 +459,14 @@ impl RunManager {
         let record = runs
             .get_mut(run_id)
             .ok_or_else(|| RunManagerError::UnknownRun(run_id.to_string()))?;
-        let original_nodes = record.nodes.clone();
-        self.refresh_nodes(record)?;
-        if record.nodes != original_nodes {
-            persist_record(&self.inner.state_root.join(run_id), record)?;
+        // finish_run persists the final node snapshot. Re-reading logs for every
+        // terminal run on each list poll is unnecessary and can dominate a CPU.
+        if !record.status.is_terminal() {
+            let original_nodes = record.nodes.clone();
+            self.refresh_nodes(record)?;
+            if record.nodes != original_nodes {
+                persist_record(&self.inner.state_root.join(run_id), record)?;
+            }
         }
         Ok(record.clone())
     }
@@ -2817,6 +2821,49 @@ mod tests {
         .unwrap();
         let persisted: RunRecord = serde_json::from_slice(&persisted).unwrap();
         assert_eq!(persisted.status, RunStatus::Passed);
+    }
+
+    #[tokio::test]
+    async fn terminal_run_listing_does_not_rescan_node_logs() {
+        let (root, manager) = fixture_repo();
+        let run_id = "terminal";
+        let log_dir = root
+            .path()
+            .join("guest-linux/aarch64/logs/terminal-fixture");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(log_dir.join("nodeA_guest.log"), "verdict=fail\n").unwrap();
+
+        let mut nodes = topology_nodes(2);
+        for node in &mut nodes {
+            node.status = NodeStatus::Passed;
+        }
+        manager.inner.runs.write().await.insert(
+            run_id.to_string(),
+            RunRecord {
+                id: run_id.to_string(),
+                demo_id: "fixture".to_string(),
+                demo_title: "Fixture".to_string(),
+                target_id: "local".to_string(),
+                source_revision: None,
+                status: RunStatus::Passed,
+                created_at_ms: now_ms(),
+                started_at_ms: Some(now_ms()),
+                finished_at_ms: Some(now_ms()),
+                pid: None,
+                exit_code: Some(0),
+                parameters: BTreeMap::new(),
+                nodes,
+                process_log_path: format!("out/sim-console/runs/{run_id}/process.log"),
+                message: Some("process completed successfully".to_string()),
+            },
+        );
+
+        let records = manager.list().await;
+        assert_eq!(records.len(), 1);
+        assert!(records[0]
+            .nodes
+            .iter()
+            .all(|node| node.status == NodeStatus::Passed));
     }
 
     #[tokio::test]
