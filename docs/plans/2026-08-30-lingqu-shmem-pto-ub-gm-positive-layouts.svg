@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1160"
+     viewBox="0 0 1600 1160" role="img"
+     aria-labelledby="title desc">
+  <title id="title">P4H PTO UB GM positive layout validation</title>
+  <desc id="desc">Four validated UB global-memory layouts and the common
+  two-node direct-access execution and evidence path.</desc>
+  <defs>
+    <style>
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #10233a; }
+      .subtitle { font: 500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #42566f; }
+      .h2 { font: 700 23px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #10233a; }
+      .h3 { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #10233a; }
+      .body { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #243b53; }
+      .small { font: 500 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #334e68; }
+      .metric { font: 700 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #10233a; }
+      .card { fill: #f8fafc; stroke: #9fb3c8; stroke-width: 2; }
+      .page { fill: #eef2f6; stroke: #bcccdc; stroke-width: 1.5; }
+      .input-a { fill: #b8def6; stroke: #2878a8; stroke-width: 2; }
+      .input-b { fill: #c8ead5; stroke: #2f855a; stroke-width: 2; }
+      .output { fill: #f8d9a0; stroke: #b7791f; stroke-width: 2; }
+      .unused { fill: #ffffff; stroke: #9fb3c8; stroke-width: 1.5; stroke-dasharray: 5 5; }
+      .boundary { stroke: #66788a; stroke-width: 2; stroke-dasharray: 7 6; }
+      .offset { stroke: #c53030; stroke-width: 3; }
+      .flow { fill: #edf4ff; stroke: #6b8fb3; stroke-width: 2; }
+      .gate { fill: #edf9f0; stroke: #4f9d69; stroke-width: 2; }
+      .arrow { stroke: #526d82; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#526d82"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="1160" fill="#ffffff"/>
+  <text x="70" y="66" class="title">P4H：PTO 直接访问 UB GM 的正向布局矩阵</text>
+  <text x="70" y="100" class="subtitle">同一条 QEMU → Rust bridge → Simpler/PTO 路径；四种布局在 n4-910c 与 n4-910c1 共 8 个 formal campaign 通过</text>
+
+  <g transform="translate(70 135)">
+    <rect class="card" width="710" height="315" rx="16"/>
+    <text x="24" y="38" class="h2">1. contiguous ND</text>
+    <text x="24" y="67" class="body">128 × 128，tile 128 × 128；每个 view 65,536 B</text>
+    <rect x="35" y="105" width="200" height="72" rx="8" class="input-a"/>
+    <rect x="255" y="105" width="200" height="72" rx="8" class="input-b"/>
+    <rect x="475" y="105" width="200" height="72" rx="8" class="output"/>
+    <text x="96" y="136" class="h3">Input A</text>
+    <text x="74" y="160" class="small">+0x00000</text>
+    <text x="316" y="136" class="h3">Input B</text>
+    <text x="290" y="160" class="small">+0x10000</text>
+    <text x="542" y="136" class="h3">Output</text>
+    <text x="512" y="160" class="small">+0x20000</text>
+    <path d="M35 207 H675" class="arrow"/>
+    <text x="35" y="237" class="metric">LOAD 2 × 65,536 B</text>
+    <text x="270" y="237" class="metric">STORE 1 × 65,536 B</text>
+    <text x="520" y="237" class="metric">FENCE 1</text>
+    <text x="35" y="278" class="body">完整 ND tile；三个连续 view 不重叠，Node A 验证 16,384 个输出元素。</text>
+  </g>
+
+  <g transform="translate(820 135)">
+    <rect class="card" width="710" height="315" rx="16"/>
+    <text x="24" y="38" class="h2">2. tail tile</text>
+    <text x="24" y="67" class="body">128 × 127，tile 128 × 128；每个有效 view 65,024 B</text>
+    <rect x="35" y="105" width="205" height="72" rx="8" class="unused"/>
+    <rect x="35" y="105" width="197" height="72" rx="8" class="input-a"/>
+    <rect x="255" y="105" width="205" height="72" rx="8" class="unused"/>
+    <rect x="255" y="105" width="197" height="72" rx="8" class="input-b"/>
+    <rect x="475" y="105" width="205" height="72" rx="8" class="unused"/>
+    <rect x="475" y="105" width="197" height="72" rx="8" class="output"/>
+    <text x="84" y="136" class="h3">Input A</text>
+    <text x="74" y="160" class="small">+0x00000</text>
+    <text x="302" y="136" class="h3">Input B</text>
+    <text x="293" y="160" class="small">+0x0fe00</text>
+    <text x="535" y="136" class="h3">Output</text>
+    <text x="515" y="160" class="small">+0x1fc00</text>
+    <text x="35" y="217" class="metric">LOAD 2 × 65,024 B</text>
+    <text x="270" y="217" class="metric">STORE 1 × 65,024 B</text>
+    <text x="520" y="217" class="metric">FENCE 1</text>
+    <text x="35" y="254" class="body">虚线尾部代表 tile capacity 中未参与本次访问的 512 B。</text>
+    <text x="35" y="282" class="body">有效区由 manifest 固定，runner 校验 QEMU 的精确 byte geometry。</text>
+  </g>
+
+  <g transform="translate(70 485)">
+    <rect class="card" width="710" height="315" rx="16"/>
+    <text x="24" y="38" class="h2">3. cross-page</text>
+    <text x="24" y="67" class="body">每个 view 256 B，从 4 KiB page boundary 前 128 B 开始</text>
+    <g transform="translate(35 100)">
+      <rect x="0" y="0" width="200" height="92" class="page"/>
+      <rect x="200" y="0" width="200" height="92" class="page"/>
+      <rect x="400" y="0" width="240" height="92" class="page"/>
+      <line x1="200" y1="-12" x2="200" y2="108" class="boundary"/>
+      <line x1="400" y1="-12" x2="400" y2="108" class="boundary"/>
+      <rect x="168" y="13" width="64" height="20" rx="5" class="input-a"/>
+      <rect x="368" y="39" width="64" height="20" rx="5" class="input-b"/>
+      <rect x="568" y="65" width="64" height="20" rx="5" class="output"/>
+      <text x="144" y="-20" class="small">page +0x1000</text>
+      <text x="344" y="-20" class="small">page +0x2000</text>
+    </g>
+    <text x="35" y="227" class="small">A +0x0f80</text>
+    <text x="165" y="227" class="small">B +0x1f80</text>
+    <text x="295" y="227" class="small">Out +0x2f80</text>
+    <text x="435" y="227" class="metric">每个 range 跨 1 条 page boundary</text>
+    <text x="35" y="263" class="metric">2 × LOAD(256 B) · 1 × STORE(256 B) · 1 × FENCE</text>
+    <text x="35" y="291" class="body">跨页不会切换到 host staging；PTO callback 继续直接访问同一 OBMM backing。</text>
+  </g>
+
+  <g transform="translate(820 485)">
+    <rect class="card" width="710" height="315" rx="16"/>
+    <text x="24" y="38" class="h2">4. unaligned offset</text>
+    <text x="24" y="67" class="body">三个 256 B view 均从 64-byte alignment 后 +4 B 开始</text>
+    <g transform="translate(35 103)">
+      <rect x="0" y="0" width="190" height="72" rx="8" class="page"/>
+      <rect x="215" y="0" width="190" height="72" rx="8" class="page"/>
+      <rect x="430" y="0" width="190" height="72" rx="8" class="page"/>
+      <line x1="5" y1="-10" x2="5" y2="84" class="offset"/>
+      <line x1="220" y1="-10" x2="220" y2="84" class="offset"/>
+      <line x1="435" y1="-10" x2="435" y2="84" class="offset"/>
+      <rect x="5" y="18" width="125" height="36" rx="6" class="input-a"/>
+      <rect x="220" y="18" width="125" height="36" rx="6" class="input-b"/>
+      <rect x="435" y="18" width="125" height="36" rx="6" class="output"/>
+      <text x="43" y="42" class="h3">A</text>
+      <text x="258" y="42" class="h3">B</text>
+      <text x="465" y="42" class="h3">Out</text>
+    </g>
+    <text x="35" y="217" class="small">A +0x0004</text>
+    <text x="165" y="217" class="small">B +0x1004</text>
+    <text x="295" y="217" class="small">Out +0x2004</text>
+    <text x="435" y="217" class="body">红线：+4 B 起点</text>
+    <text x="35" y="255" class="metric">2 × LOAD(256 B) · 1 × STORE(256 B) · 1 × FENCE</text>
+    <text x="35" y="286" class="body">验证 callback 的 byte-range 语义不依赖自然对齐，也不绕回普通 pointer。</text>
+  </g>
+
+  <text x="70" y="850" class="h2">共同执行路径与 formal evidence gate</text>
+  <g transform="translate(70 875)">
+    <rect x="0" y="0" width="245" height="105" rx="14" class="flow"/>
+    <text x="20" y="34" class="h3">冻结 callable snapshot</text>
+    <text x="20" y="63" class="body">manifest version 1</text>
+    <text x="20" y="87" class="body">9 个 artifact + SHA-256</text>
+
+    <path d="M255 52 H315" class="arrow"/>
+    <rect x="325" y="0" width="245" height="105" rx="14" class="flow"/>
+    <text x="345" y="34" class="h3">QEMU authorization</text>
+    <text x="345" y="63" class="body">3 个 memref binding</text>
+    <text x="345" y="87" class="body">requester/map/generation</text>
+
+    <path d="M580 52 H640" class="arrow"/>
+    <rect x="650" y="0" width="245" height="105" rx="14" class="flow"/>
+    <text x="670" y="34" class="h3">Simpler / PTO</text>
+    <text x="670" y="63" class="body">TLOAD A、TLOAD B</text>
+    <text x="670" y="87" class="body">TSTORE Out</text>
+
+    <path d="M905 52 H965" class="arrow"/>
+    <rect x="975" y="0" width="245" height="105" rx="14" class="flow"/>
+    <text x="995" y="34" class="h3">Fence + unbind</text>
+    <text x="995" y="63" class="body">dirty output fence = 1</text>
+    <text x="995" y="87" class="body">payload staging = 0</text>
+
+    <path d="M1230 52 H1290" class="arrow"/>
+    <rect x="1300" y="0" width="160" height="105" rx="14" class="flow"/>
+    <text x="1320" y="34" class="h3">Node A</text>
+    <text x="1320" y="63" class="body">原 mapping</text>
+    <text x="1320" y="87" class="body">验证输出</text>
+  </g>
+
+  <g transform="translate(70 1010)">
+    <rect x="0" y="0" width="1460" height="105" rx="16" class="gate"/>
+    <text x="24" y="35" class="h3">审计结论</text>
+    <text x="170" y="35" class="metric">8 / 8 pass</text>
+    <text x="320" y="35" class="metric">fingerprint stable = 1</text>
+    <text x="590" y="35" class="metric">snapshot/source SHA mismatch = 0</text>
+    <text x="985" y="35" class="metric">QEMU leftovers = 0</text>
+    <text x="24" y="72" class="body">n4-910c + n4-910c1：producer/consumer 均 pass；精确 load/store/fence geometry 全匹配；</text>
+    <text x="24" y="96" class="body">NPU、GVA route、GSVA experimental feature 泄漏为 0；n4 的 P3 evaluator PID 419618 保持 Tl。</text>
+  </g>
+</svg>
