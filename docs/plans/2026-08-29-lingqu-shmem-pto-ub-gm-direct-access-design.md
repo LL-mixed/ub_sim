@@ -1689,6 +1689,25 @@ P4E 当前实施状态：
 - P4E 只覆盖 consumer released import。retired segment 需要 producer 明确发送
   “已退役”同步事件，再让 consumer 提交已经准备好的 dispatch，当前仍待实现。
 
+P4F retired-segment 实施约束：
+
+![P4F retired-segment 确定性双 guest 生命周期协议](2026-08-30-lingqu-shmem-pto-ub-gm-retired-segment-protocol.svg)
+
+- consumer 必须先完成 payload import、endpoint-map register 和 dispatch prepare，
+  随后用独立的真实 OBMM control export 发布 `PREPARED`；
+- producer import control segment 并观察 cookie/generation 后才允许 unexport payload；
+- simulator provider 在释放 producer backing 之前，按 owner CNA、UBA 和 token 原子
+  发布 shared retirement tombstone；若 tombstone 发布失败，unexport fail-closed；
+- producer 只能在 unexport 返回成功后把 control state 写为 `RETIRED`；consumer
+  观察到该状态后提交先前准备好的 dispatch；
+- QEMU 的每次 mapping reference 重校验都必须检查 shared tombstone。命中时返回
+  `pto_ub_gm_bad_memref`，并保持 authorization、binding 和数据 callback 为零；
+- control segment 独立于 payload segment 存活，测试结束后由双方正常 unimport/
+  unexport。协议不使用固定 sleep 作为生命周期判定条件；
+- 当前 `obmm_unexport()` 只销毁 guest kernel export region，尚未通知 QEMU/SIM_DEC。
+  P4F 必须增加 simulator export-retire callback、跨 QEMU tombstone registry 和对应
+  exact-count 门禁，完成这些改动和双机验证后才能把 retired segment 标记为通过。
+
 退出条件：
 
 - 负向 case 返回确定错误；

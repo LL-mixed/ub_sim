@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title { font: 700 28px system-ui, sans-serif; fill: #172033; }
+      .subtitle { font: 16px system-ui, sans-serif; fill: #475569; }
+      .lane-title { font: 700 20px system-ui, sans-serif; fill: #172033; }
+      .body { font: 15px system-ui, sans-serif; fill: #273449; }
+      .small { font: 13px system-ui, sans-serif; fill: #475569; }
+      .step { font: 700 14px system-ui, sans-serif; fill: #172033; }
+      .lane { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 2; }
+      .producer { fill: #dbeafe; stroke: #60a5fa; stroke-width: 2; }
+      .consumer { fill: #dcfce7; stroke: #4ade80; stroke-width: 2; }
+      .provider { fill: #fef3c7; stroke: #f59e0b; stroke-width: 2; }
+      .reject { fill: #fee2e2; stroke: #ef4444; stroke-width: 2; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 2; stroke-dasharray: 7 6; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1280" height="760" fill="#ffffff"/>
+  <text x="50" y="48" class="title">P4F retired-segment：确定性双 guest 生命周期协议</text>
+  <text x="50" y="77" class="subtitle">提交只发生在 producer unexport 已完成并发布 shared tombstone 之后</text>
+
+  <rect x="40" y="105" width="360" height="575" rx="14" class="lane"/>
+  <rect x="460" y="105" width="360" height="575" rx="14" class="lane"/>
+  <rect x="880" y="105" width="360" height="575" rx="14" class="lane"/>
+  <text x="220" y="140" text-anchor="middle" class="lane-title">Node A producer</text>
+  <text x="640" y="140" text-anchor="middle" class="lane-title">Node B consumer</text>
+  <text x="1060" y="140" text-anchor="middle" class="lane-title">QEMU / SIM_DEC provider</text>
+
+  <rect x="70" y="175" width="300" height="80" rx="10" class="producer"/>
+  <text x="88" y="200" class="step">1. payload export + publish</text>
+  <text x="88" y="225" class="body">seed input/output sentinel</text>
+  <text x="88" y="246" class="small">payload segment remains active</text>
+
+  <rect x="490" y="175" width="300" height="105" rx="10" class="consumer"/>
+  <text x="508" y="200" class="step">2. import + materialize</text>
+  <text x="508" y="225" class="body">register endpoint map</text>
+  <text x="508" y="247" class="body">prepare valid dispatch metadata</text>
+  <text x="508" y="269" class="small">dispatch has not been submitted</text>
+  <path d="M370 218 L490 218" class="arrow"/>
+
+  <rect x="490" y="315" width="300" height="95" rx="10" class="consumer"/>
+  <text x="508" y="340" class="step">3. control export = PREPARED</text>
+  <text x="508" y="365" class="body">publish a real OBMM control segment</text>
+  <text x="508" y="388" class="small">separate from payload bytes</text>
+
+  <rect x="70" y="315" width="300" height="95" rx="10" class="producer"/>
+  <text x="88" y="340" class="step">4. import control segment</text>
+  <text x="88" y="365" class="body">observe PREPARED cookie/generation</text>
+  <text x="88" y="388" class="small">no timing-based sleep gate</text>
+  <path d="M490 363 L370 363" class="arrow"/>
+
+  <rect x="70" y="450" width="300" height="105" rx="10" class="producer"/>
+  <text x="88" y="475" class="step">5. unexport payload</text>
+  <text x="88" y="500" class="body">provider publishes RETIRED tombstone</text>
+  <text x="88" y="522" class="body">then frees producer backing</text>
+  <text x="88" y="544" class="small">fail-closed ordering</text>
+
+  <rect x="910" y="450" width="300" height="105" rx="10" class="provider"/>
+  <text x="928" y="475" class="step">shared lifetime registry</text>
+  <text x="928" y="500" class="body">key: owner CNA + UBA + token</text>
+  <text x="928" y="522" class="body">atomic tombstone publication</text>
+  <text x="928" y="544" class="small">visible to every node QEMU</text>
+  <path d="M370 502 L910 502" class="arrow"/>
+
+  <rect x="70" y="590" width="300" height="65" rx="10" class="producer"/>
+  <text x="88" y="617" class="step">6. control state = RETIRED</text>
+  <text x="88" y="641" class="body">write only after unexport returns</text>
+
+  <rect x="490" y="590" width="300" height="65" rx="10" class="consumer"/>
+  <text x="508" y="617" class="step">7. observe RETIRED → submit</text>
+  <text x="508" y="641" class="body">original map reference is preserved</text>
+  <path d="M370 622 L490 622" class="arrow"/>
+
+  <rect x="910" y="590" width="300" height="95" rx="10" class="reject"/>
+  <text x="928" y="617" class="step">8. mapping revalidation rejects</text>
+  <text x="928" y="642" class="body">completion: pto_ub_gm_bad_memref</text>
+  <text x="928" y="666" class="small">0 authorize / bind / data callback</text>
+  <path d="M790 622 L910 622" class="dash"/>
+
+  <text x="50" y="720" class="subtitle">Invariant：control segment 独立存活；payload retirement 不依赖 guest 调度时序，也不允许 fallback copy。</text>
+</svg>
