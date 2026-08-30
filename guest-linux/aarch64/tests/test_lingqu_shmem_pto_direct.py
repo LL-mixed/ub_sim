@@ -1061,6 +1061,26 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             self.assertIn("qemu_binary=", validation)
             self.assertTrue((evidence / "source-sha256.txt").is_file())
 
+    def test_formal_runner_disables_guest_artifact_preparation(self):
+        dedicated_source = PTO_RUNNER.read_text()
+        generic_source = DUAL_NODE_RUNNER.read_text()
+
+        self.assertIn(
+            "--skip-guest-artifact-preparation", dedicated_source
+        )
+        self.assertIn(
+            "SKIP_GUEST_ARTIFACT_PREPARATION=1", generic_source
+        )
+        self.assertIn(
+            'if [[ "$SKIP_GUEST_ARTIFACT_PREPARATION" -eq 1 ]]',
+            generic_source,
+        )
+        self.assertIn(
+            'ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" '
+            '"$INITRAMFS_IMAGE"',
+            generic_source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

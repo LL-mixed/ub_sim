@@ -71,6 +71,7 @@ REPORT_FILE="${REPORT_FILE:-$OUT_DIR/apps_report.latest.txt}"
 MAX_RUNTIME="${MAX_RUNTIME:-300}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_${RANDOM}}"
 INTERACTIVE_AFTER_PASS=0
+SKIP_GUEST_ARTIFACT_PREPARATION=0
 MAIN_PID=$$
 
 usage() {
@@ -140,6 +141,10 @@ Options:
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
+  --skip-guest-artifact-preparation
+                     Require existing kernel/initramfs files without running
+                     guest artifact builders. Intended for immutable formal
+                     evidence runs.
   -h, --help         Show this help.
 USAGE
 }
@@ -850,6 +855,10 @@ while [[ $# -gt 0 ]]; do
       UB_USE_PREBUILT_QEMU=1
       shift
       ;;
+    --skip-guest-artifact-preparation)
+      SKIP_GUEST_ARTIFACT_PREPARATION=1
+      shift
+      ;;
     --interactive-after-pass)
       INTERACTIVE_AFTER_PASS=1
       shift
@@ -908,7 +917,18 @@ fi
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
-ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+if [[ "$SKIP_GUEST_ARTIFACT_PREPARATION" -eq 1 ]]; then
+  if [[ ! -f "$KERNEL_IMAGE" ]]; then
+    echo "prebuilt guest kernel does not exist: $KERNEL_IMAGE" >&2
+    exit 2
+  fi
+  if [[ ! -f "$INITRAMFS_IMAGE" ]]; then
+    echo "prebuilt guest initramfs does not exist: $INITRAMFS_IMAGE" >&2
+    exit 2
+  fi
+else
+  ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+fi
 
 if [[ "$APPEND_EXTRA" == *"linqu_llm_infer=1"* ]]; then
   append_cmdline_if_missing "pmd_mapping=100%"

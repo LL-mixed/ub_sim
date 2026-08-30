@@ -480,6 +480,7 @@ set +e
   --kernel-image "$KERNEL_IMAGE" \
   --initramfs-image "$INITRAMFS_IMAGE" \
   --use-prebuilt-qemu \
+  --skip-guest-artifact-preparation \
   --pto-manifest "$MANIFEST" \
   --pto-scenario "$SCENARIO" \
   --pto-artifact-fingerprint "$ARTIFACT_FINGERPRINT" \
