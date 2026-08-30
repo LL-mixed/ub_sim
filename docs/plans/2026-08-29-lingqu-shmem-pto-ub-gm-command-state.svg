@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1000" viewBox="0 0 1680 1000" role="img" aria-labelledby="title desc">
   <title id="title">IoOpcode Dispatch v2 的 UB_GM 安全执行状态机</title>
-  <desc id="desc">展示 QEMU UBC 在进入现有 sim-qemu bridge 之前读取 metadata、校验并完成可恢复 backend authorization，随后沿 ChipBackend 主链同步执行 PTO，最后 fence、unbind 和发布原有 CQ completion。同步、pending resume、timeout、cancel、late/duplicate completion 与 reset/recovery 均已在 n4-910c 和 n4-910c1 验证。</desc>
+  <desc id="desc">展示 QEMU UBC 在进入现有 sim-qemu bridge 之前读取 metadata、校验并完成可恢复 backend authorization，随后沿 ChipBackend 主链同步执行 PTO，最后 fence、unbind 和发布原有 CQ completion。同步、authorization lifecycle 与 P4C mapping/requester/bounds/access preflight fail-closed 均已在 n4-910c 和 n4-910c1 验证。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
@@ -24,7 +24,7 @@
 
   <rect width="1680" height="1000" fill="#f8fafc"/>
   <text x="60" y="54" class="title">IoOpcode::Dispatch v2 + UB_GM：现有 bridge 的安全执行状态机</text>
-  <text x="60" y="84" class="subtitle">P3/P2/P4A/P4B 双机通过：sync、pending/resume、timeout、cancel、late/duplicate completion、reset/recovery。</text>
+  <text x="60" y="84" class="subtitle">P3/P2/P4A–P4C 双机通过：正向、authorization lifecycle，以及 mapping/requester/bounds/access preflight。</text>
 
   <rect x="45" y="115" width="1590" height="300" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
   <text x="72" y="153" class="lane-title">QEMU UBC preflight：尚未进入 Rust bridge</text>
@@ -120,7 +120,7 @@
   <text x="580" y="858" class="error-text">任一步骤失败</text>
 
   <rect x="1100" y="875" width="510" height="88" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
-  <text x="1355" y="902" text-anchor="middle" class="note">P4B lifecycle 已闭环：cancel 有且仅有一个失败 CQ；</text>
-  <text x="1355" y="925" text-anchor="middle" class="note">duplicate/late 被拒绝；reset 无旧 CQ、退役 map、重启后恢复；</text>
+  <text x="1355" y="902" text-anchor="middle" class="note">P4B：cancel exact-once；duplicate/late guard；reset/recovery；</text>
+  <text x="1355" y="925" text-anchor="middle" class="note">P4C：mapping/requester/OOB/overflow/access preflight exact-once；</text>
   <text x="1355" y="948" text-anchor="middle" class="note">sim_npu / GVA / GSVA：experimental optional，default disabled。</text>
 </svg>
