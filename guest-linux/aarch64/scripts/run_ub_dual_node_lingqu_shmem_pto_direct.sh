@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$GUEST_ROOT/../.." && pwd)"
 GENERIC_RUNNER="$SCRIPT_DIR/run_ub_dual_node_apps.sh"
+QEMU_SOURCE_DIR="${QEMU_UB_SOURCE_DIR:-$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub}"
+QEMU_BUILD_DIR="${QEMU_UB_BUILD_DIR:-$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/build}"
 MANIFEST=""
 SCENARIO="$WORKSPACE_ROOT/scenarios/mvp_2host_single_domain.yaml"
 SIM_CLI_BIN="${SIM_CLI_BIN:-$WORKSPACE_ROOT/target/release/sim-cli}"
@@ -64,7 +66,8 @@ Options:
                          access-denied.
   --fault-case CASE      Test-only dispatch fault: none, bad-mapping-ref,
                          stale-mapping, released-import, retired-segment,
-                         wrong-requester, oob,
+                         wrong-requester, oob, shape-stride-oob,
+                         cross-segment,
                          address-overflow, role-access-mismatch,
                          tstore-on-read, or tload-on-write.
   --run-secs N           Harness per-app timeout.
@@ -273,7 +276,7 @@ case "$FAULT_CASE" in
       exit 2
     fi
     ;;
-  bad-mapping-ref|stale-mapping|released-import|retired-segment|oob|address-overflow|role-access-mismatch)
+  bad-mapping-ref|stale-mapping|released-import|retired-segment|oob|shape-stride-oob|cross-segment|address-overflow|role-access-mismatch)
     if [[ "$EXPECT" != "bad-memref" ]]; then
       echo "fault case $FAULT_CASE requires expected result bad-memref" >&2
       exit 2
@@ -405,6 +408,35 @@ for log_dir in "$GUEST_ROOT/logs/${RUN_ID}_apps_iter"*; do
   cp -R "$log_dir" "$EVIDENCE_DIR/"
 done
 
+FINGERPRINT_AFTER_JSON="$EVIDENCE_DIR/callable-fingerprint-after.json"
+ARTIFACT_FINGERPRINT_AFTER="unavailable"
+ARTIFACT_FINGERPRINT_STABLE=0
+if "$SIM_CLI_BIN" lingqu-shmem-pto-e2e \
+    --fingerprint-manifest "$MANIFEST" > "$FINGERPRINT_AFTER_JSON"; then
+  if ARTIFACT_FINGERPRINT_AFTER="$(python3 - "$FINGERPRINT_AFTER_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    payload = json.load(stream)
+value = payload.get("artifact_fingerprint")
+hex_value = payload.get("artifact_fingerprint_hex")
+if not isinstance(value, int) or value <= 0 or hex_value != f"0x{value:016x}":
+    raise SystemExit("invalid post-run artifact fingerprint")
+print(hex_value)
+PY
+)" && [[ "$ARTIFACT_FINGERPRINT_AFTER" == "$ARTIFACT_FINGERPRINT" ]]; then
+    ARTIFACT_FINGERPRINT_STABLE=1
+  fi
+fi
+if [[ "$ARTIFACT_FINGERPRINT_STABLE" -ne 1 ]]; then
+  echo "PTO callable artifacts changed during validation: "\
+"before=$ARTIFACT_FINGERPRINT after=$ARTIFACT_FINGERPRINT_AFTER" >&2
+  if [[ "$RUNNER_RC" -eq 0 ]]; then
+    RUNNER_RC=32
+  fi
+fi
+
 ARTIFACT_LIST="$EVIDENCE_DIR/artifact-paths.txt"
 python3 - "$MANIFEST" <<'PY' > "$ARTIFACT_LIST"
 import json
@@ -428,7 +460,8 @@ for path in paths:
 PY
 
 HASH_FILE="$EVIDENCE_DIR/sha256.txt"
-QEMU_BINARY="$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64"
+QEMU_BINARY="$QEMU_BUILD_DIR/qemu-system-aarch64"
+QEMU_BUILD_STAMP="$QEMU_BUILD_DIR/.qemu_build.stamp"
 {
   hash_file "$MANIFEST"
   hash_file "$SCENARIO"
@@ -439,6 +472,11 @@ QEMU_BINARY="$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64"
     hash_file "$QEMU_BINARY"
   else
     echo "MISSING  $QEMU_BINARY"
+  fi
+  if [[ -f "$QEMU_BUILD_STAMP" ]]; then
+    hash_file "$QEMU_BUILD_STAMP"
+  else
+    echo "MISSING  $QEMU_BUILD_STAMP"
   fi
   while IFS= read -r artifact; do
     if [[ -f "$artifact" ]]; then
@@ -461,8 +499,10 @@ SOURCE_HASH_FILE="$EVIDENCE_DIR/source-sha256.txt"
   hash_file "$GUEST_ROOT/libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.h"
   hash_file "$WORKSPACE_ROOT/crates/sim-qemu/include/linqu_shmem_pto_abi.h"
   hash_file "$WORKSPACE_ROOT/crates/sim-qemu/src/ub_gm_abi.rs"
-  hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c"
-  hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/include/hw/ub/ub_ubc.h"
+  hash_file "$QEMU_SOURCE_DIR/hw/ub/ub_obmm_async.c"
+  hash_file "$QEMU_SOURCE_DIR/hw/ub/ub_ubc.c"
+  hash_file "$QEMU_SOURCE_DIR/include/hw/ub/ub_obmm_async.h"
+  hash_file "$QEMU_SOURCE_DIR/include/hw/ub/ub_ubc.h"
 } > "$SOURCE_HASH_FILE"
 
 {
@@ -494,6 +534,8 @@ fi
   echo "manifest=$MANIFEST"
   echo "scenario=$SCENARIO"
   echo "artifact_fingerprint=$ARTIFACT_FINGERPRINT"
+  echo "artifact_fingerprint_after=$ARTIFACT_FINGERPRINT_AFTER"
+  echo "artifact_fingerprint_stable=$ARTIFACT_FINGERPRINT_STABLE"
   echo "elements=$ELEMENTS"
   echo "generation=$GENERATION"
   echo "nodea_cna=$NODEA_CNA"
@@ -507,6 +549,8 @@ fi
   echo "expected_result=$EXPECT"
   echo "fault_case=$FAULT_CASE"
   echo "manifest_ub_gm_access_fault=$MANIFEST_ACCESS_FAULT"
+  echo "qemu_source_dir=$QEMU_SOURCE_DIR"
+  echo "qemu_build_dir=$QEMU_BUILD_DIR"
   echo "qemu_binary=$QEMU_BINARY"
 } > "$EVIDENCE_DIR/validation.status"
 

@@ -179,7 +179,7 @@ PY
 
 qemu_ub_bin_path() {
   local workspace_root="$1"
-  local build_dir="$workspace_root/vendor/qemu_8.2.0_ub/build"
+  local build_dir="$(qemu_ub_build_path "$workspace_root")"
   local signed_bin="$build_dir/qemu-system-aarch64"
   local unsigned_bin="$build_dir/qemu-system-aarch64-unsigned"
 
@@ -196,12 +196,12 @@ qemu_ub_bin_path() {
 
 qemu_ub_build_path() {
   local workspace_root="$1"
-  echo "$workspace_root/vendor/qemu_8.2.0_ub/build"
+  echo "${QEMU_UB_BUILD_DIR:-$workspace_root/vendor/qemu_8.2.0_ub/build}"
 }
 
 qemu_ub_source_path() {
   local workspace_root="$1"
-  echo "$workspace_root/vendor/qemu_8.2.0_ub"
+  echo "${QEMU_UB_SOURCE_DIR:-$workspace_root/vendor/qemu_8.2.0_ub}"
 }
 
 qemu_ub_supports_required_opts() {

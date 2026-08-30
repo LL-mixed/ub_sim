@@ -27,6 +27,7 @@
 #define PTO_DIRECT_DEFAULT_TIMEOUT_MS 120000u
 #define PTO_DIRECT_ALIGNMENT 64u
 #define PTO_DIRECT_OUTPUT_SENTINEL UINT32_C(0x7fc00001)
+#define PTO_DIRECT_SEGMENT_GUARD_SENTINEL UINT8_C(0xa5)
 #define PTO_DIRECT_CONTROL_MAGIC UINT64_C(0x50544f5245544952)
 #define PTO_DIRECT_CONTROL_VERSION 1u
 #define PTO_DIRECT_CONTROL_PREPARED 1u
@@ -58,6 +59,8 @@ enum pto_direct_fault_case {
     PTO_DIRECT_FAULT_RETIRED_SEGMENT,
     PTO_DIRECT_FAULT_WRONG_REQUESTER,
     PTO_DIRECT_FAULT_OOB,
+    PTO_DIRECT_FAULT_SHAPE_STRIDE_OOB,
+    PTO_DIRECT_FAULT_CROSS_SEGMENT,
     PTO_DIRECT_FAULT_ADDRESS_OVERFLOW,
     PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH,
     PTO_DIRECT_FAULT_TSTORE_ON_READ,
@@ -169,6 +172,10 @@ static const char *fault_case_name(enum pto_direct_fault_case fault_case)
         return "wrong-requester";
     case PTO_DIRECT_FAULT_OOB:
         return "oob";
+    case PTO_DIRECT_FAULT_SHAPE_STRIDE_OOB:
+        return "shape-stride-oob";
+    case PTO_DIRECT_FAULT_CROSS_SEGMENT:
+        return "cross-segment";
     case PTO_DIRECT_FAULT_ADDRESS_OVERFLOW:
         return "address-overflow";
     case PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH:
@@ -233,7 +240,7 @@ static void usage(FILE *stream)
             "authorization-cancelled, bad-memref, or access-denied\n"
             "  --fault-case CASE         none, bad-mapping-ref, "
             "stale-mapping, released-import, retired-segment, "
-            "wrong-requester, oob, "
+            "wrong-requester, oob, shape-stride-oob, cross-segment, "
             "address-overflow, "
             "role-access-mismatch, tstore-on-read, or tload-on-write\n");
 }
@@ -317,6 +324,10 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                 config->fault_case = PTO_DIRECT_FAULT_WRONG_REQUESTER;
             } else if (strcmp(fault_case, "oob") == 0) {
                 config->fault_case = PTO_DIRECT_FAULT_OOB;
+            } else if (strcmp(fault_case, "shape-stride-oob") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_SHAPE_STRIDE_OOB;
+            } else if (strcmp(fault_case, "cross-segment") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_CROSS_SEGMENT;
             } else if (strcmp(fault_case, "address-overflow") == 0) {
                 config->fault_case = PTO_DIRECT_FAULT_ADDRESS_OVERFLOW;
             } else if (strcmp(fault_case,
@@ -572,6 +583,35 @@ static bool output_is_sentinel(const void *address,
     return true;
 }
 
+static void seed_segment_guard(void *address, size_t length)
+{
+    memset(address, PTO_DIRECT_SEGMENT_GUARD_SENTINEL, length);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+}
+
+static bool segment_guard_is_sentinel(const void *address,
+                                      size_t length,
+                                      size_t *mismatch_offset,
+                                      uint8_t *actual)
+{
+    const volatile uint8_t *bytes = address;
+    size_t index;
+
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    for (index = 0; index < length; index++) {
+        if (bytes[index] != PTO_DIRECT_SEGMENT_GUARD_SENTINEL) {
+            if (mismatch_offset) {
+                *mismatch_offset = index;
+            }
+            if (actual) {
+                *actual = bytes[index];
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 static int retire_payload_after_consumer_prepared(
     int obmm_fd,
     const struct pto_direct_config *config,
@@ -660,7 +700,11 @@ static int run_producer(const struct pto_direct_config *config,
                         uint32_t local_cna)
 {
     struct obmm_helpers_meta meta = { 0 };
+    struct obmm_helpers_meta guard_meta = { 0 };
     struct obmm_helpers_region region = {
+        .fd = -1,
+    };
+    struct obmm_helpers_region guard_region = {
         .fd = -1,
     };
     uint64_t started_at;
@@ -698,6 +742,28 @@ static int run_producer(const struct pto_direct_config *config,
                "msync_unsupported=0 bytes=%" PRIu64 "\n",
                layout->used_bytes);
     }
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+        if (obmm_do_export(obmm_fd, &guard_meta,
+                           PTO_DIRECT_EXPORT_BYTES) != 0) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] producer guard_export error=%s\n",
+                    strerror(errno));
+            goto out;
+        }
+        guard_meta.export_cna = local_cna;
+        if (obmm_map_region(guard_meta.export_mem_id, guard_meta.size, true,
+                            &guard_region) != 0) {
+            goto out;
+        }
+        seed_segment_guard(guard_region.addr, guard_region.len);
+        if (msync(guard_region.addr, guard_region.len, MS_SYNC) != 0 &&
+            errno != EINVAL) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] producer guard_msync error=%s\n",
+                    strerror(errno));
+            goto out;
+        }
+    }
     if (obmm_bootstrap_publish(obmm_fd, config->node_id,
                                config->node_count, config->generation,
                                &meta) != 0) {
@@ -711,6 +777,25 @@ static int run_producer(const struct pto_direct_config *config,
            " elements=%u generation=%" PRIu64 "\n",
            meta.export_mem_id, meta.remote_uba, meta.export_cna,
            meta.size, config->elements, config->generation);
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+        uint64_t guard_generation = config->generation + 1;
+
+        if (obmm_bootstrap_publish(obmm_fd, config->node_id,
+                                   config->node_count, guard_generation,
+                                   &guard_meta) != 0) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] producer guard_publish error=%s\n",
+                    strerror(errno));
+            goto out;
+        }
+        printf("LINGQU_SHMEM_PTO role=producer stage=guard_published "
+               "mem_id=%" PRIu64 " remote_uba=0x%" PRIx64
+               " export_cna=0x%x bytes=%" PRIu64
+               " generation=%" PRIu64 " sentinel=0x%02x\n",
+               guard_meta.export_mem_id, guard_meta.remote_uba,
+               guard_meta.export_cna, guard_meta.size, guard_generation,
+               PTO_DIRECT_SEGMENT_GUARD_SENTINEL);
+    }
 
     if (config->fault_case == PTO_DIRECT_FAULT_RETIRED_SEGMENT) {
         uint32_t changed_index = 0;
@@ -779,6 +864,26 @@ static int run_producer(const struct pto_direct_config *config,
 
             if (output_is_sentinel(region.addr, layout, config->elements,
                                    &changed_index, &changed_bits)) {
+                if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+                    size_t guard_offset = 0;
+                    uint8_t guard_actual = 0;
+
+                    if (!segment_guard_is_sentinel(
+                            guard_region.addr, guard_region.len,
+                            &guard_offset, &guard_actual)) {
+                        fprintf(stderr,
+                                "LINGQU_SHMEM_PTO_RESULT role=producer "
+                                "status=fail reason=guard_changed_after_"
+                                "expected_failure offset=%zu actual=0x%02x\n",
+                                guard_offset, guard_actual);
+                        goto out;
+                    }
+                    printf("LINGQU_SHMEM_PTO role=producer "
+                           "stage=guard_verified guard_unchanged=1 "
+                           "bytes=%zu sentinel=0x%02x\n",
+                           guard_region.len,
+                           PTO_DIRECT_SEGMENT_GUARD_SENTINEL);
+                }
                 printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass "
                        "expected=%s "
                        "observed=verify_timeout output_unchanged=1 "
@@ -804,6 +909,10 @@ static int run_producer(const struct pto_direct_config *config,
     }
 
 out:
+    obmm_unmap_region(&guard_region);
+    if (guard_meta.export_mem_id != 0) {
+        (void)obmm_do_unexport(obmm_fd, guard_meta.export_mem_id);
+    }
     obmm_unmap_region(&region);
     if (meta.export_mem_id != 0) {
         (void)obmm_do_unexport(obmm_fd, meta.export_mem_id);
@@ -961,6 +1070,9 @@ static int inject_fault_case(
     struct lingqu_shmem_pto_wire_result *wire_result,
     struct obmm_async *async_runtime,
     struct obmm_async_map *async_map,
+    const struct obmm_async_map *guard_async_map,
+    uint64_t guard_mapping_ref,
+    uint64_t guard_local_pa,
     int obmm_fd,
     uint64_t *import_mem_id,
     struct obmm_helpers_region *imported)
@@ -974,6 +1086,7 @@ static int inject_fault_case(
         return 0;
     }
     if (!metadata || !wire_result || !async_runtime || !async_map ||
+        !guard_async_map ||
         obmm_fd < 0 || !import_mem_id || !imported) {
         return -EINVAL;
     }
@@ -1068,6 +1181,73 @@ static int inject_fault_case(
         wire_memrefs[2].byte_offset =
             mapping_bytes - wire_memrefs[2].byte_length + 1;
         break;
+    case PTO_DIRECT_FAULT_SHAPE_STRIDE_OOB: {
+        uint32_t *shape;
+        uint64_t extent_bytes;
+        size_t shape_offset;
+
+        if (wire_memrefs[2].rank != 1 ||
+            !metadata_span(metadata_iova, metadata_capacity,
+                           wire_memrefs[2].shape_table_iova,
+                           sizeof(*shape), &shape_offset)) {
+            return -EPROTO;
+        }
+        shape = (uint32_t *)(metadata + shape_offset);
+        if (*shape == UINT32_MAX) {
+            return -ERANGE;
+        }
+        (*shape)++;
+        extent_bytes = (uint64_t)*shape * sizeof(float);
+        if (extent_bytes <= wire_memrefs[2].byte_length) {
+            return -ERANGE;
+        }
+        printf("LINGQU_SHMEM_PTO role=consumer stage=fault_mutation "
+               "fault=shape-stride-oob arg_index=%u shape0=%u "
+               "stride0=1 extent_bytes=%" PRIu64
+               " view_bytes=%" PRIu64 "\n",
+               wire_memrefs[2].arg_index, *shape, extent_bytes,
+               wire_memrefs[2].byte_length);
+        break;
+    }
+    case PTO_DIRECT_FAULT_CROSS_SEGMENT: {
+        uint64_t half = wire_memrefs[2].byte_length / 2;
+        uint64_t boundary;
+        uint64_t request_start;
+        uint64_t request_end;
+
+        if (half == 0 || guard_async_map->id == 0 ||
+            guard_async_map->generation == 0 || guard_mapping_ref == 0 ||
+            wire_memrefs[2].ub_gm_addr > UINT64_MAX - mapping_bytes) {
+            return -EINVAL;
+        }
+        boundary = wire_memrefs[2].ub_gm_addr + mapping_bytes;
+        if (guard_local_pa != boundary || mapping_bytes < half) {
+            return -ERANGE;
+        }
+        wire_memrefs[2].byte_offset = mapping_bytes - half;
+        request_start = wire_memrefs[2].ub_gm_addr +
+                        wire_memrefs[2].byte_offset;
+        if (request_start > UINT64_MAX - wire_memrefs[2].byte_length) {
+            return -ERANGE;
+        }
+        request_end = request_start + wire_memrefs[2].byte_length;
+        if (request_start >= boundary || request_end <= boundary) {
+            return -ERANGE;
+        }
+        printf("LINGQU_SHMEM_PTO role=consumer stage=fault_mutation "
+               "fault=cross-segment source_map_id=%" PRIu64
+               " source_generation=%" PRIu64
+               " guard_map_id=%" PRIu64
+               " guard_generation=%" PRIu64
+               " guard_mapping_ref=0x%" PRIx64
+               " request_start=0x%" PRIx64
+               " boundary=0x%" PRIx64 " request_end=0x%" PRIx64
+               " adjacent=1\n",
+               async_map->id, async_map->generation,
+               guard_async_map->id, guard_async_map->generation,
+               guard_mapping_ref, request_start, boundary, request_end);
+        break;
+    }
     case PTO_DIRECT_FAULT_ADDRESS_OVERFLOW:
         wire_memrefs[0].ub_gm_addr =
             UINT64_MAX - wire_memrefs[0].byte_length + 1;
@@ -1160,7 +1340,11 @@ static int run_consumer(const struct pto_direct_config *config,
                         uint32_t local_cna)
 {
     struct obmm_helpers_meta meta = { 0 };
+    struct obmm_helpers_meta guard_meta = { 0 };
     struct obmm_helpers_region imported = {
+        .fd = -1,
+    };
+    struct obmm_helpers_region guard_imported = {
         .fd = -1,
     };
     struct obmm_async_options async_options = {
@@ -1169,6 +1353,7 @@ static int run_consumer(const struct pto_direct_config *config,
     };
     struct obmm_async *async_runtime = NULL;
     struct obmm_async_map async_map = { 0 };
+    struct obmm_async_map guard_async_map = { 0 };
     struct lingqu_shmem_sim_region_desc region_desc = { 0 };
     struct lingqu_shmem_region *region = NULL;
     struct lingqu_shmem_memref *memrefs[3] = { NULL };
@@ -1183,7 +1368,9 @@ static int run_consumer(const struct pto_direct_config *config,
     uint64_t local_pas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = { false };
     uint64_t import_mem_id = 0;
+    uint64_t guard_import_mem_id = 0;
     uint64_t mapping_ref = 0;
+    uint64_t guard_mapping_ref = 0;
     uint8_t *metadata = MAP_FAILED;
     uint64_t metadata_iova = 0;
     uint32_t index;
@@ -1204,9 +1391,34 @@ static int run_consumer(const struct pto_direct_config *config,
                 "\n", submit_rc, meta.size);
         goto out;
     }
-    if (!obmm_alloc_import_pas(1, meta.size, local_pas, import_osync,
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+        submit_rc = lookup_producer_meta(
+            obmm_fd, local_cna, config->node_count,
+            config->generation + 1, config->timeout_ms, &guard_meta);
+        if (submit_rc != 0 || guard_meta.size != meta.size ||
+            guard_meta.export_mem_id == meta.export_mem_id) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] consumer guard_lookup error=%d "
+                    "size=%" PRIu64 " mem_id=%" PRIu64 "\n",
+                    submit_rc, guard_meta.size, guard_meta.export_mem_id);
+            goto out;
+        }
+    }
+    if (!obmm_alloc_import_pas(
+            config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT ? 2 : 1,
+            meta.size, local_pas, import_osync,
                                OBMM_IMPORT_CACHE_NC)) {
         fprintf(stderr, "[lingqu_shmem_pto] consumer no_import_pa\n");
+        goto out;
+    }
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT &&
+        (local_pas[0] > UINT64_MAX - meta.size ||
+         local_pas[1] != local_pas[0] + meta.size)) {
+        fprintf(stderr,
+                "[lingqu_shmem_pto] consumer imports_not_adjacent "
+                "first=0x%" PRIx64 " second=0x%" PRIx64
+                " bytes=%" PRIu64 "\n",
+                local_pas[0], local_pas[1], meta.size);
         goto out;
     }
     submit_rc = obmm_do_import_lifetime(
@@ -1217,6 +1429,17 @@ static int run_consumer(const struct pto_direct_config *config,
                 strerror(errno));
         goto out;
     }
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+        submit_rc = obmm_do_import_lifetime(
+            obmm_fd, &guard_meta, local_cna, local_pas[1],
+            config->token_value, &guard_import_mem_id);
+        if (submit_rc != 0) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] consumer guard_import error=%s\n",
+                    strerror(errno));
+            goto out;
+        }
+    }
     submit_rc = obmm_map_region(import_mem_id, meta.size,
                                 import_osync[0], &imported);
     if (submit_rc != 0) {
@@ -1225,10 +1448,26 @@ static int run_consumer(const struct pto_direct_config *config,
                 strerror(errno));
         goto out;
     }
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT &&
+        obmm_map_region(guard_import_mem_id, guard_meta.size,
+                        import_osync[1], &guard_imported) != 0) {
+        fprintf(stderr,
+                "[lingqu_shmem_pto] consumer guard_import_map error=%s\n",
+                strerror(errno));
+        goto out;
+    }
     printf("LINGQU_SHMEM_PTO role=consumer stage=import_mapped "
            "import_mem_id=%" PRIu64 " local_pa=0x%" PRIx64
            " bytes=%" PRIu64 "\n",
            import_mem_id, local_pas[0], meta.size);
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+        printf("LINGQU_SHMEM_PTO role=consumer stage=guard_import_mapped "
+               "import_mem_id=%" PRIu64 " local_pa=0x%" PRIx64
+               " bytes=%" PRIu64 " boundary=0x%" PRIx64
+               " adjacent=1\n",
+               guard_import_mem_id, local_pas[1], guard_meta.size,
+               local_pas[0] + meta.size);
+    }
     submit_rc = obmm_async_open(&async_runtime, &async_options);
     if (submit_rc != 0) {
         fprintf(stderr,
@@ -1252,6 +1491,33 @@ static int run_consumer(const struct pto_direct_config *config,
                 "[lingqu_shmem_pto] consumer mapping_ref error=%d\n",
                 submit_rc);
         goto out;
+    }
+    if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
+        submit_rc = obmm_async_map_register(
+            async_runtime, obmm_fd, guard_import_mem_id,
+            guard_imported.addr, guard_meta.size, &guard_async_map);
+        if (submit_rc != 0) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] consumer guard_map_register "
+                    "error=%d\n", submit_rc);
+            goto out;
+        }
+        submit_rc = lingqu_shmem_pto_obmm_mapping_ref(
+            guard_async_map.id, guard_async_map.generation,
+            &guard_mapping_ref);
+        if (submit_rc != 0) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] consumer guard_mapping_ref "
+                    "error=%d\n", submit_rc);
+            goto out;
+        }
+        printf("LINGQU_SHMEM_PTO role=consumer stage=guard_map_registered "
+               "map_id=%" PRIu64 " map_generation=%" PRIu64
+               " mapping_ref=0x%" PRIx64 " local_pa=0x%" PRIx64
+               " bytes=%" PRIu64 " adjacent_to_map_id=%" PRIu64
+               "\n", guard_async_map.id, guard_async_map.generation,
+               guard_mapping_ref, local_pas[1], guard_meta.size,
+               async_map.id);
     }
     region_desc = (struct lingqu_shmem_sim_region_desc) {
         .mapped_addr = imported.addr,
@@ -1325,7 +1591,8 @@ static int run_consumer(const struct pto_direct_config *config,
     }
     submit_rc = inject_fault_case(
         config, metadata, PTO_DIRECT_METADATA_BYTES, metadata_iova,
-        meta.size, &wire_result, async_runtime, &async_map, obmm_fd,
+        meta.size, &wire_result, async_runtime, &async_map,
+        &guard_async_map, guard_mapping_ref, local_pas[1], obmm_fd,
         &import_mem_id, &imported);
     if (submit_rc != 0) {
         fprintf(stderr,
@@ -1397,6 +1664,9 @@ out:
     if (region) {
         (void)lingqu_shmem_sim_region_destroy(region);
     }
+    if (guard_async_map.id != 0) {
+        (void)obmm_async_map_unregister(async_runtime, &guard_async_map);
+    }
     if (async_map.id != 0) {
         (void)obmm_async_map_unregister(async_runtime, &async_map);
     }
@@ -1404,7 +1674,11 @@ out:
     if (metadata != MAP_FAILED) {
         munmap(metadata, PTO_DIRECT_METADATA_BYTES);
     }
+    obmm_unmap_region(&guard_imported);
     obmm_unmap_region(&imported);
+    if (guard_import_mem_id != 0) {
+        (void)obmm_do_unimport(obmm_fd, guard_import_mem_id);
+    }
     if (import_mem_id != 0) {
         (void)obmm_do_unimport(obmm_fd, import_mem_id);
     }

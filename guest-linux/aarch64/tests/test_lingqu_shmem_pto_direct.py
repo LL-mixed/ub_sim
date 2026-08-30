@@ -60,7 +60,20 @@ KERNEL_OBMM_IMPORT = (
     / "obmm_import.c"
 )
 QEMU_UBC = ROOT / "vendor" / "qemu_8.2.0_ub" / "hw" / "ub" / "ub_ubc.c"
+QEMU_OBMM_ASYNC = (
+    ROOT / "vendor" / "qemu_8.2.0_ub" / "hw" / "ub" / "ub_obmm_async.c"
+)
+QEMU_OBMM_ASYNC_HEADER = (
+    ROOT
+    / "vendor"
+    / "qemu_8.2.0_ub"
+    / "include"
+    / "hw"
+    / "ub"
+    / "ub_obmm_async.h"
+)
 SIM_QEMU_FFI = ROOT / "crates" / "sim-qemu" / "src" / "ffi.rs"
+SIM_QEMU_UB_GM_ABI = ROOT / "crates" / "sim-qemu" / "src" / "ub_gm_abi.rs"
 
 
 class LingquShmemPtoDirectTest(unittest.TestCase):
@@ -119,6 +132,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("PTO_DIRECT_FAULT_RETIRED_SEGMENT", source)
         self.assertIn("PTO_DIRECT_FAULT_WRONG_REQUESTER", source)
         self.assertIn("PTO_DIRECT_FAULT_OOB", source)
+        self.assertIn("PTO_DIRECT_FAULT_SHAPE_STRIDE_OOB", source)
+        self.assertIn("PTO_DIRECT_FAULT_CROSS_SEGMENT", source)
         self.assertIn("PTO_DIRECT_FAULT_ADDRESS_OVERFLOW", source)
         self.assertIn("PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH", source)
         self.assertIn("PTO_DIRECT_FAULT_TSTORE_ON_READ", source)
@@ -232,6 +247,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("consumer SIM_DEC import unmap", runner)
         self.assertIn("producer shared payload retirement tombstone", runner)
         self.assertIn("consumer observed shared payload retirement tombstone", runner)
+        self.assertIn("consumer exact shape-stride extent mutation", runner)
+        self.assertIn("consumer adjacent guard import", runner)
+        self.assertIn("consumer QEMU cross-segment mapping rejection", runner)
+        self.assertIn("producer guard segment remained unchanged", runner)
         self.assertIn(
             "consumer exact-once requested callable access fault", runner
         )
@@ -311,14 +330,77 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn('gsub(/\\r/, "", field)', runner)
         self.assertIn("generation_epoch", dedicated_runner)
 
+    def test_p4g_bounds_protocol_is_wired_end_to_end(self):
+        app_source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
+        qemu_source = QEMU_UBC.read_text()
+        qemu_async = QEMU_OBMM_ASYNC.read_text()
+        qemu_async_header = QEMU_OBMM_ASYNC_HEADER.read_text()
+        rust_abi = SIM_QEMU_UB_GM_ABI.read_text()
+        runner = DUAL_NODE_RUNNER.read_text()
+        dedicated_runner = PTO_RUNNER.read_text()
+
+        self.assertIn('return "shape-stride-oob"', app_source)
+        self.assertIn('return "cross-segment"', app_source)
+        self.assertIn("stage=fault_mutation", app_source)
+        self.assertIn("extent_bytes <= wire_memrefs[2].byte_length", app_source)
+        self.assertIn("guard_local_pa != boundary", app_source)
+        self.assertIn("request_start >= boundary", app_source)
+        self.assertIn("request_end <= boundary", app_source)
+        self.assertIn("obmm_alloc_import_pas(", app_source)
+        self.assertIn("guard_import_mem_id", app_source)
+        self.assertIn("guard_async_map", app_source)
+        self.assertIn("guard_mapping_ref", app_source)
+        self.assertIn("stage=guard_verified", app_source)
+        self.assertIn("ub_obmm_async_crosses_mapping_boundary", qemu_source)
+        self.assertIn("QEMU_UB_GM_MAPPING_BOUNDARY_REJECT", qemu_source)
+        self.assertIn("QEMU_UB_GM_SHAPE_STRIDE_REJECT", qemu_source)
+        self.assertIn(
+            "obmm_export_lookup(uint64_t uba, uint64_t len,",
+            qemu_source,
+        )
+        self.assertIn("entry->token_id == token_id", qemu_source)
+        self.assertIn("entry->export_mem_id == record->export_mem_id", qemu_source)
+        self.assertIn("entry->generation == record->generation", qemu_source)
+        self.assertIn(
+            "typedef struct UbObmmAsyncBoundaryCrossing",
+            qemu_async_header,
+        )
+        self.assertIn(
+            "bool ub_obmm_async_crosses_mapping_boundary(", qemu_async
+        )
+        self.assertIn("request_end <= boundary", qemu_async)
+        self.assertIn("adjacent->resolved.local_pa != boundary", qemu_async)
+        self.assertIn(
+            "authorized_metadata_rejects_shape_stride_extent_beyond_view",
+            rust_abi,
+        )
+        self.assertIn(
+            "authorized_metadata_rejects_view_crossing_one_binding",
+            rust_abi,
+        )
+        self.assertIn("shape-stride-oob", runner)
+        self.assertIn("cross-segment", runner)
+        self.assertIn("QEMU_UB_GM_MAPPING_BOUNDARY_REJECT", runner)
+        self.assertIn("QEMU_UB_GM_SHAPE_STRIDE_REJECT", runner)
+        self.assertIn("shape-stride-oob", dedicated_runner)
+        self.assertIn("cross-segment", dedicated_runner)
+
     def test_dedicated_runner_derives_fingerprint_and_preserves_evidence(self):
         runner = PTO_RUNNER.read_text()
         self.assertIn("--fingerprint-manifest", runner)
         self.assertIn('payload.get("callable_id") != 1', runner)
         self.assertIn("evidence directory already exists", runner)
         self.assertIn("callable-fingerprint.json", runner)
+        self.assertIn("callable-fingerprint-after.json", runner)
+        self.assertIn("artifact_fingerprint_stable", runner)
+        self.assertIn("PTO callable artifacts changed during validation", runner)
         self.assertIn("artifact-paths.txt", runner)
         self.assertIn("source-sha256.txt", runner)
+        self.assertIn("QEMU_UB_SOURCE_DIR", runner)
+        self.assertIn("QEMU_UB_BUILD_DIR", runner)
+        self.assertIn('hash_file "$QEMU_BUILD_STAMP"', runner)
+        self.assertIn("hw/ub/ub_obmm_async.c", runner)
+        self.assertIn("include/hw/ub/ub_obmm_async.h", runner)
         self.assertIn(
             "apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c",
             runner,
@@ -388,6 +470,30 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             "unsupported PTO fault case: invented-corruption",
             result.stdout,
         )
+
+    def test_dedicated_runner_rejects_p4g_fault_expectation_mismatch(self):
+        for fault_case in ("shape-stride-oob", "cross-segment"):
+            with self.subTest(fault_case=fault_case):
+                result = subprocess.run(
+                    [
+                        str(PTO_RUNNER),
+                        "--manifest",
+                        "/does/not/need/to/exist",
+                        "--fault-case",
+                        fault_case,
+                        "--expect",
+                        "access-denied",
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(
+                    f"fault case {fault_case} requires expected result bad-memref",
+                    result.stdout,
+                )
 
     def test_generic_runner_rejects_fault_expectation_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -691,6 +797,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             self.assertIn("inject_late_completion=0", validation)
             self.assertIn("expected_result=success", validation)
             self.assertIn("fault_case=none", validation)
+            self.assertIn("qemu_source_dir=", validation)
+            self.assertIn("qemu_build_dir=", validation)
             self.assertIn("qemu_binary=", validation)
             self.assertTrue((evidence / "source-sha256.txt").is_file())
 

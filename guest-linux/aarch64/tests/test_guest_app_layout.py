@@ -264,6 +264,17 @@ def test_qemu_common_delegates_qemu_freshness_to_build_helper():
     assert 'trace "FAIL: headless launch/preflight failed rc=$launch_rc"' in w5_runner
 
 
+def test_qemu_common_supports_separate_source_and_build_worktrees():
+    common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
+
+    assert "${QEMU_UB_SOURCE_DIR:-$workspace_root/vendor/qemu_8.2.0_ub}" in common
+    assert (
+        "${QEMU_UB_BUILD_DIR:-$workspace_root/vendor/qemu_8.2.0_ub/build}"
+        in common
+    )
+    assert 'qemu_ub_build_path "$workspace_root"' in common
+
+
 def test_qemu_build_helper_uses_recorded_macos_qemu_configure_profile():
     builder = (ROOT / "scripts" / "build_qemu_binary.sh").read_text()
     macos_notes = (ROOT.parents[1] / "vendor" / "qemu_8.2.0_ub_macos_build_notes.md").read_text()

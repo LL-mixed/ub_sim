@@ -856,4 +856,48 @@ mod tests {
             Err(LingquPtoUbGmError::BadMemref)
         );
     }
+
+    #[test]
+    fn authorized_metadata_rejects_shape_stride_extent_beyond_view() {
+        let mut authorized = valid_authorized_memref();
+        authorized.shape[0] += 1;
+        let mut control = valid_control();
+        control.scalar_count = 0;
+        control.scalar_table_iova = 0;
+        control.metadata_crc32 =
+            authorized_metadata_crc32(&control, &[authorized], &[]).expect("metadata crc");
+        assert_eq!(
+            materialize_authorized_dispatch_args(
+                &control,
+                &[authorized],
+                &[],
+                control.callable_id,
+                control.artifact_fingerprint,
+                control.requester_cna,
+            ),
+            Err(LingquPtoUbGmError::BadMemref)
+        );
+    }
+
+    #[test]
+    fn authorized_metadata_rejects_view_crossing_one_binding() {
+        let mut authorized = valid_authorized_memref();
+        authorized.memref.byte_offset = 5000;
+        let mut control = valid_control();
+        control.scalar_count = 0;
+        control.scalar_table_iova = 0;
+        control.metadata_crc32 =
+            authorized_metadata_crc32(&control, &[authorized], &[]).expect("metadata crc");
+        assert_eq!(
+            materialize_authorized_dispatch_args(
+                &control,
+                &[authorized],
+                &[],
+                control.callable_id,
+                control.artifact_fingerprint,
+                control.requester_cna,
+            ),
+            Err(LingquPtoUbGmError::BadMemref)
+        );
+    }
 }

@@ -132,7 +132,8 @@ Options:
                       Test-only dispatch fault: none, bad-mapping-ref,
                       stale-mapping, released-import, retired-segment,
                       wrong-requester, oob,
-                      address-overflow, role-access-mismatch,
+                      shape-stride-oob, cross-segment, address-overflow,
+                      role-access-mismatch,
                       tstore-on-read, or tload-on-write.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
@@ -366,7 +367,7 @@ validate_lingqu_shmem_pto_config() {
     wrong-requester|tstore-on-read|tload-on-write)
       fault_expected="access-denied"
       ;;
-    bad-mapping-ref|stale-mapping|released-import|retired-segment|oob|address-overflow|role-access-mismatch)
+    bad-mapping-ref|stale-mapping|released-import|retired-segment|oob|shape-stride-oob|cross-segment|address-overflow|role-access-mismatch)
       fault_expected="bad-memref"
       ;;
     *)
@@ -1242,6 +1243,14 @@ validate_lingqu_shmem_pto_guest_log() {
           "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=bad-memref observed=payload_retired output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
           "producer retired unchanged payload" || return 1
       else
+        if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "cross-segment" ]]; then
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=producer stage=guard_published .*bytes=2097152 .*generation=[1-9][0-9]* sentinel=0xa5" 1 \
+            "producer published adjacent guard segment" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=producer stage=guard_verified guard_unchanged=1 bytes=2097152 sentinel=0xa5" 1 \
+            "producer guard segment remained unchanged" || return 1
+        fi
         assert_log_has "$log_file" \
           "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=$LINGQU_SHMEM_PTO_EXPECT observed=verify_timeout output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
           "producer unchanged output after expected authorization failure" || return 1
@@ -1286,6 +1295,28 @@ validate_lingqu_shmem_pto_guest_log() {
           assert_log_count "$log_file" \
             "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=retired-segment expected=bad-memref import_active=1 map_id=[1-9][0-9]* map_generation=[1-9][0-9]* map_active=1" 1 \
             "consumer exact-once retired segment fault" || return 1
+          ;;
+        shape-stride-oob)
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_mutation fault=shape-stride-oob arg_index=2 shape0=16385 stride0=1 extent_bytes=65540 view_bytes=65536" 1 \
+            "consumer exact shape-stride extent mutation" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=shape-stride-oob expected=bad-memref " 1 \
+            "consumer exact-once shape-stride fault" || return 1
+          ;;
+        cross-segment)
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=guard_import_mapped .*bytes=2097152 .*adjacent=1" 1 \
+            "consumer adjacent guard import" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=guard_map_registered .*adjacent_to_map_id=[1-9][0-9]*" 1 \
+            "consumer registered second segment mapping" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_mutation fault=cross-segment source_map_id=[1-9][0-9]* source_generation=[1-9][0-9]* guard_map_id=[1-9][0-9]* guard_generation=[1-9][0-9]* guard_mapping_ref=0x[1-9a-f][0-9a-f]* .*adjacent=1" 1 \
+            "consumer exact cross-segment range mutation" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=cross-segment expected=bad-memref " 1 \
+            "consumer exact-once cross-segment fault" || return 1
           ;;
         none)
           ;;
@@ -1523,6 +1554,20 @@ validate_lingqu_shmem_pto_qemu_log() {
       assert_log_count "$log_file" \
         "SIM_DEC: OBMM remote export retired map_id=[1-9][0-9]* owner_cna=$retired_export_cna .* generation=$LINGQU_SHMEM_PTO_GENERATION export_mem_id=$retired_export_mem_id" 1 \
         "consumer observed shared payload retirement tombstone" || return 1
+    elif [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "shape-stride-oob" ]]; then
+      assert_log_count "$log_file" \
+        "QEMU_UB_GM_SHAPE_STRIDE_REJECT .*arg=2 rank=1 extent_bytes=65540 view_bytes=65536" 1 \
+        "consumer QEMU shape-stride extent rejection" || return 1
+      assert_log_absent "$log_file" \
+        "QEMU_UB_GM_MAPPING_BOUNDARY_REJECT " \
+        "consumer mapping-boundary rejection during shape fault" || return 1
+    elif [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "cross-segment" ]]; then
+      assert_log_count "$log_file" \
+        "QEMU_UB_GM_MAPPING_BOUNDARY_REJECT .*arg=2 source_map=[1-9][0-9]* source_generation=[1-9][0-9]* .*source_length=2097152 .*adjacent_map=[1-9][0-9]* adjacent_generation=[1-9][0-9]* .*request_length=65536" 1 \
+        "consumer QEMU cross-segment mapping rejection" || return 1
+      assert_log_absent "$log_file" \
+        "QEMU_UB_GM_SHAPE_STRIDE_REJECT " \
+        "consumer shape rejection during cross-segment fault" || return 1
     fi
     return 0
   fi
