@@ -139,7 +139,13 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("PTO_DIRECT_TAIL_ELEMENTS", source)
         self.assertIn("PTO_DIRECT_LAYOUT_CROSS_PAGE", source)
         self.assertIn("PTO_DIRECT_LAYOUT_UNALIGNED", source)
+        self.assertIn("PTO_DIRECT_LAYOUT_ND_STRIDED", source)
+        self.assertIn("PTO_DIRECT_LAYOUT_DN", source)
+        self.assertIn("PTO_DIRECT_LAYOUT_NZ", source)
         self.assertIn("stage=layout layout=%s", source)
+        self.assertIn("stage=fragment layout=%s", source)
+        self.assertIn("layout_element_offset", source)
+        self.assertIn("holes_unchanged=1", source)
         self.assertIn("layout->input_a_offset = sizeof(float)", source)
         self.assertIn("PTO_DIRECT_PAGE_BYTES - half", source)
         self.assertIn("--expect OUTCOME", source)
@@ -234,6 +240,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("validate_pto_layout_manifest", runner)
         self.assertIn("exact cross-page layout", runner)
         self.assertIn("exact unaligned layout", runner)
+        self.assertIn("exact strided ND layout", runner)
+        self.assertIn("exact DN layout", runner)
+        self.assertIn("exact NZ layout", runner)
         self.assertIn(
             "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT", runner
         )
@@ -416,6 +425,35 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("shape-stride-oob", dedicated_runner)
         self.assertIn("cross-segment", dedicated_runner)
 
+    def test_p4i_layout_contract_is_wired_end_to_end(self):
+        app_source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
+        generator = ARTIFACT_GENERATOR.read_text()
+        qemu_source = QEMU_UBC.read_text()
+        runner = DUAL_NODE_RUNNER.read_text()
+        dedicated_runner = PTO_RUNNER.read_text()
+
+        for profile in ("nd-strided", "dn", "nz"):
+            self.assertIn(f'"{profile}"', app_source)
+            self.assertIn(f'"{profile}"', generator)
+            self.assertIn(f'"{profile}"', runner)
+            self.assertIn(f'"{profile}"', dedicated_runner)
+        self.assertIn("layout->storage_elements", app_source)
+        self.assertIn(".rank = layout->rank", app_source)
+        self.assertIn("spec.shape[dim] = layout->shape[dim]", app_source)
+        self.assertIn("spec.strides[dim] = layout->strides[dim]", app_source)
+        self.assertIn('"storage_bytes": storage_elements * 4', generator)
+        self.assertIn('"fragments": fragments', generator)
+        self.assertIn('"compute_tile_layout": "RowMajor"', generator)
+        self.assertIn("linqu_uapi_validate_strided_memref", qemu_source)
+        self.assertIn("stride < extent_elements", qemu_source)
+        self.assertIn("nd-strided requires global 3x5 and tile 4x8", generator)
+        self.assertIn("producer strided output and holes", runner)
+        self.assertIn("$role strided ND fragment 0", runner)
+        self.assertIn("$role strided ND fragment 1", runner)
+        self.assertIn("$role strided ND fragment 2", runner)
+        self.assertIn("P4I contract mismatch", runner)
+        self.assertIn("P4I contract mismatch", dedicated_runner)
+
     def test_dedicated_runner_derives_fingerprint_and_preserves_evidence(self):
         runner = PTO_RUNNER.read_text()
         self.assertIn("--fingerprint-manifest", runner)
@@ -462,6 +500,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--expect OUTCOME", result.stdout)
         self.assertIn("--fault-case CASE", result.stdout)
         self.assertIn("--layout LAYOUT", result.stdout)
+        self.assertIn("nd-strided", result.stdout)
+        self.assertIn("dn", result.stdout)
+        self.assertIn("nz", result.stdout)
 
     def test_artifact_generator_separates_global_shape_from_tile_capacity(self):
         module = runpy.run_path(str(ARTIFACT_GENERATOR))
@@ -487,9 +528,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         generator = ARTIFACT_GENERATOR.read_text()
         self.assertIn('manifest["ub_gm_layout"]', generator)
         self.assertIn(
-            '"logical_elements": vector_global_rows * vector_global_cols',
+            '"logical_elements": logical_elements',
             generator,
         )
+        self.assertIn('"storage_elements": storage_elements', generator)
 
     def test_artifact_generator_rejects_invalid_global_shape(self):
         module = runpy.run_path(str(ARTIFACT_GENERATOR))
@@ -715,6 +757,28 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
             "PTO layout tail requires exactly 16256 elements",
+            result.stdout,
+        )
+
+    def test_dedicated_runner_rejects_p4i_layout_element_mismatch(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--layout",
+                "nd-strided",
+                "--elements",
+                "14",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "PTO layout nd-strided requires exactly 15 elements",
             result.stdout,
         )
 

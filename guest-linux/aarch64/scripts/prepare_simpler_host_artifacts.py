@@ -722,6 +722,7 @@ def vector_layout_contract(
     return {
         "profile": profile,
         "pto_layout": pto_layout,
+        "compute_tile_layout": "RowMajor",
         "rank": 5,
         "shape": shape,
         "strides": strides,
@@ -790,17 +791,9 @@ def write_vector_kernel_source(
     elif layout_profile == "dn":
         stride_args = "15, 15, 15, 1, 3"
         global_layout = "Layout::DN"
-        tile_layout = (
-            "Tile<TileType::Vec, float, kTRows_, kTCols_, "
-            "BLayout::ColMajor, -1, -1>"
-        )
     elif layout_profile == "nz":
         stride_args = "128, 128, 128, 8, 1"
         global_layout = "Layout::NZ"
-        tile_layout = (
-            "Tile<TileType::Vec, float, kTRows_, kTCols_, "
-            "BLayout::ColMajor, -1, -1, SLayout::RowMajor, 512>"
-        )
     if layout_contract["pto_layout"] != global_layout.removeprefix("Layout::"):
         raise ValueError(f"inconsistent UB_GM layout profile: {layout_profile}")
     op_name = {

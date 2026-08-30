@@ -399,7 +399,7 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
                 (3, 5, 8, 8),
                 "Stride<15, 15, 15, 1, 3>",
                 "Layout::DN",
-                "BLayout::ColMajor",
+                "BLayout::RowMajor",
                 15,
                 [(0, 15)],
             ),
@@ -408,7 +408,7 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
                 (16, 8, 16, 8),
                 "Stride<128, 128, 128, 8, 1>",
                 "Layout::NZ",
-                "SLayout::RowMajor, 512",
+                "BLayout::RowMajor",
                 128,
                 [(0, 128)],
             ),
@@ -446,6 +446,7 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
                 self.assertIn(global_layout, source)
                 self.assertIn(tile_layout, source)
                 self.assertEqual(contract["rank"], 5)
+                self.assertEqual(contract["compute_tile_layout"], "RowMajor")
                 self.assertEqual(contract["storage_elements"], storage_elements)
                 self.assertEqual(
                     [

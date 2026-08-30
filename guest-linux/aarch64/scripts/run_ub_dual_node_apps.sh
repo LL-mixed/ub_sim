@@ -109,7 +109,8 @@ Options:
   --pto-scenario PATH Two-host simulator scenario used by the Rust bridge.
   --pto-artifact-fingerprint N
                       Callable fingerprint computed from that manifest.
-  --pto-layout LAYOUT PTO UB_GM layout: nd, tail, cross-page, or unaligned.
+  --pto-layout LAYOUT PTO UB_GM layout: nd, tail, cross-page, unaligned,
+                      nd-strided, dn, or nz.
   --pto-elements N    Host-vector element count required by that layout.
   --pto-generation N  OBMM bootstrap generation.
   --pto-token-value N OBMM import token value.
@@ -329,6 +330,9 @@ expected_geometry = {
     "tail": (128, 127, 128, 128),
     "cross-page": (1, 64, 1, 64),
     "unaligned": (1, 64, 1, 64),
+    "nd-strided": (3, 5, 4, 8),
+    "dn": (3, 5, 8, 8),
+    "nz": (16, 8, 16, 8),
 }
 geometry = expected_geometry[expected_layout]
 expected = {
@@ -344,6 +348,57 @@ if actual != expected:
         "PTO manifest layout mismatch: "
         f"expected={expected!r} actual={actual!r}"
     )
+if expected_layout in ("nd-strided", "dn", "nz"):
+    p4i_contracts = {
+        "nd-strided": {
+            "pto_layout": "ND",
+            "compute_tile_layout": "RowMajor",
+            "rank": 5,
+            "shape": [1, 1, 1, 3, 5],
+            "strides": [24, 24, 24, 8, 1],
+            "logical_bytes": 60,
+            "storage_elements": 21,
+            "storage_bytes": 84,
+            "fragments": [
+                {"element_offset": 0, "element_count": 5},
+                {"element_offset": 8, "element_count": 5},
+                {"element_offset": 16, "element_count": 5},
+            ],
+        },
+        "dn": {
+            "pto_layout": "DN",
+            "compute_tile_layout": "RowMajor",
+            "rank": 5,
+            "shape": [1, 1, 1, 3, 5],
+            "strides": [15, 15, 15, 1, 3],
+            "logical_bytes": 60,
+            "storage_elements": 15,
+            "storage_bytes": 60,
+            "fragments": [
+                {"element_offset": 0, "element_count": 15},
+            ],
+        },
+        "nz": {
+            "pto_layout": "NZ",
+            "compute_tile_layout": "RowMajor",
+            "rank": 5,
+            "shape": [1, 1, 1, 16, 8],
+            "strides": [128, 128, 128, 8, 1],
+            "logical_bytes": 512,
+            "storage_elements": 128,
+            "storage_bytes": 512,
+            "fragments": [
+                {"element_offset": 0, "element_count": 128},
+            ],
+        },
+    }
+    p4i_expected = p4i_contracts[expected_layout]
+    p4i_actual = {key: layout.get(key) for key in p4i_expected}
+    if p4i_actual != p4i_expected:
+        raise SystemExit(
+            "PTO manifest P4I contract mismatch: "
+            f"expected={p4i_expected!r} actual={p4i_actual!r}"
+        )
 PY
 }
 
@@ -397,6 +452,12 @@ validate_lingqu_shmem_pto_config() {
       ;;
     cross-page|unaligned)
       expected_layout_elements=64
+      ;;
+    nd-strided|dn)
+      expected_layout_elements=15
+      ;;
+    nz)
+      expected_layout_elements=128
       ;;
     *)
       echo "unsupported PTO layout: $LINGQU_SHMEM_PTO_LAYOUT" >&2
@@ -1349,6 +1410,36 @@ validate_lingqu_shmem_pto_guest_log() {
         "LINGQU_SHMEM_PTO role=$role stage=layout layout=unaligned input_a_offset=4 input_b_offset=4100 output_offset=8196 tensor_bytes=256 cross_page=0,0,0 offset_mod_64=4,4,4" 1 \
         "$role exact unaligned layout" || return 1
       ;;
+    nd-strided)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=nd-strided input_a_offset=0 input_b_offset=128 output_offset=256 tensor_bytes=84 cross_page=0,0,0 offset_mod_64=0,0,0 pto_layout=ND rank=5 shape=1,1,1,3,5 strides=24,24,24,8,1 logical_elements=15 storage_elements=21 fragments=3" 1 \
+        "$role exact strided ND layout" || return 1
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=fragment layout=nd-strided index=0 element_offset=0 element_count=5 byte_offset=0 byte_length=20" 1 \
+        "$role strided ND fragment 0" || return 1
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=fragment layout=nd-strided index=1 element_offset=8 element_count=5 byte_offset=32 byte_length=20" 1 \
+        "$role strided ND fragment 1" || return 1
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=fragment layout=nd-strided index=2 element_offset=16 element_count=5 byte_offset=64 byte_length=20" 1 \
+        "$role strided ND fragment 2" || return 1
+      ;;
+    dn)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=dn input_a_offset=0 input_b_offset=64 output_offset=128 tensor_bytes=60 cross_page=0,0,0 offset_mod_64=0,0,0 pto_layout=DN rank=5 shape=1,1,1,3,5 strides=15,15,15,1,3 logical_elements=15 storage_elements=15 fragments=1" 1 \
+        "$role exact DN layout" || return 1
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=fragment layout=dn index=0 element_offset=0 element_count=15 byte_offset=0 byte_length=60" 1 \
+        "$role DN fragment table" || return 1
+      ;;
+    nz)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=nz input_a_offset=0 input_b_offset=512 output_offset=1024 tensor_bytes=512 cross_page=0,0,0 offset_mod_64=0,0,0 pto_layout=NZ rank=5 shape=1,1,1,16,8 strides=128,128,128,8,1 logical_elements=128 storage_elements=128 fragments=1" 1 \
+        "$role exact NZ layout" || return 1
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=fragment layout=nz index=0 element_offset=0 element_count=128 byte_offset=0 byte_length=512" 1 \
+        "$role NZ fragment table" || return 1
+      ;;
   esac
   if [[ "$role" == "producer" ]]; then
     assert_log_has "$log_file" \
@@ -1389,6 +1480,11 @@ validate_lingqu_shmem_pto_guest_log() {
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=producer producer_verify=pass elements=$LINGQU_SHMEM_PTO_ELEMENTS" \
       "producer original-mapping verification" || return 1
+    if [[ "$LINGQU_SHMEM_PTO_LAYOUT" == "nd-strided" ]]; then
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=producer producer_verify=pass elements=15 output_offset=256 storage_elements=21 holes_unchanged=1" 1 \
+        "producer strided output and holes" || return 1
+    fi
   else
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=consumer stage=prepared .*map_id=[1-9][0-9]* .*map_generation=[1-9][0-9]* .*mapping_ref=0x[1-9a-f][0-9a-f]* .*requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA .*fingerprint=0x[1-9a-f][0-9a-f]*" \
@@ -1556,29 +1652,45 @@ with open(log_path, "r", encoding="utf-8", errors="replace") as stream:
             accesses.append(
                 (match.group(1), int(match.group(2), 16), int(match.group(3)))
             )
-if len(accesses) != 3:
+fragments = (
+    [(0, 20), (32, 20), (64, 20)]
+    if layout == "nd-strided"
+    else [(0, tensor_bytes)]
+)
+expected_count = len(fragments) * 3
+if len(accesses) != expected_count:
     raise SystemExit(
-        f"expected three PTO UB_GM data callbacks, found {len(accesses)}"
+        f"expected {expected_count} PTO UB_GM data callbacks, "
+        f"found {len(accesses)}"
     )
-if [kind for kind, _, _ in accesses].count("LOAD") != 2 or \
-   [kind for kind, _, _ in accesses].count("STORE") != 1:
-    raise SystemExit(f"unexpected PTO UB_GM callback kinds: {accesses!r}")
-for kind, address, length in accesses:
-    if length != tensor_bytes:
+cursor = 0
+for expected_kind in ("LOAD", "LOAD", "STORE"):
+    group = accesses[cursor:cursor + len(fragments)]
+    cursor += len(fragments)
+    base = group[0][1] - fragments[0][0]
+    if base % 64 != (4 if layout == "unaligned" else 0):
         raise SystemExit(
-            f"{kind} length mismatch: expected={tensor_bytes} actual={length}"
+            f"{expected_kind} base alignment mismatch: addr=0x{base:x}"
         )
-    crosses_page = address // 4096 != (address + length - 1) // 4096
+    for actual, (relative_offset, expected_length) in zip(group, fragments):
+        kind, address, length = actual
+        if kind != expected_kind or address != base + relative_offset or \
+           length != expected_length:
+            raise SystemExit(
+                f"unexpected {expected_kind} fragment: expected_offset="
+                f"{relative_offset} expected_length={expected_length} "
+                f"base=0x{base:x} actual={actual!r}"
+            )
+    crosses_page = base // 4096 != \
+        (base + tensor_bytes - 1) // 4096
     if layout == "cross-page" and not crosses_page:
-        raise SystemExit(f"{kind} did not cross a 4 KiB page: addr=0x{address:x}")
-    if layout == "unaligned" and (address % 64 != 4 or crosses_page):
         raise SystemExit(
-            f"{kind} unaligned contract failed: addr=0x{address:x} "
-            f"mod64={address % 64} crosses_page={int(crosses_page)}"
+            f"{expected_kind} did not cross a 4 KiB page: addr=0x{base:x}"
         )
-    if layout in ("nd", "tail", "cross-page") and address % 64 != 0:
+    if layout == "unaligned" and crosses_page:
         raise SystemExit(
-            f"{kind} expected 64-byte alignment: addr=0x{address:x}"
+            f"{expected_kind} unaligned range crossed a page: "
+            f"addr=0x{base:x}"
         )
 PY
 }
@@ -1588,9 +1700,16 @@ validate_lingqu_shmem_pto_qemu_log() {
   local log_file="$2"
   local producer_guest_log="${3:-}"
   local expected_cna="$LINGQU_SHMEM_PTO_NODEA_CNA"
-  local tensor_bytes=$((LINGQU_SHMEM_PTO_ELEMENTS * 4))
+  local logical_bytes=$((LINGQU_SHMEM_PTO_ELEMENTS * 4))
+  local tensor_bytes="$logical_bytes"
+  local fragment_count=1
   local retired_export_cna=""
   local retired_export_mem_id=""
+
+  if [[ "$LINGQU_SHMEM_PTO_LAYOUT" == "nd-strided" ]]; then
+    tensor_bytes=84
+    fragment_count=3
+  fi
 
   if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "retired-segment" ]]; then
     if [[ ! -f "$producer_guest_log" ]]; then
@@ -1877,16 +1996,18 @@ validate_lingqu_shmem_pto_qemu_log() {
   assert_log_has "$log_file" \
     "SIM_QEMU_UB_GM_BIND_REGISTER .*bindings=3 requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA" \
     "consumer three-memref binding" || return 1
-  assert_log_count "$log_file" "QEMU_UB_GM_LOAD request=.*length=$tensor_bytes " 2 \
+  assert_log_count "$log_file" "QEMU_UB_GM_LOAD request=.*length=" \
+    $((fragment_count * 2)) \
     "consumer PTO TLOAD callbacks" || return 1
-  assert_log_count "$log_file" "QEMU_UB_GM_STORE request=.*length=$tensor_bytes " 1 \
+  assert_log_count "$log_file" "QEMU_UB_GM_STORE request=.*length=" \
+    "$fragment_count" \
     "consumer PTO TSTORE callback" || return 1
   assert_log_count "$log_file" "QEMU_UB_GM_FENCE request=.*length=$tensor_bytes" 1 \
     "consumer PTO write fence" || return 1
   validate_lingqu_shmem_pto_layout_accesses \
     "$log_file" "$LINGQU_SHMEM_PTO_LAYOUT" "$tensor_bytes" || return 1
   assert_log_has "$log_file" \
-    "QEMU_UB_GM_UNBIND .*reason=completion_success bindings=3 load_bytes=$((tensor_bytes * 2)) store_bytes=$tensor_bytes fences=1 segment_payload_staging_bytes=0" \
+    "QEMU_UB_GM_UNBIND .*reason=completion_success bindings=3 load_bytes=$((logical_bytes * 2)) store_bytes=$logical_bytes fences=1 segment_payload_staging_bytes=0" \
     "consumer zero-staging completion unbind" || return 1
 }
 

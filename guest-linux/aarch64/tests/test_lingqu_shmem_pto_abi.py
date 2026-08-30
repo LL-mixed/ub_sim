@@ -180,7 +180,7 @@ int main(void)
             "control.requester_cna != ubc_dev->pto_device_cna",
             "linqu_ub_bridge_query_ub_gm_callable_v1",
             "linqu_uapi_decode_memref",
-            "linqu_uapi_validate_contiguous_memref",
+            "linqu_uapi_validate_strided_memref",
             "ub_obmm_async_resolve_mapping_ref",
             "linqu_ub_gm_register_dispatch",
             "linqu_ub_bridge_submit_ub_gm_v2",

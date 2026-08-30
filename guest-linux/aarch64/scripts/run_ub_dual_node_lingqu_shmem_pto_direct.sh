@@ -48,7 +48,8 @@ Options:
   --sim-cli-bin PATH     sim-cli containing the fingerprint query.
   --kernel-image PATH    Arm64 guest kernel image.
   --initramfs-image PATH Guest initramfs with the PTO workload.
-  --layout LAYOUT        nd, tail, cross-page, or unaligned.
+  --layout LAYOUT        nd, tail, cross-page, unaligned, nd-strided, dn,
+                         or nz.
   --elements N           Callable 1 element count; derived from layout unless
                          explicitly provided.
   --generation N         OBMM bootstrap generation; defaults to a unique run ID.
@@ -145,6 +146,9 @@ geometry_by_layout = {
     "tail": (128, 127, 128, 128),
     "cross-page": (1, 64, 1, 64),
     "unaligned": (1, 64, 1, 64),
+    "nd-strided": (3, 5, 4, 8),
+    "dn": (3, 5, 8, 8),
+    "nz": (16, 8, 16, 8),
 }
 geometry = geometry_by_layout[expected_layout]
 expected = {
@@ -161,6 +165,57 @@ if actual != expected:
         f"{contract_label} layout mismatch: "
         f"expected={expected!r} actual={actual!r}"
     )
+if expected_layout in ("nd-strided", "dn", "nz"):
+    p4i_contracts = {
+        "nd-strided": {
+            "pto_layout": "ND",
+            "compute_tile_layout": "RowMajor",
+            "rank": 5,
+            "shape": [1, 1, 1, 3, 5],
+            "strides": [24, 24, 24, 8, 1],
+            "logical_bytes": 60,
+            "storage_elements": 21,
+            "storage_bytes": 84,
+            "fragments": [
+                {"element_offset": 0, "element_count": 5},
+                {"element_offset": 8, "element_count": 5},
+                {"element_offset": 16, "element_count": 5},
+            ],
+        },
+        "dn": {
+            "pto_layout": "DN",
+            "compute_tile_layout": "RowMajor",
+            "rank": 5,
+            "shape": [1, 1, 1, 3, 5],
+            "strides": [15, 15, 15, 1, 3],
+            "logical_bytes": 60,
+            "storage_elements": 15,
+            "storage_bytes": 60,
+            "fragments": [
+                {"element_offset": 0, "element_count": 15},
+            ],
+        },
+        "nz": {
+            "pto_layout": "NZ",
+            "compute_tile_layout": "RowMajor",
+            "rank": 5,
+            "shape": [1, 1, 1, 16, 8],
+            "strides": [128, 128, 128, 8, 1],
+            "logical_bytes": 512,
+            "storage_elements": 128,
+            "storage_bytes": 512,
+            "fragments": [
+                {"element_offset": 0, "element_count": 128},
+            ],
+        },
+    }
+    p4i_expected = p4i_contracts[expected_layout]
+    p4i_actual = {key: layout.get(key) for key in p4i_expected}
+    if p4i_actual != p4i_expected:
+        raise SystemExit(
+            f"{contract_label} P4I contract mismatch: "
+            f"expected={p4i_expected!r} actual={p4i_actual!r}"
+        )
 value = payload.get("ub_gm_access_fault", "none")
 if value not in ("none", "tstore-on-read", "tload-on-write"):
     raise SystemExit(
@@ -319,6 +374,12 @@ case "$LAYOUT" in
     ;;
   cross-page|unaligned)
     EXPECTED_LAYOUT_ELEMENTS=64
+    ;;
+  nd-strided|dn)
+    EXPECTED_LAYOUT_ELEMENTS=15
+    ;;
+  nz)
+    EXPECTED_LAYOUT_ELEMENTS=128
     ;;
   *)
     echo "unsupported PTO layout: $LAYOUT" >&2

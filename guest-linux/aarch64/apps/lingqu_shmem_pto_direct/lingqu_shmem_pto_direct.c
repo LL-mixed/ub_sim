@@ -29,6 +29,11 @@
 #define PTO_DIRECT_TAIL_ELEMENTS \
     (PTO_DIRECT_TAIL_ROWS * PTO_DIRECT_TAIL_COLUMNS)
 #define PTO_DIRECT_SMALL_LAYOUT_ELEMENTS 64u
+#define PTO_DIRECT_ND_STRIDED_ELEMENTS 15u
+#define PTO_DIRECT_DN_ELEMENTS 15u
+#define PTO_DIRECT_NZ_ELEMENTS 128u
+#define PTO_DIRECT_LAYOUT_RANK 5u
+#define PTO_DIRECT_MAX_FRAGMENTS 3u
 #define PTO_DIRECT_DEFAULT_TIMEOUT_MS 120000u
 #define PTO_DIRECT_ALIGNMENT 64u
 #define PTO_DIRECT_PAGE_BYTES 4096u
@@ -62,6 +67,9 @@ enum pto_direct_layout_kind {
     PTO_DIRECT_LAYOUT_TAIL,
     PTO_DIRECT_LAYOUT_CROSS_PAGE,
     PTO_DIRECT_LAYOUT_UNALIGNED,
+    PTO_DIRECT_LAYOUT_ND_STRIDED,
+    PTO_DIRECT_LAYOUT_DN,
+    PTO_DIRECT_LAYOUT_NZ,
 };
 
 enum pto_direct_fault_case {
@@ -111,6 +119,18 @@ struct pto_direct_layout {
     uint64_t output_offset;
     uint64_t tensor_bytes;
     uint64_t used_bytes;
+    uint64_t logical_elements;
+    uint64_t storage_elements;
+    uint32_t global_rows;
+    uint32_t global_cols;
+    uint32_t rank;
+    uint32_t shape[PTO_DIRECT_LAYOUT_RANK];
+    uint32_t strides[PTO_DIRECT_LAYOUT_RANK];
+    uint32_t fragment_count;
+    struct {
+        uint32_t element_offset;
+        uint32_t element_count;
+    } fragments[PTO_DIRECT_MAX_FRAGMENTS];
 };
 
 static uint64_t align_up(uint64_t value, uint64_t alignment)
@@ -180,8 +200,25 @@ static const char *layout_name(enum pto_direct_layout_kind layout)
         return "cross-page";
     case PTO_DIRECT_LAYOUT_UNALIGNED:
         return "unaligned";
+    case PTO_DIRECT_LAYOUT_ND_STRIDED:
+        return "nd-strided";
+    case PTO_DIRECT_LAYOUT_DN:
+        return "dn";
+    case PTO_DIRECT_LAYOUT_NZ:
+        return "nz";
     }
     return "unknown";
+}
+
+static const char *layout_pto_name(enum pto_direct_layout_kind layout)
+{
+    if (layout == PTO_DIRECT_LAYOUT_DN) {
+        return "DN";
+    }
+    if (layout == PTO_DIRECT_LAYOUT_NZ) {
+        return "NZ";
+    }
+    return "ND";
 }
 
 static uint32_t layout_elements(enum pto_direct_layout_kind layout)
@@ -194,6 +231,12 @@ static uint32_t layout_elements(enum pto_direct_layout_kind layout)
     case PTO_DIRECT_LAYOUT_CROSS_PAGE:
     case PTO_DIRECT_LAYOUT_UNALIGNED:
         return PTO_DIRECT_SMALL_LAYOUT_ELEMENTS;
+    case PTO_DIRECT_LAYOUT_ND_STRIDED:
+        return PTO_DIRECT_ND_STRIDED_ELEMENTS;
+    case PTO_DIRECT_LAYOUT_DN:
+        return PTO_DIRECT_DN_ELEMENTS;
+    case PTO_DIRECT_LAYOUT_NZ:
+        return PTO_DIRECT_NZ_ELEMENTS;
     }
     return 0;
 }
@@ -270,8 +313,8 @@ static void usage(FILE *stream)
             "--node-id N --node-count N [options]\n"
             "\n"
             "options:\n"
-            "  --layout LAYOUT           nd, tail, cross-page, or "
-            "unaligned\n"
+            "  --layout LAYOUT           nd, tail, cross-page, unaligned, "
+            "nd-strided, dn, or nz\n"
             "  --elements N              f32 elements required by the "
             "selected layout\n"
             "  --generation N            OBMM bootstrap generation\n"
@@ -363,6 +406,12 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                 config->layout = PTO_DIRECT_LAYOUT_CROSS_PAGE;
             } else if (strcmp(layout, "unaligned") == 0) {
                 config->layout = PTO_DIRECT_LAYOUT_UNALIGNED;
+            } else if (strcmp(layout, "nd-strided") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_ND_STRIDED;
+            } else if (strcmp(layout, "dn") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_DN;
+            } else if (strcmp(layout, "nz") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_NZ;
             } else {
                 fprintf(stderr, "invalid layout: %s\n", layout);
                 return -EINVAL;
@@ -470,15 +519,97 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
 static int build_layout(const struct pto_direct_config *config,
                         struct pto_direct_layout *layout)
 {
-    uint64_t tensor_bytes;
+    uint64_t max_element_offset = 0;
+    uint32_t index;
 
     if (!config || !layout || config->elements == 0 ||
         config->elements != layout_elements(config->layout)) {
         return -EINVAL;
     }
-    tensor_bytes = (uint64_t)config->elements * sizeof(float);
+    memset(layout, 0, sizeof(*layout));
+    layout->rank = PTO_DIRECT_LAYOUT_RANK;
+    layout->shape[0] = 1;
+    layout->shape[1] = 1;
+    layout->shape[2] = 1;
+    if (config->layout == PTO_DIRECT_LAYOUT_ND_STRIDED) {
+        layout->global_rows = 3;
+        layout->global_cols = 5;
+        layout->strides[0] = 24;
+        layout->strides[1] = 24;
+        layout->strides[2] = 24;
+        layout->strides[3] = 8;
+        layout->strides[4] = 1;
+        layout->fragment_count = 3;
+        layout->fragments[0].element_offset = 0;
+        layout->fragments[0].element_count = 5;
+        layout->fragments[1].element_offset = 8;
+        layout->fragments[1].element_count = 5;
+        layout->fragments[2].element_offset = 16;
+        layout->fragments[2].element_count = 5;
+    } else if (config->layout == PTO_DIRECT_LAYOUT_DN) {
+        layout->global_rows = 3;
+        layout->global_cols = 5;
+        layout->strides[0] = 15;
+        layout->strides[1] = 15;
+        layout->strides[2] = 15;
+        layout->strides[3] = 1;
+        layout->strides[4] = 3;
+    } else if (config->layout == PTO_DIRECT_LAYOUT_NZ) {
+        layout->global_rows = 16;
+        layout->global_cols = 8;
+        layout->strides[0] = 128;
+        layout->strides[1] = 128;
+        layout->strides[2] = 128;
+        layout->strides[3] = 8;
+        layout->strides[4] = 1;
+    } else {
+        if (config->layout == PTO_DIRECT_LAYOUT_TAIL) {
+            layout->global_rows = PTO_DIRECT_TAIL_ROWS;
+            layout->global_cols = PTO_DIRECT_TAIL_COLUMNS;
+        } else if (config->layout == PTO_DIRECT_LAYOUT_ND) {
+            layout->global_rows = PTO_DIRECT_HOST_VECTOR_ROWS;
+            layout->global_cols = PTO_DIRECT_HOST_VECTOR_COLUMNS;
+        } else {
+            layout->global_rows = 1;
+            layout->global_cols = PTO_DIRECT_SMALL_LAYOUT_ELEMENTS;
+        }
+        layout->strides[0] = 1;
+        layout->strides[1] = 1;
+        layout->strides[2] = 1;
+        layout->strides[3] = layout->global_cols;
+        layout->strides[4] = 1;
+    }
+    layout->shape[3] = layout->global_rows;
+    layout->shape[4] = layout->global_cols;
+    layout->logical_elements =
+        (uint64_t)layout->global_rows * layout->global_cols;
+    if (layout->logical_elements != config->elements) {
+        return -EINVAL;
+    }
+    for (index = 0; index < layout->rank; index++) {
+        uint64_t dim_span = (uint64_t)layout->shape[index] - 1;
+        uint64_t stride = layout->strides[index];
+
+        if (layout->shape[index] == 0 || stride == 0 ||
+            dim_span > (UINT64_MAX - max_element_offset) / stride) {
+            return -EOVERFLOW;
+        }
+        max_element_offset += dim_span * stride;
+    }
+    layout->storage_elements = max_element_offset + 1;
+    if (layout->storage_elements > UINT64_MAX / sizeof(float) ||
+        layout->storage_elements > UINT32_MAX) {
+        return -EOVERFLOW;
+    }
+    layout->tensor_bytes = layout->storage_elements * sizeof(float);
+    if (layout->fragment_count == 0) {
+        layout->fragment_count = 1;
+        layout->fragments[0].element_offset = 0;
+        layout->fragments[0].element_count =
+            (uint32_t)layout->storage_elements;
+    }
     if (config->layout == PTO_DIRECT_LAYOUT_CROSS_PAGE) {
-        uint64_t half = tensor_bytes / 2;
+        uint64_t half = layout->tensor_bytes / 2;
 
         layout->input_a_offset = PTO_DIRECT_PAGE_BYTES - half;
         layout->input_b_offset = 2u * PTO_DIRECT_PAGE_BYTES - half;
@@ -490,14 +621,16 @@ static int build_layout(const struct pto_direct_config *config,
                                 sizeof(float);
     } else {
         layout->input_a_offset = 0;
-        layout->input_b_offset = align_up(tensor_bytes,
+        layout->input_b_offset = align_up(layout->tensor_bytes,
                                           PTO_DIRECT_ALIGNMENT);
         layout->output_offset = align_up(
-            layout->input_b_offset + tensor_bytes,
+            layout->input_b_offset + layout->tensor_bytes,
             PTO_DIRECT_ALIGNMENT);
     }
-    layout->tensor_bytes = tensor_bytes;
-    layout->used_bytes = layout->output_offset + tensor_bytes;
+    if (layout->output_offset > UINT64_MAX - layout->tensor_bytes) {
+        return -EOVERFLOW;
+    }
+    layout->used_bytes = layout->output_offset + layout->tensor_bytes;
     return layout->used_bytes <= PTO_DIRECT_EXPORT_BYTES ? 0 : -E2BIG;
 }
 
@@ -588,22 +721,55 @@ static int lookup_producer_meta(int obmm_fd,
                             generation, timeout_ms, meta);
 }
 
+static uint64_t layout_element_offset(
+    const struct pto_direct_layout *layout,
+    uint32_t logical_index)
+{
+    uint32_t row = logical_index / layout->global_cols;
+    uint32_t column = logical_index % layout->global_cols;
+
+    return (uint64_t)row * layout->strides[3] +
+           (uint64_t)column * layout->strides[4];
+}
+
+static bool layout_storage_offset_is_logical(
+    const struct pto_direct_layout *layout,
+    uint64_t storage_offset)
+{
+    uint32_t index;
+
+    for (index = 0; index < layout->logical_elements; index++) {
+        if (layout_element_offset(layout, index) == storage_offset) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void seed_region(void *address,
                         const struct pto_direct_layout *layout,
                         uint32_t elements)
 {
-    float *input_a = (float *)((uint8_t *)address +
-                               layout->input_a_offset);
-    float *input_b = (float *)((uint8_t *)address +
-                               layout->input_b_offset);
+    uint32_t *input_a_bits = (uint32_t *)((uint8_t *)address +
+                                          layout->input_a_offset);
+    uint32_t *input_b_bits = (uint32_t *)((uint8_t *)address +
+                                          layout->input_b_offset);
     uint32_t *output = (uint32_t *)((uint8_t *)address +
                                     layout->output_offset);
     uint32_t index;
 
-    for (index = 0; index < elements; index++) {
-        input_a[index] = (float)index;
-        input_b[index] = (float)(2u * index + 1u);
+    for (index = 0; index < layout->storage_elements; index++) {
+        input_a_bits[index] = PTO_DIRECT_OUTPUT_SENTINEL;
+        input_b_bits[index] = PTO_DIRECT_OUTPUT_SENTINEL;
         output[index] = PTO_DIRECT_OUTPUT_SENTINEL;
+    }
+    for (index = 0; index < elements; index++) {
+        uint64_t offset = layout_element_offset(layout, index);
+        float input_a = (float)index;
+        float input_b = (float)(2u * index + 1u);
+
+        memcpy(&input_a_bits[offset], &input_a, sizeof(input_a));
+        memcpy(&input_b_bits[offset], &input_b, sizeof(input_b));
     }
     __atomic_thread_fence(__ATOMIC_RELEASE);
 }
@@ -622,12 +788,13 @@ static bool output_matches(const void *address,
 
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     for (index = 0; index < elements; index++) {
+        uint64_t offset = layout_element_offset(layout, index);
         float sum = (float)(3u * index + 1u);
         float expected = (sum + 1.0f) * (sum + 2.0f);
         uint32_t bits;
 
         memcpy(&bits, &expected, sizeof(bits));
-        if (output[index] != bits) {
+        if (output[offset] != bits) {
             if (mismatch_index) {
                 *mismatch_index = index;
             }
@@ -635,9 +802,28 @@ static bool output_matches(const void *address,
                 *expected_bits = bits;
             }
             if (actual_bits) {
-                *actual_bits = output[index];
+                *actual_bits = output[offset];
             }
             return false;
+        }
+    }
+    if (layout->storage_elements != layout->logical_elements) {
+        uint64_t offset;
+
+        for (offset = 0; offset < layout->storage_elements; offset++) {
+            if (!layout_storage_offset_is_logical(layout, offset) &&
+                output[offset] != PTO_DIRECT_OUTPUT_SENTINEL) {
+                if (mismatch_index) {
+                    *mismatch_index = (uint32_t)offset;
+                }
+                if (expected_bits) {
+                    *expected_bits = PTO_DIRECT_OUTPUT_SENTINEL;
+                }
+                if (actual_bits) {
+                    *actual_bits = output[offset];
+                }
+                return false;
+            }
         }
     }
     return true;
@@ -655,7 +841,8 @@ static bool output_is_sentinel(const void *address,
     uint32_t index;
 
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    for (index = 0; index < elements; index++) {
+    (void)elements;
+    for (index = 0; index < layout->storage_elements; index++) {
         if (output[index] != PTO_DIRECT_OUTPUT_SENTINEL) {
             if (mismatch_index) {
                 *mismatch_index = index;
@@ -928,8 +1115,10 @@ static int run_producer(const struct pto_direct_config *config,
             }
             printf("LINGQU_SHMEM_PTO role=producer producer_verify=pass "
                    "elements=%u output_offset=%" PRIu64
-                   " elapsed_ms=%" PRIu64 "\n",
+                   " storage_elements=%" PRIu64
+                   " holes_unchanged=1 elapsed_ms=%" PRIu64 "\n",
                    config->elements, layout->output_offset,
+                   layout->storage_elements,
                    monotonic_ms() - started_at);
             printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass\n");
             rc = 0;
@@ -1021,17 +1210,24 @@ static int create_memrefs(
     };
     uint32_t index;
 
+    if (elements != layout->logical_elements) {
+        return -EINVAL;
+    }
     for (index = 0; index < 3; index++) {
         struct lingqu_shmem_memref_spec spec = {
             .byte_offset = offsets[index],
             .byte_length = layout->tensor_bytes,
-            .rank = 1,
+            .rank = layout->rank,
             .dtype = 0,
             .access = index < 2 ? LINGQU_SHMEM_ACCESS_READ :
                                   LINGQU_SHMEM_ACCESS_WRITE,
-            .shape = { elements },
-            .strides = { 1 },
         };
+        uint32_t dim;
+
+        for (dim = 0; dim < layout->rank; dim++) {
+            spec.shape[dim] = layout->shape[dim];
+            spec.strides[dim] = layout->strides[dim];
+        }
         int rc = lingqu_shmem_memref_create(region, &spec,
                                              &memrefs[index]);
 
@@ -1778,6 +1974,7 @@ int main(int argc, char **argv)
 {
     struct pto_direct_config config;
     struct pto_direct_layout layout;
+    uint32_t fragment_index;
     uint32_t local_cna = 0;
 
     if (parse_args(argc, argv, &config) != 0 ||
@@ -1802,7 +1999,10 @@ int main(int argc, char **argv)
            "input_a_offset=%" PRIu64 " input_b_offset=%" PRIu64
            " output_offset=%" PRIu64 " tensor_bytes=%" PRIu64
            " cross_page=%u,%u,%u offset_mod_64=%" PRIu64 ",%" PRIu64
-           ",%" PRIu64 "\n",
+           ",%" PRIu64 " pto_layout=%s rank=%u"
+           " shape=%u,%u,%u,%u,%u strides=%u,%u,%u,%u,%u"
+           " logical_elements=%" PRIu64 " storage_elements=%" PRIu64
+           " fragments=%u\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            layout_name(config.layout), layout.input_a_offset,
@@ -1816,7 +2016,30 @@ int main(int argc, char **argv)
                               layout.tensor_bytes),
            layout.input_a_offset % PTO_DIRECT_ALIGNMENT,
            layout.input_b_offset % PTO_DIRECT_ALIGNMENT,
-           layout.output_offset % PTO_DIRECT_ALIGNMENT);
+           layout.output_offset % PTO_DIRECT_ALIGNMENT,
+           layout_pto_name(config.layout), layout.rank,
+           layout.shape[0], layout.shape[1], layout.shape[2],
+           layout.shape[3], layout.shape[4],
+           layout.strides[0], layout.strides[1], layout.strides[2],
+           layout.strides[3], layout.strides[4],
+           layout.logical_elements, layout.storage_elements,
+           layout.fragment_count);
+    for (fragment_index = 0;
+         fragment_index < layout.fragment_count;
+         fragment_index++) {
+        printf("LINGQU_SHMEM_PTO role=%s stage=fragment layout=%s "
+               "index=%u element_offset=%u element_count=%u "
+               "byte_offset=%u byte_length=%u\n",
+               config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
+                                                         "consumer",
+               layout_name(config.layout), fragment_index,
+               layout.fragments[fragment_index].element_offset,
+               layout.fragments[fragment_index].element_count,
+               layout.fragments[fragment_index].element_offset *
+                   (uint32_t)sizeof(float),
+               layout.fragments[fragment_index].element_count *
+                   (uint32_t)sizeof(float));
+    }
     if (config.role == PTO_DIRECT_ROLE_PRODUCER) {
         return run_producer(&config, &layout, local_cna);
     }
