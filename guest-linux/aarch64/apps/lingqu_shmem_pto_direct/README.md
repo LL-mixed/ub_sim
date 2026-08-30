@@ -39,6 +39,11 @@ lingqu_shmem_pto_direct --role producer --node-id 0 --node-count 2 \
 lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
   --elements 16384 --generation 101 --timeout-ms 120000 \
   --requester-cna 0xf002 --artifact-fingerprint 0x1234
+
+lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
+  --elements 16384 --generation 101 --timeout-ms 5000 \
+  --cancel-after-ms 10 --expect authorization-cancelled \
+  --requester-cna 0xf002 --artifact-fingerprint 0x1234
 ```
 
 The default `--expect success` mode exits successfully only after the producer
@@ -50,6 +55,24 @@ the exact `pto_ub_gm_authorization_timeout` code. When those conditions hold,
 both roles report the expected failure as a passing test outcome and return
 zero, so the PID 1 guest launcher stays healthy. Any changed output, successful
 dispatch, or different completion error remains a test failure.
+
+`--expect authorization-cancelled` is the active-cancellation test mode. It
+requires `--cancel-after-ms` to fall strictly inside the endpoint timeout.
+After the dispatch enters pending authorization, the endpoint writes the
+operation identity and then rings the cancel doorbell. It continues polling
+until it receives exactly one status-3 completion carrying
+`pto_ub_gm_authorization_cancelled`. The producer applies the same complete
+sentinel scan used by the timeout test. The host gate additionally proves
+that the matching command-queue head advanced once, no authorization or data
+callback ran, and an optionally injected late completion was ignored after
+the pending snapshot had been destroyed.
+
+The QEMU-only duplicate-completion injection applies to delayed successful
+authorization. Each legitimate timer completion resumes the command once;
+the immediately repeated completion must be rejected by the active
+operation/request/sequence guard with `reason=already_completed`. These
+injection switches are host test controls and are absent from the guest
+workload ABI.
 
 Callable 1 currently identifies the frozen host-vector artifact whose PTO
 kernel executes one `128 x 128` `f32` tile. For each element it computes

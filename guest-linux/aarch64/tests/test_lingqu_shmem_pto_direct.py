@@ -52,6 +52,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_memref_create", source)
         self.assertIn("lingqu_shmem_pto_dispatch_prepare", source)
         self.assertIn("lingqu_shmem_pto_endpoint_submit", source)
+        self.assertIn("lingqu_shmem_pto_endpoint_submit_cancel_after", source)
         self.assertIn("obmm_async_map_register", source)
         self.assertIn("producer_verify=pass", source)
         self.assertIn("(sum + 1.0f) * (sum + 2.0f)", source)
@@ -64,13 +65,12 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("PTO_DIRECT_HOST_VECTOR_ELEMENTS", source)
         self.assertIn("--expect OUTCOME", source)
         self.assertIn("PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT", source)
+        self.assertIn("PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED", source)
+        self.assertIn("--cancel-after-ms N", source)
         self.assertIn("output_is_sentinel", source)
         self.assertIn("output_unchanged=1", source)
-        self.assertIn(
-            'strcmp(completion.error_code,\n'
-            '                   "pto_ub_gm_authorization_timeout") == 0',
-            source,
-        )
+        self.assertIn("expectation_error_code(config->expectation)", source)
+        self.assertIn("LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED", source)
         self.assertIn(
             "config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS", source
         )
@@ -98,6 +98,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_pto_artifact_fingerprint", run_app)
         self.assertIn("lingqu_shmem_pto_expect success", run_app)
         self.assertIn("--expect $(cmdline_value", run_app)
+        self.assertIn("lingqu_shmem_pto_cancel_after_ms 0", run_app)
         self.assertIn("linqu_shmem_pto_direct=1", run_app)
         self.assertIn("/bin/lingqu_shmem_pto_direct", run_app)
         self.assertIn("lingqu_shmem_pto_elements 16384", run_app)
@@ -110,6 +111,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA", runner)
         self.assertIn("--pto-authorization-delay-ns", runner)
         self.assertIn("--pto-authorization-timeout-ns", runner)
+        self.assertIn("--pto-cancel-after-ms", runner)
+        self.assertIn("--pto-inject-duplicate-completion", runner)
+        self.assertIn("--pto-inject-late-completion", runner)
         self.assertIn("--pto-expect", runner)
         self.assertIn("LINGQU_SHMEM_PTO_EXPECT", runner)
         self.assertIn(
@@ -130,6 +134,10 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", runner)
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_TIMEOUT", runner)
         self.assertIn("pto_ub_gm_authorization_timeout", runner)
+        self.assertIn("pto_ub_gm_authorization_cancelled", runner)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_CANCEL", runner)
+        self.assertIn("source=cancel-late-injection reason=no_pending", runner)
+        self.assertIn("source=duplicate-injection reason=already_completed", runner)
         self.assertIn("consumer exact-once timeout CQ completion", runner)
         self.assertIn("consumer retained CMDQ head while pending", runner)
         self.assertIn("consumer data access after authorization timeout", runner)
@@ -169,6 +177,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--manifest PATH", result.stdout)
         self.assertIn("--authorization-delay-ns N", result.stdout)
         self.assertIn("--authorization-timeout-ns N", result.stdout)
+        self.assertIn("--cancel-after-ms N", result.stdout)
+        self.assertIn("--inject-duplicate-completion 0|1", result.stdout)
+        self.assertIn("--inject-late-completion 0|1", result.stdout)
         self.assertIn("--expect OUTCOME", result.stdout)
 
     def test_dedicated_runner_rejects_unknown_expected_result(self):
@@ -187,7 +198,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
-            "expected result must be success or authorization-timeout",
+            "expected result must be success, authorization-timeout, or authorization-cancelled",
             result.stdout,
         )
 
@@ -285,6 +296,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             validation = (evidence / "validation.status").read_text()
             self.assertIn("authorization_delay_ns=250000", validation)
             self.assertIn("authorization_timeout_ns=10000000", validation)
+            self.assertIn("cancel_after_ms=0", validation)
+            self.assertIn("inject_duplicate_completion=0", validation)
+            self.assertIn("inject_late_completion=0", validation)
             self.assertIn("expected_result=success", validation)
             self.assertIn("qemu_binary=", validation)
             self.assertTrue((evidence / "source-sha256.txt").is_file())

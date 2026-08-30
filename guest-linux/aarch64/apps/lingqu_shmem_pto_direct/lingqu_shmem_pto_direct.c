@@ -39,6 +39,7 @@ enum pto_direct_role {
 enum pto_direct_expectation {
     PTO_DIRECT_EXPECT_SUCCESS,
     PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT,
+    PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED,
 };
 
 struct pto_direct_config {
@@ -51,6 +52,7 @@ struct pto_direct_config {
     uint64_t generation;
     uint64_t artifact_fingerprint;
     uint64_t timeout_ms;
+    uint64_t cancel_after_ms;
     enum pto_direct_expectation expectation;
 };
 
@@ -101,6 +103,33 @@ static int parse_u64(const char *text, uint64_t *value_out)
     return 0;
 }
 
+static const char *expectation_name(enum pto_direct_expectation expectation)
+{
+    switch (expectation) {
+    case PTO_DIRECT_EXPECT_SUCCESS:
+        return "success";
+    case PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT:
+        return "authorization-timeout";
+    case PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED:
+        return "authorization-cancelled";
+    }
+    return "unknown";
+}
+
+static const char *expectation_error_code(
+    enum pto_direct_expectation expectation)
+{
+    switch (expectation) {
+    case PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT:
+        return LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_TIMEOUT;
+    case PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED:
+        return LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED;
+    case PTO_DIRECT_EXPECT_SUCCESS:
+        break;
+    }
+    return NULL;
+}
+
 static void usage(FILE *stream)
 {
     fprintf(stream,
@@ -113,9 +142,12 @@ static void usage(FILE *stream)
             "  --generation N            OBMM bootstrap generation\n"
             "  --token-value N           OBMM import token value\n"
             "  --timeout-ms N            producer/dispatch deadline\n"
+            "  --cancel-after-ms N       cancel pending authorization; "
+            "zero disables\n"
             "  --requester-cna N         required for consumer\n"
             "  --artifact-fingerprint N  required for consumer\n"
-            "  --expect OUTCOME          success or authorization-timeout\n");
+            "  --expect OUTCOME          success, authorization-timeout, "
+            "or authorization-cancelled\n");
 }
 
 static int parse_args(int argc, char **argv, struct pto_direct_config *config)
@@ -165,6 +197,10 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                               "authorization-timeout") == 0) {
                 config->expectation =
                     PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT;
+            } else if (strcmp(expectation,
+                              "authorization-cancelled") == 0) {
+                config->expectation =
+                    PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED;
             } else {
                 fprintf(stderr, "invalid expected outcome: %s\n",
                         expectation);
@@ -192,6 +228,8 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
             config->token_value = (uint32_t)value;
         } else if (strcmp(option, "--timeout-ms") == 0) {
             config->timeout_ms = value;
+        } else if (strcmp(option, "--cancel-after-ms") == 0) {
+            config->cancel_after_ms = value;
         } else if (strcmp(option, "--requester-cna") == 0 &&
                    value <= UINT32_MAX) {
             config->requester_cna = (uint32_t)value;
@@ -208,6 +246,11 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
         config->generation == 0 ||
         config->generation > (UINT64_MAX >> 16) ||
         config->timeout_ms == 0 ||
+        (config->expectation == PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED &&
+         (config->cancel_after_ms == 0 ||
+          config->cancel_after_ms >= config->timeout_ms)) ||
+        (config->expectation != PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED &&
+         config->cancel_after_ms != 0) ||
         (config->role == PTO_DIRECT_ROLE_PRODUCER && config->node_id != 0) ||
         (config->role == PTO_DIRECT_ROLE_CONSUMER &&
          (config->node_id != 1 || config->requester_cna == 0 ||
@@ -451,12 +494,12 @@ static int run_producer(const struct pto_direct_config *config,
 
         if (output_matches(region.addr, layout, config->elements,
                            &mismatch_index, &expected_bits, &actual_bits)) {
-            if (config->expectation ==
-                PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT) {
+            if (config->expectation != PTO_DIRECT_EXPECT_SUCCESS) {
                 fprintf(stderr,
                         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
                         "reason=unexpected_success "
-                        "expected=authorization-timeout\n");
+                        "expected=%s\n",
+                        expectation_name(config->expectation));
                 goto out;
             }
             printf("LINGQU_SHMEM_PTO role=producer producer_verify=pass "
@@ -477,26 +520,27 @@ static int run_producer(const struct pto_direct_config *config,
 
         (void)output_matches(region.addr, layout, config->elements,
                              &mismatch_index, &expected_bits, &actual_bits);
-        if (config->expectation ==
-            PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT) {
+        if (config->expectation != PTO_DIRECT_EXPECT_SUCCESS) {
             uint32_t changed_index = 0;
             uint32_t changed_bits = PTO_DIRECT_OUTPUT_SENTINEL;
 
             if (output_is_sentinel(region.addr, layout, config->elements,
                                    &changed_index, &changed_bits)) {
                 printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass "
-                       "expected=authorization-timeout "
+                       "expected=%s "
                        "observed=verify_timeout output_unchanged=1 "
                        "elements=%u sentinel=0x%08x\n",
+                       expectation_name(config->expectation),
                        config->elements, PTO_DIRECT_OUTPUT_SENTINEL);
                 rc = 0;
                 goto out;
             }
             fprintf(stderr,
                     "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
-                    "reason=output_changed_after_authorization_timeout "
-                    "index=%u actual=0x%08x\n",
-                    changed_index, changed_bits);
+                    "reason=output_changed_after_expected_failure "
+                    "expected=%s index=%u actual=0x%08x\n",
+                    expectation_name(config->expectation), changed_index,
+                    changed_bits);
             goto out;
         }
         fprintf(stderr,
@@ -703,8 +747,14 @@ static int run_consumer(const struct pto_direct_config *config,
            wire_result.metadata_bytes, wire_result.metadata_crc32,
            config->requester_cna, config->artifact_fingerprint,
            endpoint_info.resource_path);
-    submit_rc = lingqu_shmem_pto_endpoint_submit(
-        endpoint, &slot, config->timeout_ms, &completion);
+    if (config->expectation == PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED) {
+        submit_rc = lingqu_shmem_pto_endpoint_submit_cancel_after(
+            endpoint, &slot, config->timeout_ms, config->cancel_after_ms,
+            &completion);
+    } else {
+        submit_rc = lingqu_shmem_pto_endpoint_submit(
+            endpoint, &slot, config->timeout_ms, &completion);
+    }
     if (submit_rc != 0) {
         fprintf(stderr,
                 "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail "
@@ -717,14 +767,16 @@ static int run_consumer(const struct pto_direct_config *config,
            completion.error_code[0] ? completion.error_code : "none",
            completion.finished_at);
     if (!lingqu_shmem_pto_completion_succeeded(&completion)) {
-        if (config->expectation ==
-                PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT &&
+        const char *expected_error =
+            expectation_error_code(config->expectation);
+
+        if (expected_error != NULL &&
             completion.status == PTO_DIRECT_COMPLETION_FAILED &&
-            strcmp(completion.error_code,
-                   "pto_ub_gm_authorization_timeout") == 0) {
+            strcmp(completion.error_code, expected_error) == 0) {
             printf("LINGQU_SHMEM_PTO_RESULT role=consumer status=pass "
-                   "expected=authorization-timeout "
+                   "expected=%s "
                    "observed=completion error=%s\n",
+                   expectation_name(config->expectation),
                    completion.error_code);
             rc = 0;
             goto out;
@@ -735,11 +787,11 @@ static int run_consumer(const struct pto_direct_config *config,
                 completion.error_code[0] ? completion.error_code : "unknown");
         goto out;
     }
-    if (config->expectation ==
-        PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT) {
+    if (config->expectation != PTO_DIRECT_EXPECT_SUCCESS) {
         fprintf(stderr,
                 "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail "
-                "reason=unexpected_success expected=authorization-timeout\n");
+                "reason=unexpected_success expected=%s\n",
+                expectation_name(config->expectation));
         goto out;
     }
     printf("LINGQU_SHMEM_PTO_RESULT role=consumer status=pass "
@@ -792,13 +844,12 @@ int main(int argc, char **argv)
     }
     printf("LINGQU_SHMEM_PTO role=%s stage=start node_id=%u node_count=%u "
            "local_cna=0x%x elements=%u generation=%" PRIu64
-           " expected=%s\n",
+           " expected=%s cancel_after_ms=%" PRIu64 "\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            config.node_id, config.node_count, local_cna,
            config.elements, config.generation,
-           config.expectation == PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT ?
-               "authorization-timeout" : "success");
+           expectation_name(config.expectation), config.cancel_after_ms);
     if (config.role == PTO_DIRECT_ROLE_PRODUCER) {
         return run_producer(&config, &layout, local_cna);
     }

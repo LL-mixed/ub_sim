@@ -19,6 +19,9 @@ NODEA_CNA=0xf001
 NODEB_CNA=0xf002
 AUTHORIZATION_DELAY_NS=0
 AUTHORIZATION_TIMEOUT_NS=1000000000
+CANCEL_AFTER_MS=0
+INJECT_DUPLICATE_COMPLETION=0
+INJECT_LATE_COMPLETION=0
 EXPECT="success"
 RUN_SECS=180
 MAX_RUNTIME=300
@@ -47,7 +50,13 @@ Options:
                          Per-memref QEMU authorization delay; zero is sync.
   --authorization-timeout-ns N
                          Dispatch-wide authorization timeout.
-  --expect OUTCOME       Expected result: success or authorization-timeout.
+  --cancel-after-ms N    Cancel pending authorization after N guest ms.
+  --inject-duplicate-completion 0|1
+                         Inject a duplicate timer completion.
+  --inject-late-completion 0|1
+                         Inject a completion after cancel cleanup.
+  --expect OUTCOME       Expected result: success, authorization-timeout,
+                         or authorization-cancelled.
   --run-secs N           Harness per-app timeout.
   --max-runtime N        Harness global watchdog timeout.
   --run-id ID            Stable evidence and log identifier.
@@ -157,6 +166,21 @@ while [[ $# -gt 0 ]]; do
       AUTHORIZATION_TIMEOUT_NS="$2"
       shift 2
       ;;
+    --cancel-after-ms)
+      require_value "$1" "$#"
+      CANCEL_AFTER_MS="$2"
+      shift 2
+      ;;
+    --inject-duplicate-completion)
+      require_value "$1" "$#"
+      INJECT_DUPLICATE_COMPLETION="$2"
+      shift 2
+      ;;
+    --inject-late-completion)
+      require_value "$1" "$#"
+      INJECT_LATE_COMPLETION="$2"
+      shift 2
+      ;;
     --expect)
       require_value "$1" "$#"
       EXPECT="$2"
@@ -204,10 +228,10 @@ if [[ -z "$RUN_ID" || "$RUN_ID" == *[^A-Za-z0-9._-]* ]]; then
   exit 2
 fi
 case "$EXPECT" in
-  success|authorization-timeout)
+  success|authorization-timeout|authorization-cancelled)
     ;;
   *)
-    echo "expected result must be success or authorization-timeout" >&2
+    echo "expected result must be success, authorization-timeout, or authorization-cancelled" >&2
     exit 2
     ;;
 esac
@@ -289,6 +313,9 @@ set +e
   --pto-nodeb-cna "$NODEB_CNA" \
   --pto-authorization-delay-ns "$AUTHORIZATION_DELAY_NS" \
   --pto-authorization-timeout-ns "$AUTHORIZATION_TIMEOUT_NS" \
+  --pto-cancel-after-ms "$CANCEL_AFTER_MS" \
+  --pto-inject-duplicate-completion "$INJECT_DUPLICATE_COMPLETION" \
+  --pto-inject-late-completion "$INJECT_LATE_COMPLETION" \
   --pto-expect "$EXPECT" \
   > "$HARNESS_LOG" 2>&1
 RUNNER_RC=$?
@@ -349,6 +376,10 @@ SOURCE_HASH_FILE="$EVIDENCE_DIR/source-sha256.txt"
   hash_file "$0"
   hash_file "$GUEST_ROOT/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c"
   hash_file "$GUEST_ROOT/initramfs/run_app"
+  hash_file "$GUEST_ROOT/libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.c"
+  hash_file "$GUEST_ROOT/libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.h"
+  hash_file "$WORKSPACE_ROOT/crates/sim-qemu/include/linqu_shmem_pto_abi.h"
+  hash_file "$WORKSPACE_ROOT/crates/sim-qemu/src/ub_gm_abi.rs"
   hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c"
   hash_file "$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/include/hw/ub/ub_ubc.h"
 } > "$SOURCE_HASH_FILE"
@@ -388,6 +419,9 @@ fi
   echo "nodeb_cna=$NODEB_CNA"
   echo "authorization_delay_ns=$AUTHORIZATION_DELAY_NS"
   echo "authorization_timeout_ns=$AUTHORIZATION_TIMEOUT_NS"
+  echo "cancel_after_ms=$CANCEL_AFTER_MS"
+  echo "inject_duplicate_completion=$INJECT_DUPLICATE_COMPLETION"
+  echo "inject_late_completion=$INJECT_LATE_COMPLETION"
   echo "expected_result=$EXPECT"
   echo "qemu_binary=$QEMU_BINARY"
 } > "$EVIDENCE_DIR/validation.status"

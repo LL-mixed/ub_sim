@@ -84,6 +84,7 @@ enum LingquPtoUbGmError {
     LINGQU_PTO_UB_GM_AUTHORIZATION_TIMEOUT = 6,
     LINGQU_PTO_UB_GM_CALLBACK_FAILED = 7,
     LINGQU_PTO_UB_GM_EXECUTION_FAILED = 8,
+    LINGQU_PTO_UB_GM_AUTHORIZATION_CANCELLED = 9,
 };
 
 #define LINGQU_PTO_UB_GM_CODE_UNSUPPORTED_CALLABLE \
@@ -97,6 +98,8 @@ enum LingquPtoUbGmError {
     "pto_ub_gm_authorization_timeout"
 #define LINGQU_PTO_UB_GM_CODE_CALLBACK_FAILED "pto_ub_gm_callback_failed"
 #define LINGQU_PTO_UB_GM_CODE_EXECUTION_FAILED "pto_ub_gm_execution_failed"
+#define LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED \
+    "pto_ub_gm_authorization_cancelled"
 
 typedef struct LingquPtoDispatchSlotV2 {
     uint8_t descriptor_tag;

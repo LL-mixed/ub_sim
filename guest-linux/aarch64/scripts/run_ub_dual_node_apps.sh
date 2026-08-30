@@ -56,6 +56,9 @@ LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
 LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS:-0}"
 LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS:-1000000000}"
+LINGQU_SHMEM_PTO_CANCEL_AFTER_MS="${LINGQU_SHMEM_PTO_CANCEL_AFTER_MS:-0}"
+LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION="${LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION:-0}"
+LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION="${LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION:-0}"
 LINGQU_SHMEM_PTO_EXPECT="${LINGQU_SHMEM_PTO_EXPECT:-success}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
@@ -112,8 +115,15 @@ Options:
                       Per-memref QEMU authorization delay; zero is sync.
   --pto-authorization-timeout-ns N
                       Dispatch-wide authorization timeout.
+  --pto-cancel-after-ms N
+                      Cancel the pending dispatch after N guest milliseconds.
+  --pto-inject-duplicate-completion 0|1
+                      Inject a duplicate authorization timer completion.
+  --pto-inject-late-completion 0|1
+                      Inject a completion after cancel/reset cleanup.
   --pto-expect OUTCOME
-                      Expected PTO result: success or authorization-timeout.
+                      Expected PTO result: success, authorization-timeout,
+                      or authorization-cancelled.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
@@ -273,6 +283,7 @@ require_pto_unsigned_value() {
 }
 
 validate_lingqu_shmem_pto_config() {
+  local cancel_after_ns=0
   local value=""
 
   if [[ ! -f "$SIMPLER_HOST_VECTOR_MANIFEST" ]]; then
@@ -303,7 +314,10 @@ validate_lingqu_shmem_pto_config() {
     "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
     "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA" \
     "authorization-delay-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS" \
-    "authorization-timeout-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS"; do
+    "authorization-timeout-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS" \
+    "cancel-after-ms:$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS" \
+    "inject-duplicate-completion:$LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION" \
+    "inject-late-completion:$LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION"; do
     require_pto_unsigned_value "${value%%:*}" "${value#*:}"
   done
   if (( LINGQU_SHMEM_PTO_ELEMENTS != 16384 )); then
@@ -327,21 +341,61 @@ validate_lingqu_shmem_pto_config() {
     echo "PTO authorization timeout must be nonzero" >&2
     exit 2
   fi
+  if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION > 1 ||
+        LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION > 1 )); then
+    echo "PTO completion injection switches must be 0 or 1" >&2
+    exit 2
+  fi
+  cancel_after_ns=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS * 1000000))
   case "$LINGQU_SHMEM_PTO_EXPECT" in
     success)
+      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 )); then
+        echo "PTO success requires cancel-after-ms=0" >&2
+        exit 2
+      fi
       ;;
     authorization-timeout)
+      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 )); then
+        echo "authorization-timeout requires cancel-after-ms=0" >&2
+        exit 2
+      fi
       if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS <=
             LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS )); then
         echo "authorization-timeout requires delay-ns greater than timeout-ns" >&2
         exit 2
       fi
       ;;
+    authorization-cancelled)
+      if (( LINGQU_SHMEM_PTO_CANCEL_AFTER_MS == 0 ||
+            LINGQU_SHMEM_PTO_CANCEL_AFTER_MS >=
+              LINGQU_SHMEM_PTO_TIMEOUT_MS )); then
+        echo "authorization-cancelled requires cancel-after-ms in 1..timeout-ms-1" >&2
+        exit 2
+      fi
+      if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS <= cancel_after_ns ||
+            LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS <= cancel_after_ns )); then
+        echo "authorization-cancelled requires both QEMU authorization deadlines after the guest cancel point" >&2
+        exit 2
+      fi
+      ;;
     *)
-      echo "PTO expected result must be success or authorization-timeout" >&2
+      echo "PTO expected result must be success, authorization-timeout, or authorization-cancelled" >&2
       exit 2
       ;;
   esac
+  if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" != "success" ]] ||
+       (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
+      echo "duplicate completion injection requires delayed successful authorization" >&2
+      exit 2
+    fi
+  fi
+  if (( LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" != "authorization-cancelled" ]]; then
+      echo "late completion injection requires authorization-cancelled" >&2
+      exit 2
+    fi
+  fi
   if printf '%s\n' "$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" |
      grep -Eq '^(0[xX]0+|0+)$'; then
     echo "PTO artifact fingerprint must be nonzero" >&2
@@ -361,6 +415,9 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_TIMEOUT_MS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS))
+  LINGQU_SHMEM_PTO_CANCEL_AFTER_MS=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS))
+  LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION=$((LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION))
+  LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION=$((LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION))
   printf -v LINGQU_SHMEM_PTO_NODEA_CNA '0x%x' \
     "$((LINGQU_SHMEM_PTO_NODEA_CNA))"
   printf -v LINGQU_SHMEM_PTO_NODEB_CNA '0x%x' \
@@ -371,6 +428,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_generation=$LINGQU_SHMEM_PTO_GENERATION"
   append_cmdline_if_missing "lingqu_shmem_pto_token_value=$LINGQU_SHMEM_PTO_TOKEN_VALUE"
   append_cmdline_if_missing "lingqu_shmem_pto_timeout_ms=$LINGQU_SHMEM_PTO_TIMEOUT_MS"
+  append_cmdline_if_missing "lingqu_shmem_pto_cancel_after_ms=$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
   append_cmdline_if_missing \
     "lingqu_shmem_pto_artifact_fingerprint=$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT"
@@ -589,6 +647,30 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="$2"
+      shift 2
+      ;;
+    --pto-cancel-after-ms)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-cancel-after-ms requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_CANCEL_AFTER_MS="$2"
+      shift 2
+      ;;
+    --pto-inject-duplicate-completion)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-inject-duplicate-completion requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION="$2"
+      shift 2
+      ;;
+    --pto-inject-late-completion)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-inject-late-completion requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION="$2"
       shift 2
       ;;
     --pto-expect)
@@ -1043,8 +1125,18 @@ validate_obmm_coh_test_log() {
 }
 
 validate_lingqu_shmem_pto_guest_log() {
+  local expected_error=""
   local role="$1"
   local log_file="$2"
+
+  case "$LINGQU_SHMEM_PTO_EXPECT" in
+    authorization-timeout)
+      expected_error="pto_ub_gm_authorization_timeout"
+      ;;
+    authorization-cancelled)
+      expected_error="pto_ub_gm_authorization_cancelled"
+      ;;
+  esac
 
   assert_log_has "$log_file" \
     "LINGQU_SHMEM_PTO role=$role stage=start .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
@@ -1053,16 +1145,16 @@ validate_lingqu_shmem_pto_guest_log() {
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=producer stage=published .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
       "producer exported source region" || return 1
-    if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
+    if [[ -n "$expected_error" ]]; then
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO role=producer producer_verify=pass" \
         "producer write after rejected dispatch" || return 1
       assert_log_has "$log_file" \
-        "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=authorization-timeout observed=verify_timeout output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
-        "producer unchanged output after authorization timeout" || return 1
+        "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=$LINGQU_SHMEM_PTO_EXPECT observed=verify_timeout output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
+        "producer unchanged output after expected authorization failure" || return 1
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail" \
-        "producer unexpected authorization-timeout result" || return 1
+        "producer unexpected authorization failure result" || return 1
       return 0
     fi
     assert_log_has "$log_file" \
@@ -1072,16 +1164,16 @@ validate_lingqu_shmem_pto_guest_log() {
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=consumer stage=prepared .*map_id=[1-9][0-9]* .*map_generation=[1-9][0-9]* .*mapping_ref=0x[1-9a-f][0-9a-f]* .*requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA .*fingerprint=0x[1-9a-f][0-9a-f]*" \
       "consumer opaque map-ref dispatch" || return 1
-    if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then
+    if [[ -n "$expected_error" ]]; then
       assert_log_count "$log_file" \
-        "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=3 error=pto_ub_gm_authorization_timeout" 1 \
-        "consumer exact-once authorization timeout completion" || return 1
+        "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=3 error=$expected_error" 1 \
+        "consumer exact-once expected authorization failure completion" || return 1
       assert_log_has "$log_file" \
-        "LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=authorization-timeout observed=completion error=pto_ub_gm_authorization_timeout" \
-        "consumer expected authorization timeout result" || return 1
+        "LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=$LINGQU_SHMEM_PTO_EXPECT observed=completion error=$expected_error" \
+        "consumer expected authorization failure result" || return 1
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail" \
-        "consumer unexpected authorization-timeout result" || return 1
+        "consumer unexpected authorization failure result" || return 1
       return 0
     fi
     assert_log_has "$log_file" \
@@ -1115,7 +1207,7 @@ validate_lingqu_shmem_pto_qemu_log() {
       "QEMU_UB_GM_(LOAD|STORE|FENCE|UNBIND) " \
       "producer host-side PTO data access" || return 1
     assert_log_absent "$log_file" \
-      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME|TIMEOUT)" \
+      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME|TIMEOUT|CANCEL|COMPLETION_IGNORED)" \
       "producer PTO authorization activity" || return 1
     return 0
   fi
@@ -1148,6 +1240,45 @@ validate_lingqu_shmem_pto_qemu_log() {
     assert_log_absent "$log_file" \
       "QEMU_UB_GM_(INPUT_AUTHORIZE|OUTPUT_AUTHORIZE|INOUT_AUTHORIZE|LOAD|STORE|FENCE|UNBIND)|SIM_QEMU_UB_GM_BIND_REGISTER" \
       "consumer data access after authorization timeout" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_(CANCEL|COMPLETION_IGNORED)" \
+      "consumer cancellation activity during authorization timeout" || return 1
+    return 0
+  fi
+  if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-cancelled" ]]; then
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=0 .*sequence=[1-9][0-9]* .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 1 \
+      "consumer first-range pending authorization before cancel" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_FAILURE_COMPLETION .*cq_slot=0 cq_tail=1 status=3 code=pto_ub_gm_authorization_cancelled" 1 \
+      "consumer exact-once cancellation CQ completion" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_DISPATCH_REJECT .*code=pto_ub_gm_authorization_cancelled" 1 \
+      "consumer exact-once cancelled dispatch" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_CANCEL .*slot=0 .*sequence=[1-9][0-9]* cmdq_head=1 cq_tail=1" 1 \
+      "consumer cancel advanced matching CMDQ head" || return 1
+    assert_log_count "$log_file" \
+      "linqu-uapi kick ring queued=0 consumed=0 pending_head=0 tail=1" 1 \
+      "consumer retained CMDQ head before cancel" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_CANCEL_IGNORED" \
+      "consumer ignored cancellation request" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_(RESUME|TIMEOUT)" \
+      "consumer timer completion after cancel" || return 1
+    if (( LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
+      assert_log_count "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED .*source=cancel-late-injection reason=no_pending" 1 \
+        "consumer ignored injected late completion" || return 1
+    else
+      assert_log_absent "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED" \
+        "consumer unexpected late completion" || return 1
+    fi
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_(INPUT_AUTHORIZE|OUTPUT_AUTHORIZE|INOUT_AUTHORIZE|LOAD|STORE|FENCE|UNBIND)|SIM_QEMU_UB_GM_BIND_REGISTER" \
+      "consumer data access after authorization cancellation" || return 1
     return 0
   fi
 
@@ -1155,6 +1286,8 @@ validate_lingqu_shmem_pto_qemu_log() {
     "consumer PTO dispatch rejection" || return 1
   assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_TIMEOUT" \
     "consumer PTO authorization timeout" || return 1
+  assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_CANCEL" \
+    "consumer unexpected PTO authorization cancel" || return 1
   if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
     assert_log_absent "$log_file" \
       "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME)" \
@@ -1166,6 +1299,15 @@ validate_lingqu_shmem_pto_qemu_log() {
     assert_log_count "$log_file" \
       "QEMU_UB_GM_AUTHORIZATION_RESUME .*cursor=[0-2] .*status=ready" 3 \
       "consumer resumed authorization ranges" || return 1
+    if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
+      assert_log_count "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED .*source=duplicate-injection reason=already_completed" 3 \
+        "consumer ignored duplicate authorization completions" || return 1
+    else
+      assert_log_absent "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED" \
+        "consumer unexpected duplicate authorization completion" || return 1
+    fi
   fi
 
   assert_log_count "$log_file" "QEMU_UB_GM_INPUT_AUTHORIZE " 2 \
@@ -1335,6 +1477,8 @@ start_node() {
   local remote_model_args=()
   local async_load_args=()
   local pto_ub_gm_args=()
+  local pto_duplicate_completion="off"
+  local pto_late_completion="off"
   local serial_args=()
   local node_append_extra="$APPEND_EXTRA"
   local ipourma_args=""
@@ -1366,12 +1510,20 @@ start_node() {
     )
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+    if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
+      pto_duplicate_completion="on"
+    fi
+    if (( LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
+      pto_late_completion="on"
+    fi
     case "$role" in
       nodeA)
         pto_ub_gm_args=(
           -global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEA_CNA"
           -global "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS"
           -global "ubc.pto-authorization-timeout-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS"
+          -global "ubc.pto-authorization-inject-duplicate-completion=$pto_duplicate_completion"
+          -global "ubc.pto-authorization-inject-late-completion=$pto_late_completion"
         )
         ;;
       nodeB)
@@ -1379,6 +1531,8 @@ start_node() {
           -global "ubc.pto-device-cna=$LINGQU_SHMEM_PTO_NODEB_CNA"
           -global "ubc.pto-authorization-delay-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS"
           -global "ubc.pto-authorization-timeout-ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS"
+          -global "ubc.pto-authorization-inject-duplicate-completion=$pto_duplicate_completion"
+          -global "ubc.pto-authorization-inject-late-completion=$pto_late_completion"
         )
         ;;
       *)
@@ -1917,6 +2071,11 @@ run_iteration() {
       nodea_expected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=authorization-timeout observed=verify_timeout"
       nodea_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=fail"
       nodeb_expected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=authorization-timeout observed=completion error=pto_ub_gm_authorization_timeout"
+      nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail"
+    elif [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-cancelled" ]]; then
+      nodea_expected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=authorization-cancelled observed=verify_timeout"
+      nodea_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=producer status=fail"
+      nodeb_expected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=pass expected=authorization-cancelled observed=completion error=pto_ub_gm_authorization_cancelled"
       nodeb_unexpected_result="LINGQU_SHMEM_PTO_RESULT role=consumer status=fail"
     fi
 
@@ -2698,6 +2857,9 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_nodeb_cna=${LINGQU_SHMEM_PTO_NODEB_CNA}"
     echo "lingqu_shmem_pto_authorization_delay_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS}"
     echo "lingqu_shmem_pto_authorization_timeout_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS}"
+    echo "lingqu_shmem_pto_cancel_after_ms=${LINGQU_SHMEM_PTO_CANCEL_AFTER_MS}"
+    echo "lingqu_shmem_pto_inject_duplicate_completion=${LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION}"
+    echo "lingqu_shmem_pto_inject_late_completion=${LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION}"
     echo "lingqu_shmem_pto_expect=${LINGQU_SHMEM_PTO_EXPECT}"
   fi
   echo "passed=${passed}"

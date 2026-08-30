@@ -159,9 +159,13 @@ int main(void)
             "sizeof(PtoSimUbGmBindingV1) == 64",
             "sizeof(PtoSimUbGmAuthorizedMemrefV1) == 192",
             "sizeof(PtoSimUbGmAccessOpsV1) == 32",
+            "LINGQU_PTO_UB_GM_AUTHORIZATION_CANCELLED = 9",
         ):
             self.assertIn(contract, public)
             self.assertIn(contract, qemu)
+        self.assertIn(
+            "LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED", public
+        )
 
     def test_qemu_v2_ingress_is_fail_closed_before_bridge_submission(self):
         source = QEMU_UBC_SOURCE.read_text()
@@ -225,15 +229,29 @@ int main(void)
         )
         timer_end = source.index("\n}\n", timer_start) + 3
         timer = source[timer_start:timer_end]
-        self.assertIn("authorization->completion_ready = true", timer)
         self.assertIn(
             "authorization->ready_ns > authorization->deadline_ns", timer
         )
         self.assertIn(
             "LINGQU_PTO_UB_GM_AUTHORIZATION_TIMEOUT", timer
         )
-        self.assertIn("linqu_uapi_schedule_kick", timer)
-        self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", timer)
+        self.assertIn("linqu_uapi_authorization_complete", timer)
+        self.assertIn("duplicate-injection", timer)
+
+        complete_start = source.index(
+            "static bool linqu_uapi_authorization_complete"
+        )
+        complete_end = source.index("\n}\n", complete_start) + 3
+        complete = source[complete_start:complete_end]
+        self.assertIn("authorization->op_id != op_id", complete)
+        self.assertIn("authorization->request_id != request_id", complete)
+        self.assertIn("authorization->sequence != sequence", complete)
+        self.assertIn("if (!authorization->waiting)", complete)
+        self.assertIn("reason=identity_mismatch", complete)
+        self.assertIn("reason=already_completed", complete)
+        self.assertIn("authorization->completion_ready = true", complete)
+        self.assertIn("linqu_uapi_schedule_kick", complete)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_RESUME", complete)
 
         kick_start = source.index("static void linqu_uapi_kick(")
         kick_end = source.index("static void linqu_uapi_kick_bh", kick_start)
@@ -260,6 +278,7 @@ int main(void)
         )
         error_map = source[error_map_start:error_map_end]
         self.assertIn('"pto_ub_gm_authorization_timeout"', error_map)
+        self.assertIn('"pto_ub_gm_authorization_cancelled"', error_map)
 
         publish_start = source.index(
             "static bool linqu_uapi_publish_ub_gm_failure"
@@ -281,6 +300,57 @@ int main(void)
         properties = source[source.index("static Property ub_bus_controller_dev_properties"):]
         self.assertIn('"pto-authorization-delay-ns"', properties)
         self.assertIn('"pto-authorization-timeout-ns"', properties)
+        self.assertIn(
+            '"pto-authorization-inject-duplicate-completion"', properties
+        )
+        self.assertIn(
+            '"pto-authorization-inject-late-completion"', properties
+        )
+
+    def test_qemu_cancels_and_resets_pending_authorization_exactly_once(self):
+        source = QEMU_UBC_SOURCE.read_text()
+
+        self.assertIn("LINQU_UAPI_REG_CANCEL_OP_ID 0x0a0", source)
+        self.assertIn("LINQU_UAPI_REG_CANCEL_DOORBELL 0x0a8", source)
+        self.assertIn("0x0000000400030000ULL", source)
+
+        cancel_start = source.index(
+            "static bool linqu_uapi_cancel_authorization"
+        )
+        cancel_end = source.index("\n}\n", cancel_start) + 3
+        cancel = source[cancel_start:cancel_end]
+        publish = cancel.index("linqu_uapi_publish_ub_gm_failure")
+        advance = cancel.index("linqu_uapi_cmdq_head =", publish)
+        discard = cancel.index("linqu_uapi_authorization_discard", advance)
+        late = cancel.index("cancel-late-injection", discard)
+        self.assertLess(publish, advance)
+        self.assertLess(advance, discard)
+        self.assertLess(discard, late)
+        self.assertIn("LINGQU_PTO_UB_GM_AUTHORIZATION_CANCELLED", cancel)
+        self.assertIn("reason=cq_unavailable", cancel)
+        self.assertIn("QEMU_UB_GM_AUTHORIZATION_CANCEL", cancel)
+
+        reset_start = source.index(
+            "static void ub_bus_controller_dev_reset"
+        )
+        reset_end = source.index("\n}\n", reset_start) + 3
+        reset = source[reset_start:reset_end]
+        reset_discard = reset.index("linqu_uapi_authorization_discard")
+        reset_late = reset.index("reset-late-injection", reset_discard)
+        bridge_free = reset.index("linqu_ub_bridge_free", reset_late)
+        registry_free = reset.index("linqu_ub_gm_registry_free", bridge_free)
+        self.assertLess(reset_discard, reset_late)
+        self.assertLess(reset_late, bridge_free)
+        self.assertLess(bridge_free, registry_free)
+        self.assertIn("linqu_uapi_cmdq_head = 0", reset)
+        self.assertIn("linqu_uapi_cq_tail = 0", reset)
+        self.assertIn("linqu_uapi_cancel_op_id = 0", reset)
+        self.assertIn("cq_completion=0", reset)
+        self.assertNotIn("linqu_uapi_publish_ub_gm_failure", reset)
+        self.assertNotIn("linqu_uapi_next_authorization_sequence = 0", reset)
+
+        class_init = source[source.index("static void ub_bus_controller_dev_class_init"):]
+        self.assertIn("dc->reset = ub_bus_controller_dev_reset", class_init)
 
     def test_qemu_callbacks_revalidate_and_unbind_request_scoped_mappings(self):
         source = QEMU_UBC_SOURCE.read_text()
@@ -323,6 +393,7 @@ int main(void)
             "pto_ub_gm_unbound",
             "pto_ub_gm_access_denied",
             "pto_ub_gm_authorization_timeout",
+            "pto_ub_gm_authorization_cancelled",
             "pto_ub_gm_callback_failed",
             "pto_ub_gm_execution_failed",
         ):

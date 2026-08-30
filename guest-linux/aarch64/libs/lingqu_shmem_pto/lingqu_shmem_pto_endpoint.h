@@ -50,6 +50,13 @@ int lingqu_shmem_pto_endpoint_submit(
     uint64_t timeout_ms,
     struct lingqu_shmem_pto_completion *completion);
 
+int lingqu_shmem_pto_endpoint_submit_cancel_after(
+    struct lingqu_shmem_pto_endpoint *endpoint,
+    const LingquPtoDispatchSlotV2 *slot,
+    uint64_t timeout_ms,
+    uint64_t cancel_after_ms,
+    struct lingqu_shmem_pto_completion *completion);
+
 void lingqu_shmem_pto_endpoint_close(
     struct lingqu_shmem_pto_endpoint *endpoint);
 

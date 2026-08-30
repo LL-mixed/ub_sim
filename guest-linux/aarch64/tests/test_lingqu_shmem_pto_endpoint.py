@@ -35,6 +35,20 @@ def _compile(compiler, output):
 
 
 class LingquShmemPtoEndpointTest(unittest.TestCase):
+    def test_cancel_submission_uses_op_scoped_mmio_doorbell(self):
+        header = (LIB_DIR / "lingqu_shmem_pto_endpoint.h").read_text()
+        source = (LIB_DIR / "lingqu_shmem_pto_endpoint.c").read_text()
+
+        self.assertIn("lingqu_shmem_pto_endpoint_submit_cancel_after", header)
+        self.assertIn("LINGQU_REG_CANCEL_OP_ID 0x0a0u", source)
+        self.assertIn("LINGQU_REG_CANCEL_DOORBELL 0x0a8u", source)
+        op_write = source.index("LINGQU_REG_CANCEL_OP_ID, op_id")
+        doorbell_write = source.index("LINGQU_REG_CANCEL_DOORBELL, 1")
+        self.assertLess(op_write, doorbell_write)
+        self.assertIn("cancel_after_ms >= timeout_ms", source)
+        self.assertIn("bool cancel_requested = false", source)
+        self.assertIn("cancel_requested = true", source)
+
     def test_completion_decoder_golden(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "endpoint-golden"

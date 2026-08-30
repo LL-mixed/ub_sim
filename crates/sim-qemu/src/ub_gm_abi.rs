@@ -37,6 +37,7 @@ pub enum LingquPtoUbGmError {
     AuthorizationTimeout = 6,
     CallbackFailed = 7,
     ExecutionFailed = 8,
+    AuthorizationCancelled = 9,
 }
 
 impl LingquPtoUbGmError {
@@ -51,6 +52,7 @@ impl LingquPtoUbGmError {
             Self::AuthorizationTimeout => "pto_ub_gm_authorization_timeout",
             Self::CallbackFailed => "pto_ub_gm_callback_failed",
             Self::ExecutionFailed => "pto_ub_gm_execution_failed",
+            Self::AuthorizationCancelled => "pto_ub_gm_authorization_cancelled",
         }
     }
 
@@ -739,6 +741,11 @@ mod tests {
             LingquPtoUbGmError::CallbackFailed.code(),
             "pto_ub_gm_callback_failed"
         );
+        assert_eq!(
+            LingquPtoUbGmError::AuthorizationCancelled.code(),
+            "pto_ub_gm_authorization_cancelled"
+        );
+        assert_eq!(LingquPtoUbGmError::AuthorizationCancelled.ffi_status(), -9);
     }
 
     #[test]

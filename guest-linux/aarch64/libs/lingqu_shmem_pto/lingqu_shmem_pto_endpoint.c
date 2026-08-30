@@ -29,6 +29,8 @@
 #define LINGQU_REG_IRQ_STATUS 0x078u
 #define LINGQU_REG_IRQ_ACK 0x080u
 #define LINGQU_REG_DEFAULT_SEGMENT 0x088u
+#define LINGQU_REG_CANCEL_OP_ID 0x0a0u
+#define LINGQU_REG_CANCEL_DOORBELL 0x0a8u
 
 struct lingqu_shmem_pto_endpoint {
     int resource_fd;
@@ -316,13 +318,15 @@ int lingqu_shmem_pto_endpoint_open(
     return 0;
 }
 
-int lingqu_shmem_pto_endpoint_submit(
+static int endpoint_submit_internal(
     struct lingqu_shmem_pto_endpoint *endpoint,
     const LingquPtoDispatchSlotV2 *slot,
     uint64_t timeout_ms,
+    uint64_t cancel_after_ms,
     struct lingqu_shmem_pto_completion *completion)
 {
     uint8_t completion_slot[LINGQU_SHMEM_PTO_SLOT_BYTES];
+    uint64_t cancel_at = 0;
     uint64_t deadline;
     uint64_t started_at;
     uint64_t op_id;
@@ -331,9 +335,11 @@ int lingqu_shmem_pto_endpoint_submit(
     uint32_t cmdq_next;
     uint32_t cq_head;
     uint32_t cq_tail;
+    bool cancel_requested = false;
     int rc;
 
     if (!endpoint || !slot || !completion || timeout_ms == 0 ||
+        (cancel_after_ms != 0 && cancel_after_ms >= timeout_ms) ||
         slot->descriptor_tag != LINGQU_PTO_DISPATCH_SLOT_TAG_V2) {
         return -EINVAL;
     }
@@ -373,7 +379,14 @@ int lingqu_shmem_pto_endpoint_submit(
         return -EOVERFLOW;
     }
     deadline = started_at + timeout_ms;
+    if (cancel_after_ms != 0) {
+        if (started_at > UINT64_MAX - cancel_after_ms) {
+            return -EOVERFLOW;
+        }
+        cancel_at = started_at + cancel_after_ms;
+    }
     for (;;) {
+        uint64_t now_ms;
         uint32_t observed_tail = (uint32_t)mmio_read64(
             endpoint->endpoint_mmio, LINGQU_REG_CQ_TAIL) %
             endpoint->cq_depth;
@@ -396,7 +409,16 @@ int lingqu_shmem_pto_endpoint_submit(
             }
             return 0;
         }
-        if (monotonic_ms() >= deadline) {
+        now_ms = monotonic_ms();
+        if (!cancel_requested && cancel_after_ms != 0 &&
+            now_ms >= cancel_at) {
+            mmio_write64(endpoint->endpoint_mmio,
+                         LINGQU_REG_CANCEL_OP_ID, op_id);
+            mmio_write64(endpoint->endpoint_mmio,
+                         LINGQU_REG_CANCEL_DOORBELL, 1);
+            cancel_requested = true;
+        }
+        if (now_ms >= deadline) {
             return -ETIMEDOUT;
         }
         {
@@ -408,6 +430,30 @@ int lingqu_shmem_pto_endpoint_submit(
             nanosleep(&pause, NULL);
         }
     }
+}
+
+int lingqu_shmem_pto_endpoint_submit(
+    struct lingqu_shmem_pto_endpoint *endpoint,
+    const LingquPtoDispatchSlotV2 *slot,
+    uint64_t timeout_ms,
+    struct lingqu_shmem_pto_completion *completion)
+{
+    return endpoint_submit_internal(
+        endpoint, slot, timeout_ms, 0, completion);
+}
+
+int lingqu_shmem_pto_endpoint_submit_cancel_after(
+    struct lingqu_shmem_pto_endpoint *endpoint,
+    const LingquPtoDispatchSlotV2 *slot,
+    uint64_t timeout_ms,
+    uint64_t cancel_after_ms,
+    struct lingqu_shmem_pto_completion *completion)
+{
+    if (cancel_after_ms == 0) {
+        return -EINVAL;
+    }
+    return endpoint_submit_internal(
+        endpoint, slot, timeout_ms, cancel_after_ms, completion);
 }
 
 void lingqu_shmem_pto_endpoint_close(
