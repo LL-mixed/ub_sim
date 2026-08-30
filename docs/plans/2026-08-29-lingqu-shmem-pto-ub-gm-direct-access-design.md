@@ -115,7 +115,7 @@ acceptance 不设置这些 token。
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录最初审计输入。随后完成的 P0–P4C 实施证据如下；表中的 revision
+这些 revision 记录最初审计输入。随后完成的 P0–P4D 实施证据如下；表中的 revision
 均为已经提交的阶段性代码。P2 的同步与可恢复 authorization 正向路径已经完成，
 P4A authorization timeout、P4B authorization lifecycle、P4C ingress/preflight
 负向矩阵和 P4D callback execution access conflict 已完成双机验证；P4 的复杂
@@ -149,10 +149,12 @@ extent、lifetime、layout、并发与其他 recovery case，以及 P5 继续保
 | P4B | `vendor/qemu_8.2.0_ub` | `264a042e` | reset 时退役 SIM_DEC mapping、重建 OBMM async endpoint 并保留单调 map ID |
 | P4B | `ub_sim` | `28fcd2d` | strict QMP reset campaign、重启恢复/sequence gate、QEMU gitlink 与契约测试 |
 | P4C | `ub_sim` | `86b4bb4` | mapping/requester/bounds/role-access fault injection、有效 CRC、精确错误与零数据回调门禁 |
+| P4D | `vendor/simpler` | `fb060537` | 精确传播 PTO callback access failure，避免 scheduler timeout 覆盖原始错误 |
+| P4D | `ub_sim` | `5a68bca` | execution access fault artifact、guest CLI、严格门禁、契约测试与 Simpler gitlink |
 
 P4D 的四组正式 campaign 已使用 `source-sha256.txt` 和完整 artifact fingerprint
-完成审计，详见 9.9 节。承载 P4D 的 `ub_sim` 与 `vendor/simpler` 代码当前仍在独立
-工作树中，本表暂不为其填写 Git revision；代码提交后需要在本表回填对应 revision。
+完成审计，详见 9.9 节。承载 P4D 的 `vendor/simpler@fb060537` 与
+`ub_sim@5a68bca` 已独立提交，正式 evidence 中的 source hash 与提交内容一致。
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -1588,8 +1590,8 @@ P4D 当前实施状态：
   0 payload staging；
 - runner 要求 exact-one artifact fault marker、精确 runtime `-5`、completion-failure
   unbind、完整 producer sentinel、健康 guest 和零 QEMU 残留；证据见 9.9 节；
-- P4D 代码仍待归档为独立 `vendor/simpler` 与根仓库 commit；正式 evidence 通过
-  source/artifact SHA-256 绑定到实际执行内容；
+- P4D 代码已归档为 `vendor/simpler@fb060537` 与 `ub_sim@5a68bca`；正式 evidence
+  通过 source/artifact SHA-256 绑定到实际执行内容；
 - P4D 没有覆盖 retired segment、released import、复杂 extent/layout、并发、
   write fence failure、通用 callback failure、PTO exception 或 guest exit。
 
@@ -1767,13 +1769,13 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | authorization timeout fail-closed | P4A 已在 n4-910c 与 n4-910c1 通过；exact-once status 3 completion、零数据访问、完整 sentinel 和健康 guest 均有 evidence |
 | authorization cancel/duplicate/reset lifecycle | P4B 已在 n4-910c 与 n4-910c1 通过；覆盖 cancel exact-once CQ、late/duplicate guard、reset 无 CQ cleanup、旧 map 退役、sequence 单调和 reboot recovery |
 | mapping/requester/bounds/access preflight | P4C 已在 n4-910c 与 n4-910c1 共 12 个 campaign 通过；覆盖 bad generation、stale map、wrong requester、OOB、overflow 和 role/access mismatch，并证明零 authorization/binding/data callback |
-| PTO callback execution access conflict | P4D 已在 n4-910c 与 n4-910c1 共 4 个 campaign 通过；READ 上 `TSTORE` 和 WRITE 上 `TLOAD` 均在实际 PTO callback 返回 `-EACCES`，错误未被 scheduler timeout 覆盖；代码 revision 待独立归档 |
+| PTO callback execution access conflict | P4D 已在 n4-910c 与 n4-910c1 共 4 个 campaign 通过；READ 上 `TSTORE` 和 WRITE 上 `TLOAD` 均在实际 PTO callback 返回 `-EACCES`，错误未被 scheduler timeout 覆盖；代码已归档为 `vendor/simpler@fb060537` 与 `ub_sim@5a68bca` |
 | no-staging 结构化证明 | P1 pass-through tests 与 P3 r9 `segment_payload_staging_bytes=0` 共同覆盖；P5 统一 H2D/D2H counters 待完成 |
 
 P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle、P4C preflight 和
 P4D callback execution access conflict 已完成运行验证，最小可信 direct-access PoC
-已闭环。P4D 代码仍需独立归档，P4 其余范围与 P5 决定完整负向稳健性、布局覆盖、
-性能和上层运行时可用性，因此当前仍不能声明第 15 节的完整目标已经完成。
+已闭环并归档。P4 其余范围与 P5 决定完整负向稳健性、布局覆盖、性能和上层运行时
+可用性，因此当前仍不能声明第 15 节的完整目标已经完成。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 
