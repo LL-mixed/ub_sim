@@ -62,9 +62,10 @@ Options:
   --expect OUTCOME       Expected result: success, authorization-timeout,
                          authorization-cancelled, bad-memref, or
                          access-denied.
-  --fault-case CASE      Test-only wire fault: none, bad-mapping-ref,
+  --fault-case CASE      Test-only dispatch fault: none, bad-mapping-ref,
                          stale-mapping, wrong-requester, oob,
-                         address-overflow, or role-access-mismatch.
+                         address-overflow, role-access-mismatch,
+                         tstore-on-read, or tload-on-write.
   --run-secs N           Harness per-app timeout.
   --max-runtime N        Harness global watchdog timeout.
   --run-id ID            Stable evidence and log identifier.
@@ -260,9 +261,9 @@ case "$FAULT_CASE" in
       exit 2
     fi
     ;;
-  wrong-requester)
+  wrong-requester|tstore-on-read|tload-on-write)
     if [[ "$EXPECT" != "access-denied" ]]; then
-      echo "fault case wrong-requester requires expected result access-denied" >&2
+      echo "fault case $FAULT_CASE requires expected result access-denied" >&2
       exit 2
     fi
     ;;
@@ -297,6 +298,29 @@ SCENARIO="$(canonical_file "simulator scenario" "$SCENARIO")"
 SIM_CLI_BIN="$(canonical_file "sim-cli" "$SIM_CLI_BIN")"
 KERNEL_IMAGE="$(canonical_file "kernel image" "$KERNEL_IMAGE")"
 INITRAMFS_IMAGE="$(canonical_file "initramfs image" "$INITRAMFS_IMAGE")"
+MANIFEST_ACCESS_FAULT="$(python3 - "$MANIFEST" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    payload = json.load(stream)
+value = payload.get("ub_gm_access_fault", "none")
+if value not in ("none", "tstore-on-read", "tload-on-write"):
+    raise SystemExit(f"invalid manifest UB_GM access fault: {value!r}")
+print(value)
+PY
+)"
+EXPECTED_MANIFEST_ACCESS_FAULT="none"
+if [[ "$FAULT_CASE" == "tstore-on-read" ||
+      "$FAULT_CASE" == "tload-on-write" ]]; then
+  EXPECTED_MANIFEST_ACCESS_FAULT="$FAULT_CASE"
+fi
+if [[ "$MANIFEST_ACCESS_FAULT" != "$EXPECTED_MANIFEST_ACCESS_FAULT" ]]; then
+  echo "manifest UB_GM access fault mismatch: "\
+"case=$FAULT_CASE manifest=$MANIFEST_ACCESS_FAULT "\
+"expected=$EXPECTED_MANIFEST_ACCESS_FAULT" >&2
+  exit 2
+fi
 if [[ -z "$EVIDENCE_DIR" ]]; then
   EVIDENCE_DIR="$WORKSPACE_ROOT/out/lingqu-shmem-pto-e2e/$RUN_ID"
 fi
@@ -423,6 +447,8 @@ SOURCE_HASH_FILE="$EVIDENCE_DIR/source-sha256.txt"
 {
   hash_file "$GENERIC_RUNNER"
   hash_file "$0"
+  hash_file "$GUEST_ROOT/scripts/prepare_simpler_host_artifacts.py"
+  hash_file "$GUEST_ROOT/scripts/prepare_simpler_host_vector_artifacts.py"
   hash_file "$GUEST_ROOT/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c"
   hash_file "$GUEST_ROOT/initramfs/run_app"
   hash_file "$GUEST_ROOT/libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.c"
@@ -474,6 +500,7 @@ fi
   echo "inject_late_completion=$INJECT_LATE_COMPLETION"
   echo "expected_result=$EXPECT"
   echo "fault_case=$FAULT_CASE"
+  echo "manifest_ub_gm_access_fault=$MANIFEST_ACCESS_FAULT"
   echo "qemu_binary=$QEMU_BINARY"
 } > "$EVIDENCE_DIR/validation.status"
 

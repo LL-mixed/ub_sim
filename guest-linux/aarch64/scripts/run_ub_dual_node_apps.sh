@@ -129,9 +129,10 @@ Options:
                       Expected PTO result: success, authorization-timeout,
                       authorization-cancelled, bad-memref, or access-denied.
   --pto-fault-case CASE
-                      Test-only wire fault: none, bad-mapping-ref,
+                      Test-only dispatch fault: none, bad-mapping-ref,
                       stale-mapping, wrong-requester, oob, address-overflow,
-                      or role-access-mismatch.
+                      role-access-mismatch, tstore-on-read, or
+                      tload-on-write.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
@@ -361,7 +362,7 @@ validate_lingqu_shmem_pto_config() {
   case "$LINGQU_SHMEM_PTO_FAULT_CASE" in
     none)
       ;;
-    wrong-requester)
+    wrong-requester|tstore-on-read|tload-on-write)
       fault_expected="access-denied"
       ;;
     bad-mapping-ref|stale-mapping|oob|address-overflow|role-access-mismatch)
@@ -417,7 +418,7 @@ validate_lingqu_shmem_pto_config() {
             LINGQU_SHMEM_PTO_RESET_ON_PENDING != 0 ||
             LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 ||
             LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
-        echo "PTO wire faults require synchronous authorization without lifecycle injections" >&2
+        echo "PTO fault cases require synchronous authorization without lifecycle injections" >&2
         exit 2
       fi
       ;;
@@ -1245,11 +1246,23 @@ validate_lingqu_shmem_pto_guest_log() {
       "LINGQU_SHMEM_PTO role=consumer stage=prepared .*map_id=[1-9][0-9]* .*map_generation=[1-9][0-9]* .*mapping_ref=0x[1-9a-f][0-9a-f]* .*requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA .*fingerprint=0x[1-9a-f][0-9a-f]*" \
       "consumer opaque map-ref dispatch" || return 1
     if [[ -n "$expected_error" ]]; then
-      if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]]; then
-        assert_log_count "$log_file" \
-          "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=$LINGQU_SHMEM_PTO_FAULT_CASE expected=$LINGQU_SHMEM_PTO_EXPECT " 1 \
-          "consumer exact-once requested wire fault" || return 1
-      fi
+      case "$LINGQU_SHMEM_PTO_FAULT_CASE" in
+        tstore-on-read|tload-on-write)
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_selected fault=$LINGQU_SHMEM_PTO_FAULT_CASE source=callable-artifact expected=$LINGQU_SHMEM_PTO_EXPECT " 1 \
+            "consumer exact-once requested callable access fault" || return 1
+          assert_log_absent "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=$LINGQU_SHMEM_PTO_FAULT_CASE " \
+            "consumer wire mutation for callable access fault" || return 1
+          ;;
+        none)
+          ;;
+        *)
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=$LINGQU_SHMEM_PTO_FAULT_CASE expected=$LINGQU_SHMEM_PTO_EXPECT " 1 \
+            "consumer exact-once requested wire fault" || return 1
+          ;;
+      esac
       assert_log_count "$log_file" \
         "LINGQU_SHMEM_PTO role=consumer stage=completion .*completion_status=3 error=$expected_error" 1 \
         "consumer exact-once expected failure completion" || return 1
@@ -1358,6 +1371,35 @@ validate_lingqu_shmem_pto_qemu_log() {
   assert_log_has "$log_file" \
     "QEMU_UB_GM_ACCESS_REGISTER pto_device_cna=$expected_cna" \
     "$node_name PTO access registration" || return 1
+  if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "tstore-on-read" ||
+        "$LINGQU_SHMEM_PTO_FAULT_CASE" == "tload-on-write" ]]; then
+    local expected_load_bytes=131072
+
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_INPUT_AUTHORIZE " 2 \
+      "consumer execution-fault input authorization" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_OUTPUT_AUTHORIZE " 1 \
+      "consumer execution-fault output authorization" || return 1
+    assert_log_count "$log_file" \
+      "SIM_QEMU_UB_GM_BIND_REGISTER .*bindings=3 requester_cna=$expected_cna" 1 \
+      "consumer execution-fault binding registration" || return 1
+    assert_log_count "$log_file" \
+      "linqu-uapi flush_cq wrote completion .*status=3 .*code=pto_ub_gm_access_denied" 1 \
+      "consumer execution-fault CQ completion" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_UNBIND .*reason=completion_failure bindings=3 load_bytes=$expected_load_bytes store_bytes=0 fences=0 segment_payload_staging_bytes=0" 1 \
+      "consumer execution-fault cleanup" || return 1
+    assert_log_count "$log_file" "QEMU_UB_GM_LOAD " 2 \
+      "consumer valid loads before denied PTO access" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_(STORE|FENCE|FAILURE_COMPLETION|DISPATCH_REJECT)" \
+      "consumer backend activity after PTO access denial" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME|TIMEOUT|CANCEL|COMPLETION_IGNORED)" \
+      "consumer asynchronous authorization during execution access fault" || return 1
+    return 0
+  fi
   if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "bad-memref" ||
         "$LINGQU_SHMEM_PTO_EXPECT" == "access-denied" ]]; then
     local expected_error="pto_ub_gm_bad_memref"

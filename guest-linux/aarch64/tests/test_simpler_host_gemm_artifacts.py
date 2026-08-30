@@ -316,6 +316,15 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn('choices=("static", "shared")', source)
         self.assertIn('default="static"', source)
 
+    def test_producer_exposes_test_only_ub_gm_access_fault_cli(self):
+        source = PRODUCER.read_text()
+        self.assertIn('"--ub-gm-access-fault"', source)
+        self.assertIn(
+            'choices=("none", "tstore-on-read", "tload-on-write")',
+            source,
+        )
+        self.assertIn('manifest["ub_gm_access_fault"]', source)
+
     def test_standard_profiles_use_exported_orchestration_entry(self):
         producer = load_producer()
         vector = producer.PROFILE_SPECS["host_vector"]
@@ -341,6 +350,37 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertIn("converter.u64 = args[2]", add_scalar)
         self.assertNotIn("int size =", add)
         self.assertNotIn("int size =", add_scalar)
+
+    def test_generated_vector_access_faults_preserve_signature_and_misuse_binding(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tstore = producer.write_vector_kernel_source(
+                root, 0, 32, 32, "tstore-on-read"
+            ).read_text()
+            tload = producer.write_vector_kernel_source(
+                root, 2, 32, 32, "tload-on-write"
+            ).read_text()
+
+        for source in (tstore, tload):
+            self.assertIn("ChipTensor* src0_tensor", source)
+            self.assertIn("ChipTensor* src1_tensor", source)
+            self.assertIn("ChipTensor* out_tensor", source)
+        self.assertIn("TSTORE(src0Global, dstTile);", tstore)
+        self.assertNotIn("TSTORE(dstGlobal, dstTile);", tstore)
+        self.assertLess(
+            tload.index("TLOAD(dstTile, dstGlobal);"),
+            tload.index("TLOAD(src0Tile, src0Global);"),
+        )
+        self.assertIn("TSTORE(dstGlobal, dstTile);", tload)
+
+    def test_generated_vector_rejects_unknown_access_fault(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "unsupported UB_GM access fault"):
+                producer.write_vector_kernel_source(
+                    Path(temp_dir), 0, 32, 32, "unknown"
+                )
 
     def test_profile_is_pure_gemm_with_explicit_geometry(self):
         producer = load_producer()

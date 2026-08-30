@@ -645,7 +645,19 @@ def load_reuse_runtime_manifest(path: Path) -> dict:
     return runtime
 
 
-def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, tile_cols: int) -> Path | None:
+def write_vector_kernel_source(
+    build_dir: Path,
+    func_id: int,
+    tile_rows: int,
+    tile_cols: int,
+    ub_gm_access_fault: str = "none",
+) -> Path | None:
+    if ub_gm_access_fault not in (
+        "none",
+        "tstore-on-read",
+        "tload-on-write",
+    ):
+        raise ValueError(f"unsupported UB_GM access fault: {ub_gm_access_fault}")
     op_name = {
         0: "TADD(dstTile, src0Tile, src1Tile);",
         1: "TADDS(dstTile, src0Tile, scalar);",
@@ -657,6 +669,8 @@ def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, ti
     second_input = ""
     scalar_input = ""
     load_second = ""
+    fault_load = ""
+    store_target = "dstGlobal"
     if func_id in (0, 2):
         second_input = """\
     __gm__ ChipTensor* src1_tensor =
@@ -690,6 +704,11 @@ def write_vector_kernel_source(build_dir: Path, func_id: int, tile_rows: int, ti
         reinterpret_cast<__gm__ float*>(out_tensor->buffer.addr) +
         out_tensor->start_offset;
 """
+
+    if ub_gm_access_fault == "tstore-on-read" and func_id == 0:
+        store_target = "src0Global"
+    if ub_gm_access_fault == "tload-on-write" and func_id == 2:
+        fault_load = "    TLOAD(dstTile, dstGlobal);\n"
 
     source = build_dir / f"vector_kernel_func_{func_id}.cpp"
     source.write_text(
@@ -734,6 +753,7 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     TASSIGN(dstTile, 0x20000);
     GlobalData src0Global(src0);
     GlobalData dstGlobal(out);
+{fault_load}\
     TLOAD(src0Tile, src0Global);
 {load_second}
     set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
@@ -741,7 +761,7 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     {op_name}
     set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
     wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-    TSTORE(dstGlobal, dstTile);
+    TSTORE({store_target}, dstTile);
 
     pipe_sync();
 }}
@@ -2677,6 +2697,7 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
         "manifest": str(manifest_path),
         "orchestration": orchestration,
         "sim_kernel_libgcc": args.sim_kernel_libgcc,
+        "ub_gm_access_fault": args.ub_gm_access_fault,
         "tile_batch": args.tile_batch if args.profile == "host_matmul" else None,
         "kernels": [
             {
@@ -2704,6 +2725,10 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
 
 def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> int:
     spec = PROFILE_SPECS[args.profile]
+    if args.ub_gm_access_fault != "none" and args.profile != "host_vector":
+        raise SystemExit(
+            "--ub-gm-access-fault is only supported for --profile host_vector"
+        )
     if args.tile_batch < 1:
         raise SystemExit("--tile-batch must be >= 1")
     if args.tile_batch > 1 and args.profile != "host_matmul":
@@ -2843,6 +2868,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
                 kernel.func_id,
                 args.vector_tile_rows,
                 args.vector_tile_cols,
+                args.ub_gm_access_fault,
             )
             if args.profile == "host_vector"
             else None
@@ -3021,6 +3047,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         },
         "note": "args_template is consumed by simulator-side helper to construct SimplerRuntimeArg entries",
     }
+    if args.profile == "host_vector":
+        manifest["ub_gm_access_fault"] = args.ub_gm_access_fault
     if args.profile == "host_gemm":
         manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {
@@ -3109,6 +3137,15 @@ def main() -> int:
     parser.add_argument("--gemm-n", type=int, default=128)
     parser.add_argument("--tile-batch", type=int, default=1)
     parser.add_argument("--reuse-runtime-manifest", default=None)
+    parser.add_argument(
+        "--ub-gm-access-fault",
+        choices=("none", "tstore-on-read", "tload-on-write"),
+        default="none",
+        help=(
+            "build a test-only HostVector kernel that violates a UB_GM "
+            "binding at the PTO TLOAD/TSTORE execution guard"
+        ),
+    )
     parser.add_argument(
         "--sim-kernel-libgcc",
         choices=("static", "shared"),

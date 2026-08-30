@@ -78,8 +78,18 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("PTO_DIRECT_FAULT_OOB", source)
         self.assertIn("PTO_DIRECT_FAULT_ADDRESS_OVERFLOW", source)
         self.assertIn("PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH", source)
+        self.assertIn("PTO_DIRECT_FAULT_TSTORE_ON_READ", source)
+        self.assertIn("PTO_DIRECT_FAULT_TLOAD_ON_WRITE", source)
         self.assertIn("refresh_fault_metadata_crc", source)
         self.assertIn("stage=fault_injected", source)
+        self.assertIn("stage=fault_selected", source)
+        self.assertIn("source=callable-artifact", source)
+        self.assertNotIn(
+            "wire_memrefs[2].role = LINGQU_PTO_MEMREF_INPUT", source
+        )
+        self.assertNotIn(
+            "wire_memrefs[0].role = LINGQU_PTO_MEMREF_OUTPUT", source
+        )
         self.assertIn(
             "config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS", source
         )
@@ -167,9 +177,22 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("QEMU_UB_GM_LOAD", runner)
         self.assertIn("QEMU_UB_GM_STORE", runner)
         self.assertIn("QEMU_UB_GM_FENCE", runner)
+        self.assertIn("consumer execution-fault binding registration", runner)
+        self.assertIn("consumer valid loads before denied PTO access", runner)
+        self.assertIn(
+            "consumer exact-once requested callable access fault", runner
+        )
+        self.assertIn("source=callable-artifact", runner)
+        self.assertIn(
+            "consumer wire mutation for callable access fault", runner
+        )
+        self.assertIn("reason=completion_failure", runner)
         self.assertIn("segment_payload_staging_bytes=0", runner)
         self.assertIn("experimental NPU/GVA/GSVA leakage", runner)
         self.assertIn("UB_NPU: created|SIM_DEC: GVA_MAP", runner)
+        self.assertIn("manifest UB_GM access fault mismatch", PTO_RUNNER.read_text())
+        self.assertIn("manifest_ub_gm_access_fault", PTO_RUNNER.read_text())
+        self.assertIn("prepare_simpler_host_artifacts.py", PTO_RUNNER.read_text())
 
     def test_dedicated_runner_derives_fingerprint_and_preserves_evidence(self):
         runner = PTO_RUNNER.read_text()
@@ -280,6 +303,28 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
             "PTO fault case wrong-requester requires expected result access-denied",
+            result.stdout,
+        )
+
+    def test_dedicated_runner_rejects_execution_fault_expectation_mismatch(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--fault-case",
+                "tstore-on-read",
+                "--expect",
+                "bad-memref",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "fault case tstore-on-read requires expected result access-denied",
             result.stdout,
         )
 

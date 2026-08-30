@@ -94,18 +94,30 @@ They must be paired with one test-only `--fault-case` value:
   syntactically valid CNA;
 - `oob` moves the output view one byte beyond the registered map;
 - `address-overflow` makes the first UB GM range overflow `uint64_t`;
-- `role-access-mismatch` declares the output role with read-only access.
+- `role-access-mismatch` declares the output role with read-only access;
+- `tstore-on-read` selects a test-only HostVector artifact whose first kernel
+  stores its result through the normal read-only `a` input binding;
+- `tload-on-write` selects a test-only HostVector artifact whose final kernel
+  loads through the normal write-only `f` output binding.
 
 All metadata mutations happen after the public
 `lingqu_shmem_pto_dispatch_prepare()` call and remain inside this acceptance
 application. The workload recomputes the ABI CRC over the complete control,
-memref, shape, and stride metadata before submission. Consequently, QEMU must
-reject the intended mapping, requester, bounds, or role/access violation; a
-CRC failure cannot accidentally satisfy the test. The host gate requires one
-status-3 completion with the exact expected error, immediate retirement of the
-command slot, no binding or PTO data callback, and an unchanged producer
-sentinel. Public `lingqu_shmem` callers still cannot construct these invalid
-wire objects through the ordinary memref API.
+memref, shape, and stride metadata before submission. Consequently, a CRC
+failure cannot accidentally satisfy the test. Mapping, requester, bounds, and
+role/access mismatch cases must fail during QEMU preflight with no binding or
+PTO data callback. Public `lingqu_shmem` callers still cannot construct these
+test-only wire objects through the ordinary memref API.
+
+The two execution-stage cases keep the ordinary `[INPUT/READ, INPUT/READ,
+OUTPUT/WRITE]` metadata and callable signature. Their manifest carries an
+explicit `ub_gm_access_fault` marker, and the artifact fingerprint covers the
+faulty kernel binary. The host gate rejects a marker/case mismatch before QEMU
+starts. A valid run must pass QEMU preflight, register all three bindings,
+enter the callable, and fail only when the test kernel's `TSTORE` or `TLOAD`
+requests access excluded by the binding. Both classes require one status-3
+completion with the exact expected error, one command-slot retirement, and an
+unchanged producer sentinel.
 
 Callable 1 currently identifies the frozen host-vector artifact whose PTO
 kernel executes one `128 x 128` `f32` tile. For each element it computes

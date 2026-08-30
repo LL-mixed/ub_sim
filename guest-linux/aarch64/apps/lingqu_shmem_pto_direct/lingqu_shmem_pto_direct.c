@@ -53,6 +53,8 @@ enum pto_direct_fault_case {
     PTO_DIRECT_FAULT_OOB,
     PTO_DIRECT_FAULT_ADDRESS_OVERFLOW,
     PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH,
+    PTO_DIRECT_FAULT_TSTORE_ON_READ,
+    PTO_DIRECT_FAULT_TLOAD_ON_WRITE,
 };
 
 struct pto_direct_config {
@@ -151,6 +153,10 @@ static const char *fault_case_name(enum pto_direct_fault_case fault_case)
         return "address-overflow";
     case PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH:
         return "role-access-mismatch";
+    case PTO_DIRECT_FAULT_TSTORE_ON_READ:
+        return "tstore-on-read";
+    case PTO_DIRECT_FAULT_TLOAD_ON_WRITE:
+        return "tload-on-write";
     }
     return "unknown";
 }
@@ -158,7 +164,9 @@ static const char *fault_case_name(enum pto_direct_fault_case fault_case)
 static enum pto_direct_expectation fault_case_expectation(
     enum pto_direct_fault_case fault_case)
 {
-    if (fault_case == PTO_DIRECT_FAULT_WRONG_REQUESTER) {
+    if (fault_case == PTO_DIRECT_FAULT_WRONG_REQUESTER ||
+        fault_case == PTO_DIRECT_FAULT_TSTORE_ON_READ ||
+        fault_case == PTO_DIRECT_FAULT_TLOAD_ON_WRITE) {
         return PTO_DIRECT_EXPECT_ACCESS_DENIED;
     }
     if (fault_case != PTO_DIRECT_FAULT_NONE) {
@@ -205,7 +213,7 @@ static void usage(FILE *stream)
             "authorization-cancelled, bad-memref, or access-denied\n"
             "  --fault-case CASE         none, bad-mapping-ref, "
             "stale-mapping, wrong-requester, oob, address-overflow, "
-            "or role-access-mismatch\n");
+            "role-access-mismatch, tstore-on-read, or tload-on-write\n");
 }
 
 static int parse_args(int argc, char **argv, struct pto_direct_config *config)
@@ -289,6 +297,10 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                               "role-access-mismatch") == 0) {
                 config->fault_case =
                     PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH;
+            } else if (strcmp(fault_case, "tstore-on-read") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_TSTORE_ON_READ;
+            } else if (strcmp(fault_case, "tload-on-write") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_TLOAD_ON_WRITE;
             } else {
                 fprintf(stderr, "invalid fault case: %s\n", fault_case);
                 return -EINVAL;
@@ -821,6 +833,17 @@ static int inject_fault_case(
     }
     wire_memrefs = (LingquShmemMemrefV1 *)(metadata + memref_offset);
 
+    if (config->fault_case == PTO_DIRECT_FAULT_TSTORE_ON_READ ||
+        config->fault_case == PTO_DIRECT_FAULT_TLOAD_ON_WRITE) {
+        printf("LINGQU_SHMEM_PTO role=consumer stage=fault_selected "
+               "fault=%s source=callable-artifact expected=%s "
+               "metadata_crc32=0x%08x map_active=1\n",
+               fault_case_name(config->fault_case),
+               expectation_name(config->expectation),
+               wire_result->metadata_crc32);
+        return 0;
+    }
+
     if (config->fault_case == PTO_DIRECT_FAULT_STALE_MAPPING) {
         uint64_t map_id = async_map->id;
         uint64_t map_generation = async_map->generation;
@@ -873,6 +896,8 @@ static int inject_fault_case(
     case PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH:
         wire_memrefs[2].access = LINGQU_PTO_UB_GM_READ;
         break;
+    case PTO_DIRECT_FAULT_TSTORE_ON_READ:
+    case PTO_DIRECT_FAULT_TLOAD_ON_WRITE:
     case PTO_DIRECT_FAULT_NONE:
     case PTO_DIRECT_FAULT_STALE_MAPPING:
         return -EINVAL;
