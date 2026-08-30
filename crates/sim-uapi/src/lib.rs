@@ -16088,23 +16088,56 @@ fn validate_host_vector_ub_gm_args(req: &PtoUbGmDispatchV2Req) -> Result<(), Str
         {
             return Err("pto_ub_gm_bad_memref".to_string());
         }
-        let mut expected_stride = 1u64;
-        for (dim, stride) in view.shape.iter().zip(&view.strides).rev() {
-            if u64::from(*stride) != expected_stride {
-                return Err("pto_ub_gm_bad_memref".to_string());
-            }
-            expected_stride = expected_stride
-                .checked_mul(u64::from(*dim))
-                .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
-        }
-        let expected_bytes = expected_stride
-            .checked_mul(std::mem::size_of::<f32>() as u64)
-            .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
+        let expected_bytes = strided_view_extent_bytes(
+            &view.shape,
+            &view.strides,
+            std::mem::size_of::<f32>() as u64,
+        )?;
         if expected_bytes != view.byte_length {
             return Err("pto_ub_gm_bad_memref".to_string());
         }
     }
     Ok(())
+}
+
+fn strided_view_extent_bytes(
+    shape: &[u32],
+    strides: &[u32],
+    element_bytes: u64,
+) -> Result<u64, String> {
+    if shape.is_empty()
+        || shape.len() != strides.len()
+        || element_bytes == 0
+        || shape.iter().any(|dim| *dim == 0)
+        || strides.iter().any(|stride| *stride == 0)
+    {
+        return Err("pto_ub_gm_bad_memref".to_string());
+    }
+
+    let mut active_dims = shape
+        .iter()
+        .zip(strides)
+        .filter(|(dim, _)| **dim > 1)
+        .map(|(dim, stride)| (u64::from(*stride), u64::from(*dim)))
+        .collect::<Vec<_>>();
+    active_dims.sort_unstable_by_key(|(stride, _)| *stride);
+
+    let mut extent_elements = 1u64;
+    for (stride, dimension) in active_dims {
+        if stride < extent_elements {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        }
+        extent_elements = extent_elements
+            .checked_add(
+                (dimension - 1)
+                    .checked_mul(stride)
+                    .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?,
+            )
+            .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())?;
+    }
+    extent_elements
+        .checked_mul(element_bytes)
+        .ok_or_else(|| "pto_ub_gm_bad_memref".to_string())
 }
 
 const W4_LEGACY_KVCACHE_PAYLOAD_BYTES: usize = 8192;
@@ -44667,7 +44700,7 @@ outputs:
     }
 
     #[test]
-    fn host_vector_ub_gm_v2_args_require_exact_request_and_contiguous_f32_views() {
+    fn host_vector_ub_gm_v2_args_require_exact_request_and_strided_f32_views() {
         let request_id = 42;
         let mut req = super::PtoUbGmDispatchV2Req {
             op_id: 7,
@@ -44700,6 +44733,52 @@ outputs:
             ],
         };
         assert_eq!(super::validate_host_vector_ub_gm_args(&req), Ok(()));
+
+        for (shape, strides, byte_length) in [
+            (vec![1, 1, 1, 3, 5], vec![24, 24, 24, 8, 1], 84),
+            (vec![1, 1, 1, 3, 5], vec![15, 15, 15, 1, 3], 60),
+        ] {
+            for arg in &mut req.args {
+                let sim_core::SimplerRuntimeArg::UbGmMemref { view, .. } = arg else {
+                    panic!("expected UB_GM memref");
+                };
+                view.shape.clone_from(&shape);
+                view.strides.clone_from(&strides);
+                view.byte_length = byte_length;
+            }
+            assert_eq!(super::validate_host_vector_ub_gm_args(&req), Ok(()));
+        }
+
+        for arg in &mut req.args {
+            let sim_core::SimplerRuntimeArg::UbGmMemref { view, .. } = arg else {
+                panic!("expected UB_GM memref");
+            };
+            view.shape = vec![3, 5];
+            view.strides = vec![1, 2];
+            view.byte_length = 44;
+        }
+        assert_eq!(
+            super::validate_host_vector_ub_gm_args(&req),
+            Err("pto_ub_gm_bad_memref".to_string())
+        );
+
+        for (index, arg) in req.args.iter_mut().enumerate() {
+            *arg = ub_gm_vector_arg(
+                request_id,
+                (index + 1) as u64,
+                index as u64,
+                if index == 2 {
+                    sim_core::SimplerUbGmAccess::Write
+                } else {
+                    sim_core::SimplerUbGmAccess::Read
+                },
+                if index == 2 {
+                    sim_core::BufferUsage::Output
+                } else {
+                    sim_core::BufferUsage::Input
+                },
+            );
+        }
 
         let sim_core::SimplerRuntimeArg::UbGmMemref { binding, .. } = &mut req.args[0] else {
             panic!("expected UB_GM memref");

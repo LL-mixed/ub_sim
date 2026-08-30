@@ -309,7 +309,7 @@ pub fn materialize_authorized_dispatch_args(
         {
             return Err(LingquPtoUbGmError::BadMemref);
         }
-        validate_contiguous_shape(
+        validate_strided_shape(
             &authorized.shape[..rank],
             &authorized.strides[..rank],
             memref.dtype,
@@ -381,25 +381,42 @@ fn access_and_usage(
     }
 }
 
-fn validate_contiguous_shape(
+fn validate_strided_shape(
     shape: &[u32],
     strides: &[u32],
     dtype: u16,
     byte_length: u64,
 ) -> Result<(), LingquPtoUbGmError> {
-    if shape.is_empty() || shape.len() != strides.len() || shape.iter().any(|dim| *dim == 0) {
+    if shape.is_empty()
+        || shape.len() != strides.len()
+        || shape.iter().any(|dim| *dim == 0)
+        || strides.iter().any(|stride| *stride == 0)
+    {
         return Err(LingquPtoUbGmError::BadMemref);
     }
-    let mut expected_stride = 1u64;
-    for (dim, stride) in shape.iter().zip(strides).rev() {
-        if u64::from(*stride) != expected_stride {
+
+    let mut active_dims = shape
+        .iter()
+        .zip(strides)
+        .filter(|(dim, _)| **dim > 1)
+        .map(|(dim, stride)| (u64::from(*stride), u64::from(*dim)))
+        .collect::<Vec<_>>();
+    active_dims.sort_unstable_by_key(|(stride, _)| *stride);
+
+    let mut extent_elements = 1u64;
+    for (stride, dimension) in active_dims {
+        if stride < extent_elements {
             return Err(LingquPtoUbGmError::BadMemref);
         }
-        expected_stride = expected_stride
-            .checked_mul(u64::from(*dim))
+        extent_elements = extent_elements
+            .checked_add(
+                (dimension - 1)
+                    .checked_mul(stride)
+                    .ok_or(LingquPtoUbGmError::BadMemref)?,
+            )
             .ok_or(LingquPtoUbGmError::BadMemref)?;
     }
-    let expected_bytes = expected_stride
+    let expected_bytes = extent_elements
         .checked_mul(dtype_bytes(dtype).ok_or(LingquPtoUbGmError::BadMemref)?)
         .ok_or(LingquPtoUbGmError::BadMemref)?;
     if expected_bytes != byte_length {
@@ -866,6 +883,67 @@ mod tests {
         control.scalar_table_iova = 0;
         control.metadata_crc32 =
             authorized_metadata_crc32(&control, &[authorized], &[]).expect("metadata crc");
+        assert_eq!(
+            materialize_authorized_dispatch_args(
+                &control,
+                &[authorized],
+                &[],
+                control.callable_id,
+                control.artifact_fingerprint,
+                control.requester_cna,
+            ),
+            Err(LingquPtoUbGmError::BadMemref)
+        );
+    }
+
+    #[test]
+    fn authorized_metadata_accepts_padded_and_transposed_strided_views() {
+        for (shape, strides, byte_length) in [
+            ([3, 5, 0, 0, 0], [8, 1, 0, 0, 0], 84),
+            ([3, 5, 0, 0, 0], [1, 3, 0, 0, 0], 60),
+        ] {
+            let mut authorized = valid_authorized_memref();
+            authorized.memref.rank = 2;
+            authorized.memref.byte_length = byte_length;
+            authorized.shape = shape;
+            authorized.strides = strides;
+            let mut control = valid_control();
+            control.scalar_count = 0;
+            control.scalar_table_iova = 0;
+            control.metadata_crc32 =
+                authorized_metadata_crc32(&control, &[authorized], &[]).expect("metadata crc");
+
+            let args = materialize_authorized_dispatch_args(
+                &control,
+                &[authorized],
+                &[],
+                control.callable_id,
+                control.artifact_fingerprint,
+                control.requester_cna,
+            )
+            .expect("strided authorized args");
+            let SimplerRuntimeArg::UbGmMemref { view, .. } = &args[0] else {
+                panic!("expected UB_GM memref");
+            };
+            assert_eq!(view.byte_length, byte_length);
+            assert_eq!(view.shape, shape[..2]);
+            assert_eq!(view.strides, strides[..2]);
+        }
+    }
+
+    #[test]
+    fn authorized_metadata_rejects_overlapping_strided_view() {
+        let mut authorized = valid_authorized_memref();
+        authorized.memref.rank = 2;
+        authorized.memref.byte_length = 44;
+        authorized.shape = [3, 5, 0, 0, 0];
+        authorized.strides = [1, 2, 0, 0, 0];
+        let mut control = valid_control();
+        control.scalar_count = 0;
+        control.scalar_table_iova = 0;
+        control.metadata_crc32 =
+            authorized_metadata_crc32(&control, &[authorized], &[]).expect("metadata crc");
+
         assert_eq!(
             materialize_authorized_dispatch_args(
                 &control,

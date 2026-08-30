@@ -419,6 +419,26 @@ impl Tensor {
         let mut shapes = [0u32; 5];
         let mut tensor_strides = [0u32; 5];
         let mut extent_elements = 1u64;
+        let mut active_dims = shape
+            .iter()
+            .zip(strides)
+            .filter(|(dimension, _)| **dimension > 1)
+            .map(|(dimension, stride)| (u64::from(*stride), u64::from(*dimension)))
+            .collect::<Vec<_>>();
+        active_dims.sort_unstable_by_key(|(stride, _)| *stride);
+        for (stride, dimension) in active_dims {
+            if stride < extent_elements {
+                return Err(SimplerApiError::InvalidTensorShape);
+            }
+            extent_elements = extent_elements
+                .checked_add(
+                    (dimension - 1)
+                        .checked_mul(stride)
+                        .ok_or(SimplerApiError::InvalidTensorShape)?,
+                )
+                .ok_or(SimplerApiError::InvalidTensorShape)?;
+        }
+
         let mut expected_stride = 1u64;
         let mut contiguous = true;
         for index in (0..shape.len()).rev() {
@@ -427,13 +447,6 @@ impl Tensor {
             shapes[index] = shape[index];
             tensor_strides[index] = strides[index];
             contiguous &= stride == expected_stride;
-            extent_elements = extent_elements
-                .checked_add(
-                    (dimension - 1)
-                        .checked_mul(stride)
-                        .ok_or(SimplerApiError::InvalidTensorShape)?,
-                )
-                .ok_or(SimplerApiError::InvalidTensorShape)?;
             expected_stride = expected_stride
                 .checked_mul(dimension)
                 .ok_or(SimplerApiError::InvalidTensorShape)?;
@@ -1281,6 +1294,29 @@ mod tests {
         assert!(DataType::try_from(15).is_err());
         assert!(Tensor::from_ub_gm(0x7000_0000_1000, 16, &[8], &[1], DataType::Float32,).is_err());
         assert!(Tensor::from_ub_gm(0, 32, &[8], &[1], DataType::Float32).is_err());
+    }
+
+    #[test]
+    fn ub_gm_tensor_accepts_padded_and_transposed_non_overlapping_views() {
+        for (shape, strides, bytes) in [
+            (&[3, 5][..], &[8, 1][..], 84),
+            (&[3, 5][..], &[1, 3][..], 60),
+        ] {
+            let tensor =
+                Tensor::from_ub_gm(0x7000_0000_1000, bytes, shape, strides, DataType::Float32)
+                    .expect("strided UB GM tensor");
+
+            assert_eq!(tensor.address_space(), AddressSpace::UbGm);
+            assert_eq!(tensor.buffer_size(), bytes);
+            assert!(!tensor.is_contiguous());
+        }
+    }
+
+    #[test]
+    fn ub_gm_tensor_rejects_overlapping_strided_view() {
+        assert!(
+            Tensor::from_ub_gm(0x7000_0000_1000, 44, &[3, 5], &[1, 2], DataType::Float32,).is_err()
+        );
     }
 
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {
