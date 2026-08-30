@@ -21,7 +21,7 @@
 
 | 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment、四种正向 layout 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 的 stride/DN/NZ、并发与其他 recovery case，以及 P5 性能/上层集成仍待完成 |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment、ND/tail/cross-page/unaligned/stride/DN/NZ layout 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；扩展并发、其他 recovery case，以及 P5 性能/真实上层 workload 接入属于后续工作，不阻塞本轮 direct-access PoC 收口 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -115,13 +115,14 @@ acceptance 不设置这些 token。
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录最初审计输入。随后完成的 P0–P4H 实施证据如下；表中的 revision
+这些 revision 记录最初审计输入。随后完成的 P0–P4I 实施证据如下；表中的 revision
 均为已经提交的阶段性代码。P2 的同步与可恢复 authorization 正向路径已经完成，
 P4A authorization timeout、P4B authorization lifecycle、P4C ingress/preflight
 负向矩阵、P4D callback execution access conflict、P4E released-import lifetime 和
 P4F retired-segment lifetime、P4G shape/stride extent 与跨 segment 边界已完成双机
 验证；P4H 又完成 contiguous ND、tail、cross-page 和 unaligned 四种正向布局的双机
-验证。stride、DN/NZ、并发与其他 recovery case，以及 P5 继续保持未完成状态。
+验证，P4I 完成 stride、DN 和 NZ 三种布局的双机验证。扩展并发、其他 recovery case
+以及 P5 继续作为后续工作。
 
 | 阶段 | 仓库 | Revision | 已提交内容 |
 | --- | --- | --- | --- |
@@ -161,6 +162,10 @@ P4F retired-segment lifetime、P4G shape/stride extent 与跨 segment 边界已�
 | P4G | `ub_sim` | `7b14988` | 两类边界 workload、双 export guard、严格 runner、契约测试与 QEMU gitlink |
 | P4H | `ub_sim` | `9570fad`、`25382ae` | 四种正向 layout workload、manifest-bound geometry 与非法 vector shape 拒绝 |
 | P4H | `ub_sim` | `64deaf3`、`787f0d8`、`59ed5aa` | formal artifact snapshot、guest artifact 隔离与 immutable callable manifest |
+| P4I | `vendor/pto-isa` | `66213f99` | stride-aware UB GM tile range planning、fragment load/store 与 mock coverage |
+| P4I | `vendor/qemu_8.2.0_ub` | `6e59331e3e` | strided PTO UB GM memref validation 与授权 view |
+| P4I | `ub_sim` | `09ef8af`、`c702e68`、`5e94760`、`b667ef9` | PTO/QEMU gitlink、三种 layout artifact、guest workload 与执行入口 |
+| P4I | `ub_sim` | `96b8a2c`、`58563d2`、`caac3ff` | strided public memref、PTO materialization 与 bridge view 传播 |
 
 P4D 的四组正式 campaign 已使用 `source-sha256.txt` 和完整 artifact fingerprint
 完成审计，详见 9.9 节。承载 P4D 的 `vendor/simpler@fb060537` 与
@@ -170,7 +175,7 @@ P4E 的两组正式 campaign 同样通过 source/artifact SHA-256 绑定实际�
 正式 campaign 进一步完成 producer retired-segment 验证，详见 9.11 节。P4G 的
 四组正式 campaign 又完成 shape/stride extent 和跨相邻 mapping 的 fail-closed 验证，
 详见 9.12 节。P4H 的八组正式 campaign 在两个远端主机完成四种正向 layout，详见
-9.13 节。
+9.13 节。P4I 的六组正式 campaign 进一步完成 stride、DN 和 NZ，详见 9.14 节。
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -252,7 +257,7 @@ WRITE 上 `TLOAD` access conflict 双机验证。P4E 又证明 consumer 释放 O
 dispatch 会依据完整 export lifetime identity 在 authorization 前被拒绝。P4G 随后
 补齐 shape/stride extent 超过 view 以及一个 request 携带 source mapping reference
 跨入相邻 active mapping 的双机拒绝；两类 fault 均在 authorization 前终止。复杂
-layout、多 dispatch 竞争和其他 recovery case 继续归入 P4 后续阶段。
+layout 已由 P4H/P4I 补齐；多 dispatch 压力和其他 recovery case 保留为后续扩展。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
 
@@ -287,12 +292,12 @@ layout、多 dispatch 竞争和其他 recovery case 继续归入 P4 后续阶段
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight、P4D callback execution access conflict、P4E released-import、P4F retired-segment lifetime、P4G shape/stride/cross-segment 负向矩阵和 P4H 四种正向 layout 均通过 | P4 扩展 stride、DN/NZ 与并发矩阵 |
-| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context、真实 guest E2E、P4G 单 mapping 边界约束及 P4H cross-page/unaligned byte-range 均已实现 | P4 扩展 stride、DN/NZ |
-| PTO CPU UB GM hook | P1 已实现 contiguous range callback 与 fail-closed；P4H 已验证 ND、tail、cross-page 和 unaligned | P4 扩展 stride、DN/NZ |
-| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle、P4C preflight、P4D actual access conflict、P4E released-import、P4F retired-segment、P4G extent/mapping-boundary 和 P4H 四种正向 layout E2E 通过 | P4 补通用 callback failure、stride/DN/NZ 与并发矩阵 |
-| backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume；P4A/P4B 已验证 timeout/cancel exact-once failure completion、duplicate guard 和 reset 无 CQ cleanup/recovery | P4 补多 slot、多 binding 和其他失败竞争 |
-| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault、两类 P4D execution fault、P4E released-import、P4F retired-segment、两类 P4G bounds fault 与 P4H 四种正向 layout 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展其余负向、stride/DN/NZ 与并发 coverage |
+| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight、P4D callback execution access conflict、P4E released-import、P4F retired-segment lifetime、P4G shape/stride/cross-segment 负向矩阵、P4H 四种正向 layout 和 P4I stride/DN/NZ 均通过 | 扩展并发矩阵属于后续稳健性工作 |
+| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context、真实 guest E2E、P4G 单 mapping 边界约束、P4H cross-page/unaligned byte-range 及 P4I strided view 均已实现 | 当前 direct-access PoC 范围已闭环 |
+| PTO CPU UB GM hook | P1 已实现 contiguous range callback 与 fail-closed；P4H 已验证 ND、tail、cross-page 和 unaligned；P4I 已实现并验证 stride-aware fragment、DN 和 NZ | range coalescing 与更复杂一致性语义属于后续优化 |
+| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle、P4C preflight、P4D actual access conflict、P4E released-import、P4F retired-segment、P4G extent/mapping-boundary、P4H 四种正向 layout 和 P4I stride/DN/NZ E2E 通过 | 通用 callback failure 与并发矩阵属于后续稳健性工作 |
+| backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume；P4A/P4B 已验证 timeout/cancel exact-once failure completion、duplicate guard 和 reset 无 CQ cleanup/recovery | 多 slot、多 binding 和其他失败竞争属于后续压力扩展 |
+| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault、两类 P4D execution fault、P4E released-import、P4F retired-segment、两类 P4G bounds fault、P4H 四种正向 layout 与 P4I stride/DN/NZ 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | 扩展并发和其他 recovery coverage 属于后续工作 |
 
 ## 4. 修正后的目标架构
 
@@ -937,9 +942,10 @@ access 或 lifetime 检查失败时返回确定错误；地址只要落入 synth
 
 P1 已在 `TLOAD_TILE_IMPL()` 和 `TSTORE_IMPL()` 的公共入口、任何 pointer dereference
 之前增加保留区检查。普通 HOST/DEVICE 地址继续进入原实现；synthetic UB_GM 地址先
-解析当前 run context。V1 支持 contiguous ND 和 tail tile；synthetic 地址遇到 DN、NZ、
-stride 或 atomic store 时返回 `pto_ub_gm_bad_memref`，不会绕回普通 pointer 路径。
-P4 再扩展这些 layout，而 fail-closed 分派边界从 P1 起保持不变。
+解析当前 run context。P4I 已把同一 fail-closed 分派扩展到 stride、DN 和 NZ：PTO 根据
+shape/stride 生成连续 fragment，逐个调用 UB GM callback，并在 tile scratch 与逻辑
+layout 之间转换。atomic store 继续返回 `pto_ub_gm_bad_memref`，不会绕回普通 pointer
+路径。
 
 ### 8.2 callback 粒度
 
@@ -953,7 +959,9 @@ callback 粒度采用 tile 或合并后的连续 fragment：
 6. 批量写入并标记 binding dirty；
 7. kernel 完成后 fence dirty bindings。
 
-禁止为每个 scalar element 调一次 QEMU callback。
+禁止为每个 scalar element 调一次 QEMU callback。P4I 的 ND-strided case 把三行有效
+数据聚合为 3 个 20 B fragment；DN 的 60 B extent 与 NZ 的 512 B extent 都能合并成
+单个 callback range。该行为已由 QEMU exact address/length counters 验证。
 
 ### 8.3 分阶段 layout 覆盖
 
@@ -961,7 +969,7 @@ callback 粒度采用 tile 或合并后的连续 fragment：
 | --- | --- |
 | V1 | contiguous ND、自然对齐、tail tile、普通 READ/WRITE |
 | V1.1 | cross-page、unaligned offset |
-| V1.2 | stride、DN、NZ |
+| V1.2 | stride、DN、NZ；P4I 已完成代码与双机验证 |
 | V1.3 | range coalescing、多个相邻 tensor view |
 | V2 | atomic store、重叠写和更复杂的一致性语义 |
 
@@ -1286,7 +1294,8 @@ ingress/preflight 检查。它没有覆盖 callback 执行阶段的 `READ` 上 `
 上 `TLOAD`、复杂 shape/stride extent、跨 segment、retired-segment lifetime、layout
 或并发行为；released-import lifetime 后续由 P4E 补齐，retired-segment lifetime
 后续由 P4F 补齐，shape/stride extent 与跨 segment 后续由 P4G 补齐，V1/V1.1
-positive layout 后续由 P4H 补齐；stride、DN/NZ、并发和其他 failure 继续留在 P4。
+positive layout 后续由 P4H 补齐，stride、DN/NZ 由 P4I 补齐；并发压力和其他
+failure 保留为后续稳健性扩展。
 
 ### 9.9 P4D PTO callback access conflict 双机证据
 
@@ -1545,7 +1554,7 @@ contract 聚焦回归合计 27/27 通过，`cargo fmt --all --check`、SVG XML �
 
 P4F 已完成 producer retired-segment lifetime 这一项。shape/stride extent 与跨
 segment 随后由 P4G 补齐；layout、多 dispatch 竞争、write fence failure、通用
-callback failure、PTO exception 和 guest exit 仍归入 P4 后续范围。
+callback failure、PTO exception 和 guest exit 保留为后续恢复能力扩展。
 
 ### 9.12 P4G shape/stride extent 与跨 segment 双机证据
 
@@ -1632,8 +1641,8 @@ dedup identity 修复后，r2 证明两个 export 独立退役。
 `out/lingqu-shmem-pto-e2e/p4g-complete-20260830-r1/`。实现提交为
 `vendor/qemu_8.2.0_ub@371b33976e` 与 `ub_sim@7b14988`。P4G 完成 bounds 表中的
 shape/stride extent 与跨 segment 两项；tail、cross-page、unaligned 正向 layout 随后
-由 P4H 完成。stride、DN/NZ、concurrency、fence/callback/PTO failure 和 guest exit
-仍待完成。
+由 P4H 完成，stride、DN/NZ 由 P4I 完成。concurrency 压力和
+fence/callback/PTO/guest-exit failure 保留为后续扩展。
 
 ### 9.13 P4H ND、tail、cross-page 与 unaligned 双机正向证据
 
@@ -1713,6 +1722,68 @@ TLS policy 和 static `libgcc` contract，同时关闭开发期 cache refresh。
 `out/lingqu-shmem-pto-e2e/p4h-complete-20260830-r1/`；大体积 `.bin` artifact 继续
 保留在两台远端 evidence 目录，并由 snapshot manifest 与 SHA-256 绑定。两台机器
 结束后没有 QEMU 残留；n4-910c 的 P3 evaluator PID `419618` 保持 `Tl`。
+
+### 9.14 P4I stride、DN 与 NZ 双机正向证据
+
+P4I 完成 8.3 节 V1.2。公开 `lingqu_shmem_memref` 现在保留五维 shape/stride，
+Rust materialization 将该信息写入 `AddressSpace::UB_GM` tensor，PTO CPU 在
+`TLOAD_TILE_IMPL()`/`TSTORE_IMPL()` 中生成连续 fragment。QEMU 仍只接收经过
+authorization 的 view 和 dispatch-local binding，PTO 不接触 host backing pointer。
+
+![P4I stride、DN、NZ 直接访问与双机证据](2026-08-30-lingqu-shmem-pto-ub-gm-strided-layouts.svg)
+
+三种实际 geometry 与 callback 结果如下：
+
+| Layout | Shape | Strides | 每个 view extent | 每个 tensor 的 callback | 两 input / 一 output |
+| --- | --- | --- | ---: | --- | --- |
+| ND-strided | `[1,1,1,3,5]` | `[24,24,24,8,1]` | 84 B | 3 × 20 B fragment | 6 load / 3 store，120 B / 60 B |
+| DN | `[1,1,1,3,5]` | `[15,15,15,1,3]` | 60 B | 1 × 60 B range | 2 load / 1 store，120 B / 60 B |
+| NZ | `[1,1,1,16,8]` | `[128,128,128,8,1]` | 512 B | 1 × 512 B range | 2 load / 1 store，1,024 B / 512 B |
+
+ND-strided 的三行分别位于 element offset 0、8 和 16，每行包含 5 个有效 `f32`；
+两段行间空洞各包含 3 个 `f32`。producer oracle 除了验证 15 个 output 元素，还要求
+空洞保持原 sentinel。DN 的逻辑索引通过最后两维 stride `1,3` 映射到连续 60 B
+extent；NZ 使用 16×8 的连续 512 B block。三种 layout 均在写回后执行一次 fence。
+
+六组正式 campaign 如下：
+
+| 主机 | Layout | Run id | Artifact fingerprint | 结果 |
+| --- | --- | --- | --- | --- |
+| n4-910c | ND-strided | `pto-ub-gm-p4i-nd-strided-n4-910c-20260830-r1` | `0x8b6309f2df09f0e0` | pass |
+| n4-910c | DN | `pto-ub-gm-p4i-dn-n4-910c-20260830-r1` | `0xedfe11d3acbf2f5c` | pass |
+| n4-910c | NZ | `pto-ub-gm-p4i-nz-n4-910c-20260830-r1` | `0x60d2a6b8a59c3bd7` | pass |
+| n4-910c1 | ND-strided | `pto-ub-gm-p4i-nd-strided-n4-910c1-20260830-r4` | `0x0b4c4722a87e0cc1` | pass |
+| n4-910c1 | DN | `pto-ub-gm-p4i-dn-n4-910c1-20260830-r1` | `0xeba17ce5736473d9` | pass |
+| n4-910c1 | NZ | `pto-ub-gm-p4i-nz-n4-910c1-20260830-r1` | `0xb55db78c51eee59e` | pass |
+
+每组 evidence 都满足以下 gate：
+
+| 门禁 | 六组共同结果 |
+| --- | --- |
+| guest result | producer 与 consumer 各有且只有一个 pass result，Node A 原始 mapping oracle 通过 |
+| access geometry | load/store 次数、逐条地址、长度和累计 bytes 与上表精确一致；fence 恰好一次 |
+| strided integrity | ND-strided 的全部空洞保持原值；DN/NZ 的逻辑 output 与 producer oracle 一致 |
+| direct access | `segment_payload_staging_bytes=0`，completion-success unbind 正常完成 |
+| callable identity | 运行前后 artifact fingerprint 稳定，source/snapshot hashes 匹配 |
+| default feature set | `sim_npu`、GVA route、GSVA 日志与 counters 均为 0 |
+| completion/cleanup | `validation.status=pass`、runner exit code 为 0、QEMU leftovers 为 0 |
+
+正式运行使用的二进制指纹如下：
+
+| 主机 | QEMU SHA-256 | initramfs SHA-256 |
+| --- | --- | --- |
+| n4-910c | `4589eeaa4c300e3607ef89f04b249bbd10e5490815bd8800677ef3a9eb880563` | `7953326369c494134bf2d47eab13874de29fa75927ba438a2d8835d2cc58a2be` |
+| n4-910c1 | `8b2e3e155e75756b02f5612fa083865eb553194961fe3aaa1927627cac54154a` | `ecb3ccf6d0c6d21dd7b903d3bc1e85e1e543333997c58c950ecdafa7c7a3089b` |
+
+对应实现已提交为 `vendor/pto-isa@66213f99`、
+`vendor/qemu_8.2.0_ub@6e59331e3e` 以及根仓库 `09ef8af`、`c702e68`、
+`5e94760`、`b667ef9`、`96b8a2c`、`58563d2`、`caac3ff`。n4-910c 的
+guest contract suite 为 358/358 pass；两台机器结束后没有 QEMU 残留，n4-910c 的
+P3 evaluator PID `419618` 全程保持 `Tl`。
+
+P4I 完成当前 direct-access PoC 的复杂 layout 正向范围。多 dispatch 压力、通用
+callback/PTO/fence failure、guest exit 竞争、正式性能评估与真实 Lingqu workload
+接入列为后续扩展，不阻塞本轮目标收口。
 
 ## 10. 分阶段实施计划
 
@@ -1852,7 +1923,7 @@ P2 不修改 `guest-linux/kernel_ub/include/uapi/ub/ub_npu.h`，不增加 `NPU_O
 上述退出条件已经满足。P2 的“仿真正向路径已完成”覆盖同步 fast path，以及由显式
 QEMU delay 确定性触发的可恢复 authorization 正向路径。真实异步 provider 将来仍需
 接入相同状态机；P4A 已完成 timeout fail-closed 验证，P4B 已完成 cancel、迟到/重复
-completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 后续阶段。
+completion 与 reset/recovery。多 dispatch 压力和其他负向保留为后续扩展。
 
 预计工作量：5–8 个工程日。
 
@@ -1900,7 +1971,16 @@ completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 �
 
 预计工作量：5–8 个工程日。
 
-### P4：负向、layout 与并发验证（P4A–P4H 已完成，其余待完成）
+### P4：负向、layout 与并发验证（direct-access PoC 的 P4A–P4I 已完成）
+
+“负向与生命周期”指主动制造无效 mapping、越界、权限错误、authorization timeout、
+import/export 释放和 reset 等条件，验证系统返回确定错误、保持 producer 数据完整并
+清理 binding/QEMU 资源。它验证 fail-closed，不增加新的用户功能。当前 PoC 已覆盖
+主要 mapping、bounds、access、authorization 和 import/export 生命周期断点。
+
+“并发安全性”指两个或更多 dispatch 同时存在时，每个 request 的 slot、sequence、
+binding、callback 和 completion 互不串扰。当前正式 acceptance 使用单 dispatch，已
+证明同一 dispatch 内多个 input/output binding 正确；多 dispatch 矩阵属于压力扩展。
 
 | 类别 | Cases | 当前状态 |
 | --- | --- | --- |
@@ -1914,12 +1994,12 @@ completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 �
 | Access | READ memref 上 TSTORE、WRITE memref 上 TLOAD | P4D 双机通过；实际 PTO callback 返回 `-EACCES` |
 | Ordering | authorization timeout | P4A 双机通过 |
 | Ordering | duplicate completion | P4B 双机通过 |
-| Ordering | remote holder、write fence failure | 待完成 |
+| Ordering | remote holder、write fence failure | 后续扩展；不阻塞当前 direct-access PoC |
 | Layout | ND、tail、cross-page、unaligned | P4H 双机通过；四种 layout 共 8 个 formal campaign，精确地址/长度、load/store/fence、零 staging 与 artifact immutability gate 全部通过 |
-| Layout | stride、DN、NZ | 待完成 |
-| Concurrency | 多 dispatch、多 binding、相同 object 不同 view、读写竞争 | 待完成 |
+| Layout | stride、DN、NZ | P4I 双机通过；三种 layout 共 6 个 formal campaign，fragment geometry、producer oracle、零 staging 和 artifact fingerprint gate 全部通过 |
+| Concurrency | 多 dispatch、多 binding、相同 object 不同 view、读写竞争 | 后续压力与稳健性扩展；不阻塞当前 direct-access PoC |
 | Recovery | QEMU reset、旧 map 退役、重启后重新 import/dispatch | P4B 双机通过 |
-| Recovery | callback failure、PTO exception、guest exit | 待完成 |
+| Recovery | callback failure、PTO exception、guest exit | 后续恢复能力扩展；不阻塞当前 direct-access PoC |
 
 P4A 当前实施状态：
 
@@ -1947,8 +2027,9 @@ P4B 当前实施状态：
 - P4B 没有覆盖的 mapping/requester/OOB/overflow/role-access preflight 已由 P4C
   补齐，实际 `TLOAD/TSTORE` access conflict 已由 P4D 补齐，released import 已由
   P4E 补齐，producer retired segment 已由 P4F 补齐，shape/stride extent 与跨
-  segment 已由 P4G 补齐，ND/tail/cross-page/unaligned 已由 P4H 补齐；stride/DN/NZ、
-  多 dispatch 竞争、callback/PTO/fence failure 和 guest exit 仍待完成。
+  segment 已由 P4G 补齐，ND/tail/cross-page/unaligned 已由 P4H 补齐，stride/DN/NZ
+  已由 P4I 补齐；多 dispatch 压力和 callback/PTO/fence/guest-exit recovery 属于后续
+  扩展。
 
 P4C 当前实施状态：
 
@@ -1962,8 +2043,8 @@ P4C 当前实施状态：
 - 双机 artifact fingerprint 唯一，关键 source hash 在 case 间一致，证据见 9.8 节；
 - P4C 没有覆盖的 actual `TSTORE`/`TLOAD` access conflict 已由 P4D 补齐，released
   import 已由 P4E 补齐，retired segment 已由 P4F 补齐，shape/stride extent 与跨
-  segment 已由 P4G 补齐，ND/tail/cross-page/unaligned 已由 P4H 补齐；stride/DN/NZ、
-  并发或 callback/fence/PTO failure 仍待完成。
+  segment 已由 P4G 补齐，ND/tail/cross-page/unaligned 已由 P4H 补齐，stride/DN/NZ
+  已由 P4I 补齐；并发压力和 callback/fence/PTO failure 属于后续扩展。
 
 P4D 当前实施状态：
 
@@ -1981,8 +2062,8 @@ P4D 当前实施状态：
   通过 source/artifact SHA-256 绑定到实际执行内容；
 - P4D 没有覆盖的 released import 已由 P4E 补齐，retired segment 已由 P4F 补齐；
   shape/stride extent 与跨 segment 已由 P4G 补齐，ND/tail/cross-page/unaligned 已由
-  P4H 补齐；stride/DN/NZ、并发、write fence failure、通用 callback failure、PTO
-  exception 或 guest exit 仍待完成。
+  P4H 补齐，stride/DN/NZ 已由 P4I 补齐；并发、write fence failure、通用 callback
+  failure、PTO exception 或 guest exit 属于后续扩展。
 
 P4E 当前实施状态：
 
@@ -2049,21 +2130,45 @@ P4H 当前实施状态：
   泄漏为零，结束后没有 QEMU 残留；
 - 实现已提交为 `ub_sim@9570fad`、`25382ae`、`64deaf3`、`787f0d8` 和
   `59ed5aa`，完整证据见 9.13 节；
-- P4H 完成 V1/V1.1 positive layout。stride、DN/NZ、并发、remote holder、write
-  fence failure、通用 callback failure、PTO exception 和 guest exit 继续归入后续
-  P4 阶段。
+- P4H 完成 V1/V1.1 positive layout，P4I 随后完成 stride、DN/NZ。并发、remote
+  holder、write fence failure、通用 callback failure、PTO exception 和 guest exit
+  继续作为后续稳健性扩展。
+
+P4I 当前实施状态：
+
+![P4I stride、DN、NZ 直接访问与双机证据](2026-08-30-lingqu-shmem-pto-ub-gm-strided-layouts.svg)
+
+- PTO ISA 依据 shape/stride 生成连续 fragment，ND-strided 为每个 tensor 3 × 20 B，
+  DN 与 NZ 分别合并为 60 B 和 512 B range；
+- public memref、guest materialization、Rust bridge、QEMU authorized view 和 PTO
+  callable 全链保留相同 geometry；
+- n4-910c 与 n4-910c1 共六个正式 campaign 全部通过，producer oracle、空洞完整性、
+  exact callback geometry、一次 fence、零 staging 和 fingerprint stability 均通过；
+- 代码已归档为 `vendor/pto-isa@66213f99`、`vendor/qemu_8.2.0_ub@6e59331e3e`
+  以及根仓库 `09ef8af` 至 `caac3ff` 的七个阶段提交，完整证据见 9.14 节。
 
 退出条件：
 
 - 负向 case 返回确定错误；
 - 没有 fallback copy 和 partial success；
 - layout oracle 与 producer 验证一致；
-- 并发 binding 无串扰；
+- 当前单 dispatch 的 binding、completion 和 cleanup 无串扰；
 - 远端 guest/QEMU regression 全部通过。
 
 预计工作量：5–8 个工程日。
 
-### P5：性能与上层集成（待完成）
+### P5：性能与真实上层 workload 集成（后续工作）
+
+P5 不参与本轮 direct-access PoC 的完成判定。这里的“性能”是把一次 dispatch 拆成
+validate、authorization、binding、TLOAD、layout transform、TSTORE、fence 和
+completion，评估 callback 次数、bytes、相对开销与可合并空间；QEMU wall-clock
+不用于承诺真实硬件绝对时延。
+
+“真实上层 workload 集成”是让 Lingqu 的 task/callable submission 自然携带
+`lingqu_shmem_memref`，runtime 自动 materialize `AddressSpace::UB_GM`。当前专用
+vector-add CLI 已经覆盖同一真实 QEMU/Rust/Simpler/PTO 数据路径，足以完成机制 PoC；
+接入完整 Lingqu application、模型 workload 或 Simpler L3+ mailbox 属于后续产品化
+工作。
 
 工作内容：
 
@@ -2221,7 +2326,7 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | `AddressSpace::UB_GM` | P0/P1 已实现 C++/Rust/Simpler ABI、128-byte layout tests 与 pass-through |
 | Dispatch v2/callback/binding/counter ABI | P0 已实现 header、Rust mirror、malformed metadata validators 与 contract CLI |
 | `pto_device_cna` | P0 已加入 scenario config 与 default-disabled property；P2 已按非零 CNA 注册 callback |
-| PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests |
+| PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests；P4I 已实现 stride-aware fragment、DN/NZ layout transform 与双机 E2E |
 | existing bridge 的 UB GM authorization/binding | P2 已实现同步 fast path、pending slot snapshot/resume、opaque endpoint-map reference、resume/callback mapping 重校验与 completion cleanup |
 | 两节点 PTO direct-access acceptance | n4-910c 与 n4-910c1 r9 均通过；默认 acceptance 无 NPU/GVA/GSVA 依赖 |
 | authorization timeout fail-closed | P4A 已在 n4-910c 与 n4-910c1 通过；exact-once status 3 completion、零数据访问、完整 sentinel 和健康 guest 均有 evidence |
@@ -2232,20 +2337,22 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | retired-segment lifetime | P4F 已在 n4-910c r6 与 n4-910c1 r8 通过；producer unexport 在 backing 释放前原子发布五元 export lifetime tombstone，consumer 原 import/map/dispatch 在 authorization 前返回 `pto_ub_gm_bad_memref`；root/kernel/QEMU 已归档为 `7bc05b0` / `149518e2510b` / `b631266c49` |
 | shape/stride extent 与跨 segment bounds | P4G 已在 n4-910c 与 n4-910c1 共 4 个 campaign 通过；65,540 B extent/65,536 B view 和携带 source mapping reference 的 64 KiB 跨 mapping request 均在 authorization 前返回 `pto_ub_gm_bad_memref`；source/guard sentinel 完整；root/QEMU 已归档为 `7b14988` / `371b33976e` |
 | ND/tail/cross-page/unaligned 正向 layout | P4H 已在 n4-910c 与 n4-910c1 共 8 个 formal campaign 通过；四种 layout 的 exact address/length、2×load、1×store、1×fence、producer oracle 与零 staging 全部匹配；每组冻结 9 个 artifact，source/snapshot SHA 与运行前后 fingerprint 稳定；实现已归档为 `9570fad` / `25382ae` / `64deaf3` / `787f0d8` / `59ed5aa` |
-| no-staging 结构化证明 | P1 pass-through tests 与 P3 r9 `segment_payload_staging_bytes=0` 共同覆盖；P5 统一 H2D/D2H counters 待完成 |
+| stride/DN/NZ 正向 layout | P4I 已在 n4-910c 与 n4-910c1 共 6 个 formal campaign 通过；ND-strided 3 × 20 B fragment、DN 60 B range、NZ 512 B range 的 exact callback geometry、producer oracle、空洞完整性、一次 fence、零 staging 与 fingerprint stability 全部匹配；实现已归档为 PTO `66213f99`、QEMU `6e59331e3e` 与根仓库 `09ef8af` 至 `caac3ff` |
+| no-staging 结构化证明 | P1 pass-through tests、P3 r9 与 P4H/P4I formal evidence 共同覆盖；`segment_payload_staging_bytes=0`，direct path 不生成 H2D/D2H operation；P5 的统一分段性能报告属于后续工作 |
 
-P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle、P4C preflight 和
+P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle、P4C preflight、
 P4D callback execution access conflict、P4E released-import lifetime、P4F
-retired-segment lifetime、P4G extent/mapping bounds 与 P4H V1/V1.1 positive layout
-已完成运行验证，最小可信 direct-access PoC 已闭环并归档。P4 其余范围与 P5 决定
-完整负向稳健性、stride/DN/NZ、并发、性能和上层运行时可用性，因此当前仍不能声明
-第 15 节的完整目标已经完成。
+retired-segment lifetime、P4G extent/mapping bounds、P4H V1/V1.1 positive layout 与
+P4I stride/DN/NZ 已完成运行验证。第 15 节定义的 direct-access PoC 已闭环：默认
+ChipBackend route 通过 PTO `TLOAD/TSTORE` 直接访问 `lingqu_shmem` backing，双机
+oracle、精确 callback bytes、零 staging、代码/构建指纹和 cleanup gate 全部通过。
+扩展并发、其他 recovery、正式性能评估和真实上层 workload 接入作为后续工作。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 
 ## 15. 最终验收标准
 
-同时满足以下条件后才可以声明目标完成：
+以下条件均已有代码和远端 evidence，因此本轮 direct-access PoC 可以声明完成：
 
 - 存在可用的 `lingqu_shmem_memref` API；
 - memref materialize 为 `AddressSpace::UB_GM`；
@@ -2274,6 +2381,6 @@ experimental `NPU_OP_VECTOR_ADD_U32`、GVA 或 GSVA 的启用与通过不计作�
 3. `pto_device_cna` 由默认 ChipBackend topology 明确分配，不从 experimental `sim_npu` 隐式继承。
 4. synthetic aperture 的编码、每 dispatch binding 上限和并发 dispatch 策略。
 5. registry 由 Simpler runtime 管理，PTO CPU ISA 负责 range interception。
-6. V1 同时支持 tail tile；DN/NZ 放到 P4。
+6. V1 支持 tail tile，V1.2 的 stride/DN/NZ 已由 P4I 完成。
 
 评审通过后从 P0/P1 开始实施。当前阶段不扩展 attached-NPU opcode，不设计通用 external-memory provider，也不提前修改 Simpler L3+ wire。`sim_npu`、GVA、GSVA 保持 experimental、optional、default disabled，不进入默认 feature set。
