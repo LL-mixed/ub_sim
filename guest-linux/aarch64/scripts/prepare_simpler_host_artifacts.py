@@ -659,6 +659,18 @@ def write_vector_kernel_source(
         global_rows = tile_rows
     if global_cols is None:
         global_cols = tile_cols
+    if (
+        tile_rows <= 0
+        or tile_cols <= 0
+        or global_rows <= 0
+        or global_cols <= 0
+        or global_rows > tile_rows
+        or global_cols > tile_cols
+    ):
+        raise ValueError(
+            "vector kernel requires positive global dimensions no larger "
+            "than the tile dimensions"
+        )
     if ub_gm_access_fault not in (
         "none",
         "tstore-on-read",
@@ -2744,8 +2756,16 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
-    vector_global_rows = args.vector_global_rows or args.vector_tile_rows
-    vector_global_cols = args.vector_global_cols or args.vector_tile_cols
+    vector_global_rows = (
+        args.vector_tile_rows
+        if args.vector_global_rows is None
+        else args.vector_global_rows
+    )
+    vector_global_cols = (
+        args.vector_tile_cols
+        if args.vector_global_cols is None
+        else args.vector_global_cols
+    )
     if args.profile == "host_vector" and (
         args.vector_tile_rows <= 0
         or args.vector_tile_cols <= 0

@@ -483,6 +483,22 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             generator,
         )
 
+    def test_artifact_generator_rejects_invalid_global_shape(self):
+        module = runpy.run_path(str(ARTIFACT_GENERATOR))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(
+                ValueError,
+                "positive global dimensions",
+            ):
+                module["write_vector_kernel_source"](
+                    pathlib.Path(directory),
+                    0,
+                    128,
+                    128,
+                    global_rows=0,
+                    global_cols=127,
+                )
+
     def test_dedicated_runner_rejects_unknown_expected_result(self):
         result = subprocess.run(
             [
