@@ -78,12 +78,16 @@ static bool role_access_valid(
             memref->access == LINGQU_PTO_UB_GM_READ_WRITE);
 }
 
-static bool contiguous_view_valid(
+static bool strided_view_valid(
     const struct lingqu_shmem_pto_memref_desc *memref)
 {
-    uint64_t elements = 1;
-    uint64_t expected_stride = 1;
+    struct {
+        uint64_t stride;
+        uint32_t dimension;
+    } active_dims[LINGQU_PTO_MAX_RANK];
+    uint64_t extent_elements = 1;
     uint64_t element_bytes;
+    uint32_t active_count = 0;
     uint32_t index;
 
     if (!memref || memref->rank == 0 ||
@@ -94,18 +98,41 @@ static bool contiguous_view_valid(
     if (element_bytes == 0) {
         return false;
     }
-    for (index = memref->rank; index > 0; index--) {
-        uint32_t dim = memref->shape[index - 1];
+    for (index = 0; index < memref->rank; index++) {
+        uint32_t dimension = memref->shape[index];
+        uint64_t stride = memref->strides[index];
+        uint32_t insert_at;
 
-        if (dim == 0 || memref->strides[index - 1] != expected_stride ||
-            elements > UINT64_MAX / dim) {
+        if (dimension == 0 || stride == 0) {
             return false;
         }
-        elements *= dim;
-        expected_stride = elements;
+        if (dimension == 1) {
+            continue;
+        }
+        insert_at = active_count;
+        while (insert_at > 0 &&
+               active_dims[insert_at - 1].stride > stride) {
+            active_dims[insert_at] = active_dims[insert_at - 1];
+            insert_at--;
+        }
+        active_dims[insert_at].stride = stride;
+        active_dims[insert_at].dimension = dimension;
+        active_count++;
     }
-    return elements <= UINT64_MAX / element_bytes &&
-           elements * element_bytes == memref->byte_length;
+    for (index = 0; index < active_count; index++) {
+        uint64_t stride = active_dims[index].stride;
+        uint64_t dimension_span =
+            (uint64_t)active_dims[index].dimension - 1;
+
+        if (stride < extent_elements ||
+            dimension_span >
+                (UINT64_MAX - extent_elements) / stride) {
+            return false;
+        }
+        extent_elements += dimension_span * stride;
+    }
+    return extent_elements <= UINT64_MAX / element_bytes &&
+           extent_elements * element_bytes == memref->byte_length;
 }
 
 static uint32_t crc32_ieee_update(uint32_t crc,
@@ -273,7 +300,7 @@ int lingqu_shmem_pto_dispatch_materialize(
             source->byte_length == 0 ||
             source->arg_index >= dispatch->memref_count ||
             arg_seen[source->arg_index] || !role_access_valid(source) ||
-            !contiguous_view_valid(source) ||
+            !strided_view_valid(source) ||
             !checked_add_u64(source->byte_offset, source->byte_length,
                              &view_end) ||
             !checked_add_u64(source->ub_gm_addr, view_end, &view_end)) {

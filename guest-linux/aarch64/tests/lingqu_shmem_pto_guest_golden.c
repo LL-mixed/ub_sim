@@ -92,6 +92,39 @@ int main(void)
     CHECK(wire_memrefs[0].shape_table_iova == UINT64_C(0x100130));
     CHECK(wire_memrefs[2].stride_table_iova == UINT64_C(0x100144));
 
+    for (index = 0; index < 3; index++) {
+        memrefs[index].byte_offset = (uint64_t)index * 128;
+        memrefs[index].byte_length = 84;
+        memrefs[index].rank = 2;
+        memrefs[index].shape[0] = 3;
+        memrefs[index].shape[1] = 5;
+        memrefs[index].strides[0] = 8;
+        memrefs[index].strides[1] = 1;
+    }
+    CHECK(lingqu_shmem_pto_dispatch_materialize(
+              &dispatch, metadata, sizeof(metadata), UINT64_C(0x100000),
+              &slot, &result) == 0);
+    memrefs[1].strides[0] = 2;
+    CHECK(lingqu_shmem_pto_dispatch_materialize(
+              &dispatch, metadata, sizeof(metadata), UINT64_C(0x100000),
+              &slot, &result) == -EINVAL);
+    memrefs[1].strides[0] = 1;
+    memrefs[1].strides[1] = 3;
+    memrefs[1].byte_length = 60;
+    CHECK(lingqu_shmem_pto_dispatch_materialize(
+              &dispatch, metadata, sizeof(metadata), UINT64_C(0x100000),
+              &slot, &result) == 0);
+
+    for (index = 0; index < 3; index++) {
+        memrefs[index].byte_offset = (uint64_t)index * 64;
+        memrefs[index].byte_length = 64;
+        memrefs[index].rank = 1;
+        memrefs[index].shape[0] = 16;
+        memrefs[index].shape[1] = 0;
+        memrefs[index].strides[0] = 1;
+        memrefs[index].strides[1] = 0;
+    }
+
     scalar.arg_index = 3;
     scalar.dtype = 7;
     scalar.value = UINT64_C(0x0102030405060708);
