@@ -112,6 +112,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--pto-authorization-delay-ns", runner)
         self.assertIn("--pto-authorization-timeout-ns", runner)
         self.assertIn("--pto-cancel-after-ms", runner)
+        self.assertIn("--pto-reset-on-pending", runner)
         self.assertIn("--pto-inject-duplicate-completion", runner)
         self.assertIn("--pto-inject-late-completion", runner)
         self.assertIn("--pto-expect", runner)
@@ -136,8 +137,14 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("pto_ub_gm_authorization_timeout", runner)
         self.assertIn("pto_ub_gm_authorization_cancelled", runner)
         self.assertIn("QEMU_UB_GM_AUTHORIZATION_CANCEL", runner)
+        self.assertIn("QEMU_UB_GM_RESET authorization_pending=1", runner)
         self.assertIn("source=cancel-late-injection reason=no_pending", runner)
+        self.assertIn("source=reset-late-injection reason=no_pending", runner)
         self.assertIn("source=duplicate-injection reason=already_completed", runner)
+        self.assertIn("qmp_execute_strict", runner)
+        self.assertIn("system_reset", runner)
+        self.assertIn("validate_lingqu_shmem_pto_reset_sequence", runner)
+        self.assertIn("resumed_sequence <= reset_sequence", runner)
         self.assertIn("consumer exact-once timeout CQ completion", runner)
         self.assertIn("consumer retained CMDQ head while pending", runner)
         self.assertIn("consumer data access after authorization timeout", runner)
@@ -167,6 +174,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("pgrep -af '[q]emu-system-aarch64'", runner)
         self.assertNotIn("pgrep -af qemu-system-aarch64", runner)
         self.assertIn("validation.status=pass", runner)
+        self.assertIn('QMP_ARGS=(--use-qmp)', runner)
+        self.assertIn('--pto-reset-on-pending "$RESET_ON_PENDING"', runner)
+        self.assertIn("reset_on_pending=$RESET_ON_PENDING", runner)
         result = subprocess.run(
             [str(PTO_RUNNER), "--help"],
             check=True,
@@ -178,6 +188,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--authorization-delay-ns N", result.stdout)
         self.assertIn("--authorization-timeout-ns N", result.stdout)
         self.assertIn("--cancel-after-ms N", result.stdout)
+        self.assertIn("--reset-on-pending 0|1", result.stdout)
         self.assertIn("--inject-duplicate-completion 0|1", result.stdout)
         self.assertIn("--inject-late-completion 0|1", result.stdout)
         self.assertIn("--expect OUTCOME", result.stdout)
@@ -199,6 +210,40 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
             "expected result must be success, authorization-timeout, or authorization-cancelled",
+            result.stdout,
+        )
+
+    def test_generic_runner_rejects_reset_without_delayed_authorization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "manifest.json"
+            scenario = root / "scenario.yaml"
+            manifest.write_text("{}\n")
+            scenario.write_text("schema_version: 1\n")
+            result = subprocess.run(
+                [
+                    str(DUAL_NODE_RUNNER),
+                    "--app",
+                    "lingqu_shmem_pto_direct",
+                    "--pto-manifest",
+                    str(manifest),
+                    "--pto-scenario",
+                    str(scenario),
+                    "--pto-artifact-fingerprint",
+                    "1",
+                    "--pto-authorization-delay-ns",
+                    "0",
+                    "--pto-reset-on-pending",
+                    "1",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "reset-on-pending requires delayed successful authorization",
             result.stdout,
         )
 
@@ -297,6 +342,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             self.assertIn("authorization_delay_ns=250000", validation)
             self.assertIn("authorization_timeout_ns=10000000", validation)
             self.assertIn("cancel_after_ms=0", validation)
+            self.assertIn("reset_on_pending=0", validation)
             self.assertIn("inject_duplicate_completion=0", validation)
             self.assertIn("inject_late_completion=0", validation)
             self.assertIn("expected_result=success", validation)

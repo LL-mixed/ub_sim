@@ -20,6 +20,7 @@ NODEB_CNA=0xf002
 AUTHORIZATION_DELAY_NS=0
 AUTHORIZATION_TIMEOUT_NS=1000000000
 CANCEL_AFTER_MS=0
+RESET_ON_PENDING=0
 INJECT_DUPLICATE_COMPLETION=0
 INJECT_LATE_COMPLETION=0
 EXPECT="success"
@@ -51,6 +52,8 @@ Options:
   --authorization-timeout-ns N
                          Dispatch-wide authorization timeout.
   --cancel-after-ms N    Cancel pending authorization after N guest ms.
+  --reset-on-pending 0|1
+                         Reset nodeB through QMP after authorization suspends.
   --inject-duplicate-completion 0|1
                          Inject a duplicate timer completion.
   --inject-late-completion 0|1
@@ -169,6 +172,11 @@ while [[ $# -gt 0 ]]; do
     --cancel-after-ms)
       require_value "$1" "$#"
       CANCEL_AFTER_MS="$2"
+      shift 2
+      ;;
+    --reset-on-pending)
+      require_value "$1" "$#"
+      RESET_ON_PENDING="$2"
       shift 2
       ;;
     --inject-duplicate-completion)
@@ -292,6 +300,10 @@ PY
 
 REPORT_FILE="$EVIDENCE_DIR/apps-report.txt"
 HARNESS_LOG="$EVIDENCE_DIR/harness.log"
+QMP_ARGS=()
+if [[ "$RESET_ON_PENDING" != "0" ]]; then
+  QMP_ARGS=(--use-qmp)
+fi
 set +e
 "$GENERIC_RUNNER" \
   --app lingqu_shmem_pto_direct \
@@ -314,9 +326,11 @@ set +e
   --pto-authorization-delay-ns "$AUTHORIZATION_DELAY_NS" \
   --pto-authorization-timeout-ns "$AUTHORIZATION_TIMEOUT_NS" \
   --pto-cancel-after-ms "$CANCEL_AFTER_MS" \
+  --pto-reset-on-pending "$RESET_ON_PENDING" \
   --pto-inject-duplicate-completion "$INJECT_DUPLICATE_COMPLETION" \
   --pto-inject-late-completion "$INJECT_LATE_COMPLETION" \
   --pto-expect "$EXPECT" \
+  "${QMP_ARGS[@]}" \
   > "$HARNESS_LOG" 2>&1
 RUNNER_RC=$?
 set -e
@@ -420,6 +434,7 @@ fi
   echo "authorization_delay_ns=$AUTHORIZATION_DELAY_NS"
   echo "authorization_timeout_ns=$AUTHORIZATION_TIMEOUT_NS"
   echo "cancel_after_ms=$CANCEL_AFTER_MS"
+  echo "reset_on_pending=$RESET_ON_PENDING"
   echo "inject_duplicate_completion=$INJECT_DUPLICATE_COMPLETION"
   echo "inject_late_completion=$INJECT_LATE_COMPLETION"
   echo "expected_result=$EXPECT"

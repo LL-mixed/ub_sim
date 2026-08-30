@@ -337,17 +337,38 @@ int main(void)
         reset = source[reset_start:reset_end]
         reset_discard = reset.index("linqu_uapi_authorization_discard")
         reset_late = reset.index("reset-late-injection", reset_discard)
-        bridge_free = reset.index("linqu_ub_bridge_free", reset_late)
+        async_free = reset.index("ub_obmm_async_free", reset_late)
+        async_new = reset.index("ub_obmm_async_new", async_free)
+        sim_dec_reset = reset.index("sim_dec_reset_mappings", async_new)
+        bridge_free = reset.index("linqu_ub_bridge_free", sim_dec_reset)
         registry_free = reset.index("linqu_ub_gm_registry_free", bridge_free)
         self.assertLess(reset_discard, reset_late)
-        self.assertLess(reset_late, bridge_free)
+        self.assertLess(reset_late, async_free)
+        self.assertLess(async_free, async_new)
+        self.assertLess(async_new, sim_dec_reset)
+        self.assertLess(sim_dec_reset, bridge_free)
         self.assertLess(bridge_free, registry_free)
         self.assertIn("linqu_uapi_cmdq_head = 0", reset)
         self.assertIn("linqu_uapi_cq_tail = 0", reset)
         self.assertIn("linqu_uapi_cancel_op_id = 0", reset)
         self.assertIn("cq_completion=0", reset)
+        self.assertIn("sim_dec_unmaps=%u", reset)
+        self.assertIn("obmm_async_reset=%u", reset)
         self.assertNotIn("linqu_uapi_publish_ub_gm_failure", reset)
         self.assertNotIn("linqu_uapi_next_authorization_sequence = 0", reset)
+
+        sim_dec_start = source.index(
+            "static uint32_t sim_dec_reset_mappings(BusControllerDev *ubc_dev)\n{"
+        )
+        sim_dec_end = source.index("\n}\n", sim_dec_start) + 3
+        sim_dec = source[sim_dec_start:sim_dec_end]
+        self.assertIn("QTAILQ_REMOVE(&g_sim_decoder->map_list", sim_dec)
+        self.assertIn("SIM_DEC_ROUTE_RETIRED", sim_dec)
+        self.assertIn("ubc_cpu_window_detach", sim_dec)
+        self.assertIn("gva_ownership_registered = false", sim_dec)
+        self.assertIn("QTAILQ_INSERT_TAIL", sim_dec)
+        self.assertIn("SIM_DEC: RESET_UNMAP", sim_dec)
+        self.assertNotIn("next_map_id = 1", sim_dec)
 
         class_init = source[source.index("static void ub_bus_controller_dev_class_init"):]
         self.assertIn("dc->reset = ub_bus_controller_dev_reset", class_init)

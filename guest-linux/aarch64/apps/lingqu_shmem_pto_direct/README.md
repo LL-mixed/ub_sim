@@ -74,6 +74,15 @@ operation/request/sequence guard with `reason=already_completed`. These
 injection switches are host test controls and are absent from the guest
 workload ABI.
 
+The host runner's `--reset-on-pending 1` mode starts both guests under QMP,
+waits for nodeB to log the first suspended authorization, and issues a strict
+`system_reset` to nodeB. QEMU must discard the pending snapshot without a CQ
+completion, reject an optional post-reset timer event with `reason=no_pending`,
+and retain the monotonic authorization sequence. The rebooted consumer then
+submits the workload again and must finish through the ordinary success path.
+This makes reset cleanup, stale-event rejection, and post-reset recovery one
+end-to-end gate; the guest workload ABI has no reset-specific option.
+
 Callable 1 currently identifies the frozen host-vector artifact whose PTO
 kernel executes one `128 x 128` `f32` tile. For each element it computes
 `c = a + b`, followed by `f = (c + 1) * (c + 2)`. The producer verifies this

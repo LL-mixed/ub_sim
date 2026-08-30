@@ -57,6 +57,7 @@ LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
 LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS:-0}"
 LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS="${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS:-1000000000}"
 LINGQU_SHMEM_PTO_CANCEL_AFTER_MS="${LINGQU_SHMEM_PTO_CANCEL_AFTER_MS:-0}"
+LINGQU_SHMEM_PTO_RESET_ON_PENDING="${LINGQU_SHMEM_PTO_RESET_ON_PENDING:-0}"
 LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION="${LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION:-0}"
 LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION="${LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION:-0}"
 LINGQU_SHMEM_PTO_EXPECT="${LINGQU_SHMEM_PTO_EXPECT:-success}"
@@ -117,6 +118,8 @@ Options:
                       Dispatch-wide authorization timeout.
   --pto-cancel-after-ms N
                       Cancel the pending dispatch after N guest milliseconds.
+  --pto-reset-on-pending 0|1
+                      Reset nodeB through QMP after authorization suspends.
   --pto-inject-duplicate-completion 0|1
                       Inject a duplicate authorization timer completion.
   --pto-inject-late-completion 0|1
@@ -316,6 +319,7 @@ validate_lingqu_shmem_pto_config() {
     "authorization-delay-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS" \
     "authorization-timeout-ns:$LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS" \
     "cancel-after-ms:$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS" \
+    "reset-on-pending:$LINGQU_SHMEM_PTO_RESET_ON_PENDING" \
     "inject-duplicate-completion:$LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION" \
     "inject-late-completion:$LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION"; do
     require_pto_unsigned_value "${value%%:*}" "${value#*:}"
@@ -341,9 +345,10 @@ validate_lingqu_shmem_pto_config() {
     echo "PTO authorization timeout must be nonzero" >&2
     exit 2
   fi
-  if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION > 1 ||
+  if (( LINGQU_SHMEM_PTO_RESET_ON_PENDING > 1 ||
+        LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION > 1 ||
         LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION > 1 )); then
-    echo "PTO completion injection switches must be 0 or 1" >&2
+    echo "PTO reset and completion injection switches must be 0 or 1" >&2
     exit 2
   fi
   cancel_after_ns=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS * 1000000))
@@ -390,9 +395,22 @@ validate_lingqu_shmem_pto_config() {
       exit 2
     fi
   fi
+  if (( LINGQU_SHMEM_PTO_RESET_ON_PENDING != 0 )); then
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" != "success" ]] ||
+       (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 ||
+          LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS >
+            LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS ||
+          LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 ||
+          LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
+      echo "reset-on-pending requires delayed successful authorization without cancel or duplicate injection" >&2
+      exit 2
+    fi
+    USE_QMP=1
+  fi
   if (( LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
-    if [[ "$LINGQU_SHMEM_PTO_EXPECT" != "authorization-cancelled" ]]; then
-      echo "late completion injection requires authorization-cancelled" >&2
+    if [[ "$LINGQU_SHMEM_PTO_EXPECT" != "authorization-cancelled" ]] &&
+       (( LINGQU_SHMEM_PTO_RESET_ON_PENDING == 0 )); then
+      echo "late completion injection requires cancellation or reset-on-pending" >&2
       exit 2
     fi
   fi
@@ -416,6 +434,7 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS))
   LINGQU_SHMEM_PTO_CANCEL_AFTER_MS=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS))
+  LINGQU_SHMEM_PTO_RESET_ON_PENDING=$((LINGQU_SHMEM_PTO_RESET_ON_PENDING))
   LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION=$((LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION))
   LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION=$((LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION))
   printf -v LINGQU_SHMEM_PTO_NODEA_CNA '0x%x' \
@@ -655,6 +674,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       LINGQU_SHMEM_PTO_CANCEL_AFTER_MS="$2"
+      shift 2
+      ;;
+    --pto-reset-on-pending)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-reset-on-pending requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_RESET_ON_PENDING="$2"
       shift 2
       ;;
     --pto-inject-duplicate-completion)
@@ -1188,6 +1215,64 @@ validate_lingqu_shmem_pto_guest_log() {
     "$role PTO UB_GM result" || return 1
 }
 
+validate_lingqu_shmem_pto_reset_sequence() {
+  local log_file="$1"
+  local reset_sequence=""
+  local reset_next_sequence=""
+  local resumed_sequence=""
+
+  reset_sequence="$(awk '
+    /QEMU_UB_GM_RESET authorization_pending=1 / {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^sequence=/) {
+          sub(/^sequence=/, "", $i)
+          print $i
+          exit
+        }
+      }
+    }
+  ' "$log_file")"
+  reset_next_sequence="$(awk '
+    /QEMU_UB_GM_RESET authorization_pending=1 / {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^next_sequence=/) {
+          sub(/^next_sequence=/, "", $i)
+          print $i
+          exit
+        }
+      }
+    }
+  ' "$log_file")"
+  resumed_sequence="$(awk '
+    /QEMU_UB_GM_RESET authorization_pending=1 / {
+      reset_seen = 1
+      next
+    }
+    reset_seen && /QEMU_UB_GM_AUTHORIZATION_PENDING / {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^sequence=/) {
+          sub(/^sequence=/, "", $i)
+          print $i
+          exit
+        }
+      }
+    }
+  ' "$log_file")"
+
+  if [[ "$reset_sequence" != <-> ||
+        "$reset_next_sequence" != <-> ||
+        "$resumed_sequence" != <-> ]]; then
+    echo "missing PTO reset sequence evidence in $log_file" >&2
+    return 1
+  fi
+  if (( reset_sequence == 0 ||
+        reset_next_sequence != reset_sequence ||
+        resumed_sequence <= reset_sequence )); then
+    echo "invalid PTO reset sequence progression: reset=$reset_sequence next=$reset_next_sequence resumed=$resumed_sequence" >&2
+    return 1
+  fi
+}
+
 validate_lingqu_shmem_pto_qemu_log() {
   local node_name="$1"
   local log_file="$2"
@@ -1282,31 +1367,59 @@ validate_lingqu_shmem_pto_qemu_log() {
     return 0
   fi
 
-  assert_log_absent "$log_file" "QEMU_UB_GM_DISPATCH_REJECT" \
-    "consumer PTO dispatch rejection" || return 1
-  assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_TIMEOUT" \
-    "consumer PTO authorization timeout" || return 1
-  assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_CANCEL" \
-    "consumer unexpected PTO authorization cancel" || return 1
-  if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
-    assert_log_absent "$log_file" \
-      "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME)" \
-      "synchronous PTO authorization delay" || return 1
-  else
+  if (( LINGQU_SHMEM_PTO_RESET_ON_PENDING != 0 )); then
     assert_log_count "$log_file" \
-      "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=[0-2] .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 3 \
-      "consumer pending authorization ranges" || return 1
+      "QEMU_UB_GM_RESET authorization_pending=1 .*sequence=[1-9][0-9]* cq_completion=0 next_sequence=[1-9][0-9]* sim_dec_unmaps=1 obmm_async_reset=1" 1 \
+      "consumer exact-once pending reset" || return 1
+    assert_log_count "$log_file" \
+      "SIM_DEC: RESET_UNMAP count=1 next_map_id=[2-9][0-9]*" 1 \
+      "consumer reset import-map retirement" || return 1
+    assert_log_count "$log_file" \
+      "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=[0-2] .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 4 \
+      "consumer pre-reset and rebooted authorization ranges" || return 1
     assert_log_count "$log_file" \
       "QEMU_UB_GM_AUTHORIZATION_RESUME .*cursor=[0-2] .*status=ready" 3 \
-      "consumer resumed authorization ranges" || return 1
-    if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
+      "consumer rebooted authorization resumes" || return 1
+    assert_log_absent "$log_file" \
+      "QEMU_UB_GM_(FAILURE_COMPLETION|DISPATCH_REJECT|AUTHORIZATION_TIMEOUT|AUTHORIZATION_CANCEL)" \
+      "consumer reset failure completion" || return 1
+    if (( LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 )); then
       assert_log_count "$log_file" \
-        "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED .*source=duplicate-injection reason=already_completed" 3 \
-        "consumer ignored duplicate authorization completions" || return 1
+        "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED .*source=reset-late-injection reason=no_pending" 1 \
+        "consumer ignored post-reset late completion" || return 1
     else
       assert_log_absent "$log_file" \
         "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED" \
-        "consumer unexpected duplicate authorization completion" || return 1
+        "consumer unexpected post-reset completion" || return 1
+    fi
+    validate_lingqu_shmem_pto_reset_sequence "$log_file" || return 1
+  else
+    assert_log_absent "$log_file" "QEMU_UB_GM_DISPATCH_REJECT" \
+      "consumer PTO dispatch rejection" || return 1
+    assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_TIMEOUT" \
+      "consumer PTO authorization timeout" || return 1
+    assert_log_absent "$log_file" "QEMU_UB_GM_AUTHORIZATION_CANCEL" \
+      "consumer unexpected PTO authorization cancel" || return 1
+    if (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
+      assert_log_absent "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME)" \
+        "synchronous PTO authorization delay" || return 1
+    else
+      assert_log_count "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=[0-2] .*delay_ns=$LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS " 3 \
+        "consumer pending authorization ranges" || return 1
+      assert_log_count "$log_file" \
+        "QEMU_UB_GM_AUTHORIZATION_RESUME .*cursor=[0-2] .*status=ready" 3 \
+        "consumer resumed authorization ranges" || return 1
+      if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
+        assert_log_count "$log_file" \
+          "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED .*source=duplicate-injection reason=already_completed" 3 \
+          "consumer ignored duplicate authorization completions" || return 1
+      else
+        assert_log_absent "$log_file" \
+          "QEMU_UB_GM_AUTHORIZATION_COMPLETION_IGNORED" \
+          "consumer unexpected duplicate authorization completion" || return 1
+      fi
     fi
   fi
 
@@ -1719,6 +1832,85 @@ dump_link_diagnostics() {
   grep -nE "ub_link:|ub_fm:" "$nodeb_log" 2>/dev/null | tail -10 >&2 || true
 }
 
+qmp_execute_strict() {
+  local qmp_socket="$1"
+  local command="$2"
+  local node_name="$3"
+  local timeout_s="${4:-10}"
+  local deadline=$((SECONDS + timeout_s))
+
+  while (( SECONDS < deadline )); do
+    if [[ -S "$qmp_socket" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ ! -S "$qmp_socket" ]]; then
+    echo "QMP socket not ready for $node_name: $qmp_socket" >&2
+    return 1
+  fi
+
+  if ! python3 - "$qmp_socket" "$command" <<'PY'
+import json
+import socket
+import sys
+import time
+
+
+path, command = sys.argv[1:]
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(5)
+sock.connect(path)
+buffer = b""
+
+
+def receive():
+    global buffer
+    while b"\n" not in buffer:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("QMP socket closed")
+        buffer += chunk
+    line, buffer = buffer.split(b"\n", 1)
+    return json.loads(line.strip())
+
+
+def wait_for(identifier):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        message = receive()
+        if message.get("id") == identifier:
+            if "error" in message:
+                raise RuntimeError(json.dumps(message["error"], sort_keys=True))
+            return
+    raise RuntimeError(f"timed out waiting for QMP response {identifier}")
+
+
+try:
+    greeting = receive()
+    if "QMP" not in greeting:
+        raise RuntimeError("missing QMP greeting")
+    sock.sendall(
+        json.dumps({"execute": "qmp_capabilities", "id": "capabilities"})
+        .encode("ascii")
+        + b"\r\n"
+    )
+    wait_for("capabilities")
+    sock.sendall(
+        json.dumps({"execute": command, "id": "command"}).encode("ascii")
+        + b"\r\n"
+    )
+    wait_for("command")
+finally:
+    sock.close()
+PY
+  then
+    echo "QMP command failed for $node_name: $command" >&2
+    return 1
+  fi
+  echo "QMP command completed for $node_name: $command"
+}
+
 cont_qemu() {
   local qmp_socket="$1"
   local node_name="$2"
@@ -2048,6 +2240,26 @@ run_iteration() {
     if ! check_entity_ready "nodeB" "$nodeb_qemu_log" 30 "$ENTITY_COUNT"; then
       echo "iteration ${iter}: nodeB entities not ready within timeout" >&2
       return 12
+    fi
+  fi
+
+  if (( lingqu_shmem_pto_enabled == 1 &&
+        LINGQU_SHMEM_PTO_RESET_ON_PENDING != 0 )); then
+    if ! wait_for_log_pattern "$nodeb_qemu_log" \
+         "QEMU_UB_GM_AUTHORIZATION_PENDING .*cursor=0 .*sequence=[1-9][0-9]*" \
+         30; then
+      echo "iteration ${iter}: PTO authorization did not suspend before reset" >&2
+      return 31
+    fi
+    echo "Resetting nodeB after PTO authorization suspended..."
+    if ! qmp_execute_strict "$nodeb_qmp" system_reset nodeB; then
+      echo "iteration ${iter}: nodeB QMP reset failed" >&2
+      return 31
+    fi
+    if ! wait_for_log_pattern "$nodeb_qemu_log" \
+         "QEMU_UB_GM_RESET authorization_pending=1 .*cq_completion=0" 10; then
+      echo "iteration ${iter}: nodeB reset did not discard pending authorization" >&2
+      return 31
     fi
   fi
 
@@ -2858,6 +3070,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_authorization_delay_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS}"
     echo "lingqu_shmem_pto_authorization_timeout_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS}"
     echo "lingqu_shmem_pto_cancel_after_ms=${LINGQU_SHMEM_PTO_CANCEL_AFTER_MS}"
+    echo "lingqu_shmem_pto_reset_on_pending=${LINGQU_SHMEM_PTO_RESET_ON_PENDING}"
     echo "lingqu_shmem_pto_inject_duplicate_completion=${LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION}"
     echo "lingqu_shmem_pto_inject_late_completion=${LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION}"
     echo "lingqu_shmem_pto_expect=${LINGQU_SHMEM_PTO_EXPECT}"
