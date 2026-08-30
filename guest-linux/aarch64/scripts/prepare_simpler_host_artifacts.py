@@ -658,6 +658,85 @@ def load_reuse_runtime_manifest(path: Path) -> dict:
     return runtime
 
 
+UB_GM_LAYOUT_PROFILES = (
+    "nd",
+    "tail",
+    "cross-page",
+    "unaligned",
+    "nd-strided",
+    "dn",
+    "nz",
+)
+
+
+def vector_layout_contract(
+    profile: str,
+    global_rows: int,
+    global_cols: int,
+    tile_rows: int,
+    tile_cols: int,
+) -> dict:
+    geometry = (global_rows, global_cols, tile_rows, tile_cols)
+    if profile in ("nd", "tail", "cross-page", "unaligned"):
+        pto_layout = "ND"
+        strides = [1, 1, 1, global_cols, 1]
+    elif profile == "nd-strided":
+        if geometry != (3, 5, 4, 8):
+            raise ValueError(
+                "nd-strided requires global 3x5 and tile 4x8 geometry"
+            )
+        pto_layout = "ND"
+        strides = [24, 24, 24, 8, 1]
+    elif profile == "dn":
+        if geometry != (3, 5, 8, 8):
+            raise ValueError("dn requires global 3x5 and tile 8x8 geometry")
+        pto_layout = "DN"
+        strides = [15, 15, 15, 1, 3]
+    elif profile == "nz":
+        if geometry != (16, 8, 16, 8):
+            raise ValueError("nz requires global 16x8 and tile 16x8 geometry")
+        pto_layout = "NZ"
+        strides = [128, 128, 128, 8, 1]
+    else:
+        raise ValueError(f"unsupported UB_GM layout profile: {profile}")
+
+    shape = [1, 1, 1, global_rows, global_cols]
+    offsets = sorted(
+        row * strides[3] + col * strides[4]
+        for row in range(global_rows)
+        for col in range(global_cols)
+    )
+    if len(offsets) != len(set(offsets)):
+        raise ValueError(f"UB_GM layout profile has overlapping strides: {profile}")
+    fragments = []
+    for offset in offsets:
+        if fragments and offset == (
+            fragments[-1]["element_offset"]
+            + fragments[-1]["element_count"]
+        ):
+            fragments[-1]["element_count"] += 1
+        else:
+            fragments.append({"element_offset": offset, "element_count": 1})
+    storage_elements = offsets[-1] + 1
+    logical_elements = global_rows * global_cols
+    return {
+        "profile": profile,
+        "pto_layout": pto_layout,
+        "rank": 5,
+        "shape": shape,
+        "strides": strides,
+        "global_rows": global_rows,
+        "global_cols": global_cols,
+        "tile_rows": tile_rows,
+        "tile_cols": tile_cols,
+        "logical_elements": logical_elements,
+        "logical_bytes": logical_elements * 4,
+        "storage_elements": storage_elements,
+        "storage_bytes": storage_elements * 4,
+        "fragments": fragments,
+    }
+
+
 def write_vector_kernel_source(
     build_dir: Path,
     func_id: int,
@@ -667,6 +746,7 @@ def write_vector_kernel_source(
     *,
     global_rows: int | None = None,
     global_cols: int | None = None,
+    layout_profile: str = "nd",
 ) -> Path | None:
     if global_rows is None:
         global_rows = tile_rows
@@ -690,6 +770,39 @@ def write_vector_kernel_source(
         "tload-on-write",
     ):
         raise ValueError(f"unsupported UB_GM access fault: {ub_gm_access_fault}")
+    layout_contract = vector_layout_contract(
+        layout_profile,
+        global_rows,
+        global_cols,
+        tile_rows,
+        tile_cols,
+    )
+    stride_args = ", ".join(stride for stride in (
+        "1", "1", "1", "vCols", "1"
+    ))
+    global_layout = "Layout::ND"
+    tile_layout = (
+        "Tile<TileType::Vec, float, kTRows_, kTCols_, "
+        "BLayout::RowMajor, -1, -1>"
+    )
+    if layout_profile == "nd-strided":
+        stride_args = "24, 24, 24, 8, 1"
+    elif layout_profile == "dn":
+        stride_args = "15, 15, 15, 1, 3"
+        global_layout = "Layout::DN"
+        tile_layout = (
+            "Tile<TileType::Vec, float, kTRows_, kTCols_, "
+            "BLayout::ColMajor, -1, -1>"
+        )
+    elif layout_profile == "nz":
+        stride_args = "128, 128, 128, 8, 1"
+        global_layout = "Layout::NZ"
+        tile_layout = (
+            "Tile<TileType::Vec, float, kTRows_, kTCols_, "
+            "BLayout::ColMajor, -1, -1, SLayout::RowMajor, 512>"
+        )
+    if layout_contract["pto_layout"] != global_layout.removeprefix("Layout::"):
+        raise ValueError(f"inconsistent UB_GM layout profile: {layout_profile}")
     op_name = {
         0: "TADD(dstTile, src0Tile, src1Tile);",
         1: "TADDS(dstTile, src0Tile, scalar);",
@@ -775,9 +888,9 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     constexpr int vCols = {global_cols};
 
     using DynShapeDim5 = Shape<1, 1, 1, vRows, vCols>;
-    using DynStridDim5 = Stride<1, 1, 1, vCols, 1>;
-    using GlobalData = GlobalTensor<float, DynShapeDim5, DynStridDim5>;
-    using TileData = Tile<TileType::Vec, float, kTRows_, kTCols_, BLayout::RowMajor, -1, -1>;
+    using DynStridDim5 = Stride<{stride_args}>;
+    using GlobalData = GlobalTensor<float, DynShapeDim5, DynStridDim5, {global_layout}>;
+    using TileData = {tile_layout};
 
     TileData src0Tile(vRows, vCols);
     TileData dstTile(vRows, vCols);
@@ -2791,6 +2904,18 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
             "host_vector requires positive global dimensions no larger "
             "than the tile dimensions"
         )
+    vector_layout = None
+    if args.profile == "host_vector":
+        try:
+            vector_layout = vector_layout_contract(
+                args.ub_gm_layout_profile,
+                vector_global_rows,
+                vector_global_cols,
+                args.vector_tile_rows,
+                args.vector_tile_cols,
+            )
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
     if args.profile in (
         "host_gemm",
         "host_fp32_gemm",
@@ -2925,6 +3050,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
                 args.ub_gm_access_fault,
                 global_rows=vector_global_rows,
                 global_cols=vector_global_cols,
+                layout_profile=args.ub_gm_layout_profile,
             )
             if args.profile == "host_vector"
             else None
@@ -3105,14 +3231,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     }
     if args.profile == "host_vector":
         manifest["ub_gm_access_fault"] = args.ub_gm_access_fault
-        manifest["ub_gm_layout"] = {
-            "profile": args.ub_gm_layout_profile,
-            "global_rows": vector_global_rows,
-            "global_cols": vector_global_cols,
-            "tile_rows": args.vector_tile_rows,
-            "tile_cols": args.vector_tile_cols,
-            "logical_elements": vector_global_rows * vector_global_cols,
-        }
+        manifest["ub_gm_layout"] = vector_layout
     if args.profile == "host_gemm":
         manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {
@@ -3198,7 +3317,7 @@ def main() -> int:
     parser.add_argument("--vector-global-cols", type=int, default=None)
     parser.add_argument(
         "--ub-gm-layout-profile",
-        choices=("nd", "tail", "cross-page", "unaligned"),
+        choices=UB_GM_LAYOUT_PROFILES,
         default="nd",
     )
     parser.add_argument("--matmul-rows", type=int, default=128)

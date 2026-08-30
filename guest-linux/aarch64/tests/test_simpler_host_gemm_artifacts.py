@@ -382,6 +382,106 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
                     Path(temp_dir), 0, 32, 32, "unknown"
                 )
 
+    def test_generated_vector_kernels_cover_strided_dn_and_nz_layouts(self):
+        producer = load_producer()
+        cases = (
+            (
+                "nd-strided",
+                (3, 5, 4, 8),
+                "Stride<24, 24, 24, 8, 1>",
+                "Layout::ND",
+                "BLayout::RowMajor",
+                21,
+                [(0, 5), (8, 5), (16, 5)],
+            ),
+            (
+                "dn",
+                (3, 5, 8, 8),
+                "Stride<15, 15, 15, 1, 3>",
+                "Layout::DN",
+                "BLayout::ColMajor",
+                15,
+                [(0, 15)],
+            ),
+            (
+                "nz",
+                (16, 8, 16, 8),
+                "Stride<128, 128, 128, 8, 1>",
+                "Layout::NZ",
+                "SLayout::RowMajor, 512",
+                128,
+                [(0, 128)],
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for (
+                profile,
+                geometry,
+                stride_text,
+                global_layout,
+                tile_layout,
+                storage_elements,
+                expected_fragments,
+            ) in cases:
+                global_rows, global_cols, tile_rows, tile_cols = geometry
+                source = producer.write_vector_kernel_source(
+                    root,
+                    0,
+                    tile_rows,
+                    tile_cols,
+                    global_rows=global_rows,
+                    global_cols=global_cols,
+                    layout_profile=profile,
+                ).read_text()
+                contract = producer.vector_layout_contract(
+                    profile,
+                    global_rows,
+                    global_cols,
+                    tile_rows,
+                    tile_cols,
+                )
+
+                self.assertIn(stride_text, source)
+                self.assertIn(global_layout, source)
+                self.assertIn(tile_layout, source)
+                self.assertEqual(contract["rank"], 5)
+                self.assertEqual(contract["storage_elements"], storage_elements)
+                self.assertEqual(
+                    [
+                        (item["element_offset"], item["element_count"])
+                        for item in contract["fragments"]
+                    ],
+                    expected_fragments,
+                )
+
+    def test_generated_vector_rejects_wrong_p4i_layout_geometry(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "global 3x5 and tile 4x8"):
+                producer.write_vector_kernel_source(
+                    Path(temp_dir),
+                    0,
+                    8,
+                    8,
+                    global_rows=3,
+                    global_cols=5,
+                    layout_profile="nd-strided",
+                )
+
+    def test_artifact_generator_cli_lists_p4i_layout_profiles(self):
+        result = subprocess.run(
+            [sys.executable, str(PRODUCER), "--help"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        self.assertIn("nd-strided", result.stdout)
+        self.assertIn("dn", result.stdout)
+        self.assertIn("nz", result.stdout)
+
     def test_profile_is_pure_gemm_with_explicit_geometry(self):
         producer = load_producer()
         profile = producer.PROFILE_SPECS["host_gemm"]
