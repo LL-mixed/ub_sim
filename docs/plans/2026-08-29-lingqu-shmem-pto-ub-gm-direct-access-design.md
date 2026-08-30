@@ -21,7 +21,7 @@
 
 | 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 的复杂 extent、layout、并发与其他 recovery case，以及 P5 性能/上层集成仍待完成 |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 的复杂 layout、并发与其他 recovery case，以及 P5 性能/上层集成仍待完成 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -115,12 +115,12 @@ acceptance 不设置这些 token。
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录最初审计输入。随后完成的 P0–P4F 实施证据如下；表中的 revision
+这些 revision 记录最初审计输入。随后完成的 P0–P4G 实施证据如下；表中的 revision
 均为已经提交的阶段性代码。P2 的同步与可恢复 authorization 正向路径已经完成，
 P4A authorization timeout、P4B authorization lifecycle、P4C ingress/preflight
 负向矩阵、P4D callback execution access conflict、P4E released-import lifetime 和
-P4F retired-segment lifetime 已完成双机验证；P4 的复杂 extent、layout、并发与
-其他 recovery case，以及 P5 继续保持未完成状态。
+P4F retired-segment lifetime、P4G shape/stride extent 与跨 segment 边界已完成双机
+验证；P4 的复杂 layout、并发与其他 recovery case，以及 P5 继续保持未完成状态。
 
 | 阶段 | 仓库 | Revision | 已提交内容 |
 | --- | --- | --- | --- |
@@ -156,13 +156,17 @@ P4F retired-segment lifetime 已完成双机验证；P4 的复杂 extent、layou
 | P4F | `guest-linux/kernel_ub` | `149518e2510b` | export-retire callback、import lifetime ABI v3 与独立 SIM_DEC map-v2 operation |
 | P4F | `vendor/qemu_8.2.0_ub` | `b631266c49` | 五元 export lifetime tombstone、原子发布与 mapping 重校验拒绝 |
 | P4F | `ub_sim` | `7bc05b0` | retired-segment workload、严格 runner、artifact 诊断、契约测试与两个 gitlink |
+| P4G | `vendor/qemu_8.2.0_ub` | `371b33976e` | shape/stride extent 校验、mapping 边界拒绝与 token-aware export lookup |
+| P4G | `ub_sim` | `7b14988` | 两类边界 workload、双 export guard、严格 runner、契约测试与 QEMU gitlink |
 
 P4D 的四组正式 campaign 已使用 `source-sha256.txt` 和完整 artifact fingerprint
 完成审计，详见 9.9 节。承载 P4D 的 `vendor/simpler@fb060537` 与
 `ub_sim@5a68bca` 已独立提交，正式 evidence 中的 source hash 与提交内容一致。
 P4E 的两组正式 campaign 同样通过 source/artifact SHA-256 绑定实际执行内容，详见
 9.10 节；实现已归档为 `ub_sim@92e25b8`。P4F 的 n4-910c r6 与 n4-910c1 r8
-正式 campaign 进一步完成 producer retired-segment 验证，详见 9.11 节。
+正式 campaign 进一步完成 producer retired-segment 验证，详见 9.11 节。P4G 的
+四组正式 campaign 又完成 shape/stride extent 和跨相邻 mapping 的 fail-closed 验证，
+详见 9.12 节。
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -241,7 +245,9 @@ fail-closed 验证。P4D 进一步完成实际 PTO callback 执行阶段的 READ
 WRITE 上 `TLOAD` access conflict 双机验证。P4E 又证明 consumer 释放 OBMM import
 以后，保留下来的 endpoint-map reference 会在 authorization 前被拒绝。P4F 进一步
 证明 producer 退役原 export 后，consumer 保留的 import、endpoint map 与已准备
-dispatch 会依据完整 export lifetime identity 在 authorization 前被拒绝。复杂 extent、
+dispatch 会依据完整 export lifetime identity 在 authorization 前被拒绝。P4G 随后
+补齐 shape/stride extent 超过 view 以及一个 request 携带 source mapping reference
+跨入相邻 active mapping 的双机拒绝；两类 fault 均在 authorization 前终止。复杂
 layout、多 dispatch 竞争和其他 recovery case 继续归入 P4 后续阶段。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
@@ -277,12 +283,12 @@ layout、多 dispatch 竞争和其他 recovery case 继续归入 P4 后续阶段
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight、P4D callback execution access conflict、P4E released-import 和 P4F retired-segment lifetime 负向矩阵通过 | P4 扩展复杂 extent 与 layout 矩阵 |
-| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context 与真实 guest E2E 已实现 | P4 扩展复杂 layout |
+| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight、P4D callback execution access conflict、P4E released-import、P4F retired-segment lifetime 和 P4G shape/stride/cross-segment 负向矩阵通过 | P4 扩展复杂 layout 矩阵 |
+| `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context、真实 guest E2E 和 P4G 单 mapping 边界约束已实现 | P4 扩展复杂 layout |
 | PTO CPU UB GM hook | P1 已实现 contiguous ND、tail、range callback 与 fail-closed | P4 扩展复杂 layout |
-| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle、P4C preflight、P4D actual access conflict、P4E released-import 和 P4F retired-segment E2E 通过 | P4 补通用 callback failure、layout 与并发矩阵 |
+| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle、P4C preflight、P4D actual access conflict、P4E released-import、P4F retired-segment 和 P4G extent/mapping-boundary E2E 通过 | P4 补通用 callback failure、layout 与并发矩阵 |
 | backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume；P4A/P4B 已验证 timeout/cancel exact-once failure completion、duplicate guard 和 reset 无 CQ cleanup/recovery | P4 补多 slot、多 binding 和其他失败竞争 |
-| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault、两类 P4D execution fault、P4E released-import 与 P4F retired-segment fault 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展其余负向、layout 与并发 coverage |
+| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault、两类 P4D execution fault、P4E released-import、P4F retired-segment 与两类 P4G bounds fault 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展其余负向、layout 与并发 coverage |
 
 ## 4. 修正后的目标架构
 
@@ -1275,7 +1281,8 @@ n4-910c 上暂停的 P3 PID `419618` 保持 `Tl`。
 ingress/preflight 检查。它没有覆盖 callback 执行阶段的 `READ` 上 `TSTORE`、`WRITE`
 上 `TLOAD`、复杂 shape/stride extent、跨 segment、retired-segment lifetime、layout
 或并发行为；released-import lifetime 后续由 P4E 补齐，retired-segment lifetime
-后续由 P4F 补齐，其余项目继续留在 P4。
+后续由 P4F 补齐，shape/stride extent 与跨 segment 后续由 P4G 补齐，其余项目继续
+留在 P4。
 
 ### 9.9 P4D PTO callback access conflict 双机证据
 
@@ -1344,7 +1351,7 @@ PTO、Simpler、Rust bridge 和 QEMU completion path 精确返回，未被 sched
 覆盖。该阶段仍未覆盖 retired-segment lifetime、复杂 extent、跨 segment、layout、
 并发、write fence failure、通用 callback failure、PTO exception 和 guest exit；
 released-import lifetime 后续由 P4E 补齐，retired-segment lifetime 后续由 P4F
-补齐。
+补齐，shape/stride extent 与跨 segment 后续由 P4G 补齐。
 
 ### 9.10 P4E released-import lifetime 双机证据
 
@@ -1532,9 +1539,96 @@ contract 聚焦回归合计 27/27 通过，`cargo fmt --all --check`、SVG XML �
 `git diff --check` 均通过。两台机器结束后没有 QEMU 残留，n4-910c 的 P3 PID
 `419618` 保持 `Tl`。
 
-P4F 已完成 producer retired-segment lifetime 这一项。复杂 extent、跨 segment、
-layout、多 dispatch 竞争、write fence failure、通用 callback failure、PTO exception
-和 guest exit 仍归入 P4 后续范围。
+P4F 已完成 producer retired-segment lifetime 这一项。shape/stride extent 与跨
+segment 随后由 P4G 补齐；layout、多 dispatch 竞争、write fence failure、通用
+callback failure、PTO exception 和 guest exit 仍归入 P4 后续范围。
+
+### 9.12 P4G shape/stride extent 与跨 segment 双机证据
+
+P4G 补齐 P4 bounds 表中的两项缺口：shape/stride 计算出的实际 extent 超过
+memref view，以及一个 request 使用 source mapping reference 跨入相邻 active
+mapping。两条路径都保留有效 metadata CRC，确保 QEMU 拒绝的是目标 bounds
+条件；损坏 CRC 的通用 metadata rejection 没有参与本阶段判定。
+
+![P4G extent 与跨 segment 边界拒绝协议](2026-08-30-lingqu-shmem-pto-ub-gm-bounds-protocol.svg)
+
+两类 fault 的构造与判定如下：
+
+| Fault | guest 构造 | QEMU 判定点 | 预期结果 |
+| --- | --- | --- | --- |
+| `shape-stride-oob` | output view 保持 65,536 B；一维 `f32` shape 从 16,384 改为 16,385，重新计算 metadata CRC | contiguous memref validator 计算 `16,385 × 4 = 65,540 B`，与 65,536 B view 不相等 | 1 次 `QEMU_UB_GM_SHAPE_STRIDE_REJECT`，返回 `pto_ub_gm_bad_memref` |
+| `cross-segment` | producer 创建两个独立 2 MiB export；consumer 映射到相邻 PA 并注册两个 endpoint map。64 KiB output request 从 source boundary 前 32 KiB 开始，仍携带 source map 1 的 mapping reference | `ub_obmm_async_crosses_mapping_boundary()` 解析 source map 的精确 generation，确认 request 后 32 KiB 落入相邻 active map 2 | 1 次 `QEMU_UB_GM_MAPPING_BOUNDARY_REJECT`，返回 `pto_ub_gm_bad_memref` |
+
+`cross-segment` 使用的两个 export 在当前 OBMM allocator 中具有相同
+`remote_uba=0xffffffe00000` 和 owner CNA。它们通过 token、export mem ID 与
+generation 区分：source 为 `token=96, mem_id=1, generation=520`，guard 为
+`token=97, mem_id=2, generation=521`。P4G 同时把 QEMU export lookup 改为
+token-aware，并把 export dedup identity 扩展为
+`remote_uba/export_cna/token_id/export_mem_id/generation`。因此两个 export 可以
+独立解析、读写和退役；同地址复用不会把 guard backing 错绑定到 source entry。
+
+四组正式 campaign 如下：
+
+| 主机 | Fault | Run id | Generation | Artifact fingerprint | 结果 |
+| --- | --- | --- | ---: | --- | --- |
+| n4-910c | shape/stride | `pto-ub-gm-p4g-shape-stride-oob-n4-20260830-r2` | 510 | `0x46b67fee45d77b47` | pass |
+| n4-910c | cross-segment | `pto-ub-gm-p4g-cross-segment-n4-20260830-r1` | 520/521 | `0x46b67fee45d77b47` | pass |
+| n4-910c1 | shape/stride | `pto-ub-gm-p4g-shape-stride-oob-n4c1-20260830-r1` | 510 | `0x8aef63cab146f75c` | pass |
+| n4-910c1 | cross-segment | `pto-ub-gm-p4g-cross-segment-n4c1-20260830-r2` | 520/521 | `0x8aef63cab146f75c` | pass |
+
+每组 `validation.status=pass`、`runner_exit_code=0`，并记录运行前后 artifact
+fingerprint；四组的 `artifact_fingerprint_stable=1`。两台机器使用不同的既有
+callable artifact 目录，因此 fingerprint 不同；P4G 属于 correctness gate，没有用
+这些结果做跨主机性能比较。实际执行的 root/QEMU 源内容保持一致：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `lingqu_shmem_pto_direct.c` | `a536872044100e4e4eb743c6ce1adb0c27579de5fb752d78a3e4fb5d5d5a70f8` |
+| `run_ub_dual_node_apps.sh` | `966456aadc368091a1335e0a8f3c03be336b6baeb4e89f44aad6e882b084acc0` |
+| PTO direct 专用 runner | `f6f9017090a5d9e03cea947bdd350ece0c921fae956a19b5a3be94477dc2d7ec` |
+| Rust `ub_gm_abi.rs` | `d485ae91c3511d1b95e16c2140f3cabe27b4730b94530b45d7b58dcac97dddc5` |
+| QEMU `ub_obmm_async.c` | `3162a5591972749aefac5b9eee2c2ef5e8516b9ad0e0c11a4596d5540baac4e4` |
+| QEMU `ub_ubc.c` | `95a49e12743f54d84d3543182ba6e1d5a83ac922a851ffe16568bc6f7fd6217e` |
+| QEMU `ub_obmm_async.h` | `8923561c0fef76f3620b9d432f0d78f8f58740a87e7d60f7bd56f797e65b973d` |
+
+n4-910c 与 n4-910c1 的 QEMU binary SHA-256 分别为
+`27bd2cde563fb34330fb925718423055ed1cc5189dc01e4b0f767e765a1d4bc6` 和
+`cf9f32927e11257a9daec15a022fdad87b1414225d5814524ca1ee29916e976b`；
+两台机器都通过项目 wrapper 从同一组 QEMU source hashes 完整构建。runner 还将
+QEMU source/build 目录、build stamp、binary、kernel、initramfs、scenario、manifest
+和 runtime payload hashes 一并写入 evidence。
+
+四组 campaign 的共同 exact-count 门禁为：
+
+| 门禁 | 结果 |
+| --- | --- |
+| bounds rejection | 对应 fault marker 精确 1 次；另一类 bounds marker 为 0 |
+| completion/retirement | status 3 failure completion 精确 1 次；dispatch reject 精确 1 次；CMDQ slot 只退休一次 |
+| data path | authorization、binding、`QEMU_UB_GM_DATA_ACCESS`、TLOAD/TSTORE/fence callback 均为 0 |
+| source output | 16,384 个 output element 全部保持 `0x7fc00001` |
+| adjacent guard | `cross-segment` 的 2 MiB guard 全部保持 `0xa5`；两个 export 各退役一次 |
+| artifact/cleanup | 运行前后 fingerprint 一致；runner exit 0；结束后没有 QEMU 残留 |
+
+诊断 campaign 保持只读并排除在正式结果之外。n4-910c shape r1 暴露 callable
+artifact 在 campaign 内发生变化，专用 runner 因而新增运行后 fingerprint gate，r2
+使用稳定 artifact 通过。n4-910c1 cross r1 暴露 QEMU 旧 export dedup key 会把两个
+同 UBA/owner 的 export 合并，导致 primary unexport 失败；token-aware lookup 和完整
+dedup identity 修复后，r2 证明两个 export 独立退役。
+
+回归测试覆盖如下：
+
+- n4-910c：`cargo test --workspace -- --test-threads=1` 退出 0；
+- n4-910c1：Python 3.12.14 执行
+  `python -m unittest discover guest-linux/aarch64/tests`，346/346 通过；
+- 本地 focused contract：PTO direct 19/19、`sim-qemu` library 37/37 通过；
+- `cargo fmt --all --check`、shell syntax、`git diff --check` 通过；
+- n4-910c 的已暂停 P3 evaluator PID `419618` 始终保持 `Tl`，没有被恢复。
+
+正式 evidence 已复制到本地忽略目录
+`out/lingqu-shmem-pto-e2e/p4g-complete-20260830-r1/`。实现提交为
+`vendor/qemu_8.2.0_ub@371b33976e` 与 `ub_sim@7b14988`。P4G 完成 bounds 表中的
+shape/stride extent 与跨 segment 两项；tail、cross-page、unaligned、stride、DN/NZ
+正向 layout，以及 concurrency、fence/callback/PTO failure 和 guest exit 仍待完成。
 
 ## 10. 分阶段实施计划
 
@@ -1722,7 +1816,7 @@ completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 �
 
 预计工作量：5–8 个工程日。
 
-### P4：负向、layout 与并发验证（P4A–P4F 已完成，其余待完成）
+### P4：负向、layout 与并发验证（P4A–P4G 已完成，其余待完成）
 
 | 类别 | Cases | 当前状态 |
 | --- | --- | --- |
@@ -1731,7 +1825,7 @@ completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 �
 | Lifecycle | released import | P4E 双机通过；保留 endpoint map 时释放 backing，authorization 前返回 `bad-memref` |
 | Lifecycle | retired segment | P4F 双机通过；完整五元 export lifetime tombstone 在 authorization 前返回 `bad-memref` |
 | Bounds | OOB、整数溢出 | P4C 双机通过 |
-| Bounds | shape/stride extent 超界、跨 segment | 待完成 |
+| Bounds | shape/stride extent 超界、跨 segment | P4G 双机通过；有效 CRC 的 65,540 B extent/65,536 B view 与 64 KiB request 跨两个相邻 2 MiB mapping 均在 authorization 前返回 `bad-memref` |
 | Access | role/access preflight 不匹配 | P4C 双机通过 |
 | Access | READ memref 上 TSTORE、WRITE memref 上 TLOAD | P4D 双机通过；实际 PTO callback 返回 `-EACCES` |
 | Ordering | authorization timeout | P4A 双机通过 |
@@ -1767,8 +1861,9 @@ P4B 当前实施状态：
   9.7 节；
 - P4B 没有覆盖的 mapping/requester/OOB/overflow/role-access preflight 已由 P4C
   补齐，实际 `TLOAD/TSTORE` access conflict 已由 P4D 补齐，released import 已由
-  P4E 补齐，producer retired segment 已由 P4F 补齐；复杂 extent、layout、多 dispatch 竞争、
-  callback/PTO/fence failure 和 guest exit 仍待完成。
+  P4E 补齐，producer retired segment 已由 P4F 补齐，shape/stride extent 与跨
+  segment 已由 P4G 补齐；复杂 layout、多 dispatch 竞争、callback/PTO/fence
+  failure 和 guest exit 仍待完成。
 
 P4C 当前实施状态：
 
@@ -1781,8 +1876,8 @@ P4C 当前实施状态：
   一次，authorization、binding 和 PTO data callback 计数全部为零；
 - 双机 artifact fingerprint 唯一，关键 source hash 在 case 间一致，证据见 9.8 节；
 - P4C 没有覆盖的 actual `TSTORE`/`TLOAD` access conflict 已由 P4D 补齐，released
-  import 已由 P4E 补齐，retired segment 已由 P4F 补齐；复杂 extent/layout、并发或
-  callback/fence/PTO failure 仍待完成。
+  import 已由 P4E 补齐，retired segment 已由 P4F 补齐，shape/stride extent 与跨
+  segment 已由 P4G 补齐；复杂 layout、并发或 callback/fence/PTO failure 仍待完成。
 
 P4D 当前实施状态：
 
@@ -1799,8 +1894,8 @@ P4D 当前实施状态：
 - P4D 代码已归档为 `vendor/simpler@fb060537` 与 `ub_sim@5a68bca`；正式 evidence
   通过 source/artifact SHA-256 绑定到实际执行内容；
 - P4D 没有覆盖的 released import 已由 P4E 补齐，retired segment 已由 P4F 补齐；
-  复杂 extent/layout、并发、write fence failure、通用 callback failure、PTO
-  exception 或 guest exit 仍待完成。
+  shape/stride extent 与跨 segment 已由 P4G 补齐；复杂 layout、并发、write fence
+  failure、通用 callback failure、PTO exception 或 guest exit 仍待完成。
 
 P4E 当前实施状态：
 
@@ -1834,6 +1929,24 @@ P4F 当前实施状态：
 - 实现已提交为 `guest-linux/kernel_ub@149518e2510b` 和
   `vendor/qemu_8.2.0_ub@b631266c49`，root workload、runner、tests 与 gitlink 已提交
   为 `ub_sim@7bc05b0`，完整证据见 9.11 节。
+
+P4G 当前实施状态：
+
+![P4G extent 与跨 segment 边界拒绝协议](2026-08-30-lingqu-shmem-pto-ub-gm-bounds-protocol.svg)
+
+- `shape-stride-oob` 保持 65,536 B output view，把一维 `f32` shape 改为
+  16,385，使计算 extent 达到 65,540 B；QEMU 记录一次精确 shape/stride reject；
+- `cross-segment` 使用两个真实 2 MiB export/import 和相邻 local PA。64 KiB request
+  携带 source map 1 reference，从 boundary 前 32 KiB 跨入 guard map 2；QEMU 记录
+  一次精确 mapping-boundary reject；
+- 两种 fault 都在有效 metadata CRC 下返回 `pto_ub_gm_bad_memref`，authorization、
+  binding 和数据 callback 为零；source output sentinel 完整，cross case 的 2 MiB
+  guard sentinel 也完整；
+- QEMU export lookup 现在匹配 token，export dedup identity 同时匹配 UBA、owner CNA、
+  token、export mem ID 和 generation，支持同 UBA 的两个 export 独立存活和退役；
+- n4-910c 与 n4-910c1 共四组正式 campaign 全部通过，运行前后 artifact
+  fingerprint 稳定，无 QEMU 残留；代码已提交为
+  `vendor/qemu_8.2.0_ub@371b33976e` 与 `ub_sim@7b14988`，完整证据见 9.12 节。
 
 退出条件：
 
@@ -2012,13 +2125,14 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | PTO callback execution access conflict | P4D 已在 n4-910c 与 n4-910c1 共 4 个 campaign 通过；READ 上 `TSTORE` 和 WRITE 上 `TLOAD` 均在实际 PTO callback 返回 `-EACCES`，错误未被 scheduler timeout 覆盖；代码已归档为 `vendor/simpler@fb060537` 与 `ub_sim@5a68bca` |
 | released-import lifetime | P4E 已在 n4-910c 与 n4-910c1 通过；保留 endpoint map 时释放 consumer import，QEMU 在 authorization 前返回 `pto_ub_gm_bad_memref`，producer sentinel 完整；代码已归档为 `ub_sim@92e25b8` |
 | retired-segment lifetime | P4F 已在 n4-910c r6 与 n4-910c1 r8 通过；producer unexport 在 backing 释放前原子发布五元 export lifetime tombstone，consumer 原 import/map/dispatch 在 authorization 前返回 `pto_ub_gm_bad_memref`；root/kernel/QEMU 已归档为 `7bc05b0` / `149518e2510b` / `b631266c49` |
+| shape/stride extent 与跨 segment bounds | P4G 已在 n4-910c 与 n4-910c1 共 4 个 campaign 通过；65,540 B extent/65,536 B view 和携带 source mapping reference 的 64 KiB 跨 mapping request 均在 authorization 前返回 `pto_ub_gm_bad_memref`；source/guard sentinel 完整；root/QEMU 已归档为 `7b14988` / `371b33976e` |
 | no-staging 结构化证明 | P1 pass-through tests 与 P3 r9 `segment_payload_staging_bytes=0` 共同覆盖；P5 统一 H2D/D2H counters 待完成 |
 
 P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle、P4C preflight 和
 P4D callback execution access conflict、P4E released-import lifetime、P4F
-retired-segment lifetime 已完成运行验证，最小可信 direct-access PoC 已闭环并归档。
-P4 其余范围与 P5 决定完整负向稳健性、布局覆盖、性能和上层运行时可用性，因此
-当前仍不能声明第 15 节的完整目标已经完成。
+retired-segment lifetime、P4G extent/mapping bounds 已完成运行验证，最小可信
+direct-access PoC 已闭环并归档。P4 其余范围与 P5 决定完整负向稳健性、布局覆盖、
+性能和上层运行时可用性，因此当前仍不能声明第 15 节的完整目标已经完成。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 

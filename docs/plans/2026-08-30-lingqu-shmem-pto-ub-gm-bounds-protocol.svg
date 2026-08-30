@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960"
+     viewBox="0 0 1440 960" role="img" aria-labelledby="title desc">
+  <title id="title">P4G PTO UB GM extent 与跨 segment 边界拒绝协议</title>
+  <desc id="desc">左侧展示 shape stride 计算出的 65540 字节 extent 超过 65536 字节 view，右侧展示携带 source mapping reference 的 65536 字节请求跨入相邻 2 MiB guard mapping。两条路径都在 authorization 和数据 callback 之前返回 bad memref。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; }
+      .shape { fill: #dbeafe; stroke: #2563eb; stroke-width: 2; }
+      .segment-a { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; }
+      .segment-b { fill: #fef3c7; stroke: #d97706; stroke-width: 2; }
+      .reject { fill: #fee2e2; stroke: #dc2626; stroke-width: 2; }
+      .pass { fill: #e0f2fe; stroke: #0284c7; stroke-width: 2; }
+      .neutral { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.5; }
+      .title { font: 700 30px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 700 21px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1e293b; }
+      .small { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .mono { font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #0f172a; }
+      .strong { font-weight: 700; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2; marker-end: url(#arrow); }
+      .dash { fill: none; stroke: #dc2626; stroke-width: 3; stroke-dasharray: 9 7; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1440" height="960"/>
+  <text class="title" x="720" y="48" text-anchor="middle">P4G：PTO UB GM extent 与 mapping 边界 fail-closed</text>
+  <text class="body" x="720" y="78" text-anchor="middle">两个 fault 都携带有效 metadata CRC；QEMU 在 authorization、binding 和 PTO callback 之前拒绝</text>
+
+  <rect class="panel" x="42" y="108" width="658" height="560" rx="16"/>
+  <text class="subtitle" x="72" y="146">A. shape-stride-oob</text>
+  <text class="body" x="72" y="176">wire view 保持 64 KiB，修改 shape 后重新计算 metadata CRC</text>
+
+  <rect class="shape" x="78" y="208" width="586" height="92" rx="10"/>
+  <text class="mono" x="102" y="240">dtype = f32, rank = 1, stride[0] = 1</text>
+  <text class="mono" x="102" y="270">shape[0] = 16,385  →  extent = 16,385 × 4 = 65,540 B</text>
+  <text class="mono" x="102" y="292">memref.byte_length = 65,536 B</text>
+
+  <path class="arrow" d="M371 302 L371 350"/>
+  <rect class="neutral" x="118" y="352" width="506" height="94" rx="10"/>
+  <text class="body strong" x="371" y="384" text-anchor="middle">QEMU contiguous memref validator</text>
+  <text class="mono" x="371" y="414" text-anchor="middle">extent_bytes == byte_length ?</text>
+
+  <path class="arrow" d="M371 448 L371 495"/>
+  <rect class="reject" x="118" y="497" width="506" height="102" rx="10"/>
+  <text class="body strong" x="371" y="532" text-anchor="middle">QEMU_UB_GM_SHAPE_STRIDE_REJECT × 1</text>
+  <text class="mono" x="371" y="562" text-anchor="middle">65,540 B &gt; 65,536 B → bad-memref</text>
+  <text class="small" x="371" y="586" text-anchor="middle">不进入 mapping authorization</text>
+
+  <rect class="panel" x="740" y="108" width="658" height="560" rx="16"/>
+  <text class="subtitle" x="770" y="146">B. cross-segment</text>
+  <text class="body" x="770" y="176">两个真实 OBMM export/import 映射到相邻 PA，request 保留 source mapping_ref</text>
+
+  <rect class="segment-a" x="776" y="220" width="282" height="116" rx="8"/>
+  <rect class="segment-b" x="1058" y="220" width="304" height="116" rx="8"/>
+  <text class="body strong" x="917" y="250" text-anchor="middle">source mapping</text>
+  <text class="mono" x="917" y="278" text-anchor="middle">2 MiB · map 1</text>
+  <text class="small" x="917" y="308" text-anchor="middle">output sentinel 0x7fc00001</text>
+  <text class="body strong" x="1210" y="250" text-anchor="middle">adjacent guard mapping</text>
+  <text class="mono" x="1210" y="278" text-anchor="middle">2 MiB · map 2</text>
+  <text class="small" x="1210" y="308" text-anchor="middle">guard sentinel 0xa5</text>
+  <line x1="1058" y1="204" x2="1058" y2="356" stroke="#0f172a" stroke-width="2"/>
+  <text class="small strong" x="1058" y="198" text-anchor="middle">mapping boundary</text>
+
+  <path class="dash" d="M1005 350 L1111 350"/>
+  <path class="arrow" d="M1005 372 L1111 372"/>
+  <text class="mono" x="1058" y="404" text-anchor="middle">64 KiB request：32 KiB + 32 KiB</text>
+  <text class="small" x="1058" y="428" text-anchor="middle">mapping_ref 仍指向 source map 1</text>
+
+  <path class="arrow" d="M1058 438 L1058 485"/>
+  <rect class="reject" x="790" y="487" width="536" height="112" rx="10"/>
+  <text class="body strong" x="1058" y="522" text-anchor="middle">QEMU_UB_GM_MAPPING_BOUNDARY_REJECT × 1</text>
+  <text class="mono" x="1058" y="552" text-anchor="middle">request_end &gt; source_boundary → bad-memref</text>
+  <text class="small" x="1058" y="579" text-anchor="middle">token-aware export lookup 保持两个同 UBA export 独立</text>
+
+  <path class="arrow" d="M371 602 L371 704 L720 704"/>
+  <path class="arrow" d="M1058 602 L1058 704 L720 704"/>
+  <rect class="pass" x="190" y="706" width="1060" height="122" rx="14"/>
+  <text class="subtitle" x="720" y="742" text-anchor="middle">共同可观测结果</text>
+  <text class="body" x="720" y="775" text-anchor="middle">status-3 failure completion × 1 · dispatch reject × 1 · CMDQ slot 退休 × 1</text>
+  <text class="body" x="720" y="804" text-anchor="middle">authorization = 0 · binding = 0 · TLOAD/TSTORE/fence callback = 0 · payload staging = 0</text>
+
+  <rect class="neutral" x="42" y="852" width="1356" height="70" rx="12"/>
+  <text class="body strong" x="720" y="881" text-anchor="middle">正式证据：n4-910c + n4-910c1 × 两种 fault，4/4 campaign pass</text>
+  <text class="small" x="720" y="908" text-anchor="middle">shape：output sentinel 完整；cross：output 与 2 MiB guard sentinel 均完整；artifact fingerprint 运行前后稳定；无 QEMU 残留</text>
+</svg>
