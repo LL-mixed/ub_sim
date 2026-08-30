@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1160" viewBox="0 0 1680 1160" role="img" aria-labelledby="title desc">
   <title id="title">现有 ChipBackend bridge 上已贯通的 PTO UB_GM 架构</title>
-  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、传统 host payload staging、P3 已验证的 UB_GM 参数与数据路径，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
+  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、传统 host payload staging、P3/P2/P4A/P4B 已验证的 UB_GM 数据与 authorization lifecycle，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
@@ -29,7 +29,7 @@
 
   <rect width="1680" height="1160" fill="#f8fafc"/>
   <text x="60" y="54" class="title">lingqu_shmem → PTO UB_GM：复用现有 ChipBackend bridge</text>
-  <text x="60" y="84" class="subtitle">P3 同步、P2 delayed-ready 与 P4A timeout fail-closed 均已在 n4-910c / n4-910c1 验证；成功路径 2×64 KiB load、1×64 KiB store、1×fence、零 payload staging。</text>
+  <text x="60" y="84" class="subtitle">P3/P2/P4A/P4B 已在 n4-910c / n4-910c1 通过；覆盖 sync、delayed-ready、timeout、cancel、duplicate、reset/recovery 和零 payload staging。</text>
 
   <rect x="45" y="112" width="1590" height="270" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
   <text x="72" y="149" class="lane-title">A. 已实现并保留的控制与执行主链</text>
