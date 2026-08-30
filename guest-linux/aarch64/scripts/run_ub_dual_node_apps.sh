@@ -130,9 +130,9 @@ Options:
                       authorization-cancelled, bad-memref, or access-denied.
   --pto-fault-case CASE
                       Test-only dispatch fault: none, bad-mapping-ref,
-                      stale-mapping, wrong-requester, oob, address-overflow,
-                      role-access-mismatch, tstore-on-read, or
-                      tload-on-write.
+                      stale-mapping, released-import, wrong-requester, oob,
+                      address-overflow, role-access-mismatch,
+                      tstore-on-read, or tload-on-write.
   --use-qmp          Start guests paused and resume them through QMP.
   --use-prebuilt-qemu
                      Require the QEMU binary already built by the wrapper.
@@ -365,7 +365,7 @@ validate_lingqu_shmem_pto_config() {
     wrong-requester|tstore-on-read|tload-on-write)
       fault_expected="access-denied"
       ;;
-    bad-mapping-ref|stale-mapping|oob|address-overflow|role-access-mismatch)
+    bad-mapping-ref|stale-mapping|released-import|oob|address-overflow|role-access-mismatch)
       fault_expected="bad-memref"
       ;;
     *)
@@ -1255,6 +1255,14 @@ validate_lingqu_shmem_pto_guest_log() {
             "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=$LINGQU_SHMEM_PTO_FAULT_CASE " \
             "consumer wire mutation for callable access fault" || return 1
           ;;
+        released-import)
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=released-import expected=bad-memref import_mem_id=[1-9][0-9]* import_active=0 map_id=[1-9][0-9]* map_generation=[1-9][0-9]* map_active=1" 1 \
+            "consumer exact-once released import fault" || return 1
+          assert_log_count "$log_file" \
+            "UB SIM Decoder: OBMM unimport unmapped map_id=0x[1-9a-f][0-9a-f]*" 1 \
+            "consumer released SIM_DEC import mapping" || return 1
+          ;;
         none)
           ;;
         *)
@@ -1422,6 +1430,11 @@ validate_lingqu_shmem_pto_qemu_log() {
     assert_log_absent "$log_file" \
       "QEMU_UB_GM_(INPUT_AUTHORIZE|OUTPUT_AUTHORIZE|INOUT_AUTHORIZE|LOAD|STORE|FENCE|UNBIND)|SIM_QEMU_UB_GM_BIND_REGISTER" \
       "consumer data access after wire fault" || return 1
+    if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "released-import" ]]; then
+      assert_log_count "$log_file" \
+        "SIM_DEC: UNMAP success id=[1-9a-f][0-9a-f]*" 1 \
+        "consumer SIM_DEC import unmap" || return 1
+    fi
     return 0
   fi
   if [[ "$LINGQU_SHMEM_PTO_EXPECT" == "authorization-timeout" ]]; then

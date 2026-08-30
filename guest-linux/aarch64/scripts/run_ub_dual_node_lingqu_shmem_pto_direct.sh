@@ -63,7 +63,7 @@ Options:
                          authorization-cancelled, bad-memref, or
                          access-denied.
   --fault-case CASE      Test-only dispatch fault: none, bad-mapping-ref,
-                         stale-mapping, wrong-requester, oob,
+                         stale-mapping, released-import, wrong-requester, oob,
                          address-overflow, role-access-mismatch,
                          tstore-on-read, or tload-on-write.
   --run-secs N           Harness per-app timeout.
@@ -267,7 +267,7 @@ case "$FAULT_CASE" in
       exit 2
     fi
     ;;
-  bad-mapping-ref|stale-mapping|oob|address-overflow|role-access-mismatch)
+  bad-mapping-ref|stale-mapping|released-import|oob|address-overflow|role-access-mismatch)
     if [[ "$EXPECT" != "bad-memref" ]]; then
       echo "fault case $FAULT_CASE requires expected result bad-memref" >&2
       exit 2

@@ -74,6 +74,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("LINGQU_PTO_UB_GM_CODE_AUTHORIZATION_CANCELLED", source)
         self.assertIn("PTO_DIRECT_FAULT_BAD_MAPPING_REF", source)
         self.assertIn("PTO_DIRECT_FAULT_STALE_MAPPING", source)
+        self.assertIn("PTO_DIRECT_FAULT_RELEASED_IMPORT", source)
         self.assertIn("PTO_DIRECT_FAULT_WRONG_REQUESTER", source)
         self.assertIn("PTO_DIRECT_FAULT_OOB", source)
         self.assertIn("PTO_DIRECT_FAULT_ADDRESS_OVERFLOW", source)
@@ -96,6 +97,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertNotIn("NPU_OP_PTO_DISPATCH", source)
         self.assertNotIn("MAP_GSVA", source)
         self.assertIn("obmm_do_import(", source)
+        self.assertIn("obmm_do_unimport(obmm_fd, released_mem_id)", source)
+        self.assertIn("import_active=0", source)
         self.assertNotIn("obmm_do_import_v2(", source)
         self.assertNotIn("OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA", source)
 
@@ -179,6 +182,9 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("QEMU_UB_GM_FENCE", runner)
         self.assertIn("consumer execution-fault binding registration", runner)
         self.assertIn("consumer valid loads before denied PTO access", runner)
+        self.assertIn("consumer exact-once released import fault", runner)
+        self.assertIn("consumer released SIM_DEC import mapping", runner)
+        self.assertIn("consumer SIM_DEC import unmap", runner)
         self.assertIn(
             "consumer exact-once requested callable access fault", runner
         )
@@ -325,6 +331,62 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
             "fault case tstore-on-read requires expected result access-denied",
+            result.stdout,
+        )
+
+    def test_dedicated_runner_rejects_released_import_expectation_mismatch(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--fault-case",
+                "released-import",
+                "--expect",
+                "access-denied",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "fault case released-import requires expected result bad-memref",
+            result.stdout,
+        )
+
+    def test_generic_runner_rejects_released_import_expectation_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "manifest.json"
+            scenario = root / "scenario.yaml"
+            manifest.write_text("{}\n")
+            scenario.write_text("schema_version: 1\n")
+            result = subprocess.run(
+                [
+                    str(DUAL_NODE_RUNNER),
+                    "--app",
+                    "lingqu_shmem_pto_direct",
+                    "--pto-manifest",
+                    str(manifest),
+                    "--pto-scenario",
+                    str(scenario),
+                    "--pto-artifact-fingerprint",
+                    "1",
+                    "--pto-fault-case",
+                    "released-import",
+                    "--pto-expect",
+                    "access-denied",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "PTO fault case released-import requires expected result bad-memref",
             result.stdout,
         )
 

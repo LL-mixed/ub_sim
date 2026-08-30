@@ -90,6 +90,8 @@ They must be paired with one test-only `--fault-case` value:
   reference while preserving a valid wire encoding;
 - `stale-mapping` retires the registered endpoint map after materialization
   and before submission;
+- `released-import` unmaps and unimports the consumer's OBMM import after
+  materialization while preserving the registered endpoint-map reference;
 - `wrong-requester` replaces the validated requester CNA with a different,
   syntactically valid CNA;
 - `oob` moves the output view one byte beyond the registered map;

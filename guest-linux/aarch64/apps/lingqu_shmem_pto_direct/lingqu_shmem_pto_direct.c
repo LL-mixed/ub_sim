@@ -49,6 +49,7 @@ enum pto_direct_fault_case {
     PTO_DIRECT_FAULT_NONE,
     PTO_DIRECT_FAULT_BAD_MAPPING_REF,
     PTO_DIRECT_FAULT_STALE_MAPPING,
+    PTO_DIRECT_FAULT_RELEASED_IMPORT,
     PTO_DIRECT_FAULT_WRONG_REQUESTER,
     PTO_DIRECT_FAULT_OOB,
     PTO_DIRECT_FAULT_ADDRESS_OVERFLOW,
@@ -145,6 +146,8 @@ static const char *fault_case_name(enum pto_direct_fault_case fault_case)
         return "bad-mapping-ref";
     case PTO_DIRECT_FAULT_STALE_MAPPING:
         return "stale-mapping";
+    case PTO_DIRECT_FAULT_RELEASED_IMPORT:
+        return "released-import";
     case PTO_DIRECT_FAULT_WRONG_REQUESTER:
         return "wrong-requester";
     case PTO_DIRECT_FAULT_OOB:
@@ -212,7 +215,8 @@ static void usage(FILE *stream)
             "  --expect OUTCOME          success, authorization-timeout, "
             "authorization-cancelled, bad-memref, or access-denied\n"
             "  --fault-case CASE         none, bad-mapping-ref, "
-            "stale-mapping, wrong-requester, oob, address-overflow, "
+            "stale-mapping, released-import, wrong-requester, oob, "
+            "address-overflow, "
             "role-access-mismatch, tstore-on-read, or tload-on-write\n");
 }
 
@@ -287,6 +291,8 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                 config->fault_case = PTO_DIRECT_FAULT_BAD_MAPPING_REF;
             } else if (strcmp(fault_case, "stale-mapping") == 0) {
                 config->fault_case = PTO_DIRECT_FAULT_STALE_MAPPING;
+            } else if (strcmp(fault_case, "released-import") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_RELEASED_IMPORT;
             } else if (strcmp(fault_case, "wrong-requester") == 0) {
                 config->fault_case = PTO_DIRECT_FAULT_WRONG_REQUESTER;
             } else if (strcmp(fault_case, "oob") == 0) {
@@ -811,7 +817,10 @@ static int inject_fault_case(
     uint64_t mapping_bytes,
     struct lingqu_shmem_pto_wire_result *wire_result,
     struct obmm_async *async_runtime,
-    struct obmm_async_map *async_map)
+    struct obmm_async_map *async_map,
+    int obmm_fd,
+    uint64_t *import_mem_id,
+    struct obmm_helpers_region *imported)
 {
     LingquPtoDispatchControlV2 *control;
     LingquShmemMemrefV1 *wire_memrefs;
@@ -821,7 +830,8 @@ static int inject_fault_case(
     if (!config || config->fault_case == PTO_DIRECT_FAULT_NONE) {
         return 0;
     }
-    if (!metadata || !wire_result || !async_runtime || !async_map) {
+    if (!metadata || !wire_result || !async_runtime || !async_map ||
+        obmm_fd < 0 || !import_mem_id || !imported) {
         return -EINVAL;
     }
     control = (LingquPtoDispatchControlV2 *)metadata;
@@ -858,6 +868,28 @@ static int inject_fault_case(
                fault_case_name(config->fault_case),
                expectation_name(config->expectation), map_id,
                map_generation);
+        return 0;
+    }
+
+    if (config->fault_case == PTO_DIRECT_FAULT_RELEASED_IMPORT) {
+        uint64_t released_mem_id = *import_mem_id;
+
+        if (released_mem_id == 0) {
+            return -EINVAL;
+        }
+        obmm_unmap_region(imported);
+        rc = obmm_do_unimport(obmm_fd, released_mem_id);
+        if (rc != 0) {
+            return errno != 0 ? -errno : rc;
+        }
+        *import_mem_id = 0;
+        printf("LINGQU_SHMEM_PTO role=consumer stage=fault_injected "
+               "fault=%s expected=%s import_mem_id=%" PRIu64
+               " import_active=0 map_id=%" PRIu64
+               " map_generation=%" PRIu64 " map_active=1\n",
+               fault_case_name(config->fault_case),
+               expectation_name(config->expectation), released_mem_id,
+               async_map->id, async_map->generation);
         return 0;
     }
 
@@ -900,6 +932,7 @@ static int inject_fault_case(
     case PTO_DIRECT_FAULT_TLOAD_ON_WRITE:
     case PTO_DIRECT_FAULT_NONE:
     case PTO_DIRECT_FAULT_STALE_MAPPING:
+    case PTO_DIRECT_FAULT_RELEASED_IMPORT:
         return -EINVAL;
     }
     rc = refresh_fault_metadata_crc(
@@ -1070,7 +1103,8 @@ static int run_consumer(const struct pto_direct_config *config,
            endpoint_info.resource_path);
     submit_rc = inject_fault_case(
         config, metadata, PTO_DIRECT_METADATA_BYTES, metadata_iova,
-        meta.size, &wire_result, async_runtime, &async_map);
+        meta.size, &wire_result, async_runtime, &async_map, obmm_fd,
+        &import_mem_id, &imported);
     if (submit_rc != 0) {
         fprintf(stderr,
                 "[lingqu_shmem_pto] consumer fault_injection "
