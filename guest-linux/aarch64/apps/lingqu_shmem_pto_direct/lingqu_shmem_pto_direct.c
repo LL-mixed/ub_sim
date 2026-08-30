@@ -27,6 +27,11 @@
 #define PTO_DIRECT_DEFAULT_TIMEOUT_MS 120000u
 #define PTO_DIRECT_ALIGNMENT 64u
 #define PTO_DIRECT_OUTPUT_SENTINEL UINT32_C(0x7fc00001)
+#define PTO_DIRECT_CONTROL_MAGIC UINT64_C(0x50544f5245544952)
+#define PTO_DIRECT_CONTROL_VERSION 1u
+#define PTO_DIRECT_CONTROL_PREPARED 1u
+#define PTO_DIRECT_CONTROL_RETIRED 2u
+#define PTO_DIRECT_CONTROL_BYTES (2u * 1024u * 1024u)
 #define PTO_DIRECT_CALLABLE_ID UINT64_C(1)
 #define PTO_DIRECT_COMPLETION_FAILED 3u
 #define PTO_DIRECT_METADATA_BYTES 4096u
@@ -50,12 +55,22 @@ enum pto_direct_fault_case {
     PTO_DIRECT_FAULT_BAD_MAPPING_REF,
     PTO_DIRECT_FAULT_STALE_MAPPING,
     PTO_DIRECT_FAULT_RELEASED_IMPORT,
+    PTO_DIRECT_FAULT_RETIRED_SEGMENT,
     PTO_DIRECT_FAULT_WRONG_REQUESTER,
     PTO_DIRECT_FAULT_OOB,
     PTO_DIRECT_FAULT_ADDRESS_OVERFLOW,
     PTO_DIRECT_FAULT_ROLE_ACCESS_MISMATCH,
     PTO_DIRECT_FAULT_TSTORE_ON_READ,
     PTO_DIRECT_FAULT_TLOAD_ON_WRITE,
+};
+
+struct pto_direct_control {
+    uint64_t magic;
+    uint64_t generation;
+    uint64_t payload_mem_id;
+    uint32_t version;
+    uint32_t state;
+    uint64_t reserved[4];
 };
 
 struct pto_direct_config {
@@ -148,6 +163,8 @@ static const char *fault_case_name(enum pto_direct_fault_case fault_case)
         return "stale-mapping";
     case PTO_DIRECT_FAULT_RELEASED_IMPORT:
         return "released-import";
+    case PTO_DIRECT_FAULT_RETIRED_SEGMENT:
+        return "retired-segment";
     case PTO_DIRECT_FAULT_WRONG_REQUESTER:
         return "wrong-requester";
     case PTO_DIRECT_FAULT_OOB:
@@ -215,7 +232,8 @@ static void usage(FILE *stream)
             "  --expect OUTCOME          success, authorization-timeout, "
             "authorization-cancelled, bad-memref, or access-denied\n"
             "  --fault-case CASE         none, bad-mapping-ref, "
-            "stale-mapping, released-import, wrong-requester, oob, "
+            "stale-mapping, released-import, retired-segment, "
+            "wrong-requester, oob, "
             "address-overflow, "
             "role-access-mismatch, tstore-on-read, or tload-on-write\n");
 }
@@ -293,6 +311,8 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
                 config->fault_case = PTO_DIRECT_FAULT_STALE_MAPPING;
             } else if (strcmp(fault_case, "released-import") == 0) {
                 config->fault_case = PTO_DIRECT_FAULT_RELEASED_IMPORT;
+            } else if (strcmp(fault_case, "retired-segment") == 0) {
+                config->fault_case = PTO_DIRECT_FAULT_RETIRED_SEGMENT;
             } else if (strcmp(fault_case, "wrong-requester") == 0) {
                 config->fault_case = PTO_DIRECT_FAULT_WRONG_REQUESTER;
             } else if (strcmp(fault_case, "oob") == 0) {
@@ -417,12 +437,13 @@ static int get_local_cna(uint32_t *cna_out)
     return -ENOENT;
 }
 
-static int lookup_producer_meta(int obmm_fd,
-                                uint32_t local_cna,
-                                uint32_t node_count,
-                                uint64_t generation,
-                                uint64_t timeout_ms,
-                                struct obmm_helpers_meta *meta)
+static int lookup_node_meta(int obmm_fd,
+                            uint32_t local_cna,
+                            uint32_t node_count,
+                            uint32_t target_node,
+                            uint64_t generation,
+                            uint64_t timeout_ms,
+                            struct obmm_helpers_meta *meta)
 {
     uint64_t started_at = monotonic_ms();
 
@@ -441,11 +462,12 @@ static int lookup_producer_meta(int obmm_fd,
             const struct obmm_bootstrap_record *record =
                 &command.records[index];
 
-            if (record->node_id != 0) {
+            if (record->node_id != target_node) {
                 continue;
             }
             *meta = (struct obmm_helpers_meta) {
                 .export_mem_id = record->export_mem_id,
+                .generation = record->generation,
                 .remote_uba = record->remote_uba,
                 .size = record->size,
                 .token_id = record->token_id,
@@ -456,6 +478,17 @@ static int lookup_producer_meta(int obmm_fd,
         usleep(100000);
     }
     return -ETIMEDOUT;
+}
+
+static int lookup_producer_meta(int obmm_fd,
+                                uint32_t local_cna,
+                                uint32_t node_count,
+                                uint64_t generation,
+                                uint64_t timeout_ms,
+                                struct obmm_helpers_meta *meta)
+{
+    return lookup_node_meta(obmm_fd, local_cna, node_count, 0,
+                            generation, timeout_ms, meta);
 }
 
 static void seed_region(void *address,
@@ -539,6 +572,89 @@ static bool output_is_sentinel(const void *address,
     return true;
 }
 
+static int retire_payload_after_consumer_prepared(
+    int obmm_fd,
+    const struct pto_direct_config *config,
+    uint32_t local_cna,
+    struct obmm_helpers_meta *payload_meta,
+    struct obmm_helpers_region *payload_region)
+{
+    struct obmm_helpers_meta control_meta = { 0 };
+    struct obmm_helpers_region control_region = { .fd = -1 };
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = { false };
+    uint64_t local_pas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
+    uint64_t control_import_id = 0;
+    uint64_t started_at;
+    struct pto_direct_control *control;
+    int rc = -ETIMEDOUT;
+
+    rc = lookup_node_meta(obmm_fd, local_cna, config->node_count, 1,
+                          config->generation, config->timeout_ms,
+                          &control_meta);
+    if (rc != 0 || control_meta.size != PTO_DIRECT_CONTROL_BYTES) {
+        return rc != 0 ? rc : -EPROTO;
+    }
+    if (!obmm_alloc_import_pas(1, control_meta.size, local_pas,
+                               import_osync, OBMM_IMPORT_CACHE_NC)) {
+        return -ENOMEM;
+    }
+    if (obmm_do_import_lifetime(obmm_fd, &control_meta, local_cna,
+                                local_pas[0], config->token_value,
+                                &control_import_id) != 0 ||
+        obmm_map_region(control_import_id, control_meta.size,
+                        import_osync[0], &control_region) != 0) {
+        rc = errno != 0 ? -errno : -EIO;
+        goto out;
+    }
+    control = control_region.addr;
+    started_at = monotonic_ms();
+    while (monotonic_ms() - started_at < config->timeout_ms) {
+        if (control->magic == PTO_DIRECT_CONTROL_MAGIC &&
+            control->version == PTO_DIRECT_CONTROL_VERSION &&
+            control->generation == config->generation &&
+            control->payload_mem_id == payload_meta->export_mem_id &&
+            __atomic_load_n(&control->state, __ATOMIC_ACQUIRE) ==
+                PTO_DIRECT_CONTROL_PREPARED) {
+            break;
+        }
+        usleep(1000);
+    }
+    if (__atomic_load_n(&control->state, __ATOMIC_ACQUIRE) !=
+        PTO_DIRECT_CONTROL_PREPARED) {
+        rc = -ETIMEDOUT;
+        goto out;
+    }
+    printf("LINGQU_SHMEM_PTO role=producer stage=consumer_prepared "
+           "control_mem_id=%" PRIu64 " payload_mem_id=%" PRIu64 "\n",
+           control_meta.export_mem_id, payload_meta->export_mem_id);
+    obmm_unmap_region(payload_region);
+    rc = obmm_do_unexport(obmm_fd, payload_meta->export_mem_id);
+    if (rc != 0) {
+        rc = errno != 0 ? -errno : rc;
+        goto out;
+    }
+    printf("LINGQU_SHMEM_PTO role=producer stage=payload_retired "
+           "payload_mem_id=%" PRIu64 "\n", payload_meta->export_mem_id);
+    payload_meta->export_mem_id = 0;
+    __atomic_store_n(&control->state, PTO_DIRECT_CONTROL_RETIRED,
+                     __ATOMIC_RELEASE);
+    if (msync(control_region.addr, sizeof(*control), MS_SYNC) != 0 &&
+        errno != EINVAL) {
+        rc = -errno;
+        goto out;
+    }
+    printf("LINGQU_SHMEM_PTO role=producer stage=retired_ack "
+           "control_mem_id=%" PRIu64 " state=%u\n",
+           control_meta.export_mem_id, PTO_DIRECT_CONTROL_RETIRED);
+    rc = 0;
+out:
+    obmm_unmap_region(&control_region);
+    if (control_import_id != 0) {
+        (void)obmm_do_unimport(obmm_fd, control_import_id);
+    }
+    return rc;
+}
+
 static int run_producer(const struct pto_direct_config *config,
                         const struct pto_direct_layout *layout,
                         uint32_t local_cna)
@@ -595,6 +711,33 @@ static int run_producer(const struct pto_direct_config *config,
            " elements=%u generation=%" PRIu64 "\n",
            meta.export_mem_id, meta.remote_uba, meta.export_cna,
            meta.size, config->elements, config->generation);
+
+    if (config->fault_case == PTO_DIRECT_FAULT_RETIRED_SEGMENT) {
+        uint32_t changed_index = 0;
+        uint32_t changed_bits = 0;
+
+        if (!output_is_sentinel(region.addr, layout, config->elements,
+                                &changed_index, &changed_bits)) {
+            fprintf(stderr,
+                    "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
+                    "reason=output_changed_before_retire index=%u "
+                    "actual=0x%08x\n", changed_index, changed_bits);
+            goto out;
+        }
+        if (retire_payload_after_consumer_prepared(
+                obmm_fd, config, local_cna, &meta, &region) != 0) {
+            fprintf(stderr,
+                    "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
+                    "reason=retire_handshake\n");
+            goto out;
+        }
+        printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass "
+               "expected=bad-memref observed=payload_retired "
+               "output_unchanged=1 elements=%u sentinel=0x%08x\n",
+               config->elements, PTO_DIRECT_OUTPUT_SENTINEL);
+        rc = 0;
+        goto out;
+    }
 
     started_at = monotonic_ms();
     while (monotonic_ms() - started_at < config->timeout_ms) {
@@ -893,6 +1036,10 @@ static int inject_fault_case(
         return 0;
     }
 
+    if (config->fault_case == PTO_DIRECT_FAULT_RETIRED_SEGMENT) {
+        return 0;
+    }
+
     switch (config->fault_case) {
     case PTO_DIRECT_FAULT_BAD_MAPPING_REF: {
         uint64_t mapping_ref = wire_memrefs[0].opaque_mapping_ref;
@@ -933,6 +1080,7 @@ static int inject_fault_case(
     case PTO_DIRECT_FAULT_NONE:
     case PTO_DIRECT_FAULT_STALE_MAPPING:
     case PTO_DIRECT_FAULT_RELEASED_IMPORT:
+    case PTO_DIRECT_FAULT_RETIRED_SEGMENT:
         return -EINVAL;
     }
     rc = refresh_fault_metadata_crc(
@@ -946,6 +1094,65 @@ static int inject_fault_case(
            expectation_name(config->expectation),
            wire_result->metadata_crc32);
     return 0;
+}
+
+static int publish_control_and_wait_retired(
+    int obmm_fd,
+    const struct pto_direct_config *config,
+    uint32_t local_cna,
+    uint64_t payload_mem_id)
+{
+    struct obmm_helpers_meta meta = { 0 };
+    struct obmm_helpers_region region = { .fd = -1 };
+    struct pto_direct_control *control;
+    uint64_t started_at;
+    int rc = -ETIMEDOUT;
+
+    if (obmm_do_export(obmm_fd, &meta, PTO_DIRECT_CONTROL_BYTES) != 0) {
+        return errno != 0 ? -errno : -EIO;
+    }
+    meta.export_cna = local_cna;
+    if (obmm_map_region(meta.export_mem_id, meta.size, true, &region) != 0) {
+        rc = errno != 0 ? -errno : -EIO;
+        goto out;
+    }
+    control = region.addr;
+    memset(control, 0, sizeof(*control));
+    control->magic = PTO_DIRECT_CONTROL_MAGIC;
+    control->generation = config->generation;
+    control->payload_mem_id = payload_mem_id;
+    control->version = PTO_DIRECT_CONTROL_VERSION;
+    __atomic_store_n(&control->state, PTO_DIRECT_CONTROL_PREPARED,
+                     __ATOMIC_RELEASE);
+    if (obmm_bootstrap_publish(obmm_fd, config->node_id,
+                               config->node_count, config->generation,
+                               &meta) != 0) {
+        rc = errno != 0 ? -errno : -EIO;
+        goto out;
+    }
+    printf("LINGQU_SHMEM_PTO role=consumer stage=prepared_signal "
+           "control_mem_id=%" PRIu64 " payload_mem_id=%" PRIu64
+           " state=%u\n", meta.export_mem_id, payload_mem_id,
+           PTO_DIRECT_CONTROL_PREPARED);
+    started_at = monotonic_ms();
+    while (monotonic_ms() - started_at < config->timeout_ms) {
+        if (__atomic_load_n(&control->state, __ATOMIC_ACQUIRE) ==
+            PTO_DIRECT_CONTROL_RETIRED) {
+            printf("LINGQU_SHMEM_PTO role=consumer stage=retired_observed "
+                   "control_mem_id=%" PRIu64 " payload_mem_id=%" PRIu64
+                   " state=%u\n", meta.export_mem_id, payload_mem_id,
+                   PTO_DIRECT_CONTROL_RETIRED);
+            rc = 0;
+            break;
+        }
+        usleep(1000);
+    }
+out:
+    obmm_unmap_region(&region);
+    if (meta.export_mem_id != 0) {
+        (void)obmm_do_unexport(obmm_fd, meta.export_mem_id);
+    }
+    return rc;
 }
 
 static int run_consumer(const struct pto_direct_config *config,
@@ -1002,7 +1209,7 @@ static int run_consumer(const struct pto_direct_config *config,
         fprintf(stderr, "[lingqu_shmem_pto] consumer no_import_pa\n");
         goto out;
     }
-    submit_rc = obmm_do_import(
+    submit_rc = obmm_do_import_lifetime(
         obmm_fd, &meta, local_cna, local_pas[0], config->token_value,
         &import_mem_id);
     if (submit_rc != 0) {
@@ -1101,6 +1308,21 @@ static int run_consumer(const struct pto_direct_config *config,
            wire_result.metadata_bytes, wire_result.metadata_crc32,
            config->requester_cna, config->artifact_fingerprint,
            endpoint_info.resource_path);
+    if (config->fault_case == PTO_DIRECT_FAULT_RETIRED_SEGMENT) {
+        submit_rc = publish_control_and_wait_retired(
+            obmm_fd, config, local_cna, meta.export_mem_id);
+        if (submit_rc != 0) {
+            fprintf(stderr,
+                    "[lingqu_shmem_pto] consumer retire_handshake "
+                    "error=%d\n", submit_rc);
+            goto out;
+        }
+        printf("LINGQU_SHMEM_PTO role=consumer stage=fault_injected "
+               "fault=retired-segment expected=bad-memref "
+               "import_active=1 map_id=%" PRIu64
+               " map_generation=%" PRIu64 " map_active=1\n",
+               async_map.id, async_map.generation);
+    }
     submit_rc = inject_fault_case(
         config, metadata, PTO_DIRECT_METADATA_BYTES, metadata_iova,
         meta.size, &wire_result, async_runtime, &async_map, obmm_fd,

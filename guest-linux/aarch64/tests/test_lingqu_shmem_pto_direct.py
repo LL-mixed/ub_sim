@@ -20,6 +20,47 @@ PTO_RUNNER = (
     / "scripts"
     / "run_ub_dual_node_lingqu_shmem_pto_direct.sh"
 )
+OBMM_COMMON = ROOT / "guest-linux" / "aarch64" / "common" / "obmm_common.h"
+KERNEL_OBMM_SIM_DECODER = (
+    ROOT
+    / "guest-linux"
+    / "kernel_ub"
+    / "drivers"
+    / "ub"
+    / "obmm"
+    / "obmm_sim_decoder.h"
+)
+KERNEL_SIM_DECODER = (
+    ROOT
+    / "guest-linux"
+    / "kernel_ub"
+    / "drivers"
+    / "ub"
+    / "ubus"
+    / "sim"
+    / "ub_sim_decoder.h"
+)
+KERNEL_SIM_DECODER_MAIN = (
+    ROOT
+    / "guest-linux"
+    / "kernel_ub"
+    / "drivers"
+    / "ub"
+    / "ubus"
+    / "sim"
+    / "ub_sim_decoder_main.c"
+)
+KERNEL_OBMM_IMPORT = (
+    ROOT
+    / "guest-linux"
+    / "kernel_ub"
+    / "drivers"
+    / "ub"
+    / "obmm"
+    / "obmm_import.c"
+)
+QEMU_UBC = ROOT / "vendor" / "qemu_8.2.0_ub" / "hw" / "ub" / "ub_ubc.c"
+SIM_QEMU_FFI = ROOT / "crates" / "sim-qemu" / "src" / "ffi.rs"
 
 
 class LingquShmemPtoDirectTest(unittest.TestCase):
@@ -75,6 +116,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("PTO_DIRECT_FAULT_BAD_MAPPING_REF", source)
         self.assertIn("PTO_DIRECT_FAULT_STALE_MAPPING", source)
         self.assertIn("PTO_DIRECT_FAULT_RELEASED_IMPORT", source)
+        self.assertIn("PTO_DIRECT_FAULT_RETIRED_SEGMENT", source)
         self.assertIn("PTO_DIRECT_FAULT_WRONG_REQUESTER", source)
         self.assertIn("PTO_DIRECT_FAULT_OOB", source)
         self.assertIn("PTO_DIRECT_FAULT_ADDRESS_OVERFLOW", source)
@@ -96,9 +138,12 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         )
         self.assertNotIn("NPU_OP_PTO_DISPATCH", source)
         self.assertNotIn("MAP_GSVA", source)
-        self.assertIn("obmm_do_import(", source)
+        self.assertIn("obmm_do_import_lifetime(", source)
         self.assertIn("obmm_do_unimport(obmm_fd, released_mem_id)", source)
         self.assertIn("import_active=0", source)
+        self.assertIn("stage=prepared_signal", source)
+        self.assertIn("stage=payload_retired", source)
+        self.assertIn("stage=retired_observed", source)
         self.assertNotIn("obmm_do_import_v2(", source)
         self.assertNotIn("OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA", source)
 
@@ -185,6 +230,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("consumer exact-once released import fault", runner)
         self.assertIn("consumer released SIM_DEC import mapping", runner)
         self.assertIn("consumer SIM_DEC import unmap", runner)
+        self.assertIn("producer shared payload retirement tombstone", runner)
+        self.assertIn("consumer observed shared payload retirement tombstone", runner)
         self.assertIn(
             "consumer exact-once requested callable access fault", runner
         )
@@ -199,6 +246,70 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("manifest UB_GM access fault mismatch", PTO_RUNNER.read_text())
         self.assertIn("manifest_ub_gm_access_fault", PTO_RUNNER.read_text())
         self.assertIn("prepare_simpler_host_artifacts.py", PTO_RUNNER.read_text())
+
+    def test_retired_segment_protocol_is_wired_end_to_end(self):
+        common_header = OBMM_COMMON.read_text()
+        app_source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
+        obmm_header = KERNEL_OBMM_SIM_DECODER.read_text()
+        obmm_import = KERNEL_OBMM_IMPORT.read_text()
+        decoder_header = KERNEL_SIM_DECODER.read_text()
+        decoder_main = KERNEL_SIM_DECODER_MAIN.read_text()
+        qemu_source = QEMU_UBC.read_text()
+        sim_qemu_ffi = SIM_QEMU_FFI.read_text()
+        runner = DUAL_NODE_RUNNER.read_text()
+        dedicated_runner = PTO_RUNNER.read_text()
+        self.assertIn("OBMM_SIM_DEC_PRIV_VER_3", common_header)
+        self.assertIn("obmm_do_import_lifetime", common_header)
+        self.assertIn(
+            "struct obmm_sim_dec_import_priv_v1 priv", common_header
+        )
+        self.assertIn("remote_export_mem_id", common_header)
+        self.assertIn("remote_export_generation", common_header)
+        self.assertIn("priv.remote_export_mem_id = meta->export_mem_id", common_header)
+        self.assertIn(
+            "priv.remote_export_generation = meta->generation", common_header
+        )
+        self.assertIn(".generation = record->generation", app_source)
+        self.assertIn("obmm_sim_dec_export_retire_info", obmm_header)
+        self.assertIn("obmm_sim_dec_import_priv_v3", obmm_header)
+        self.assertIn("obmm_register_export_retire_callback", obmm_header)
+        self.assertIn("cb ? cb((void *)info) : -ENODEV", obmm_import)
+        self.assertIn("remote_export_generation", obmm_import)
+        self.assertIn("SIM_DEC_OP_OBMM_EXPORT_RETIRE", decoder_header)
+        self.assertIn("SIM_DEC_OP_OBMM_MAP_V2", decoder_header)
+        self.assertIn("sim_dec_obmm_map_v2_req", decoder_header)
+        self.assertIn("sim_dec_obmm_export_retire_req", decoder_header)
+        self.assertIn("info->remote_export_mem_id", decoder_main)
+        self.assertIn("info->remote_export_generation", decoder_main)
+        self.assertIn("SIM_DEC_OP_OBMM_EXPORT_RETIRE", qemu_source)
+        self.assertIn("SIM_DEC_OP_OBMM_MAP_V2", qemu_source)
+        self.assertIn("obmm_retired", qemu_source)
+        self.assertIn("generation%016", qemu_source)
+        self.assertIn("export%016", qemu_source)
+        self.assertIn("remote export retired", qemu_source)
+        self.assertIn("QEMU_UB_GM_CALLABLE_REJECT", qemu_source)
+        self.assertIn("query_status=%d", qemu_source)
+        self.assertIn("expected_fingerprint=0x%016", qemu_source)
+        self.assertIn("requested_fingerprint=0x%016", qemu_source)
+        self.assertIn('g_getenv("SIMPLER_HOST_VECTOR_MANIFEST")', qemu_source)
+        self.assertIn(
+            "SIM_QEMU_UB_GM_CALLABLE_QUERY_FAILED", sim_qemu_ffi
+        )
+        self.assertIn("callable_id, error", sim_qemu_ffi)
+        self.assertIn("consumer mapped exact payload export lifetime", runner)
+        self.assertIn("retired export identity", runner)
+        self.assertIn("local retired_export_cna=\"\"", runner)
+        self.assertIn("/stage=published /", runner)
+        self.assertIn("/^export_cna=/", runner)
+        self.assertIn("mem_id == expected_mem_id", runner)
+        self.assertIn("invalid retired export owner CNA", runner)
+        self.assertIn("owner_cna=$retired_export_cna", runner)
+        self.assertNotIn(
+            "owner_cna=$LINGQU_SHMEM_PTO_NODEA_CNA", runner
+        )
+        self.assertIn('gsub(/\\r/, "", $i)', runner)
+        self.assertIn('gsub(/\\r/, "", field)', runner)
+        self.assertIn("generation_epoch", dedicated_runner)
 
     def test_dedicated_runner_derives_fingerprint_and_preserves_evidence(self):
         runner = PTO_RUNNER.read_text()
@@ -387,6 +498,62 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
             "PTO fault case released-import requires expected result bad-memref",
+            result.stdout,
+        )
+
+    def test_dedicated_runner_rejects_retired_segment_expectation_mismatch(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--fault-case",
+                "retired-segment",
+                "--expect",
+                "access-denied",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "fault case retired-segment requires expected result bad-memref",
+            result.stdout,
+        )
+
+    def test_generic_runner_rejects_retired_segment_expectation_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "manifest.json"
+            scenario = root / "scenario.yaml"
+            manifest.write_text("{}\n")
+            scenario.write_text("schema_version: 1\n")
+            result = subprocess.run(
+                [
+                    str(DUAL_NODE_RUNNER),
+                    "--app",
+                    "lingqu_shmem_pto_direct",
+                    "--pto-manifest",
+                    str(manifest),
+                    "--pto-scenario",
+                    str(scenario),
+                    "--pto-artifact-fingerprint",
+                    "1",
+                    "--pto-fault-case",
+                    "retired-segment",
+                    "--pto-expect",
+                    "access-denied",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "PTO fault case retired-segment requires expected result bad-memref",
             result.stdout,
         )
 

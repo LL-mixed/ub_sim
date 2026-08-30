@@ -153,7 +153,14 @@ def test_qemu_endpoint_is_routed_and_uses_registered_buffers():
     assert "ub_obmm_async_free(" in ubc
     assert ".max_access_size = sizeof(uint64_t)" in ubc
     assert '"node%u-generation%" PRIu64 ".ini"' in ubc
-    assert ubc.index("obmm_export_register(record);") < ubc.index(
+    bootstrap_start = ubc.index(
+        "static int sim_dec_handle_obmm_bootstrap_publish("
+    )
+    bootstrap_end = ubc.index(
+        "static bool sim_dec_obmm_bootstrap_load(", bootstrap_start
+    )
+    bootstrap = ubc[bootstrap_start:bootstrap_end]
+    assert bootstrap.index("obmm_export_register(record);") < bootstrap.index(
         "g_rename(tmp_path, path)"
     )
     assert "dma_memory_write(" in endpoint

@@ -16750,6 +16750,9 @@ fn simpler_manifest_runtime_matches_build_lib(
             build_lib.join("libcpu_sim_context.so"),
         ),
     ];
+    if artifacts.iter().any(|(_, current)| !current.is_file()) {
+        return true;
+    }
     artifacts.iter().all(|(cached_source, current)| {
         cached_source
             .as_str()
@@ -29999,6 +30002,13 @@ mod tests {
         assert!(super::simpler_manifest_runtime_matches_build_lib(
             &manifest, &build_lib
         ));
+        std::fs::remove_file(runtime_dir.join("libaicore_kernel.so"))
+            .expect("remove incomplete current AICore runtime");
+        assert!(super::simpler_manifest_runtime_matches_build_lib(
+            &manifest, &build_lib
+        ));
+        std::fs::write(runtime_dir.join("libaicore_kernel.so"), vec![3u8; 8])
+            .expect("restore current AICore runtime");
         std::fs::write(runtime_dir.join("libaicore_kernel.so"), b"new-aicore")
             .expect("replace current AICore runtime");
         assert!(!super::simpler_manifest_runtime_matches_build_lib(

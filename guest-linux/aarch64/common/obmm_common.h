@@ -73,6 +73,7 @@ enum obmm_import_cache_mode {
 #define OBMM_SIM_DEC_PRIV_MAGIC        0x53444950U
 #define OBMM_SIM_DEC_PRIV_VER_1        1
 #define OBMM_SIM_DEC_PRIV_VER_2        2
+#define OBMM_SIM_DEC_PRIV_VER_3        3
 #define OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM 1
 #define OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER 2
 #define OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA 1
@@ -93,6 +94,7 @@ enum obmm_import_cache_mode {
 
 struct obmm_helpers_meta {
     uint64_t export_mem_id;
+    uint64_t generation;
     uint64_t remote_uba;
     uint64_t size;
     uint32_t token_id;
@@ -136,6 +138,17 @@ struct obmm_sim_dec_import_priv_v1 {
     uint64_t remote_uba;
     uint32_t token_value;
     uint32_t flags;
+};
+
+struct obmm_sim_dec_import_priv_v3 {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t len;
+    uint64_t remote_uba;
+    uint32_t token_value;
+    uint32_t flags;
+    uint64_t remote_export_mem_id;
+    uint64_t remote_export_generation;
 };
 
 struct obmm_helpers_window {
@@ -554,6 +567,47 @@ static int OBMM_MAYBE_UNUSED obmm_do_import(int obmm_fd, const struct obmm_helpe
     return 0;
 }
 
+static int OBMM_MAYBE_UNUSED obmm_do_import_lifetime(
+    int obmm_fd, const struct obmm_helpers_meta *meta, uint32_t local_cna,
+    uint64_t local_pa, uint32_t token_value, uint64_t *import_mem_id)
+{
+    struct obmm_sim_dec_import_priv_v3 priv = {0};
+    struct obmm_mem_desc *desc;
+    int numa = 0;
+    mem_id id;
+
+    (void)obmm_fd;
+    if (!meta || meta->export_mem_id == 0 || meta->generation == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    priv.magic = OBMM_SIM_DEC_PRIV_MAGIC;
+    priv.version = OBMM_SIM_DEC_PRIV_VER_3;
+    priv.len = sizeof(priv);
+    priv.remote_uba = meta->remote_uba;
+    priv.token_value = token_value;
+    priv.remote_export_mem_id = meta->export_mem_id;
+    priv.remote_export_generation = meta->generation;
+
+    desc = calloc(1, sizeof(*desc) + sizeof(priv));
+    if (!desc)
+        return -1;
+    desc->addr = local_pa;
+    desc->length = meta->size;
+    desc->tokenid = meta->token_id;
+    desc->scna = local_cna;
+    desc->dcna = meta->export_cna;
+    desc->priv_len = sizeof(priv);
+    memcpy(desc->priv, &priv, sizeof(priv));
+
+    id = obmm_import(desc, OBMM_IMPORT_FLAG_ALLOW_MMAP, 0, &numa);
+    free(desc);
+    if (id == OBMM_INVALID_MEMID)
+        return -1;
+    *import_mem_id = (uint64_t)id;
+    return 0;
+}
+
 static int obmm_do_import_v2_epoch(int obmm_fd,
                             const struct obmm_helpers_meta *meta,
                             uint32_t local_cna, uint64_t local_pa,
@@ -705,6 +759,7 @@ static int OBMM_MAYBE_UNUSED obmm_bootstrap_lookup(int obmm_fd, uint32_t local_c
             if (record->node_id >= (uint32_t)node_count)
                 continue;
             metas[record->node_id].export_mem_id = record->export_mem_id;
+            metas[record->node_id].generation = record->generation;
             metas[record->node_id].remote_uba = record->remote_uba;
             metas[record->node_id].size = record->size;
             metas[record->node_id].token_id = record->token_id;

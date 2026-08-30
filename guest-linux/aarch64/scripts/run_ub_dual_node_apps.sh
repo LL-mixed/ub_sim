@@ -130,7 +130,8 @@ Options:
                       authorization-cancelled, bad-memref, or access-denied.
   --pto-fault-case CASE
                       Test-only dispatch fault: none, bad-mapping-ref,
-                      stale-mapping, released-import, wrong-requester, oob,
+                      stale-mapping, released-import, retired-segment,
+                      wrong-requester, oob,
                       address-overflow, role-access-mismatch,
                       tstore-on-read, or tload-on-write.
   --use-qmp          Start guests paused and resume them through QMP.
@@ -365,7 +366,7 @@ validate_lingqu_shmem_pto_config() {
     wrong-requester|tstore-on-read|tload-on-write)
       fault_expected="access-denied"
       ;;
-    bad-mapping-ref|stale-mapping|released-import|oob|address-overflow|role-access-mismatch)
+    bad-mapping-ref|stale-mapping|released-import|retired-segment|oob|address-overflow|role-access-mismatch)
       fault_expected="bad-memref"
       ;;
     *)
@@ -1230,9 +1231,21 @@ validate_lingqu_shmem_pto_guest_log() {
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO role=producer producer_verify=pass" \
         "producer write after rejected dispatch" || return 1
-      assert_log_has "$log_file" \
-        "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=$LINGQU_SHMEM_PTO_EXPECT observed=verify_timeout output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
-        "producer unchanged output after expected authorization failure" || return 1
+      if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "retired-segment" ]]; then
+        assert_log_count "$log_file" \
+          "LINGQU_SHMEM_PTO role=producer stage=consumer_prepared .*payload_mem_id=[1-9][0-9]*" 1 \
+          "producer observed prepared consumer" || return 1
+        assert_log_count "$log_file" \
+          "LINGQU_SHMEM_PTO role=producer stage=payload_retired payload_mem_id=[1-9][0-9]*" 1 \
+          "producer retired payload" || return 1
+        assert_log_has "$log_file" \
+          "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=bad-memref observed=payload_retired output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
+          "producer retired unchanged payload" || return 1
+      else
+        assert_log_has "$log_file" \
+          "LINGQU_SHMEM_PTO_RESULT role=producer status=pass expected=$LINGQU_SHMEM_PTO_EXPECT observed=verify_timeout output_unchanged=1 elements=$LINGQU_SHMEM_PTO_ELEMENTS sentinel=0x7fc00001" \
+          "producer unchanged output after expected authorization failure" || return 1
+      fi
       assert_log_absent "$log_file" \
         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail" \
         "producer unexpected failure result" || return 1
@@ -1262,6 +1275,17 @@ validate_lingqu_shmem_pto_guest_log() {
           assert_log_count "$log_file" \
             "UB SIM Decoder: OBMM unimport unmapped map_id=0x[1-9a-f][0-9a-f]*" 1 \
             "consumer released SIM_DEC import mapping" || return 1
+          ;;
+        retired-segment)
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=prepared_signal .*state=1" 1 \
+            "consumer prepared signal" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=retired_observed .*state=2" 1 \
+            "consumer observed payload retirement" || return 1
+          assert_log_count "$log_file" \
+            "LINGQU_SHMEM_PTO role=consumer stage=fault_injected fault=retired-segment expected=bad-memref import_active=1 map_id=[1-9][0-9]* map_generation=[1-9][0-9]* map_active=1" 1 \
+            "consumer exact-once retired segment fault" || return 1
           ;;
         none)
           ;;
@@ -1355,8 +1379,61 @@ validate_lingqu_shmem_pto_reset_sequence() {
 validate_lingqu_shmem_pto_qemu_log() {
   local node_name="$1"
   local log_file="$2"
+  local producer_guest_log="${3:-}"
   local expected_cna="$LINGQU_SHMEM_PTO_NODEA_CNA"
   local tensor_bytes=$((LINGQU_SHMEM_PTO_ELEMENTS * 4))
+  local retired_export_cna=""
+  local retired_export_mem_id=""
+
+  if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "retired-segment" ]]; then
+    if [[ ! -f "$producer_guest_log" ]]; then
+      echo "missing producer guest log for retired export identity" >&2
+      return 1
+    fi
+    retired_export_mem_id="$(awk '
+      /stage=payload_retired / {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^payload_mem_id=/) {
+            sub(/^payload_mem_id=/, "", $i)
+            gsub(/\r/, "", $i)
+            print $i
+            exit
+          }
+        }
+      }
+    ' "$producer_guest_log")"
+    if [[ "$retired_export_mem_id" != <-> ||
+          "$retired_export_mem_id" == 0 ]]; then
+      echo "invalid retired export identity in $producer_guest_log" >&2
+      return 1
+    fi
+    retired_export_cna="$(awk -v expected_mem_id="$retired_export_mem_id" '
+      /stage=published / {
+        mem_id = ""
+        export_cna = ""
+        for (i = 1; i <= NF; i++) {
+          field = $i
+          gsub(/\r/, "", field)
+          if (field ~ /^mem_id=/) {
+            sub(/^mem_id=/, "", field)
+            mem_id = field
+          } else if (field ~ /^export_cna=/) {
+            sub(/^export_cna=/, "", field)
+            export_cna = field
+          }
+        }
+        if (mem_id == expected_mem_id && export_cna != "") {
+          print export_cna
+          exit
+        }
+      }
+    ' "$producer_guest_log")"
+    if ! printf '%s\n' "$retired_export_cna" |
+        grep -qE '^0x[0-9a-fA-F]+$'; then
+      echo "invalid retired export owner CNA in $producer_guest_log" >&2
+      return 1
+    fi
+  fi
 
   if [[ "$node_name" == "nodeB" ]]; then
     expected_cna="$LINGQU_SHMEM_PTO_NODEB_CNA"
@@ -1373,6 +1450,11 @@ validate_lingqu_shmem_pto_qemu_log() {
     assert_log_absent "$log_file" \
       "QEMU_UB_GM_AUTHORIZATION_(PENDING|RESUME|TIMEOUT|CANCEL|COMPLETION_IGNORED)" \
       "producer PTO authorization activity" || return 1
+    if [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "retired-segment" ]]; then
+      assert_log_count "$log_file" \
+        "SIM_DEC: OBMM export retired mem_id=$retired_export_mem_id owner_cna=$retired_export_cna .* generation=$LINGQU_SHMEM_PTO_GENERATION" 1 \
+        "producer shared payload retirement tombstone" || return 1
+    fi
     return 0
   fi
 
@@ -1434,6 +1516,13 @@ validate_lingqu_shmem_pto_qemu_log() {
       assert_log_count "$log_file" \
         "SIM_DEC: UNMAP success id=[1-9a-f][0-9a-f]*" 1 \
         "consumer SIM_DEC import unmap" || return 1
+    elif [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" == "retired-segment" ]]; then
+      assert_log_count "$log_file" \
+        "SIM_DEC: MAP success .* generation=$LINGQU_SHMEM_PTO_GENERATION export_mem_id=$retired_export_mem_id" 1 \
+        "consumer mapped exact payload export lifetime" || return 1
+      assert_log_count "$log_file" \
+        "SIM_DEC: OBMM remote export retired map_id=[1-9][0-9]* owner_cna=$retired_export_cna .* generation=$LINGQU_SHMEM_PTO_GENERATION export_mem_id=$retired_export_mem_id" 1 \
+        "consumer observed shared payload retirement tombstone" || return 1
     fi
     return 0
   fi
@@ -3131,9 +3220,9 @@ run_iteration() {
     validate_lingqu_shmem_pto_guest_log \
       "consumer" "$nodeb_guest_log" || return 1
     validate_lingqu_shmem_pto_qemu_log \
-      "nodeA" "$nodea_qemu_log" || return 1
+      "nodeA" "$nodea_qemu_log" "$nodea_guest_log" || return 1
     validate_lingqu_shmem_pto_qemu_log \
-      "nodeB" "$nodeb_qemu_log" || return 1
+      "nodeB" "$nodeb_qemu_log" "$nodea_guest_log" || return 1
   fi
   validate_kernel_health_log "nodeA" "$nodea_guest_log" || return 1
   validate_kernel_health_log "nodeB" "$nodeb_guest_log" || return 1

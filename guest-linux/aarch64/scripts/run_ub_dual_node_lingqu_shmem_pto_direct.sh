@@ -12,7 +12,7 @@ SIM_CLI_BIN="${SIM_CLI_BIN:-$WORKSPACE_ROOT/target/release/sim-cli}"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$GUEST_ROOT/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$GUEST_ROOT/out/initramfs.cpio.gz}"
 ELEMENTS=16384
-GENERATION=101
+GENERATION=""
 TOKEN_VALUE=0
 TIMEOUT_MS=120000
 NODEA_CNA=0xf001
@@ -43,7 +43,7 @@ Options:
   --kernel-image PATH    Arm64 guest kernel image.
   --initramfs-image PATH Guest initramfs with the PTO workload.
   --elements N           Callable 1 element count; must be 16384.
-  --generation N         OBMM bootstrap generation.
+  --generation N         OBMM bootstrap generation; defaults to a unique run ID.
   --token-value N        OBMM import token value.
   --timeout-ms N         Guest producer/dispatch timeout.
   --nodea-cna N          QEMU PTO device CNA for nodeA.
@@ -63,7 +63,8 @@ Options:
                          authorization-cancelled, bad-memref, or
                          access-denied.
   --fault-case CASE      Test-only dispatch fault: none, bad-mapping-ref,
-                         stale-mapping, released-import, wrong-requester, oob,
+                         stale-mapping, released-import, retired-segment,
+                         wrong-requester, oob,
                          address-overflow, role-access-mismatch,
                          tstore-on-read, or tload-on-write.
   --run-secs N           Harness per-app timeout.
@@ -237,6 +238,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$GENERATION" ]]; then
+  generation_epoch="$(date +%s)"
+  GENERATION=$(( (generation_epoch << 15) | (RANDOM & 32767) ))
+fi
+
 if [[ -z "$MANIFEST" ]]; then
   echo "--manifest is required" >&2
   usage >&2
@@ -267,7 +273,7 @@ case "$FAULT_CASE" in
       exit 2
     fi
     ;;
-  bad-mapping-ref|stale-mapping|released-import|oob|address-overflow|role-access-mismatch)
+  bad-mapping-ref|stale-mapping|released-import|retired-segment|oob|address-overflow|role-access-mismatch)
     if [[ "$EXPECT" != "bad-memref" ]]; then
       echo "fault case $FAULT_CASE requires expected result bad-memref" >&2
       exit 2

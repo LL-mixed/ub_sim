@@ -122,8 +122,13 @@ impl LinquUbBridge {
         if callable_id != PTO_UB_GM_HOST_VECTOR_CALLABLE_ID {
             return Err(LingquPtoUbGmError::UnsupportedCallable);
         }
-        pto_ub_gm_host_vector_callable_fingerprint()
-            .map_err(|_| LingquPtoUbGmError::ExecutionFailed)
+        pto_ub_gm_host_vector_callable_fingerprint().map_err(|error| {
+            eprintln!(
+                "SIM_QEMU_UB_GM_CALLABLE_QUERY_FAILED callable={} error={}",
+                callable_id, error
+            );
+            LingquPtoUbGmError::ExecutionFailed
+        })
     }
 
     fn submit_ub_gm_v2(
