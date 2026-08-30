@@ -1,5 +1,7 @@
 import json
+import os
 import pathlib
+import runpy
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +21,13 @@ PTO_RUNNER = (
     / "aarch64"
     / "scripts"
     / "run_ub_dual_node_lingqu_shmem_pto_direct.sh"
+)
+ARTIFACT_GENERATOR = (
+    ROOT
+    / "guest-linux"
+    / "aarch64"
+    / "scripts"
+    / "prepare_simpler_host_artifacts.py"
 )
 OBMM_COMMON = ROOT / "guest-linux" / "aarch64" / "common" / "obmm_common.h"
 KERNEL_OBMM_SIM_DECODER = (
@@ -101,6 +110,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn(b"LINGQU_SHMEM_PTO_RESULT", data)
         self.assertIn(b"--artifact-fingerprint", data)
         self.assertIn(b"--fault-case", data)
+        self.assertIn(b"--layout", data)
 
     def test_workload_uses_public_memrefs_and_producer_verification(self):
         source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
@@ -118,6 +128,12 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             "lingqu_shmem_sim_phys_for_virt(imported.addr", source
         )
         self.assertIn("PTO_DIRECT_HOST_VECTOR_ELEMENTS", source)
+        self.assertIn("PTO_DIRECT_TAIL_ELEMENTS", source)
+        self.assertIn("PTO_DIRECT_LAYOUT_CROSS_PAGE", source)
+        self.assertIn("PTO_DIRECT_LAYOUT_UNALIGNED", source)
+        self.assertIn("stage=layout layout=%s", source)
+        self.assertIn("layout->input_a_offset = sizeof(float)", source)
+        self.assertIn("PTO_DIRECT_PAGE_BYTES - half", source)
         self.assertIn("--expect OUTCOME", source)
         self.assertIn("PTO_DIRECT_EXPECT_AUTHORIZATION_TIMEOUT", source)
         self.assertIn("PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED", source)
@@ -149,7 +165,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
             "wire_memrefs[0].role = LINGQU_PTO_MEMREF_OUTPUT", source
         )
         self.assertIn(
-            "config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS", source
+            "config->elements != layout_elements(config->layout)", source
         )
         self.assertNotIn("NPU_OP_PTO_DISPATCH", source)
         self.assertNotIn("MAP_GSVA", source)
@@ -183,6 +199,8 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_pto_cancel_after_ms 0", run_app)
         self.assertIn("lingqu_shmem_pto_fault_case none", run_app)
         self.assertIn("--fault-case $(cmdline_value", run_app)
+        self.assertIn("lingqu_shmem_pto_layout nd", run_app)
+        self.assertIn("--layout $(cmdline_value", run_app)
         self.assertIn("linqu_shmem_pto_direct=1", run_app)
         self.assertIn("/bin/lingqu_shmem_pto_direct", run_app)
         self.assertIn("lingqu_shmem_pto_elements 16384", run_app)
@@ -201,8 +219,13 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--pto-inject-late-completion", runner)
         self.assertIn("--pto-expect", runner)
         self.assertIn("--pto-fault-case", runner)
+        self.assertIn("--pto-layout", runner)
         self.assertIn("LINGQU_SHMEM_PTO_EXPECT", runner)
         self.assertIn("LINGQU_SHMEM_PTO_FAULT_CASE", runner)
+        self.assertIn("LINGQU_SHMEM_PTO_LAYOUT", runner)
+        self.assertIn("validate_pto_layout_manifest", runner)
+        self.assertIn("exact cross-page layout", runner)
+        self.assertIn("exact unaligned layout", runner)
         self.assertIn(
             "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT", runner
         )
@@ -430,6 +453,35 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("--inject-late-completion 0|1", result.stdout)
         self.assertIn("--expect OUTCOME", result.stdout)
         self.assertIn("--fault-case CASE", result.stdout)
+        self.assertIn("--layout LAYOUT", result.stdout)
+
+    def test_artifact_generator_separates_global_shape_from_tile_capacity(self):
+        module = runpy.run_path(str(ARTIFACT_GENERATOR))
+        with tempfile.TemporaryDirectory() as directory:
+            source = module["write_vector_kernel_source"](
+                pathlib.Path(directory),
+                0,
+                128,
+                128,
+                global_rows=128,
+                global_cols=127,
+            )
+            generated = source.read_text()
+
+        self.assertIn("constexpr int kTRows_ = 128;", generated)
+        self.assertIn("constexpr int kTCols_ = 128;", generated)
+        self.assertIn("constexpr int vRows = 128;", generated)
+        self.assertIn("constexpr int vCols = 127;", generated)
+        self.assertIn(
+            "using DynStridDim5 = Stride<1, 1, 1, vCols, 1>;",
+            generated,
+        )
+        generator = ARTIFACT_GENERATOR.read_text()
+        self.assertIn('manifest["ub_gm_layout"]', generator)
+        self.assertIn(
+            '"logical_elements": vector_global_rows * vector_global_cols',
+            generator,
+        )
 
     def test_dedicated_runner_rejects_unknown_expected_result(self):
         result = subprocess.run(
@@ -468,6 +520,45 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(
             "unsupported PTO fault case: invented-corruption",
+            result.stdout,
+        )
+
+    def test_dedicated_runner_rejects_unknown_layout(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--layout",
+                "fragmented",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("unsupported PTO layout: fragmented", result.stdout)
+
+    def test_dedicated_runner_rejects_layout_element_mismatch(self):
+        result = subprocess.run(
+            [
+                str(PTO_RUNNER),
+                "--manifest",
+                "/does/not/need/to/exist",
+                "--layout",
+                "tail",
+                "--elements",
+                "64",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(
+            "PTO layout tail requires exactly 16256 elements",
             result.stdout,
         )
 
@@ -728,7 +819,15 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
                             "kernels": [
                                 {"binary": {"source": str(artifacts[4])}}
                             ],
-                        }
+                        },
+                        "ub_gm_layout": {
+                            "profile": "nd",
+                            "global_rows": 128,
+                            "global_cols": 128,
+                            "tile_rows": 128,
+                            "tile_cols": 128,
+                            "logical_elements": 16384,
+                        },
                     }
                 )
             )
@@ -763,7 +862,7 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
                     "--initramfs-image",
                     str(initramfs),
                     "--elements",
-                    "1",
+                    "16384",
                     "--authorization-delay-ns",
                     "250000",
                     "--authorization-timeout-ns",
@@ -774,15 +873,19 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
                     str(evidence),
                 ],
                 check=False,
+                env={
+                    **os.environ,
+                    "QEMU_UB_BUILD_DIR": str(root / "missing-qemu-build"),
+                },
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
 
-            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertEqual(result.returncode, 1, result.stdout)
             self.assertNotIn("command not found", result.stdout)
             self.assertNotIn("permission denied", result.stdout)
-            self.assertIn("PTO callable 1 requires exactly 16384", result.stdout)
+            self.assertIn("prebuilt QEMU binary not found", result.stdout)
             self.assertTrue((evidence / "sha256.txt").is_file())
             self.assertIn(
                 "validation.status=fail",

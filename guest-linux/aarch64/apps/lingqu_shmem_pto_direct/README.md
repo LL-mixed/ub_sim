@@ -2,7 +2,8 @@
 
 This directory defines the guest-side two-node acceptance workload for PTO
 `AddressSpace::UB_GM` access to `lingqu_shmem`. The source, runner, and runtime
-evidence cover the P3 happy path and the P4 lifecycle and fault gates.
+evidence cover the P3 happy path plus the P4 lifecycle, fault, and layout
+gates.
 
 - The producer exports one OBMM region, writes two contiguous `f32` inputs,
   initializes the output, publishes bootstrap metadata, and verifies the
@@ -34,17 +35,40 @@ Example guest invocations:
 
 ```text
 lingqu_shmem_pto_direct --role producer --node-id 0 --node-count 2 \
-  --elements 16384 --generation 101 --timeout-ms 120000
+  --layout nd --elements 16384 --generation 101 --timeout-ms 120000
 
 lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
-  --elements 16384 --generation 101 --timeout-ms 120000 \
+  --layout nd --elements 16384 --generation 101 --timeout-ms 120000 \
   --requester-cna 0xf002 --artifact-fingerprint 0x1234
 
 lingqu_shmem_pto_direct --role consumer --node-id 1 --node-count 2 \
-  --elements 16384 --generation 101 --timeout-ms 5000 \
+  --layout nd --elements 16384 --generation 101 --timeout-ms 5000 \
   --cancel-after-ms 10 --expect authorization-cancelled \
   --requester-cna 0xf002 --artifact-fingerprint 0x1234
 ```
+
+P4H adds three positive layouts while retaining `nd` as the default:
+
+| Layout | Elements | Artifact global/tile geometry | Region placement |
+| --- | ---: | --- | --- |
+| `nd` | 16,384 | `128x128 / 128x128` | 64-byte aligned contiguous views |
+| `tail` | 16,256 | `128x127 / 128x128` | compact row-major global data; final tile column is invalid |
+| `cross-page` | 64 | `1x64 / 1x64` | every 256-byte view starts 128 bytes before a 4 KiB boundary |
+| `unaligned` | 64 | `1x64 / 1x64` | every view starts at byte offset `4 mod 64` without crossing a page |
+
+The selected layout must match the `ub_gm_layout` object embedded in the
+artifact manifest. For example, a tail artifact is built with:
+
+```text
+prepare_simpler_host_vector_artifacts.sh /tmp/pto-tail \
+  --ub-gm-layout-profile tail \
+  --vector-global-rows 128 --vector-global-cols 127 \
+  --vector-tile-rows 128 --vector-tile-cols 128
+```
+
+The host gate verifies the manifest geometry before boot, exact guest offsets
+after boot, and the final QEMU callback addresses and lengths. This prevents a
+layout label from passing while the callable executes a different geometry.
 
 The default `--expect success` mode exits successfully only after the producer
 observes the transformed output and the consumer receives a successful PTO
@@ -99,6 +123,10 @@ They must be paired with one test-only `--fault-case` value:
 - `wrong-requester` replaces the validated requester CNA with a different,
   syntactically valid CNA;
 - `oob` moves the output view one byte beyond the registered map;
+- `shape-stride-oob` keeps a valid metadata CRC while extending the output
+  shape beyond the declared view;
+- `cross-segment` makes one valid view span two adjacent OBMM mappings while
+  retaining the source mapping reference;
 - `address-overflow` makes the first UB GM range overflow `uint64_t`;
 - `role-access-mismatch` declares the output role with read-only access;
 - `tstore-on-read` selects a test-only HostVector artifact whose first kernel
@@ -137,9 +165,9 @@ requests access excluded by the binding. Both classes require one status-3
 completion with the exact expected error, one command-slot retirement, and an
 unchanged producer sentinel.
 
-Callable 1 currently identifies the frozen host-vector artifact whose PTO
-kernel executes one `128 x 128` `f32` tile. For each element it computes
-`c = a + b`, followed by `f = (c + 1) * (c + 2)`. The producer verifies this
-callable-specific result in its original export mapping. The workload rejects
-any other element count before exporting or importing memory, so a shorter
-memref cannot reach the kernel and fail during its fixed-size `TLOAD`.
+Callable 1 identifies a host-vector artifact whose manifest fixes the selected
+global shape and tile capacity. For each logical element it computes `c = a +
+b`, followed by `f = (c + 1) * (c + 2)`. The producer verifies this
+callable-specific result in its original export mapping. The workload accepts
+only the element count assigned to the selected layout, and both host runners
+reject a manifest/layout mismatch before QEMU starts.

@@ -48,6 +48,7 @@ SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_4host_single_domain.yaml}"
 LINGQU_SHMEM_PTO_ELEMENTS="${LINGQU_SHMEM_PTO_ELEMENTS:-16384}"
+LINGQU_SHMEM_PTO_LAYOUT="${LINGQU_SHMEM_PTO_LAYOUT:-nd}"
 LINGQU_SHMEM_PTO_GENERATION="${LINGQU_SHMEM_PTO_GENERATION:-101}"
 LINGQU_SHMEM_PTO_TOKEN_VALUE="${LINGQU_SHMEM_PTO_TOKEN_VALUE:-0}"
 LINGQU_SHMEM_PTO_TIMEOUT_MS="${LINGQU_SHMEM_PTO_TIMEOUT_MS:-120000}"
@@ -107,7 +108,8 @@ Options:
   --pto-scenario PATH Two-host simulator scenario used by the Rust bridge.
   --pto-artifact-fingerprint N
                       Callable fingerprint computed from that manifest.
-  --pto-elements N    Host-vector element count; callable 1 requires 16384.
+  --pto-layout LAYOUT PTO UB_GM layout: nd, tail, cross-page, or unaligned.
+  --pto-elements N    Host-vector element count required by that layout.
   --pto-generation N  OBMM bootstrap generation.
   --pto-token-value N OBMM import token value.
   --pto-timeout-ms N  Producer verification and dispatch timeout.
@@ -293,8 +295,56 @@ require_pto_unsigned_value() {
   fi
 }
 
+validate_pto_layout_manifest() {
+  local manifest="$1"
+  local expected_layout="$2"
+  local expected_elements="$3"
+
+  python3 - "$manifest" "$expected_layout" "$expected_elements" <<'PY'
+import json
+import sys
+
+manifest_path, expected_layout, expected_elements_text = sys.argv[1:]
+expected_elements = int(expected_elements_text)
+with open(manifest_path, "r", encoding="utf-8") as stream:
+    manifest = json.load(stream)
+layout = manifest.get("ub_gm_layout")
+if not isinstance(layout, dict):
+    raise SystemExit("PTO manifest has no ub_gm_layout contract")
+actual = {
+    "profile": layout.get("profile"),
+    "global_rows": layout.get("global_rows"),
+    "global_cols": layout.get("global_cols"),
+    "tile_rows": layout.get("tile_rows"),
+    "tile_cols": layout.get("tile_cols"),
+    "logical_elements": layout.get("logical_elements"),
+}
+expected_geometry = {
+    "nd": (128, 128, 128, 128),
+    "tail": (128, 127, 128, 128),
+    "cross-page": (1, 64, 1, 64),
+    "unaligned": (1, 64, 1, 64),
+}
+geometry = expected_geometry[expected_layout]
+expected = {
+    "profile": expected_layout,
+    "global_rows": geometry[0],
+    "global_cols": geometry[1],
+    "tile_rows": geometry[2],
+    "tile_cols": geometry[3],
+    "logical_elements": expected_elements,
+}
+if actual != expected:
+    raise SystemExit(
+        "PTO manifest layout mismatch: "
+        f"expected={expected!r} actual={actual!r}"
+    )
+PY
+}
+
 validate_lingqu_shmem_pto_config() {
   local cancel_after_ns=0
+  local expected_layout_elements=0
   local fault_expected=""
   local value=""
 
@@ -333,8 +383,23 @@ validate_lingqu_shmem_pto_config() {
     "inject-late-completion:$LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION"; do
     require_pto_unsigned_value "${value%%:*}" "${value#*:}"
   done
-  if (( LINGQU_SHMEM_PTO_ELEMENTS != 16384 )); then
-    echo "PTO callable 1 requires exactly 16384 elements" >&2
+  case "$LINGQU_SHMEM_PTO_LAYOUT" in
+    nd)
+      expected_layout_elements=16384
+      ;;
+    tail)
+      expected_layout_elements=16256
+      ;;
+    cross-page|unaligned)
+      expected_layout_elements=64
+      ;;
+    *)
+      echo "unsupported PTO layout: $LINGQU_SHMEM_PTO_LAYOUT" >&2
+      exit 2
+      ;;
+  esac
+  if (( LINGQU_SHMEM_PTO_ELEMENTS != expected_layout_elements )); then
+    echo "PTO layout $LINGQU_SHMEM_PTO_LAYOUT requires exactly $expected_layout_elements elements" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_GENERATION == 0 ||
@@ -429,6 +494,12 @@ validate_lingqu_shmem_pto_config() {
       exit 2
       ;;
   esac
+  if [[ "$LINGQU_SHMEM_PTO_LAYOUT" != "nd" ]] &&
+     { [[ "$LINGQU_SHMEM_PTO_EXPECT" != "success" ]] ||
+       [[ "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]]; }; then
+    echo "PTO layout $LINGQU_SHMEM_PTO_LAYOUT currently requires success with fault-case=none" >&2
+    exit 2
+  fi
   if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
     if [[ "$LINGQU_SHMEM_PTO_EXPECT" != "success" ]] ||
        (( LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS == 0 )); then
@@ -467,6 +538,10 @@ validate_lingqu_shmem_pto_config() {
     echo "PTO device CNA must be in 1..0x00ffffff" >&2
     exit 2
   fi
+  validate_pto_layout_manifest \
+    "$SIMPLER_HOST_VECTOR_MANIFEST" \
+    "$LINGQU_SHMEM_PTO_LAYOUT" \
+    "$LINGQU_SHMEM_PTO_ELEMENTS"
 
   LINGQU_SHMEM_PTO_ELEMENTS=$((LINGQU_SHMEM_PTO_ELEMENTS))
   LINGQU_SHMEM_PTO_GENERATION=$((LINGQU_SHMEM_PTO_GENERATION))
@@ -484,6 +559,7 @@ validate_lingqu_shmem_pto_config() {
     "$((LINGQU_SHMEM_PTO_NODEB_CNA))"
 
   append_cmdline_if_missing "linqu_node_count=2"
+  append_cmdline_if_missing "lingqu_shmem_pto_layout=$LINGQU_SHMEM_PTO_LAYOUT"
   append_cmdline_if_missing "lingqu_shmem_pto_elements=$LINGQU_SHMEM_PTO_ELEMENTS"
   append_cmdline_if_missing "lingqu_shmem_pto_generation=$LINGQU_SHMEM_PTO_GENERATION"
   append_cmdline_if_missing "lingqu_shmem_pto_token_value=$LINGQU_SHMEM_PTO_TOKEN_VALUE"
@@ -652,6 +728,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       LINGQU_SHMEM_PTO_ELEMENTS="$2"
+      shift 2
+      ;;
+    --pto-layout)
+      if [[ $# -lt 2 ]]; then
+        echo "--pto-layout requires a value" >&2
+        exit 2
+      fi
+      LINGQU_SHMEM_PTO_LAYOUT="$2"
       shift 2
       ;;
     --pto-generation)
@@ -1222,8 +1306,30 @@ validate_lingqu_shmem_pto_guest_log() {
   esac
 
   assert_log_has "$log_file" \
-    "LINGQU_SHMEM_PTO role=$role stage=start .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION expected=$LINGQU_SHMEM_PTO_EXPECT fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE" \
+    "LINGQU_SHMEM_PTO role=$role stage=start .*layout=$LINGQU_SHMEM_PTO_LAYOUT elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION expected=$LINGQU_SHMEM_PTO_EXPECT fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE" \
     "$role PTO UB_GM start contract" || return 1
+  case "$LINGQU_SHMEM_PTO_LAYOUT" in
+    nd)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=nd input_a_offset=0 input_b_offset=65536 output_offset=131072 tensor_bytes=65536 cross_page=1,1,1 offset_mod_64=0,0,0" 1 \
+        "$role exact ND layout" || return 1
+      ;;
+    tail)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=tail input_a_offset=0 input_b_offset=65024 output_offset=130048 tensor_bytes=65024 cross_page=1,1,1 offset_mod_64=0,0,0" 1 \
+        "$role exact tail layout" || return 1
+      ;;
+    cross-page)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=cross-page input_a_offset=3968 input_b_offset=8064 output_offset=12160 tensor_bytes=256 cross_page=1,1,1 offset_mod_64=0,0,0" 1 \
+        "$role exact cross-page layout" || return 1
+      ;;
+    unaligned)
+      assert_log_count "$log_file" \
+        "LINGQU_SHMEM_PTO role=$role stage=layout layout=unaligned input_a_offset=4 input_b_offset=4100 output_offset=8196 tensor_bytes=256 cross_page=0,0,0 offset_mod_64=4,4,4" 1 \
+        "$role exact unaligned layout" || return 1
+      ;;
+  esac
   if [[ "$role" == "producer" ]]; then
     assert_log_has "$log_file" \
       "LINGQU_SHMEM_PTO role=producer stage=published .*elements=$LINGQU_SHMEM_PTO_ELEMENTS generation=$LINGQU_SHMEM_PTO_GENERATION" \
@@ -1405,6 +1511,56 @@ validate_lingqu_shmem_pto_reset_sequence() {
     echo "invalid PTO reset sequence progression: reset=$reset_sequence next=$reset_next_sequence resumed=$resumed_sequence" >&2
     return 1
   fi
+}
+
+validate_lingqu_shmem_pto_layout_accesses() {
+  local log_file="$1"
+  local layout="$2"
+  local tensor_bytes="$3"
+
+  python3 - "$log_file" "$layout" "$tensor_bytes" <<'PY'
+import re
+import sys
+
+log_path, layout, tensor_bytes_text = sys.argv[1:]
+tensor_bytes = int(tensor_bytes_text)
+pattern = re.compile(
+    r"QEMU_UB_GM_(LOAD|STORE) request=.* addr=0x([0-9a-f]+) "
+    r"length=([0-9]+) "
+)
+accesses = []
+with open(log_path, "r", encoding="utf-8", errors="replace") as stream:
+    for line in stream:
+        match = pattern.search(line)
+        if match:
+            accesses.append(
+                (match.group(1), int(match.group(2), 16), int(match.group(3)))
+            )
+if len(accesses) != 3:
+    raise SystemExit(
+        f"expected three PTO UB_GM data callbacks, found {len(accesses)}"
+    )
+if [kind for kind, _, _ in accesses].count("LOAD") != 2 or \
+   [kind for kind, _, _ in accesses].count("STORE") != 1:
+    raise SystemExit(f"unexpected PTO UB_GM callback kinds: {accesses!r}")
+for kind, address, length in accesses:
+    if length != tensor_bytes:
+        raise SystemExit(
+            f"{kind} length mismatch: expected={tensor_bytes} actual={length}"
+        )
+    crosses_page = address // 4096 != (address + length - 1) // 4096
+    if layout == "cross-page" and not crosses_page:
+        raise SystemExit(f"{kind} did not cross a 4 KiB page: addr=0x{address:x}")
+    if layout == "unaligned" and (address % 64 != 4 or crosses_page):
+        raise SystemExit(
+            f"{kind} unaligned contract failed: addr=0x{address:x} "
+            f"mod64={address % 64} crosses_page={int(crosses_page)}"
+        )
+    if layout in ("nd", "tail", "cross-page") and address % 64 != 0:
+        raise SystemExit(
+            f"{kind} expected 64-byte alignment: addr=0x{address:x}"
+        )
+PY
 }
 
 validate_lingqu_shmem_pto_qemu_log() {
@@ -1707,6 +1863,8 @@ validate_lingqu_shmem_pto_qemu_log() {
     "consumer PTO TSTORE callback" || return 1
   assert_log_count "$log_file" "QEMU_UB_GM_FENCE request=.*length=$tensor_bytes" 1 \
     "consumer PTO write fence" || return 1
+  validate_lingqu_shmem_pto_layout_accesses \
+    "$log_file" "$LINGQU_SHMEM_PTO_LAYOUT" "$tensor_bytes" || return 1
   assert_log_has "$log_file" \
     "QEMU_UB_GM_UNBIND .*reason=completion_success bindings=3 load_bytes=$((tensor_bytes * 2)) store_bytes=$tensor_bytes fences=1 segment_payload_staging_bytes=0" \
     "consumer zero-staging completion unbind" || return 1
@@ -3334,6 +3492,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
   if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
     echo "lingqu_shmem_pto_manifest=${SIMPLER_HOST_VECTOR_MANIFEST}"
     echo "lingqu_shmem_pto_artifact_fingerprint=${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT}"
+    echo "lingqu_shmem_pto_layout=${LINGQU_SHMEM_PTO_LAYOUT}"
     echo "lingqu_shmem_pto_elements=${LINGQU_SHMEM_PTO_ELEMENTS}"
     echo "lingqu_shmem_pto_generation=${LINGQU_SHMEM_PTO_GENERATION}"
     echo "lingqu_shmem_pto_nodea_cna=${LINGQU_SHMEM_PTO_NODEA_CNA}"

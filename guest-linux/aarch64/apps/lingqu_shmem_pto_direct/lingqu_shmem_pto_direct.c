@@ -24,8 +24,14 @@
 #define PTO_DIRECT_HOST_VECTOR_COLUMNS 128u
 #define PTO_DIRECT_HOST_VECTOR_ELEMENTS \
     (PTO_DIRECT_HOST_VECTOR_ROWS * PTO_DIRECT_HOST_VECTOR_COLUMNS)
+#define PTO_DIRECT_TAIL_ROWS 128u
+#define PTO_DIRECT_TAIL_COLUMNS 127u
+#define PTO_DIRECT_TAIL_ELEMENTS \
+    (PTO_DIRECT_TAIL_ROWS * PTO_DIRECT_TAIL_COLUMNS)
+#define PTO_DIRECT_SMALL_LAYOUT_ELEMENTS 64u
 #define PTO_DIRECT_DEFAULT_TIMEOUT_MS 120000u
 #define PTO_DIRECT_ALIGNMENT 64u
+#define PTO_DIRECT_PAGE_BYTES 4096u
 #define PTO_DIRECT_OUTPUT_SENTINEL UINT32_C(0x7fc00001)
 #define PTO_DIRECT_SEGMENT_GUARD_SENTINEL UINT8_C(0xa5)
 #define PTO_DIRECT_CONTROL_MAGIC UINT64_C(0x50544f5245544952)
@@ -49,6 +55,13 @@ enum pto_direct_expectation {
     PTO_DIRECT_EXPECT_AUTHORIZATION_CANCELLED,
     PTO_DIRECT_EXPECT_BAD_MEMREF,
     PTO_DIRECT_EXPECT_ACCESS_DENIED,
+};
+
+enum pto_direct_layout_kind {
+    PTO_DIRECT_LAYOUT_ND,
+    PTO_DIRECT_LAYOUT_TAIL,
+    PTO_DIRECT_LAYOUT_CROSS_PAGE,
+    PTO_DIRECT_LAYOUT_UNALIGNED,
 };
 
 enum pto_direct_fault_case {
@@ -87,6 +100,7 @@ struct pto_direct_config {
     uint64_t artifact_fingerprint;
     uint64_t timeout_ms;
     uint64_t cancel_after_ms;
+    enum pto_direct_layout_kind layout;
     enum pto_direct_expectation expectation;
     enum pto_direct_fault_case fault_case;
 };
@@ -153,6 +167,35 @@ static const char *expectation_name(enum pto_direct_expectation expectation)
         return "access-denied";
     }
     return "unknown";
+}
+
+static const char *layout_name(enum pto_direct_layout_kind layout)
+{
+    switch (layout) {
+    case PTO_DIRECT_LAYOUT_ND:
+        return "nd";
+    case PTO_DIRECT_LAYOUT_TAIL:
+        return "tail";
+    case PTO_DIRECT_LAYOUT_CROSS_PAGE:
+        return "cross-page";
+    case PTO_DIRECT_LAYOUT_UNALIGNED:
+        return "unaligned";
+    }
+    return "unknown";
+}
+
+static uint32_t layout_elements(enum pto_direct_layout_kind layout)
+{
+    switch (layout) {
+    case PTO_DIRECT_LAYOUT_ND:
+        return PTO_DIRECT_HOST_VECTOR_ELEMENTS;
+    case PTO_DIRECT_LAYOUT_TAIL:
+        return PTO_DIRECT_TAIL_ELEMENTS;
+    case PTO_DIRECT_LAYOUT_CROSS_PAGE:
+    case PTO_DIRECT_LAYOUT_UNALIGNED:
+        return PTO_DIRECT_SMALL_LAYOUT_ELEMENTS;
+    }
+    return 0;
 }
 
 static const char *fault_case_name(enum pto_direct_fault_case fault_case)
@@ -227,8 +270,10 @@ static void usage(FILE *stream)
             "--node-id N --node-count N [options]\n"
             "\n"
             "options:\n"
-            "  --elements N              f32 elements; callable 1 requires "
-            "16384\n"
+            "  --layout LAYOUT           nd, tail, cross-page, or "
+            "unaligned\n"
+            "  --elements N              f32 elements required by the "
+            "selected layout\n"
             "  --generation N            OBMM bootstrap generation\n"
             "  --token-value N           OBMM import token value\n"
             "  --timeout-ms N            producer/dispatch deadline\n"
@@ -307,6 +352,23 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
             }
             continue;
         }
+        if (strcmp(option, "--layout") == 0) {
+            const char *layout = argv[++index];
+
+            if (strcmp(layout, "nd") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_ND;
+            } else if (strcmp(layout, "tail") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_TAIL;
+            } else if (strcmp(layout, "cross-page") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_CROSS_PAGE;
+            } else if (strcmp(layout, "unaligned") == 0) {
+                config->layout = PTO_DIRECT_LAYOUT_UNALIGNED;
+            } else {
+                fprintf(stderr, "invalid layout: %s\n", layout);
+                return -EINVAL;
+            }
+            continue;
+        }
         if (strcmp(option, "--fault-case") == 0) {
             const char *fault_case = argv[++index];
 
@@ -378,7 +440,7 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
     }
     if (config->role == PTO_DIRECT_ROLE_UNSET || config->node_count != 2 ||
         config->node_id >= config->node_count || config->elements == 0 ||
-        config->elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS ||
+        config->elements != layout_elements(config->layout) ||
         config->generation == 0 ||
         config->generation > (UINT64_MAX >> 16) ||
         config->timeout_ms == 0 ||
@@ -392,6 +454,9 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
           config->expectation == PTO_DIRECT_EXPECT_ACCESS_DENIED)) ||
         (config->fault_case != PTO_DIRECT_FAULT_NONE &&
          config->expectation != fault_case_expectation(config->fault_case)) ||
+        (config->layout != PTO_DIRECT_LAYOUT_ND &&
+         (config->fault_case != PTO_DIRECT_FAULT_NONE ||
+          config->expectation != PTO_DIRECT_EXPECT_SUCCESS)) ||
         (config->role == PTO_DIRECT_ROLE_PRODUCER && config->node_id != 0) ||
         (config->role == PTO_DIRECT_ROLE_CONSUMER &&
          (config->node_id != 1 || config->requester_cna == 0 ||
@@ -402,23 +467,44 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
     return 0;
 }
 
-static int build_layout(uint32_t elements, struct pto_direct_layout *layout)
+static int build_layout(const struct pto_direct_config *config,
+                        struct pto_direct_layout *layout)
 {
     uint64_t tensor_bytes;
 
-    if (!layout || elements == 0 ||
-        elements != PTO_DIRECT_HOST_VECTOR_ELEMENTS) {
+    if (!config || !layout || config->elements == 0 ||
+        config->elements != layout_elements(config->layout)) {
         return -EINVAL;
     }
-    tensor_bytes = (uint64_t)elements * sizeof(float);
-    layout->input_a_offset = 0;
-    layout->input_b_offset = align_up(tensor_bytes,
-                                      PTO_DIRECT_ALIGNMENT);
-    layout->output_offset = align_up(layout->input_b_offset + tensor_bytes,
-                                     PTO_DIRECT_ALIGNMENT);
+    tensor_bytes = (uint64_t)config->elements * sizeof(float);
+    if (config->layout == PTO_DIRECT_LAYOUT_CROSS_PAGE) {
+        uint64_t half = tensor_bytes / 2;
+
+        layout->input_a_offset = PTO_DIRECT_PAGE_BYTES - half;
+        layout->input_b_offset = 2u * PTO_DIRECT_PAGE_BYTES - half;
+        layout->output_offset = 3u * PTO_DIRECT_PAGE_BYTES - half;
+    } else if (config->layout == PTO_DIRECT_LAYOUT_UNALIGNED) {
+        layout->input_a_offset = sizeof(float);
+        layout->input_b_offset = PTO_DIRECT_PAGE_BYTES + sizeof(float);
+        layout->output_offset = 2u * PTO_DIRECT_PAGE_BYTES +
+                                sizeof(float);
+    } else {
+        layout->input_a_offset = 0;
+        layout->input_b_offset = align_up(tensor_bytes,
+                                          PTO_DIRECT_ALIGNMENT);
+        layout->output_offset = align_up(
+            layout->input_b_offset + tensor_bytes,
+            PTO_DIRECT_ALIGNMENT);
+    }
     layout->tensor_bytes = tensor_bytes;
     layout->used_bytes = layout->output_offset + tensor_bytes;
     return layout->used_bytes <= PTO_DIRECT_EXPORT_BYTES ? 0 : -E2BIG;
+}
+
+static bool range_crosses_page(uint64_t offset, uint64_t length)
+{
+    return length != 0 && offset / PTO_DIRECT_PAGE_BYTES !=
+           (offset + length - 1) / PTO_DIRECT_PAGE_BYTES;
 }
 
 static int get_local_cna(uint32_t *cna_out)
@@ -1695,7 +1781,7 @@ int main(int argc, char **argv)
     uint32_t local_cna = 0;
 
     if (parse_args(argc, argv, &config) != 0 ||
-        build_layout(config.elements, &layout) != 0) {
+        build_layout(&config, &layout) != 0) {
         usage(stderr);
         return 2;
     }
@@ -1704,14 +1790,33 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("LINGQU_SHMEM_PTO role=%s stage=start node_id=%u node_count=%u "
-           "local_cna=0x%x elements=%u generation=%" PRIu64
+           "local_cna=0x%x layout=%s elements=%u generation=%" PRIu64
            " expected=%s fault_case=%s cancel_after_ms=%" PRIu64 "\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            config.node_id, config.node_count, local_cna,
-           config.elements, config.generation,
+           layout_name(config.layout), config.elements, config.generation,
            expectation_name(config.expectation),
            fault_case_name(config.fault_case), config.cancel_after_ms);
+    printf("LINGQU_SHMEM_PTO role=%s stage=layout layout=%s "
+           "input_a_offset=%" PRIu64 " input_b_offset=%" PRIu64
+           " output_offset=%" PRIu64 " tensor_bytes=%" PRIu64
+           " cross_page=%u,%u,%u offset_mod_64=%" PRIu64 ",%" PRIu64
+           ",%" PRIu64 "\n",
+           config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
+                                                     "consumer",
+           layout_name(config.layout), layout.input_a_offset,
+           layout.input_b_offset, layout.output_offset,
+           layout.tensor_bytes,
+           range_crosses_page(layout.input_a_offset,
+                              layout.tensor_bytes),
+           range_crosses_page(layout.input_b_offset,
+                              layout.tensor_bytes),
+           range_crosses_page(layout.output_offset,
+                              layout.tensor_bytes),
+           layout.input_a_offset % PTO_DIRECT_ALIGNMENT,
+           layout.input_b_offset % PTO_DIRECT_ALIGNMENT,
+           layout.output_offset % PTO_DIRECT_ALIGNMENT);
     if (config.role == PTO_DIRECT_ROLE_PRODUCER) {
         return run_producer(&config, &layout, local_cna);
     }

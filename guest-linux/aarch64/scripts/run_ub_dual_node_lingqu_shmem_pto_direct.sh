@@ -13,7 +13,9 @@ SCENARIO="$WORKSPACE_ROOT/scenarios/mvp_2host_single_domain.yaml"
 SIM_CLI_BIN="${SIM_CLI_BIN:-$WORKSPACE_ROOT/target/release/sim-cli}"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$GUEST_ROOT/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$GUEST_ROOT/out/initramfs.cpio.gz}"
+LAYOUT="nd"
 ELEMENTS=16384
+ELEMENTS_WAS_SET=0
 GENERATION=""
 TOKEN_VALUE=0
 TIMEOUT_MS=120000
@@ -44,7 +46,9 @@ Options:
   --sim-cli-bin PATH     sim-cli containing the fingerprint query.
   --kernel-image PATH    Arm64 guest kernel image.
   --initramfs-image PATH Guest initramfs with the PTO workload.
-  --elements N           Callable 1 element count; must be 16384.
+  --layout LAYOUT        nd, tail, cross-page, or unaligned.
+  --elements N           Callable 1 element count; derived from layout unless
+                         explicitly provided.
   --generation N         OBMM bootstrap generation; defaults to a unique run ID.
   --token-value N        OBMM import token value.
   --timeout-ms N         Guest producer/dispatch timeout.
@@ -142,6 +146,12 @@ while [[ $# -gt 0 ]]; do
     --elements)
       require_value "$1" "$#"
       ELEMENTS="$2"
+      ELEMENTS_WAS_SET=1
+      shift 2
+      ;;
+    --layout)
+      require_value "$1" "$#"
+      LAYOUT="$2"
       shift 2
       ;;
     --generation)
@@ -246,6 +256,29 @@ if [[ -z "$GENERATION" ]]; then
   GENERATION=$(( (generation_epoch << 15) | (RANDOM & 32767) ))
 fi
 
+case "$LAYOUT" in
+  nd)
+    EXPECTED_LAYOUT_ELEMENTS=16384
+    ;;
+  tail)
+    EXPECTED_LAYOUT_ELEMENTS=16256
+    ;;
+  cross-page|unaligned)
+    EXPECTED_LAYOUT_ELEMENTS=64
+    ;;
+  *)
+    echo "unsupported PTO layout: $LAYOUT" >&2
+    exit 2
+    ;;
+esac
+if [[ "$ELEMENTS_WAS_SET" -eq 0 ]]; then
+  ELEMENTS="$EXPECTED_LAYOUT_ELEMENTS"
+fi
+if [[ "$ELEMENTS" != "$EXPECTED_LAYOUT_ELEMENTS" ]]; then
+  echo "PTO layout $LAYOUT requires exactly $EXPECTED_LAYOUT_ELEMENTS elements" >&2
+  exit 2
+fi
+
 if [[ -z "$MANIFEST" ]]; then
   echo "--manifest is required" >&2
   usage >&2
@@ -287,6 +320,11 @@ case "$FAULT_CASE" in
     exit 2
     ;;
 esac
+if [[ "$LAYOUT" != "nd" ]] &&
+   { [[ "$EXPECT" != "success" ]] || [[ "$FAULT_CASE" != "none" ]]; }; then
+  echo "PTO layout $LAYOUT currently requires success with fault-case=none" >&2
+  exit 2
+fi
 if [[ ! -x "$SIM_CLI_BIN" &&
       "$SIM_CLI_BIN" == "$WORKSPACE_ROOT/target/release/sim-cli" &&
       -x "$WORKSPACE_ROOT/target/debug/sim-cli" ]]; then
@@ -307,12 +345,38 @@ SCENARIO="$(canonical_file "simulator scenario" "$SCENARIO")"
 SIM_CLI_BIN="$(canonical_file "sim-cli" "$SIM_CLI_BIN")"
 KERNEL_IMAGE="$(canonical_file "kernel image" "$KERNEL_IMAGE")"
 INITRAMFS_IMAGE="$(canonical_file "initramfs image" "$INITRAMFS_IMAGE")"
-MANIFEST_ACCESS_FAULT="$(python3 - "$MANIFEST" <<'PY'
+MANIFEST_ACCESS_FAULT="$(python3 - "$MANIFEST" "$LAYOUT" "$ELEMENTS" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as stream:
     payload = json.load(stream)
+expected_layout = sys.argv[2]
+expected_elements = int(sys.argv[3])
+layout = payload.get("ub_gm_layout")
+if not isinstance(layout, dict):
+    raise SystemExit("PTO manifest has no ub_gm_layout contract")
+geometry_by_layout = {
+    "nd": (128, 128, 128, 128),
+    "tail": (128, 127, 128, 128),
+    "cross-page": (1, 64, 1, 64),
+    "unaligned": (1, 64, 1, 64),
+}
+geometry = geometry_by_layout[expected_layout]
+expected = {
+    "profile": expected_layout,
+    "global_rows": geometry[0],
+    "global_cols": geometry[1],
+    "tile_rows": geometry[2],
+    "tile_cols": geometry[3],
+    "logical_elements": expected_elements,
+}
+actual = {key: layout.get(key) for key in expected}
+if actual != expected:
+    raise SystemExit(
+        "PTO manifest layout mismatch: "
+        f"expected={expected!r} actual={actual!r}"
+    )
 value = payload.get("ub_gm_access_fault", "none")
 if value not in ("none", "tstore-on-read", "tload-on-write"):
     raise SystemExit(f"invalid manifest UB_GM access fault: {value!r}")
@@ -384,6 +448,7 @@ set +e
   --pto-manifest "$MANIFEST" \
   --pto-scenario "$SCENARIO" \
   --pto-artifact-fingerprint "$ARTIFACT_FINGERPRINT" \
+  --pto-layout "$LAYOUT" \
   --pto-elements "$ELEMENTS" \
   --pto-generation "$GENERATION" \
   --pto-token-value "$TOKEN_VALUE" \
@@ -536,6 +601,7 @@ fi
   echo "artifact_fingerprint=$ARTIFACT_FINGERPRINT"
   echo "artifact_fingerprint_after=$ARTIFACT_FINGERPRINT_AFTER"
   echo "artifact_fingerprint_stable=$ARTIFACT_FINGERPRINT_STABLE"
+  echo "layout=$LAYOUT"
   echo "elements=$ELEMENTS"
   echo "generation=$GENERATION"
   echo "nodea_cna=$NODEA_CNA"

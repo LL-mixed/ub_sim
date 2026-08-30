@@ -651,7 +651,14 @@ def write_vector_kernel_source(
     tile_rows: int,
     tile_cols: int,
     ub_gm_access_fault: str = "none",
+    *,
+    global_rows: int | None = None,
+    global_cols: int | None = None,
 ) -> Path | None:
+    if global_rows is None:
+        global_rows = tile_rows
+    if global_cols is None:
+        global_cols = tile_cols
     if ub_gm_access_fault not in (
         "none",
         "tstore-on-read",
@@ -739,11 +746,11 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
 {second_input}{scalar_input}
     constexpr int kTRows_ = {tile_rows};
     constexpr int kTCols_ = {tile_cols};
-    constexpr int vRows = {tile_rows};
-    constexpr int vCols = {tile_cols};
+    constexpr int vRows = {global_rows};
+    constexpr int vCols = {global_cols};
 
     using DynShapeDim5 = Shape<1, 1, 1, vRows, vCols>;
-    using DynStridDim5 = Stride<1, 1, 1, kTCols_, 1>;
+    using DynStridDim5 = Stride<1, 1, 1, vCols, 1>;
     using GlobalData = GlobalTensor<float, DynShapeDim5, DynStridDim5>;
     using TileData = Tile<TileType::Vec, float, kTRows_, kTCols_, BLayout::RowMajor, -1, -1>;
 
@@ -2737,6 +2744,20 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         raise SystemExit(
             "--tile-batch > 1 must use --reuse-runtime-manifest to avoid loading multiple simpler runtime binaries in one process"
         )
+    vector_global_rows = args.vector_global_rows or args.vector_tile_rows
+    vector_global_cols = args.vector_global_cols or args.vector_tile_cols
+    if args.profile == "host_vector" and (
+        args.vector_tile_rows <= 0
+        or args.vector_tile_cols <= 0
+        or vector_global_rows <= 0
+        or vector_global_cols <= 0
+        or vector_global_rows > args.vector_tile_rows
+        or vector_global_cols > args.vector_tile_cols
+    ):
+        raise SystemExit(
+            "host_vector requires positive global dimensions no larger "
+            "than the tile dimensions"
+        )
     if args.profile in (
         "host_gemm",
         "host_fp32_gemm",
@@ -2869,6 +2890,8 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
                 args.vector_tile_rows,
                 args.vector_tile_cols,
                 args.ub_gm_access_fault,
+                global_rows=vector_global_rows,
+                global_cols=vector_global_cols,
             )
             if args.profile == "host_vector"
             else None
@@ -3049,6 +3072,14 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     }
     if args.profile == "host_vector":
         manifest["ub_gm_access_fault"] = args.ub_gm_access_fault
+        manifest["ub_gm_layout"] = {
+            "profile": args.ub_gm_layout_profile,
+            "global_rows": vector_global_rows,
+            "global_cols": vector_global_cols,
+            "tile_rows": args.vector_tile_rows,
+            "tile_cols": args.vector_tile_cols,
+            "logical_elements": vector_global_rows * vector_global_cols,
+        }
     if args.profile == "host_gemm":
         manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {
@@ -3130,6 +3161,13 @@ def main() -> int:
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--vector-tile-rows", type=int, default=32)
     parser.add_argument("--vector-tile-cols", type=int, default=32)
+    parser.add_argument("--vector-global-rows", type=int, default=None)
+    parser.add_argument("--vector-global-cols", type=int, default=None)
+    parser.add_argument(
+        "--ub-gm-layout-profile",
+        choices=("nd", "tail", "cross-page", "unaligned"),
+        default="nd",
+    )
     parser.add_argument("--matmul-rows", type=int, default=128)
     parser.add_argument("--matmul-cols", type=int, default=128)
     parser.add_argument("--gemm-m", type=int, default=128)
