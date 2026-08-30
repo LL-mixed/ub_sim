@@ -21,7 +21,7 @@
 
 | 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle 以及 mapping/requester/OOB/overflow/role-access preflight 负向路径已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 的复杂 extent、callback access、lifetime、layout、并发与其他 recovery case，以及 P5 性能/上层集成仍待完成 |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight 负向路径和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；P4 的复杂 extent、lifetime、layout、并发与其他 recovery case，以及 P5 性能/上层集成仍待完成 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -117,9 +117,9 @@ acceptance 不设置这些 token。
 
 这些 revision 记录最初审计输入。随后完成的 P0–P4C 实施证据如下；表中的 revision
 均为已经提交的阶段性代码。P2 的同步与可恢复 authorization 正向路径已经完成，
-P4A authorization timeout、P4B authorization lifecycle 和 P4C ingress/preflight
-负向矩阵已完成双机验证；P4 的复杂 extent、真实 callback access、lifetime、layout、
-并发与其他 recovery case，以及 P5 继续保持未完成状态。
+P4A authorization timeout、P4B authorization lifecycle、P4C ingress/preflight
+负向矩阵和 P4D callback execution access conflict 已完成双机验证；P4 的复杂
+extent、lifetime、layout、并发与其他 recovery case，以及 P5 继续保持未完成状态。
 
 | 阶段 | 仓库 | Revision | 已提交内容 |
 | --- | --- | --- | --- |
@@ -149,6 +149,10 @@ P4A authorization timeout、P4B authorization lifecycle 和 P4C ingress/prefligh
 | P4B | `vendor/qemu_8.2.0_ub` | `264a042e` | reset 时退役 SIM_DEC mapping、重建 OBMM async endpoint 并保留单调 map ID |
 | P4B | `ub_sim` | `28fcd2d` | strict QMP reset campaign、重启恢复/sequence gate、QEMU gitlink 与契约测试 |
 | P4C | `ub_sim` | `86b4bb4` | mapping/requester/bounds/role-access fault injection、有效 CRC、精确错误与零数据回调门禁 |
+
+P4D 的四组正式 campaign 已使用 `source-sha256.txt` 和完整 artifact fingerprint
+完成审计，详见 9.9 节。承载 P4D 的 `ub_sim` 与 `vendor/simpler` 代码当前仍在独立
+工作树中，本表暂不为其填写 Git revision；代码提交后需要在本表回填对应 revision。
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -223,8 +227,9 @@ authorization timeout 的双机 fail-closed 验证。P4B 又完成 cancel、canc
 completion、正常完成后的重复 completion，以及 QMP reset、旧 mapping 退役、迟到
 事件拒绝与重启后恢复的双机验证。P4C 进一步完成错误 mapping generation、stale
 mapping、错误 requester、OOB、地址加法溢出和 role/access preflight 不一致的双机
-fail-closed 验证。复杂 extent、真实 callback access、lifetime、layout、多 dispatch
-竞争和其他 recovery case 继续归入 P4 后续阶段。
+fail-closed 验证。P4D 进一步完成实际 PTO callback 执行阶段的 READ 上 `TSTORE` 和
+WRITE 上 `TLOAD` access conflict 双机验证。复杂 extent、lifetime、layout、多
+dispatch 竞争和其他 recovery case 继续归入 P4 后续阶段。
 
 ### 3.4 Experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` 的真实位置
 
@@ -259,12 +264,12 @@ fail-closed 验证。复杂 extent、真实 callback access、lifetime、layout�
 | OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
-| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight 负向矩阵通过 | P4 扩展复杂 extent、callback access 与其他 lifetime 矩阵 |
+| `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight 与 P4D callback execution access conflict 负向矩阵通过 | P4 扩展复杂 extent 与其他 lifetime 矩阵 |
 | `AddressSpace::UB_GM` | C++/Rust 同值 `2`、Simpler pass-through、worker run context 与真实 guest E2E 已实现 | P4 扩展复杂 layout |
 | PTO CPU UB GM hook | P1 已实现 contiguous ND、tail、range callback 与 fail-closed | P4 扩展复杂 layout |
-| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle 和 P4C preflight E2E 通过 | P4 补 callback access/failure、layout 与并发矩阵 |
+| QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle、P4C preflight 和 P4D actual access conflict E2E 通过 | P4 补通用 callback failure、layout 与并发矩阵 |
 | backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume；P4A/P4B 已验证 timeout/cancel exact-once failure completion、duplicate guard 和 reset 无 CQ cleanup/recovery | P4 补多 slot、多 binding 和其他失败竞争 |
-| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery 与六类 P4C preflight fault 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展其余负向、layout 与并发 coverage |
+| 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault 与两类 P4D execution fault 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | P4 扩展其余负向、layout 与并发 coverage |
 
 ## 4. 修正后的目标架构
 
@@ -1258,6 +1263,73 @@ ingress/preflight 检查。它没有覆盖 callback 执行阶段的 `READ` 上 `
 上 `TLOAD`、复杂 shape/stride extent、跨 segment、retired/released lifetime、layout
 或并发行为；这些项目继续留在 P4。
 
+### 9.9 P4D PTO callback access conflict 双机证据
+
+P4D 把 access conflict 从 wire preflight 推进到实际 PTO 指令执行阶段。两个 fault
+artifact 保持正常 dispatch ABI、角色和权限声明不变：两个 input 都是
+`INPUT/READ`，output 是 `OUTPUT/WRITE`。因此，QEMU 能完成正常 metadata 校验、
+authorization 和 binding，故障只由 kernel 内实际执行的非法访问触发：
+
+- `tstore-on-read` 先从两个合法 READ input 执行 `TLOAD`，随后尝试通过第一个
+  READ input 执行 `TSTORE`；
+- `tload-on-write` 先完成两个合法 input `TLOAD`，随后尝试通过 WRITE-only output
+  执行 `TLOAD`；
+- workload 根据 manifest 顶层 `ub_gm_access_fault` 选择对应 fault，runner 要求
+  manifest marker 与 CLI case 精确一致；执行型 fault 不修改 wire role/access。
+
+最初的诊断 run 发现 Simpler simulated AICore 在 PTO guard 返回 `-EACCES` 后只退出
+当前执行线程，scheduler 等待其他 AICore 直至 30 秒超时，最终错误被 scheduler
+timeout 覆盖。修正后的共同 helper 在 A2A3/A5 DeviceRunner 中完成以下动作：
+
+1. 把 PTO guard 的正错误号规范化为负 errno；
+2. 由 first-writer 原子记录精确 `sched_error_code`；
+3. 只把发生 unwind 的模拟 AICore 标记为 exited；
+4. 交给既有 emergency shutdown 结束其他 AICore；
+5. 让 runtime 直接返回 `sched_error_code=-5`、`runtime_status=-5`。
+
+四组正式 campaign 如下。早期用于定位 callable signature 和 scheduler timeout 的
+诊断 run 保留为只读证据，不进入本表，也不参与通过判定。
+
+| Fault | n4-910c run id | n4-910c1 run id | Artifact fingerprint |
+| --- | --- | --- | --- |
+| READ memref 上 `TSTORE` | `pto-ub-gm-p4d-tstore-on-read-n4-20260830-r5` | `pto-ub-gm-p4d-tstore-on-read-n4c1-20260830-r4` | `0x5e96ed70d5f7b948` |
+| WRITE memref 上 `TLOAD` | `pto-ub-gm-p4d-tload-on-write-n4-20260830-r1` | `pto-ub-gm-p4d-tload-on-write-n4c1-20260830-r1` | `0xe24c88328577e77f` |
+
+四个 campaign 的 exact-count 审计结果完全一致：
+
+| 门禁 | 每个 campaign 的结果 |
+| --- | --- |
+| `validation.status` / runner exit / QEMU leftovers | pass / 0 / 0 |
+| fault 选择 | 1 次 `stage=fault_selected ... source=callable-artifact`；0 次 wire `fault_injected` |
+| authorization | 2 次 INPUT、1 次 OUTPUT |
+| binding | 1 次 register，包含 3 个 binding |
+| 合法 callback | 2 次 65,536-byte load，共 `load_bytes=131072` |
+| 被拒绝访问之后的数据动作 | `store_bytes=0`、`fences=0`、`segment_payload_staging_bytes=0` |
+| runtime 错误 | 1 次 `sched_error_code=-5 runtime_status=-5` |
+| cleanup | 1 次 `reason=completion_failure` unbind |
+| scheduler timeout | 0 |
+| guest producer / consumer | pass / pass；producer output sentinel 保持完整 |
+
+两种 fault manifest SHA-256 分别为：
+
+- `tstore-on-read`：
+  `ed4415cf323cd0146e50efd6a0ffa92b83e751bb829503cdc4e3aef7aa556b20`；
+- `tload-on-write`：
+  `16b0ca512888b58e309c9b54da31bb1a7d4888c5195475e000f6c8dce45c753a`。
+
+两台机器使用同一份修正后的 Simpler `runtime_host.bin`，SHA-256 为
+`52de9dbc21822bd7b74f05999b4d5731677f402cce5f17a28680332b3d8b6da2`。
+n4-910c 与 n4-910c1 的 QEMU、kernel 和 initramfs 各自有独立构建指纹；每个
+campaign 的 `sha256.txt`、`source-sha256.txt` 和 `revisions.txt` 均保留这些值。
+四份 evidence 已复制到本地忽略目录
+`out/lingqu-shmem-pto-e2e/<run-id>/`，源端与本地完整目录 file-SHA-256 manifest
+逐文件一致。n4-910c 上暂停的 P3 PID `419618` 在验证前后保持 `Tl`。
+
+P4D 证明 access capability 在真实 PTO callback 执行点生效，而且错误可以穿过
+PTO、Simpler、Rust bridge 和 QEMU completion path 精确返回，未被 scheduler timeout
+覆盖。该阶段仍未覆盖 retired/released lifetime、复杂 extent、跨 segment、layout、
+并发、write fence failure、通用 callback failure、PTO exception 和 guest exit。
+
 ## 10. 分阶段实施计划
 
 ### P0：冻结 ABI、device identity 与验收契约（已完成）
@@ -1444,7 +1516,7 @@ completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 �
 
 预计工作量：5–8 个工程日。
 
-### P4：负向、layout 与并发验证（P4A/P4B/P4C 已完成，其余待完成）
+### P4：负向、layout 与并发验证（P4A/P4B/P4C/P4D 已完成，其余待完成）
 
 | 类别 | Cases | 当前状态 |
 | --- | --- | --- |
@@ -1454,7 +1526,7 @@ completion 与 reset/recovery。多 dispatch 竞争和其他负向仍归入 P4 �
 | Bounds | OOB、整数溢出 | P4C 双机通过 |
 | Bounds | shape/stride extent 超界、跨 segment | 待完成 |
 | Access | role/access preflight 不匹配 | P4C 双机通过 |
-| Access | READ memref 上 TSTORE、WRITE memref 上 TLOAD | 待完成；需要进入 callback 后验证 |
+| Access | READ memref 上 TSTORE、WRITE memref 上 TLOAD | P4D 双机通过；实际 PTO callback 返回 `-EACCES` |
 | Ordering | authorization timeout | P4A 双机通过 |
 | Ordering | duplicate completion | P4B 双机通过 |
 | Ordering | remote holder、write fence failure | 待完成 |
@@ -1487,8 +1559,8 @@ P4B 当前实施状态：
 - n4-910c、n4-910c1 的 cancel、duplicate、reset r2 和同步回归均通过，证据见
   9.7 节；
 - P4B 没有覆盖的 mapping/requester/OOB/overflow/role-access preflight 已由 P4C
-  补齐；复杂 extent、真实 callback access、layout、多 dispatch 竞争、
-  callback/PTO/fence failure 和 guest exit 仍待完成。
+  补齐，实际 `TLOAD/TSTORE` access conflict 已由 P4D 补齐；复杂 extent、layout、
+  多 dispatch 竞争、callback/PTO/fence failure 和 guest exit 仍待完成。
 
 P4C 当前实施状态：
 
@@ -1500,8 +1572,26 @@ P4C 当前实施状态：
 - 每个 campaign 都只有一个 status 3 CQ 和一个 dispatch reject，CMDQ slot 只退休
   一次，authorization、binding 和 PTO data callback 计数全部为零；
 - 双机 artifact fingerprint 唯一，关键 source hash 在 case 间一致，证据见 9.8 节；
-- P4C 没有覆盖 actual `TSTORE`/`TLOAD` access conflict、retired segment、released
-  import、复杂 extent/layout、并发或 callback/fence/PTO failure。
+- P4C 没有覆盖的 actual `TSTORE`/`TLOAD` access conflict 已由 P4D 补齐；retired
+  segment、released import、复杂 extent/layout、并发或 callback/fence/PTO failure
+  仍待完成。
+
+P4D 当前实施状态：
+
+- fault artifact 保持正常的两个 `INPUT/READ` 和一个 `OUTPUT/WRITE` wire contract，
+  只在实际 kernel 指令序列中注入 `TSTORE` on READ 或 `TLOAD` on WRITE；
+- Simpler A2A3/A5 的共同 failure helper 将 PTO guard 错误原子传播为 runtime
+  `-EACCES`，同时触发既有 emergency shutdown，消除了原先 30 秒 scheduler timeout
+  对精确错误的覆盖；
+- n4-910c、n4-910c1 共四个正式 campaign 全部通过；每组完成 2/1 input/output
+  authorization、3 个 binding 和 2 次合法 load，非法访问后保持 0 store、0 fence、
+  0 payload staging；
+- runner 要求 exact-one artifact fault marker、精确 runtime `-5`、completion-failure
+  unbind、完整 producer sentinel、健康 guest 和零 QEMU 残留；证据见 9.9 节；
+- P4D 代码仍待归档为独立 `vendor/simpler` 与根仓库 commit；正式 evidence 通过
+  source/artifact SHA-256 绑定到实际执行内容；
+- P4D 没有覆盖 retired segment、released import、复杂 extent/layout、并发、
+  write fence failure、通用 callback failure、PTO exception 或 guest exit。
 
 退出条件：
 
@@ -1677,12 +1767,13 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | authorization timeout fail-closed | P4A 已在 n4-910c 与 n4-910c1 通过；exact-once status 3 completion、零数据访问、完整 sentinel 和健康 guest 均有 evidence |
 | authorization cancel/duplicate/reset lifecycle | P4B 已在 n4-910c 与 n4-910c1 通过；覆盖 cancel exact-once CQ、late/duplicate guard、reset 无 CQ cleanup、旧 map 退役、sequence 单调和 reboot recovery |
 | mapping/requester/bounds/access preflight | P4C 已在 n4-910c 与 n4-910c1 共 12 个 campaign 通过；覆盖 bad generation、stale map、wrong requester、OOB、overflow 和 role/access mismatch，并证明零 authorization/binding/data callback |
+| PTO callback execution access conflict | P4D 已在 n4-910c 与 n4-910c1 共 4 个 campaign 通过；READ 上 `TSTORE` 和 WRITE 上 `TLOAD` 均在实际 PTO callback 返回 `-EACCES`，错误未被 scheduler timeout 覆盖；代码 revision 待独立归档 |
 | no-staging 结构化证明 | P1 pass-through tests 与 P3 r9 `segment_payload_staging_bytes=0` 共同覆盖；P5 统一 H2D/D2H counters 待完成 |
 
-P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle 和 P4C preflight
-负向矩阵已完成，最小可信 direct-access PoC 已闭环。P4 其余范围与 P5 决定完整
-负向稳健性、布局覆盖、性能和上层运行时可用性，因此当前仍不能声明第 15 节的
-完整目标已经完成。
+P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle、P4C preflight 和
+P4D callback execution access conflict 已完成运行验证，最小可信 direct-access PoC
+已闭环。P4D 代码仍需独立归档，P4 其余范围与 P5 决定完整负向稳健性、布局覆盖、
+性能和上层运行时可用性，因此当前仍不能声明第 15 节的完整目标已经完成。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 

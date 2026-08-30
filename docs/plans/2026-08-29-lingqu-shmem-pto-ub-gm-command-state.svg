@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1000" viewBox="0 0 1680 1000" role="img" aria-labelledby="title desc">
   <title id="title">IoOpcode Dispatch v2 的 UB_GM 安全执行状态机</title>
-  <desc id="desc">展示 QEMU UBC 在进入现有 sim-qemu bridge 之前读取 metadata、校验并完成可恢复 backend authorization，随后沿 ChipBackend 主链同步执行 PTO，最后 fence、unbind 和发布原有 CQ completion。同步、authorization lifecycle 与 P4C mapping/requester/bounds/access preflight fail-closed 均已在 n4-910c 和 n4-910c1 验证。</desc>
+  <desc id="desc">展示 QEMU UBC 在进入现有 sim-qemu bridge 之前读取 metadata、校验并完成可恢复 backend authorization，随后沿 ChipBackend 主链同步执行 PTO，最后 fence、unbind 和发布原有 CQ completion。同步、authorization lifecycle、P4C mapping/requester/bounds/access preflight 和 P4D 实际 PTO callback access conflict 均已在 n4-910c 和 n4-910c1 验证。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
@@ -24,7 +24,7 @@
 
   <rect width="1680" height="1000" fill="#f8fafc"/>
   <text x="60" y="54" class="title">IoOpcode::Dispatch v2 + UB_GM：现有 bridge 的安全执行状态机</text>
-  <text x="60" y="84" class="subtitle">P3/P2/P4A–P4C 双机通过：正向、authorization lifecycle，以及 mapping/requester/bounds/access preflight。</text>
+  <text x="60" y="84" class="subtitle">P3/P2/P4A–P4D 双机通过：正向、authorization lifecycle、preflight 与实际 callback access fail-closed。</text>
 
   <rect x="45" y="115" width="1590" height="300" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
   <text x="72" y="153" class="lane-title">QEMU UBC preflight：尚未进入 Rust bridge</text>
@@ -86,7 +86,7 @@
   <text x="468" y="168" text-anchor="middle" class="edge-text">backend completion / revalidate / resume saved cursor</text>
 
   <rect x="45" y="620" width="1590" height="220" rx="22" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
-  <text x="72" y="658" class="lane-title">全部 memref 获权后的 Rust/ChipBackend/Simpler 主链：P3 r9 + P2 r2 已验证</text>
+  <text x="72" y="658" class="lane-title">全部 memref 获权后的 Rust/ChipBackend/Simpler 主链：P3 r9 + P2 r2 + P4D 已验证</text>
 
   <rect x="100" y="700" width="340" height="95" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
   <text x="270" y="731" text-anchor="middle" class="state-title">7. Dispatch through existing route</text>
@@ -113,14 +113,16 @@
   <path d="M825 747 H880" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
   <path d="M1200 747 H1255" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
 
-  <rect x="70" y="875" width="980" height="88" rx="16" fill="#fef2f2" stroke="#f87171" stroke-width="2"/>
-  <text x="560" y="909" text-anchor="middle" class="state-title">Terminal error</text>
-  <text x="560" y="936" text-anchor="middle" class="state-text">bad metadata / mapping / lifetime / OOB / access / timeout / callback / PTO failure → cleanup once → FatalFailure { code }</text>
-  <path d="M560 840 V865" stroke="#dc2626" stroke-width="2.3" fill="none" marker-end="url(#arrow-red)"/>
-  <text x="580" y="858" class="error-text">任一步骤失败</text>
+  <rect x="70" y="855" width="910" height="130" rx="16" fill="#fef2f2" stroke="#f87171" stroke-width="2"/>
+  <text x="525" y="902" text-anchor="middle" class="state-title">Terminal error</text>
+  <text x="525" y="934" text-anchor="middle" class="state-text">bad metadata / mapping / lifetime / OOB / access / timeout / callback / PTO failure</text>
+  <text x="525" y="960" text-anchor="middle" class="state-text">→ cleanup once → FatalFailure { exact code }</text>
+  <path d="M525 840 V845" stroke="#dc2626" stroke-width="2.3" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="545" y="851" class="error-text">任一步骤失败</text>
 
-  <rect x="1100" y="875" width="510" height="88" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
-  <text x="1355" y="902" text-anchor="middle" class="note">P4B：cancel exact-once；duplicate/late guard；reset/recovery；</text>
-  <text x="1355" y="925" text-anchor="middle" class="note">P4C：mapping/requester/OOB/overflow/access preflight exact-once；</text>
-  <text x="1355" y="948" text-anchor="middle" class="note">sim_npu / GVA / GSVA：experimental optional，default disabled。</text>
+  <rect x="1020" y="855" width="590" height="130" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+  <text x="1315" y="890" text-anchor="middle" class="note">P4B：cancel exact-once；duplicate/late guard；reset/recovery；</text>
+  <text x="1315" y="914" text-anchor="middle" class="note">P4C：mapping/requester/OOB/overflow/access preflight exact-once；</text>
+  <text x="1315" y="938" text-anchor="middle" class="note">P4D：READ/TSTORE、WRITE/TLOAD → runtime −EACCES；</text>
+  <text x="1315" y="962" text-anchor="middle" class="note">sim_npu / GVA / GSVA：experimental optional，default disabled。</text>
 </svg>

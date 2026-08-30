@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1160" viewBox="0 0 1680 1160" role="img" aria-labelledby="title desc">
   <title id="title">现有 ChipBackend bridge 上已贯通的 PTO UB_GM 架构</title>
-  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、传统 host payload staging、P3/P2/P4A/P4B 已验证的 UB_GM 数据与 authorization lifecycle、P4C 已验证的 ingress/preflight 负向路径，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
+  <desc id="desc">展示现有 IoOpcode Dispatch 到 Simpler PTO 的执行链、传统 host payload staging、P3/P2/P4A/P4B 已验证的 UB_GM 数据与 authorization lifecycle、P4C 已验证的 ingress/preflight 负向路径、P4D 已验证的实际 PTO callback access conflict，以及默认关闭的 sim_npu、GVA、GSVA 实验能力。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
@@ -29,7 +29,7 @@
 
   <rect width="1680" height="1160" fill="#f8fafc"/>
   <text x="60" y="54" class="title">lingqu_shmem → PTO UB_GM：复用现有 ChipBackend bridge</text>
-  <text x="60" y="84" class="subtitle">P3/P2/P4A–P4C 双机通过：正向、authorization lifecycle、preflight fail-closed 和零 payload staging。</text>
+  <text x="60" y="84" class="subtitle">P3/P2/P4A–P4D 双机通过：正向、authorization lifecycle、preflight/callback fail-closed 和零 payload staging。</text>
 
   <rect x="45" y="112" width="1590" height="270" rx="22" fill="#eef6ff" stroke="#60a5fa" stroke-width="2"/>
   <text x="72" y="149" class="lane-title">A. 已实现并保留的控制与执行主链</text>
@@ -137,7 +137,7 @@
   <text x="1242" y="664" text-anchor="middle" class="note">control metadata 可复制；tensor payload 不进入 segment_payloads 或 HostPayloadRegistry。</text>
 
   <rect x="45" y="742" width="1590" height="260" rx="22" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="2"/>
-  <text x="72" y="780" class="lane-title">D. P3 已验证的数据循环：PTO callback 回到 QEMU UB GM interface，再访问 lingqu_shmem backing</text>
+  <text x="72" y="780" class="lane-title">D. P3/P4D 已验证的数据循环与访问门禁：PTO callback 回到 QEMU UB GM interface</text>
 
   <rect x="95" y="835" width="240" height="110" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
   <text x="215" y="868" text-anchor="middle" class="box-title">Simpler / PTO</text>
@@ -169,7 +169,7 @@
   <path d="M1055 890 H1120" stroke="#15803d" stroke-width="2.7" fill="none" marker-end="url(#arrow-green)"/>
   <path d="M1390 890 H1455" stroke="#15803d" stroke-width="2.7" fill="none" marker-end="url(#arrow-green)"/>
   <path d="M1260 945 V975 H215 V955" stroke="#334155" stroke-width="2" stroke-dasharray="7 5" fill="none" marker-end="url(#arrow)"/>
-  <text x="740" y="968" text-anchor="middle" class="edge-text">read response / write completion；同步 callback 内不等待 authorization</text>
+  <text x="740" y="968" text-anchor="middle" class="edge-text">P4D：callback 执行点重校验 access；READ/TSTORE 与 WRITE/TLOAD 精确返回 −EACCES</text>
 
   <rect x="45" y="1030" width="1590" height="92" rx="18" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
   <text x="72" y="1064" class="lane-title">EXPERIMENTAL / OPTIONAL / DEFAULT DISABLED：sim_npu + GVA/GSVA</text>
