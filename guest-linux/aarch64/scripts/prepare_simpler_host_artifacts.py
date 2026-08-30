@@ -19,6 +19,7 @@ SIMPLER_CAPI_ABI_VERSION = 5
 SIM_AICORE_TLS_ADAPTER_VERSION = 1
 HOST_TOOLCHAIN_MARKER = ".sim-host-toolchain.json"
 HOST_ARTIFACT_LOCK = ".sim-host-artifacts.lock"
+HOST_ARTIFACT_OUTPUT_LOCK = ".sim-host-artifacts.output.lock"
 
 SIM_AICORE_TLS_HEADER = r"""#pragma once
 
@@ -111,6 +112,18 @@ def resolve_sim_kernel_compiler(compiler_name: str | None) -> Path | None:
 def artifact_build_lock(simpler_root: Path):
     lock_path = simpler_root / "build" / HOST_ARTIFACT_LOCK
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def artifact_output_lock(output_dir: Path):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir / HOST_ARTIFACT_OUTPUT_LOCK
     with lock_path.open("a+b") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
@@ -3220,8 +3233,10 @@ def main() -> int:
 
     if args.describe:
         return describe(args, simpler_root, pto_isa_root)
+    output_dir = Path(args.output_dir).expanduser().resolve()
     with artifact_build_lock(simpler_root):
-        return build(args, simpler_root, pto_isa_root)
+        with artifact_output_lock(output_dir):
+            return build(args, simpler_root, pto_isa_root)
 
 
 if __name__ == "__main__":

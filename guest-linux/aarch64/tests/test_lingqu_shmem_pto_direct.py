@@ -1,4 +1,5 @@
 import json
+import fcntl
 import os
 import pathlib
 import runpy
@@ -28,6 +29,13 @@ ARTIFACT_GENERATOR = (
     / "aarch64"
     / "scripts"
     / "prepare_simpler_host_artifacts.py"
+)
+ARTIFACT_SNAPSHOTTER = (
+    ROOT
+    / "guest-linux"
+    / "aarch64"
+    / "scripts"
+    / "snapshot_simpler_host_artifacts.py"
 )
 OBMM_COMMON = ROOT / "guest-linux" / "aarch64" / "common" / "obmm_common.h"
 KERNEL_OBMM_SIM_DECODER = (
@@ -498,6 +506,138 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
                     global_rows=0,
                     global_cols=127,
                 )
+
+    def test_artifact_snapshot_is_self_contained_and_immutable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            artifacts = []
+            for index, name in enumerate(
+                (
+                    "runtime_host.so",
+                    "orchestration.so",
+                    "runtime_aicpu.bin",
+                    "runtime_aicore.bin",
+                    "kernel_0.bin",
+                    "runtime_log.so",
+                )
+            ):
+                artifact = source_dir / name
+                artifact.write_bytes(f"artifact-{index}".encode("ascii"))
+                artifacts.append(artifact)
+            manifest = source_dir / "host_vector_manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "simpler_runtime": {
+                            "host_runtime_library": {
+                                "source": str(artifacts[0])
+                            },
+                            "orch_shared_object": {
+                                "source": str(artifacts[1])
+                            },
+                            "aicpu_binary": {"source": str(artifacts[2])},
+                            "aicore_binary": {"source": str(artifacts[3])},
+                            "kernels": [
+                                {"binary": {"source": str(artifacts[4])}}
+                            ],
+                            "runtime_env": {
+                                "SIMPLER_LOG_LIBRARY": str(artifacts[5]),
+                                "NON_FILE_VALUE": "preserved",
+                            },
+                        }
+                    }
+                )
+            )
+            snapshot_dir = root / "snapshot"
+            result = subprocess.run(
+                [
+                    str(ARTIFACT_SNAPSHOTTER),
+                    "--manifest",
+                    str(manifest),
+                    "--output-dir",
+                    str(snapshot_dir),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            snapshot_manifest = pathlib.Path(result.stdout.strip())
+            snapshot = json.loads(snapshot_manifest.read_text())
+            snapshot_host = pathlib.Path(
+                snapshot["simpler_runtime"]["host_runtime_library"][
+                    "source"
+                ]
+            )
+            original_snapshot_bytes = snapshot_host.read_bytes()
+
+            artifacts[0].write_bytes(b"mutated-after-snapshot")
+
+            self.assertEqual(snapshot_host.read_bytes(), original_snapshot_bytes)
+            self.assertTrue(
+                snapshot_host.is_relative_to(snapshot_dir.resolve())
+            )
+            self.assertEqual(
+                snapshot["simpler_runtime"]["runtime_env"]["NON_FILE_VALUE"],
+                "preserved",
+            )
+            self.assertEqual(snapshot["artifact_snapshot"]["version"], 1)
+            self.assertEqual(
+                snapshot["artifact_snapshot"]["source_manifest"],
+                str(manifest.resolve()),
+            )
+            self.assertEqual(
+                len(snapshot["artifact_snapshot"]["artifacts"]), 6
+            )
+
+    def test_artifact_snapshot_waits_for_exclusive_build_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            artifact = root / "runtime.bin"
+            artifact.write_bytes(b"runtime")
+            manifest = root / "host_vector_manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "simpler_runtime": {
+                            "host_runtime_library": {
+                                "source": str(artifact)
+                            },
+                            "orch_shared_object": {
+                                "source": str(artifact)
+                            },
+                            "kernels": [],
+                        }
+                    }
+                )
+            )
+            lock_path = root / ".sim-host-artifacts.output.lock"
+            with lock_path.open("a+b") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                process = subprocess.Popen(
+                    [
+                        str(ARTIFACT_SNAPSHOTTER),
+                        "--manifest",
+                        str(manifest),
+                        "--output-dir",
+                        str(root / "snapshot"),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    process.wait(timeout=0.2)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            stdout, _ = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0, stdout)
+
+        generator = ARTIFACT_GENERATOR.read_text()
+        self.assertIn("HOST_ARTIFACT_OUTPUT_LOCK", generator)
+        self.assertIn("fcntl.LOCK_EX", generator)
+        self.assertIn("with artifact_output_lock(output_dir)", generator)
 
     def test_dedicated_runner_rejects_unknown_expected_result(self):
         result = subprocess.run(

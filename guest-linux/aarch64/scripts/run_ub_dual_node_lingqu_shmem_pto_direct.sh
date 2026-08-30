@@ -6,9 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$GUEST_ROOT/../.." && pwd)"
 GENERIC_RUNNER="$SCRIPT_DIR/run_ub_dual_node_apps.sh"
+ARTIFACT_SNAPSHOTTER="$SCRIPT_DIR/snapshot_simpler_host_artifacts.py"
 QEMU_SOURCE_DIR="${QEMU_UB_SOURCE_DIR:-$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub}"
 QEMU_BUILD_DIR="${QEMU_UB_BUILD_DIR:-$WORKSPACE_ROOT/vendor/qemu_8.2.0_ub/build}"
 MANIFEST=""
+SOURCE_MANIFEST=""
 SCENARIO="$WORKSPACE_ROOT/scenarios/mvp_2host_single_domain.yaml"
 SIM_CLI_BIN="${SIM_CLI_BIN:-$WORKSPACE_ROOT/target/release/sim-cli}"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$GUEST_ROOT/out/Image}"
@@ -114,6 +116,58 @@ hash_file() {
   else
     shasum -a 256 "$input_path"
   fi
+}
+
+validate_artifact_manifest() {
+  local manifest_path="$1"
+  local expected_layout="$2"
+  local expected_elements="$3"
+  local contract_label="$4"
+
+  python3 - \
+    "$manifest_path" \
+    "$expected_layout" \
+    "$expected_elements" \
+    "$contract_label" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as stream:
+    payload = json.load(stream)
+expected_layout = sys.argv[2]
+expected_elements = int(sys.argv[3])
+contract_label = sys.argv[4]
+layout = payload.get("ub_gm_layout")
+if not isinstance(layout, dict):
+    raise SystemExit(f"{contract_label} has no ub_gm_layout contract")
+geometry_by_layout = {
+    "nd": (128, 128, 128, 128),
+    "tail": (128, 127, 128, 128),
+    "cross-page": (1, 64, 1, 64),
+    "unaligned": (1, 64, 1, 64),
+}
+geometry = geometry_by_layout[expected_layout]
+expected = {
+    "profile": expected_layout,
+    "global_rows": geometry[0],
+    "global_cols": geometry[1],
+    "tile_rows": geometry[2],
+    "tile_cols": geometry[3],
+    "logical_elements": expected_elements,
+}
+actual = {key: layout.get(key) for key in expected}
+if actual != expected:
+    raise SystemExit(
+        f"{contract_label} layout mismatch: "
+        f"expected={expected!r} actual={actual!r}"
+    )
+value = payload.get("ub_gm_access_fault", "none")
+if value not in ("none", "tstore-on-read", "tload-on-write"):
+    raise SystemExit(
+        f"invalid {contract_label} UB_GM access fault: {value!r}"
+    )
+print(value)
+PY
 }
 
 while [[ $# -gt 0 ]]; do
@@ -339,50 +393,18 @@ if [[ ! -x "$GENERIC_RUNNER" ]]; then
   echo "generic dual-node runner is not executable: $GENERIC_RUNNER" >&2
   exit 2
 fi
+if [[ ! -x "$ARTIFACT_SNAPSHOTTER" ]]; then
+  echo "artifact snapshotter is not executable: $ARTIFACT_SNAPSHOTTER" >&2
+  exit 2
+fi
 
-MANIFEST="$(canonical_file "PTO manifest" "$MANIFEST")"
+SOURCE_MANIFEST="$(canonical_file "PTO manifest" "$MANIFEST")"
 SCENARIO="$(canonical_file "simulator scenario" "$SCENARIO")"
 SIM_CLI_BIN="$(canonical_file "sim-cli" "$SIM_CLI_BIN")"
 KERNEL_IMAGE="$(canonical_file "kernel image" "$KERNEL_IMAGE")"
 INITRAMFS_IMAGE="$(canonical_file "initramfs image" "$INITRAMFS_IMAGE")"
-MANIFEST_ACCESS_FAULT="$(python3 - "$MANIFEST" "$LAYOUT" "$ELEMENTS" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as stream:
-    payload = json.load(stream)
-expected_layout = sys.argv[2]
-expected_elements = int(sys.argv[3])
-layout = payload.get("ub_gm_layout")
-if not isinstance(layout, dict):
-    raise SystemExit("PTO manifest has no ub_gm_layout contract")
-geometry_by_layout = {
-    "nd": (128, 128, 128, 128),
-    "tail": (128, 127, 128, 128),
-    "cross-page": (1, 64, 1, 64),
-    "unaligned": (1, 64, 1, 64),
-}
-geometry = geometry_by_layout[expected_layout]
-expected = {
-    "profile": expected_layout,
-    "global_rows": geometry[0],
-    "global_cols": geometry[1],
-    "tile_rows": geometry[2],
-    "tile_cols": geometry[3],
-    "logical_elements": expected_elements,
-}
-actual = {key: layout.get(key) for key in expected}
-if actual != expected:
-    raise SystemExit(
-        "PTO manifest layout mismatch: "
-        f"expected={expected!r} actual={actual!r}"
-    )
-value = payload.get("ub_gm_access_fault", "none")
-if value not in ("none", "tstore-on-read", "tload-on-write"):
-    raise SystemExit(f"invalid manifest UB_GM access fault: {value!r}")
-print(value)
-PY
-)"
+MANIFEST_ACCESS_FAULT="$(validate_artifact_manifest \
+  "$SOURCE_MANIFEST" "$LAYOUT" "$ELEMENTS" "PTO manifest")"
 EXPECTED_MANIFEST_ACCESS_FAULT="none"
 if [[ "$FAULT_CASE" == "tstore-on-read" ||
       "$FAULT_CASE" == "tload-on-write" ]]; then
@@ -403,6 +425,19 @@ if [[ -e "$EVIDENCE_DIR" ]]; then
 fi
 mkdir -p "$EVIDENCE_DIR"
 EVIDENCE_DIR="$(cd "$EVIDENCE_DIR" && pwd)"
+
+ARTIFACT_SNAPSHOT_DIR="$EVIDENCE_DIR/artifacts"
+MANIFEST="$($ARTIFACT_SNAPSHOTTER \
+  --manifest "$SOURCE_MANIFEST" \
+  --output-dir "$ARTIFACT_SNAPSHOT_DIR")"
+MANIFEST="$(canonical_file "PTO artifact snapshot" "$MANIFEST")"
+SNAPSHOT_ACCESS_FAULT="$(validate_artifact_manifest \
+  "$MANIFEST" "$LAYOUT" "$ELEMENTS" "PTO artifact snapshot")"
+if [[ "$SNAPSHOT_ACCESS_FAULT" != "$MANIFEST_ACCESS_FAULT" ]]; then
+  echo "PTO artifact snapshot access fault changed: "\
+"source=$MANIFEST_ACCESS_FAULT snapshot=$SNAPSHOT_ACCESS_FAULT" >&2
+  exit 2
+fi
 
 FINGERPRINT_JSON="$EVIDENCE_DIR/callable-fingerprint.json"
 "$SIM_CLI_BIN" lingqu-shmem-pto-e2e \
@@ -556,6 +591,7 @@ SOURCE_HASH_FILE="$EVIDENCE_DIR/source-sha256.txt"
 {
   hash_file "$GENERIC_RUNNER"
   hash_file "$0"
+  hash_file "$ARTIFACT_SNAPSHOTTER"
   hash_file "$GUEST_ROOT/scripts/prepare_simpler_host_artifacts.py"
   hash_file "$GUEST_ROOT/scripts/prepare_simpler_host_vector_artifacts.py"
   hash_file "$GUEST_ROOT/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c"
@@ -596,6 +632,7 @@ fi
   echo "runner_exit_code=$RUNNER_RC"
   echo "run_id=$RUN_ID"
   echo "evidence_dir=$EVIDENCE_DIR"
+  echo "source_manifest=$SOURCE_MANIFEST"
   echo "manifest=$MANIFEST"
   echo "scenario=$SCENARIO"
   echo "artifact_fingerprint=$ARTIFACT_FINGERPRINT"
