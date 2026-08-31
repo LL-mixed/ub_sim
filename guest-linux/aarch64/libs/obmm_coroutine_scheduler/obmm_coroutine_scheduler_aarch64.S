@@ -88,6 +88,22 @@ obmm_coroutine_scheduler_context_resume:
     b .Lfatal
     .size obmm_coroutine_scheduler_context_resume, .-obmm_coroutine_scheduler_context_resume
 
+    .global obmm_coroutine_scheduler_wait
+    .type obmm_coroutine_scheduler_wait, %function
+obmm_coroutine_scheduler_wait:
+    /* Custom simulated kernel-free wait primitive: HLT #0x5344. */
+    .inst 0xd44a6880
+    ret
+    .size obmm_coroutine_scheduler_wait, .-obmm_coroutine_scheduler_wait
+
+    .global obmm_coroutine_scheduler_scheduler_enter
+    .type obmm_coroutine_scheduler_scheduler_enter, %function
+obmm_coroutine_scheduler_scheduler_enter:
+    /* Custom simulated scheduler-enter primitive: HLT #0x5345. */
+    .inst 0xd44a68a0
+    ret
+    .size obmm_coroutine_scheduler_scheduler_enter, .-obmm_coroutine_scheduler_scheduler_enter
+
 .Lfatal:
     brk #0
     b .Lfatal

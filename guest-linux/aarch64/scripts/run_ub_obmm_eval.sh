@@ -383,6 +383,9 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   async_load_export_mem_id="$(summary_field "$async_load_export" export_mem_id)"
   async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
   if [[ "$async_load_coroutines" != <2-> || "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
+        "$(summary_field "$async_load_summary" abi)" != "3" ||
+        "$(summary_field "$async_load_summary" event_delivery)" != "ring" ||
+        "$(summary_field "$async_load_summary" wait_wakeup)" != "hlt" ||
         "$(summary_field "$async_load_summary" async_load_completion)" != "$ASYNC_LOAD_COMPLETION" ||
         "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
         "$(summary_field "$async_load_summary" completed)" != "$async_load_coroutines" ||
@@ -390,6 +393,13 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
         "$(summary_field "$async_load_summary" el0_upcalls_pending)" != "$async_load_coroutines" ||
         "$(summary_field "$async_load_summary" el0_upcalls_complete)" != "$async_load_coroutines" ||
         "$(summary_field "$async_load_summary" el0_upcalls_fault)" != "0" ||
+        "$(summary_field "$async_load_summary" el0_event_ring_consumed)" != "$(( 2 * async_load_coroutines ))" ||
+        "$(summary_field "$async_load_summary" el0_wait_assists)" != <1-> ||
+        "$(summary_field "$async_load_summary" el0_scheduler_enter_assists)" != "$async_load_coroutines" ||
+        "$(summary_field "$async_load_summary" event_producer_final)" != "$(( 2 * async_load_coroutines ))" ||
+        "$(summary_field "$async_load_summary" event_consumer_final)" != "$(( 2 * async_load_coroutines ))" ||
+        "$(summary_field "$async_load_summary" event_wait_wakeups)" != <1-> ||
+        "$(summary_field "$async_load_summary" kernel_hotpath_ioctls)" != "0" ||
         "$(summary_field "$async_load_summary" qemu_context_saves)" != "0" ||
         "$(summary_field "$async_load_summary" qemu_context_restores)" != "0" ||
         "$(summary_field "$async_load_summary" qemu_context_switches)" != "0" ||

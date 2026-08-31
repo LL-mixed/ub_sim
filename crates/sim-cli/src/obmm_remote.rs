@@ -324,7 +324,7 @@ fn async_load_model_spec(config: &ScenarioConfig) -> String {
     let model = &config.async_load_model;
 
     format!(
-        "v2|enabled={}|contexts={}|pending={}|events={}|clock_mhz={}",
+        "v3|enabled={}|contexts={}|pending={}|events={}|clock_mhz={}",
         u8::from(model.enabled),
         model.context_entries,
         model.pending_load_entries,
@@ -1275,12 +1275,18 @@ fn validate_async_load_producer_consumer_evidence(
 
     let summary = exactly_one_marker(text, "OBMM_ASYNC_LOAD_SUMMARY ")?;
     require_field(&summary, "schema", "1")?;
+    require_field(&summary, "abi", "3")?;
+    require_field(&summary, "event_delivery", "ring")?;
+    require_field(&summary, "wait_wakeup", "hlt")?;
     require_field(&summary, "role", "consumer")?;
     require_field(&summary, "producer_node", "0")?;
     require_field(&summary, "consumer_node", "1")?;
     require_field(&summary, "source_export_mem_id", export_mem_id)?;
     require_field(&summary, "status", "pass")?;
     let coroutines = required_u64(&summary, "coroutines")?;
+    let expected_events = coroutines
+        .checked_mul(2)
+        .ok_or_else(|| anyhow::anyhow!("ASYNC_LOAD event count overflow"))?;
     if coroutines < 2
         || required_u64(&summary, "completed")? != coroutines
         || required_u64(&summary, "values_verified")? != coroutines
@@ -1290,6 +1296,13 @@ fn validate_async_load_producer_consumer_evidence(
         || required_u64(&summary, "el0_context_saves")? == 0
         || required_u64(&summary, "el0_context_restores")? == 0
         || required_u64(&summary, "el0_context_switches")? == 0
+        || required_u64(&summary, "el0_event_ring_consumed")? != expected_events
+        || required_u64(&summary, "el0_wait_assists")? == 0
+        || required_u64(&summary, "el0_scheduler_enter_assists")? != coroutines
+        || required_u64(&summary, "event_producer_final")? != expected_events
+        || required_u64(&summary, "event_consumer_final")? != expected_events
+        || required_u64(&summary, "event_wait_wakeups")? == 0
+        || required_u64(&summary, "kernel_hotpath_ioctls")? != 0
         || required_u64(&summary, "direct_el0_upcalls")? == 0
         || required_u64(&summary, "qemu_context_saves")? != 0
         || required_u64(&summary, "qemu_context_restores")? != 0
@@ -1299,7 +1312,9 @@ fn validate_async_load_producer_consumer_evidence(
         || required_u64(&summary, "backend_pending_final")? != 0
         || required_u64(&summary, "trace_dropped")? != 0
     {
-        anyhow::bail!("ASYNC_LOAD summary does not prove EL0 scheduler progress and drain");
+        anyhow::bail!(
+            "ASYNC_LOAD summary does not prove ABI v3 kernel-free event handling, scheduler progress, and drain"
+        );
     }
     if required_u64(&summary, "el0_context_saves")? != required_u64(&summary, "direct_el0_upcalls")?
     {
@@ -1841,12 +1856,17 @@ mod tests {
                  OBMM_ASYNC_LOAD_COROUTINE_SUMMARY schema=1 coroutine=1 context_id=abc1 \
                  expected=2222222222222222 actual=2222222222222222 pending=1 \
                  complete=1 resumes_after_complete=1 status=pass\n\
-                 OBMM_ASYNC_LOAD_SUMMARY schema=1 role=consumer producer_node=0 \
+                 OBMM_ASYNC_LOAD_SUMMARY schema=1 abi=3 event_delivery=ring \
+                 wait_wakeup=hlt role=consumer producer_node=0 \
                  consumer_node=1 source_export_mem_id=17 import_mem_id=33 \
                  coroutines=2 completed=2 values_verified=2 \
                  el0_upcalls_pending=2 el0_upcalls_complete=2 el0_upcalls_fault=0 \
                  el0_context_saves=4 el0_context_restores=6 \
-                 el0_context_switches=3 direct_el0_upcalls=4 \
+                 el0_context_switches=3 el0_event_ring_consumed=4 \
+                 el0_wait_assists=1 el0_scheduler_enter_assists=2 \
+                 event_producer_final=4 event_consumer_final=4 \
+                 event_wait_wakeups=1 kernel_hotpath_ioctls=0 \
+                 direct_el0_upcalls=4 \
                  qemu_context_saves=0 qemu_context_restores=0 \
                  qemu_context_switches=0 qemu_context_bytes=0 \
                  async_load_pending_final=0 backend_pending_final=0 trace_dropped=0 \
@@ -2045,19 +2065,25 @@ mod tests {
             .replace("el0_context_saves=4", "el0_context_saves=0");
         let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid)
             .expect_err("missing EL0 save evidence must fail ASYNC_LOAD gate");
-        assert!(error.to_string().contains("EL0 scheduler progress"));
+        assert!(error
+            .to_string()
+            .contains("ABI v3 kernel-free event handling"));
 
         let invalid =
             phase_evidence(ObmmPhaseGate::AsyncLoad, hash).replace("completed=2", "completed=1");
         let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid)
             .expect_err("incomplete ASYNC_LOAD operation set must fail");
-        assert!(error.to_string().contains("EL0 scheduler progress"));
+        assert!(error
+            .to_string()
+            .contains("ABI v3 kernel-free event handling"));
 
         let invalid = phase_evidence(ObmmPhaseGate::AsyncLoad, hash)
             .replace("qemu_context_saves=0", "qemu_context_saves=1");
         let error = validate_phase_evidence(ObmmPhaseGate::AsyncLoad, &accepted, &invalid)
             .expect_err("QEMU-owned ASYNC_LOAD context save must fail");
-        assert!(error.to_string().contains("EL0 scheduler progress"));
+        assert!(error
+            .to_string()
+            .contains("ABI v3 kernel-free event handling"));
 
         let replay = phase_evidence(ObmmPhaseGate::AsyncLoad, hash).replace(
             "async_load_completion=patch replay_consumed=0 replay_mismatch=0 \
@@ -2232,7 +2258,7 @@ mod tests {
 
         assert_eq!(
             async_load_model_spec(&config),
-            "v2|enabled=1|contexts=64|pending=64|events=128|clock_mhz=2000"
+            "v3|enabled=1|contexts=64|pending=64|events=128|clock_mhz=2000"
         );
     }
 

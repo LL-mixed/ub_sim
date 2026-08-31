@@ -1,19 +1,26 @@
-# OBMM remote-load P3 ABI v2 性能评估结果
+# OBMM remote-load P3：ABI v2 历史性能结果与 ABI v3 重跑要求
 
 > 命名说明：当前机制名为 `async load`。文中小写 `p2b` 仅用于精确引用改名前的
 > 远端 workspace 和历史 evidence 路径。
 
 > 日期：2026-08-13；更新：2026-08-20
 >
-> 状态：**2-node formal acceptance、4/8-node 定向 scale-out、2,240-case
+> ABI v2 历史状态：**2-node formal acceptance、4/8-node 定向 scale-out、2,240-case
 > 7-seed coarse runtime policy 和 1,960-case fine-grained formal boundary 已完成；
 > 4,942-case full matrix 于 2026-08-14 按用户要求安全暂停**
 >
+> ABI v3 当前状态（2026-08-31）：mmap event ring、EL0 atomic wait/wakeup、
+> scheduler-enter assist 与零 hot-path ioctl 已实现；patch/replay 的 2-node 10 ms
+> correctness E2E 均为 pass。现有 P3 数字全部来自 ABI v2，不能代表 ABI v3 的性能。
+> 恢复正式 P3 时需要使用 ABI v3 artifact 和 gate 从头采集，不得合并 ABI v2 raw evidence。
+> ABI v3 功能证据见
+> [kernel-free event ring 设计与实跑](async-load-abi-v3-kernel-free-event-ring.md)。
+>
 > 设计基线：[P3 对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 
-## 1. 结论
+## 1. 结论与当前适用范围
 
-当前可以给出五条有证据边界的结论：
+当前可以给出六条有证据边界的结论：
 
 1. ABI v2 的 2-node formal acceptance 为 **49/49 pass**，P0、P1、submit/await、async load、P4
    五个 phase gate 全部通过；旧 ABI v1 的 49-case 结果没有复用。
@@ -29,6 +36,9 @@
    fail closed 到 sync。
 5. 完整 P3 sensitivity 仍未完成。4,942-case full matrix 负责覆盖 jitter、tail、
    failure、range 和更完整的 crossing，当前保持暂停；coarse bucket 不向未测区域外推。
+6. 上述吞吐、makespan 与 policy bucket 只描述 ABI v2。ABI v3 已移除 event/wait ioctl
+   hot path，固定机制开销发生变化；在 ABI v3 P3 重跑完成前，当前数据只能作为历史
+   对照，不能回答 ABI v3 下 sync、submit/await、async load 的新 break-even 边界。
 
 ![submit/await 与 async load 在 2、4、8 节点上的 cluster throughput 和相对收益](2026-08-13-obmm-p3-performance-results.svg)
 

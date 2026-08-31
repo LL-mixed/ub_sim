@@ -423,7 +423,7 @@ def test_eval_runner_fails_closed_before_launch():
             common
             + [
                 "--async-load-model",
-                "v2|enabled=1|contexts=64|pending=64|events=128|clock_mhz=1000",
+                "v3|enabled=1|contexts=64|pending=64|events=128|clock_mhz=1000",
                 "--obmm-async-args",
                 "--mode async-load --async-load-producer-consumer "
                 "--producer-index 1 --coroutines 2 --iterations 2 "

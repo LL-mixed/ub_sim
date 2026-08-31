@@ -1803,7 +1803,11 @@ static void async_print_eval_summary(const struct async_app *app,
            "el0_upcalls_fault=%llu el0_context_saves=%llu "
            "el0_context_restores=%llu el0_context_switches=%llu "
            "el0_context_bytes=%llu el0_scheduler_ns=%llu "
-           "el0_no_ready_waits=%llu direct_el0_upcalls=%llu "
+           "el0_no_ready_waits=%llu el0_event_ring_consumed=%llu "
+           "el0_wait_assists=%llu el0_scheduler_enter_assists=%llu "
+           "event_producer_final=%llu event_consumer_final=%llu "
+           "event_wait_wakeups=%llu kernel_hotpath_ioctls=%llu "
+           "direct_el0_upcalls=%llu "
            "qemu_context_saves=%llu qemu_context_restores=%llu "
            "qemu_context_switches=%llu qemu_context_bytes=%llu "
            "uffd_fault_ns_p50=%llu uffd_fault_ns_p95=%llu "
@@ -1875,6 +1879,13 @@ static void async_print_eval_summary(const struct async_app *app,
            (unsigned long long)app->async_load_metrics.el0_context_bytes,
            (unsigned long long)app->async_load_metrics.el0_scheduler_ns,
            (unsigned long long)app->async_load_metrics.el0_no_ready_waits,
+           (unsigned long long)app->async_load_metrics.el0_event_ring_consumed,
+           (unsigned long long)app->async_load_metrics.el0_wait_assists,
+           (unsigned long long)app->async_load_metrics.el0_scheduler_enter_assists,
+           (unsigned long long)app->async_load_metrics.event_producer_final,
+           (unsigned long long)app->async_load_metrics.event_consumer_final,
+           (unsigned long long)app->async_load_metrics.event_wait_wakeups,
+           (unsigned long long)app->async_load_metrics.kernel_hotpath_ioctls,
            (unsigned long long)app->async_load_metrics.device.direct_upcalls,
            (unsigned long long)app->async_load_metrics.device.context_saves,
            (unsigned long long)app->async_load_metrics.device.context_restores,
@@ -2035,7 +2046,7 @@ static int async_pin_current_cpu(void)
 
 static int async_run_async_load_workload(struct async_app *app)
 {
-    struct obmm_async_load_caps_v2 caps;
+    struct obmm_async_load_caps_v3 caps;
     uint32_t index;
     int ret;
 
@@ -2448,6 +2459,17 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
         app->async_load_metrics.el0_complete_upcalls == app->config.coroutines &&
         app->async_load_metrics.el0_fault_upcalls == 0 &&
         app->async_load_metrics.el0_context_switches > 0 &&
+        app->async_load_metrics.el0_event_ring_consumed ==
+            2ULL * app->config.coroutines &&
+        app->async_load_metrics.el0_wait_assists > 0 &&
+        app->async_load_metrics.el0_scheduler_enter_assists ==
+            app->config.coroutines &&
+        app->async_load_metrics.event_producer_final ==
+            app->async_load_metrics.el0_event_ring_consumed &&
+        app->async_load_metrics.event_consumer_final ==
+            app->async_load_metrics.event_producer_final &&
+        app->async_load_metrics.event_wait_wakeups > 0 &&
+        app->async_load_metrics.kernel_hotpath_ioctls == 0 &&
         app->async_load_trace_dropped == 0 &&
         app->async_load_metrics.el0_context_saves ==
             app->async_load_metrics.device.direct_upcalls &&
@@ -2461,13 +2483,18 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
         app->async_load_metrics.replay.replay_consumed ==
             (app->config.async_load_completion == ASYNC_LOAD_COMPLETION_REPLAY ?
              app->config.coroutines : 0);
-    printf("OBMM_ASYNC_LOAD_SUMMARY schema=1 role=consumer "
+    printf("OBMM_ASYNC_LOAD_SUMMARY schema=1 abi=%u event_delivery=ring "
+           "wait_wakeup=hlt role=consumer "
            "producer_node=%d consumer_node=%d "
            "source_export_mem_id=%llu import_mem_id=%llu "
            "coroutines=%u completed=%llu values_verified=%u "
            "el0_upcalls_pending=%llu el0_upcalls_complete=%llu "
            "el0_upcalls_fault=%llu el0_context_saves=%llu "
            "el0_context_restores=%llu el0_context_switches=%llu "
+           "el0_event_ring_consumed=%llu el0_wait_assists=%llu "
+           "el0_scheduler_enter_assists=%llu event_producer_final=%llu "
+           "event_consumer_final=%llu event_wait_wakeups=%llu "
+           "kernel_hotpath_ioctls=%llu "
            "direct_el0_upcalls=%llu qemu_context_saves=%llu "
            "qemu_context_restores=%llu qemu_context_switches=%llu "
            "qemu_context_bytes=%llu async_load_pending_final=%llu "
@@ -2475,6 +2502,7 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
            "async_load_completion=%s replay_consumed=%llu "
            "replay_mismatch=%llu replay_ready_high_water=%llu "
            "status=%s\n",
+           OBMM_ASYNC_LOAD_ABI_VERSION,
            app->config.producer_index, local_index,
            (unsigned long long)producer_meta.export_mem_id,
            (unsigned long long)import_mem_id, app->config.coroutines,
@@ -2485,6 +2513,13 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
            (unsigned long long)app->async_load_metrics.el0_context_saves,
            (unsigned long long)app->async_load_metrics.el0_context_restores,
            (unsigned long long)app->async_load_metrics.el0_context_switches,
+           (unsigned long long)app->async_load_metrics.el0_event_ring_consumed,
+           (unsigned long long)app->async_load_metrics.el0_wait_assists,
+           (unsigned long long)app->async_load_metrics.el0_scheduler_enter_assists,
+           (unsigned long long)app->async_load_metrics.event_producer_final,
+           (unsigned long long)app->async_load_metrics.event_consumer_final,
+           (unsigned long long)app->async_load_metrics.event_wait_wakeups,
+           (unsigned long long)app->async_load_metrics.kernel_hotpath_ioctls,
            (unsigned long long)app->async_load_metrics.device.direct_upcalls,
            (unsigned long long)app->async_load_metrics.device.context_saves,
            (unsigned long long)app->async_load_metrics.device.context_restores,
@@ -2966,6 +3001,13 @@ cleanup:
            " el0_context_bytes=%" PRIu64
            " el0_scheduler_ns=%" PRIu64
            " el0_no_ready_waits=%" PRIu64
+           " el0_event_ring_consumed=%" PRIu64
+           " el0_wait_assists=%" PRIu64
+           " el0_scheduler_enter_assists=%" PRIu64
+           " event_producer_final=%" PRIu64
+           " event_consumer_final=%" PRIu64
+           " event_wait_wakeups=%" PRIu64
+           " kernel_hotpath_ioctls=%" PRIu64
            " direct_el0_upcalls=%" PRIu64
            " qemu_context_saves=%" PRIu64
            " qemu_context_restores=%" PRIu64
@@ -3039,6 +3081,13 @@ cleanup:
            (uint64_t)app.async_load_metrics.el0_context_bytes,
            (uint64_t)app.async_load_metrics.el0_scheduler_ns,
            (uint64_t)app.async_load_metrics.el0_no_ready_waits,
+           (uint64_t)app.async_load_metrics.el0_event_ring_consumed,
+           (uint64_t)app.async_load_metrics.el0_wait_assists,
+           (uint64_t)app.async_load_metrics.el0_scheduler_enter_assists,
+           (uint64_t)app.async_load_metrics.event_producer_final,
+           (uint64_t)app.async_load_metrics.event_consumer_final,
+           (uint64_t)app.async_load_metrics.event_wait_wakeups,
+           (uint64_t)app.async_load_metrics.kernel_hotpath_ioctls,
            (uint64_t)app.async_load_metrics.device.direct_upcalls,
            (uint64_t)app.async_load_metrics.device.context_saves,
            (uint64_t)app.async_load_metrics.device.context_restores,

@@ -1,9 +1,16 @@
 # async load：普通 `LDR` + 自定义 EL0 upcall + guest EL0 coroutine scheduler
 
+> 2026-08-31 更新：ABI v3 已用 mmap event ring 和三个 EL0 HLT assist 替换 ABI v2
+> 的 `GET_EVENT` / scheduler-enter ioctl hot path，patch 与 replay 的 2-node real guest
+> E2E 均已通过。现行 ABI、实现位置、时序与证据见
+> [ABI v3 kernel-free event ring 设计](async-load-abi-v3-kernel-free-event-ring.md)。
+> 本文第 4.2、4.4、7、9 节保留 ABI v2 的设计与历史证据，用于说明机制演进；这些
+> 段落不再定义当前 event data plane。
+
 > 命名说明：当前接口统一使用 `async load` / `async-load` / `async_load`。下文仍含
 > `p2b` 的字符串仅用于精确引用改名前的历史 evidence 路径或输出原文。
 
-> 状态：ABI v2 的 2-node producer/consumer 功能目标已完成，并在 `n4-910c`
+> 历史状态：ABI v2 的 2-node producer/consumer 功能目标已完成，并在 `n4-910c`
 > 通过 ARM64 Linux 原生构建、远端 QEMU guest E2E 和机器可读 phase gate。P3 ABI v2
 > 的 2-node acceptance、4/8-node 定向 scale-out、2,240-case coarse policy 与
 > 1,960-case fine formal boundary 已完成，4,942-case full matrix 按要求暂停；
@@ -254,7 +261,7 @@ EL0 entry 已经保存完整 application context 之后。这里“direct-to-EL0
 
 dispatcher 把 transient frame 复制到 guest-owned Context Store、用 event 中的
 `interrupted_pc` 设置保存 PC，再处理 PENDING/COMPLETE/FAULT 并调用 EL0 scheduler。
-最终不是用 `ERET` 返回，而是由 scheduler 选择 context 后执行 §4.3 的
+返回路径不使用 `ERET`。scheduler 选择 context 后执行 §4.3 的
 `HLT #0x5343` atomic resume。
 
 #### 4.1.5 与标准 Arm exception 的精确区别
@@ -529,8 +536,7 @@ coroutine scheduler/P1 state 的访问继续由 QEMU iothread lock 串行化；c
 
 ## 9. 当前测试方法、结果与证据边界
 
-当前测试不是一个测试程序包打天下，而是四层证据链。每层失败都会阻止 phase gate，
-但各层证明的对象不同：
+当前测试由四层证据链共同构成。每层失败都会阻止 phase gate，各层证明的对象不同：
 
 | 层次 | 当前测试 | 已通过 | 它实际证明什么 |
 |---|---|---:|---|
@@ -641,7 +647,7 @@ r15 使用的 correctness 参数：
 | remote model | fixed 10 ms、无 jitter/drop/error/duplicate；queue depth 64 |
 | deadline | 每条 load 1 s |
 
-10 ms 不是性能参数，而是因果验证工具。100 µs 模型下，completion 可能在 scheduler
+10 ms 用于因果验证，不作为性能参数。100 µs 模型下，completion 可能在 scheduler
 恢复第二个 context、但尚未进入其 C worker body 时就到达，只能证明“选中过另一个
 context”，不能稳定证明“另一个 coroutine 已执行自己的 load”。10 ms 确保该重叠窗口
 可观察，phase gate 仍绑定模型 manifest，不能把此运行解释为性能结论。

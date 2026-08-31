@@ -30,13 +30,14 @@ enum obmm_coroutine_scheduler_trace_kind {
 
 enum obmm_coroutine_scheduler_error_stage {
     OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_NONE = 0,
-    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_WAIT_EVENT,
-    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_UPCALL_GET_EVENT,
+    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_MAP,
+    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_DRAIN,
+    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_WAIT_ASSIST,
     OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_VALIDATE,
     OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_HANDLE,
     OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_COLLECT_METRICS,
     OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_STOP,
-    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_SCHEDULER_ENTER,
+    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_SCHEDULER_ENTER_ASSIST,
 };
 
 struct obmm_coroutine_scheduler_trace_event {
@@ -70,8 +71,8 @@ struct obmm_coroutine_scheduler_map {
 };
 
 struct obmm_coroutine_scheduler_metrics {
-    struct obmm_async_load_stats_v2 device;
-    struct obmm_async_load_observability_v2 observability;
+    struct obmm_async_load_stats_v3 device;
+    struct obmm_async_load_observability_v3 observability;
     struct obmm_async_load_replay_stats_v1 replay;
     uint64_t el0_pending_upcalls;
     uint64_t el0_complete_upcalls;
@@ -84,6 +85,13 @@ struct obmm_coroutine_scheduler_metrics {
     uint64_t el0_no_ready_waits;
     uint64_t el0_scheduler_ns;
     uint64_t el0_ready_high_water;
+    uint64_t el0_event_ring_consumed;
+    uint64_t el0_wait_assists;
+    uint64_t el0_scheduler_enter_assists;
+    uint64_t event_producer_final;
+    uint64_t event_consumer_final;
+    uint64_t event_wait_wakeups;
+    uint64_t kernel_hotpath_ioctls;
     uint32_t clock_mhz;
     int32_t first_error;
     uint32_t first_error_stage;
@@ -95,7 +103,7 @@ int obmm_coroutine_scheduler_open(struct obmm_coroutine_scheduler **runtime,
                   const struct obmm_coroutine_scheduler_options *options);
 void obmm_coroutine_scheduler_close(struct obmm_coroutine_scheduler *runtime);
 int obmm_coroutine_scheduler_get_caps(const struct obmm_coroutine_scheduler *runtime,
-                      struct obmm_async_load_caps_v2 *caps);
+                      struct obmm_async_load_caps_v3 *caps);
 
 int obmm_coroutine_scheduler_register_map(struct obmm_coroutine_scheduler *runtime, int mapping_fd,
                           uint64_t mem_id, void *gsva_base,

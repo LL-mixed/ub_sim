@@ -547,6 +547,13 @@ struct GuestPhaseMetrics {
     el0_context_bytes: u64,
     el0_scheduler_ns: u64,
     el0_no_ready_waits: u64,
+    el0_event_ring_consumed: u64,
+    el0_wait_assists: u64,
+    el0_scheduler_enter_assists: u64,
+    event_producer_final: u64,
+    event_consumer_final: u64,
+    event_wait_wakeups: u64,
+    kernel_hotpath_ioctls: u64,
     direct_el0_upcalls: u64,
     qemu_context_saves: u64,
     qemu_context_restores: u64,
@@ -2387,7 +2394,7 @@ fn planned_command(
         command.extend([
             "--async-load-model".into(),
             format!(
-                "v2|enabled={}|contexts={}|pending={}|events={}|clock_mhz={}",
+                "v3|enabled={}|contexts={}|pending={}|events={}|clock_mhz={}",
                 u8::from(scheduler.enabled),
                 scheduler.context_entries,
                 scheduler.pending_load_entries,
@@ -3515,6 +3522,13 @@ fn parse_guest_summary(output: &str) -> anyhow::Result<GuestEvalSummary> {
             el0_context_bytes: parse_u64_field("el0_context_bytes")?,
             el0_scheduler_ns: parse_u64_field("el0_scheduler_ns")?,
             el0_no_ready_waits: parse_u64_field("el0_no_ready_waits")?,
+            el0_event_ring_consumed: parse_u64_field("el0_event_ring_consumed")?,
+            el0_wait_assists: parse_u64_field("el0_wait_assists")?,
+            el0_scheduler_enter_assists: parse_u64_field("el0_scheduler_enter_assists")?,
+            event_producer_final: parse_u64_field("event_producer_final")?,
+            event_consumer_final: parse_u64_field("event_consumer_final")?,
+            event_wait_wakeups: parse_u64_field("event_wait_wakeups")?,
+            kernel_hotpath_ioctls: parse_u64_field("kernel_hotpath_ioctls")?,
             direct_el0_upcalls: parse_u64_field("direct_el0_upcalls")?,
             qemu_context_saves: parse_u64_field("qemu_context_saves")?,
             qemu_context_restores: parse_u64_field("qemu_context_restores")?,
@@ -3671,7 +3685,7 @@ struct PolicyReport {
     buckets: Vec<PolicyBucket>,
 }
 
-const PHASE_METRIC_FIELDS: [&str; 53] = [
+const PHASE_METRIC_FIELDS: [&str; 60] = [
     "ready_ns",
     "wait_ns",
     "idle_ns",
@@ -3701,6 +3715,13 @@ const PHASE_METRIC_FIELDS: [&str; 53] = [
     "el0_context_bytes",
     "el0_scheduler_ns",
     "el0_no_ready_waits",
+    "el0_event_ring_consumed",
+    "el0_wait_assists",
+    "el0_scheduler_enter_assists",
+    "event_producer_final",
+    "event_consumer_final",
+    "event_wait_wakeups",
+    "kernel_hotpath_ioctls",
     "direct_el0_upcalls",
     "qemu_context_saves",
     "qemu_context_restores",
@@ -3758,6 +3779,13 @@ fn phase_metric(metrics: &GuestPhaseMetrics, name: &str) -> u64 {
         "el0_context_bytes" => metrics.el0_context_bytes,
         "el0_scheduler_ns" => metrics.el0_scheduler_ns,
         "el0_no_ready_waits" => metrics.el0_no_ready_waits,
+        "el0_event_ring_consumed" => metrics.el0_event_ring_consumed,
+        "el0_wait_assists" => metrics.el0_wait_assists,
+        "el0_scheduler_enter_assists" => metrics.el0_scheduler_enter_assists,
+        "event_producer_final" => metrics.event_producer_final,
+        "event_consumer_final" => metrics.event_consumer_final,
+        "event_wait_wakeups" => metrics.event_wait_wakeups,
+        "kernel_hotpath_ioctls" => metrics.kernel_hotpath_ioctls,
         "direct_el0_upcalls" => metrics.direct_el0_upcalls,
         "qemu_context_saves" => metrics.qemu_context_saves,
         "qemu_context_restores" => metrics.qemu_context_restores,
@@ -4039,6 +4067,7 @@ fn validate_mode_metrics(
     }
 
     let expected_upcalls = expected_remote_operations(case);
+    let expected_events = expected_upcalls.saturating_mul(2);
     if matches!(
         case.outcome,
         OutcomeProfile::Success | OutcomeProfile::DuplicateLate
@@ -4050,9 +4079,20 @@ fn validate_mode_metrics(
         || (case.coroutines > 1 && phase.el0_context_switches == 0)
         || phase.el0_context_bytes == 0
         || phase.el0_scheduler_ns == 0
+        || phase.el0_event_ring_consumed != expected_events
+        || phase.el0_wait_assists == 0
+        || phase.el0_wait_assists != phase.el0_no_ready_waits
+        || phase.el0_scheduler_enter_assists != u64::from(case.coroutines)
+        || phase.event_producer_final != expected_events
+        || phase.event_consumer_final != expected_events
+        || phase.event_wait_wakeups > phase.el0_wait_assists
+        || phase.kernel_hotpath_ioctls != 0
         || phase.direct_el0_upcalls != phase.el0_context_saves)
     {
-        reasons.push("ASYNC_LOAD does not prove ABI v2 guest-EL0 scheduler progress".into());
+        reasons.push(
+            "ASYNC_LOAD does not prove ABI v3 kernel-free event handling and guest-EL0 scheduler progress"
+                .into(),
+        );
     }
 }
 
@@ -6415,6 +6455,10 @@ mod tests {
                     el0_context_saves=0 el0_context_restores=0 \
                     el0_context_switches=0 el0_context_bytes=0 \
                     el0_scheduler_ns=0 el0_no_ready_waits=0 \
+                    el0_event_ring_consumed=0 el0_wait_assists=0 \
+                    el0_scheduler_enter_assists=0 event_producer_final=0 \
+                    event_consumer_final=0 event_wait_wakeups=0 \
+                    kernel_hotpath_ioctls=0 \
                     direct_el0_upcalls=0 qemu_context_saves=0 \
                     qemu_context_restores=0 qemu_context_switches=0 \
                     qemu_context_bytes=0 uffd_fault_ns_p50=0 \
@@ -6452,6 +6496,13 @@ mod tests {
         summary.phase.el0_context_switches = 12_000;
         summary.phase.el0_context_bytes = 24_960_000;
         summary.phase.el0_scheduler_ns = 500_000;
+        summary.phase.el0_no_ready_waits = 1;
+        summary.phase.el0_event_ring_consumed = summary.operations * 2;
+        summary.phase.el0_wait_assists = 1;
+        summary.phase.el0_scheduler_enter_assists = u64::from(case.coroutines);
+        summary.phase.event_producer_final = summary.operations * 2;
+        summary.phase.event_consumer_final = summary.operations * 2;
+        summary.phase.event_wait_wakeups = 1;
         summary.phase.direct_el0_upcalls = summary.phase.el0_context_saves;
 
         let mut reasons = Vec::new();
@@ -6486,6 +6537,13 @@ mod tests {
         summary.phase.el0_context_switches = 50_000;
         summary.phase.el0_context_bytes = 100_000_000;
         summary.phase.el0_scheduler_ns = 1_000_000;
+        summary.phase.el0_no_ready_waits = 1;
+        summary.phase.el0_event_ring_consumed = 65_536;
+        summary.phase.el0_wait_assists = 1;
+        summary.phase.el0_scheduler_enter_assists = u64::from(case.coroutines);
+        summary.phase.event_producer_final = 65_536;
+        summary.phase.event_consumer_final = 65_536;
+        summary.phase.event_wait_wakeups = 1;
         summary.phase.direct_el0_upcalls = summary.phase.el0_context_saves;
 
         let mut reasons = Vec::new();
@@ -6498,7 +6556,7 @@ mod tests {
         validate_mode_metrics(&case, &summary, &mut reasons);
         assert_eq!(
             reasons,
-            vec!["ASYNC_LOAD does not prove ABI v2 guest-EL0 scheduler progress"]
+            vec!["ASYNC_LOAD does not prove ABI v3 kernel-free event handling and guest-EL0 scheduler progress"]
         );
     }
 
@@ -6518,6 +6576,13 @@ mod tests {
         summary.phase.el0_context_switches = 0;
         summary.phase.el0_context_bytes = 1_000_000;
         summary.phase.el0_scheduler_ns = 500_000;
+        summary.phase.el0_no_ready_waits = 1;
+        summary.phase.el0_event_ring_consumed = summary.operations * 2;
+        summary.phase.el0_wait_assists = 1;
+        summary.phase.el0_scheduler_enter_assists = u64::from(case.coroutines);
+        summary.phase.event_producer_final = summary.operations * 2;
+        summary.phase.event_consumer_final = summary.operations * 2;
+        summary.phase.event_wait_wakeups = 1;
         summary.phase.direct_el0_upcalls = summary.phase.el0_context_saves;
 
         let mut reasons = Vec::new();
@@ -6525,10 +6590,11 @@ mod tests {
         assert!(reasons.is_empty(), "{reasons:?}");
 
         case.coroutines = 2;
+        summary.phase.el0_scheduler_enter_assists = 1;
         validate_mode_metrics(&case, &summary, &mut reasons);
         assert_eq!(
             reasons,
-            vec!["ASYNC_LOAD does not prove ABI v2 guest-EL0 scheduler progress"]
+            vec!["ASYNC_LOAD does not prove ABI v3 kernel-free event handling and guest-EL0 scheduler progress"]
         );
     }
 

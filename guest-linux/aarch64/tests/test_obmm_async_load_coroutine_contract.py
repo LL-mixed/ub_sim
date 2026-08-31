@@ -16,17 +16,26 @@ APP_DIR = ROOT / "apps" / "obmm_async_coroutine"
 GUEST_ARTIFACT_BUILDER = ROOT / "scripts" / "build_guest_artifacts.sh"
 
 
-def test_async_load_uapi_v2_layout_compiles_for_aarch64():
+def test_async_load_uapi_v3_layout_compiles_for_aarch64():
     compiler = shutil.which("aarch64-linux-gnu-gcc")
     if not compiler:
         return
     source = r"""
 #include <stddef.h>
 #include <ub/obmm_async_load.h>
-_Static_assert(OBMM_ASYNC_LOAD_ABI_VERSION == 2, "ABI version");
+_Static_assert(OBMM_ASYNC_LOAD_ABI_VERSION == 3, "ABI version");
 _Static_assert(OBMM_ASYNC_LOAD_RESUME_HLT_IMM == 0x5343, "resume immediate");
+_Static_assert(OBMM_ASYNC_LOAD_WAIT_HLT_IMM == 0x5344, "wait immediate");
+_Static_assert(OBMM_ASYNC_LOAD_SCHEDULER_ENTER_HLT_IMM == 0x5345,
+               "scheduler-enter immediate");
 _Static_assert(OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE == (1ULL << 8),
                "replay capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING == (1ULL << 9),
+               "event-ring capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_EL0_WAIT_WAKE == (1ULL << 10),
+               "wait-wakeup capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER == (1ULL << 11),
+               "scheduler-enter capability");
 _Static_assert(OBMM_ASYNC_LOAD_START_REPLAY_RETIRE == 1,
                "replay start flag");
 _Static_assert(sizeof(struct obmm_async_load_context_v2) == 832, "context size");
@@ -36,19 +45,25 @@ _Static_assert(offsetof(struct obmm_async_load_context_v2, pc) == 272, "pc offse
 _Static_assert(offsetof(struct obmm_async_load_context_v2, q) == 288, "q offset");
 _Static_assert(offsetof(struct obmm_async_load_context_v2, fpcr) == 800,
                "fpcr offset");
-_Static_assert(sizeof(struct obmm_async_load_caps_v2) == 64, "caps size");
+_Static_assert(sizeof(struct obmm_async_load_caps_v3) == 112, "caps size");
 _Static_assert(sizeof(struct obmm_async_load_map_register_v1) == 64, "map size");
-_Static_assert(sizeof(struct obmm_async_load_start_v2) == 40, "start size");
-_Static_assert(sizeof(struct obmm_async_load_event_v2) == 72, "event size");
-_Static_assert(sizeof(struct obmm_async_load_stats_v2) == 152, "stats size");
-_Static_assert(sizeof(struct obmm_async_load_observability_v2) == 144,
+_Static_assert(sizeof(struct obmm_async_load_start_v3) == 40, "start size");
+_Static_assert(sizeof(struct obmm_async_load_event_producer_v3) == 64,
+               "producer size");
+_Static_assert(sizeof(struct obmm_async_load_event_consumer_v3) == 64,
+               "consumer size");
+_Static_assert(sizeof(struct obmm_async_load_event_v3) == 128, "event size");
+_Static_assert(sizeof(struct obmm_async_load_stats_v3) == 152, "stats size");
+_Static_assert(sizeof(struct obmm_async_load_observability_v3) == 144,
                "observability size");
 _Static_assert(sizeof(struct obmm_async_load_replay_stats_v1) == 32,
                "replay stats size");
-_Static_assert(offsetof(struct obmm_async_load_start_v2, upcall_entry) == 24,
+_Static_assert(offsetof(struct obmm_async_load_start_v3, upcall_entry) == 24,
                "upcall entry offset");
-_Static_assert(offsetof(struct obmm_async_load_event_v2, interrupted_pc) == 24,
+_Static_assert(offsetof(struct obmm_async_load_event_v3, interrupted_pc) == 32,
                "interrupted PC offset");
+_Static_assert(offsetof(struct obmm_async_load_event_v3, map_id) == 64,
+               "map id offset");
 int main(void) { return 0; }
 """
     with tempfile.TemporaryDirectory() as directory:
@@ -149,7 +164,9 @@ def test_qemu_provides_mechanism_but_not_coroutine_policy():
     assert "UB_ASYNC_LOAD_PLT_REPLAY_READY" in model
     assert "ub_async_load_cpu_take_upcall" in device
     assert "ub_async_load_cpu_resume" in device
-    assert "ub_async_load_scheduler_command" in device
+    assert "ub_async_load_ring_publish_one" in device
+    assert "ub_async_load_cpu_wait" in device
+    assert "ub_async_load_cpu_scheduler_enter" in device
     replay_expected = device.split(
         "bool ub_async_load_cpu_replay_expected", 1
     )[1].split("bool ub_async_load_cpu_take_upcall", 1)[0]
@@ -166,11 +183,24 @@ def test_qemu_provides_mechanism_but_not_coroutine_policy():
     assert "active_context_id && !state->upcall_active" not in device
     assert "ready_queue" not in device
     assert "UB_ASYNC_LOAD_RESUME_IMM" in translate
+    assert "UB_ASYNC_LOAD_WAIT_IMM" in translate
+    assert "UB_ASYNC_LOAD_SCHEDULER_ENTER_IMM" in translate
     assert "gen_helper_async_load_resume" in translate
+    assert "gen_helper_async_load_wait" in translate
+    assert "gen_helper_async_load_scheduler_enter" in translate
     assert "HELPER(async_load_remote_load)" in helper
     assert "UB_ASYNC_LOAD_TRY_REPLAYED" in helper
     assert "async_load_replay_valid = true" in helper
     assert "env->pc = upcall_entry" in helper
+    assert "HELPER(async_load_wait)" in helper
+    assert "HELPER(async_load_scheduler_enter)" in helper
+    assert "cpu_loop_exit_noexc(cs)" in helper
+    wait_helper = helper.split("void HELPER(async_load_wait)", 1)[1].split(
+        "void HELPER(async_load_scheduler_enter)", 1
+    )[0]
+    assert wait_helper.index("cs->halted = 1") < wait_helper.index(
+        "qemu_mutex_unlock_iothread()"
+    )
     assert "async_load_probe_access_range" in helper
     assert "probe_access(env, address, UB_ASYNC_LOAD_CONTEXT_BYTES" not in helper
     assert "async_load_context_load" in helper
@@ -203,54 +233,63 @@ def test_guest_el0_runtime_owns_save_state_and_selection():
     assert "runtime->caps.capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE" in runtime
     assert "runtime->current->state != OBMM_COROUTINE_SCHEDULER_CONTEXT_DONE" in dispatch
     assert "interrupted_was_running" in dispatch
-    assert "OBMM_ASYNC_LOAD_IOCTL_GET_EVENT" in runtime
-    assert "OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER" in runtime
-    assert "OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_SCHEDULER_ENTER" in runtime
+    assert "OBMM_ASYNC_LOAD_IOCTL_GET_EVENT" not in runtime
+    assert "OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER" not in runtime
+    assert "obmm_coroutine_scheduler_event_ring_next" in runtime
+    assert "obmm_coroutine_scheduler_event_ring_drain" in runtime
+    assert "__ATOMIC_ACQUIRE" in runtime
+    assert "__ATOMIC_RELEASE" in runtime
+    assert "runtime->metrics.kernel_hotpath_ioctls++" in runtime
+    assert "runtime->hot_path_active = true" in runtime
+    assert "runtime->hot_path_active = false" in runtime
     assert "stp x0, x1, [sp, #16]" in assembly
     assert "stp q30, q31, [sp, #768]" in assembly
     assert ".inst 0xd44a6860" in assembly
+    assert ".inst 0xd44a6880" in assembly
+    assert ".inst 0xd44a68a0" in assembly
     assert "OBMM_ASYNC_LOAD_REG_UPCALL_ENTRY" in driver
-    assert "OBMM_ASYNC_LOAD_REG_EVENT_COMMAND" in driver
-    assert "OBMM_ASYNC_LOAD_REG_SCHEDULER_COMMAND" in driver
-    assert "struct obmm_async_load_start_v2" in driver
+    assert "OBMM_ASYNC_LOAD_REG_EVENT_RING_BASE" in driver
+    assert "OBMM_ASYNC_LOAD_REG_EVENT_CONSUMER_BASE" in driver
+    assert "struct obmm_async_load_start_v3" in driver
+    assert "linqu_async_load_mmap" in driver
+    assert "dma_mmap_coherent" in driver
     assert "linqu_async_load_create_context" not in driver
-    assert "!(event.flags & OBMM_ASYNC_LOAD_EVENT_GET_WAIT)" in driver
-    wait_event = driver.split("static long linqu_async_load_get_event", 1)[1].split(
-        "static long linqu_async_load_context_commit", 1
+    assert "linqu_async_load_get_event" not in driver
+    assert "linqu_async_load_scheduler_enter" not in driver
+    ring_mmap = driver.split("static int linqu_async_load_mmap", 1)[1].split(
+        "static long linqu_async_load_query_caps", 1
     )[0]
-    assert "timeout_ns = OBMM_ASYNC_LOAD_MAX_LOAD_TIMEOUT_NS;" in wait_event
-    assert "timeout_ns = ctx->load_timeout_ns" not in wait_event
-    assert "OBMM_ASYNC_LOAD_STATUS_EVENT_PENDING |" in wait_event
-    assert "OBMM_ASYNC_LOAD_STATUS_EVENT_DELIVERED" in wait_event
-    assert "linqu_async_load: GET_EVENT timeout" in wait_event
-    assert "if (!(status & OBMM_ASYNC_LOAD_STATUS_EVENT_DELIVERED))" in wait_event
-    event_command = device.split("static void ub_async_load_event_command", 1)[1].split(
-        "bool ub_async_load_device_write", 1
+    assert "vma->vm_flags & VM_WRITE" in ring_mmap
+    publish = device.split("static bool ub_async_load_ring_publish_one", 1)[1].split(
+        "static void ub_async_load_reset", 1
     )[0]
-    assert "!state->session_active || !state->upcall_active" not in event_command
-    assert "!state->session_active || state->delivered_event_valid" in event_command
-    scheduler_command = device.split(
-        "static void ub_async_load_scheduler_command", 1
-    )[1].split("bool ub_async_load_device_write", 1)[0]
-    assert "state->active_context_id = 0" in scheduler_command
-    assert "state->upcall_active = true" in scheduler_command
+    assert publish.index("dma_memory_write(") < publish.index(
+        "offsetof(UbAsyncLoadEventProducerV3, producer_sequence)"
+    )
     schedule_after_exit = runtime.split(
         "void obmm_coroutine_scheduler_schedule_after_exit", 1
     )[1].split("static int obmm_coroutine_scheduler_collect_metrics", 1)[0]
-    assert schedule_after_exit.index("OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER") < (
+    assert schedule_after_exit.index("obmm_coroutine_scheduler_scheduler_enter()") < (
         schedule_after_exit.index("obmm_coroutine_scheduler_schedule(runtime")
     )
 
 
-def test_scheduler_enter_ioctl_is_part_of_guest_abi_v2():
+def test_async_load_hot_path_is_kernel_free_in_guest_abi_v3():
     uapi = (
         KERNEL_ROOT / "include" / "uapi" / "ub" / "obmm_async_load.h"
     ).read_text()
     driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+    runtime = (LIB_DIR / "obmm_coroutine_scheduler.c").read_text()
 
-    assert "OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER" in uapi
-    assert "static long linqu_async_load_scheduler_enter" in driver
-    assert "case OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER:" in driver
+    assert "OBMM_ASYNC_LOAD_IOCTL_GET_EVENT" not in uapi
+    assert "OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER" not in uapi
+    assert "linqu_async_load_get_event" not in driver
+    assert "linqu_async_load_scheduler_enter" not in driver
+    assert ".mmap = linqu_async_load_mmap" in driver
+    assert "OBMM_ASYNC_LOAD_IOCTL_GET_EVENT" not in runtime
+    assert "OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER" not in runtime
+    assert "obmm_coroutine_scheduler_wait();" in runtime
+    assert "obmm_coroutine_scheduler_scheduler_enter();" in runtime
     assert "OBMM_ASYNC_LOAD_IOCTL_GET_REPLAY_STATS" in uapi
     assert "case OBMM_ASYNC_LOAD_IOCTL_GET_REPLAY_STATS:" in driver
     assert "ctx->capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE" in driver
@@ -281,6 +320,9 @@ def test_async_load_producer_consumer_has_causal_upcall_evidence():
     assert "OBMM_ASYNC_LOAD_UPCALL schema=1 event=complete" in app
     assert "OBMM_ASYNC_LOAD_COROUTINE_SUMMARY schema=1" in app
     assert "OBMM_ASYNC_LOAD_SUMMARY schema=1" in app
+    assert "abi=%u event_delivery=ring" in app
+    assert "wait_wakeup=hlt role=consumer" in app
+    assert "kernel_hotpath_ioctls" in app
     assert "ASYNC_LOAD coroutine $coroutine_id causal event order is invalid" in runner
     assert "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY" in runner
     assert "blocked load switching to another coroutine" in runner
@@ -314,7 +356,7 @@ def test_async_load_scenarios_do_not_model_qemu_scheduler_cycles():
             assert stale not in text
 
 
-def test_kernel_artifact_signature_tracks_async_load_v2_sources():
+def test_kernel_artifact_signature_tracks_async_load_v3_sources():
     builder = GUEST_ARTIFACT_BUILDER.read_text()
     signature = builder.split("current_kernel_artifact_signature()", 1)[1].split(
         "kernel_image_stamp_matches()", 1
@@ -326,7 +368,7 @@ def test_kernel_artifact_signature_tracks_async_load_v2_sources():
 
 class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
     def test_uapi_layout(self):
-        test_async_load_uapi_v2_layout_compiles_for_aarch64()
+        test_async_load_uapi_v3_layout_compiles_for_aarch64()
 
     def test_cross_compile(self):
         test_async_load_library_and_shared_cli_cross_compile_without_warnings()
@@ -340,8 +382,8 @@ class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
     def test_guest_el0_scheduler_ownership(self):
         test_guest_el0_runtime_owns_save_state_and_selection()
 
-    def test_scheduler_enter_ioctl(self):
-        test_scheduler_enter_ioctl_is_part_of_guest_abi_v2()
+    def test_kernel_free_hot_path(self):
+        test_async_load_hot_path_is_kernel_free_in_guest_abi_v3()
 
     def test_async_load_producer_consumer_causal_evidence(self):
         test_async_load_producer_consumer_has_causal_upcall_evidence()
@@ -353,7 +395,7 @@ class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
         test_async_load_scenarios_do_not_model_qemu_scheduler_cycles()
 
     def test_kernel_artifact_signature(self):
-        test_kernel_artifact_signature_tracks_async_load_v2_sources()
+        test_kernel_artifact_signature_tracks_async_load_v3_sources()
 
 
 if __name__ == "__main__":
