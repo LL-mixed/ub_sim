@@ -36,8 +36,12 @@ _Static_assert(OBMM_ASYNC_LOAD_CAP_EL0_WAIT_WAKE == (1ULL << 10),
                "wait-wakeup capability");
 _Static_assert(OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER == (1ULL << 11),
                "scheduler-enter capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY == (1ULL << 12),
+               "kernel-task replay capability");
 _Static_assert(OBMM_ASYNC_LOAD_START_REPLAY_RETIRE == 1,
                "replay start flag");
+_Static_assert(OBMM_ASYNC_LOAD_START_KERNEL_TASK == 2,
+               "kernel-task start flag");
 _Static_assert(sizeof(struct obmm_async_load_context_v2) == 832, "context size");
 _Static_assert(offsetof(struct obmm_async_load_context_v2, x) == 16, "x offset");
 _Static_assert(offsetof(struct obmm_async_load_context_v2, sp) == 264, "sp offset");
@@ -58,6 +62,8 @@ _Static_assert(sizeof(struct obmm_async_load_observability_v3) == 144,
                "observability size");
 _Static_assert(sizeof(struct obmm_async_load_replay_stats_v1) == 32,
                "replay stats size");
+_Static_assert(sizeof(struct obmm_async_load_kernel_task_stats_v1) == 64,
+               "kernel-task stats size");
 _Static_assert(offsetof(struct obmm_async_load_start_v3, upcall_entry) == 24,
                "upcall entry offset");
 _Static_assert(offsetof(struct obmm_async_load_event_v3, interrupted_pc) == 32,
@@ -364,6 +370,86 @@ def test_kernel_artifact_signature_tracks_async_load_v3_sources():
 
     assert "include/linux/obmm.h" in signature
     assert "include/uapi/ub/obmm_async_load.h" in signature
+    assert "arch/arm64/include/asm/esr.h" in signature
+    assert "arch/arm64/mm/fault.c" in signature
+    assert "include/linux/arm64_remote_load.h" in signature
+    assert "linqu_driver_blob=" in signature
+    assert 'git hash-object "$ROOT_DIR/driver/linqu_ub_drv.c"' in signature
+
+
+def test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue():
+    uapi = (
+        KERNEL_ROOT / "include" / "uapi" / "ub" / "obmm_async_load.h"
+    ).read_text()
+    esr = (KERNEL_ROOT / "arch" / "arm64" / "include" / "asm" / "esr.h").read_text()
+    fault = (KERNEL_ROOT / "arch" / "arm64" / "mm" / "fault.c").read_text()
+    fault_api = (KERNEL_ROOT / "include" / "linux" / "arm64_remote_load.h").read_text()
+    driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+    device = (QEMU_ROOT / "hw" / "ub" / "ub_async_load_device.c").read_text()
+    model = (QEMU_ROOT / "hw" / "ub" / "ub_async_load.c").read_text()
+    ubc = (QEMU_ROOT / "hw" / "ub" / "ub_ubc.c").read_text()
+    virt = (QEMU_ROOT / "hw" / "arm" / "virt.c").read_text()
+    helper = (QEMU_ROOT / "target" / "arm" / "tcg" / "helper-a64.c").read_text()
+    app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    runner = (ROOT / "scripts" / "run_ub_obmm_eval.sh").read_text()
+
+    assert "OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY" in uapi
+    assert "OBMM_ASYNC_LOAD_START_KERNEL_TASK" in uapi
+    assert "OBMM_ASYNC_LOAD_IOCTL_GET_KERNEL_TASK_STATS" in uapi
+    assert "ESR_ELx_FSC_REMOTE_LOAD\t(0x3a)" in esr
+    assert "arm64_register_remote_load_fault_handler" in fault_api
+    assert "do_remote_load_fault" in fault
+    assert '"UB remote load pending"' in fault
+
+    assert "env->cp15.tpidr_el[0]" in helper
+    assert "ub_async_load_cpu_take_kernel_fault" in helper
+    assert "UB_ASYNC_LOAD_REMOTE_FSC" in helper
+    assert "raise_exception_ra(env, EXCP_DATA_ABORT" in helper
+    kernel_fault = helper.split(
+        "if (kernel_task) {", 1
+    )[1].split("env->pc = upcall_entry", 1)[0]
+    assert "env->exception.vaddress = va" in kernel_fault
+    assert "env->pc" not in kernel_fault
+
+    assert "ASYNC_LOAD_REG_IRQ_STATUS" in device
+    assert ".context_cookie = entry->load.context_cookie" in model
+    assert ".reserved[0] = cpu_to_le64(" in device
+    assert "ubc_async_load_irq_set(state->ubc_dev, true)" in device
+    assert "ubc_async_load_irq_set(state->ubc_dev, state->irq_status != 0)" in device
+    assert "state->event_consumer_sequence !=" in device
+    assert "qemu_set_irq(bcs->async_load_irq, level)" in ubc
+    assert 'qemu_fdt_setprop_cells(ms->fdt, linqu_nodename, "interrupts"' in virt
+    assert "vms->irqmap[VIRT_PLATFORM_BUS] + 1" in virt
+    assert "linqu_remote_load_fault" in driver
+    assert "linqu_async_load_drain_kernel_events_locked" in driver
+    assert "wait_event_killable_timeout" in driver
+    assert "wake_up(&wait->waitq)" in driver
+    assert "read_sysreg(tpidr_el0)" in driver
+    assert "candidate->context_cookie == context_cookie" in driver
+    assert "wait->context_cookie != context_cookie" in driver
+    assert "wait->fault_pc != fault_pc" in driver
+    assert "wait->effective_va != effective_va" in driver
+    assert "required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING" in driver
+    assert "OBMM_ASYNC_LOAD_REG_IRQ_ACK" in driver
+    remote_fault = driver.split(
+        "static int linqu_remote_load_fault", 1
+    )[1].split("static const struct arm64_remote_load_fault_ops", 1)[0]
+    assert "regs->pc" in remote_fault
+    assert "regs->pc =" not in remote_fault
+    assert "regs->pc +=" not in remote_fault
+
+    assert "--kernel-task-replay" in app
+    assert "--threads N" in app
+    assert "pthread_create" in app
+    assert "async_load_scalar_load(address" in app
+    assert "scheduling=linux-task retirement=replay" in app
+    assert "OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY" in app
+    assert "obmm_async_kernel_task_replay=1" in run_app
+    assert 'args="$args --kernel-task-replay"' in run_app
+    assert 'append_cmdline "obmm_async_kernel_task_replay=1"' in runner
+    assert "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE" in runner
+    assert "remote-load block pid=" in runner
 
 
 class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
@@ -396,6 +482,9 @@ class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
 
     def test_kernel_artifact_signature(self):
         test_kernel_artifact_signature_tracks_async_load_v3_sources()
+
+    def test_kernel_task_replay_contract(self):
+        test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue()
 
 
 if __name__ == "__main__":

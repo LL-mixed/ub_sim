@@ -15,6 +15,7 @@ EXPECTED_OUTCOME="success"
 ASYNC_LOAD_PRODUCER_CONSUMER=0
 ASYNC_LOAD_PRODUCER_INDEX=0
 ASYNC_LOAD_COMPLETION=patch
+KERNEL_TASK_REPLAY=0
 
 usage() {
   cat <<'EOF'
@@ -185,6 +186,15 @@ while (( async_index <= ${#async_words} )); do
     async_index=$((async_index + 1))
     continue
   fi
+  if [[ "$option" == "--kernel-task-replay" ]]; then
+    KERNEL_TASK_REPLAY=1
+    ASYNC_LOAD_PRODUCER_CONSUMER=1
+    ASYNC_LOAD_COMPLETION=replay
+    append_cmdline "obmm_async_load_producer_consumer=1"
+    append_cmdline "obmm_async_kernel_task_replay=1"
+    async_index=$((async_index + 1))
+    continue
+  fi
   if (( async_index == ${#async_words} )); then
     echo "$option requires a value in --obmm-async-args" >&2
     exit 2
@@ -208,6 +218,7 @@ while (( async_index <= ${#async_words} )); do
       append_cmdline "obmm_async_load_completion=$value"
       ;;
     --coroutines) append_cmdline "obmm_async_coroutines=$value" ;;
+    --threads) append_cmdline "obmm_async_threads=$value" ;;
     --inflight) append_cmdline "obmm_async_inflight=$value" ;;
     --lookahead) append_cmdline "obmm_async_lookahead=$value" ;;
     --access-bytes) append_cmdline "obmm_async_access_bytes=$value" ;;
@@ -250,6 +261,10 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     echo "ASYNC_LOAD producer/consumer validation requires node_count=2, producer_index=0, async-load mode, and success outcome" >&2
     exit 2
   fi
+fi
+if (( KERNEL_TASK_REPLAY )) && [[ "$ASYNC_LOAD_COMPLETION" != "replay" ]]; then
+  echo "kernel-task replay validation requires replay retirement" >&2
+  exit 2
 fi
 
 if [[ "$OBMM_ASYNC_ARGS" == *"--mode async-load"* &&
@@ -347,7 +362,11 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       producer_count="$(grep -c '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" || true)"
     fi
     if [[ -f "$consumer_log" ]]; then
-      consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" || true)"
+      if (( KERNEL_TASK_REPLAY )); then
+        consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY .*status=pass' "$consumer_log" || true)"
+      else
+        consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" || true)"
+      fi
     fi
     if (( producer_count == 1 && consumer_count == 1 )); then
       break
@@ -378,9 +397,53 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   done
 
   async_load_export="$(grep '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" | tr -d '\r')"
+  async_load_export_mem_id="$(summary_field "$async_load_export" export_mem_id)"
+  if (( KERNEL_TASK_REPLAY )); then
+    async_load_summary="$(grep '^OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
+    async_load_coroutines="$(summary_field "$async_load_summary" threads)"
+    async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
+    kernel_block_count="$(grep -c 'remote-load block pid=' "$consumer_log" || true)"
+    kernel_wake_count="$(grep -c 'remote-load wake pid=' "$consumer_log" || true)"
+    kernel_blocked_tasks="$(grep -o 'remote-load block pid=[0-9]*' "$consumer_log" | sort -u | wc -l | tr -d ' ')"
+    if [[ "$async_load_coroutines" != <2-> ||
+          "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
+          "$(summary_field "$async_load_summary" abi)" != "3" ||
+          "$(summary_field "$async_load_summary" event_delivery)" != "cq-irq" ||
+          "$(summary_field "$async_load_summary" scheduling)" != "linux-task" ||
+          "$(summary_field "$async_load_summary" retirement)" != "replay" ||
+          "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" verified)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" faults)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" pending)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" completions)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" protocol_errors)" != "0" ||
+          "$(summary_field "$async_load_summary" timeouts)" != "0" ||
+          "$(summary_field "$async_load_summary" interrupted_waits)" != "0" ||
+          "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
+          "$(summary_field "$async_load_summary" direct_el0_upcalls)" != "0" ||
+          "$kernel_block_count" != "$async_load_coroutines" ||
+          "$kernel_wake_count" != "$async_load_coroutines" ||
+          "$kernel_blocked_tasks" != "$async_load_coroutines" ]]; then
+      echo "ASYNC_LOAD kernel-task terminal or driver evidence is inconsistent" >&2
+      exit 1
+    fi
+    for (( thread_id = 0; thread_id < async_load_coroutines; thread_id++ )); do
+      write_line="$(grep "^OBMM_ASYNC_LOAD_WRITE .*coroutine=${thread_id} " "$producer_log" | tr -d '\r')"
+      thread_line="$(grep "^OBMM_ASYNC_LOAD_KERNEL_THREAD .*thread=${thread_id} .*status=pass" "$consumer_log" | tr -d '\r')"
+      if [[ -z "$write_line" || -z "$thread_line" ||
+            "$(summary_field "$write_line" export_mem_id)" != "$async_load_export_mem_id" ||
+            "$(summary_field "$write_line" value)" != "$(summary_field "$thread_line" expected)" ||
+            "$(summary_field "$thread_line" expected)" != "$(summary_field "$thread_line" actual)" ]]; then
+        echo "ASYNC_LOAD kernel task $thread_id has inconsistent value evidence" >&2
+        exit 1
+      fi
+    done
+    blocked_load_switches=0
+  else
   async_load_summary="$(grep '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
   async_load_coroutines="$(summary_field "$async_load_summary" coroutines)"
-  async_load_export_mem_id="$(summary_field "$async_load_export" export_mem_id)"
   async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
   if [[ "$async_load_coroutines" != <2-> || "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
         "$(summary_field "$async_load_summary" abi)" != "3" ||
@@ -489,6 +552,7 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   if (( blocked_load_switches == 0 )); then
     echo "ASYNC_LOAD evidence does not show a blocked load switching to another coroutine that issues its own LDR" >&2
     exit 1
+  fi
   fi
 else
   for node_id in "${NODE_IDS[@]}"; do
@@ -608,10 +672,18 @@ integer node_index=1
 print -r -- "OBMM_RUN_EVIDENCE node_count=$NODE_COUNT scenario_sha256=$SCENARIO_SHA256 model_file_sha256=$MODEL_FILE_SHA256 model_contract_hash=$MODEL_CONTRACT_HASH qemu_sha256=$QEMU_SHA256 kernel_sha256=$KERNEL_SHA256 initramfs_sha256=$INITRAMFS_SHA256 qemu_destroyed=1"
 if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeA role=producer export_mem_id=$async_load_export_mem_id writes=$async_load_coroutines status=ready"
-  print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id coroutines=$async_load_coroutines completed=$async_load_coroutines status=pass"
-  print -r -- "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY blocked_load_switches=$blocked_load_switches status=pass"
-  grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
-  grep '^OBMM_ASYNC_LOAD_\(IMPORT\|CONTEXT\|LDR\|UPCALL\|SCHEDULE\|COROUTINE_SUMMARY\)' "$consumer_log"
+  if (( KERNEL_TASK_REPLAY )); then
+    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=$async_load_coroutines completed=$async_load_coroutines status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE blocked_tasks=$kernel_blocked_tasks blocks=$kernel_block_count wakes=$kernel_wake_count direct_el0_upcalls=0 status=pass"
+    grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
+    grep '^OBMM_ASYNC_LOAD_KERNEL_\(THREAD\|TASK_SUMMARY\)' "$consumer_log"
+    grep 'remote-load \(pending\|block\|completion\|wake\)' "$consumer_log"
+  else
+    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id coroutines=$async_load_coroutines completed=$async_load_coroutines status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY blocked_load_switches=$blocked_load_switches status=pass"
+    grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
+    grep '^OBMM_ASYNC_LOAD_\(IMPORT\|CONTEXT\|LDR\|UPCALL\|SCHEDULE\|COROUTINE_SUMMARY\)' "$consumer_log"
+  fi
   for node_id in nodeA nodeB; do
     qemu_log="$RUN_DIR/${node_id}_qemu.log"
     duplicate_count="$(grep -c 'duplicate=1' "$qemu_log" || true)"

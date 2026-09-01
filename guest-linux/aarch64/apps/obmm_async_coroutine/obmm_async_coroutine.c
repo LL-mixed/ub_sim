@@ -24,6 +24,7 @@
 #include "obmm_coroutine_scheduler.h"
 #include "uffd_mode.h"
 #include "logical_op.h"
+#include <ub/obmm_async_load.h>
 
 #define ASYNC_EXPORT_BYTES (2UL * 1024UL * 1024UL)
 #define ASYNC_BOOTSTRAP_GENERATION 0x4153594e4301ULL
@@ -111,6 +112,25 @@ struct async_config {
     bool verify;
     bool self_test;
     bool async_load_producer_consumer;
+    bool kernel_task_replay;
+};
+
+struct async_kernel_thread_runtime;
+
+struct async_kernel_thread {
+    struct async_kernel_thread_runtime *runtime;
+    uint32_t thread_id;
+    uint64_t expected;
+    uint64_t actual;
+    uint64_t start_ns;
+    uint64_t end_ns;
+};
+
+struct async_kernel_thread_runtime {
+    struct async_app *app;
+    atomic_bool start;
+    atomic_uint ready;
+    struct async_kernel_thread threads[OBMM_ASYNC_LOAD_MAX_CONTEXTS];
 };
 
 struct async_request {
@@ -422,7 +442,9 @@ static void async_usage(const char *program)
             "[--compute-us N] [--iterations N] [--deadline-us N] "
             "[--seed N] [--node-count N] [--peer-index N] "
             "[--async-load-completion patch|replay] "
-            "[--async-load-producer-consumer] [--producer-index N] [--verify]\n",
+            "[--async-load-producer-consumer] [--kernel-task-replay] "
+            "[--threads N] "
+            "[--producer-index N] [--verify]\n",
             program);
 }
 
@@ -489,6 +511,12 @@ static bool async_parse_args(int argc, char **argv,
             config->async_load_producer_consumer = true;
             continue;
         }
+        if (strcmp(option, "--kernel-task-replay") == 0) {
+            config->kernel_task_replay = true;
+            config->async_load_producer_consumer = true;
+            config->async_load_completion = ASYNC_LOAD_COMPLETION_REPLAY;
+            continue;
+        }
         if (index + 1 >= argc) {
             return false;
         }
@@ -553,7 +581,8 @@ static bool async_parse_args(int argc, char **argv,
                 return false;
             }
             config->option_flags |= ASYNC_OPTION_ASYNC_LOAD_COMPLETION;
-        } else if (strcmp(option, "--coroutines") == 0) {
+        } else if (strcmp(option, "--coroutines") == 0 ||
+                   strcmp(option, "--threads") == 0) {
             if (!async_parse_u32(value, &config->coroutines)) {
                 return false;
             }
@@ -688,6 +717,13 @@ static bool async_parse_args(int argc, char **argv,
          config->iterations != config->coroutines ||
          config->warmup != 0 || config->access_bytes != 8 ||
          config->pattern != ASYNC_PATTERN_SEQUENTIAL || !config->verify)) {
+        return false;
+    }
+    if (config->kernel_task_replay &&
+        (config->mode != ASYNC_APP_MODE_ASYNC_LOAD ||
+         config->async_load_completion != ASYNC_LOAD_COMPLETION_REPLAY ||
+         config->coroutines < 2 ||
+         config->coroutines > OBMM_ASYNC_LOAD_MAX_CONTEXTS)) {
         return false;
     }
     if (config->access_bytes != 1 && config->access_bytes != 2 &&
@@ -2348,6 +2384,253 @@ static int async_run_async_load_producer(struct async_app *app, int obmm_fd,
     }
 }
 
+static void *async_kernel_thread_entry(void *opaque)
+{
+    struct async_kernel_thread *thread = opaque;
+    struct async_app *app = thread->runtime->app;
+    uint64_t offset = async_load_offset(thread->thread_id);
+    volatile void *address = (volatile uint8_t *)app->remote_address + offset;
+
+    thread->expected = async_load_value(app->config.seed, thread->thread_id);
+    atomic_fetch_add_explicit(&thread->runtime->ready, 1,
+                              memory_order_release);
+    while (!atomic_load_explicit(&thread->runtime->start,
+                                 memory_order_acquire))
+        sched_yield();
+    thread->start_ns = async_now_ns();
+    thread->actual = async_load_scalar_load(address, sizeof(uint64_t));
+    thread->end_ns = async_now_ns();
+    return NULL;
+}
+
+static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
+                                    uint32_t local_cna, int local_index)
+{
+    struct obmm_helpers_meta producer_meta = { 0 };
+    struct obmm_helpers_region import_region = { .fd = -1 };
+    struct obmm_async_load_caps_v3 caps = { 0 };
+    struct obmm_async_load_map_register_v1 map = { 0 };
+    struct obmm_async_load_map_unregister_v1 unmap = { 0 };
+    struct obmm_async_load_start_v3 start = { 0 };
+    struct obmm_async_load_kernel_task_stats_v1 kernel_stats = { 0 };
+    struct obmm_async_load_replay_stats_v1 replay_stats = { 0 };
+    struct obmm_async_load_stats_v3 device_stats = { 0 };
+    struct async_kernel_thread_runtime runtime = { .app = app };
+    bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = { false };
+    uint64_t local_pas[OBMM_POOL_HELPERS_MAX_NODES] = { 0 };
+    pthread_t tids[OBMM_ASYNC_LOAD_MAX_CONTEXTS] = { 0 };
+    cpu_set_t cpu_set;
+    uint64_t import_mem_id = 0;
+    uint32_t created = 0;
+    uint32_t verified = 0;
+    uint32_t index;
+    int async_load_fd = -1;
+    int ret = 0;
+    const char *failure_stage = "bootstrap-lookup";
+    bool session_started = false;
+    bool map_registered = false;
+    bool pass;
+
+    atomic_init(&runtime.start, false);
+    atomic_init(&runtime.ready, 0);
+
+    if (async_bootstrap_lookup_node(
+            obmm_fd, local_cna, app->config.node_count,
+            ASYNC_BOOTSTRAP_GENERATION, app->config.producer_index,
+            &producer_meta) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    if (producer_meta.size < async_load_offset(
+            app->config.coroutines - 1) + sizeof(uint64_t)) {
+        ret = -ERANGE;
+        goto cleanup;
+    }
+    failure_stage = "allocate-import-pa";
+    if (!obmm_alloc_import_pas(1, producer_meta.size, local_pas,
+                               import_osync,
+                               obmm_parse_import_cache_mode())) {
+        ret = -ENOMEM;
+        goto cleanup;
+    }
+    failure_stage = "import-region";
+    if (obmm_do_import(obmm_fd, &producer_meta, local_cna, local_pas[0],
+                       producer_meta.token_id, &import_mem_id) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    failure_stage = "map-region";
+    if (obmm_map_region(import_mem_id, producer_meta.size,
+                        import_osync[0], &import_region) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    app->remote_address = import_region.addr;
+
+    failure_stage = "cpu-affinity";
+    CPU_ZERO(&cpu_set);
+    CPU_SET(app->config.handler_cpu, &cpu_set);
+    if (sched_setaffinity(0, sizeof(cpu_set), &cpu_set) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    failure_stage = "open-device";
+    async_load_fd = open(OBMM_COROUTINE_SCHEDULER_DEFAULT_DEVICE,
+                         O_RDWR | O_CLOEXEC);
+    if (async_load_fd < 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    failure_stage = "query-caps";
+    if (ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_QUERY_CAPS, &caps) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    if (caps.abi_version != OBMM_ASYNC_LOAD_ABI_VERSION ||
+        !(caps.capabilities & OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY) ||
+        app->config.coroutines > caps.context_entries) {
+        ret = -EOPNOTSUPP;
+        goto cleanup;
+    }
+
+    map = (struct obmm_async_load_map_register_v1) {
+        .mem_id = import_mem_id,
+        .gsva_base = (uintptr_t)import_region.addr,
+        .mapped_addr = (uintptr_t)import_region.addr,
+        .length = producer_meta.size,
+        .mapping_fd = import_region.fd,
+        .model_phase_generation = 1,
+    };
+    failure_stage = "register-map";
+    if (ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_REGISTER_MAP, &map) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    map_registered = true;
+
+    start = (struct obmm_async_load_start_v3) {
+        .home_cpu = (uint32_t)sched_getcpu(),
+        .flags = OBMM_ASYNC_LOAD_START_REPLAY_RETIRE |
+                 OBMM_ASYNC_LOAD_START_KERNEL_TASK,
+        .load_timeout_ns = (uint64_t)app->config.deadline_us * 1000,
+        .logical_contexts = app->config.coroutines,
+    };
+    failure_stage = "start-session";
+    if (ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_START, &start) != 0) {
+        ret = -errno;
+        goto cleanup;
+    }
+    session_started = true;
+    failure_stage = "create-threads";
+    for (index = 0; index < app->config.coroutines; index++) {
+        runtime.threads[index].runtime = &runtime;
+        runtime.threads[index].thread_id = index;
+        ret = pthread_create(&tids[index], NULL, async_kernel_thread_entry,
+                             &runtime.threads[index]);
+        if (ret != 0) {
+            ret = -ret;
+            goto cleanup;
+        }
+        created++;
+    }
+    while (atomic_load_explicit(&runtime.ready, memory_order_acquire) !=
+           app->config.coroutines)
+        sched_yield();
+    atomic_store_explicit(&runtime.start, true, memory_order_release);
+    failure_stage = "join-threads";
+    for (index = 0; index < created; index++) {
+        int join_ret = pthread_join(tids[index], NULL);
+
+        if (join_ret != 0 && ret == 0)
+            ret = -join_ret;
+    }
+    created = 0;
+
+    failure_stage = "read-stats";
+    if (ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_GET_KERNEL_TASK_STATS,
+              &kernel_stats) != 0 ||
+        ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_GET_REPLAY_STATS,
+              &replay_stats) != 0 ||
+        ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_GET_STATS,
+              &device_stats) != 0) {
+        ret = ret ? ret : -errno;
+    }
+    for (index = 0; index < app->config.coroutines; index++) {
+        struct async_kernel_thread *thread = &runtime.threads[index];
+        bool thread_pass = thread->actual == thread->expected;
+
+        if (thread_pass)
+            verified++;
+        printf("OBMM_ASYNC_LOAD_KERNEL_THREAD schema=1 thread=%u "
+               "expected=%016llx actual=%016llx latency_ns=%llu status=%s\n",
+               index, (unsigned long long)thread->expected,
+               (unsigned long long)thread->actual,
+               (unsigned long long)(thread->end_ns - thread->start_ns),
+               thread_pass ? "pass" : "fail");
+    }
+    pass = ret == 0 && verified == app->config.coroutines &&
+        kernel_stats.faults == app->config.coroutines &&
+        kernel_stats.pending_events == app->config.coroutines &&
+        kernel_stats.completion_events == app->config.coroutines &&
+        kernel_stats.task_wakeups == app->config.coroutines &&
+        kernel_stats.protocol_errors == 0 && kernel_stats.timeouts == 0 &&
+        kernel_stats.interrupted_waits == 0 &&
+        replay_stats.replay_consumed == app->config.coroutines &&
+        replay_stats.replay_mismatch == 0 &&
+        device_stats.direct_upcalls == 0;
+    printf("OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY schema=1 abi=%u "
+           "event_delivery=cq-irq scheduling=linux-task retirement=replay "
+           "producer_node=%d consumer_node=%d source_export_mem_id=%llu "
+           "threads=%u verified=%u "
+           "faults=%llu pending=%llu completions=%llu sleeps=%llu "
+           "wakeups=%llu protocol_errors=%llu timeouts=%llu "
+           "interrupted_waits=%llu replay_consumed=%llu "
+           "replay_mismatch=%llu direct_el0_upcalls=%llu status=%s\n",
+           OBMM_ASYNC_LOAD_ABI_VERSION, app->config.producer_index,
+           local_index, (unsigned long long)producer_meta.export_mem_id,
+           app->config.coroutines, verified,
+           (unsigned long long)kernel_stats.faults,
+           (unsigned long long)kernel_stats.pending_events,
+           (unsigned long long)kernel_stats.completion_events,
+           (unsigned long long)kernel_stats.task_sleeps,
+           (unsigned long long)kernel_stats.task_wakeups,
+           (unsigned long long)kernel_stats.protocol_errors,
+           (unsigned long long)kernel_stats.timeouts,
+           (unsigned long long)kernel_stats.interrupted_waits,
+           (unsigned long long)replay_stats.replay_consumed,
+           (unsigned long long)replay_stats.replay_mismatch,
+           (unsigned long long)device_stats.direct_upcalls,
+           pass ? "pass" : "fail");
+    fflush(stdout);
+    if (!pass && ret == 0)
+        ret = -EIO;
+
+cleanup:
+    if (created) {
+        atomic_store_explicit(&runtime.start, true, memory_order_release);
+        for (index = 0; index < created; index++)
+            pthread_join(tids[index], NULL);
+    }
+    if (session_started)
+        ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_STOP);
+    if (map_registered) {
+        unmap.policy_id = map.policy_id;
+        unmap.map_generation = map.map_generation;
+        ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_UNREGISTER_MAP, &unmap);
+    }
+    if (async_load_fd >= 0)
+        close(async_load_fd);
+    obmm_unmap_region(&import_region);
+    if (import_mem_id)
+        obmm_do_unimport(obmm_fd, import_mem_id);
+    if (ret)
+        fprintf(stderr,
+                "OBMM_ASYNC_LOAD_KERNEL_TASK_ERROR schema=1 node=%d stage=%s "
+                "rc=%d errno=%d\n",
+                local_index, failure_stage, ret, errno);
+    return ret;
+}
+
 static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
                                   uint32_t local_cna, int local_index)
 {
@@ -2639,6 +2922,9 @@ int main(int argc, char **argv)
     if (app.config.async_load_producer_consumer) {
         if (local_index == app.config.producer_index) {
             run_status = async_run_async_load_producer(
+                &app, obmm_fd, local_cna, local_index);
+        } else if (app.config.kernel_task_replay) {
+            run_status = async_run_kernel_task_consumer(
                 &app, obmm_fd, local_cna, local_index);
         } else {
             run_status = async_run_async_load_consumer(

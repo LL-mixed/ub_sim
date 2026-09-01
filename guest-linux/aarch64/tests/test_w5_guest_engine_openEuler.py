@@ -77,7 +77,7 @@ class W5GuestEngineOpenEulerTest(unittest.TestCase):
 
     def test_openEuler_root_storage_is_built_into_guest_kernel(self):
         source = GUEST_BUILDER.read_text(encoding="utf-8")
-        self.assertIn('KERNEL_BUILD_POLICY_REV="3"', source)
+        self.assertIn('KERNEL_BUILD_POLICY_REV="4"', source)
         self.assertIn("build_policy=%s", source)
         self.assertIn("-e VIRTIO \\", source)
         self.assertIn("-e VIRTIO_BLK \\", source)

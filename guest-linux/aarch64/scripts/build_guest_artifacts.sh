@@ -7,7 +7,7 @@ OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
 KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
 KERNEL_UAPI_STAMP_FILE="$OUT_DIR/.kernel_uapi.kernel_ub_head"
-KERNEL_BUILD_POLICY_REV="3"
+KERNEL_BUILD_POLICY_REV="4"
 KERNEL_SRC_DIR="$(cd "$ROOT_DIR/../kernel_ub" && pwd)"
 KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$OUT_DIR/kernel_build}"
 KERNEL_UAPI_INSTALL_DIR="${KERNEL_UAPI_INSTALL_DIR:-$OUT_DIR/kernel_uapi}"
@@ -81,12 +81,16 @@ current_kernel_artifact_signature() {
 
   printf 'kernel_head=%s\n' "$current_head"
   printf 'build_policy=%s\n' "$KERNEL_BUILD_POLICY_REV"
+  printf 'linqu_driver_blob=%s\n' "$(git hash-object "$ROOT_DIR/driver/linqu_ub_drv.c")"
   if kernel_git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     for tracked_path in \
       drivers/ub/obmm \
       drivers/ub/ubus/ub_npu.c \
       drivers/ub/ubus/ub_ssd.c \
       drivers/ub/ubus/sim \
+      arch/arm64/include/asm/esr.h \
+      arch/arm64/mm/fault.c \
+      include/linux/arm64_remote_load.h \
       include/linux/obmm.h \
       include/uapi/asm-generic/mman-common.h \
       include/uapi/ub/obmm_async_load.h \
