@@ -29,6 +29,10 @@
 #include "components/mem_service/mem_service_profile.h"
 #include "components/mem_service/mem_service_qwen3.h"
 #include "components/mem_service/mem_service_wire_client.h"
+#include "lingqu_shmem_mem_service.h"
+#include "lingqu_shmem_sim.h"
+#include "lingqu_shmem_pto.h"
+#include "lingqu_shmem_pto_endpoint.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
@@ -125,6 +129,11 @@
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_VERSION 1U
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_HEADER_BYTES 32ULL
 #define W4_QWEN3_OBJECT_SERVICE_PAYLOAD_INDEX_RECORD_BYTES 48ULL
+#define W5_PTO_UB_GM_PROBE_BYTES 4096ULL
+#define W5_PTO_UB_GM_PROBE_ELEMENTS \
+    (W5_PTO_UB_GM_PROBE_BYTES / sizeof(float))
+#define W5_PTO_UB_GM_METADATA_BYTES 4096ULL
+#define W5_PTO_UB_GM_CALLABLE_ID 1ULL
 #define QWEN3_MEMORY_BOUNDARY_REGISTRY_MARKER 0x7735627265673030ULL
 #define QWEN3_MEMORY_BOUNDARY_REGISTRY_VERSION 1U
 #define QWEN3_MEMORY_BOUNDARY_REGISTRY_HEADER_BYTES 32ULL
@@ -253,6 +262,14 @@ struct llm_model_range_runtime_forward {
     uint8_t output_payload[W4_QWEN3_MAX_HIDDEN_RANGE_BYTES];
     uint8_t *kv_payload;
     uint64_t kv_payload_capacity;
+};
+
+struct w5_pto_ub_gm_hidden_result {
+    uint8_t *data;
+    uint64_t len;
+    uint64_t backing_offset;
+    uint64_t checksum;
+    uint64_t tile_count;
 };
 
 static uint64_t qwen3_serving_effective_decode_step(uint64_t decode_step);
@@ -5761,6 +5778,24 @@ static uint64_t env_u64_or_default(const char *key, uint64_t default_value)
     return (uint64_t)parsed;
 }
 
+static uint64_t env_u64_base0_or_default(const char *key,
+                                         uint64_t default_value)
+{
+    const char *value = getenv(key);
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!value || value[0] == '\0') {
+        return default_value;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 0);
+    if (errno != 0 || end == value || (end && *end != '\0')) {
+        return default_value;
+    }
+    return (uint64_t)parsed;
+}
+
 static uint64_t qwen3_serving_effective_decode_step(uint64_t decode_step)
 {
     return env_u64_or_default("SIM_W5_SERVING_DECODE_STEP_BASE", 0) + decode_step;
@@ -9602,6 +9637,421 @@ static int run_llm_infer_mem_service_serving_mode(const char *connect_spec,
     return 0;
 }
 
+static int run_w5_pto_ub_gm_hidden_tile(
+    const struct mem_service_object_payload_view *input_view,
+    uint32_t local_node,
+    uint64_t decode_step,
+    uint64_t tile_index,
+    uint64_t tile_offset,
+    uint64_t artifact_fingerprint,
+    uint32_t requester_cna,
+    uint64_t timeout_ms,
+    struct w5_pto_ub_gm_hidden_result *result_out)
+{
+    struct lingqu_shmem_mem_service_context *context = NULL;
+    struct lingqu_shmem_mem_service_lease *input_lease = NULL;
+    struct lingqu_shmem_mem_service_lease *output_lease = NULL;
+    struct lingqu_shmem_mem_service_local_buffer output_buffer;
+    struct lingqu_shmem_memref *input_memref = NULL;
+    struct lingqu_shmem_memref *output_memref = NULL;
+    struct lingqu_shmem_memref_spec input_spec = {
+        .byte_offset = tile_offset,
+        .byte_length = W5_PTO_UB_GM_PROBE_BYTES,
+        .rank = 5,
+        .dtype = 0,
+        .access = LINGQU_SHMEM_ACCESS_READ,
+        .shape = { 1, 1, 1, 32, 32 },
+        .strides = { 1, 1, 1, 32, 1 },
+    };
+    struct lingqu_shmem_memref_spec output_spec = {
+        .byte_length = W5_PTO_UB_GM_PROBE_BYTES,
+        .rank = 5,
+        .dtype = 0,
+        .access = LINGQU_SHMEM_ACCESS_WRITE,
+        .shape = { 1, 1, 1, 32, 32 },
+        .strides = { 1, 1, 1, 32, 1 },
+    };
+    struct lingqu_shmem_pto_memref_arg args[3];
+    struct lingqu_shmem_pto_request request;
+    struct lingqu_shmem_pto_inflight *inflight = NULL;
+    struct lingqu_shmem_pto_wire_result wire_result;
+    struct lingqu_shmem_pto_endpoint *endpoint = NULL;
+    struct lingqu_shmem_pto_endpoint_info endpoint_info;
+    struct lingqu_shmem_pto_completion completion;
+    LingquPtoDispatchSlotV2 slot;
+    uint8_t *metadata = MAP_FAILED;
+    uint64_t metadata_iova = 0;
+    uint64_t input_checksum = 0;
+    uint64_t output_checksum = 0;
+    uint32_t mismatch_index = 0;
+    uint32_t expected_bits = 0;
+    uint32_t actual_bits = 0;
+    const char *probe_stage = "validate_arguments";
+    int probe_rc = -1;
+
+    if (!input_view || !input_view->data || !result_out ||
+        tile_offset > input_view->len ||
+        W5_PTO_UB_GM_PROBE_BYTES > input_view->len - tile_offset ||
+        tile_index > UINT16_MAX || artifact_fingerprint == 0 ||
+        requester_cna == 0 || timeout_ms == 0) {
+        return -EINVAL;
+    }
+    memset(result_out, 0, sizeof(*result_out));
+    memset(&output_buffer, 0, sizeof(output_buffer));
+    memset(args, 0, sizeof(args));
+    memset(&request, 0, sizeof(request));
+    memset(&wire_result, 0, sizeof(wire_result));
+    memset(&endpoint_info, 0, sizeof(endpoint_info));
+    memset(&completion, 0, sizeof(completion));
+    memset(&slot, 0, sizeof(slot));
+
+    probe_stage = "open_context";
+    probe_rc = lingqu_shmem_mem_service_open(&context);
+    if (probe_rc != 0) {
+        goto out;
+    }
+    probe_stage = "acquire_input";
+    probe_rc = lingqu_shmem_mem_service_acquire(
+        context, input_view, &input_spec, &input_memref, &input_lease);
+    if (probe_rc != 0) {
+        goto out;
+    }
+    probe_stage = "acquire_output";
+    probe_rc = lingqu_shmem_mem_service_acquire_local(
+        context, &output_spec, &output_memref, &output_buffer, &output_lease);
+    if (probe_rc != 0) {
+        goto out;
+    }
+    args[0] = (struct lingqu_shmem_pto_memref_arg) {
+        .memref = input_memref,
+        .arg_index = 0,
+    };
+    args[1] = (struct lingqu_shmem_pto_memref_arg) {
+        .memref = input_memref,
+        .arg_index = 1,
+    };
+    args[2] = (struct lingqu_shmem_pto_memref_arg) {
+        .memref = output_memref,
+        .arg_index = 2,
+    };
+    request = (struct lingqu_shmem_pto_request) {
+        .op_id = UINT64_C(0x5700000000000000) |
+                 ((decode_step & UINT64_C(0x0000ffff)) << 32) |
+                 ((uint64_t)local_node << 24) |
+                 (tile_index << 8) | UINT64_C(1),
+        .request_id = UINT64_C(0x5700000000000000) |
+                      ((decode_step & UINT64_C(0x0000ffff)) << 32) |
+                      ((uint64_t)local_node << 24) |
+                      (tile_index << 8) | UINT64_C(2),
+        .callable_id = W5_PTO_UB_GM_CALLABLE_ID,
+        .artifact_fingerprint = artifact_fingerprint,
+        .requester_cna = requester_cna,
+        .memrefs = args,
+        .memref_count = 3,
+    };
+    probe_stage = "allocate_metadata";
+    metadata = mmap(NULL,
+                    W5_PTO_UB_GM_METADATA_BYTES,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1,
+                    0);
+    if (metadata == MAP_FAILED) {
+        probe_rc = -errno;
+        goto out;
+    }
+    memset(metadata, 0, W5_PTO_UB_GM_METADATA_BYTES);
+    probe_stage = "resolve_metadata_iova";
+    probe_rc = lingqu_shmem_sim_phys_for_virt(metadata, &metadata_iova);
+    if (probe_rc != 0) {
+        goto out;
+    }
+    probe_stage = "prepare_dispatch";
+    probe_rc = lingqu_shmem_pto_dispatch_prepare(
+        &request,
+        metadata,
+        W5_PTO_UB_GM_METADATA_BYTES,
+        metadata_iova,
+        &slot,
+        &wire_result,
+        &inflight);
+    if (probe_rc != 0) {
+        goto out;
+    }
+    probe_stage = "open_endpoint";
+    probe_rc = lingqu_shmem_pto_endpoint_open(&endpoint, &endpoint_info);
+    if (probe_rc != 0) {
+        goto out;
+    }
+    printf("[w4_guest] stage w5_pto_ub_gm_probe_submit"
+           " node=%u step=%" PRIu64
+           " tile=%" PRIu64 " tile_offset=0x%016" PRIx64
+           " source_owner=node%u input_offset=0x%016" PRIx64
+           " output_offset=0x%016" PRIx64 " bytes=%" PRIu64
+           " callable_id=%" PRIu64 " fingerprint=0x%016" PRIx64
+           " requester_cna=0x%08" PRIx32
+           " source=lingqu_memory_service target=simpler_pto"
+           " address_space=UB_GM guest_inline_payload=0 status=ready\n",
+           local_node + 1U,
+           decode_step,
+           tile_index,
+           tile_offset,
+           input_view->owner_node + 1U,
+           input_view->backing_offset + tile_offset,
+           output_buffer.backing_offset,
+           output_buffer.len,
+           request.callable_id,
+           artifact_fingerprint,
+           requester_cna);
+    probe_stage = "submit_dispatch";
+    probe_rc = lingqu_shmem_pto_endpoint_submit(
+        endpoint, &slot, timeout_ms, &completion);
+    if (probe_rc != 0 ||
+        !lingqu_shmem_pto_completion_succeeded(&completion)) {
+        if (probe_rc == 0) {
+            probe_rc = -EIO;
+        }
+        goto out;
+    }
+    probe_stage = "validate_output";
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    for (uint32_t index = 0;
+         index < (uint32_t)W5_PTO_UB_GM_PROBE_ELEMENTS;
+         ++index) {
+        float input_value;
+        float sum;
+        float plus_one;
+        float plus_two;
+        float expected;
+
+        memcpy(&input_value,
+               input_view->data + tile_offset +
+                   (uint64_t)index * sizeof(input_value),
+               sizeof(input_value));
+        sum = input_value + input_value;
+        plus_one = sum + 1.0f;
+        plus_two = sum + 2.0f;
+        expected = plus_one * plus_two;
+        memcpy(&expected_bits, &expected, sizeof(expected_bits));
+        memcpy(&actual_bits,
+               output_buffer.data + (uint64_t)index * sizeof(actual_bits),
+               sizeof(actual_bits));
+        if (actual_bits != expected_bits) {
+            mismatch_index = index;
+            probe_rc = -EILSEQ;
+            fprintf(stderr,
+                    "[w4_guest] fail w5 PTO UB_GM semantic output"
+                    " node=%u step=%" PRIu64 " tile=%" PRIu64
+                    " index=%" PRIu32
+                    " expected_bits=0x%08" PRIx32
+                    " actual_bits=0x%08" PRIx32 "\n",
+                    local_node + 1U,
+                    decode_step,
+                    tile_index,
+                    mismatch_index,
+                    expected_bits,
+                    actual_bits);
+            goto out;
+        }
+    }
+    input_checksum = w4_qwen3_hidden_payload_checksum(
+        input_view->data + tile_offset, W5_PTO_UB_GM_PROBE_BYTES);
+    output_checksum = w4_qwen3_hidden_payload_checksum(
+        output_buffer.data, output_buffer.len);
+    printf("[w4_guest] stage w5_pto_ub_gm_probe_semantic"
+           " node=%u step=%" PRIu64 " tile=%" PRIu64
+           " tile_offset=0x%016" PRIx64 " elements=%" PRIu64
+           " formula=(2*x+1)*(2*x+2)"
+           " input_checksum=0x%016" PRIx64
+           " output_checksum=0x%016" PRIx64 " status=ok\n",
+           local_node + 1U,
+           decode_step,
+           tile_index,
+           tile_offset,
+           (uint64_t)W5_PTO_UB_GM_PROBE_ELEMENTS,
+           input_checksum,
+           output_checksum);
+    printf("[w4_guest] stage w5_pto_ub_gm_probe_complete"
+           " node=%u step=%" PRIu64 " tile=%" PRIu64
+           " tile_offset=0x%016" PRIx64 " op_id=%" PRIu64
+           " request_id=%" PRIu64 " output_offset=0x%016" PRIx64
+           " output_checksum=0x%016" PRIx64 " bytes=%" PRIu64
+           " source=simpler_pto target=lingqu_memory_service_local_buffer"
+           " tload=direct tstore=direct guest_inline_payload=0 status=ok\n",
+           local_node + 1U,
+           decode_step,
+           tile_index,
+           tile_offset,
+           request.op_id,
+           request.request_id,
+           output_buffer.backing_offset,
+           output_checksum,
+           output_buffer.len);
+    probe_rc = 0;
+
+out:
+    lingqu_shmem_pto_endpoint_close(endpoint);
+    lingqu_shmem_pto_dispatch_finish(inflight);
+    if (output_lease) {
+        if (probe_rc == 0) {
+            probe_stage = "release_output";
+        }
+        int release_rc = lingqu_shmem_mem_service_release(output_lease);
+
+        if (probe_rc == 0 && release_rc != 0) {
+            probe_rc = release_rc;
+        }
+    }
+    if (input_lease) {
+        if (probe_rc == 0) {
+            probe_stage = "release_input";
+        }
+        int release_rc = lingqu_shmem_mem_service_release(input_lease);
+
+        if (probe_rc == 0 && release_rc != 0) {
+            probe_rc = release_rc;
+        }
+    }
+    if (context) {
+        if (probe_rc == 0) {
+            probe_stage = "close_context";
+        }
+        int close_rc = lingqu_shmem_mem_service_close(context);
+
+        if (probe_rc == 0 && close_rc != 0) {
+            probe_rc = close_rc;
+        }
+    }
+    if (metadata != MAP_FAILED) {
+        munmap(metadata, W5_PTO_UB_GM_METADATA_BYTES);
+    }
+    if (probe_rc != 0) {
+        fprintf(stderr,
+                "[w4_guest] fail w5 PTO UB_GM probe node=%u step=%" PRIu64
+                " stage=%s rc=%d completion=%s\n",
+                local_node + 1U,
+                decode_step,
+                probe_stage,
+                probe_rc,
+                completion.error_code[0] ? completion.error_code : "none");
+    }
+    if (probe_rc == 0) {
+        *result_out = (struct w5_pto_ub_gm_hidden_result) {
+            .data = output_buffer.data,
+            .len = output_buffer.len,
+            .backing_offset = output_buffer.backing_offset,
+            .checksum = output_checksum,
+            .tile_count = 1,
+        };
+    }
+    return probe_rc;
+}
+
+static int run_w5_pto_ub_gm_hidden_transform(
+    const struct mem_service_object_payload_view *input_view,
+    uint32_t local_node,
+    uint64_t decode_step,
+    uint64_t hidden_bytes,
+    uint64_t artifact_fingerprint,
+    uint32_t requester_cna,
+    uint64_t timeout_ms,
+    struct w5_pto_ub_gm_hidden_result *result_out)
+{
+    struct w5_pto_ub_gm_hidden_result tile_result;
+    uint8_t *output_data = NULL;
+    uint64_t output_offset = 0;
+    uint64_t tile_count;
+    uint64_t tile_index;
+
+    if (!input_view || !result_out || hidden_bytes == 0 ||
+        input_view->len != hidden_bytes || hidden_bytes > SIZE_MAX ||
+        hidden_bytes % W5_PTO_UB_GM_PROBE_BYTES != 0) {
+        return -EINVAL;
+    }
+    tile_count = hidden_bytes / W5_PTO_UB_GM_PROBE_BYTES;
+    if (tile_count == 0 || tile_count > UINT16_MAX) {
+        return -E2BIG;
+    }
+    memset(result_out, 0, sizeof(*result_out));
+    printf("[w4_guest] stage w5_pto_ub_gm_hidden_transform_start"
+           " node=%u step=%" PRIu64 " bytes=%" PRIu64
+           " tile_bytes=%" PRIu64 " tiles=%" PRIu64
+           " source=lingqu_memory_service_remote_hidden"
+           " target=lingqu_memory_service_local_hidden status=ready\n",
+           local_node + 1U,
+           decode_step,
+           hidden_bytes,
+           (uint64_t)W5_PTO_UB_GM_PROBE_BYTES,
+           tile_count);
+    for (tile_index = 0; tile_index < tile_count; ++tile_index) {
+        uint64_t tile_offset = tile_index * W5_PTO_UB_GM_PROBE_BYTES;
+        int rc;
+
+        memset(&tile_result, 0, sizeof(tile_result));
+        rc = run_w5_pto_ub_gm_hidden_tile(
+            input_view,
+            local_node,
+            decode_step,
+            tile_index,
+            tile_offset,
+            artifact_fingerprint,
+            requester_cna,
+            timeout_ms,
+            &tile_result);
+        if (rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail W5 PTO UB_GM hidden transform"
+                    " node=%u step=%" PRIu64 " tile=%" PRIu64
+                    " tile_offset=0x%016" PRIx64 " rc=%d\n",
+                    local_node + 1U,
+                    decode_step,
+                    tile_index,
+                    tile_offset,
+                    rc);
+            return rc;
+        }
+        if (tile_index == 0) {
+            output_data = tile_result.data;
+            output_offset = tile_result.backing_offset;
+        } else if (tile_result.data != output_data + tile_offset ||
+                   tile_result.backing_offset != output_offset + tile_offset) {
+            fprintf(stderr,
+                    "[w4_guest] fail W5 PTO UB_GM hidden output continuity"
+                    " node=%u step=%" PRIu64 " tile=%" PRIu64
+                    " expected_offset=0x%016" PRIx64
+                    " actual_offset=0x%016" PRIx64 "\n",
+                    local_node + 1U,
+                    decode_step,
+                    tile_index,
+                    output_offset + tile_offset,
+                    tile_result.backing_offset);
+            return -ERANGE;
+        }
+    }
+    *result_out = (struct w5_pto_ub_gm_hidden_result) {
+        .data = output_data,
+        .len = hidden_bytes,
+        .backing_offset = output_offset,
+        .checksum = w4_qwen3_hidden_payload_checksum(
+            output_data, hidden_bytes),
+        .tile_count = tile_count,
+    };
+    printf("[w4_guest] stage w5_pto_ub_gm_hidden_transform_complete"
+           " node=%u step=%" PRIu64 " bytes=%" PRIu64
+           " tile_bytes=%" PRIu64 " tiles=%" PRIu64
+           " output_offset=0x%016" PRIx64
+           " output_checksum=0x%016" PRIx64
+           " tload=direct tstore=direct guest_inline_payload=0 status=ok\n",
+           local_node + 1U,
+           decode_step,
+           hidden_bytes,
+           (uint64_t)W5_PTO_UB_GM_PROBE_BYTES,
+           tile_count,
+           result_out->backing_offset,
+           result_out->checksum);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "--mem-service-serving-publish") == 0) {
@@ -9790,6 +10240,12 @@ int main(int argc, char **argv)
     bool qwen3_step_terminal_observed = false;
     bool qwen3_shortpath_terminal_committed = false;
     bool qwen3_pre_resolved_range_input = false;
+    bool w5_pto_ub_gm_probe_enabled = false;
+    bool w5_pto_ub_gm_publish_output = false;
+    uint64_t w5_pto_ub_gm_artifact_fingerprint = 0;
+    uint64_t w5_pto_ub_gm_timeout_ms = 0;
+    uint32_t w5_pto_ub_gm_requester_cna = 0;
+    struct w5_pto_ub_gm_hidden_result w5_pto_ub_gm_hidden_result;
     struct mem_service_object_payload_view qwen3_pre_resolved_range_input_view;
     struct w4_guest_supernode_clock supernode_clock;
     struct w4_qwen3_memory_decision_config qwen3_memory_decision_config;
@@ -9808,12 +10264,86 @@ int main(int argc, char **argv)
     memset(&qwen3_pre_resolved_range_input_view,
            0,
            sizeof(qwen3_pre_resolved_range_input_view));
+    memset(&w5_pto_ub_gm_hidden_result,
+           0,
+           sizeof(w5_pto_ub_gm_hidden_result));
     resolve_role(role, sizeof(role));
     memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
     cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
     require_uapi_resource = env_bool_is_one("LINQU_W4_REQUIRE_UAPI_RESOURCE");
     enable_db_cluster = env_bool_is_one("LINQU_MEM_SERVICE_CLUSTER");
     resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
+    w5_pto_ub_gm_probe_enabled =
+        env_bool_is_one("SIM_W5_PTO_UB_GM_PROBE");
+    w5_pto_ub_gm_publish_output =
+        env_bool_is_one("SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT");
+    if (w5_pto_ub_gm_publish_output && !w5_pto_ub_gm_probe_enabled) {
+        fprintf(stderr,
+                "[w4_guest] fail W5 PTO UB_GM publish requires probe enable\n");
+        return 1;
+    }
+    w5_pto_ub_gm_artifact_fingerprint = env_u64_base0_or_default(
+        "SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT", 0);
+    w5_pto_ub_gm_timeout_ms = env_u64_or_default(
+        "SIM_W5_PTO_UB_GM_TIMEOUT_MS", 300000ULL);
+    if (w5_pto_ub_gm_probe_enabled) {
+        char requester_cna_text[64];
+        char direct_enabled_text[16];
+        char *end = NULL;
+        unsigned long requester_cna_value;
+
+        memset(requester_cna_text, 0, sizeof(requester_cna_text));
+        memset(direct_enabled_text, 0, sizeof(direct_enabled_text));
+        if (!enable_db_cluster || !env_nonempty("SIM_UAPI_W5_PROFILE") ||
+            (w5_pto_ub_gm_publish_output && !is_qwen3_profile()) ||
+            w5_pto_ub_gm_artifact_fingerprint == 0 ||
+            w5_pto_ub_gm_timeout_ms == 0 ||
+            !cmdline_get_value("linqu_shmem_pto_direct",
+                               direct_enabled_text,
+                               sizeof(direct_enabled_text)) ||
+            strcmp(direct_enabled_text, "1") != 0 ||
+            !cmdline_get_value("lingqu_shmem_pto_requester_cna",
+                               requester_cna_text,
+                               sizeof(requester_cna_text))) {
+            fprintf(stderr,
+                    "[w4_guest] fail W5 PTO UB_GM probe configuration"
+                    " memory_service=%u w5_profile=%u fingerprint=0x%016" PRIx64
+                    " timeout_ms=%" PRIu64
+                    " publish_output=%u direct=%s requester_cna=%s\n",
+                    enable_db_cluster ? 1U : 0U,
+                    env_nonempty("SIM_UAPI_W5_PROFILE") ? 1U : 0U,
+                    w5_pto_ub_gm_artifact_fingerprint,
+                    w5_pto_ub_gm_timeout_ms,
+                    w5_pto_ub_gm_publish_output ? 1U : 0U,
+                    direct_enabled_text[0] ? direct_enabled_text : "missing",
+                    requester_cna_text[0] ? requester_cna_text : "missing");
+            return 1;
+        }
+        errno = 0;
+        requester_cna_value = strtoul(requester_cna_text, &end, 0);
+        if (errno != 0 || end == requester_cna_text ||
+            (end && *end != '\0') || requester_cna_value == 0 ||
+            requester_cna_value > LINGQU_PTO_CNA_MAX) {
+            fprintf(stderr,
+                    "[w4_guest] fail W5 PTO UB_GM probe requester CNA"
+                    " value=%s supported=1..0x%x\n",
+                    requester_cna_text,
+                    LINGQU_PTO_CNA_MAX);
+            return 1;
+        }
+        w5_pto_ub_gm_requester_cna = (uint32_t)requester_cna_value;
+        printf("[w4_guest] stage w5_pto_ub_gm_probe_config"
+               " fingerprint=0x%016" PRIx64
+               " requester_cna=0x%08" PRIx32
+               " timeout_ms=%" PRIu64
+               " publish_output=%u"
+               " source=lingqu_memory_service target=simpler_pto"
+               " address_space=UB_GM status=ok\n",
+               w5_pto_ub_gm_artifact_fingerprint,
+               w5_pto_ub_gm_requester_cna,
+               w5_pto_ub_gm_timeout_ms,
+               w5_pto_ub_gm_publish_output ? 1U : 0U);
+    }
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
     sampler_config.top_k =
@@ -11342,6 +11872,9 @@ decode_round_start:
     memset(&qwen3_pre_resolved_range_input_view,
            0,
            sizeof(qwen3_pre_resolved_range_input_view));
+    memset(&w5_pto_ub_gm_hidden_result,
+           0,
+           sizeof(w5_pto_ub_gm_hidden_result));
     bool delay_decode_round_start_log =
         is_qwen3_profile() && enable_db_cluster && cluster_node_count == w4_qwen3_tp_nodes() &&
         guest_decode_step == 0;
@@ -12166,6 +12699,11 @@ decode_round_start:
                         expected_bytes);
                 goto out;
             }
+            if (range_input_view.payload_kind ==
+                W4_QWEN3_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT) {
+                qwen3_pre_resolved_range_input_view = range_input_view;
+                qwen3_pre_resolved_range_input = true;
+            }
             write_segment_bytes(ep_mmio,
                                 W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                     ((uint64_t)object_ref_write_index *
@@ -12486,6 +13024,10 @@ decode_round_start:
                            range_input_checksum,
                            range_input_view.len,
                            range_input_view.payload_kind);
+                    if (hidden_range_input) {
+                        qwen3_pre_resolved_range_input_view = range_input_view;
+                        qwen3_pre_resolved_range_input = true;
+                    }
                 }
             }
         } else {
@@ -12821,6 +13363,76 @@ decode_round_start:
         runtime_forward.payload_bytes ==
             w4_runtime_handoff_hidden_bytes(guest_decode_step);
     verify_done_ms = monotonic_ms();
+    if (w5_pto_ub_gm_probe_enabled) {
+        uint32_t local_node = UINT32_MAX;
+
+        mmio_write64(ep_mmio, REG_CQ_HEAD, cq_tail % cq_depth);
+        mmio_write64(
+            ep_mmio, REG_IRQ_ACK, mmio_read64(ep_mmio, REG_IRQ_STATUS));
+        printf("[w4_guest] stage w5_pto_ub_gm_queue_handoff"
+               " step=%" PRIu64 " cmdq_head=%" PRIu64
+               " cmdq_tail=%" PRIu64 " cq_head=%" PRIu64
+               " cq_tail=%" PRIu64
+               " source=w5_base_dispatch target=pto_probe status=ready\n",
+               guest_decode_step,
+               mmio_read64(ep_mmio, REG_CMDQ_HEAD),
+               mmio_read64(ep_mmio, REG_CMDQ_TAIL),
+               mmio_read64(ep_mmio, REG_CQ_HEAD),
+               mmio_read64(ep_mmio, REG_CQ_TAIL));
+        if (!w4_cluster_role_index(role, cluster_node_count, &local_node)) {
+            fprintf(stderr,
+                    "[w4_guest] fail W5 PTO UB_GM probe local node"
+                    " role=%s nodes=%u\n",
+                    role,
+                    cluster_node_count);
+            goto out;
+        }
+        if (!qwen3_pre_resolved_range_input) {
+            printf("[w4_guest] stage w5_pto_ub_gm_probe_skip"
+                   " node=%u step=%" PRIu64
+                   " reason=no_upstream_hidden status=skipped\n",
+                   local_node + 1U,
+                   guest_decode_step);
+        } else if (qwen3_pre_resolved_range_input_view.len <
+                   W5_PTO_UB_GM_PROBE_BYTES) {
+            printf("[w4_guest] stage w5_pto_ub_gm_probe_skip"
+                   " node=%u step=%" PRIu64
+                   " reason=hidden_payload_too_small bytes=%" PRIu64
+                   " required=%" PRIu64 " status=skipped\n",
+                   local_node + 1U,
+                   guest_decode_step,
+                   qwen3_pre_resolved_range_input_view.len,
+                   (uint64_t)W5_PTO_UB_GM_PROBE_BYTES);
+        } else {
+            int pto_rc;
+
+            if (w5_pto_ub_gm_publish_output) {
+                pto_rc = run_w5_pto_ub_gm_hidden_transform(
+                    &qwen3_pre_resolved_range_input_view,
+                    local_node,
+                    guest_decode_step,
+                    runtime_forward.payload_bytes,
+                    w5_pto_ub_gm_artifact_fingerprint,
+                    w5_pto_ub_gm_requester_cna,
+                    w5_pto_ub_gm_timeout_ms,
+                    &w5_pto_ub_gm_hidden_result);
+            } else {
+                pto_rc = run_w5_pto_ub_gm_hidden_tile(
+                    &qwen3_pre_resolved_range_input_view,
+                    local_node,
+                    guest_decode_step,
+                    0,
+                    0,
+                    w5_pto_ub_gm_artifact_fingerprint,
+                    w5_pto_ub_gm_requester_cna,
+                    w5_pto_ub_gm_timeout_ms,
+                    &w5_pto_ub_gm_hidden_result);
+            }
+            if (pto_rc != 0) {
+                goto out;
+            }
+        }
+    }
     if (model_runtime_forward_ready && enable_db_cluster) {
         uint32_t dispatch_node = 0U;
         struct mem_service_obmm_range_flow_request range_request;
@@ -13074,6 +13686,43 @@ decode_round_start:
         }
 model_publish_runtime_range:
         if (!qwen3_shortpath_terminal_committed) {
+            const uint8_t *hidden_publish_payload =
+                runtime_forward.output_payload;
+            uint64_t hidden_publish_bytes = runtime_forward.payload_bytes;
+            uint64_t hidden_publish_checksum = runtime_forward.payload_checksum;
+            bool hidden_publish_in_place = false;
+
+            if (w5_pto_ub_gm_publish_output &&
+                qwen3_pre_resolved_range_input) {
+                if (!w5_pto_ub_gm_hidden_result.data ||
+                    w5_pto_ub_gm_hidden_result.len !=
+                        runtime_forward.payload_bytes ||
+                    w5_pto_ub_gm_hidden_result.tile_count == 0 ||
+                    w5_pto_ub_gm_hidden_result.checksum == 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail W5 PTO UB_GM hidden publish"
+                            " node=%u step=%" PRIu64
+                            " result_bytes=%" PRIu64
+                            " expected_bytes=%" PRIu64
+                            " tiles=%" PRIu64 " checksum=0x%016" PRIx64
+                            "\n",
+                            dispatch_node + 1U,
+                            guest_decode_step,
+                            w5_pto_ub_gm_hidden_result.len,
+                            runtime_forward.payload_bytes,
+                            w5_pto_ub_gm_hidden_result.tile_count,
+                            w5_pto_ub_gm_hidden_result.checksum);
+                    goto out;
+                }
+                hidden_publish_payload = w5_pto_ub_gm_hidden_result.data;
+                hidden_publish_bytes = w5_pto_ub_gm_hidden_result.len;
+                hidden_publish_checksum =
+                    w5_pto_ub_gm_hidden_result.checksum;
+                hidden_publish_in_place = true;
+                range_request.publish_payload_in_place = true;
+                range_request.publish_payload_offset =
+                    w5_pto_ub_gm_hidden_result.backing_offset;
+            }
             range_publish_start_ms = monotonic_ms();
             if (mem_service_range_flow_publish_runtime_output(
                     &db_service,
@@ -13081,9 +13730,9 @@ model_publish_runtime_range:
                     dispatch_node,
                     cluster_node_count,
                     guest_decode_step,
-                    runtime_forward.output_payload,
-                    runtime_forward.payload_bytes,
-                    runtime_forward.payload_checksum,
+                    hidden_publish_payload,
+                    hidden_publish_bytes,
+                    hidden_publish_checksum,
                     runtime_forward.kv_payload,
                     runtime_forward.kv_payload_bytes,
                     runtime_forward.kv_payload_checksum) != 0) {
@@ -13094,6 +13743,28 @@ model_publish_runtime_range:
             }
             range_publish_done_ms = monotonic_ms();
             range_publish_ms = range_publish_done_ms - range_publish_start_ms;
+            if (w5_pto_ub_gm_publish_output) {
+                printf("[w4_guest] stage w5_pto_ub_gm_hidden_publish"
+                       " node=%u step=%" PRIu64 " bytes=%" PRIu64
+                       " offset=0x%016" PRIx64
+                       " checksum=0x%016" PRIx64 " tiles=%" PRIu64
+                       " publish_mode=%s backing=obmm_shmem"
+                       " source=%s target=lingqu_memory_service status=ok\n",
+                       dispatch_node + 1U,
+                       guest_decode_step,
+                       hidden_publish_bytes,
+                       hidden_publish_in_place ?
+                           w5_pto_ub_gm_hidden_result.backing_offset :
+                           runtime_forward.payload_offset,
+                       hidden_publish_checksum,
+                       hidden_publish_in_place ?
+                           w5_pto_ub_gm_hidden_result.tile_count :
+                           0,
+                       hidden_publish_in_place ? "in_place" : "copy",
+                       hidden_publish_in_place ?
+                           "simpler_pto_ub_gm" :
+                           "base_range_output");
+            }
         }
         if (qwen3_engram_config.enabled &&
             !memory_shortpath_engram_owner_selected &&

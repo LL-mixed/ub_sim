@@ -546,10 +546,11 @@ static long linqu_obmm_async_buffer_free(struct linqu_ub_file *ctx,
 	return 0;
 }
 
-static long linqu_obmm_async_map_register(struct linqu_ub_file *ctx,
-					  unsigned long arg)
+static long linqu_obmm_async_map_register_common(
+	struct linqu_ub_file *ctx, u64 mem_id, u64 mapped_addr, u64 length,
+	u32 flags, u32 reserved, u64 *map_id, u64 *map_generation,
+	u64 *local_pa_out)
 {
-	struct obmm_async_map_register_v1 request;
 	struct linqu_ub_drv *drv = ctx->drv;
 	struct vm_area_struct *vma;
 	unsigned long pfn;
@@ -557,23 +558,20 @@ static long linqu_obmm_async_map_register(struct linqu_ub_file *ctx,
 	u32 index;
 	int ret;
 
-	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
-		return -EFAULT;
-	if (!request.mem_id || !request.length ||
-	    request.mapped_addr > U64_MAX - request.length ||
-	    request.flags || request.reserved)
+	if (!mem_id || !length || mapped_addr > U64_MAX - length || flags ||
+	    reserved || !map_id || !map_generation || !local_pa_out)
 		return -EINVAL;
 	mmap_read_lock(current->mm);
-	vma = find_vma(current->mm, request.mapped_addr);
-	if (!vma || request.mapped_addr < vma->vm_start ||
-	    request.mapped_addr + request.length > vma->vm_end) {
+	vma = find_vma(current->mm, mapped_addr);
+	if (!vma || mapped_addr < vma->vm_start ||
+	    mapped_addr + length > vma->vm_end) {
 		ret = -EFAULT;
 		goto out_unlock;
 	}
-	ret = follow_pfn(vma, request.mapped_addr, &pfn);
+	ret = follow_pfn(vma, mapped_addr, &pfn);
 	if (ret)
 		goto out_unlock;
-	local_pa = PFN_PHYS(pfn) + offset_in_page(request.mapped_addr);
+	local_pa = PFN_PHYS(pfn) + offset_in_page(mapped_addr);
 out_unlock:
 	mmap_read_unlock(current->mm);
 	if (ret)
@@ -589,16 +587,17 @@ out_unlock:
 	if (!ctx->maps[index].generation)
 		ctx->maps[index].generation++;
 	ctx->maps[index].allocated = true;
-	ctx->maps[index].length = request.length;
-	request.map_id = index + 1;
-	request.map_generation = ctx->maps[index].generation;
+	ctx->maps[index].length = length;
+	*map_id = index + 1;
+	*map_generation = ctx->maps[index].generation;
+	*local_pa_out = local_pa;
 
 	writeq(local_pa, drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_LOCAL_PA);
-	writeq(request.length,
+	writeq(length,
 	       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_LENGTH);
-	writeq(request.map_id,
+	writeq(*map_id,
 	       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_ID);
-	writeq(request.map_generation,
+	writeq(*map_generation,
 	       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_GENERATION);
 	/* Publish all map descriptor fields before the registration command. */
 	wmb();
@@ -607,13 +606,59 @@ out_unlock:
 		ctx->maps[index].allocated = false;
 		return -EIO;
 	}
+	return 0;
+}
+
+static long linqu_obmm_async_map_register(struct linqu_ub_file *ctx,
+					  unsigned long arg)
+{
+	struct obmm_async_map_register_v1 request;
+	u64 local_pa;
+	int ret;
+
+	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+		return -EFAULT;
+	ret = linqu_obmm_async_map_register_common(
+		ctx, request.mem_id, request.mapped_addr, request.length,
+		request.flags, request.reserved, &request.map_id,
+		&request.map_generation, &local_pa);
+	if (ret)
+		return ret;
 	if (copy_to_user((void __user *)arg, &request, sizeof(request))) {
 		writeq(request.map_id,
-		       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_ID);
+		       ctx->drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_ID);
 		writeq(request.map_generation,
-		       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_GENERATION);
-		writeq(2, drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_CMD);
-		ctx->maps[index].allocated = false;
+		       ctx->drv->obmm_async_mmio +
+		       OBMM_ASYNC_REG_MAP_GENERATION);
+		writeq(2, ctx->drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_CMD);
+		ctx->maps[request.map_id - 1].allocated = false;
+		return -EFAULT;
+	}
+	return 0;
+}
+
+static long linqu_obmm_async_map_register_v2(struct linqu_ub_file *ctx,
+					     unsigned long arg)
+{
+	struct obmm_async_map_register_v2 request;
+	int ret;
+
+	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+		return -EFAULT;
+	ret = linqu_obmm_async_map_register_common(
+		ctx, request.mem_id, request.mapped_addr, request.length,
+		request.flags, request.reserved, &request.map_id,
+		&request.map_generation, &request.local_pa);
+	if (ret)
+		return ret;
+	if (copy_to_user((void __user *)arg, &request, sizeof(request))) {
+		writeq(request.map_id,
+		       ctx->drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_ID);
+		writeq(request.map_generation,
+		       ctx->drv->obmm_async_mmio +
+		       OBMM_ASYNC_REG_MAP_GENERATION);
+		writeq(2, ctx->drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_CMD);
+		ctx->maps[request.map_id - 1].allocated = false;
 		return -EFAULT;
 	}
 	return 0;
@@ -732,6 +777,8 @@ static long linqu_ub_ioctl(struct file *file, unsigned int cmd,
 		return linqu_obmm_async_buffer_free(ctx, arg);
 	case OBMM_ASYNC_IOCTL_MAP_REGISTER:
 		return linqu_obmm_async_map_register(ctx, arg);
+	case OBMM_ASYNC_IOCTL_MAP_REGISTER_V2:
+		return linqu_obmm_async_map_register_v2(ctx, arg);
 	case OBMM_ASYNC_IOCTL_MAP_UNREGISTER:
 		return linqu_obmm_async_map_unregister(ctx, arg);
 	case OBMM_ASYNC_IOCTL_KICK:

@@ -34,6 +34,10 @@ _Static_assert(offsetof(struct obmm_async_cq_entry_v1, reserved) == 56,
                "CQ reserved offset");
 _Static_assert(sizeof(struct obmm_async_observability_v1) == 168,
                "observability size");
+_Static_assert(sizeof(struct obmm_async_map_register_v2) == 56,
+               "map register v2 size");
+_Static_assert(offsetof(struct obmm_async_map_register_v2, local_pa) == 48,
+               "map register v2 local PA offset");
 _Static_assert(offsetof(struct obmm_async_observability_v1,
                         model_service_ns) == 8,
                "model service offset");
@@ -140,6 +144,28 @@ def test_public_api_and_uapi_are_transport_neutral():
     for forbidden in ("sim_dec", "urma", "rdma", "roce", "tcp", "cuda"):
         assert forbidden not in public_text
         assert forbidden not in uapi_text
+
+
+def test_map_registration_returns_the_authoritative_local_pa():
+    public_text = (LIB_DIR / "obmm_async.h").read_text()
+    library_text = (LIB_DIR / "obmm_async.c").read_text()
+    driver_text = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+    uapi_text = (
+        KERNEL_ROOT / "include" / "uapi" / "ub" / "obmm_async.h"
+    ).read_text()
+
+    assert "struct obmm_async_map_register_v2" in uapi_text
+    assert "OBMM_ASYNC_IOCTL_MAP_REGISTER_V2" in uapi_text
+    assert "uint64_t local_pa;" in public_text
+    assert "request.local_pa" in library_text
+    assert "v2_errno != ENOTTY" in library_text
+    assert "linqu_obmm_async_map_register_common" in driver_text
+    assert "*local_pa_out = local_pa;" in driver_text
+    assert "case OBMM_ASYNC_IOCTL_MAP_REGISTER_V2:" in driver_text
+    assert "drv->obmm_async_mmio" not in driver_text[
+        driver_text.index("static long linqu_obmm_async_map_register(") :
+        driver_text.index("static long linqu_obmm_async_map_register_v2(")
+    ]
 
 
 def test_qemu_endpoint_is_routed_and_uses_registered_buffers():

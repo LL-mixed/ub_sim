@@ -383,7 +383,7 @@ int obmm_async_map_register(struct obmm_async *runtime, int obmm_fd,
                             uint64_t mem_id, void *mapped_addr,
                             uint64_t length, struct obmm_async_map *map)
 {
-    struct obmm_async_map_register_v1 request = {
+    struct obmm_async_map_register_v2 request = {
         .mem_id = mem_id,
         .mapped_addr = (uintptr_t)mapped_addr,
         .length = length,
@@ -393,13 +393,33 @@ int obmm_async_map_register(struct obmm_async *runtime, int obmm_fd,
         !length || !map) {
         return -EINVAL;
     }
-    if (ioctl(runtime->fd, OBMM_ASYNC_IOCTL_MAP_REGISTER, &request) != 0) {
-        return -errno;
+    if (ioctl(runtime->fd, OBMM_ASYNC_IOCTL_MAP_REGISTER_V2, &request) != 0) {
+        int v2_errno = errno;
+
+        if (v2_errno != ENOTTY) {
+            return -v2_errno;
+        }
+        {
+            struct obmm_async_map_register_v1 legacy_request = {
+                .mem_id = mem_id,
+                .mapped_addr = (uintptr_t)mapped_addr,
+                .length = length,
+            };
+
+            if (ioctl(runtime->fd, OBMM_ASYNC_IOCTL_MAP_REGISTER,
+                      &legacy_request) != 0) {
+                return -errno;
+            }
+            request.map_id = legacy_request.map_id;
+            request.map_generation = legacy_request.map_generation;
+            request.local_pa = 0;
+        }
     }
     *map = (struct obmm_async_map) {
         .id = request.map_id,
         .generation = request.map_generation,
         .length = length,
+        .local_pa = request.local_pa,
     };
     return 0;
 }

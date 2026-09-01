@@ -39,6 +39,7 @@ struct obmm_async_map {
     uint64_t id;
     uint64_t generation;
     uint64_t length;
+    uint64_t local_pa;
 };
 
 struct obmm_async_buffer {

@@ -93,6 +93,7 @@ current_kernel_artifact_signature() {
       include/linux/arm64_remote_load.h \
       include/linux/obmm.h \
       include/uapi/asm-generic/mman-common.h \
+      include/uapi/ub/obmm_async.h \
       include/uapi/ub/obmm_async_load.h \
       include/uapi/ub/ub_npu.h \
       include/uapi/ub/ub_ssd.h \

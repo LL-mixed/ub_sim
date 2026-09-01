@@ -120,8 +120,17 @@ fi
 APPEND_BASE="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 QEMU_MEM="${QEMU_MEM:-8G}"
 PORT_NUM="${UB_SIM_PORT_NUM:-$DEFAULT_PORT_NUM}"
+SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-vector-artifacts/host_vector_manifest.json}"
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
+SIM_W5_PTO_UB_GM_PROBE="${SIM_W5_PTO_UB_GM_PROBE:-0}"
+SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
+SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
+SIM_W5_PTO_UB_GM_TIMEOUT_MS="${SIM_W5_PTO_UB_GM_TIMEOUT_MS:-300000}"
+SIM_W5_PTO_UB_GM_ACCESS_BYTES="${SIM_W5_PTO_UB_GM_ACCESS_BYTES:-4096}"
+SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA="${SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA:-0}"
+SIM_LINGQU_SHMEM_PTO_ENABLE="${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}"
+SIM_LINGQU_SHMEM_PTO_CNA_BASE="${SIM_LINGQU_SHMEM_PTO_CNA_BASE:-0xf001}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-$(w5_profile_default_w4_backend "$SIM_UAPI_W5_PROFILE")}"
 SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
 SIM_QWEN3_GUEST_DECODE_STEPS="${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
@@ -461,6 +470,49 @@ validate_w5_profile_runtime() {
       fi
       ;;
   esac
+  return 0
+}
+
+validate_w5_pto_ub_gm_probe() {
+  if [[ "$SIM_W5_PTO_UB_GM_PROBE" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "$SIM_UAPI_W5_PROFILE" ]]; then
+    trace "FAIL: W5 PTO UB_GM probe requires SIM_UAPI_W5_PROFILE"
+    return 1
+  fi
+  if [[ "$SIM_LINGQU_SHMEM_PTO_ENABLE" != "1" ]]; then
+    trace "FAIL: W5 PTO UB_GM probe requires SIM_LINGQU_SHMEM_PTO_ENABLE=1"
+    return 1
+  fi
+  if [[ -z "$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT" ]]; then
+    trace "FAIL: W5 PTO UB_GM probe requires artifact fingerprint"
+    return 1
+  fi
+  if [[ ! -f "$SIMPLER_HOST_VECTOR_MANIFEST" ]]; then
+    trace "FAIL: W5 PTO UB_GM probe manifest missing path=$SIMPLER_HOST_VECTOR_MANIFEST"
+    return 1
+  fi
+  if [[ "$SIM_W5_PTO_UB_GM_ACCESS_BYTES" != "4096" ]]; then
+    trace "FAIL: W5 PTO UB_GM probe requires the callable-1 4096-byte layout, got access_bytes=$SIM_W5_PTO_UB_GM_ACCESS_BYTES"
+    return 1
+  fi
+  if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" != "0" &&
+        "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" != "1" ]]; then
+    trace "FAIL: SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT must be 0 or 1"
+    return 1
+  fi
+  if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
+    if [[ ! "$SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES" =~ '^[1-9][0-9]*$' ]]; then
+      trace "FAIL: W5 PTO UB_GM publish requires positive hidden range bytes"
+      return 1
+    fi
+    if (( SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES % SIM_W5_PTO_UB_GM_ACCESS_BYTES != 0 )); then
+      trace "FAIL: W5 hidden bytes must be divisible by callable tile bytes hidden=$SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES tile=$SIM_W5_PTO_UB_GM_ACCESS_BYTES"
+      return 1
+    fi
+  fi
+  trace "prepare: W5 PTO UB_GM probe manifest=$SIMPLER_HOST_VECTOR_MANIFEST fingerprint=$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT cna_base=$SIM_LINGQU_SHMEM_PTO_CNA_BASE timeout_ms=$SIM_W5_PTO_UB_GM_TIMEOUT_MS access_bytes=$SIM_W5_PTO_UB_GM_ACCESS_BYTES publish_output=$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
   return 0
 }
 
@@ -858,6 +910,12 @@ export SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="$SIM_MEM_SERVICE_LAZY_REMOTE_ACTI
 export SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE"
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_W5_RUN_ID="$RUN_ID_BASE"
+export SIM_W5_PTO_UB_GM_PROBE="$SIM_W5_PTO_UB_GM_PROBE"
+export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
+export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT"
+export SIM_W5_PTO_UB_GM_TIMEOUT_MS="$SIM_W5_PTO_UB_GM_TIMEOUT_MS"
+export SIM_W5_PTO_UB_GM_ACCESS_BYTES="$SIM_W5_PTO_UB_GM_ACCESS_BYTES"
+export SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA="$SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA"
 export SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}"
 export SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}"
 export SIM_QWEN3_DENSE_VOCAB_SIZE="${SIM_QWEN3_DENSE_VOCAB_SIZE:-}"
@@ -1096,6 +1154,10 @@ run_llm_infer_once() {
   export OBMM_POOL_IMPORT_PA_BIAS_MB
   export SIM_MEM_SERVICE_IMPORT_PA_BIAS_MB
   log "start step=0 \$LINQU_UB_ROLE local_ip=\$LINQU_UB_LOCAL_IP request_id=\${SIM_W5_SERVING_REQUEST_ID:-none} run_id=\${SIM_W5_RUN_ID:-none} request_index=\$request_index decode_step_base=\$request_step_base import_pa_bias_mb=\$import_pa_bias_mb"
+  if [ "\$SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA" = "1" ]; then
+    rm -f /dev/ub_ssd0
+    log "stage w5_pto_ub_gm_optional_backend backend=ub_ssd_gsva enabled=0 primary_backing=obmm_shmem status=ok"
+  fi
   set +e
   /bin/linqu_llm_infer
   rc=\$?
@@ -1703,7 +1765,7 @@ validate_node_log() {
   local engram_candidates_owner_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local terminal_publish_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local idx owner_role
-  local remote_idx
+  local remote_idx pto_tiles pto_dispatches pto_loads
 
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
@@ -1714,6 +1776,36 @@ validate_node_log() {
   fi
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % SIM_W5_CLUSTER_NODE_COUNT + 1))
+
+  if [[ "$SIM_W5_PTO_UB_GM_PROBE" == "1" ]]; then
+    pto_tiles=1
+    if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
+      pto_tiles=$((SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES / SIM_W5_PTO_UB_GM_ACCESS_BYTES))
+    fi
+    pto_dispatches=$((pto_tiles * SIM_QWEN3_GUEST_DECODE_STEPS))
+    pto_loads=$((2 * pto_dispatches))
+    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_config fingerprint=0x[0-9a-f]+ requester_cna=0x[0-9a-f]+ timeout_ms=[1-9][0-9]* publish_output=${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT} source=lingqu_memory_service target=simpler_pto address_space=UB_GM status=ok" "$node_id W5 PTO UB_GM probe config" || return 1
+    if (( idx == 1 )); then
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_skip node=1 step=[0-9]+ reason=no_upstream_hidden status=skipped" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 PTO UB_GM source-node skip per step" || return 1
+      if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
+        assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_hidden_publish node=1 step=[0-9]+ .*publish_mode=copy backing=obmm_shmem source=base_range_output target=lingqu_memory_service status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 source hidden publish per step" || return 1
+      fi
+      assert_log_absent "$qemu_log" "QEMU_UB_GM_(LOAD|STORE) request=" "$node_id W5 PTO source data callback" || return 1
+    else
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_submit node=${idx} step=[0-9]+ tile=[0-9]+ .*source=lingqu_memory_service target=simpler_pto address_space=UB_GM guest_inline_payload=0 status=ready" "$pto_dispatches" "$node_id W5 PTO UB_GM submit count" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_semantic node=${idx} step=[0-9]+ tile=[0-9]+ .*elements=1024 formula=\\(2\\*x\\+1\\)\\*\\(2\\*x\\+2\\) input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ status=ok" "$pto_dispatches" "$node_id W5 PTO UB_GM semantic count" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_complete node=${idx} step=[0-9]+ tile=[0-9]+ .*source=simpler_pto target=lingqu_memory_service_local_buffer tload=direct tstore=direct guest_inline_payload=0 status=ok" "$pto_dispatches" "$node_id W5 PTO UB_GM completion count" || return 1
+      assert_log_count "$qemu_log" "QEMU_UB_GM_LOAD request=.*length=${SIM_W5_PTO_UB_GM_ACCESS_BYTES}([[:space:]]|$)" "$pto_loads" "$node_id W5 PTO UB_GM TLOAD count" || return 1
+      assert_log_count "$qemu_log" "QEMU_UB_GM_STORE request=.*length=${SIM_W5_PTO_UB_GM_ACCESS_BYTES}([[:space:]]|$)" "$pto_dispatches" "$node_id W5 PTO UB_GM TSTORE count" || return 1
+      assert_log_count "$qemu_log" "QEMU_UB_GM_UNBIND .*bindings=3 load_bytes=$((2 * SIM_W5_PTO_UB_GM_ACCESS_BYTES)) store_bytes=${SIM_W5_PTO_UB_GM_ACCESS_BYTES} fences=1 segment_payload_staging_bytes=0" "$pto_dispatches" "$node_id W5 PTO UB_GM zero-staging completion count" || return 1
+      assert_log_absent "$qemu_log" "QEMU_UB_GM_(LOAD|STORE) denied|QEMU_UB_GM_DISPATCH_REJECT" "$node_id W5 PTO UB_GM denied access" || return 1
+      if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
+        assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_hidden_transform_start node=${idx} step=[0-9]+ bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES} tile_bytes=${SIM_W5_PTO_UB_GM_ACCESS_BYTES} tiles=${pto_tiles} .*status=ready" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 PTO hidden transform start per step" || return 1
+        assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_hidden_transform_complete node=${idx} step=[0-9]+ bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES} tile_bytes=${SIM_W5_PTO_UB_GM_ACCESS_BYTES} tiles=${pto_tiles} .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 PTO hidden transform completion per step" || return 1
+        assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_hidden_publish node=${idx} step=[0-9]+ bytes=${SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES} .*tiles=${pto_tiles} publish_mode=in_place backing=obmm_shmem source=simpler_pto_ub_gm target=lingqu_memory_service status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 PTO in-place hidden publish per step" || return 1
+      fi
+    fi
+  fi
 
   if [[ -n "$SIM_UAPI_W5_PROFILE" ]] && w5_shortpath_execution_armed; then
     if (( idx > 1 )); then
@@ -1997,6 +2089,7 @@ prepare_environment() {
   qwen3_dense_apply_config_env
   validate_qwen3_runtime_object_view_source || return 1
   validate_w5_profile_runtime || return 1
+  validate_w5_pto_ub_gm_probe || return 1
   resolve_w5_serving_requests_config || return 1
   validate_qwen3_engram_context_refs || return 1
   if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
@@ -2015,9 +2108,19 @@ prepare_environment() {
     trace "prepare: model runtime range wait timeout ms=$SIM_QWEN3_RUNTIME_RANGE_WAIT_MS"
   fi
   if [[ "$SIM_W5_GUEST_ENGINE" == "openEuler" ]]; then
-    build_w4_openEuler_initramfs
+    if ! build_w4_openEuler_initramfs; then
+      trace "FAIL: per-run openEuler initramfs build failed image=$RUN_INITRAMFS_IMAGE"
+      return 1
+    fi
   else
-    build_w4_initramfs
+    if ! build_w4_initramfs; then
+      trace "FAIL: per-run initramfs build failed image=$RUN_INITRAMFS_IMAGE"
+      return 1
+    fi
+  fi
+  if [[ ! -s "$RUN_INITRAMFS_IMAGE" ]]; then
+    trace "FAIL: per-run initramfs output missing image=$RUN_INITRAMFS_IMAGE"
+    return 1
   fi
   trace "prepare: guest engine=$SIM_W5_GUEST_ENGINE"
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
@@ -2026,10 +2129,13 @@ prepare_environment() {
     SIM_W5_GUEST_ENGINE="$SIM_W5_GUEST_ENGINE" SIM_W5_OE_DISK_IMAGE="${SIM_W5_OE_DISK_IMAGE:-}" \
     INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_app" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
+    SIMPLER_HOST_VECTOR_MANIFEST="$SIMPLER_HOST_VECTOR_MANIFEST" \
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="$SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST" \
     SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
+    SIM_LINGQU_SHMEM_PTO_ENABLE="$SIM_LINGQU_SHMEM_PTO_ENABLE" \
+    SIM_LINGQU_SHMEM_PTO_CNA_BASE="$SIM_LINGQU_SHMEM_PTO_CNA_BASE" \
     SIM_W5_RUN_ID="$RUN_ID_BASE" \
     SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}" \
     SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}" \
