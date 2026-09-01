@@ -44,9 +44,13 @@
 #define PTO_DIRECT_CONTROL_PREPARED 1u
 #define PTO_DIRECT_CONTROL_RETIRED 2u
 #define PTO_DIRECT_CONTROL_BYTES (2u * 1024u * 1024u)
+#define PTO_DIRECT_COMPLETION_ACK_MAGIC UINT64_C(0x4c5150544f41434b)
+#define PTO_DIRECT_COMPLETION_ACK_BYTES sizeof(uint64_t)
 #define PTO_DIRECT_CALLABLE_ID UINT64_C(1)
 #define PTO_DIRECT_COMPLETION_FAILED 3u
 #define PTO_DIRECT_METADATA_BYTES 4096u
+#define PTO_DIRECT_MIN_NODES 2u
+#define PTO_DIRECT_MAX_NODES 8u
 
 enum pto_direct_role {
     PTO_DIRECT_ROLE_UNSET,
@@ -487,7 +491,9 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
             return -EINVAL;
         }
     }
-    if (config->role == PTO_DIRECT_ROLE_UNSET || config->node_count != 2 ||
+    if (config->role == PTO_DIRECT_ROLE_UNSET ||
+        config->node_count < PTO_DIRECT_MIN_NODES ||
+        config->node_count > PTO_DIRECT_MAX_NODES ||
         config->node_id >= config->node_count || config->elements == 0 ||
         config->elements != layout_elements(config->layout) ||
         config->generation == 0 ||
@@ -506,9 +512,13 @@ static int parse_args(int argc, char **argv, struct pto_direct_config *config)
         (config->layout != PTO_DIRECT_LAYOUT_ND &&
          (config->fault_case != PTO_DIRECT_FAULT_NONE ||
           config->expectation != PTO_DIRECT_EXPECT_SUCCESS)) ||
+        (config->node_count > PTO_DIRECT_MIN_NODES &&
+         (config->expectation != PTO_DIRECT_EXPECT_SUCCESS ||
+          config->fault_case != PTO_DIRECT_FAULT_NONE ||
+          config->cancel_after_ms != 0)) ||
         (config->role == PTO_DIRECT_ROLE_PRODUCER && config->node_id != 0) ||
         (config->role == PTO_DIRECT_ROLE_CONSUMER &&
-         (config->node_id != 1 || config->requester_cna == 0 ||
+         (config->node_id == 0 || config->requester_cna == 0 ||
           config->requester_cna > LINGQU_PTO_CNA_MAX ||
           config->artifact_fingerprint == 0))) {
         return -EINVAL;
@@ -634,6 +644,155 @@ static int build_layout(const struct pto_direct_config *config,
     return layout->used_bytes <= PTO_DIRECT_EXPORT_BYTES ? 0 : -E2BIG;
 }
 
+static uint64_t lane_stride(const struct pto_direct_layout *layout)
+{
+    return align_up(layout->used_bytes, PTO_DIRECT_ALIGNMENT);
+}
+
+static uint64_t lane_base(const struct pto_direct_layout *layout,
+                          uint32_t node_id)
+{
+    return node_id == 0 ? 0 :
+           (uint64_t)(node_id - 1) * lane_stride(layout);
+}
+
+static uint64_t lane_span_bytes(const struct pto_direct_config *config,
+                                const struct pto_direct_layout *layout)
+{
+    return (uint64_t)(config->node_count - 2) * lane_stride(layout) +
+           layout->used_bytes;
+}
+
+static uint64_t completion_ack_base(
+    const struct pto_direct_config *config,
+    const struct pto_direct_layout *layout)
+{
+    return align_up(lane_span_bytes(config, layout), PTO_DIRECT_ALIGNMENT);
+}
+
+static uint64_t completion_ack_offset(
+    const struct pto_direct_config *config,
+    const struct pto_direct_layout *layout,
+    uint32_t consumer_node_id)
+{
+    return completion_ack_base(config, layout) +
+           (uint64_t)(consumer_node_id - 1) *
+               PTO_DIRECT_COMPLETION_ACK_BYTES;
+}
+
+static uint64_t completion_ack_marker(
+    const struct pto_direct_config *config,
+    uint32_t consumer_node_id)
+{
+    return PTO_DIRECT_COMPLETION_ACK_MAGIC ^
+           (config->generation << 8) ^ consumer_node_id;
+}
+
+static uint64_t completion_ack_span_bytes(
+    const struct pto_direct_config *config,
+    const struct pto_direct_layout *layout)
+{
+    return completion_ack_base(config, layout) +
+           (uint64_t)(config->node_count - 1) *
+               PTO_DIRECT_COMPLETION_ACK_BYTES;
+}
+
+static int validate_lane_capacity(const struct pto_direct_config *config,
+                                  const struct pto_direct_layout *layout)
+{
+    uint64_t stride = lane_stride(layout);
+    uint64_t lane_count = config->node_count - 1;
+    uint64_t span;
+
+    if (lane_count == 0 || lane_count - 1 > UINT64_MAX / stride) {
+        return -E2BIG;
+    }
+    span = (lane_count - 1) * stride;
+    if (span > UINT64_MAX - layout->used_bytes ||
+        span + layout->used_bytes > PTO_DIRECT_EXPORT_BYTES ||
+        completion_ack_span_bytes(config, layout) >
+            PTO_DIRECT_EXPORT_BYTES) {
+        return -E2BIG;
+    }
+    return 0;
+}
+
+static void seed_completion_acks(
+    void *address,
+    const struct pto_direct_config *config,
+    const struct pto_direct_layout *layout)
+{
+    uint64_t base = completion_ack_base(config, layout);
+    size_t bytes = (size_t)(config->node_count - 1) *
+                   PTO_DIRECT_COMPLETION_ACK_BYTES;
+
+    memset((uint8_t *)address + base, 0, bytes);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+}
+
+static bool completion_acks_match(
+    const void *address,
+    const struct pto_direct_config *config,
+    const struct pto_direct_layout *layout,
+    uint32_t *pending_node_id,
+    uint64_t *expected_marker,
+    uint64_t *actual_marker)
+{
+    uint32_t consumer_node_id;
+
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    for (consumer_node_id = 1;
+         consumer_node_id < config->node_count;
+         consumer_node_id++) {
+        uint64_t offset = completion_ack_offset(
+            config, layout, consumer_node_id);
+        const volatile uint64_t *ack =
+            (const volatile uint64_t *)((const uint8_t *)address + offset);
+        uint64_t expected = completion_ack_marker(
+            config, consumer_node_id);
+        uint64_t actual = *ack;
+
+        if (actual == expected) {
+            continue;
+        }
+        if (pending_node_id) {
+            *pending_node_id = consumer_node_id;
+        }
+        if (expected_marker) {
+            *expected_marker = expected;
+        }
+        if (actual_marker) {
+            *actual_marker = actual;
+        }
+        return false;
+    }
+    return true;
+}
+
+static int publish_completion_ack(
+    void *address,
+    const struct pto_direct_config *config,
+    const struct pto_direct_layout *layout)
+{
+    uint64_t offset = completion_ack_offset(
+        config, layout, config->node_id);
+    volatile uint64_t *ack =
+        (volatile uint64_t *)((uint8_t *)address + offset);
+    uint64_t marker = completion_ack_marker(config, config->node_id);
+
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    *ack = marker;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (*ack != marker) {
+        return -EIO;
+    }
+    printf("LINGQU_SHMEM_PTO role=consumer "
+           "stage=completion_ack_published node_id=%u "
+           "ack_offset=%" PRIu64 " marker=0x%" PRIx64 "\n",
+           config->node_id, offset, marker);
+    return 0;
+}
+
 static bool range_crosses_page(uint64_t offset, uint64_t length)
 {
     return length != 0 && offset / PTO_DIRECT_PAGE_BYTES !=
@@ -748,13 +907,16 @@ static bool layout_storage_offset_is_logical(
 
 static void seed_region(void *address,
                         const struct pto_direct_layout *layout,
-                        uint32_t elements)
+                        uint32_t elements,
+                        uint32_t consumer_node_id)
 {
-    uint32_t *input_a_bits = (uint32_t *)((uint8_t *)address +
+    uint64_t base = lane_base(layout, consumer_node_id);
+    uint32_t lane_index = consumer_node_id - 1;
+    uint32_t *input_a_bits = (uint32_t *)((uint8_t *)address + base +
                                           layout->input_a_offset);
-    uint32_t *input_b_bits = (uint32_t *)((uint8_t *)address +
+    uint32_t *input_b_bits = (uint32_t *)((uint8_t *)address + base +
                                           layout->input_b_offset);
-    uint32_t *output = (uint32_t *)((uint8_t *)address +
+    uint32_t *output = (uint32_t *)((uint8_t *)address + base +
                                     layout->output_offset);
     uint32_t index;
 
@@ -765,8 +927,9 @@ static void seed_region(void *address,
     }
     for (index = 0; index < elements; index++) {
         uint64_t offset = layout_element_offset(layout, index);
-        float input_a = (float)index;
-        float input_b = (float)(2u * index + 1u);
+        uint32_t lane_element = lane_index * elements + index;
+        float input_a = (float)lane_element;
+        float input_b = (float)(2u * lane_element + 1u);
 
         memcpy(&input_a_bits[offset], &input_a, sizeof(input_a));
         memcpy(&input_b_bits[offset], &input_b, sizeof(input_b));
@@ -777,19 +940,23 @@ static void seed_region(void *address,
 static bool output_matches(const void *address,
                            const struct pto_direct_layout *layout,
                            uint32_t elements,
+                           uint32_t consumer_node_id,
                            uint32_t *mismatch_index,
                            uint32_t *expected_bits,
                            uint32_t *actual_bits)
 {
+    uint64_t base = lane_base(layout, consumer_node_id);
+    uint32_t lane_index = consumer_node_id - 1;
     const volatile uint32_t *output =
-        (const volatile uint32_t *)((const uint8_t *)address +
+        (const volatile uint32_t *)((const uint8_t *)address + base +
                                     layout->output_offset);
     uint32_t index;
 
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     for (index = 0; index < elements; index++) {
         uint64_t offset = layout_element_offset(layout, index);
-        float sum = (float)(3u * index + 1u);
+        uint32_t lane_element = lane_index * elements + index;
+        float sum = (float)(3u * lane_element + 1u);
         float expected = (sum + 1.0f) * (sum + 2.0f);
         uint32_t bits;
 
@@ -832,11 +999,13 @@ static bool output_matches(const void *address,
 static bool output_is_sentinel(const void *address,
                                const struct pto_direct_layout *layout,
                                uint32_t elements,
+                               uint32_t consumer_node_id,
                                uint32_t *mismatch_index,
                                uint32_t *actual_bits)
 {
+    uint64_t base = lane_base(layout, consumer_node_id);
     const volatile uint32_t *output =
-        (const volatile uint32_t *)((const uint8_t *)address +
+        (const volatile uint32_t *)((const uint8_t *)address + base +
                                     layout->output_offset);
     uint32_t index;
 
@@ -981,6 +1150,9 @@ static int run_producer(const struct pto_direct_config *config,
         .fd = -1,
     };
     uint64_t started_at;
+    uint64_t active_bytes;
+    uint32_t consumer_node_id;
+    bool outputs_observed = false;
     int obmm_fd = -1;
     int rc = 1;
 
@@ -999,8 +1171,15 @@ static int run_producer(const struct pto_direct_config *config,
     if (obmm_map_region(meta.export_mem_id, meta.size, true, &region) != 0) {
         goto out;
     }
-    seed_region(region.addr, layout, config->elements);
-    if (msync(region.addr, layout->used_bytes, MS_SYNC) != 0) {
+    for (consumer_node_id = 1;
+         consumer_node_id < config->node_count;
+         consumer_node_id++) {
+        seed_region(region.addr, layout, config->elements,
+                    consumer_node_id);
+    }
+    seed_completion_acks(region.addr, config, layout);
+    active_bytes = completion_ack_span_bytes(config, layout);
+    if (msync(region.addr, active_bytes, MS_SYNC) != 0) {
         if (errno != EINVAL) {
             fprintf(stderr,
                     "[lingqu_shmem_pto] producer msync error=%s\n",
@@ -1008,12 +1187,12 @@ static int run_producer(const struct pto_direct_config *config,
             goto out;
         }
         printf("LINGQU_SHMEM_PTO role=producer stage=seeded "
-               "msync_unsupported=1 bytes=%" PRIu64 "\n",
-               layout->used_bytes);
+               "msync_unsupported=1 bytes=%" PRIu64 " lanes=%u\n",
+               active_bytes, config->node_count - 1);
     } else {
         printf("LINGQU_SHMEM_PTO role=producer stage=seeded "
-               "msync_unsupported=0 bytes=%" PRIu64 "\n",
-               layout->used_bytes);
+               "msync_unsupported=0 bytes=%" PRIu64 " lanes=%u\n",
+               active_bytes, config->node_count - 1);
     }
     if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
         if (obmm_do_export(obmm_fd, &guard_meta,
@@ -1074,7 +1253,7 @@ static int run_producer(const struct pto_direct_config *config,
         uint32_t changed_index = 0;
         uint32_t changed_bits = 0;
 
-        if (!output_is_sentinel(region.addr, layout, config->elements,
+        if (!output_is_sentinel(region.addr, layout, config->elements, 1,
                                 &changed_index, &changed_bits)) {
             fprintf(stderr,
                     "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
@@ -1099,12 +1278,39 @@ static int run_producer(const struct pto_direct_config *config,
 
     started_at = monotonic_ms();
     while (monotonic_ms() - started_at < config->timeout_ms) {
+        bool all_match = true;
+        bool all_acked;
+        uint32_t mismatch_node_id = 0;
+        uint32_t pending_node_id = 0;
         uint32_t mismatch_index = 0;
         uint32_t expected_bits = 0;
         uint32_t actual_bits = 0;
+        uint64_t expected_marker = 0;
+        uint64_t actual_marker = 0;
 
-        if (output_matches(region.addr, layout, config->elements,
-                           &mismatch_index, &expected_bits, &actual_bits)) {
+        for (consumer_node_id = 1;
+             consumer_node_id < config->node_count;
+             consumer_node_id++) {
+            if (!output_matches(region.addr, layout, config->elements,
+                                consumer_node_id, &mismatch_index,
+                                &expected_bits, &actual_bits)) {
+                all_match = false;
+                mismatch_node_id = consumer_node_id;
+                break;
+            }
+        }
+        all_acked = all_match && completion_acks_match(
+            region.addr, config, layout, &pending_node_id,
+            &expected_marker, &actual_marker);
+        if (all_match && !all_acked && !outputs_observed) {
+            printf("LINGQU_SHMEM_PTO role=producer "
+                   "stage=output_verified_waiting_for_completion_acks "
+                   "pending_node_id=%u expected_marker=0x%" PRIx64
+                   " actual_marker=0x%" PRIx64 "\n",
+                   pending_node_id, expected_marker, actual_marker);
+            outputs_observed = true;
+        }
+        if (all_match && all_acked) {
             if (config->expectation != PTO_DIRECT_EXPECT_SUCCESS) {
                 fprintf(stderr,
                         "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
@@ -1113,31 +1319,57 @@ static int run_producer(const struct pto_direct_config *config,
                         expectation_name(config->expectation));
                 goto out;
             }
+            printf("LINGQU_SHMEM_PTO role=producer "
+                   "stage=completion_acks_verified consumers=%u "
+                   "ack_base=%" PRIu64 "\n",
+                   config->node_count - 1,
+                   completion_ack_base(config, layout));
             printf("LINGQU_SHMEM_PTO role=producer producer_verify=pass "
                    "elements=%u output_offset=%" PRIu64
                    " storage_elements=%" PRIu64
-                   " holes_unchanged=1 elapsed_ms=%" PRIu64 "\n",
+                   " holes_unchanged=1 elapsed_ms=%" PRIu64
+                   " consumers=%u\n",
                    config->elements, layout->output_offset,
                    layout->storage_elements,
-                   monotonic_ms() - started_at);
-            printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass\n");
+                   monotonic_ms() - started_at,
+                   config->node_count - 1);
+            printf("LINGQU_SHMEM_PTO_RESULT role=producer status=pass "
+                   "consumers=%u lanes_verified=%u "
+                   "completion_acks=%u\n",
+                   config->node_count - 1, config->node_count - 1,
+                   config->node_count - 1);
             rc = 0;
             goto out;
         }
+        (void)mismatch_node_id;
         usleep(1000);
     }
     {
+        bool all_match = true;
         uint32_t mismatch_index = 0;
         uint32_t expected_bits = 0;
         uint32_t actual_bits = 0;
+        uint32_t mismatch_node_id = 1;
+        uint32_t pending_node_id = 0;
+        uint64_t expected_marker = 0;
+        uint64_t actual_marker = 0;
 
-        (void)output_matches(region.addr, layout, config->elements,
-                             &mismatch_index, &expected_bits, &actual_bits);
+        for (consumer_node_id = 1;
+             consumer_node_id < config->node_count;
+             consumer_node_id++) {
+            if (!output_matches(region.addr, layout, config->elements,
+                                consumer_node_id, &mismatch_index,
+                                &expected_bits, &actual_bits)) {
+                all_match = false;
+                mismatch_node_id = consumer_node_id;
+                break;
+            }
+        }
         if (config->expectation != PTO_DIRECT_EXPECT_SUCCESS) {
             uint32_t changed_index = 0;
             uint32_t changed_bits = PTO_DIRECT_OUTPUT_SENTINEL;
 
-            if (output_is_sentinel(region.addr, layout, config->elements,
+            if (output_is_sentinel(region.addr, layout, config->elements, 1,
                                    &changed_index, &changed_bits)) {
                 if (config->fault_case == PTO_DIRECT_FAULT_CROSS_SEGMENT) {
                     size_t guard_offset = 0;
@@ -1176,11 +1408,24 @@ static int run_producer(const struct pto_direct_config *config,
                     changed_bits);
             goto out;
         }
+        if (all_match && !completion_acks_match(
+                region.addr, config, layout, &pending_node_id,
+                &expected_marker, &actual_marker)) {
+            fprintf(stderr,
+                    "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
+                    "reason=completion_ack_timeout "
+                    "consumer_node_id=%u expected=0x%" PRIx64
+                    " actual=0x%" PRIx64 " outputs_verified=1\n",
+                    pending_node_id, expected_marker, actual_marker);
+            goto out;
+        }
         fprintf(stderr,
                 "LINGQU_SHMEM_PTO_RESULT role=producer status=fail "
-                "reason=verify_timeout index=%u expected=0x%08x "
+                "reason=verify_timeout consumer_node_id=%u index=%u "
+                "expected=0x%08x "
                 "actual=0x%08x\n",
-                mismatch_index, expected_bits, actual_bits);
+                mismatch_node_id, mismatch_index, expected_bits,
+                actual_bits);
     }
 
 out:
@@ -1200,13 +1445,15 @@ static int create_memrefs(
     struct lingqu_shmem_region *region,
     const struct pto_direct_layout *layout,
     uint32_t elements,
+    uint32_t consumer_node_id,
     struct lingqu_shmem_memref *memrefs[3],
     struct lingqu_shmem_pto_memref_arg args[3])
 {
+    uint64_t base = lane_base(layout, consumer_node_id);
     const uint64_t offsets[3] = {
-        layout->input_a_offset,
-        layout->input_b_offset,
-        layout->output_offset,
+        base + layout->input_a_offset,
+        base + layout->input_b_offset,
+        base + layout->output_offset,
     };
     uint32_t index;
 
@@ -1808,7 +2055,8 @@ static int run_consumer(const struct pto_direct_config *config,
         .opaque_mapping_ref = mapping_ref,
     };
     if (lingqu_shmem_sim_region_create(&region_desc, &region) != 0 ||
-        create_memrefs(region, layout, config->elements, memrefs, args) != 0) {
+        create_memrefs(region, layout, config->elements, config->node_id,
+                       memrefs, args) != 0) {
         fprintf(stderr, "[lingqu_shmem_pto] consumer memref_create failed\n");
         goto out;
     }
@@ -1823,8 +2071,11 @@ static int run_consumer(const struct pto_direct_config *config,
         goto out;
     }
     request = (struct lingqu_shmem_pto_request) {
-        .op_id = (config->generation << 16) | UINT64_C(1),
-        .request_id = (config->generation << 16) | UINT64_C(2),
+        .op_id = (config->generation << 16) |
+                 ((uint64_t)(config->node_id - 1) << 8) | UINT64_C(1),
+        .request_id = (config->generation << 16) |
+                      ((uint64_t)(config->node_id - 1) << 8) |
+                      UINT64_C(2),
         .callable_id = PTO_DIRECT_CALLABLE_ID,
         .artifact_fingerprint = config->artifact_fingerprint,
         .requester_cna = config->requester_cna,
@@ -1850,12 +2101,15 @@ static int run_consumer(const struct pto_direct_config *config,
            " map_generation=%" PRIu64 " mapping_ref=0x%" PRIx64
            " metadata_iova=0x%" PRIx64 " metadata_bytes=%zu crc=0x%08x"
            " requester_cna=0x%x fingerprint=0x%" PRIx64
-           " resource=%s\n",
+           " resource=%s node_id=%u lane_index=%u lane_base=%" PRIu64
+           " op_id=%" PRIu64 " request_id=%" PRIu64 "\n",
            import_mem_id, local_pas[0], async_map.id,
            async_map.generation, mapping_ref, metadata_iova,
            wire_result.metadata_bytes, wire_result.metadata_crc32,
            config->requester_cna, config->artifact_fingerprint,
-           endpoint_info.resource_path);
+           endpoint_info.resource_path, config->node_id,
+           config->node_id - 1, lane_base(layout, config->node_id),
+           request.op_id, request.request_id);
     if (config->fault_case == PTO_DIRECT_FAULT_RETIRED_SEGMENT) {
         submit_rc = publish_control_and_wait_retired(
             obmm_fd, config, local_cna, meta.export_mem_id);
@@ -1930,9 +2184,19 @@ static int run_consumer(const struct pto_direct_config *config,
                 expectation_name(config->expectation));
         goto out;
     }
+    submit_rc = publish_completion_ack(imported.addr, config, layout);
+    if (submit_rc != 0) {
+        fprintf(stderr,
+                "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail "
+                "reason=completion_ack_publish rc=%d\n",
+                submit_rc);
+        goto out;
+    }
     printf("LINGQU_SHMEM_PTO_RESULT role=consumer status=pass "
-           "op_id=%" PRIu64 " elements=%u\n",
-           completion.op_id, config->elements);
+           "op_id=%" PRIu64 " request_id=%" PRIu64
+           " node_id=%u lane_index=%u elements=%u\n",
+           completion.op_id, request.request_id, config->node_id,
+           config->node_id - 1, config->elements);
     rc = 0;
 
 out:
@@ -1978,7 +2242,8 @@ int main(int argc, char **argv)
     uint32_t local_cna = 0;
 
     if (parse_args(argc, argv, &config) != 0 ||
-        build_layout(&config, &layout) != 0) {
+        build_layout(&config, &layout) != 0 ||
+        validate_lane_capacity(&config, &layout) != 0) {
         usage(stderr);
         return 2;
     }
@@ -1988,13 +2253,16 @@ int main(int argc, char **argv)
     }
     printf("LINGQU_SHMEM_PTO role=%s stage=start node_id=%u node_count=%u "
            "local_cna=0x%x layout=%s elements=%u generation=%" PRIu64
-           " expected=%s fault_case=%s cancel_after_ms=%" PRIu64 "\n",
+           " expected=%s fault_case=%s cancel_after_ms=%" PRIu64
+           " lane_index=%u lane_base=%" PRIu64 "\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            config.node_id, config.node_count, local_cna,
            layout_name(config.layout), config.elements, config.generation,
            expectation_name(config.expectation),
-           fault_case_name(config.fault_case), config.cancel_after_ms);
+           fault_case_name(config.fault_case), config.cancel_after_ms,
+           config.node_id == 0 ? 0 : config.node_id - 1,
+           lane_base(&layout, config.node_id));
     printf("LINGQU_SHMEM_PTO role=%s stage=layout layout=%s "
            "input_a_offset=%" PRIu64 " input_b_offset=%" PRIu64
            " output_offset=%" PRIu64 " tensor_bytes=%" PRIu64
@@ -2002,7 +2270,8 @@ int main(int argc, char **argv)
            ",%" PRIu64 " pto_layout=%s rank=%u"
            " shape=%u,%u,%u,%u,%u strides=%u,%u,%u,%u,%u"
            " logical_elements=%" PRIu64 " storage_elements=%" PRIu64
-           " fragments=%u\n",
+           " fragments=%u lane_base=%" PRIu64
+           " lane_stride=%" PRIu64 " lane_span_bytes=%" PRIu64 "\n",
            config.role == PTO_DIRECT_ROLE_PRODUCER ? "producer" :
                                                      "consumer",
            layout_name(config.layout), layout.input_a_offset,
@@ -2023,7 +2292,8 @@ int main(int argc, char **argv)
            layout.strides[0], layout.strides[1], layout.strides[2],
            layout.strides[3], layout.strides[4],
            layout.logical_elements, layout.storage_elements,
-           layout.fragment_count);
+           layout.fragment_count, lane_base(&layout, config.node_id),
+           lane_stride(&layout), lane_span_bytes(&config, &layout));
     for (fragment_index = 0;
          fragment_index < layout.fragment_count;
          fragment_index++) {

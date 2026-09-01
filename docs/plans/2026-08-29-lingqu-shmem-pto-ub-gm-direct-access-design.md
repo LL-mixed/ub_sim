@@ -21,7 +21,7 @@
 
 | 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment、ND/tail/cross-page/unaligned/stride/DN/NZ layout 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过 | 传统 `host_vector` 参数继续使用 host payload staging；扩展并发、其他 recovery case，以及 P5 性能/真实上层 workload 接入属于后续工作，不阻塞本轮 direct-access PoC 收口 |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment、ND/tail/cross-page/unaligned/stride/DN/NZ layout 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过；一个 producer 加七个 consumer 的八节点 demo 已通过统一 CLI 正式门禁 | 传统 `host_vector` 参数继续使用 host payload staging；扩展并发隔离、其他 recovery case，以及 P5 性能/真实上层 workload 接入属于后续工作，不阻塞本轮 direct-access PoC 收口 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -298,6 +298,7 @@ layout 已由 P4H/P4I 补齐；多 dispatch 压力和其他 recovery case 保留
 | QEMU UBC access callback | P2 已实现 read/write/fence、逐次 mapping 重校验和 completion cleanup；P3 同步、P4A timeout、P4B lifecycle、P4C preflight、P4D actual access conflict、P4E released-import、P4F retired-segment、P4G extent/mapping-boundary、P4H 四种正向 layout 和 P4I stride/DN/NZ E2E 通过 | 通用 callback failure 与并发矩阵属于后续稳健性工作 |
 | backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume；P4A/P4B 已验证 timeout/cancel exact-once failure completion、duplicate guard 和 reset 无 CQ cleanup/recovery | 多 slot、多 binding 和其他失败竞争属于后续压力扩展 |
 | 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault、两类 P4D execution fault、P4E released-import、P4F retired-segment、两类 P4G bounds fault、P4H 四种正向 layout 与 P4I stride/DN/NZ 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | 扩展并发和其他 recovery coverage 属于后续工作 |
+| 八节点 PTO direct functional demo | n4-910c 上统一 CLI 已通过；Node 0 export，Node 1–7 分别在独立 lane 运行同一 Simpler/PTO callable；14 load、7 store、7 fence、7 completion ack、7 lane oracle、零 staging 和零 QEMU leftover 均通过 | 宿主 callable 真并行仍未证明；正式报告将当前 Simpler host-wide lock 记录为潜在串行化边界 |
 
 ## 4. 修正后的目标架构
 
@@ -530,7 +531,7 @@ ChipTensor output_arg = make_tensor_external(
 Simpler 展开 callable 参数后，kernel entry 实际观察到的值等价于：
 
 ```cpp
-// 这些值来自三个 AddressSpace::UB_GM ChipTensor，不是 host allocation。
+// 这些值来自三个 AddressSpace::UB_GM ChipTensor，不来自 host allocation。
 __gm__ float *input_a = reinterpret_cast<__gm__ float *>(0x700000000000);
 __gm__ float *input_b = reinterpret_cast<__gm__ float *>(0x700000010000);
 __gm__ float *output  = reinterpret_cast<__gm__ float *>(0x700000020000);
@@ -1785,6 +1786,119 @@ P4I 完成当前 direct-access PoC 的复杂 layout 正向范围。多 dispatch 
 callback/PTO/fence failure、guest exit 竞争、正式性能评估与真实 Lingqu workload
 接入列为后续扩展，不阻塞本轮目标收口。
 
+### 9.15 八节点 functional demo 验收契约与正式结果
+
+八节点 functional demo 采用一个 producer 和七个 consumer：Node 0 创建并 export
+一块 2 MiB OBMM shared memory，Node 1–7 import 同一个 export，并分别在独立 tensor
+lane 上运行 callable 1。每个 lane 包含 input A、input B 和 output 三个 view；七个
+output view 不重叠。Node 0 从原始 export mapping 验证全部七组结果。
+
+![八节点 Lingqu shmem PTO UB GM functional demo](2026-09-01-lingqu-shmem-pto-ub-gm-eight-node-demo.svg)
+
+八节点 ND demo 的冻结契约如下：
+
+| 项目 | 单个 consumer | 七个 consumer 合计 |
+| --- | ---: | ---: |
+| PTO callable | callable 1 | 同一个 artifact fingerprint |
+| logical elements | 16,384 | 114,688 |
+| load calls | 2 | 14 |
+| load bytes | 131,072 B | 917,504 B |
+| store calls | 1 | 7 |
+| store bytes | 65,536 B | 458,752 B |
+| fences | 1 | 7 |
+| successful completions | 1 | 7 |
+| completion acknowledgements | 1 | 7 |
+| payload staging bytes | 0 | 0 |
+
+2 MiB export 在七个 data lane 之后保留七个 64-bit completion ack。consumer 只有在
+PTO completion 成功、`TSTORE` 和 fence 都已经完成后，才用普通 remote-mapping
+store 写入本节点的 ack。该 store 属于 guest 间生命周期控制 metadata，不承载
+tensor payload，也不计入 PTO load/store callback 数。producer 必须同时满足两项条件
+后才允许 unexport：
+
+1. 七个 output lane 全部通过数值 oracle；
+2. 七个 completion ack 全部匹配当前 generation 和 node identity。
+
+这个握手关闭了一个真实竞态。诊断运行 r5 中，Node D 的 65,536 B `TSTORE` 已成功，
+producer 随即观察到七个正确 output 并回收 export；Node D 尚未执行的 fence 在 mapping
+lifetime 重校验处返回 `pto_ub_gm_callback_failed`。补入 ack 后，producer 会在相同
+窗口记录 `output_verified_waiting_for_completion_acks` 并继续持有 export，直到七个
+consumer 都报告 completion。
+
+每个 consumer 使用独立的 PTO device CNA、`op_id`、`request_id` 和 lane。Node 1–7
+的 lane 编号依次为 0–6，lane base 由 guest app 根据 `node_id` 确定；任何 view
+超出 2 MiB export 都必须在 dispatch 前失败。正式 evidence 必须包含：
+
+- 1 条 producer pass result 和 7 条 consumer pass result；
+- 7 个唯一的 requester CNA、`op_id`、`request_id` 和 output range；
+- 14 次 load、7 次 store、7 次 fence 的逐节点 QEMU callback 记录；
+- 7 条 consumer completion ack 与 1 条 producer `completion_acks=7` 记录；
+- Node 0 对全部七个 output lane 的 oracle；
+- `segment_payload_staging_bytes=0`，且没有 H2D/D2H payload operation；
+- artifact fingerprint 在运行前后保持一致；
+- `sim_npu`、GVA 和 GSVA 保持 default disabled；
+- runner 结束后没有残留 QEMU。
+
+当前 host-vector dispatch 使用 host-wide lock
+`/tmp/linqu_simpler_host_vector.lock`。七个 QEMU consumer 可以同时提交，进入
+Simpler/PTO callable 的阶段可能在宿主机上依次执行。该串行化允许作为本节
+functional demo 的执行边界，正式报告必须明确记录。多 callable 真并行属于独立的
+multi-dispatch concurrency gate，不纳入本节完成条件。
+
+2026-09-01 在 n4-910c 完成两次正式运行：
+
+| Gate | Run ID | 结果 | 关键结果 |
+| --- | --- | --- | --- |
+| 两节点回归 | `two-node-completion-ack-20260901-r13` | `validation.status=pass`、runner exit 0 | 2 load / 131,072 B，1 store / 65,536 B，1 fence，1 ack，producer oracle pass，零 staging，零 QEMU leftover |
+| 八节点统一 CLI | `eight-node-cli-completion-ack-20260901-r6` | `validation.status=pass`、runner exit 0 | 14 load / 917,504 B，7 store / 458,752 B，7 fence，7 ack，7/7 lane oracle，零 staging，零 QEMU leftover |
+
+八节点结构化报告给出：
+
+- `artifact_fingerprint=0x8271b18803bfcd72`，运行前后稳定；
+- `producer.completion_acks=7`，ack base 为 1,376,256 B；
+- `host_dispatch_serialization=possible`；
+- `host_callable_parallelism_proven=false`；
+- `qemu-leftovers.txt` 长度为 0。
+
+本地冻结 evidence 位于
+`out/lingqu-shmem-pto-e2e/two-node-completion-ack-20260901-r13/` 和
+`out/lingqu-shmem-pto-eight-node/eight-node-cli-completion-ack-20260901-r6/`。
+八节点 `sha256.txt` 记录的关键输入如下：
+
+| 输入 | SHA-256 |
+| --- | --- |
+| source artifact manifest | `166c9aff9bc90c4023d97c469c36f2f5113303de282d3695dfacbdb54ac4df78` |
+| frozen artifact manifest | `5d6dd901ab85b8656c9eea535158ccd9e016cf629afd7dab548ca4f6c19e7584` |
+| guest `Image` | `a8f482a625fa6e56e0aa17d3e79419bab43714a754b667e935f4ec05fb763f0e` |
+| initramfs | `241b31b11c2bd484e16c815a9f42c076ac6e04e0d2a0881da8e06e877af7332c` |
+| QEMU binary | `00aceb40b7d0b8d2d211b6fe244aeb4761bc679a7ace0940d3aeb4777c0a04cf` |
+| orchestration shared object | `63703d812bf43ca66db9009ec7713156824c1c9e0fc30b24fbaa3872d047a5d9` |
+| guest demo app source | `6764e1b6a7d6f763730e6c87c2c324e3f71051669024175adc2458ed6104c8d9` |
+
+最终回归在同一台 n4-910c 上完成：
+
+| 回归 | 运行时 | 结果 |
+| --- | --- | --- |
+| Rust workspace | 项目固定的 PTO ISA revision 与远端 AArch64 toolchain | `cargo test --workspace` 退出码 0；`sim-cli` 294/294 通过，workspace 其余 crate 与 doc tests 全部通过 |
+| guest contract discovery | `/home/ll/.local/envs/ub-sim-py312/bin/python`，Python 3.12 | 365/365 通过 |
+| 八节点/direct focused contracts | Python 3.12 | 36/36 通过 |
+| Simpler A2A3 rank-5 scene test | 隔离 PyTorch 2.13 / Python 3.12 环境 | `TestVectorExampleHostBuildGraph::default PASSED` |
+| Simpler A5 rank-5 scene test | 同一隔离环境 | `TestVectorExampleHostBuildGraphA5::default PASSED` |
+| A5 manifest direct execution | `sim-cli host-vector`，16,384 elements | `completion=Success`，`all_match_expected=true` |
+| XML / format / whitespace | 本地轻量检查 | `xmllint`、`cargo fmt --all -- --check` 与 `git diff --check` 通过 |
+
+n4-910c 的系统 `python3` 为 3.9.9。该解释器枚举旧版 discovery 时会在现有
+DGX/W5 脚本的 `Path.write_text(newline=...)` 和 `Path | None` 处失败；项目已有的
+`ub-sim-py312` 环境执行同一 discovery 后 365/365 通过。最终验收以 Python 3.12
+结果为准。Simpler scene tests 使用 `out/test-envs/` 下的一次性 PyTorch 环境，未改写
+共享 Python 环境。测试结束后主机没有 QEMU 或 `sim-console` 残留，两份正式
+evidence 的 `qemu-leftovers.txt` 均为 0 byte。
+
+这组结果完成了“两个/八个 node 上的 demo app 通过现有 QEMU bridge 和 Simpler
+运行 PTO kernel，并用 `TLOAD/TSTORE` 访问 OBMM shared memory”的目标。宿主执行
+并行度、通用多 dispatch 隔离、更多 recovery case、Lingqu `task/gm_tensor` 上层
+封装与 P5 性能优化继续作为独立后续工作。
+
 ## 10. 分阶段实施计划
 
 ### P0：冻结 ABI、device identity 与验收契约（已完成）
@@ -1979,8 +2093,11 @@ import/export 释放和 reset 等条件，验证系统返回确定错误、保�
 主要 mapping、bounds、access、authorization 和 import/export 生命周期断点。
 
 “并发安全性”指两个或更多 dispatch 同时存在时，每个 request 的 slot、sequence、
-binding、callback 和 completion 互不串扰。当前正式 acceptance 使用单 dispatch，已
-证明同一 dispatch 内多个 input/output binding 正确；多 dispatch 矩阵属于压力扩展。
+binding、callback 和 completion 互不串扰。八节点正式 acceptance 已覆盖七个独立
+QEMU consumer 同时提交、各自完成一个 dispatch；宿主 Simpler 可在 host-wide lock
+处依次执行。这个结果证明跨七个 QEMU bridge 的 fan-out 功能正确。单个 QEMU UAPI
+queue 中同时保留多个 slot、同一个 mapping 上的重叠 view 竞争，以及无 host-wide
+lock 的 callable 真并行仍属于压力扩展。
 
 | 类别 | Cases | 当前状态 |
 | --- | --- | --- |
@@ -1997,7 +2114,8 @@ binding、callback 和 completion 互不串扰。当前正式 acceptance 使用�
 | Ordering | remote holder、write fence failure | 后续扩展；不阻塞当前 direct-access PoC |
 | Layout | ND、tail、cross-page、unaligned | P4H 双机通过；四种 layout 共 8 个 formal campaign，精确地址/长度、load/store/fence、零 staging 与 artifact immutability gate 全部通过 |
 | Layout | stride、DN、NZ | P4I 双机通过；三种 layout 共 6 个 formal campaign，fragment geometry、producer oracle、零 staging 和 artifact fingerprint gate 全部通过 |
-| Concurrency | 多 dispatch、多 binding、相同 object 不同 view、读写竞争 | 后续压力与稳健性扩展；不阻塞当前 direct-access PoC |
+| Concurrency | 七个独立 QEMU consumer fan-out | 八节点正式 gate 通过；7 个独立 CNA、op、request、lane 和 completion ack，无跨节点串扰；宿主 callable 可能依次执行 |
+| Concurrency | 单 QEMU 多 slot、相同 object 重叠 view、读写竞争、无锁真并行 | 后续压力与稳健性扩展；不阻塞当前 direct-access PoC |
 | Recovery | QEMU reset、旧 map 退役、重启后重新 import/dispatch | P4B 双机通过 |
 | Recovery | callback failure、PTO exception、guest exit | 后续恢复能力扩展；不阻塞当前 direct-access PoC |
 
@@ -2194,23 +2312,31 @@ vector-add CLI 已经覆盖同一真实 QEMU/Rust/Simpler/PTO 数据路径，足
 ```bash
 cargo run --release -p sim-cli -- \
   lingqu-shmem-pto-e2e \
-  --scenario 2host \
+  --manifest /path/to/host_vector_manifest.json \
+  --nodes 8 \
+  --scenario scenarios/mvp_8host_single_domain.yaml \
   --kernel vector-add \
-  --elements 1024 \
+  --elements 16384 \
   --layout nd \
   --verify \
-  --evidence-dir out/lingqu-shmem-pto-e2e/run-001
+  --evidence-dir out/lingqu-shmem-pto-eight-node/run-001
 ```
 
 CLI 负责：
 
-- 构建或检查 guest app 和 artifact fingerprint；
-- 启动两个 QEMU 节点；
+- 检查 artifact manifest、ND geometry 和运行前后 fingerprint；
+- 根据 `--nodes 2|8` 选择专用 QEMU runner；
+- 八节点模式为 Node 0 配置 producer，为 Node 1–7 配置独立 consumer lane 和 PTO CNA；
 - 驱动 export/import/dispatch；
-- 汇总两个节点日志和 QEMU counters；
+- 汇总 guest 日志和逐节点 QEMU callback counters；
 - 执行验收断言；
-- 检查残留 QEMU；
-- 生成 `validation.json` 和 `validation.status`。
+- 检查本 campaign 的残留 QEMU；
+- 八节点模式生成 `validation.json` 和 `validation.status`；
+- 两节点模式继续保留现有 `validation.status`、原始日志和 formal evidence contract。
+
+八节点 `validation.json` 必须包含
+`host_dispatch_serialization=possible` 和 host-wide lock 路径。这个字段明确表达
+七个 consumer 的 Simpler callable 可能在同一宿主机上依次执行。
 
 ### 11.2 分级 gates
 
@@ -2272,18 +2398,20 @@ P4A 已证明 timeout 会销毁 pending snapshot、发布一次 failure CQ、推
 reset 会在不写旧 CQ 的前提下丢弃 snapshot、退役 SIM_DEC map、重建 OBMM async
 endpoint，并让 reboot 后的新 dispatch 继续使用单调 sequence。
 
-当前 authorization lifecycle 的主要剩余难点是多 dispatch 并发：需要证明不同
-slot、binding 和 sequence 不串扰，并覆盖 callback/PTO/fence failure 与 guest exit
-同 pending dispatch 竞争时的 cleanup 顺序。
+八节点 gate 已证明七个独立 QEMU bridge 的 fan-out dispatch 可以同时提交并正确
+完成。authorization lifecycle 的主要剩余难点收窄为单个 QEMU UAPI queue 内的
+multi-slot 并发：需要证明不同 slot、binding 和 sequence 不串扰，并覆盖
+callback/PTO/fence failure 与 guest exit 同 pending dispatch 竞争时的 cleanup 顺序。
 
 experimental GSVA adaptor 可以把该内部过程实现成 acquire/ACK；默认状态机和公开接口不使用 GSVA 名称。
 
 ### 13.3 callback 的线程与生命周期
 
 callback 从 Simpler/PTO 经 Rust FFI 回到 QEMU。当前 V1 已固定 BQL 释放边界、
-request-scoped registry，以及 timeout/cancel/reset 的单 dispatch cleanup。剩余工作是
-固定多 dispatch 的串行/重入策略，并验证 callback 同 reset、guest exit 和 completion
-竞争时的 QEMU context 生命周期。
+request-scoped registry，以及 timeout/cancel/reset 的单 dispatch cleanup。八节点
+fan-out 通过 host-wide lock 约束宿主 Simpler 调用。剩余工作是固定单 QEMU 多 slot
+dispatch 的串行/重入策略，并验证 callback 同 reset、guest exit 和 completion 竞争时
+的 QEMU context 生命周期。
 
 ### 13.4 device CNA 的来源
 
@@ -2329,6 +2457,7 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | PTO CPU UB GM callback | P1 已实现 contiguous ND、tail、range callback、fail-closed 与 ASan tests；P4I 已实现 stride-aware fragment、DN/NZ layout transform 与双机 E2E |
 | existing bridge 的 UB GM authorization/binding | P2 已实现同步 fast path、pending slot snapshot/resume、opaque endpoint-map reference、resume/callback mapping 重校验与 completion cleanup |
 | 两节点 PTO direct-access acceptance | n4-910c 与 n4-910c1 r9 均通过；默认 acceptance 无 NPU/GVA/GSVA 依赖 |
+| 两/八节点 demo app acceptance | n4-910c 的 completion-ack r13/r6 均通过；八节点为一个 producer、七个 consumer、七个独立 lane 和 dispatch，14 load、7 store、7 fence、7 ack、7 lane oracle、零 staging、零 leftover 均匹配 |
 | authorization timeout fail-closed | P4A 已在 n4-910c 与 n4-910c1 通过；exact-once status 3 completion、零数据访问、完整 sentinel 和健康 guest 均有 evidence |
 | authorization cancel/duplicate/reset lifecycle | P4B 已在 n4-910c 与 n4-910c1 通过；覆盖 cancel exact-once CQ、late/duplicate guard、reset 无 CQ cleanup、旧 map 退役、sequence 单调和 reboot recovery |
 | mapping/requester/bounds/access preflight | P4C 已在 n4-910c 与 n4-910c1 共 12 个 campaign 通过；覆盖 bad generation、stale map、wrong requester、OOB、overflow 和 role/access mismatch，并证明零 authorization/binding/data callback |
@@ -2344,9 +2473,10 @@ P0、P1、P2 仿真正向路径、P3、P4A timeout、P4B lifecycle、P4C preflig
 P4D callback execution access conflict、P4E released-import lifetime、P4F
 retired-segment lifetime、P4G extent/mapping bounds、P4H V1/V1.1 positive layout 与
 P4I stride/DN/NZ 已完成运行验证。第 15 节定义的 direct-access PoC 已闭环：默认
-ChipBackend route 通过 PTO `TLOAD/TSTORE` 直接访问 `lingqu_shmem` backing，双机
-oracle、精确 callback bytes、零 staging、代码/构建指纹和 cleanup gate 全部通过。
-扩展并发、其他 recovery、正式性能评估和真实上层 workload 接入作为后续工作。
+ChipBackend route 通过 PTO `TLOAD/TSTORE` 直接访问 `lingqu_shmem` backing，两节点
+与八节点 oracle、精确 callback bytes、completion ack、零 staging、代码/构建指纹和
+cleanup gate 全部通过。单 QEMU 多 slot 并发、其他 recovery、正式性能评估和真实
+上层 workload 接入作为后续工作。
 完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
 最小 PoC 估算。
 
@@ -2367,6 +2497,7 @@ oracle、精确 callback bytes、零 staging、代码/构建指纹和 cleanup ga
 - 负向 case fail-closed；
 - 提供统一 CLI 和自动化测试；
 - 双节点 QEMU acceptance 在远端实跑通过；
+- 八节点 QEMU acceptance 在远端实跑通过，并明确记录宿主 Simpler 潜在串行化；
 - evidence 记录完整代码和构建指纹；
 - 测试结束后无残留 QEMU。
 

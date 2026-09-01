@@ -43,6 +43,7 @@ validation ledger.
 | `obmm_dataplane_microbench` | `scripts/run_ub_dual_node_obmm_dataplane_microbench_matrix.sh` | `scripts/run_ub_eight_node_obmm_dataplane_microbench.sh` |
 | `obmm_import_stress` | `scripts/run_ub_dual_node_obmm_import_stress.sh` | `scripts/run_ub_eight_node_obmm_import_stress.sh` |
 | `obmm_async_coroutine` | `scripts/run_ub_dual_node_apps.sh --app obmm_async_coroutine` | n/a |
+| `lingqu_shmem_pto_direct` | `scripts/run_ub_dual_node_lingqu_shmem_pto_direct.sh --manifest /tmp/simpler-host-vector-artifacts/host_vector_manifest.json` | `scripts/run_ub_eight_node_lingqu_shmem_pto_direct.sh --manifest /tmp/simpler-host-vector-artifacts/host_vector_manifest.json` |
 | `obmm_gsva` | `scripts/run_ub_dual_node_obmm_gsva.sh` | `scripts/run_ub_eight_node_obmm_gsva_matrix.sh` |
 | `obmm_coh_test` | `scripts/run_ub_dual_node_obmm_coh_test.sh` | `scripts/run_ub_eight_node_obmm_coh_test.sh` |
 | `gva_direct` | `scripts/run_ub_dual_node_gva_direct_test.sh` | `scripts/run_ub_eight_node_gva_direct_test.sh` |

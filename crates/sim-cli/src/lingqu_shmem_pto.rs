@@ -1,7 +1,8 @@
 use anyhow::Context;
 use serde::Serialize;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sim_config::ScenarioConfig;
 use sim_core::{CompletionStatus, SimError};
@@ -32,6 +33,23 @@ enum LingquShmemPtoMode {
         platform: String,
         scenario: PathBuf,
     },
+    P3E2e(LingquShmemPtoE2eArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LingquShmemPtoE2eArgs {
+    manifest: PathBuf,
+    scenario: PathBuf,
+    nodes: u32,
+    layout: String,
+    elements: u32,
+    evidence_dir: Option<PathBuf>,
+    kernel_image: Option<PathBuf>,
+    initramfs_image: Option<PathBuf>,
+    run_id: Option<String>,
+    runner: Option<PathBuf>,
+    cna_base: u32,
+    max_runtime: Option<u64>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -84,6 +102,11 @@ where
     if command != "lingqu-shmem-pto-e2e" {
         return Ok(None);
     }
+    let remaining = args.collect::<Vec<_>>();
+    if remaining.iter().any(|arg| arg == "--manifest") {
+        return parse_e2e_args(remaining).map(Some);
+    }
+    let mut args = remaining.into_iter();
 
     let mut contract_only = false;
     let mut fingerprint_manifest = None;
@@ -174,6 +197,173 @@ where
     Ok(Some(LingquShmemPtoArgs { mode }))
 }
 
+fn parse_e2e_args(args: Vec<OsString>) -> anyhow::Result<LingquShmemPtoArgs> {
+    let mut args = args.into_iter();
+    let mut manifest = None;
+    let mut scenario = None;
+    let mut nodes = 2u32;
+    let mut layout = "nd".to_string();
+    let mut elements = None;
+    let mut evidence_dir = None;
+    let mut kernel_image = None;
+    let mut initramfs_image = None;
+    let mut run_id = None;
+    let mut runner = None;
+    let mut cna_base = 0xf001u32;
+    let mut max_runtime = None;
+
+    while let Some(arg) = args.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--manifest" => {
+                manifest = Some(PathBuf::from(
+                    args.next().context("--manifest requires a path")?,
+                ));
+            }
+            "--scenario" => {
+                scenario = Some(PathBuf::from(
+                    args.next().context("--scenario requires a path")?,
+                ));
+            }
+            "--kernel" => {
+                let kernel = args.next().context("--kernel requires a value")?;
+                if kernel != "vector-add" {
+                    anyhow::bail!("--kernel currently supports vector-add");
+                }
+            }
+            "--nodes" => {
+                nodes = args
+                    .next()
+                    .context("--nodes requires a value")?
+                    .to_string_lossy()
+                    .parse()
+                    .context("--nodes must be 2 or 8")?;
+            }
+            "--layout" => {
+                layout = args
+                    .next()
+                    .context("--layout requires a value")?
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            "--elements" => {
+                elements = Some(
+                    args.next()
+                        .context("--elements requires a value")?
+                        .to_string_lossy()
+                        .parse()
+                        .context("--elements must be a positive integer")?,
+                );
+            }
+            "--verify" => {}
+            "--evidence-dir" => {
+                evidence_dir = Some(PathBuf::from(
+                    args.next().context("--evidence-dir requires a path")?,
+                ));
+            }
+            "--kernel-image" => {
+                kernel_image = Some(PathBuf::from(
+                    args.next().context("--kernel-image requires a path")?,
+                ));
+            }
+            "--initramfs-image" => {
+                initramfs_image = Some(PathBuf::from(
+                    args.next().context("--initramfs-image requires a path")?,
+                ));
+            }
+            "--run-id" => {
+                run_id = Some(
+                    args.next()
+                        .context("--run-id requires a value")?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            "--runner" => {
+                runner = Some(PathBuf::from(
+                    args.next().context("--runner requires a path")?,
+                ));
+            }
+            "--cna-base" => {
+                let value = args
+                    .next()
+                    .context("--cna-base requires a value")?
+                    .to_string_lossy()
+                    .into_owned();
+                cna_base = parse_u32(&value).context("--cna-base must be a 24-bit CNA")?;
+            }
+            "--max-runtime" => {
+                max_runtime = Some(
+                    args.next()
+                        .context("--max-runtime requires a value")?
+                        .to_string_lossy()
+                        .parse()
+                        .context("--max-runtime must be a positive integer")?,
+                );
+            }
+            option => anyhow::bail!("unknown lingqu-shmem-pto-e2e option: {option}"),
+        }
+    }
+    let manifest = manifest.context("--manifest is required")?;
+    if !matches!(nodes, 2 | 8) {
+        anyhow::bail!("--nodes must be 2 or 8");
+    }
+    if nodes == 8 && layout != "nd" {
+        anyhow::bail!("the eight-node functional demo currently requires --layout nd");
+    }
+    let expected_elements = match layout.as_str() {
+        "nd" => 16_384,
+        "tail" => 16_256,
+        "cross-page" | "unaligned" => 64,
+        "nd-strided" | "dn" => 15,
+        "nz" => 128,
+        _ => anyhow::bail!("unsupported PTO UB_GM layout: {layout}"),
+    };
+    let elements = elements.unwrap_or(expected_elements);
+    if elements != expected_elements {
+        anyhow::bail!("layout {layout} requires {expected_elements} elements, received {elements}");
+    }
+    if cna_base == 0 || cna_base.saturating_add(nodes - 1) > 0x00ff_ffff {
+        anyhow::bail!("--cna-base must leave one valid 24-bit CNA per node");
+    }
+    if max_runtime == Some(0) {
+        anyhow::bail!("--max-runtime must be a positive integer");
+    }
+    let scenario = scenario.unwrap_or_else(|| {
+        PathBuf::from(if nodes == 8 {
+            "scenarios/mvp_8host_single_domain.yaml"
+        } else {
+            "scenarios/mvp_2host_single_domain.yaml"
+        })
+    });
+    Ok(LingquShmemPtoArgs {
+        mode: LingquShmemPtoMode::P3E2e(LingquShmemPtoE2eArgs {
+            manifest,
+            scenario,
+            nodes,
+            layout,
+            elements,
+            evidence_dir,
+            kernel_image,
+            initramfs_image,
+            run_id,
+            runner,
+            cna_base,
+            max_runtime,
+        }),
+    })
+}
+
+fn parse_u32(value: &str) -> anyhow::Result<u32> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Ok(u32::from_str_radix(hex, 16)?)
+    } else {
+        Ok(value.parse()?)
+    }
+}
+
 pub fn run(args: LingquShmemPtoArgs) -> anyhow::Result<()> {
     match args.mode {
         LingquShmemPtoMode::ContractOnly => run_contract(),
@@ -188,7 +378,74 @@ pub fn run(args: LingquShmemPtoArgs) -> anyhow::Result<()> {
             platform,
             scenario,
         } => run_p2_bridge_mock(manifest, platform, scenario),
+        LingquShmemPtoMode::P3E2e(args) => run_p3_e2e(args),
     }
+}
+
+fn run_p3_e2e(args: LingquShmemPtoE2eArgs) -> anyhow::Result<()> {
+    let runner = args
+        .runner
+        .unwrap_or_else(|| default_e2e_runner(args.nodes));
+    let mut command = Command::new(&runner);
+
+    command
+        .arg("--manifest")
+        .arg(&args.manifest)
+        .arg("--scenario")
+        .arg(&args.scenario)
+        .arg("--layout")
+        .arg(&args.layout)
+        .arg("--elements")
+        .arg(args.elements.to_string());
+    if let Ok(sim_cli_bin) = std::env::current_exe() {
+        command.arg("--sim-cli-bin").arg(sim_cli_bin);
+    }
+    if args.nodes == 8 {
+        command
+            .arg("--cna-base")
+            .arg(format!("0x{:x}", args.cna_base));
+    } else {
+        command
+            .arg("--nodea-cna")
+            .arg(format!("0x{:x}", args.cna_base))
+            .arg("--nodeb-cna")
+            .arg(format!("0x{:x}", args.cna_base + 1));
+    }
+    if let Some(path) = args.evidence_dir {
+        command.arg("--evidence-dir").arg(path);
+    }
+    if let Some(path) = args.kernel_image {
+        command.arg("--kernel-image").arg(path);
+    }
+    if let Some(path) = args.initramfs_image {
+        command.arg("--initramfs-image").arg(path);
+    }
+    if let Some(run_id) = args.run_id {
+        command.arg("--run-id").arg(run_id);
+    }
+    if let Some(max_runtime) = args.max_runtime {
+        command.arg("--max-runtime").arg(max_runtime.to_string());
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run PTO UB_GM E2E runner {}", runner.display()))?;
+    if !status.success() {
+        anyhow::bail!("PTO UB_GM E2E runner failed with {status}");
+    }
+    Ok(())
+}
+
+fn default_e2e_runner(nodes: u32) -> PathBuf {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("sim-cli must live below the workspace root");
+    let script = if nodes == 8 {
+        "run_ub_eight_node_lingqu_shmem_pto_direct.sh"
+    } else {
+        "run_ub_dual_node_lingqu_shmem_pto_direct.sh"
+    };
+    workspace.join("guest-linux/aarch64/scripts").join(script)
 }
 
 fn run_p3_fingerprint(manifest: PathBuf) -> anyhow::Result<()> {
@@ -344,6 +601,79 @@ mod tests {
                 manifest: PathBuf::from("/tmp/manifest.json"),
             }
         );
+    }
+
+    #[test]
+    fn parses_the_eight_node_e2e_command() {
+        let args = args_from([
+            "lingqu-shmem-pto-e2e",
+            "--manifest",
+            "/tmp/manifest.json",
+            "--nodes",
+            "8",
+            "--kernel",
+            "vector-add",
+            "--layout",
+            "nd",
+            "--elements",
+            "16384",
+            "--verify",
+            "--evidence-dir",
+            "/tmp/evidence",
+            "--cna-base",
+            "0xf001",
+        ])
+        .expect("valid args")
+        .expect("recognized command");
+        assert_eq!(
+            args.mode,
+            LingquShmemPtoMode::P3E2e(LingquShmemPtoE2eArgs {
+                manifest: PathBuf::from("/tmp/manifest.json"),
+                scenario: PathBuf::from("scenarios/mvp_8host_single_domain.yaml"),
+                nodes: 8,
+                layout: "nd".to_string(),
+                elements: 16_384,
+                evidence_dir: Some(PathBuf::from("/tmp/evidence")),
+                kernel_image: None,
+                initramfs_image: None,
+                run_id: None,
+                runner: None,
+                cna_base: 0xf001,
+                max_runtime: None,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_non_nd_eight_node_e2e_layout() {
+        let error = args_from([
+            "lingqu-shmem-pto-e2e",
+            "--manifest",
+            "/tmp/manifest.json",
+            "--nodes",
+            "8",
+            "--layout",
+            "tail",
+        ])
+        .expect_err("eight-node layout must fail closed");
+        assert!(error.to_string().contains("requires --layout nd"));
+    }
+
+    #[test]
+    fn executes_the_selected_e2e_runner() {
+        let args = args_from([
+            "lingqu-shmem-pto-e2e",
+            "--manifest",
+            "/tmp/manifest.json",
+            "--nodes",
+            "8",
+            "--runner",
+            "/usr/bin/true",
+        ])
+        .expect("valid args")
+        .expect("recognized command");
+
+        run(args).expect("runner succeeds");
     }
 
     #[test]

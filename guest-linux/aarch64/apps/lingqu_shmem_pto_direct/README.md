@@ -1,6 +1,6 @@
 # Lingqu shmem PTO direct-access workload
 
-This directory defines the guest-side two-node acceptance workload for PTO
+This directory defines the guest-side two-node and eight-node acceptance workload for PTO
 `AddressSpace::UB_GM` access to `lingqu_shmem`. The source, runner, and runtime
 evidence cover the P3 happy path plus the P4 lifecycle, fault, and layout
 gates.
@@ -11,6 +11,40 @@ gates.
 - The consumer imports that exact region, registers its endpoint map, creates
   three opaque `lingqu_shmem_memref` objects, submits the existing
   `IoOpcode::Dispatch` tag-10 slot, and releases the mapping after completion.
+
+The eight-node functional demo uses Node 0 as producer and Node 1 through Node
+7 as consumers. The 2 MiB export contains seven 196,608-byte ND lanes. Each
+consumer receives one lane with two 65,536-byte inputs and one 65,536-byte
+output, plus a unique requester CNA, operation ID, and request ID. Node 0
+verifies all seven output lanes from its original export mapping. The export
+also contains seven 64-bit completion acknowledgements after the data lanes.
+Each consumer publishes its acknowledgement only after PTO completion has
+confirmed the store and fence. Node 0 keeps the export alive until both the
+seven output oracles and the seven acknowledgements pass.
+
+Run the eight-node demo through the unified CLI:
+
+```text
+sim-cli lingqu-shmem-pto-e2e \
+  --manifest /path/to/host_vector_manifest.json \
+  --nodes 8 --kernel vector-add --layout nd --elements 16384 --verify \
+  --evidence-dir /path/to/new-evidence-directory
+```
+
+The underlying command is
+`scripts/run_ub_eight_node_lingqu_shmem_pto_direct.sh`. It emits
+`validation.json` and `validation.status`, checks 14 loads, 7 stores, 7 fences,
+seven successful completions, seven producer-verified lanes, zero payload
+staging, stable artifacts, and zero campaign QEMU leftovers. The
+acknowledgements carry lifecycle metadata; tensor payload continues to move
+only through PTO `TLOAD` and `TSTORE` callbacks.
+
+The current host-vector route holds
+`/tmp/linqu_simpler_host_vector.lock`. Seven QEMU consumers may submit at the
+same time, while their Simpler callable execution may run sequentially on one
+host. The structured report records
+`host_dispatch_serialization=possible`; this functional gate does not claim
+host callable parallelism.
 
 The artifact fingerprint and PTO requester CNA are required command-line
 inputs. The host runner derives them from the selected artifact manifest and

@@ -115,6 +115,8 @@ SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$DEFAULT_SCENARIO_CONFIG}"
 REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
 ASYNC_LOAD_MODEL="${ASYNC_LOAD_MODEL:-}"
+SIM_LINGQU_SHMEM_PTO_ENABLE="${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}"
+SIM_LINGQU_SHMEM_PTO_CNA_BASE="${SIM_LINGQU_SHMEM_PTO_CNA_BASE:-0xf001}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
@@ -236,12 +238,27 @@ start_node() {
   local guest_log="$6"
   local pid_file="$7"
   local qmp_socket="$8"
+  local node_index="$9"
   local node_append_extra="$APPEND_EXTRA linqu_ipourma_ipv4=$local_ip"
+  local pto_ub_gm_args=()
   local qemu_pid
   local remote_model_args=()
   local async_load_args=()
   local oe_disk_args=()
-  local append_args="console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}"
+  local append_args
+
+  node_append_extra="$node_append_extra linqu_node_idx=$node_index"
+  node_append_extra="$node_append_extra linqu_node_count=$SIM_W5_CLUSTER_NODE_COUNT"
+  if [[ "$SIM_LINGQU_SHMEM_PTO_ENABLE" == "1" ]]; then
+    local pto_device_cna=$((SIM_LINGQU_SHMEM_PTO_CNA_BASE + node_index))
+
+    node_append_extra="$node_append_extra linqu_shmem_pto_direct=1"
+    node_append_extra="$node_append_extra lingqu_shmem_pto_requester_cna=$pto_device_cna"
+    pto_ub_gm_args=(
+      -global "ubc.pto-device-cna=$pto_device_cna"
+    )
+  fi
+  append_args="console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}"
 
   if [[ -n "${SIM_W5_OE_DISK_IMAGE:-}" ]]; then
     oe_disk_args=(
@@ -416,6 +433,7 @@ start_node() {
       -display none \
       "${remote_model_args[@]}" \
       "${async_load_args[@]}" \
+      "${pto_ub_gm_args[@]}" \
       -qmp unix:"$qmp_socket",server=on,wait=off \
       -chardev socket,id=mon0,path="$mon_socket",server=on,wait=off \
       -mon chardev=mon0,mode=readline \
@@ -498,6 +516,8 @@ log "cluster_node_count=$SIM_W5_CLUSTER_NODE_COUNT"
 log "append_extra=$APPEND_EXTRA"
 log "remote_memory_model_manifest=${REMOTE_MEMORY_MODEL_MANIFEST:-disabled}"
 log "async_load_model=${ASYNC_LOAD_MODEL:-disabled}"
+log "lingqu_shmem_pto_enable=$SIM_LINGQU_SHMEM_PTO_ENABLE"
+log "lingqu_shmem_pto_cna_base=$SIM_LINGQU_SHMEM_PTO_CNA_BASE"
 log "ub_sim_port_num=$PORT_NUM"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
   log "w5_profile=$SIM_UAPI_W5_PROFILE"
@@ -541,7 +561,7 @@ for node_id in "${NODE_IDS[@]}"; do
   serial_socket="$SERIAL_DIR/${node_id}.${SOCKET_SUFFIX}.sock"
 
   log "starting ${node_id} local_ip=${local_ip} mon_socket=${mon_socket} serial_socket=${serial_socket}"
-  start_node "$node_id" "$local_ip" "$mon_socket" "$serial_socket" "$qemu_log" "$guest_log" "$pid_file" "$qmp_socket"
+  start_node "$node_id" "$local_ip" "$mon_socket" "$serial_socket" "$qemu_log" "$guest_log" "$pid_file" "$qmp_socket" "$idx"
   idx=$((idx + 1))
   sleep 0.2
 done

@@ -403,6 +403,7 @@ run_obmm_async_coroutine() {
       obmm_async_mode=*) args="$args --mode ${token#*=}" ;;
       obmm_async_load_completion=*) args="$args --async-load-completion ${token#*=}" ;;
       obmm_async_coroutines=*) args="$args --coroutines ${token#*=}" ;;
+      obmm_async_threads=*) args="$args --threads ${token#*=}" ;;
       obmm_async_inflight=*) args="$args --inflight ${token#*=}" ;;
       obmm_async_lookahead=*) args="$args --lookahead ${token#*=}" ;;
       obmm_async_access_bytes=*) args="$args --access-bytes ${token#*=}" ;;
@@ -418,6 +419,7 @@ run_obmm_async_coroutine() {
       obmm_async_peer_index=*) args="$args --peer-index ${token#*=}" ;;
       obmm_async_producer_index=*) args="$args --producer-index ${token#*=}" ;;
       obmm_async_load_producer_consumer=1) args="$args --async-load-producer-consumer" ;;
+      obmm_async_kernel_task_replay=1) args="$args --kernel-task-replay" ;;
       obmm_uffd_case=*) args="$args --uffd-case ${token#*=}" ;;
       obmm_uffd_worker_threads=*) args="$args --worker-threads ${token#*=}" ;;
       obmm_uffd_handler_cpu=*) args="$args --handler-cpu ${token#*=}" ;;
@@ -465,9 +467,9 @@ run_lingqu_shmem_pto_direct() {
   if [ -z "$role" ]; then
     case "$node_id" in
       0) role="producer" ;;
-      1) role="consumer" ;;
+      1|2|3|4|5|6|7) role="consumer" ;;
       *)
-        log "lingqu_shmem_pto_direct requires node 0 or 1"
+        log "lingqu_shmem_pto_direct requires node index 0 through 7"
         return 2
         ;;
     esac

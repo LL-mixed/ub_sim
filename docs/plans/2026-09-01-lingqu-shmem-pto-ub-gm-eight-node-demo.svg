@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title { font: 700 30px system-ui, sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 17px system-ui, sans-serif; fill: #334155; }
+      .head { font: 700 18px system-ui, sans-serif; fill: #0f172a; }
+      .body { font: 500 15px system-ui, sans-serif; fill: #1e293b; }
+      .small { font: 500 13px system-ui, sans-serif; fill: #334155; }
+      .mono { font: 600 13px ui-monospace, SFMono-Regular, monospace; fill: #0f172a; }
+      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1400" height="900" fill="#f8fafc"/>
+  <text x="700" y="48" text-anchor="middle" class="title">八节点 Lingqu shmem PTO UB_GM functional demo</text>
+  <text x="700" y="78" text-anchor="middle" class="subtitle">Node 0 export；Node 1–7 在独立 lane 上经 Simpler/PTO 执行 TLOAD/TSTORE</text>
+
+  <rect x="42" y="112" width="270" height="670" rx="18" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="177" y="150" text-anchor="middle" class="head">Node A / Node 0</text>
+  <text x="177" y="175" text-anchor="middle" class="subtitle">producer demo app</text>
+
+  <rect x="68" y="208" width="218" height="102" rx="12" fill="#eff6ff" stroke="#60a5fa"/>
+  <text x="177" y="238" text-anchor="middle" class="body">OBMM alloc + export</text>
+  <text x="177" y="263" text-anchor="middle" class="mono">2 MiB shared memory</text>
+  <text x="177" y="287" text-anchor="middle" class="small">初始化 7 组输入与 output sentinel</text>
+
+  <rect x="68" y="344" width="218" height="294" rx="12" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="177" y="374" text-anchor="middle" class="head">原始 export mapping</text>
+  <g class="small">
+    <rect x="91" y="395" width="172" height="28" rx="6" fill="#fee2e2" stroke="#ef4444"/><text x="177" y="414" text-anchor="middle">lane 0 → Node B</text>
+    <rect x="91" y="431" width="172" height="28" rx="6" fill="#ffedd5" stroke="#f97316"/><text x="177" y="450" text-anchor="middle">lane 1 → Node C</text>
+    <rect x="91" y="467" width="172" height="28" rx="6" fill="#fef3c7" stroke="#d97706"/><text x="177" y="486" text-anchor="middle">lane 2 → Node D</text>
+    <rect x="91" y="503" width="172" height="28" rx="6" fill="#dcfce7" stroke="#16a34a"/><text x="177" y="522" text-anchor="middle">lane 3 → Node E</text>
+    <rect x="91" y="539" width="172" height="28" rx="6" fill="#ccfbf1" stroke="#0f766e"/><text x="177" y="558" text-anchor="middle">lane 4 → Node F</text>
+    <rect x="91" y="575" width="172" height="28" rx="6" fill="#e0e7ff" stroke="#4f46e5"/><text x="177" y="594" text-anchor="middle">lane 5 → Node G</text>
+    <rect x="91" y="611" width="172" height="28" rx="6" fill="#f3e8ff" stroke="#9333ea"/><text x="177" y="630" text-anchor="middle">lane 6 → Node H</text>
+  </g>
+
+  <rect x="68" y="672" width="218" height="76" rx="12" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
+  <text x="177" y="702" text-anchor="middle" class="body">producer oracle</text>
+  <text x="177" y="727" text-anchor="middle" class="mono">7 lanes + 7 ack verified</text>
+
+  <rect x="350" y="112" width="285" height="670" rx="18" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+  <text x="492" y="150" text-anchor="middle" class="head">OBMM shared memory</text>
+  <text x="492" y="175" text-anchor="middle" class="subtitle">同一个 export，七个 remote import</text>
+
+  <g class="small">
+    <rect x="380" y="210" width="225" height="62" rx="9" fill="#fee2e2" stroke="#ef4444"/><text x="492" y="235" text-anchor="middle">lane 0: A | B | output</text><text x="492" y="256" text-anchor="middle">base = 0 × 196,608 B</text>
+    <rect x="380" y="282" width="225" height="62" rx="9" fill="#ffedd5" stroke="#f97316"/><text x="492" y="307" text-anchor="middle">lane 1: A | B | output</text><text x="492" y="328" text-anchor="middle">base = 1 × 196,608 B</text>
+    <rect x="380" y="354" width="225" height="62" rx="9" fill="#fef3c7" stroke="#d97706"/><text x="492" y="379" text-anchor="middle">lane 2: A | B | output</text><text x="492" y="400" text-anchor="middle">base = 2 × 196,608 B</text>
+    <rect x="380" y="426" width="225" height="62" rx="9" fill="#dcfce7" stroke="#16a34a"/><text x="492" y="451" text-anchor="middle">lane 3: A | B | output</text><text x="492" y="472" text-anchor="middle">base = 3 × 196,608 B</text>
+    <rect x="380" y="498" width="225" height="62" rx="9" fill="#ccfbf1" stroke="#0f766e"/><text x="492" y="523" text-anchor="middle">lane 4: A | B | output</text><text x="492" y="544" text-anchor="middle">base = 4 × 196,608 B</text>
+    <rect x="380" y="570" width="225" height="62" rx="9" fill="#e0e7ff" stroke="#4f46e5"/><text x="492" y="595" text-anchor="middle">lane 5: A | B | output</text><text x="492" y="616" text-anchor="middle">base = 5 × 196,608 B</text>
+    <rect x="380" y="642" width="225" height="62" rx="9" fill="#f3e8ff" stroke="#9333ea"/><text x="492" y="667" text-anchor="middle">lane 6: A | B | output</text><text x="492" y="688" text-anchor="middle">base = 6 × 196,608 B</text>
+  </g>
+  <rect x="380" y="714" width="225" height="28" rx="7" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="492" y="733" text-anchor="middle" class="small">ack[0..6]：fence/CQ 后发布</text>
+  <text x="492" y="764" text-anchor="middle" class="mono">payload staging bytes = 0</text>
+
+  <rect x="680" y="112" width="350" height="670" rx="18" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+  <text x="855" y="150" text-anchor="middle" class="head">Node B–H / Node 1–7</text>
+  <text x="855" y="175" text-anchor="middle" class="subtitle">七个 consumer demo app</text>
+  <g>
+    <rect x="710" y="212" width="290" height="62" rx="10" fill="#ffffff" stroke="#22d3ee"/><text x="855" y="238" text-anchor="middle" class="body">OBMM import + endpoint map</text><text x="855" y="260" text-anchor="middle" class="small">每节点独立 mapping reference</text>
+    <rect x="710" y="298" width="290" height="72" rx="10" fill="#ffffff" stroke="#22d3ee"/><text x="855" y="325" text-anchor="middle" class="body">3 × lingqu_shmem_memref</text><text x="855" y="348" text-anchor="middle" class="small">独立 lane + requester CNA + op/request ID</text>
+    <rect x="710" y="394" width="290" height="72" rx="10" fill="#ffffff" stroke="#22d3ee"/><text x="855" y="421" text-anchor="middle" class="body">QEMU UBC → Rust bridge</text><text x="855" y="444" text-anchor="middle" class="small">IoOpcode::Dispatch / tag-10 ABI v2</text>
+    <rect x="710" y="490" width="290" height="96" rx="10" fill="#cffafe" stroke="#0891b2" stroke-width="2"/><text x="855" y="520" text-anchor="middle" class="head">Simpler / PTO callable 1</text><text x="855" y="546" text-anchor="middle" class="mono">2 × TLOAD + 1 × TSTORE</text><text x="855" y="569" text-anchor="middle" class="mono">1 × fence</text>
+    <rect x="710" y="610" width="290" height="94" rx="10" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/><text x="855" y="640" text-anchor="middle" class="body">consumer completion + ack</text><text x="855" y="665" text-anchor="middle" class="mono">7 / 7 success</text><text x="855" y="688" text-anchor="middle" class="small">fence/CQ 后写生命周期 ack</text>
+  </g>
+
+  <rect x="1070" y="112" width="288" height="670" rx="18" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/>
+  <text x="1214" y="150" text-anchor="middle" class="head">宿主执行边界</text>
+  <text x="1214" y="175" text-anchor="middle" class="subtitle">报告必须显式披露</text>
+
+  <rect x="1098" y="222" width="232" height="115" rx="12" fill="#ffedd5" stroke="#f97316"/>
+  <text x="1214" y="252" text-anchor="middle" class="body">host-wide dispatch lock</text>
+  <text x="1214" y="278" text-anchor="middle" class="mono">/tmp/linqu_simpler_</text>
+  <text x="1214" y="299" text-anchor="middle" class="mono">host_vector.lock</text>
+  <text x="1214" y="322" text-anchor="middle" class="small">可能串行化 callable</text>
+
+  <rect x="1098" y="376" width="232" height="112" rx="12" fill="#ffffff" stroke="#fb923c"/>
+  <text x="1214" y="405" text-anchor="middle" class="body">functional demo 证明</text>
+  <text x="1214" y="431" text-anchor="middle" class="small">八节点参与、七次 dispatch</text>
+  <text x="1214" y="454" text-anchor="middle" class="small">direct access、结果正确</text>
+  <text x="1214" y="477" text-anchor="middle" class="small">zero staging、完整 cleanup</text>
+
+  <rect x="1098" y="526" width="232" height="112" rx="12" fill="#ffffff" stroke="#fb923c"/>
+  <text x="1214" y="555" text-anchor="middle" class="body">本 gate 未证明</text>
+  <text x="1214" y="581" text-anchor="middle" class="small">宿主 callable 真并行</text>
+  <text x="1214" y="604" text-anchor="middle" class="small">并发吞吐扩展</text>
+  <text x="1214" y="627" text-anchor="middle" class="small">multi-dispatch isolation</text>
+
+  <text x="1214" y="690" text-anchor="middle" class="mono">validation.json</text>
+  <text x="1214" y="716" text-anchor="middle" class="small">host_dispatch_serialization</text>
+  <text x="1214" y="739" text-anchor="middle" class="mono">possible</text>
+
+  <path d="M312 255 L348 255" class="line"/>
+  <path d="M635 447 L678 447" class="line"/>
+  <path d="M1030 539 L1068 539" class="line"/>
+  <path d="M680 684 C590 820 280 820 286 714" class="line"/>
+  <text x="486" y="800" text-anchor="middle" class="small">producer 收齐 7 ack 后才 unexport</text>
+
+  <rect x="42" y="814" width="1316" height="54" rx="12" fill="#e2e8f0" stroke="#94a3b8"/>
+  <text x="700" y="847" text-anchor="middle" class="body">正式 gate：14 load / 917,504 B；7 store / 458,752 B；7 fence；7 completion + ack；7 lane oracle；0 staging；0 QEMU leftover</text>
+</svg>
