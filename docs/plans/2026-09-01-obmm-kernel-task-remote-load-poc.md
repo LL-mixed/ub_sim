@@ -253,6 +253,19 @@ Rust 测试并发执行时，仓库既有的 fused-SIMT launch self-check 偶发
 `out/kernel-task-replay-poc/cargo-r8-full.log`；同一代码状态下的串行全量测试
 保存在 `out/kernel-task-replay-poc/cargo-r8-full-serial.log`，结果通过。
 
+### 8.3 Trace-off 性能对比
+
+逐事件日志关闭后的 30-case paired matrix 已在 `n4-910c` 完成。两条路径统一
+使用 replay retirement、4 contexts、256 次普通 8-byte `LDR`、固定 virtual
+remote latency 和三个 seed。direct-EL0 coroutine 同时关闭 scheduler trace
+callback；Linux-task 同时关闭 driver per-event `dev_info`。
+
+结果显示：1--10 µs 区间 direct-EL0 的 makespan 优势为 30.8%--40.5%；1 ms
+区间 Linux-task makespan 低约 9.9%；10 ms 区间 makespan 接近。Linux-task 在
+全部五档的单次 load P99 都更高，配对中位比值为 1.29--3.05。完整方法、数据、
+策略建议和证据审计见
+[EL0 coroutine 与 Linux task 的 trace-off 对比](2026-09-01-obmm-el0-coroutine-vs-kernel-task-trace-off.md)。
+
 ## 9. 当前限制与后续方向
 
 | 限制 | 影响 | 后续方向 |
@@ -262,11 +275,11 @@ Rust 测试并发执行时，仓库既有的 fused-SIMT launch self-check 偶发
 | 单 home vCPU | 尚未覆盖多核 task migration | 增加 per-vCPU owner、migration handshake 与 per-CPU CQ/IRQ |
 | event ring 兼作 CQ | 功能闭环成立，队列隔离和 IRQ moderation 尚简化 | 增加 phase/owner、batch drain、coalescing 与 backpressure |
 | fault hook 仅允许一个 provider | 多设备并存时需要分派 | 以 FAR range/device owner 建立 handler registry |
-| driver 使用 `dev_info` 记录每个事件 | 会显著干扰性能 | 验收后切换 tracepoint 与采样日志 |
+| driver 逐事件日志 | 默认保留功能验收可读性；性能 CLI 已通过 `remote_load_event_log=0` 关闭 | 后续增加 tracepoint 与采样率控制 |
 | 当前只验证 scalar load | vector、atomic、exclusive、store 未覆盖 | 明确指令白名单并增加拒绝/回退测试 |
 
-本 PoC 的性能定位是语义验证。同步异常、Linux scheduler、IRQ 与日志引入的
-固定成本明显高于 EL0 coroutine direct-upcall 路径；它换取现成的进程/线程
-编程模型、内核 task 生命周期、signal 与调度能力。后续性能评估应在关闭逐事件
-日志后，按 remote latency、runnable task 数、CPU 频率、IRQ batching 和负载
-依赖性建立策略选择表。
+本 PoC 已完成第一轮 trace-off 定量对比。同步异常、Linux scheduler 和 IRQ 的
+固定成本在 1--10 µs 区间清楚可见；remote latency 达到 1--10 ms 后，batch
+makespan 逐渐由 remote wait 主导，Linux-task 路径达到接近或略低的总完成时间。
+direct-EL0 在全部测量点保持更低 P99。下一轮需要扫描 runnable task 数、CPU
+频率、IRQ batching、计算占比和带 tail/jitter 的 remote latency 分布。

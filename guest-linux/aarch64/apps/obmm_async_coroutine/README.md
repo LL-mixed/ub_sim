@@ -19,6 +19,30 @@ EL1 through the implementation-defined remote-load data-abort reason, sleeps on
 the driver waitqueue, and resumes at the unchanged faulting PC after a CQ event
 and IRQ. The repeated load retires through the device PLT replay entry. This
 mode does not enter the EL0 coroutine scheduler.
+
+Producer/consumer performance runs may assign multiple remote loads to every
+coroutine or pthread. `--iterations` must be a multiple of `--coroutines` or
+`--threads`. Use `--async-load-event-log off` for timed runs. In direct-EL0
+mode this installs no coroutine trace callback, so the timed hot path performs
+no causal event lookup, formatting, buffering, or output. In Linux-task mode it
+also sets the driver's `remote_load_event_log` module parameter to zero.
+Aggregate mechanism counters, per-load latency samples, checksum, replay
+exact-once checks, and cleanup gates remain active.
+
+Run the paired comparison through:
+
+```text
+guest-linux/aarch64/scripts/run_ub_async_load_scheduler_compare.py \
+  --scenario-config scenarios/mvp_2host_async_load_remote_10ms.yaml \
+  --base-model-manifest out/.../remote_memory_model_manifest_v1.json \
+  --output-dir out/obmm-remote-load/scheduler-compare-<run-id>
+```
+
+The comparison fixes both paths to 8-byte ordinary loads, replay retirement,
+the same model manifest, the same seed, four contexts by default, and zero
+per-event logging. It emits raw runner logs plus paired CSV/JSON summaries and
+fails if checksums or artifact fingerprints differ within a pair.
+
 `userfaultfd` uses an anonymous shadow range, a dedicated handler pthread on a
 different guest CPU, and only the standard `UFFD_USER_MODE_ONLY`, MISSING,
 `UFFDIO_COPY`, and optional `UFFDIO_POISON` contracts. It must not use the

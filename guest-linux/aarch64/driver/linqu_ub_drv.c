@@ -243,6 +243,10 @@ struct linqu_ub_drv {
 };
 
 static struct linqu_ub_drv *linqu_remote_load_drv;
+static bool remote_load_event_log = true;
+module_param(remote_load_event_log, bool, 0644);
+MODULE_PARM_DESC(remote_load_event_log,
+		 "log every remote-load pending, completion, block, wake, and IRQ event");
 static void linqu_async_load_ctx_put(struct linqu_async_load_file *ctx);
 
 static ssize_t linqu_ub_read(struct file *file, char __user *buf,
@@ -880,9 +884,10 @@ static int linqu_async_load_kernel_event_locked(
 		wait->status = status;
 		wait->pending_seen = true;
 		ctx->kernel_stats.pending_events++;
-		dev_info(ctx->drv->dev,
-			 "remote-load pending context=0x%llx token=0x%llx pc=0x%llx va=0x%llx\n",
-			 context_id, plt_token, fault_pc, effective_va);
+		if (remote_load_event_log)
+			dev_info(ctx->drv->dev,
+				 "remote-load pending context=0x%llx token=0x%llx pc=0x%llx va=0x%llx\n",
+				 context_id, plt_token, fault_pc, effective_va);
 		return 0;
 	case OBMM_ASYNC_LOAD_EVENT_COMPLETE:
 	case OBMM_ASYNC_LOAD_EVENT_FAULT:
@@ -899,9 +904,10 @@ static int linqu_async_load_kernel_event_locked(
 		wait->status = status;
 		wait->completion_seen = true;
 		ctx->kernel_stats.completion_events++;
-		dev_info(ctx->drv->dev,
-			 "remote-load completion context=0x%llx token=0x%llx status=%u\n",
-			 context_id, plt_token, status);
+		if (remote_load_event_log)
+			dev_info(ctx->drv->dev,
+				 "remote-load completion context=0x%llx token=0x%llx status=%u\n",
+				 context_id, plt_token, status);
 		wake_up(&wait->waitq);
 		return 0;
 	default:
@@ -1015,9 +1021,10 @@ static int linqu_remote_load_fault(unsigned long far, unsigned long esr,
 	wait->task_pid = task_pid_nr(current);
 	if (!wait->completion_seen)
 		ctx->kernel_stats.task_sleeps++;
-	dev_info(drv->dev,
-		 "remote-load block pid=%d token=0x%llx pc=0x%llx\n",
-		 wait->task_pid, wait->plt_token, wait->fault_pc);
+	if (remote_load_event_log)
+		dev_info(drv->dev,
+			 "remote-load block pid=%d token=0x%llx pc=0x%llx\n",
+			 wait->task_pid, wait->plt_token, wait->fault_pc);
 	mutex_unlock(&ctx->lock);
 
 	if (ctx->load_timeout_ns) {
@@ -1043,9 +1050,10 @@ static int linqu_remote_load_fault(unsigned long far, unsigned long esr,
 	}
 	ctx->kernel_stats.task_wakeups++;
 	ret = wait->status == OBMM_ASYNC_LOAD_STATUS_SUCCESS ? 0 : -EIO;
-	dev_info(drv->dev,
-		 "remote-load wake pid=%d token=0x%llx status=%u replay=%u\n",
-		 wait->task_pid, wait->plt_token, wait->status, ret == 0);
+	if (remote_load_event_log)
+		dev_info(drv->dev,
+			 "remote-load wake pid=%d token=0x%llx status=%u replay=%u\n",
+			 wait->task_pid, wait->plt_token, wait->status, ret == 0);
 	linqu_async_load_kernel_wait_reset(wait);
 
 out_unlock:
@@ -1600,10 +1608,11 @@ static irqreturn_t linqu_ub_irq_thread(int irq, void *data)
 		(async_load_irq_status ? BIT_ULL(63) : 0);
 	drv->event_pending = true;
 	mutex_unlock(&drv->lock);
-	dev_info(drv->dev,
-		 "irq handled status=0x%llx async=0x%llx remote-load=0x%llx count=%llu drain=%d\n",
-		 irq_status, async_irq_status, async_load_irq_status,
-		 drv->irq_count, drain_ret);
+	if (!async_load_irq_status || remote_load_event_log)
+		dev_info(drv->dev,
+			 "irq handled status=0x%llx async=0x%llx remote-load=0x%llx count=%llu drain=%d\n",
+			 irq_status, async_irq_status, async_load_irq_status,
+			 drv->irq_count, drain_ret);
 
 	wake_up_interruptible(&drv->waitq);
 	return IRQ_HANDLED;

@@ -413,6 +413,7 @@ run_obmm_async_coroutine() {
       obmm_async_warmup=*) args="$args --warmup ${token#*=}" ;;
       obmm_async_min_duration_ms=*) args="$args --min-duration-ms ${token#*=}" ;;
       obmm_async_trace_sample_ppm=*) args="$args --trace-sample-ppm ${token#*=}" ;;
+      obmm_async_load_event_log=*) args="$args --async-load-event-log ${token#*=}" ;;
       obmm_async_expected_outcome=*) args="$args --expected-outcome ${token#*=}" ;;
       obmm_async_deadline_us=*) args="$args --deadline-us ${token#*=}" ;;
       obmm_async_seed=*) args="$args --seed ${token#*=}" ;;

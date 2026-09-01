@@ -68,6 +68,10 @@ Current validation entry points:
   - implementation-level submit/await design for the independent OBMM async endpoint, 64-byte SQ/CQ ABI, registered destination buffers, generation-safe futures, AArch64 EL0 stackful coroutines, CLI, and tests
 - [plans/async-load-coroutine-scheduler-detailed-design.md](plans/async-load-coroutine-scheduler-detailed-design.md)
   - implementation-level async-load design for ordinary unretired AArch64 loads, load assist, pending-load table, guest EL0 coroutine scheduler, precise TCG exit/commit, fault service, CLI, and tests
+- [plans/2026-09-01-obmm-kernel-task-remote-load-poc.md](plans/2026-09-01-obmm-kernel-task-remote-load-poc.md)
+  - ESR_EL1 remote-pending extension, Linux task waitqueue scheduling, ABI v3 CQ/IRQ completion, PLT replay, two-node validation, and current limitations
+- [plans/2026-09-01-obmm-el0-coroutine-vs-kernel-task-trace-off.md](plans/2026-09-01-obmm-el0-coroutine-vs-kernel-task-trace-off.md)
+  - 30-case paired trace-off comparison of direct-EL0 coroutine and Linux-task scheduling across 1 us to 10 ms fixed remote latency, including makespan, throughput, P50/P95/P99, policy guidance, artifact identity, and safe-resume evidence
 - [plans/p3-comparative-evaluation-detailed-design.md](plans/p3-comparative-evaluation-detailed-design.md)
   - implementation-level P3 design for scalar/range/transparency comparison bands, schedule-ahead isolation, fairness and statistics rules, invalidation gates, CLI, evidence artifacts, and break-even reporting
 - [plans/2026-08-13-obmm-p3-performance-evaluation.md](plans/2026-08-13-obmm-p3-performance-evaluation.md)

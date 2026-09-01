@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import shutil
 import subprocess
 import tempfile
@@ -197,6 +199,12 @@ def test_qemu_provides_mechanism_but_not_coroutine_policy():
     assert "HELPER(async_load_remote_load)" in helper
     assert "UB_ASYNC_LOAD_TRY_REPLAYED" in helper
     assert "async_load_replay_valid = true" in helper
+    remote_load_helper = helper.split(
+        "uint64_t HELPER(async_load_remote_load)", 1
+    )[1].split("void HELPER(async_load_resume)", 1)[0]
+    assert remote_load_helper.index(
+        "ub_async_load_cpu_select_kernel_context"
+    ) < remote_load_helper.index("ub_async_load_cpu_address_is_remote")
     assert "env->pc = upcall_entry" in helper
     assert "HELPER(async_load_wait)" in helper
     assert "HELPER(async_load_scheduler_enter)" in helper
@@ -452,6 +460,168 @@ def test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue():
     assert "remote-load block pid=" in runner
 
 
+def test_async_load_timed_run_can_disable_per_event_logging():
+    app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+    driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    runner = (ROOT / "scripts" / "run_ub_obmm_eval.sh").read_text()
+
+    assert "--async-load-event-log on|off" in app
+    assert "if (!app->config.async_load_event_log)" in app
+    assert ".trace = app->config.async_load_event_log ?" in app
+    assert "async_load_coroutine_trace : NULL" in app
+    assert "bool trace_pass = !app->config.async_load_event_log" in app
+    assert "causal_timing_pass = !app->config.async_load_event_log" in app
+    assert app.count("if (app->config.async_load_event_log)") >= 2
+    assert "app->latencies_ns[iteration] = latency_ns" in app
+    assert "worker->async_load_operations_completed++" in app
+    assert "app->latency_count += worker->async_load_operations_completed" in app
+    assert "/sys/module/linqu_ub_drv/parameters/remote_load_event_log" in app
+    assert "module_param(remote_load_event_log, bool, 0644)" in driver
+    assert driver.count("if (remote_load_event_log)") >= 4
+    assert "obmm_async_load_event_log=" in run_app
+    assert "--async-load-event-log must be on or off" in runner
+    assert "ASYNC_LOAD direct-EL0 event log remained active" in runner
+    assert "ASYNC_LOAD kernel-task event log remained active" in runner
+    assert "ASYNC_LOAD producer/consumer causal timing evidence is incomplete" in runner
+
+
+def test_async_load_trace_off_compare_cli_expands_paired_replay_cases():
+    script = ROOT / "scripts" / "run_ub_async_load_scheduler_compare.py"
+    base_model = {
+        "schema": 1,
+        "manifest_hash": "fnv1a64:0000000000000000",
+        "scenario_name": "mvp_2host_async_load_remote_10ms",
+        "scenario_seed": 42,
+        "remote_memory_model": {
+            "enabled": True,
+            "time_source": "qemu_virtual",
+            "fixed_latency_ns": 10_000_000,
+            "jitter": {"mode": "none", "max_abs_ns": 0},
+            "tail": {"probability_ppm": 0, "extra_latency_ns": 0},
+            "queue_depth": 64,
+            "reorder_window": 1,
+            "drop_ppm": 0,
+            "error_ppm": 0,
+            "duplicate_ppm": 0,
+            "duplicate_delay_ns": 1_000,
+            "seed": 1,
+        },
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        directory = Path(directory)
+        model_path = directory / "base-model.json"
+        output_dir = directory / "comparison"
+        model_path.write_text(json.dumps(base_model))
+        result = subprocess.run(
+            [
+                "python3",
+                str(script),
+                "--scenario-config",
+                str(REPO_ROOT / "scenarios/mvp_2host_async_load_remote_10ms.yaml"),
+                "--base-model-manifest",
+                str(model_path),
+                "--output-dir",
+                str(output_dir),
+                "--latencies-us",
+                "1,10",
+                "--seeds",
+                "1",
+                "--contexts",
+                "4",
+                "--operations",
+                "8",
+                "--dry-run",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        dry_runs = [
+            line for line in result.stdout.splitlines() if line.startswith("DRY_RUN ")
+        ]
+        manifest = json.loads((output_dir / "run-manifest.json").read_text())
+        validation = json.loads((output_dir / "validation.json").read_text())
+
+    assert len(dry_runs) == 4
+    assert all("--async-load-event-log off" in line for line in dry_runs)
+    assert all("--async-load-completion replay" in line for line in dry_runs)
+    assert sum("--kernel-task-replay" in line for line in dry_runs) == 2
+    assert manifest["event_log"] == "off"
+    assert manifest["event_trace_callback"] == "off"
+    assert manifest["completion"] == "replay"
+    assert validation == {
+        "schema": 1,
+        "status": "dry-run",
+        "completed": 0,
+        "planned": 4,
+    }
+
+
+def test_async_load_trace_off_compare_validates_pairs_and_campaign_artifacts():
+    script = ROOT / "scripts" / "run_ub_async_load_scheduler_compare.py"
+    spec = importlib.util.spec_from_file_location("scheduler_compare", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    common = {
+        "latency_us": 10,
+        "seed": 1,
+        "contexts": 4,
+        "operations": 256,
+        "checksum": "0000000000000600",
+        "model_contract_hash": "fnv1a64:1234",
+        "scenario_sha256": "scenario",
+        "qemu_sha256": "qemu",
+        "kernel_sha256": "kernel",
+        "initramfs_sha256": "initramfs",
+    }
+    rows = [
+        {
+            **common,
+            "mode": "el0-coroutine",
+            "makespan_ns": 100,
+            "guest_ns_p50": 10,
+            "guest_ns_p95": 15,
+            "guest_ns_p99": 20,
+            "operations_per_second": 2.0,
+        },
+        {
+            **common,
+            "mode": "kernel-task",
+            "makespan_ns": 125,
+            "guest_ns_p50": 12,
+            "guest_ns_p95": 24,
+            "guest_ns_p99": 30,
+            "operations_per_second": 1.6,
+        },
+    ]
+
+    pairs = module.validate_pairs(rows)
+    fingerprints = module.validate_campaign_artifacts(rows)
+    aggregate = module.aggregate_pairs(pairs)
+
+    assert pairs[0]["kernel_over_el0_makespan_ratio"] == 1.25
+    assert aggregate[0]["kernel_over_el0_p50_ratio_median"] == 1.2
+    assert aggregate[0]["kernel_over_el0_p95_ratio_median"] == 1.6
+    assert aggregate[0]["kernel_over_el0_p99_ratio_median"] == 1.5
+    assert fingerprints["qemu_sha256"] == "qemu"
+    with tempfile.TemporaryDirectory() as directory:
+        failed_log = Path(directory) / "case.log"
+        failed_log.write_text("failed\n")
+        preserved = module.preserve_failed_log(failed_log)
+        assert preserved.name == "case.attempt-1.log"
+        assert preserved.read_text() == "failed\n"
+        assert not failed_log.exists()
+    rows[1]["qemu_sha256"] = "changed"
+    try:
+        module.validate_campaign_artifacts(rows)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("campaign artifact drift was accepted")
+
+
 class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
     def test_uapi_layout(self):
         test_async_load_uapi_v3_layout_compiles_for_aarch64()
@@ -485,6 +655,15 @@ class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
 
     def test_kernel_task_replay_contract(self):
         test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue()
+
+    def test_trace_off_contract(self):
+        test_async_load_timed_run_can_disable_per_event_logging()
+
+    def test_trace_off_compare_cli(self):
+        test_async_load_trace_off_compare_cli_expands_paired_replay_cases()
+
+    def test_trace_off_compare_aggregation(self):
+        test_async_load_trace_off_compare_validates_pairs_and_campaign_artifacts()
 
 
 if __name__ == "__main__":

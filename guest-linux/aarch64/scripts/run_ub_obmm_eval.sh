@@ -16,6 +16,9 @@ ASYNC_LOAD_PRODUCER_CONSUMER=0
 ASYNC_LOAD_PRODUCER_INDEX=0
 ASYNC_LOAD_COMPLETION=patch
 KERNEL_TASK_REPLAY=0
+ASYNC_LOAD_EVENT_LOG=on
+ASYNC_LOAD_CONTEXTS=""
+ASYNC_LOAD_ITERATIONS=""
 
 usage() {
   cat <<'EOF'
@@ -217,14 +220,23 @@ while (( async_index <= ${#async_words} )); do
       ASYNC_LOAD_COMPLETION="$value"
       append_cmdline "obmm_async_load_completion=$value"
       ;;
-    --coroutines) append_cmdline "obmm_async_coroutines=$value" ;;
-    --threads) append_cmdline "obmm_async_threads=$value" ;;
+    --coroutines)
+      ASYNC_LOAD_CONTEXTS="$value"
+      append_cmdline "obmm_async_coroutines=$value"
+      ;;
+    --threads)
+      ASYNC_LOAD_CONTEXTS="$value"
+      append_cmdline "obmm_async_threads=$value"
+      ;;
     --inflight) append_cmdline "obmm_async_inflight=$value" ;;
     --lookahead) append_cmdline "obmm_async_lookahead=$value" ;;
     --access-bytes) append_cmdline "obmm_async_access_bytes=$value" ;;
     --pattern) append_cmdline "obmm_async_pattern=$value" ;;
     --compute-us) append_cmdline "obmm_async_compute_us=$value" ;;
-    --iterations) append_cmdline "obmm_async_iterations=$value" ;;
+    --iterations)
+      ASYNC_LOAD_ITERATIONS="$value"
+      append_cmdline "obmm_async_iterations=$value"
+      ;;
     --warmup) append_cmdline "obmm_async_warmup=$value" ;;
     --min-duration-ms) append_cmdline "obmm_async_min_duration_ms=$value" ;;
     --trace-sample-ppm) append_cmdline "obmm_async_trace_sample_ppm=$value" ;;
@@ -238,6 +250,17 @@ while (( async_index <= ${#async_words} )); do
     --producer-index)
       ASYNC_LOAD_PRODUCER_INDEX="$value"
       append_cmdline "obmm_async_producer_index=$value"
+      ;;
+    --async-load-event-log)
+      case "$value" in
+        on|off) ;;
+        *)
+          echo "--async-load-event-log must be on or off" >&2
+          exit 2
+          ;;
+      esac
+      ASYNC_LOAD_EVENT_LOG="$value"
+      append_cmdline "obmm_async_load_event_log=$value"
       ;;
     --uffd-case) append_cmdline "obmm_uffd_case=$value" ;;
     --worker-threads) append_cmdline "obmm_uffd_worker_threads=$value" ;;
@@ -264,6 +287,13 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
 fi
 if (( KERNEL_TASK_REPLAY )) && [[ "$ASYNC_LOAD_COMPLETION" != "replay" ]]; then
   echo "kernel-task replay validation requires replay retirement" >&2
+  exit 2
+fi
+if (( ASYNC_LOAD_PRODUCER_CONSUMER )) &&
+   [[ "$ASYNC_LOAD_EVENT_LOG" == "on" &&
+      ( -z "$ASYNC_LOAD_CONTEXTS" ||
+        "$ASYNC_LOAD_ITERATIONS" != "$ASYNC_LOAD_CONTEXTS" ) ]]; then
+  echo "producer/consumer causal event logging requires iterations=contexts; use --async-load-event-log off for multi-operation performance runs" >&2
   exit 2
 fi
 
@@ -401,32 +431,43 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   if (( KERNEL_TASK_REPLAY )); then
     async_load_summary="$(grep '^OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
     async_load_coroutines="$(summary_field "$async_load_summary" threads)"
+    async_load_operations="$(summary_field "$async_load_summary" operations)"
     async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
     kernel_block_count="$(grep -c 'remote-load block pid=' "$consumer_log" || true)"
     kernel_wake_count="$(grep -c 'remote-load wake pid=' "$consumer_log" || true)"
-    kernel_blocked_tasks="$(grep -o 'remote-load block pid=[0-9]*' "$consumer_log" | sort -u | wc -l | tr -d ' ')"
+    kernel_blocked_tasks="$(grep -o 'remote-load block pid=[0-9]*' "$consumer_log" | sort -u | wc -l | tr -d ' ' || true)"
     if [[ "$async_load_coroutines" != <2-> ||
           "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
           "$(summary_field "$async_load_summary" abi)" != "3" ||
           "$(summary_field "$async_load_summary" event_delivery)" != "cq-irq" ||
           "$(summary_field "$async_load_summary" scheduling)" != "linux-task" ||
           "$(summary_field "$async_load_summary" retirement)" != "replay" ||
+          "$(summary_field "$async_load_summary" event_log)" != "$ASYNC_LOAD_EVENT_LOG" ||
           "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
-          "$(summary_field "$async_load_summary" verified)" != "$async_load_coroutines" ||
-          "$(summary_field "$async_load_summary" faults)" != "$async_load_coroutines" ||
-          "$(summary_field "$async_load_summary" pending)" != "$async_load_coroutines" ||
-          "$(summary_field "$async_load_summary" completions)" != "$async_load_coroutines" ||
-          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_coroutines" ||
+          "$async_load_operations" != "$ASYNC_LOAD_ITERATIONS" ||
+          "$(summary_field "$async_load_summary" verified)" != "$async_load_operations" ||
+          "$(summary_field "$async_load_summary" faults)" != "$async_load_operations" ||
+          "$(summary_field "$async_load_summary" pending)" != "$async_load_operations" ||
+          "$(summary_field "$async_load_summary" completions)" != "$async_load_operations" ||
+          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_operations" ||
           "$(summary_field "$async_load_summary" protocol_errors)" != "0" ||
           "$(summary_field "$async_load_summary" timeouts)" != "0" ||
           "$(summary_field "$async_load_summary" interrupted_waits)" != "0" ||
-          "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_coroutines" ||
+          "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_operations" ||
           "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
-          "$(summary_field "$async_load_summary" direct_el0_upcalls)" != "0" ||
-          "$kernel_block_count" != "$async_load_coroutines" ||
-          "$kernel_wake_count" != "$async_load_coroutines" ||
-          "$kernel_blocked_tasks" != "$async_load_coroutines" ]]; then
+          "$(summary_field "$async_load_summary" direct_el0_upcalls)" != "0" ]]; then
       echo "ASYNC_LOAD kernel-task terminal or driver evidence is inconsistent" >&2
+      exit 1
+    fi
+    if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+      if [[ "$kernel_block_count" != "$async_load_operations" ||
+            "$kernel_wake_count" != "$async_load_operations" ||
+            "$kernel_blocked_tasks" != "$async_load_coroutines" ]]; then
+        echo "ASYNC_LOAD kernel-task event log is incomplete" >&2
+        exit 1
+      fi
+    elif [[ "$kernel_block_count" != "0" || "$kernel_wake_count" != "0" ]]; then
+      echo "ASYNC_LOAD kernel-task event log remained active" >&2
       exit 1
     fi
     for (( thread_id = 0; thread_id < async_load_coroutines; thread_id++ )); do
@@ -434,6 +475,8 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       thread_line="$(grep "^OBMM_ASYNC_LOAD_KERNEL_THREAD .*thread=${thread_id} .*status=pass" "$consumer_log" | tr -d '\r')"
       if [[ -z "$write_line" || -z "$thread_line" ||
             "$(summary_field "$write_line" export_mem_id)" != "$async_load_export_mem_id" ||
+            "$(summary_field "$thread_line" operations)" != "$(( async_load_operations / async_load_coroutines ))" ||
+            "$(summary_field "$thread_line" verified)" != "$(( async_load_operations / async_load_coroutines ))" ||
             "$(summary_field "$write_line" value)" != "$(summary_field "$thread_line" expected)" ||
             "$(summary_field "$thread_line" expected)" != "$(summary_field "$thread_line" actual)" ]]; then
         echo "ASYNC_LOAD kernel task $thread_id has inconsistent value evidence" >&2
@@ -444,24 +487,24 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   else
   async_load_summary="$(grep '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
   async_load_coroutines="$(summary_field "$async_load_summary" coroutines)"
+  async_load_operations="$(summary_field "$async_load_summary" operations)"
   async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
   if [[ "$async_load_coroutines" != <2-> || "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
         "$(summary_field "$async_load_summary" abi)" != "3" ||
         "$(summary_field "$async_load_summary" event_delivery)" != "ring" ||
         "$(summary_field "$async_load_summary" wait_wakeup)" != "hlt" ||
         "$(summary_field "$async_load_summary" async_load_completion)" != "$ASYNC_LOAD_COMPLETION" ||
+        "$(summary_field "$async_load_summary" event_log)" != "$ASYNC_LOAD_EVENT_LOG" ||
         "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
-        "$(summary_field "$async_load_summary" completed)" != "$async_load_coroutines" ||
-        "$(summary_field "$async_load_summary" values_verified)" != "$async_load_coroutines" ||
-        "$(summary_field "$async_load_summary" el0_upcalls_pending)" != "$async_load_coroutines" ||
-        "$(summary_field "$async_load_summary" el0_upcalls_complete)" != "$async_load_coroutines" ||
+        "$async_load_operations" != "$ASYNC_LOAD_ITERATIONS" ||
+        "$(summary_field "$async_load_summary" completed)" != "$async_load_operations" ||
+        "$(summary_field "$async_load_summary" values_verified)" != "$async_load_operations" ||
+        "$(summary_field "$async_load_summary" el0_upcalls_pending)" != "$async_load_operations" ||
+        "$(summary_field "$async_load_summary" el0_upcalls_complete)" != "$async_load_operations" ||
         "$(summary_field "$async_load_summary" el0_upcalls_fault)" != "0" ||
-        "$(summary_field "$async_load_summary" el0_event_ring_consumed)" != "$(( 2 * async_load_coroutines ))" ||
-        "$(summary_field "$async_load_summary" el0_wait_assists)" != <1-> ||
-        "$(summary_field "$async_load_summary" el0_scheduler_enter_assists)" != "$async_load_coroutines" ||
-        "$(summary_field "$async_load_summary" event_producer_final)" != "$(( 2 * async_load_coroutines ))" ||
-        "$(summary_field "$async_load_summary" event_consumer_final)" != "$(( 2 * async_load_coroutines ))" ||
-        "$(summary_field "$async_load_summary" event_wait_wakeups)" != <1-> ||
+        "$(summary_field "$async_load_summary" el0_event_ring_consumed)" != "$(( 2 * async_load_operations ))" ||
+        "$(summary_field "$async_load_summary" event_producer_final)" != "$(( 2 * async_load_operations ))" ||
+        "$(summary_field "$async_load_summary" event_consumer_final)" != "$(( 2 * async_load_operations ))" ||
         "$(summary_field "$async_load_summary" kernel_hotpath_ioctls)" != "0" ||
         "$(summary_field "$async_load_summary" qemu_context_saves)" != "0" ||
         "$(summary_field "$async_load_summary" qemu_context_restores)" != "0" ||
@@ -474,6 +517,13 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     echo "ASYNC_LOAD producer/consumer terminal summary is inconsistent" >&2
     exit 1
   fi
+  if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" &&
+        ("$(summary_field "$async_load_summary" el0_wait_assists)" != <1-> ||
+         "$(summary_field "$async_load_summary" el0_scheduler_enter_assists)" != "$async_load_coroutines" ||
+         "$(summary_field "$async_load_summary" event_wait_wakeups)" != <1->) ]]; then
+    echo "ASYNC_LOAD producer/consumer causal timing evidence is incomplete" >&2
+    exit 1
+  fi
   case "$ASYNC_LOAD_COMPLETION" in
     patch)
       if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "0" ||
@@ -483,7 +533,7 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       fi
       ;;
     replay)
-      if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_coroutines" ||
+      if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_operations" ||
             "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
             "$(summary_field "$async_load_summary" replay_ready_high_water)" != <1-> ]]; then
         echo "ASYNC_LOAD replay mode lacks exact-once retirement evidence" >&2
@@ -495,17 +545,36 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   blocked_load_switches=0
   for (( coroutine_id = 0; coroutine_id < async_load_coroutines; coroutine_id++ )); do
     write_line="$(grep "^OBMM_ASYNC_LOAD_WRITE .*coroutine=${coroutine_id} " "$producer_log" | tr -d '\r')"
+    coroutine_summary="$(grep "^OBMM_ASYNC_LOAD_COROUTINE_SUMMARY .*coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
+    operations_per_context=$(( async_load_operations / async_load_coroutines ))
+    if [[ -z "$write_line" || -z "$coroutine_summary" ||
+          "$(summary_field "$coroutine_summary" operations)" != "$operations_per_context" ||
+          "$(summary_field "$coroutine_summary" completed)" != "$operations_per_context" ||
+          "$(summary_field "$coroutine_summary" verified)" != "$operations_per_context" ||
+          "$(summary_field "$write_line" value)" != "$(summary_field "$coroutine_summary" expected)" ||
+          "$(summary_field "$coroutine_summary" expected)" != "$(summary_field "$coroutine_summary" actual)" ]]; then
+      echo "ASYNC_LOAD coroutine $coroutine_id has incomplete aggregate evidence" >&2
+      exit 1
+    fi
+    if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" &&
+          ("$(summary_field "$coroutine_summary" pending)" != "$operations_per_context" ||
+           "$(summary_field "$coroutine_summary" complete)" != "$operations_per_context" ||
+           "$(summary_field "$coroutine_summary" resumes_after_complete)" -lt "$operations_per_context") ]]; then
+      echo "ASYNC_LOAD coroutine $coroutine_id has incomplete event evidence" >&2
+      exit 1
+    fi
+    if [[ "$ASYNC_LOAD_EVENT_LOG" != "on" ]]; then
+      continue
+    fi
     context_line="$(grep "^OBMM_ASYNC_LOAD_CONTEXT .*coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
     issue_line="$(grep "^OBMM_ASYNC_LOAD_LDR .*event=issue coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
     pending_line="$(grep "^OBMM_ASYNC_LOAD_UPCALL .*event=pending coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
     complete_line="$(grep "^OBMM_ASYNC_LOAD_UPCALL .*event=complete coroutine=${coroutine_id} " "$consumer_log" | tr -d '\r')"
     resume_line="$(grep "^OBMM_ASYNC_LOAD_SCHEDULE .*to_coroutine=${coroutine_id} after_complete=1" "$consumer_log" | tr -d '\r')"
     retire_line="$(grep "^OBMM_ASYNC_LOAD_LDR .*event=retire coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
-    coroutine_summary="$(grep "^OBMM_ASYNC_LOAD_COROUTINE_SUMMARY .*coroutine=${coroutine_id} .*status=pass" "$consumer_log" | tr -d '\r')"
-    if [[ -z "$write_line" || -z "$context_line" || -z "$issue_line" ||
-          -z "$pending_line" || -z "$complete_line" || -z "$resume_line" ||
-          -z "$retire_line" || -z "$coroutine_summary" ]]; then
-      echo "ASYNC_LOAD coroutine $coroutine_id is missing causal evidence" >&2
+    if [[ -z "$context_line" || -z "$issue_line" || -z "$pending_line" ||
+          -z "$complete_line" || -z "$resume_line" || -z "$retire_line" ]]; then
+      echo "ASYNC_LOAD coroutine $coroutine_id is missing causal event evidence" >&2
       exit 1
     fi
     context_id="$(summary_field "$context_line" context_id)"
@@ -522,10 +591,7 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
           "$(summary_field "$coroutine_summary" expected)" != "$expected_value" ||
           "$(summary_field "$coroutine_summary" actual)" != "$expected_value" ||
           "$(summary_field "$pending_line" token)" != "$(summary_field "$complete_line" token)" ||
-          "$(summary_field "$pending_line" pc)" != "$(summary_field "$complete_line" pc)" ||
-          "$(summary_field "$coroutine_summary" pending)" != "1" ||
-          "$(summary_field "$coroutine_summary" complete)" != "1" ||
-          "$(summary_field "$coroutine_summary" resumes_after_complete)" != <1-> ]]; then
+          "$(summary_field "$pending_line" pc)" != "$(summary_field "$complete_line" pc)" ]]; then
       echo "ASYNC_LOAD coroutine $coroutine_id has inconsistent context, token, PC, or value evidence" >&2
       exit 1
     fi
@@ -549,8 +615,12 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       blocked_load_switches=$((blocked_load_switches + 1))
     fi
   done
-  if (( blocked_load_switches == 0 )); then
+  if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]] && (( blocked_load_switches == 0 )); then
     echo "ASYNC_LOAD evidence does not show a blocked load switching to another coroutine that issues its own LDR" >&2
+    exit 1
+  elif [[ "$ASYNC_LOAD_EVENT_LOG" == "off" ]] &&
+       grep -q '^OBMM_ASYNC_LOAD_\(CONTEXT\|LDR\|UPCALL\|SCHEDULE\) ' "$consumer_log"; then
+    echo "ASYNC_LOAD direct-EL0 event log remained active" >&2
     exit 1
   fi
   fi
@@ -673,16 +743,25 @@ print -r -- "OBMM_RUN_EVIDENCE node_count=$NODE_COUNT scenario_sha256=$SCENARIO_
 if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeA role=producer export_mem_id=$async_load_export_mem_id writes=$async_load_coroutines status=ready"
   if (( KERNEL_TASK_REPLAY )); then
-    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=$async_load_coroutines completed=$async_load_coroutines status=pass"
-    print -r -- "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE blocked_tasks=$kernel_blocked_tasks blocks=$kernel_block_count wakes=$kernel_wake_count direct_el0_upcalls=0 status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=$async_load_coroutines completed=$async_load_operations event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE event_log=$ASYNC_LOAD_EVENT_LOG operations=$async_load_operations blocked_tasks=$kernel_blocked_tasks blocks=$kernel_block_count wakes=$kernel_wake_count stats_wakeups=$(summary_field "$async_load_summary" wakeups) direct_el0_upcalls=0 status=pass"
     grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
     grep '^OBMM_ASYNC_LOAD_KERNEL_\(THREAD\|TASK_SUMMARY\)' "$consumer_log"
-    grep 'remote-load \(pending\|block\|completion\|wake\)' "$consumer_log"
+    if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+      grep 'remote-load \(pending\|block\|completion\|wake\)' "$consumer_log"
+    fi
   else
-    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id coroutines=$async_load_coroutines completed=$async_load_coroutines status=pass"
-    print -r -- "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY blocked_load_switches=$blocked_load_switches status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id coroutines=$async_load_coroutines completed=$async_load_operations event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
+    if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+      print -r -- "OBMM_ASYNC_LOAD_CAUSAL_SUMMARY blocked_load_switches=$blocked_load_switches status=pass"
+    else
+      print -r -- "OBMM_ASYNC_LOAD_PERF_EVIDENCE event_log=off operations=$async_load_operations causal_lines=0 status=pass"
+    fi
     grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
-    grep '^OBMM_ASYNC_LOAD_\(IMPORT\|CONTEXT\|LDR\|UPCALL\|SCHEDULE\|COROUTINE_SUMMARY\)' "$consumer_log"
+    grep '^OBMM_ASYNC_LOAD_\(IMPORT\|COROUTINE_SUMMARY\)' "$consumer_log"
+    if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+      grep '^OBMM_ASYNC_LOAD_\(CONTEXT\|LDR\|UPCALL\|SCHEDULE\)' "$consumer_log"
+    fi
   fi
   for node_id in nodeA nodeB; do
     qemu_log="$RUN_DIR/${node_id}_qemu.log"

@@ -113,6 +113,7 @@ struct async_config {
     bool self_test;
     bool async_load_producer_consumer;
     bool kernel_task_replay;
+    bool async_load_event_log;
 };
 
 struct async_kernel_thread_runtime;
@@ -122,6 +123,10 @@ struct async_kernel_thread {
     uint32_t thread_id;
     uint64_t expected;
     uint64_t actual;
+    uint64_t operations;
+    uint64_t verified;
+    uint64_t checksum;
+    uint64_t last_monotonic_ns;
     uint64_t start_ns;
     uint64_t end_ns;
 };
@@ -130,6 +135,10 @@ struct async_kernel_thread_runtime {
     struct async_app *app;
     atomic_bool start;
     atomic_uint ready;
+    atomic_uint_fast64_t latency_next;
+    uint64_t *latencies_ns;
+    uint64_t measurement_start_ns;
+    uint64_t measurement_end_ns;
     struct async_kernel_thread threads[OBMM_ASYNC_LOAD_MAX_CONTEXTS];
 };
 
@@ -171,6 +180,9 @@ struct async_worker {
     uint64_t async_load_pending_upcalls;
     uint64_t async_load_complete_upcalls;
     uint64_t async_load_resumes_after_complete;
+    uint64_t async_load_operations_completed;
+    uint64_t async_load_verify_failures;
+    uint64_t async_load_checksum;
 };
 
 struct async_app {
@@ -443,6 +455,7 @@ static void async_usage(const char *program)
             "[--seed N] [--node-count N] [--peer-index N] "
             "[--async-load-completion patch|replay] "
             "[--async-load-producer-consumer] [--kernel-task-replay] "
+            "[--async-load-event-log on|off] "
             "[--threads N] "
             "[--producer-index N] [--verify]\n",
             program);
@@ -494,6 +507,7 @@ static bool async_parse_args(int argc, char **argv,
         .peer_index = -1,
         .producer_index = 0,
         .handler_cpu = 0,
+        .async_load_event_log = true,
     };
     for (index = 1; index < argc; index++) {
         const char *option = argv[index];
@@ -581,6 +595,14 @@ static bool async_parse_args(int argc, char **argv,
                 return false;
             }
             config->option_flags |= ASYNC_OPTION_ASYNC_LOAD_COMPLETION;
+        } else if (strcmp(option, "--async-load-event-log") == 0) {
+            if (strcmp(value, "on") == 0) {
+                config->async_load_event_log = true;
+            } else if (strcmp(value, "off") == 0) {
+                config->async_load_event_log = false;
+            } else {
+                return false;
+            }
         } else if (strcmp(option, "--coroutines") == 0 ||
                    strcmp(option, "--threads") == 0) {
             if (!async_parse_u32(value, &config->coroutines)) {
@@ -714,7 +736,8 @@ static bool async_parse_args(int argc, char **argv,
     if (config->async_load_producer_consumer &&
         (config->mode != ASYNC_APP_MODE_ASYNC_LOAD ||
          config->node_count != 2 || config->coroutines < 2 ||
-         config->iterations != config->coroutines ||
+         config->iterations < config->coroutines ||
+         config->iterations % config->coroutines != 0 ||
          config->warmup != 0 || config->access_bytes != 8 ||
          config->pattern != ASYNC_PATTERN_SEQUENTIAL || !config->verify)) {
         return false;
@@ -921,6 +944,9 @@ static void async_load_record(struct async_app *app, const char *format, ...)
     struct async_load_trace_line *line;
     va_list arguments;
 
+    if (!app->config.async_load_event_log) {
+        return;
+    }
     if (app->async_load_trace_count >= ASYNC_LOAD_TRACE_LINES) {
         app->async_load_trace_dropped++;
         return;
@@ -1628,6 +1654,42 @@ static __attribute__((noinline)) uint64_t async_load_scalar_load(
     }
 }
 
+static int async_set_kernel_event_log(bool enabled)
+{
+    static const char parameter_path[] =
+        "/sys/module/linqu_ub_drv/parameters/remote_load_event_log";
+    const char value[] = { enabled ? '1' : '0', '\n' };
+    int fd;
+    int ret = 0;
+
+    fd = open(parameter_path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -errno;
+    }
+    if (write(fd, value, sizeof(value)) != (ssize_t)sizeof(value)) {
+        ret = errno ? -errno : -EIO;
+    }
+    close(fd);
+    return ret;
+}
+
+static uint64_t async_kernel_thread_now_ns(struct async_kernel_thread *thread)
+{
+    struct timespec now;
+    uint64_t value;
+
+    if (!thread || clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+    value = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+    if (thread->last_monotonic_ns && value < thread->last_monotonic_ns) {
+        atomic_fetch_add_explicit(&async_clock_regressions, 1,
+                                  memory_order_relaxed);
+    }
+    thread->last_monotonic_ns = value;
+    return value;
+}
+
 static void async_load_worker_entry(void *opaque)
 {
     struct async_worker *worker = opaque;
@@ -1640,46 +1702,52 @@ static void async_load_worker_entry(void *opaque)
         uint64_t offset = async_load_offset(worker->worker_id);
         const volatile void *address =
             (const volatile uint8_t *)app->remote_address + offset;
-        uint64_t submit_ns = async_worker_now_ns(worker);
-        uint64_t latency_ns;
 
         worker->async_load_expected = async_load_value(
             app->config.seed, worker->worker_id);
-        async_load_record(
-            app,
-            "OBMM_ASYNC_LOAD_LDR schema=1 event=issue coroutine=%u "
-            "context_id=%016llx offset=%llu expected=%016llx",
-            worker->worker_id,
-            (unsigned long long)worker->context_id,
-            (unsigned long long)offset,
-            (unsigned long long)worker->async_load_expected);
-        app->pending++;
-        worker->async_load_actual = async_load_scalar_load(address, 8);
-        app->pending--;
-        latency_ns = async_worker_now_ns(worker) - submit_ns;
-        if (app->latency_count < app->config.iterations) {
-            app->latencies_ns[app->latency_count++] = latency_ns;
+        for (iteration = worker->begin; iteration < worker->end;
+             iteration += worker->stride) {
+            uint64_t submit_ns = async_worker_now_ns(worker);
+            uint64_t latency_ns;
+
+            if (app->config.async_load_event_log) {
+                async_load_record(
+                    app,
+                    "OBMM_ASYNC_LOAD_LDR schema=1 event=issue coroutine=%u "
+                    "operation=%llu context_id=%016llx offset=%llu "
+                    "expected=%016llx",
+                    worker->worker_id, (unsigned long long)iteration,
+                    (unsigned long long)worker->context_id,
+                    (unsigned long long)offset,
+                    (unsigned long long)worker->async_load_expected);
+            }
+            worker->async_load_actual = async_load_scalar_load(address, 8);
+            latency_ns = async_worker_now_ns(worker) - submit_ns;
+            app->latencies_ns[iteration] = latency_ns;
+            worker->async_load_operations_completed++;
+            worker->async_load_checksum ^= async_payload_checksum(
+                &worker->async_load_actual,
+                sizeof(worker->async_load_actual)) + iteration;
+            if (worker->async_load_actual != worker->async_load_expected) {
+                worker->async_load_verify_failures++;
+            }
+            if (app->config.async_load_event_log) {
+                async_load_record(
+                    app,
+                    "OBMM_ASYNC_LOAD_LDR schema=1 event=retire coroutine=%u "
+                    "operation=%llu context_id=%016llx offset=%llu "
+                    "expected=%016llx actual=%016llx latency_ns=%llu "
+                    "status=%s",
+                    worker->worker_id, (unsigned long long)iteration,
+                    (unsigned long long)worker->context_id,
+                    (unsigned long long)offset,
+                    (unsigned long long)worker->async_load_expected,
+                    (unsigned long long)worker->async_load_actual,
+                    (unsigned long long)latency_ns,
+                    worker->async_load_actual == worker->async_load_expected ?
+                        "pass" : "fail");
+            }
         }
-        app->completed++;
-        app->checksum ^= async_payload_checksum(
-            &worker->async_load_actual, sizeof(worker->async_load_actual)) +
-            worker->worker_id;
-        if (worker->async_load_actual != worker->async_load_expected) {
-            app->verify_failures++;
-        }
-        async_load_record(
-            app,
-            "OBMM_ASYNC_LOAD_LDR schema=1 event=retire coroutine=%u "
-            "context_id=%016llx offset=%llu expected=%016llx "
-            "actual=%016llx latency_ns=%llu status=%s",
-            worker->worker_id,
-            (unsigned long long)worker->context_id,
-            (unsigned long long)offset,
-            (unsigned long long)worker->async_load_expected,
-            (unsigned long long)worker->async_load_actual,
-            (unsigned long long)latency_ns,
-            worker->async_load_actual == worker->async_load_expected ?
-                "pass" : "fail");
         return;
     }
 
@@ -1757,6 +1825,35 @@ static uint64_t async_percentile_ns(uint64_t *values, uint64_t count,
     qsort(values, count, sizeof(*values), async_compare_u64);
     index = ((count - 1) * percentile) / 100;
     return values[index];
+}
+
+static bool async_collect_latency_stats(
+    const uint64_t *values, uint64_t count, uint64_t *p50_ns,
+    uint64_t *p95_ns, uint64_t *p99_ns, uint64_t *max_ns)
+{
+    uint64_t *copy;
+
+    *p50_ns = 0;
+    *p95_ns = 0;
+    *p99_ns = 0;
+    *max_ns = 0;
+    if (!values || !count || count > SIZE_MAX / sizeof(*copy)) {
+        return false;
+    }
+    copy = malloc(count * sizeof(*copy));
+    if (!copy) {
+        return false;
+    }
+    memcpy(copy, values, count * sizeof(*copy));
+    *p50_ns = async_percentile_ns(copy, count, 50);
+    memcpy(copy, values, count * sizeof(*copy));
+    *p95_ns = async_percentile_ns(copy, count, 95);
+    memcpy(copy, values, count * sizeof(*copy));
+    *p99_ns = async_percentile_ns(copy, count, 99);
+    memcpy(copy, values, count * sizeof(*copy));
+    *max_ns = async_percentile_ns(copy, count, 100);
+    free(copy);
+    return true;
 }
 
 static void async_print_eval_summary(const struct async_app *app,
@@ -2116,7 +2213,21 @@ static int async_run_async_load_workload(struct async_app *app)
                 index, (unsigned long long)context_id);
         }
     }
+    if (app->config.async_load_producer_consumer) {
+        async_measurement_begin(app);
+    }
     ret = obmm_coroutine_scheduler_run(app->coroutine_scheduler);
+    if (app->config.async_load_producer_consumer) {
+        async_measurement_end(app);
+        for (index = 0; index < app->config.coroutines; index++) {
+            const struct async_worker *worker = &app->workers[index];
+
+            app->latency_count += worker->async_load_operations_completed;
+            app->completed += worker->async_load_operations_completed;
+            app->verify_failures += worker->async_load_verify_failures;
+            app->checksum ^= worker->async_load_checksum;
+        }
+    }
     obmm_coroutine_scheduler_get_metrics(app->coroutine_scheduler, &app->async_load_metrics);
     app->failures += app->async_load_metrics.el0_fault_upcalls;
     app->timeouts += app->async_load_metrics.el0_timeout_faults;
@@ -2320,11 +2431,15 @@ static int async_run_async_load_with_warmup(
     if (ret) {
         return ret;
     }
-    async_measurement_begin(app);
+    if (!app->config.async_load_producer_consumer) {
+        async_measurement_begin(app);
+    }
     ret = async_run_async_load_once(
         app, options, mapping_fd, import_mem_id,
         app->config.iterations, 1);
-    async_measurement_end(app);
+    if (!app->config.async_load_producer_consumer) {
+        async_measurement_end(app);
+    }
     return ret;
 }
 
@@ -2390,6 +2505,7 @@ static void *async_kernel_thread_entry(void *opaque)
     struct async_app *app = thread->runtime->app;
     uint64_t offset = async_load_offset(thread->thread_id);
     volatile void *address = (volatile uint8_t *)app->remote_address + offset;
+    uint64_t ordinal;
 
     thread->expected = async_load_value(app->config.seed, thread->thread_id);
     atomic_fetch_add_explicit(&thread->runtime->ready, 1,
@@ -2397,9 +2513,28 @@ static void *async_kernel_thread_entry(void *opaque)
     while (!atomic_load_explicit(&thread->runtime->start,
                                  memory_order_acquire))
         sched_yield();
-    thread->start_ns = async_now_ns();
-    thread->actual = async_load_scalar_load(address, sizeof(uint64_t));
-    thread->end_ns = async_now_ns();
+    thread->start_ns = async_kernel_thread_now_ns(thread);
+    for (ordinal = thread->thread_id; ordinal < app->config.iterations;
+         ordinal += app->config.coroutines) {
+        uint64_t start_ns = async_kernel_thread_now_ns(thread);
+        uint64_t latency_ns;
+        uint64_t latency_slot;
+
+        thread->actual = async_load_scalar_load(address, sizeof(uint64_t));
+        latency_ns = async_kernel_thread_now_ns(thread) - start_ns;
+        latency_slot = atomic_fetch_add_explicit(
+            &thread->runtime->latency_next, 1, memory_order_relaxed);
+        if (latency_slot < app->config.iterations) {
+            thread->runtime->latencies_ns[latency_slot] = latency_ns;
+        }
+        thread->operations++;
+        if (thread->actual == thread->expected) {
+            thread->verified++;
+        }
+        thread->checksum ^= async_payload_checksum(
+            &thread->actual, sizeof(thread->actual)) + ordinal;
+    }
+    thread->end_ns = async_kernel_thread_now_ns(thread);
     return NULL;
 }
 
@@ -2421,8 +2556,15 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
     pthread_t tids[OBMM_ASYNC_LOAD_MAX_CONTEXTS] = { 0 };
     cpu_set_t cpu_set;
     uint64_t import_mem_id = 0;
+    uint64_t latency_count = 0;
+    uint64_t latency_p50_ns = 0;
+    uint64_t latency_p95_ns = 0;
+    uint64_t latency_p99_ns = 0;
+    uint64_t latency_max_ns = 0;
+    uint64_t completed = 0;
+    uint64_t verified = 0;
+    uint64_t checksum = 0;
     uint32_t created = 0;
-    uint32_t verified = 0;
     uint32_t index;
     int async_load_fd = -1;
     int ret = 0;
@@ -2433,6 +2575,12 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
 
     atomic_init(&runtime.start, false);
     atomic_init(&runtime.ready, 0);
+    atomic_init(&runtime.latency_next, 0);
+    runtime.latencies_ns = calloc(
+        app->config.iterations, sizeof(*runtime.latencies_ns));
+    if (!runtime.latencies_ns) {
+        return -ENOMEM;
+    }
 
     if (async_bootstrap_lookup_node(
             obmm_fd, local_cna, app->config.node_count,
@@ -2472,6 +2620,11 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
     CPU_SET(app->config.handler_cpu, &cpu_set);
     if (sched_setaffinity(0, sizeof(cpu_set), &cpu_set) != 0) {
         ret = -errno;
+        goto cleanup;
+    }
+    failure_stage = "event-log-control";
+    ret = async_set_kernel_event_log(app->config.async_load_event_log);
+    if (ret != 0) {
         goto cleanup;
     }
     failure_stage = "open-device";
@@ -2536,6 +2689,7 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
     while (atomic_load_explicit(&runtime.ready, memory_order_acquire) !=
            app->config.coroutines)
         sched_yield();
+    runtime.measurement_start_ns = async_now_ns();
     atomic_store_explicit(&runtime.start, true, memory_order_release);
     failure_stage = "join-threads";
     for (index = 0; index < created; index++) {
@@ -2545,6 +2699,7 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
             ret = -join_ret;
     }
     created = 0;
+    runtime.measurement_end_ns = async_now_ns();
 
     failure_stage = "read-stats";
     if (ioctl(async_load_fd, OBMM_ASYNC_LOAD_IOCTL_GET_KERNEL_TASK_STATS,
@@ -2557,38 +2712,63 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
     }
     for (index = 0; index < app->config.coroutines; index++) {
         struct async_kernel_thread *thread = &runtime.threads[index];
-        bool thread_pass = thread->actual == thread->expected;
+        bool thread_pass = thread->actual == thread->expected &&
+            thread->verified == thread->operations;
 
-        if (thread_pass)
-            verified++;
+        completed += thread->operations;
+        verified += thread->verified;
+        checksum ^= thread->checksum;
         printf("OBMM_ASYNC_LOAD_KERNEL_THREAD schema=1 thread=%u "
-               "expected=%016llx actual=%016llx latency_ns=%llu status=%s\n",
-               index, (unsigned long long)thread->expected,
+               "operations=%llu verified=%llu expected=%016llx "
+               "actual=%016llx elapsed_ns=%llu status=%s\n",
+               index, (unsigned long long)thread->operations,
+               (unsigned long long)thread->verified,
+               (unsigned long long)thread->expected,
                (unsigned long long)thread->actual,
                (unsigned long long)(thread->end_ns - thread->start_ns),
                thread_pass ? "pass" : "fail");
     }
-    pass = ret == 0 && verified == app->config.coroutines &&
-        kernel_stats.faults == app->config.coroutines &&
-        kernel_stats.pending_events == app->config.coroutines &&
-        kernel_stats.completion_events == app->config.coroutines &&
-        kernel_stats.task_wakeups == app->config.coroutines &&
+    latency_count = atomic_load_explicit(
+        &runtime.latency_next, memory_order_acquire);
+    if (!async_collect_latency_stats(
+            runtime.latencies_ns, latency_count, &latency_p50_ns,
+            &latency_p95_ns, &latency_p99_ns, &latency_max_ns) &&
+        ret == 0) {
+        ret = -ENOMEM;
+    }
+    pass = ret == 0 && completed == app->config.iterations &&
+        verified == app->config.iterations &&
+        latency_count == app->config.iterations &&
+        kernel_stats.faults == app->config.iterations &&
+        kernel_stats.pending_events == app->config.iterations &&
+        kernel_stats.completion_events == app->config.iterations &&
+        kernel_stats.task_wakeups == app->config.iterations &&
         kernel_stats.protocol_errors == 0 && kernel_stats.timeouts == 0 &&
         kernel_stats.interrupted_waits == 0 &&
-        replay_stats.replay_consumed == app->config.coroutines &&
+        replay_stats.replay_consumed == app->config.iterations &&
         replay_stats.replay_mismatch == 0 &&
         device_stats.direct_upcalls == 0;
     printf("OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY schema=1 abi=%u "
            "event_delivery=cq-irq scheduling=linux-task retirement=replay "
            "producer_node=%d consumer_node=%d source_export_mem_id=%llu "
-           "threads=%u verified=%u "
+           "threads=%u operations=%llu verified=%llu checksum=%016llx "
+           "event_log=%s guest_ns_p50=%llu guest_ns_p95=%llu "
+           "guest_ns_p99=%llu guest_ns_max=%llu makespan_ns=%llu "
            "faults=%llu pending=%llu completions=%llu sleeps=%llu "
            "wakeups=%llu protocol_errors=%llu timeouts=%llu "
            "interrupted_waits=%llu replay_consumed=%llu "
            "replay_mismatch=%llu direct_el0_upcalls=%llu status=%s\n",
            OBMM_ASYNC_LOAD_ABI_VERSION, app->config.producer_index,
            local_index, (unsigned long long)producer_meta.export_mem_id,
-           app->config.coroutines, verified,
+           app->config.coroutines, (unsigned long long)completed,
+           (unsigned long long)verified, (unsigned long long)checksum,
+           app->config.async_load_event_log ? "on" : "off",
+           (unsigned long long)latency_p50_ns,
+           (unsigned long long)latency_p95_ns,
+           (unsigned long long)latency_p99_ns,
+           (unsigned long long)latency_max_ns,
+           (unsigned long long)(runtime.measurement_end_ns -
+                                runtime.measurement_start_ns),
            (unsigned long long)kernel_stats.faults,
            (unsigned long long)kernel_stats.pending_events,
            (unsigned long long)kernel_stats.completion_events,
@@ -2620,6 +2800,7 @@ cleanup:
     }
     if (async_load_fd >= 0)
         close(async_load_fd);
+    free(runtime.latencies_ns);
     obmm_unmap_region(&import_region);
     if (import_mem_id)
         obmm_do_unimport(obmm_fd, import_mem_id);
@@ -2648,16 +2829,24 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
     struct obmm_coroutine_scheduler_options async_load_options = {
         .device_path = OBMM_COROUTINE_SCHEDULER_DEFAULT_DEVICE,
         .load_timeout_ns = (uint64_t)app->config.deadline_us * 1000,
-        .trace = async_load_coroutine_trace,
+        .trace = app->config.async_load_event_log ?
+            async_load_coroutine_trace : NULL,
         .trace_opaque = app,
         .completion_mode = app->config.async_load_completion ==
             ASYNC_LOAD_COMPLETION_REPLAY ?
             OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY : OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH,
     };
     uint64_t import_mem_id = 0;
-    uint32_t verified = 0;
+    uint64_t latency_p50_ns = 0;
+    uint64_t latency_p95_ns = 0;
+    uint64_t latency_p99_ns = 0;
+    uint64_t latency_max_ns = 0;
+    uint64_t operations_per_context =
+        app->config.iterations / app->config.coroutines;
+    uint64_t verified = 0;
     uint32_t index;
     int ret;
+    bool causal_timing_pass;
     bool pass;
 
     if (async_bootstrap_lookup_node(
@@ -2713,45 +2902,68 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
             app->runtime, &app->observability) != 0) {
         ret = -EIO;
     }
+    if (!async_collect_latency_stats(
+            app->latencies_ns, app->latency_count, &latency_p50_ns,
+            &latency_p95_ns, &latency_p99_ns, &latency_max_ns) &&
+        ret == 0) {
+        ret = -ENOMEM;
+    }
     for (index = 0; index < app->config.coroutines; index++) {
         struct async_worker *worker = &app->workers[index];
+        bool trace_pass = !app->config.async_load_event_log ||
+            (worker->async_load_pending_upcalls == operations_per_context &&
+             worker->async_load_complete_upcalls == operations_per_context &&
+             worker->async_load_resumes_after_complete >=
+                 operations_per_context);
         bool worker_pass =
             worker->async_load_actual == worker->async_load_expected &&
-            worker->async_load_pending_upcalls == 1 &&
-            worker->async_load_complete_upcalls == 1 &&
-            worker->async_load_resumes_after_complete >= 1;
+            worker->async_load_operations_completed ==
+                operations_per_context &&
+            worker->async_load_verify_failures == 0 &&
+            trace_pass;
 
         if (worker_pass) {
-            verified++;
+            verified += operations_per_context;
         }
         printf("OBMM_ASYNC_LOAD_COROUTINE_SUMMARY schema=1 coroutine=%u "
-               "context_id=%016llx expected=%016llx actual=%016llx "
+               "operations=%llu completed=%llu verified=%llu "
+               "context_id=%016llx "
+               "expected=%016llx actual=%016llx "
+               "event_log=%s "
                "pending=%llu complete=%llu resumes_after_complete=%llu "
                "status=%s\n",
-               index, (unsigned long long)worker->context_id,
+               index, (unsigned long long)operations_per_context,
+               (unsigned long long)worker->async_load_operations_completed,
+               (unsigned long long)(worker->async_load_operations_completed -
+                                    worker->async_load_verify_failures),
+               (unsigned long long)worker->context_id,
                (unsigned long long)worker->async_load_expected,
                (unsigned long long)worker->async_load_actual,
+               app->config.async_load_event_log ? "on" : "off",
                (unsigned long long)worker->async_load_pending_upcalls,
                (unsigned long long)worker->async_load_complete_upcalls,
                (unsigned long long)worker->async_load_resumes_after_complete,
                worker_pass ? "pass" : "fail");
     }
-    pass = ret == 0 && app->completed == app->config.coroutines &&
-        app->verify_failures == 0 && verified == app->config.coroutines &&
-        app->async_load_metrics.el0_pending_upcalls == app->config.coroutines &&
-        app->async_load_metrics.el0_complete_upcalls == app->config.coroutines &&
+    causal_timing_pass = !app->config.async_load_event_log ||
+        (app->async_load_metrics.el0_wait_assists > 0 &&
+         app->async_load_metrics.el0_scheduler_enter_assists ==
+             app->config.coroutines &&
+         app->async_load_metrics.event_wait_wakeups > 0);
+    pass = ret == 0 && app->completed == app->config.iterations &&
+        app->verify_failures == 0 && verified == app->config.iterations &&
+        app->latency_count == app->config.iterations &&
+        app->async_load_metrics.el0_pending_upcalls == app->config.iterations &&
+        app->async_load_metrics.el0_complete_upcalls == app->config.iterations &&
         app->async_load_metrics.el0_fault_upcalls == 0 &&
         app->async_load_metrics.el0_context_switches > 0 &&
         app->async_load_metrics.el0_event_ring_consumed ==
-            2ULL * app->config.coroutines &&
-        app->async_load_metrics.el0_wait_assists > 0 &&
-        app->async_load_metrics.el0_scheduler_enter_assists ==
-            app->config.coroutines &&
+            2ULL * app->config.iterations &&
+        causal_timing_pass &&
         app->async_load_metrics.event_producer_final ==
             app->async_load_metrics.el0_event_ring_consumed &&
         app->async_load_metrics.event_consumer_final ==
             app->async_load_metrics.event_producer_final &&
-        app->async_load_metrics.event_wait_wakeups > 0 &&
         app->async_load_metrics.kernel_hotpath_ioctls == 0 &&
         app->async_load_trace_dropped == 0 &&
         app->async_load_metrics.el0_context_saves ==
@@ -2765,12 +2977,16 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
         app->async_load_metrics.replay.replay_mismatch == 0 &&
         app->async_load_metrics.replay.replay_consumed ==
             (app->config.async_load_completion == ASYNC_LOAD_COMPLETION_REPLAY ?
-             app->config.coroutines : 0);
+             app->config.iterations : 0);
     printf("OBMM_ASYNC_LOAD_SUMMARY schema=1 abi=%u event_delivery=ring "
            "wait_wakeup=hlt role=consumer "
            "producer_node=%d consumer_node=%d "
            "source_export_mem_id=%llu import_mem_id=%llu "
-           "coroutines=%u completed=%llu values_verified=%u "
+           "coroutines=%u operations=%llu completed=%llu "
+           "values_verified=%llu verify_failures=%llu latency_count=%llu "
+           "checksum=%016llx event_log=%s "
+           "guest_ns_p50=%llu guest_ns_p95=%llu guest_ns_p99=%llu "
+           "guest_ns_max=%llu makespan_ns=%llu "
            "el0_upcalls_pending=%llu el0_upcalls_complete=%llu "
            "el0_upcalls_fault=%llu el0_context_saves=%llu "
            "el0_context_restores=%llu el0_context_switches=%llu "
@@ -2789,7 +3005,19 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
            app->config.producer_index, local_index,
            (unsigned long long)producer_meta.export_mem_id,
            (unsigned long long)import_mem_id, app->config.coroutines,
-           (unsigned long long)app->completed, verified,
+           (unsigned long long)app->config.iterations,
+           (unsigned long long)app->completed,
+           (unsigned long long)verified,
+           (unsigned long long)app->verify_failures,
+           (unsigned long long)app->latency_count,
+           (unsigned long long)app->checksum,
+           app->config.async_load_event_log ? "on" : "off",
+           (unsigned long long)latency_p50_ns,
+           (unsigned long long)latency_p95_ns,
+           (unsigned long long)latency_p99_ns,
+           (unsigned long long)latency_max_ns,
+           (unsigned long long)(app->measurement_end_ns -
+                                app->measurement_start_ns),
            (unsigned long long)app->async_load_metrics.el0_pending_upcalls,
            (unsigned long long)app->async_load_metrics.el0_complete_upcalls,
            (unsigned long long)app->async_load_metrics.el0_fault_upcalls,
