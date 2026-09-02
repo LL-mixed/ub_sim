@@ -51,7 +51,6 @@ enum async_app_mode {
 };
 
 enum async_load_completion {
-    ASYNC_LOAD_COMPLETION_PATCH,
     ASYNC_LOAD_COMPLETION_REPLAY,
 };
 
@@ -453,7 +452,7 @@ static void async_usage(const char *program)
             "[--expected-outcome success|error|drop-timeout|duplicate-late] "
             "[--compute-us N] [--iterations N] [--deadline-us N] "
             "[--seed N] [--node-count N] [--peer-index N] "
-            "[--async-load-completion patch|replay] "
+            "[--async-load-completion replay] "
             "[--async-load-producer-consumer] [--kernel-task-replay] "
             "[--async-load-event-log on|off] "
             "[--threads N] "
@@ -492,7 +491,7 @@ static bool async_parse_args(int argc, char **argv,
         .uffd_case = OBMM_UFFD_CASE_MISSING_REMOTE,
         .baseline_case = ASYNC_BASELINE_SYNC_REMOTE_MODELED,
         .expected_outcome = ASYNC_OUTCOME_SUCCESS,
-        .async_load_completion = ASYNC_LOAD_COMPLETION_PATCH,
+        .async_load_completion = ASYNC_LOAD_COMPLETION_REPLAY,
         .coroutines = 8,
         .inflight = 32,
         .lookahead = 16,
@@ -587,9 +586,7 @@ static bool async_parse_args(int argc, char **argv,
                 return false;
             }
         } else if (strcmp(option, "--async-load-completion") == 0) {
-            if (strcmp(value, "patch") == 0) {
-                config->async_load_completion = ASYNC_LOAD_COMPLETION_PATCH;
-            } else if (strcmp(value, "replay") == 0) {
+            if (strcmp(value, "replay") == 0) {
                 config->async_load_completion = ASYNC_LOAD_COMPLETION_REPLAY;
             } else {
                 return false;
@@ -835,8 +832,8 @@ static const char *async_mode_name(enum async_app_mode mode)
 static const char *async_load_completion_name(
     enum async_load_completion completion)
 {
-    return completion == ASYNC_LOAD_COMPLETION_REPLAY ?
-        "replay" : "patch";
+    (void)completion;
+    return "replay";
 }
 
 static const char *async_baseline_case_name(enum async_baseline_case test_case)
@@ -2179,7 +2176,7 @@ static int async_pin_current_cpu(void)
 
 static int async_run_async_load_workload(struct async_app *app)
 {
-    struct obmm_async_load_caps_v3 caps;
+    struct obmm_async_load_caps_v4 caps;
     uint32_t index;
     int ret;
 
@@ -2543,7 +2540,7 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
 {
     struct obmm_helpers_meta producer_meta = { 0 };
     struct obmm_helpers_region import_region = { .fd = -1 };
-    struct obmm_async_load_caps_v3 caps = { 0 };
+    struct obmm_async_load_caps_v4 caps = { 0 };
     struct obmm_async_load_map_register_v1 map = { 0 };
     struct obmm_async_load_map_unregister_v1 unmap = { 0 };
     struct obmm_async_load_start_v3 start = { 0 };
@@ -2832,9 +2829,6 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
         .trace = app->config.async_load_event_log ?
             async_load_coroutine_trace : NULL,
         .trace_opaque = app,
-        .completion_mode = app->config.async_load_completion ==
-            ASYNC_LOAD_COMPLETION_REPLAY ?
-            OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY : OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH,
     };
     uint64_t import_mem_id = 0;
     uint64_t latency_p50_ns = 0;
@@ -2976,10 +2970,9 @@ static int async_run_async_load_consumer(struct async_app *app, int obmm_fd,
         app->async_load_metrics.observability.backend_pending_current == 0 &&
         app->async_load_metrics.replay.replay_mismatch == 0 &&
         app->async_load_metrics.replay.replay_consumed ==
-            (app->config.async_load_completion == ASYNC_LOAD_COMPLETION_REPLAY ?
-             app->config.iterations : 0);
+            app->config.iterations;
     printf("OBMM_ASYNC_LOAD_SUMMARY schema=1 abi=%u event_delivery=ring "
-           "wait_wakeup=hlt role=consumer "
+           "wait_wakeup=wfe-irq role=consumer "
            "producer_node=%d consumer_node=%d "
            "source_export_mem_id=%llu import_mem_id=%llu "
            "coroutines=%u operations=%llu completed=%llu "
@@ -3229,9 +3222,6 @@ int main(int argc, char **argv)
     if (app.config.mode == ASYNC_APP_MODE_ASYNC_LOAD) {
         async_load_options.load_timeout_ns =
             (uint64_t)app.config.deadline_us * 1000;
-        async_load_options.completion_mode = app.config.async_load_completion ==
-            ASYNC_LOAD_COMPLETION_REPLAY ?
-            OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY : OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH;
         failure_stage = "coroutine-scheduler-workload";
         workload_start_ns = async_now_ns();
         workload_cpu_start_ns = async_process_now_ns();
@@ -3346,8 +3336,7 @@ int main(int argc, char **argv)
         (app.config.mode != ASYNC_APP_MODE_ASYNC_LOAD ||
          (app.async_load_metrics.replay.replay_mismatch == 0 &&
           app.async_load_metrics.replay.replay_consumed ==
-            (app.config.async_load_completion == ASYNC_LOAD_COMPLETION_REPLAY ?
-             app.completed : 0)))) {
+            app.completed))) {
         status = "pass";
     }
 

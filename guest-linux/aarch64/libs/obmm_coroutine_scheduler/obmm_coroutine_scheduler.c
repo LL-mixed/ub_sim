@@ -37,6 +37,7 @@ struct obmm_coroutine_scheduler_context_local {
     void *mapping;
     size_t mapping_bytes;
     uint64_t waiting_token;
+    uint64_t replay_token;
     struct obmm_async_load_context_v2 context __attribute__((aligned(16)));
 };
 
@@ -52,13 +53,12 @@ struct obmm_coroutine_scheduler {
     void *trace_opaque;
     bool started;
     bool device_reset;
-    bool replay_retire;
     bool hot_path_active;
     int first_error;
     uint16_t scheduler_cursor;
     uint16_t logical_contexts;
     uint64_t last_resumed_id;
-    struct obmm_async_load_caps_v3 caps;
+    struct obmm_async_load_caps_v4 caps;
     struct obmm_coroutine_scheduler_metrics metrics;
     struct obmm_coroutine_scheduler_context_local *current;
     struct obmm_coroutine_scheduler_context_local contexts[OBMM_ASYNC_LOAD_MAX_CONTEXTS];
@@ -82,7 +82,9 @@ extern void obmm_coroutine_scheduler_upcall_entry(void);
 extern void obmm_coroutine_scheduler_context_bootstrap(void);
 extern void obmm_coroutine_scheduler_context_finish(void) __attribute__((noreturn));
 extern void obmm_coroutine_scheduler_context_resume(
-    const struct obmm_async_load_context_v2 *context) __attribute__((noreturn));
+    const struct obmm_async_load_context_v2 *context,
+    uint64_t replay_token) __attribute__((noreturn));
+extern void obmm_coroutine_scheduler_wait_prepare(void);
 extern void obmm_coroutine_scheduler_wait(void);
 extern void obmm_coroutine_scheduler_scheduler_enter(void);
 
@@ -257,7 +259,7 @@ static int obmm_coroutine_scheduler_stack_allocate(size_t requested_bytes,
 static int obmm_coroutine_scheduler_event_ring_map(
     struct obmm_coroutine_scheduler *runtime)
 {
-    const struct obmm_async_load_caps_v3 *caps = &runtime->caps;
+    const struct obmm_async_load_caps_v4 *caps = &runtime->caps;
     long page_bytes = sysconf(_SC_PAGESIZE);
     uint64_t minimum_ring_bytes =
         OBMM_ASYNC_LOAD_EVENT_PRODUCER_HEADER_BYTES +
@@ -333,14 +335,6 @@ int obmm_coroutine_scheduler_open(struct obmm_coroutine_scheduler **runtime,
         coroutine_scheduler->load_timeout_ns = options->load_timeout_ns;
         coroutine_scheduler->trace = options->trace;
         coroutine_scheduler->trace_opaque = options->trace_opaque;
-        if (options->completion_mode != OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH &&
-            options->completion_mode != OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY) {
-            close(coroutine_scheduler->fd);
-            free(coroutine_scheduler);
-            return -EINVAL;
-        }
-        coroutine_scheduler->replay_retire =
-            options->completion_mode == OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY;
     }
     if (obmm_coroutine_scheduler_ioctl(
             coroutine_scheduler, OBMM_ASYNC_LOAD_IOCTL_QUERY_CAPS,
@@ -358,31 +352,33 @@ int obmm_coroutine_scheduler_open(struct obmm_coroutine_scheduler **runtime,
         !coroutine_scheduler->caps.event_queue_depth ||
         coroutine_scheduler->caps.event_queue_depth > OBMM_ASYNC_LOAD_MAX_EVENTS ||
         coroutine_scheduler->caps.context_state_bytes != OBMM_ASYNC_LOAD_CONTEXT_STATE_BYTES ||
-        coroutine_scheduler->caps.resume_hlt_imm != OBMM_ASYNC_LOAD_RESUME_HLT_IMM ||
-        coroutine_scheduler->caps.wait_hlt_imm != OBMM_ASYNC_LOAD_WAIT_HLT_IMM ||
-        coroutine_scheduler->caps.scheduler_enter_hlt_imm !=
-            OBMM_ASYNC_LOAD_SCHEDULER_ENTER_HLT_IMM ||
+        coroutine_scheduler->caps.resume_svc_imm != OBMM_ASYNC_LOAD_RESUME_SVC_IMM ||
+        coroutine_scheduler->caps.scheduler_enter_svc_imm !=
+            OBMM_ASYNC_LOAD_SCHEDULER_ENTER_SVC_IMM ||
+        coroutine_scheduler->caps.reserved1 != 0 ||
         (coroutine_scheduler->caps.capabilities &
          (OBMM_ASYNC_LOAD_CAP_DIRECT_EL0_UPCALL | OBMM_ASYNC_LOAD_CAP_EL0_RESUME |
           OBMM_ASYNC_LOAD_CAP_FULL_CONTEXT |
           OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
           OBMM_ASYNC_LOAD_CAP_EL0_WAIT_WAKE |
-          OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER)) !=
+          OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER |
+          OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
+          OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN |
+          OBMM_ASYNC_LOAD_CAP_SVC_CONTEXT_RESUME |
+          OBMM_ASYNC_LOAD_CAP_WFE_WAIT)) !=
          (OBMM_ASYNC_LOAD_CAP_DIRECT_EL0_UPCALL | OBMM_ASYNC_LOAD_CAP_EL0_RESUME |
           OBMM_ASYNC_LOAD_CAP_FULL_CONTEXT |
           OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
           OBMM_ASYNC_LOAD_CAP_EL0_WAIT_WAKE |
-          OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER) ||
+          OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER |
+          OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
+          OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN |
+          OBMM_ASYNC_LOAD_CAP_SVC_CONTEXT_RESUME |
+          OBMM_ASYNC_LOAD_CAP_WFE_WAIT) ||
         !coroutine_scheduler->caps.clock_mhz) {
         close(coroutine_scheduler->fd);
         free(coroutine_scheduler);
         return -EPROTO;
-    }
-    if (coroutine_scheduler->replay_retire &&
-        !(coroutine_scheduler->caps.capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE)) {
-        close(coroutine_scheduler->fd);
-        free(coroutine_scheduler);
-        return -EOPNOTSUPP;
     }
     ret = obmm_coroutine_scheduler_event_ring_map(coroutine_scheduler);
     if (ret) {
@@ -454,7 +450,7 @@ void obmm_coroutine_scheduler_close(struct obmm_coroutine_scheduler *runtime)
 }
 
 int obmm_coroutine_scheduler_get_caps(const struct obmm_coroutine_scheduler *runtime,
-                      struct obmm_async_load_caps_v3 *caps)
+                      struct obmm_async_load_caps_v4 *caps)
 {
     if (!runtime || !caps) {
         return -EINVAL;
@@ -783,21 +779,14 @@ static int obmm_coroutine_scheduler_process_event(struct obmm_coroutine_schedule
             return obmm_coroutine_scheduler_protocol_error(
                 runtime, event, target, "complete-state");
         }
-        if (!!(event->flags & OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY) !=
-            runtime->replay_retire) {
+        if (!(event->flags & OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY) ||
+            event->value != 0) {
             return obmm_coroutine_scheduler_protocol_error(
-                runtime, event, target, "complete-retire-mode");
+                runtime, event, target, "complete-replay-contract");
         }
         target->waiting_token = 0;
-        if (runtime->replay_retire) {
-            target->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_READY_REPLAY;
-        } else {
-            if (event->rt < 31) {
-                target->context.x[event->rt] = event->value;
-            }
-            target->context.pc = event->fault_pc + 4;
-            target->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_READY;
-        }
+        target->replay_token = event->plt_token;
+        target->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_READY_REPLAY;
         obmm_coroutine_scheduler_trace(runtime, OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_COMPLETE,
                        event, 0, event->context_id);
         return 0;
@@ -813,6 +802,7 @@ static int obmm_coroutine_scheduler_process_event(struct obmm_coroutine_schedule
                 runtime, event, target, "fault-state");
         }
         target->waiting_token = 0;
+        target->replay_token = 0;
         target->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_FAULTED;
         obmm_coroutine_scheduler_trace(runtime, OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_FAULT,
                        event, 0, event->context_id);
@@ -834,11 +824,11 @@ static int obmm_coroutine_scheduler_event_ring_validate(
         runtime->event_consumer;
 
     if (!producer || !consumer ||
-        producer->abi_version != OBMM_ASYNC_LOAD_ABI_VERSION ||
+        producer->abi_version != OBMM_ASYNC_LOAD_EVENT_ABI_VERSION ||
         producer->event_depth != runtime->caps.event_queue_depth ||
         producer->event_slot_bytes != OBMM_ASYNC_LOAD_EVENT_SLOT_BYTES ||
         producer->owner_generation != runtime->caps.owner_generation ||
-        consumer->abi_version != OBMM_ASYNC_LOAD_ABI_VERSION ||
+        consumer->abi_version != OBMM_ASYNC_LOAD_EVENT_ABI_VERSION ||
         consumer->flags ||
         consumer->owner_generation != runtime->caps.owner_generation ||
         __atomic_load_n(&producer->producer_sequence, __ATOMIC_ACQUIRE) ||
@@ -966,6 +956,16 @@ static __attribute__((noreturn)) void obmm_coroutine_scheduler_schedule(
         if (next) {
             uint64_t now_ns = obmm_coroutine_scheduler_now_ns();
             uint64_t previous_context_id = runtime->last_resumed_id;
+            uint64_t replay_token = next->replay_token;
+
+            if ((next->state ==
+                 OBMM_COROUTINE_SCHEDULER_CONTEXT_READY_REPLAY) !=
+                (replay_token != 0)) {
+                obmm_coroutine_scheduler_record_error(
+                    runtime, -EPROTO,
+                    OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_VALIDATE);
+                continue;
+            }
 
             if (runtime->last_resumed_id &&
                 runtime->last_resumed_id != next->context.context_id) {
@@ -981,14 +981,30 @@ static __attribute__((noreturn)) void obmm_coroutine_scheduler_schedule(
             runtime->last_resumed_id = next->context.context_id;
             runtime->current = next;
             next->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_RUNNING;
+            next->replay_token = 0;
             obmm_coroutine_scheduler_trace(runtime, OBMM_COROUTINE_SCHEDULER_TRACE_CONTEXT_RESUME,
                            NULL, previous_context_id,
                            next->context.context_id);
-            obmm_coroutine_scheduler_context_resume(&next->context);
+            obmm_coroutine_scheduler_context_resume(
+                &next->context, replay_token);
         }
         if (obmm_coroutine_scheduler_has_waiting(runtime)) {
             int ret;
 
+            /*
+             * Clear the local event register before the final CQ check.  A
+             * completion racing with that check leaves either a visible CQE
+             * or a set event register for the following WFE.
+             */
+            obmm_coroutine_scheduler_wait_prepare();
+            ret = obmm_coroutine_scheduler_event_ring_drain(runtime);
+            obmm_coroutine_scheduler_record_error(
+                runtime, ret,
+                OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_DRAIN);
+            if (ret || obmm_coroutine_scheduler_ready_count(runtime) ||
+                !obmm_coroutine_scheduler_has_waiting(runtime)) {
+                continue;
+            }
             runtime->metrics.el0_no_ready_waits++;
             runtime->metrics.el0_wait_assists++;
             __atomic_add_fetch(&runtime->event_consumer->wait_count, 1,
@@ -1121,8 +1137,7 @@ static int obmm_coroutine_scheduler_collect_metrics(struct obmm_coroutine_schedu
             &runtime->metrics.observability) != 0) {
         return obmm_coroutine_scheduler_neg_errno();
     }
-    if (runtime->caps.capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE &&
-        obmm_coroutine_scheduler_ioctl(
+    if (obmm_coroutine_scheduler_ioctl(
             runtime, OBMM_ASYNC_LOAD_IOCTL_GET_REPLAY_STATS,
             &runtime->metrics.replay) != 0) {
         return obmm_coroutine_scheduler_neg_errno();
@@ -1146,8 +1161,7 @@ int obmm_coroutine_scheduler_run(struct obmm_coroutine_scheduler *runtime)
     }
     request = (struct obmm_async_load_start_v3) {
         .home_cpu = home_cpu,
-        .flags = runtime->replay_retire ?
-            OBMM_ASYNC_LOAD_START_REPLAY_RETIRE : 0,
+        .flags = OBMM_ASYNC_LOAD_START_REPLAY_RETIRE,
         .load_timeout_ns = runtime->load_timeout_ns,
         .upcall_entry = (uintptr_t)obmm_coroutine_scheduler_upcall_entry,
         .logical_contexts = runtime->logical_contexts,

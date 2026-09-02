@@ -83,24 +83,55 @@ obmm_coroutine_scheduler_context_finish:
     .global obmm_coroutine_scheduler_context_resume
     .type obmm_coroutine_scheduler_context_resume, %function
 obmm_coroutine_scheduler_context_resume:
-    /* Custom simulated resume primitive: HLT #0x5343, x0 = context. */
-    .inst 0xd44a6860
+    /* x0 = context image, x1 = one-shot replay token or zero. */
+    mov x9, x0
+    ldp q0, q1, [x9, #288]
+    ldp q2, q3, [x9, #320]
+    ldp q4, q5, [x9, #352]
+    ldp q6, q7, [x9, #384]
+    ldp q8, q9, [x9, #416]
+    ldp q10, q11, [x9, #448]
+    ldp q12, q13, [x9, #480]
+    ldp q14, q15, [x9, #512]
+    ldp q16, q17, [x9, #544]
+    ldp q18, q19, [x9, #576]
+    ldp q20, q21, [x9, #608]
+    ldp q22, q23, [x9, #640]
+    ldp q24, q25, [x9, #672]
+    ldp q26, q27, [x9, #704]
+    ldp q28, q29, [x9, #736]
+    ldp q30, q31, [x9, #768]
+    ldr x10, [x9, #800]
+    msr fpcr, x10
+    ldr x10, [x9, #808]
+    msr fpsr, x10
+    ldr x10, [x9, #816]
+    msr tpidr_el0, x10
+    mov x0, x9
+    svc #0x5343
     b .Lfatal
     .size obmm_coroutine_scheduler_context_resume, .-obmm_coroutine_scheduler_context_resume
+
+    .global obmm_coroutine_scheduler_wait_prepare
+    .type obmm_coroutine_scheduler_wait_prepare, %function
+obmm_coroutine_scheduler_wait_prepare:
+    /* Clear the local event register before the final CQ-empty check. */
+    sevl
+    wfe
+    ret
+    .size obmm_coroutine_scheduler_wait_prepare, .-obmm_coroutine_scheduler_wait_prepare
 
     .global obmm_coroutine_scheduler_wait
     .type obmm_coroutine_scheduler_wait, %function
 obmm_coroutine_scheduler_wait:
-    /* Custom simulated kernel-free wait primitive: HLT #0x5344. */
-    .inst 0xd44a6880
+    wfe
     ret
     .size obmm_coroutine_scheduler_wait, .-obmm_coroutine_scheduler_wait
 
     .global obmm_coroutine_scheduler_scheduler_enter
     .type obmm_coroutine_scheduler_scheduler_enter, %function
 obmm_coroutine_scheduler_scheduler_enter:
-    /* Custom simulated scheduler-enter primitive: HLT #0x5345. */
-    .inst 0xd44a68a0
+    svc #0x5345
     ret
     .size obmm_coroutine_scheduler_scheduler_enter, .-obmm_coroutine_scheduler_scheduler_enter
 

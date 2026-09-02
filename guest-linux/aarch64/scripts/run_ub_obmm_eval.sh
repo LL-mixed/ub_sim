@@ -14,7 +14,7 @@ TIMEOUT_SEC=180
 EXPECTED_OUTCOME="success"
 ASYNC_LOAD_PRODUCER_CONSUMER=0
 ASYNC_LOAD_PRODUCER_INDEX=0
-ASYNC_LOAD_COMPLETION=patch
+ASYNC_LOAD_COMPLETION=replay
 KERNEL_TASK_REPLAY=0
 ASYNC_LOAD_EVENT_LOG=on
 ASYNC_LOAD_CONTEXTS=""
@@ -211,9 +211,9 @@ while (( async_index <= ${#async_words} )); do
     --mode) append_cmdline "obmm_async_mode=$value" ;;
     --async-load-completion)
       case "$value" in
-        patch|replay) ;;
+        replay) ;;
         *)
-          echo "--async-load-completion must be patch or replay" >&2
+          echo "--async-load-completion must be replay" >&2
           exit 2
           ;;
       esac
@@ -438,7 +438,7 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     kernel_blocked_tasks="$(grep -o 'remote-load block pid=[0-9]*' "$consumer_log" | sort -u | wc -l | tr -d ' ' || true)"
     if [[ "$async_load_coroutines" != <2-> ||
           "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
-          "$(summary_field "$async_load_summary" abi)" != "3" ||
+          "$(summary_field "$async_load_summary" abi)" != "4" ||
           "$(summary_field "$async_load_summary" event_delivery)" != "cq-irq" ||
           "$(summary_field "$async_load_summary" scheduling)" != "linux-task" ||
           "$(summary_field "$async_load_summary" retirement)" != "replay" ||
@@ -490,9 +490,9 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   async_load_operations="$(summary_field "$async_load_summary" operations)"
   async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
   if [[ "$async_load_coroutines" != <2-> || "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
-        "$(summary_field "$async_load_summary" abi)" != "3" ||
+        "$(summary_field "$async_load_summary" abi)" != "4" ||
         "$(summary_field "$async_load_summary" event_delivery)" != "ring" ||
-        "$(summary_field "$async_load_summary" wait_wakeup)" != "hlt" ||
+        "$(summary_field "$async_load_summary" wait_wakeup)" != "wfe-irq" ||
         "$(summary_field "$async_load_summary" async_load_completion)" != "$ASYNC_LOAD_COMPLETION" ||
         "$(summary_field "$async_load_summary" event_log)" != "$ASYNC_LOAD_EVENT_LOG" ||
         "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
@@ -524,23 +524,12 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     echo "ASYNC_LOAD producer/consumer causal timing evidence is incomplete" >&2
     exit 1
   fi
-  case "$ASYNC_LOAD_COMPLETION" in
-    patch)
-      if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "0" ||
-            "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ]]; then
-        echo "ASYNC_LOAD patch mode reported replay activity" >&2
-        exit 1
-      fi
-      ;;
-    replay)
-      if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_operations" ||
-            "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
-            "$(summary_field "$async_load_summary" replay_ready_high_water)" != <1-> ]]; then
-        echo "ASYNC_LOAD replay mode lacks exact-once retirement evidence" >&2
-        exit 1
-      fi
-      ;;
-  esac
+  if [[ "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_operations" ||
+        "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
+        "$(summary_field "$async_load_summary" replay_ready_high_water)" != <1-> ]]; then
+    echo "ASYNC_LOAD replay mode lacks exact-once retirement evidence" >&2
+    exit 1
+  fi
 
   blocked_load_switches=0
   for (( coroutine_id = 0; coroutine_id < async_load_coroutines; coroutine_id++ )); do
@@ -586,7 +575,7 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
           "$(summary_field "$retire_line" context_id)" != "$context_id" ||
           "$(summary_field "$coroutine_summary" context_id)" != "$context_id" ||
           "$(summary_field "$issue_line" expected)" != "$expected_value" ||
-          "$(summary_field "$complete_line" value)" != "$expected_value" ||
+          "$(summary_field "$complete_line" value)" != "0000000000000000" ||
           "$(summary_field "$retire_line" actual)" != "$expected_value" ||
           "$(summary_field "$coroutine_summary" expected)" != "$expected_value" ||
           "$(summary_field "$coroutine_summary" actual)" != "$expected_value" ||

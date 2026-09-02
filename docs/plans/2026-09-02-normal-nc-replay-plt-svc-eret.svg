@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1040" viewBox="0 0 1600 1040">
+  <defs>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #172033; }
+      .subtitle { font: 600 20px sans-serif; fill: #27344d; }
+      .body { font: 17px sans-serif; fill: #172033; }
+      .small { font: 15px sans-serif; fill: #35415a; }
+      .box { fill: #f8fafc; stroke: #365486; stroke-width: 2; rx: 14; }
+      .cpu { fill: #eef5ff; stroke: #2457a6; stroke-width: 2; rx: 14; }
+      .ubc { fill: #fff7e8; stroke: #b66a10; stroke-width: 2; rx: 14; }
+      .sw { fill: #edf9f1; stroke: #277c45; stroke-width: 2; rx: 14; }
+      .forbid { fill: #fff0f0; stroke: #b33a3a; stroke-width: 2; rx: 14; }
+      .arrow { stroke: #314a70; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #69758b; stroke-width: 2; stroke-dasharray: 8 7; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#314a70"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1040" fill="#ffffff"/>
+  <text x="800" y="48" text-anchor="middle" class="title">Normal NC async LDR：NC PLT replay + SVC/ERET</text>
+  <text x="800" y="79" text-anchor="middle" class="small">深色文字、浅色背景；cacheable fill、NC replay 与软件调度边界分离</text>
+
+  <rect x="55" y="115" width="360" height="235" class="cpu"/>
+  <text x="235" y="151" text-anchor="middle" class="subtitle">CPU core</text>
+  <text x="85" y="190" class="body">• eligible EL0 scalar LDR</text>
+  <text x="85" y="222" class="body">• precise REMOTE_PENDING</text>
+  <text x="85" y="254" class="body">• ESR / FAR / ELR</text>
+  <text x="85" y="286" class="body">• one-shot replay token latch</text>
+  <text x="85" y="318" class="body">• standard SVC / ERET path</text>
+
+  <rect x="55" y="405" width="360" height="190" class="box"/>
+  <text x="235" y="441" text-anchor="middle" class="subtitle">Cache / ordinary MSHR</text>
+  <text x="85" y="480" class="body">• cacheable line miss / merge / fill</text>
+  <text x="85" y="512" class="body">• local/remote line contract一致</text>
+  <text x="85" y="544" class="body">• 不保存 NC result 或 coroutine</text>
+  <text x="85" y="576" class="body">• 无 remote line fill table</text>
+
+  <rect x="500" y="115" width="520" height="480" class="ubc"/>
+  <text x="760" y="151" text-anchor="middle" class="subtitle">Requester UBC</text>
+  <rect x="545" y="180" width="430" height="235" class="box"/>
+  <text x="760" y="215" text-anchor="middle" class="subtitle">Normal NC PLT</text>
+  <text x="575" y="254" class="body">FREE → PENDING_REMOTE → REPLAY_READY</text>
+  <text x="575" y="286" class="body">→ REPLAY_ARMED → CONSUMED → FREE</text>
+  <text x="575" y="326" class="body">保存：tag、map generation、address、size</text>
+  <text x="575" y="358" class="body">保存：status、scalar value</text>
+  <text x="575" y="390" class="body">不保存：PC、SP、Rt、task/coroutine context</text>
+
+  <rect x="545" y="448" width="205" height="110" class="box"/>
+  <text x="648" y="483" text-anchor="middle" class="subtitle">Remote transport</text>
+  <text x="570" y="520" class="small">request / response</text>
+  <text x="570" y="545" class="small">tag correlation</text>
+
+  <rect x="770" y="448" width="205" height="110" class="box"/>
+  <text x="873" y="483" text-anchor="middle" class="subtitle">CQ + IRQ</text>
+  <text x="795" y="520" class="small">REPLAY_READY(tag)</text>
+  <text x="795" y="545" class="small">FAULT_READY(tag)</text>
+
+  <rect x="1105" y="115" width="440" height="235" class="sw"/>
+  <text x="1325" y="151" text-anchor="middle" class="subtitle">Linux EL1 fast path / driver</text>
+  <text x="1135" y="190" class="body">• PENDING fault association</text>
+  <text x="1135" y="222" class="body">• task waitqueue / CQ IRQ</text>
+  <text x="1135" y="254" class="body">• SVC context validation</text>
+  <text x="1135" y="286" class="body">• arm replay token</text>
+  <text x="1135" y="318" class="body">• standard exception exit + ERET</text>
+
+  <rect x="1105" y="405" width="440" height="190" class="sw"/>
+  <text x="1325" y="441" text-anchor="middle" class="subtitle">EL0 coroutine scheduler</text>
+  <text x="1135" y="480" class="body">• WAIT_REMOTE / READY_REPLAY</text>
+  <text x="1135" y="512" class="body">• context store 与 ready queue</text>
+  <text x="1135" y="544" class="body">• SVC resume；SEVL/WFE wait protocol</text>
+  <text x="1135" y="576" class="body">• COMPLETE 不 patch Rt/PC</text>
+
+  <path d="M 415 210 L 500 210" class="arrow"/>
+  <text x="458" y="195" text-anchor="middle" class="small">NC request</text>
+  <path d="M 500 315 L 415 315" class="arrow"/>
+  <text x="458" y="300" text-anchor="middle" class="small">PENDING(tag)</text>
+  <path d="M 975 500 L 1105 500" class="arrow"/>
+  <text x="1040" y="485" text-anchor="middle" class="small">CQ/IRQ</text>
+  <path d="M 1105 255 L 1020 255" class="arrow"/>
+  <text x="1063" y="240" text-anchor="middle" class="small">arm token</text>
+  <path d="M 1105 315 L 1060 315 L 1060 625 L 460 625 L 460 330 L 415 330" class="dash"/>
+  <text x="760" y="618" text-anchor="middle" class="small">standard exception exit + ERET 到原 LDR；replay request 携带 token</text>
+  <path d="M 1105 535 L 1020 535" class="arrow"/>
+  <text x="1063" y="520" text-anchor="middle" class="small">SVC</text>
+
+  <rect x="55" y="660" width="1490" height="315" class="forbid"/>
+  <text x="800" y="700" text-anchor="middle" class="subtitle">强制约束</text>
+  <text x="95" y="744" class="body">1. Normal NC completion 只进入 REPLAY_READY；软件禁止写 saved Rt，禁止 saved PC += 4。</text>
+  <text x="95" y="784" class="body">2. Normal NC PLT 明确位于 requester UBC；MSHR 不承载 NC replay state。</text>
+  <text x="95" y="824" class="body">3. replay token显式选择 dynamic load；同 PC、同 VA 的并发 coroutine 仍可区分。</text>
+  <text x="95" y="864" class="body">4. PLT slot 在 replay LDR 或 terminal fault 消费前禁止回收。</text>
+  <text x="95" y="904" class="body">5. 私有 HLT 退出目标 ABI；resume 使用 SVC/ERET，idle 使用 SEVL/WFE + final CQ check + WFE/IRQ。</text>
+  <text x="95" y="944" class="body">6. Normal Cacheable remote completion 进入普通 cache-line fill，恢复后 replay 原 LDR；Device 首版拒绝。</text>
+</svg>

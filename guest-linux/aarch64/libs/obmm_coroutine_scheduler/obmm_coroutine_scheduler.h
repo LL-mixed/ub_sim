@@ -15,11 +15,6 @@ extern "C" {
 
 struct obmm_coroutine_scheduler;
 
-enum obmm_coroutine_scheduler_completion_mode {
-    OBMM_COROUTINE_SCHEDULER_COMPLETION_PATCH = 0,
-    OBMM_COROUTINE_SCHEDULER_COMPLETION_REPLAY = 1,
-};
-
 enum obmm_coroutine_scheduler_trace_kind {
     OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_PENDING = 1,
     OBMM_COROUTINE_SCHEDULER_TRACE_UPCALL_COMPLETE,
@@ -61,7 +56,6 @@ struct obmm_coroutine_scheduler_options {
     uint64_t load_timeout_ns;
     obmm_coroutine_scheduler_trace_fn trace;
     void *trace_opaque;
-    enum obmm_coroutine_scheduler_completion_mode completion_mode;
 };
 
 struct obmm_coroutine_scheduler_map {
@@ -103,7 +97,7 @@ int obmm_coroutine_scheduler_open(struct obmm_coroutine_scheduler **runtime,
                   const struct obmm_coroutine_scheduler_options *options);
 void obmm_coroutine_scheduler_close(struct obmm_coroutine_scheduler *runtime);
 int obmm_coroutine_scheduler_get_caps(const struct obmm_coroutine_scheduler *runtime,
-                      struct obmm_async_load_caps_v3 *caps);
+                      struct obmm_async_load_caps_v4 *caps);
 
 int obmm_coroutine_scheduler_register_map(struct obmm_coroutine_scheduler *runtime, int mapping_fd,
                           uint64_t mem_id, void *gsva_base,

@@ -89,6 +89,7 @@ current_kernel_artifact_signature() {
       drivers/ub/ubus/ub_ssd.c \
       drivers/ub/ubus/sim \
       arch/arm64/include/asm/esr.h \
+      arch/arm64/kernel/syscall.c \
       arch/arm64/mm/fault.c \
       include/linux/arm64_remote_load.h \
       include/linux/obmm.h \

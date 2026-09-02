@@ -2,6 +2,7 @@
 #include <asm/mmu_context.h>
 #include <asm/ptrace.h>
 #include <asm/esr.h>
+#include <asm/syscall.h>
 #include <asm/sysreg.h>
 #include <linux/arm64_remote_load.h>
 #include <linux/cdev.h>
@@ -93,19 +94,24 @@
 #define OBMM_ASYNC_LOAD_REG_EVENT_PRODUCER_SEQUENCE 0x160
 #define OBMM_ASYNC_LOAD_REG_EVENT_CONSUMER_SEQUENCE 0x168
 #define OBMM_ASYNC_LOAD_REG_EVENT_RING_PUBLISHED 0x170
-#define OBMM_ASYNC_LOAD_REG_EVENT_WAIT_HALTS 0x178
 #define OBMM_ASYNC_LOAD_REG_EVENT_WAIT_WAKEUPS 0x180
 #define OBMM_ASYNC_LOAD_REG_SCHEDULER_ENTERS 0x188
 #define OBMM_ASYNC_LOAD_REG_SESSION_FLAGS 0x190
 #define OBMM_ASYNC_LOAD_REG_CAPABILITIES 0x198
 #define OBMM_ASYNC_LOAD_REG_IRQ_STATUS 0x1a0
 #define OBMM_ASYNC_LOAD_REG_IRQ_ACK 0x1a8
+#define OBMM_ASYNC_LOAD_REG_REPLAY_CONTEXT_ID 0x1b0
+#define OBMM_ASYNC_LOAD_REG_REPLAY_TOKEN 0x1b8
+#define OBMM_ASYNC_LOAD_REG_REPLAY_PC 0x1c0
+#define OBMM_ASYNC_LOAD_REG_REPLAY_COMMAND 0x1c8
 #define OBMM_ASYNC_LOAD_REG_STATS_BASE 0x200
 #define OBMM_ASYNC_LOAD_REG_OBSERVABILITY_BASE \
 	(OBMM_ASYNC_LOAD_REG_STATS_BASE + 17 * 8)
 #define OBMM_ASYNC_LOAD_OBSERVABILITY_VALUES 17
 #define OBMM_ASYNC_LOAD_REG_REPLAY_STATS_BASE 0x400
 #define OBMM_ASYNC_LOAD_MAX_LOAD_TIMEOUT_NS 10000000000ULL
+#define OBMM_ASYNC_LOAD_PSTATE_NZCV_MASK \
+	(PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT)
 
 #define OBMM_ASYNC_LOAD_STATUS_ACTIVE BIT(0)
 #define OBMM_ASYNC_LOAD_STATUS_FAIL_STOP BIT(1)
@@ -135,7 +141,7 @@ static_assert(offsetof(struct obmm_async_load_context_v2, sp) == 264);
 static_assert(offsetof(struct obmm_async_load_context_v2, pc) == 272);
 static_assert(offsetof(struct obmm_async_load_context_v2, q) == 288);
 static_assert(offsetof(struct obmm_async_load_context_v2, fpcr) == 800);
-static_assert(sizeof(struct obmm_async_load_caps_v3) == 112);
+static_assert(sizeof(struct obmm_async_load_caps_v4) == 112);
 static_assert(sizeof(struct obmm_async_load_map_register_v1) == 64);
 static_assert(sizeof(struct obmm_async_load_start_v3) == 40);
 static_assert(sizeof(struct obmm_async_load_event_producer_v3) == 64);
@@ -867,7 +873,7 @@ static int linqu_async_load_open(struct inode *inode, struct file *file)
 	memset(ctx->event_ring_cpu, 0, ctx->event_ring_bytes);
 	memset(ctx->event_consumer_cpu, 0, ctx->event_consumer_bytes);
 	consumer = ctx->event_consumer_cpu;
-	consumer->abi_version = OBMM_ASYNC_LOAD_ABI_VERSION;
+	consumer->abi_version = OBMM_ASYNC_LOAD_EVENT_ABI_VERSION;
 	consumer->owner_generation = ctx->owner_generation;
 	drv->active_async_load_file = ctx;
 	mutex_unlock(&drv->queue_lock);
@@ -980,7 +986,7 @@ static int linqu_async_load_drain_kernel_events_locked(
 
 	dma_rmb();
 	if (le32_to_cpu(READ_ONCE(producer->abi_version)) !=
-		    OBMM_ASYNC_LOAD_ABI_VERSION ||
+		    OBMM_ASYNC_LOAD_EVENT_ABI_VERSION ||
 	    le16_to_cpu(READ_ONCE(producer->event_depth)) !=
 		    ctx->event_queue_depth ||
 	    le16_to_cpu(READ_ONCE(producer->event_slot_bytes)) !=
@@ -1014,6 +1020,102 @@ static int linqu_async_load_drain_kernel_events_locked(
 	}
 	dma_wmb();
 	WRITE_ONCE(consumer->consumer_sequence, cpu_to_le64(consumer_sequence));
+	return ret;
+}
+
+static int linqu_async_load_resume_command(
+	struct linqu_async_load_file *ctx, u64 context_id,
+	u64 replay_token, u64 replay_pc)
+{
+	struct linqu_ub_drv *drv = ctx->drv;
+
+	dma_wmb();
+	writeq(context_id, drv->obmm_async_load_mmio +
+	       OBMM_ASYNC_LOAD_REG_REPLAY_CONTEXT_ID);
+	writeq(replay_token, drv->obmm_async_load_mmio +
+	       OBMM_ASYNC_LOAD_REG_REPLAY_TOKEN);
+	writeq(replay_pc, drv->obmm_async_load_mmio +
+	       OBMM_ASYNC_LOAD_REG_REPLAY_PC);
+	writeq(1, drv->obmm_async_load_mmio +
+	       OBMM_ASYNC_LOAD_REG_REPLAY_COMMAND);
+	return readq(drv->obmm_async_load_mmio +
+		     OBMM_ASYNC_LOAD_REG_LAST_ERROR) ? -EPROTO : 0;
+}
+
+static int linqu_async_load_scheduler_enter_command(
+	struct linqu_async_load_file *ctx)
+{
+	struct linqu_ub_drv *drv = ctx->drv;
+
+	dma_wmb();
+	writeq(2, drv->obmm_async_load_mmio +
+	       OBMM_ASYNC_LOAD_REG_REPLAY_COMMAND);
+	return readq(drv->obmm_async_load_mmio +
+		     OBMM_ASYNC_LOAD_REG_LAST_ERROR) ? -EPROTO : 0;
+}
+
+static int linqu_remote_load_svc(unsigned int imm, struct pt_regs *regs)
+{
+	struct obmm_async_load_context_v2 context;
+	struct linqu_async_load_file *ctx;
+	struct linqu_ub_drv *drv = READ_ONCE(linqu_remote_load_drv);
+	u64 replay_token;
+	int ret = -ENOENT;
+
+	if (imm != OBMM_ASYNC_LOAD_RESUME_SVC_IMM &&
+	    imm != OBMM_ASYNC_LOAD_SCHEDULER_ENTER_SVC_IMM)
+		return -ENOENT;
+	if (!drv || !user_mode(regs))
+		return -ENODEV;
+
+	mutex_lock(&drv->queue_lock);
+	ctx = drv->active_async_load_file;
+	if (!ctx || !ctx->started || ctx->kernel_task_mode ||
+	    !linqu_async_load_owner(ctx) ||
+	    !refcount_inc_not_zero(&ctx->refs)) {
+		mutex_unlock(&drv->queue_lock);
+		return -EPERM;
+	}
+	mutex_unlock(&drv->queue_lock);
+
+	mutex_lock(&ctx->lock);
+	if (imm == OBMM_ASYNC_LOAD_SCHEDULER_ENTER_SVC_IMM) {
+		ret = linqu_async_load_scheduler_enter_command(ctx);
+		goto out_unlock;
+	}
+	if (!IS_ALIGNED(regs->regs[0], 16) ||
+	    copy_from_user(&context,
+			   (void __user *)(uintptr_t)regs->regs[0],
+			   sizeof(context))) {
+		ret = -EFAULT;
+		goto out_unlock;
+	}
+	if (!context.context_id || !context.pc || !context.sp ||
+	    !IS_ALIGNED(context.sp, 16) || context.reserved ||
+	    (context.context_id >> 32) != ctx->owner_generation ||
+	    ((context.context_id >> 16) & 0xffff) != smp_processor_id() ||
+	    (context.context_id & 0xffff) >= ctx->context_entries) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+	replay_token = regs->regs[1];
+	ret = linqu_async_load_resume_command(
+		ctx, context.context_id, replay_token,
+		replay_token ? context.pc : 0);
+	if (ret)
+		goto out_unlock;
+
+	memcpy(regs->regs, context.x, sizeof(context.x));
+	regs->sp = context.sp;
+	regs->pc = context.pc;
+	regs->pstate = (regs->pstate & ~OBMM_ASYNC_LOAD_PSTATE_NZCV_MASK) |
+		(context.nzcv & OBMM_ASYNC_LOAD_PSTATE_NZCV_MASK);
+	regs->orig_x0 = 0;
+	regs->syscallno = NO_SYSCALL;
+
+out_unlock:
+	mutex_unlock(&ctx->lock);
+	linqu_async_load_ctx_put(ctx);
 	return ret;
 }
 
@@ -1096,11 +1198,16 @@ static int linqu_remote_load_fault(unsigned long far, unsigned long esr,
 		goto out_unlock;
 	}
 	ctx->kernel_stats.task_wakeups++;
-	ret = wait->status == OBMM_ASYNC_LOAD_STATUS_SUCCESS ? 0 : -EIO;
+	if (wait->status == OBMM_ASYNC_LOAD_STATUS_SUCCESS)
+		ret = linqu_async_load_resume_command(
+			ctx, wait->context_id, wait->plt_token, wait->fault_pc);
+	else
+		ret = -EIO;
 	if (remote_load_event_log)
 		dev_info(drv->dev,
 			 "remote-load wake pid=%d token=0x%llx status=%u replay=%u\n",
-			 wait->task_pid, wait->plt_token, wait->status, ret == 0);
+			 wait->task_pid, wait->plt_token, wait->status,
+			 ret == 0);
 	linqu_async_load_kernel_wait_reset(wait);
 
 out_unlock:
@@ -1111,6 +1218,7 @@ out_unlock:
 
 static const struct arm64_remote_load_fault_ops linqu_remote_load_fault_ops = {
 	.handle = linqu_remote_load_fault,
+	.handle_svc = linqu_remote_load_svc,
 	.owner = THIS_MODULE,
 };
 
@@ -1198,7 +1306,7 @@ static long linqu_async_load_query_caps(struct linqu_async_load_file *ctx,
 {
 	u64 version = readq(ctx->drv->obmm_async_load_mmio +
 			    OBMM_ASYNC_LOAD_REG_VERSION_CAPS);
-	struct obmm_async_load_caps_v3 caps = {
+	struct obmm_async_load_caps_v4 caps = {
 		.abi_version = version & 0xffff,
 		.context_entries = (version >> 16) & 0xffff,
 		.pending_load_entries = (version >> 32) & 0xffff,
@@ -1208,10 +1316,9 @@ static long linqu_async_load_query_caps(struct linqu_async_load_file *ctx,
 		.owner_generation = ctx->owner_generation,
 		.clock_mhz = readq(ctx->drv->obmm_async_load_mmio +
 				  OBMM_ASYNC_LOAD_REG_CLOCK_MHZ),
-		.resume_hlt_imm = OBMM_ASYNC_LOAD_RESUME_HLT_IMM,
-		.wait_hlt_imm = OBMM_ASYNC_LOAD_WAIT_HLT_IMM,
-		.scheduler_enter_hlt_imm =
-			OBMM_ASYNC_LOAD_SCHEDULER_ENTER_HLT_IMM,
+		.resume_svc_imm = OBMM_ASYNC_LOAD_RESUME_SVC_IMM,
+		.scheduler_enter_svc_imm =
+			OBMM_ASYNC_LOAD_SCHEDULER_ENTER_SVC_IMM,
 		.event_slot_bytes = OBMM_ASYNC_LOAD_EVENT_SLOT_BYTES,
 		.event_producer_header_bytes =
 			OBMM_ASYNC_LOAD_EVENT_PRODUCER_HEADER_BYTES,
@@ -1373,22 +1480,24 @@ static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	kernel_task_mode = request.flags & OBMM_ASYNC_LOAD_START_KERNEL_TASK;
-	required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING;
+	required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
+		OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
+		OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN;
 	if (kernel_task_mode)
 		required_capabilities |= OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY;
 	else
 		required_capabilities |= OBMM_ASYNC_LOAD_CAP_EL0_WAIT_WAKE |
-			OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER;
+			OBMM_ASYNC_LOAD_CAP_EL0_SCHEDULER_ENTER |
+			OBMM_ASYNC_LOAD_CAP_SVC_CONTEXT_RESUME |
+			OBMM_ASYNC_LOAD_CAP_WFE_WAIT;
 	if (ctx->started ||
 	    (ctx->capabilities & required_capabilities) !=
 	     required_capabilities ||
 	    request.flags & ~(OBMM_ASYNC_LOAD_START_REPLAY_RETIRE |
 			      OBMM_ASYNC_LOAD_START_KERNEL_TASK) ||
-	    (request.flags & OBMM_ASYNC_LOAD_START_REPLAY_RETIRE &&
-	     !(ctx->capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE)) ||
+	    !(request.flags & OBMM_ASYNC_LOAD_START_REPLAY_RETIRE) ||
 	    (kernel_task_mode &&
-	     (!(request.flags & OBMM_ASYNC_LOAD_START_REPLAY_RETIRE) ||
-	      drv->irq < 0)) ||
+	     drv->irq < 0) ||
 	    request.owner_generation ||
 	    request.reserved0 ||
 	    (!kernel_task_mode &&
@@ -1416,7 +1525,7 @@ static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 	memset(ctx->event_ring_cpu, 0, ctx->event_ring_bytes);
 	memset(ctx->event_consumer_cpu, 0, ctx->event_consumer_bytes);
 	consumer = ctx->event_consumer_cpu;
-	consumer->abi_version = OBMM_ASYNC_LOAD_ABI_VERSION;
+	consumer->abi_version = OBMM_ASYNC_LOAD_EVENT_ABI_VERSION;
 	consumer->owner_generation = ctx->owner_generation;
 	for (index = 0; index < ctx->pending_load_entries; index++)
 		linqu_async_load_kernel_wait_reset(&ctx->kernel_waits[index]);
@@ -1442,9 +1551,8 @@ static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 	writeq(ctx->event_consumer_bytes,
 	       drv->obmm_async_load_mmio +
 	       OBMM_ASYNC_LOAD_REG_EVENT_CONSUMER_BYTES);
-	if (ctx->capabilities & OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE)
-		writeq(request.flags,
-		       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_FLAGS);
+	writeq(request.flags,
+	       drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_FLAGS);
 	/* Publish owner identity and deadline before enabling interception. */
 	wmb();
 	writeq(1, drv->obmm_async_load_mmio + OBMM_ASYNC_LOAD_REG_SESSION_COMMAND);

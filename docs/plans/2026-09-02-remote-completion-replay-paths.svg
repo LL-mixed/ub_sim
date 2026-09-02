@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="980" viewBox="0 0 1680 980">
+  <defs>
+    <style>
+      .title { font: 700 31px sans-serif; fill: #172033; }
+      .subtitle { font: 700 22px sans-serif; fill: #253652; }
+      .body { font: 17px sans-serif; fill: #172033; }
+      .small { font: 15px sans-serif; fill: #35415a; }
+      .cache { fill: #eef5ff; stroke: #285da8; stroke-width: 2; rx: 14; }
+      .nc { fill: #fff6e7; stroke: #b66a10; stroke-width: 2; rx: 14; }
+      .sw { fill: #edf9f1; stroke: #277c45; stroke-width: 2; rx: 14; }
+      .note { fill: #f7f8fb; stroke: #66738a; stroke-width: 2; rx: 14; }
+      .arrow { stroke: #314a70; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .wake { stroke: #277c45; stroke-width: 2.5; fill: none; marker-end: url(#green-arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#314a70"/>
+    </marker>
+    <marker id="green-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#277c45"/>
+    </marker>
+  </defs>
+
+  <rect width="1680" height="980" fill="#ffffff"/>
+  <text x="840" y="50" text-anchor="middle" class="title">Remote async LDR：completion 返回后的两条 replay 路径</text>
+  <text x="840" y="83" text-anchor="middle" class="small">“Normal Cacheable 继续走普通 fill/replay”描述 completion result 的保存位置与原 LDR 的完成方式</text>
+
+  <text x="55" y="137" class="subtitle">Normal Cacheable：ordinary cache-line fill + original-LDR replay</text>
+  <rect x="55" y="165" width="230" height="115" class="cache"/>
+  <text x="170" y="203" text-anchor="middle" class="body">原 LDR 产生</text>
+  <text x="170" y="233" text-anchor="middle" class="body">remote line miss</text>
+  <text x="170" y="261" text-anchor="middle" class="small">PC 保持在原指令</text>
+
+  <rect x="345" y="165" width="245" height="115" class="cache"/>
+  <text x="468" y="203" text-anchor="middle" class="body">普通 MSHR</text>
+  <text x="468" y="233" text-anchor="middle" class="body">记录 line miss</text>
+  <text x="468" y="261" text-anchor="middle" class="small">local/remote 同一结构</text>
+
+  <rect x="650" y="165" width="230" height="115" class="cache"/>
+  <text x="765" y="203" text-anchor="middle" class="body">remote completion</text>
+  <text x="765" y="233" text-anchor="middle" class="body">返回完整 cache line</text>
+  <text x="765" y="261" text-anchor="middle" class="small">coherence metadata 同步</text>
+
+  <rect x="940" y="165" width="260" height="115" class="cache"/>
+  <text x="1070" y="203" text-anchor="middle" class="body">普通 fill pipeline</text>
+  <text x="1070" y="233" text-anchor="middle" class="body">安装 cache line</text>
+  <text x="1070" y="261" text-anchor="middle" class="small">释放或唤醒 MSHR waiter</text>
+
+  <rect x="1260" y="165" width="365" height="115" class="sw"/>
+  <text x="1443" y="203" text-anchor="middle" class="body">task/coroutine 从原 PC 恢复</text>
+  <text x="1443" y="233" text-anchor="middle" class="body">原 LDR 重放并命中 cache</text>
+  <text x="1443" y="261" text-anchor="middle" class="small">无需 NC PLT 或 scalar-result CQE</text>
+
+  <path d="M 285 222 L 345 222" class="arrow"/>
+  <path d="M 590 222 L 650 222" class="arrow"/>
+  <path d="M 880 222 L 940 222" class="arrow"/>
+  <path d="M 1200 222 L 1260 222" class="wake"/>
+
+  <text x="55" y="367" class="subtitle">Normal Non-cacheable：NC PLT result retention + token-directed original-LDR replay</text>
+  <rect x="55" y="395" width="230" height="125" class="nc"/>
+  <text x="170" y="432" text-anchor="middle" class="body">原 LDR 产生</text>
+  <text x="170" y="462" text-anchor="middle" class="body">remote scalar read</text>
+  <text x="170" y="492" text-anchor="middle" class="small">分配 NC PLT token</text>
+
+  <rect x="345" y="395" width="245" height="125" class="nc"/>
+  <text x="468" y="432" text-anchor="middle" class="body">remote completion</text>
+  <text x="468" y="462" text-anchor="middle" class="body">写入 NC PLT</text>
+  <text x="468" y="492" text-anchor="middle" class="small">scalar value + status</text>
+
+  <rect x="650" y="395" width="230" height="125" class="nc"/>
+  <text x="765" y="432" text-anchor="middle" class="body">发布 CQE + IRQ</text>
+  <text x="765" y="462" text-anchor="middle" class="body">携带 replay token</text>
+  <text x="765" y="492" text-anchor="middle" class="small">CQE value 固定为 0</text>
+
+  <rect x="940" y="395" width="260" height="125" class="sw"/>
+  <text x="1070" y="432" text-anchor="middle" class="body">EL0 scheduler</text>
+  <text x="1070" y="462" text-anchor="middle" class="body">选择 READY_REPLAY</text>
+  <text x="1070" y="492" text-anchor="middle" class="small">SVC arm token；ERET 到原 PC</text>
+
+  <rect x="1260" y="395" width="365" height="125" class="nc"/>
+  <text x="1443" y="432" text-anchor="middle" class="body">原 LDR 重放并携带 one-shot token</text>
+  <text x="1443" y="462" text-anchor="middle" class="body">精确消费 NC PLT entry</text>
+  <text x="1443" y="492" text-anchor="middle" class="small">返回保存的 scalar value；不发送第二次 read</text>
+
+  <path d="M 285 457 L 345 457" class="arrow"/>
+  <path d="M 590 457 L 650 457" class="arrow"/>
+  <path d="M 880 457 L 940 457" class="wake"/>
+  <path d="M 1200 457 L 1260 457" class="arrow"/>
+
+  <rect x="55" y="590" width="1570" height="145" class="note"/>
+  <text x="840" y="630" text-anchor="middle" class="subtitle">两条路径都允许远端等待期间调度其他 execution context</text>
+  <text x="90" y="673" class="body">• PENDING delivery 与 wait/schedule 解决“远端访问期间谁运行”。</text>
+  <text x="90" y="708" class="body">• fill/replay 与 NC-PLT/token replay 解决“completion 结果放在哪里、原 LDR 如何退休”。</text>
+  <text x="880" y="673" class="body">• Cacheable completion 的粒度是 cache line。</text>
+  <text x="880" y="708" class="body">• Normal NC completion 的粒度是单条 dynamic scalar load。</text>
+
+  <rect x="55" y="790" width="1570" height="135" class="note"/>
+  <text x="840" y="830" text-anchor="middle" class="subtitle">当前验证范围</text>
+  <text x="90" y="872" class="body">Normal NC 行已完成 EL0 coroutine 与 Linux-task two-node arm64 guest 实跑：每条路径均精确消费 2 个 replay token。</text>
+  <text x="90" y="907" class="body">Normal Cacheable 行是 silicon contract；当前 QEMU 没有可用于该项目验证的真实 cache/MSHR/fill hierarchy。</text>
+</svg>
