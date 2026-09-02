@@ -90,6 +90,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
             self.assertEqual(plan["access_bytes"], 4096)
             self.assertEqual(plan["hidden_bytes"], 262144)
             self.assertEqual(plan["decode_hidden_bytes"], 262144)
+            self.assertEqual(plan["decode_tokens"], 128)
             self.assertEqual(plan["tile_count"], 64)
             self.assertTrue(plan["publish_output"])
             self.assertEqual(plan["decode_steps"], 2)
@@ -112,6 +113,10 @@ class W5LingquShmemPtoTest(unittest.TestCase):
 
         self.assertIn(
             '"SIM_QWEN3_DENSE_TP_NODES": str(args.node_count)',
+            source,
+        )
+        self.assertIn(
+            '"SIM_QWEN3_DENSE_DECODE_TOKENS": str(plan["decode_tokens"])',
             source,
         )
         self.assertIn(

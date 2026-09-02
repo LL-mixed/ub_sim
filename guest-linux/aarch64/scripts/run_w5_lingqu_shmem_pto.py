@@ -38,6 +38,7 @@ EXPECTED_UB_GM_LAYOUT = {
     "fragments": [{"element_offset": 0, "element_count": 1024}],
 }
 QWEN_HIDDEN_RANGE_BYTES = 262_144
+QWEN_FULL_RANGE_DECODE_TOKENS = 128
 
 
 def positive_int(value: str) -> int:
@@ -383,6 +384,7 @@ def resolved_plan(args: argparse.Namespace, run_id: str, evidence_dir: pathlib.P
         "access_bytes": ub_gm_layout["storage_bytes"],
         "hidden_bytes": hidden_bytes,
         "decode_hidden_bytes": hidden_bytes,
+        "decode_tokens": QWEN_FULL_RANGE_DECODE_TOKENS if publish_output else 1,
         "tile_count": hidden_bytes // ub_gm_layout["storage_bytes"],
         "publish_output": publish_output,
         "cna_base": args.cna_base,
@@ -477,6 +479,7 @@ def main(argv: list[str]) -> int:
         "SIM_LINGQU_SHMEM_PTO_ENABLE": "1",
         "SIM_LINGQU_SHMEM_PTO_CNA_BASE": hex(args.cna_base),
         "SIM_QWEN3_GUEST_DECODE_STEPS": str(args.decode_steps),
+        "SIM_QWEN3_DENSE_DECODE_TOKENS": str(plan["decode_tokens"]),
         "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES": str(
             plan["decode_hidden_bytes"]
         ),
