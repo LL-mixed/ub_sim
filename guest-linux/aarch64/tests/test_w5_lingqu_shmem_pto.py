@@ -177,6 +177,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
         self.assertIn("SIM_W5_PTO_UB_GM_ACCESS_BYTES", source)
         self.assertIn("SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT", source)
         self.assertIn("backend=ub_ssd_gsva enabled=0", source)
+        self.assertIn("payload_mode=(copy|in_place)", source)
 
     def test_structured_validator_requires_tload_tstore_and_zero_staging(self):
         module = load_cli_module()
