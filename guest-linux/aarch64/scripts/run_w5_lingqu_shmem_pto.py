@@ -382,6 +382,7 @@ def resolved_plan(args: argparse.Namespace, run_id: str, evidence_dir: pathlib.P
         "ub_gm_layout": ub_gm_layout,
         "access_bytes": ub_gm_layout["storage_bytes"],
         "hidden_bytes": hidden_bytes,
+        "decode_hidden_bytes": hidden_bytes,
         "tile_count": hidden_bytes // ub_gm_layout["storage_bytes"],
         "publish_output": publish_output,
         "cna_base": args.cna_base,
@@ -476,6 +477,9 @@ def main(argv: list[str]) -> int:
         "SIM_LINGQU_SHMEM_PTO_ENABLE": "1",
         "SIM_LINGQU_SHMEM_PTO_CNA_BASE": hex(args.cna_base),
         "SIM_QWEN3_GUEST_DECODE_STEPS": str(args.decode_steps),
+        "SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES": str(
+            plan["decode_hidden_bytes"]
+        ),
         "SIM_QWEN3_DENSE_TP_NODES": str(args.node_count),
         "QEMU_MEM": args.qemu_mem,
         "QEMU_SMP": str(args.qemu_smp),

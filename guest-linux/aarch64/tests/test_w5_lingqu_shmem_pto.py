@@ -89,6 +89,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
             self.assertIn("TLOAD/TSTORE", plan["acceptance_scope"])
             self.assertEqual(plan["access_bytes"], 4096)
             self.assertEqual(plan["hidden_bytes"], 262144)
+            self.assertEqual(plan["decode_hidden_bytes"], 262144)
             self.assertEqual(plan["tile_count"], 64)
             self.assertTrue(plan["publish_output"])
             self.assertEqual(plan["decode_steps"], 2)
@@ -113,6 +114,11 @@ class W5LingquShmemPtoTest(unittest.TestCase):
             '"SIM_QWEN3_DENSE_TP_NODES": str(args.node_count)',
             source,
         )
+        self.assertIn(
+            '"SIM_QWEN3_DENSE_DECODE_HIDDEN_BYTES": str(',
+            source,
+        )
+        self.assertIn('plan["decode_hidden_bytes"]', source)
 
     def test_w5_guest_acquires_object_view_and_local_ub_gm_memrefs(self):
         source = APP.read_text()
