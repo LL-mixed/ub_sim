@@ -197,6 +197,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
         self.assertIn("SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT", source)
         self.assertIn("SIM_W5_PTO_UB_GM_PROGRAM", source)
         self.assertIn("program=pipeline_double", source)
+        self.assertIn("formula=${pto_formula_pattern}", source)
         self.assertIn("backend=ub_ssd_gsva enabled=0", source)
         self.assertIn("payload_mode=(copy|in_place)", source)
 

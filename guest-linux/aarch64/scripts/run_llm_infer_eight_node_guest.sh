@@ -1771,7 +1771,7 @@ validate_node_log() {
   local engram_candidates_owner_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local terminal_publish_node="$SIM_W5_CLUSTER_NODE_COUNT"
   local idx owner_role
-  local remote_idx pto_tiles pto_dispatches pto_loads
+  local remote_idx pto_tiles pto_dispatches pto_loads pto_formula_pattern
 
   if [[ "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" == "host_matmul" ]]; then
     expected_dispatch_word="0x3f8000003f800000"
@@ -1784,6 +1784,11 @@ validate_node_log() {
   remote_idx=$((idx % SIM_W5_CLUSTER_NODE_COUNT + 1))
 
   if [[ "$SIM_W5_PTO_UB_GM_PROBE" == "1" ]]; then
+    if [[ "$SIM_W5_PTO_UB_GM_PROGRAM" == "pipeline_double" ]]; then
+      pto_formula_pattern='2\*x'
+    else
+      pto_formula_pattern='\(2\*x\+1\)\*\(2\*x\+2\)'
+    fi
     pto_tiles=1
     if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
       pto_tiles=$((SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES / SIM_W5_PTO_UB_GM_ACCESS_BYTES))
@@ -1799,7 +1804,7 @@ validate_node_log() {
       assert_log_absent "$qemu_log" "QEMU_UB_GM_(LOAD|STORE) request=" "$node_id W5 PTO source data callback" || return 1
     else
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_submit node=${idx} step=[0-9]+ tile=[0-9]+ .*source=lingqu_memory_service target=simpler_pto address_space=UB_GM guest_inline_payload=0 status=ready" "$pto_dispatches" "$node_id W5 PTO UB_GM submit count" || return 1
-      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_semantic node=${idx} step=[0-9]+ tile=[0-9]+ .*elements=1024 formula=\\(2\\*x\\+1\\)\\*\\(2\\*x\\+2\\) input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ status=ok" "$pto_dispatches" "$node_id W5 PTO UB_GM semantic count" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_semantic node=${idx} step=[0-9]+ tile=[0-9]+ .*elements=1024 formula=${pto_formula_pattern} input_checksum=0x[0-9a-f]+ output_checksum=0x[0-9a-f]+ status=ok" "$pto_dispatches" "$node_id W5 PTO UB_GM semantic count" || return 1
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_complete node=${idx} step=[0-9]+ tile=[0-9]+ .*source=simpler_pto target=lingqu_memory_service_local_buffer tload=direct tstore=direct guest_inline_payload=0 status=ok" "$pto_dispatches" "$node_id W5 PTO UB_GM completion count" || return 1
       assert_log_count "$qemu_log" "QEMU_UB_GM_LOAD request=.*length=${SIM_W5_PTO_UB_GM_ACCESS_BYTES}([[:space:]]|$)" "$pto_loads" "$node_id W5 PTO UB_GM TLOAD count" || return 1
       assert_log_count "$qemu_log" "QEMU_UB_GM_STORE request=.*length=${SIM_W5_PTO_UB_GM_ACCESS_BYTES}([[:space:]]|$)" "$pto_dispatches" "$node_id W5 PTO UB_GM TSTORE count" || return 1
