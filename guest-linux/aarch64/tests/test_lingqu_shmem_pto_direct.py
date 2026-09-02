@@ -370,6 +370,21 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn('gsub(/\\r/, "", field)', runner)
         self.assertIn("generation_epoch", dedicated_runner)
 
+    def test_sim_dec_shared_memory_reads_retry_transient_timeouts(self):
+        qemu_source = QEMU_UBC.read_text()
+
+        self.assertIn(
+            "#define UBC_SIM_DEC_SHM_READ_MAX_ATTEMPTS 3",
+            qemu_source,
+        )
+        self.assertIn("link->shmem_ready", qemu_source)
+        self.assertIn("!ubc_dev->remote_memory_model.loaded", qemu_source)
+        self.assertIn(
+            "attempt < UBC_SIM_DEC_SHM_READ_MAX_ATTEMPTS",
+            qemu_source,
+        )
+        self.assertIn('" next_attempt=%d/%d transport=shared-memory', qemu_source)
+
     def test_p4g_bounds_protocol_is_wired_end_to_end(self):
         app_source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
         qemu_source = QEMU_UBC.read_text()
