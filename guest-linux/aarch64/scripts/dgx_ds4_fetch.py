@@ -345,7 +345,8 @@ def write_text(text: str, output_path: Path | None) -> None:
     if output_path is None:
         print(text)
         return
-    output_path.write_text(f"{text.rstrip()}\n", encoding="utf-8", newline="\n")
+    with output_path.open("w", encoding="utf-8", newline="\n") as output:
+        output.write(f"{text.rstrip()}\n")
 
 
 def run(args: argparse.Namespace) -> None:

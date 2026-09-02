@@ -62,6 +62,11 @@ def non_negative_float(value: str) -> float:
     return parsed
 
 
+def write_text_lf(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as output:
+        output.write(text)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -596,9 +601,7 @@ class CanaryRunner:
         state_path = self.output_dir / "canary-state.json"
         self.event_log = self.output_dir / "canary.log"
         state: dict[str, object] = {"run_id": self.run_id, "status": "running"}
-        state_path.write_text(
-            json.dumps(state, indent=2) + "\n", encoding="utf-8", newline="\n"
-        )
+        write_text_lf(state_path, json.dumps(state, indent=2) + "\n")
 
         primary_error: Exception | None = None
         try:
@@ -652,10 +655,9 @@ class CanaryRunner:
                     self.args.mtp_mode == "instrumented-fast"
                 ),
             )
-            (self.output_dir / "comparison.json").write_text(
+            write_text_lf(
+                self.output_dir / "comparison.json",
                 json.dumps(comparison, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-                newline="\n",
             )
             state["comparison"] = comparison
             state["status"] = comparison["status"]
@@ -704,10 +706,9 @@ class CanaryRunner:
                 )
                 state["error"] = str(primary_error)
 
-            state_path.write_text(
+            write_text_lf(
+                state_path,
                 json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-                newline="\n",
             )
 
         if primary_error is not None:
