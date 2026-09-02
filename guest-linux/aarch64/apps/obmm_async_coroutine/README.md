@@ -1,7 +1,7 @@
 # OBMM remote-memory evaluation CLI
 
 - `obmm_async_coroutine.c`: the shared submit/await, async-load, Linux-task
-  replay, and baseline validation CLI.
+replay, and baseline validation CLI.
 - `uffd_mode.[ch]`: the standard userfaultfd MISSING-mode baseline.
 - `uffd_state.[ch]`: the portable per-page generation/state machine.
 - `test_uffd_state.c`: the host-runnable state-machine unit test.
@@ -17,8 +17,11 @@ same access generator, payload verification, and checksum definition.
 PoC. Every pthread issues an ordinary scalar load. A remote pending load enters
 EL1 through the implementation-defined remote-load data-abort reason, sleeps on
 the driver waitqueue, and resumes at the unchanged faulting PC after a CQ event
-and IRQ. The repeated load retires through the device PLT replay entry. This
-mode does not enter the EL0 coroutine scheduler.
+and IRQ. `--async-load-memory normal-nc` retires the repeated load through the
+NC PLT replay entry. `--async-load-memory normal-cacheable` completes a normal
+64-byte cache-line fill, returns from the fault handler through `ERET`, and lets
+the repeated load read the filled line; this path allocates no NC PLT entry.
+Linux-task mode does not enter the EL0 coroutine scheduler.
 
 Producer/consumer performance runs may assign multiple remote loads to every
 coroutine or pthread. `--iterations` must be a multiple of `--coroutines` or

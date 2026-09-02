@@ -15,6 +15,7 @@ EXPECTED_OUTCOME="success"
 ASYNC_LOAD_PRODUCER_CONSUMER=0
 ASYNC_LOAD_PRODUCER_INDEX=0
 ASYNC_LOAD_COMPLETION=replay
+ASYNC_LOAD_MEMORY=normal-nc
 KERNEL_TASK_REPLAY=0
 ASYNC_LOAD_EVENT_LOG=on
 ASYNC_LOAD_CONTEXTS=""
@@ -220,6 +221,17 @@ while (( async_index <= ${#async_words} )); do
       ASYNC_LOAD_COMPLETION="$value"
       append_cmdline "obmm_async_load_completion=$value"
       ;;
+    --async-load-memory)
+      case "$value" in
+        normal-nc|normal-cacheable) ;;
+        *)
+          echo "--async-load-memory must be normal-nc or normal-cacheable" >&2
+          exit 2
+          ;;
+      esac
+      ASYNC_LOAD_MEMORY="$value"
+      append_cmdline "obmm_async_load_memory=$value"
+      ;;
     --coroutines)
       ASYNC_LOAD_CONTEXTS="$value"
       append_cmdline "obmm_async_coroutines=$value"
@@ -288,6 +300,13 @@ fi
 if (( KERNEL_TASK_REPLAY )) && [[ "$ASYNC_LOAD_COMPLETION" != "replay" ]]; then
   echo "kernel-task replay validation requires replay retirement" >&2
   exit 2
+fi
+if [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" ]]; then
+  if (( ! KERNEL_TASK_REPLAY )); then
+    echo "normal-cacheable validation requires --kernel-task-replay" >&2
+    exit 2
+  fi
+  export SIM_DEC_PAGE_CACHE_PER_MAP=64
 fi
 if (( ASYNC_LOAD_PRODUCER_CONSUMER )) &&
    [[ "$ASYNC_LOAD_EVENT_LOG" == "on" &&
@@ -433,38 +452,92 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     async_load_coroutines="$(summary_field "$async_load_summary" threads)"
     async_load_operations="$(summary_field "$async_load_summary" operations)"
     async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
-    kernel_block_count="$(grep -c 'remote-load block pid=' "$consumer_log" || true)"
-    kernel_wake_count="$(grep -c 'remote-load wake pid=' "$consumer_log" || true)"
-    kernel_blocked_tasks="$(grep -o 'remote-load block pid=[0-9]*' "$consumer_log" | sort -u | wc -l | tr -d ' ' || true)"
+    if [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" ]]; then
+      async_load_events="$async_load_coroutines"
+      async_load_replay_consumed=0
+      async_load_nc_plt_allocations=0
+      async_load_cacheable_fill_pending="$async_load_coroutines"
+      async_load_cacheable_replay_hits_min="$async_load_operations"
+      async_load_cacheable_fill_bytes="$(( async_load_coroutines * 64 ))"
+    else
+      async_load_events="$async_load_operations"
+      async_load_replay_consumed="$async_load_operations"
+      async_load_nc_plt_allocations="$async_load_operations"
+      async_load_cacheable_fill_pending=0
+      async_load_cacheable_replay_hits_min=0
+      async_load_cacheable_fill_bytes=0
+    fi
+    kernel_block_count="$(grep -c 'remote-load block path=.* pid=' "$consumer_log" || true)"
+    kernel_wake_count="$(grep -c 'remote-load wake path=.* pid=' "$consumer_log" || true)"
+    kernel_blocked_tasks="$(grep -o 'remote-load block path=[^ ]* pid=[0-9]*' "$consumer_log" | sed 's/.* pid=//' | sort -u | wc -l | tr -d ' ' || true)"
     if [[ "$async_load_coroutines" != <2-> ||
           "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
           "$(summary_field "$async_load_summary" abi)" != "4" ||
           "$(summary_field "$async_load_summary" event_delivery)" != "cq-irq" ||
           "$(summary_field "$async_load_summary" scheduling)" != "linux-task" ||
           "$(summary_field "$async_load_summary" retirement)" != "replay" ||
+          "$(summary_field "$async_load_summary" memory)" != "$ASYNC_LOAD_MEMORY" ||
           "$(summary_field "$async_load_summary" event_log)" != "$ASYNC_LOAD_EVENT_LOG" ||
           "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
           "$async_load_operations" != "$ASYNC_LOAD_ITERATIONS" ||
           "$(summary_field "$async_load_summary" verified)" != "$async_load_operations" ||
-          "$(summary_field "$async_load_summary" faults)" != "$async_load_operations" ||
-          "$(summary_field "$async_load_summary" pending)" != "$async_load_operations" ||
-          "$(summary_field "$async_load_summary" completions)" != "$async_load_operations" ||
-          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_operations" ||
+          "$(summary_field "$async_load_summary" faults)" != "$async_load_events" ||
+          "$(summary_field "$async_load_summary" pending)" != "$async_load_events" ||
+          "$(summary_field "$async_load_summary" completions)" != "$async_load_events" ||
+          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_events" ||
           "$(summary_field "$async_load_summary" protocol_errors)" != "0" ||
           "$(summary_field "$async_load_summary" timeouts)" != "0" ||
           "$(summary_field "$async_load_summary" interrupted_waits)" != "0" ||
-          "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_operations" ||
+          "$(summary_field "$async_load_summary" replay_consumed)" != "$async_load_replay_consumed" ||
           "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
+          "$(summary_field "$async_load_summary" nc_plt_allocations)" != "$async_load_nc_plt_allocations" ||
+          "$(summary_field "$async_load_summary" nc_plt_pending)" != "0" ||
+          "$(summary_field "$async_load_summary" cacheable_fill_pending)" != "$async_load_cacheable_fill_pending" ||
+          "$(summary_field "$async_load_summary" cacheable_fill_completed)" != "$async_load_cacheable_fill_pending" ||
+          "$(summary_field "$async_load_summary" cacheable_fill_bytes)" != "$async_load_cacheable_fill_bytes" ||
           "$(summary_field "$async_load_summary" direct_el0_upcalls)" != "0" ]]; then
       echo "ASYNC_LOAD kernel-task terminal or driver evidence is inconsistent" >&2
       exit 1
     fi
+    if (( $(summary_field "$async_load_summary" cacheable_replay_hits) <
+          async_load_cacheable_replay_hits_min )); then
+      echo "ASYNC_LOAD cacheable replay did not observe the filled line" >&2
+      exit 1
+    fi
     if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
-      if [[ "$kernel_block_count" != "$async_load_operations" ||
-            "$kernel_wake_count" != "$async_load_operations" ||
+      if [[ "$kernel_block_count" != "$async_load_events" ||
+            "$kernel_wake_count" != "$async_load_events" ||
             "$kernel_blocked_tasks" != "$async_load_coroutines" ]]; then
         echo "ASYNC_LOAD kernel-task event log is incomplete" >&2
         exit 1
+      fi
+      if [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" ]]; then
+        consumer_qemu_log="$RUN_DIR/nodeB_qemu.log"
+        kernel_esr_count="$(grep -c 'remote-load block path=normal-cacheable .* fsc=0x3a' "$consumer_log" || true)"
+        kernel_eret_wake_count="$(grep -c 'remote-load wake path=normal-cacheable .* resume=eret-replay result=0' "$consumer_log" || true)"
+        cacheable_pending_count="$(grep -c '^ASYNC_LOAD_CACHEABLE_PENDING .* nc_plt_pending=0' "$consumer_qemu_log" || true)"
+        cacheable_fill_count="$(grep -c '^ASYNC_LOAD_CACHEABLE_FILL .* nc_plt_pending=0' "$consumer_qemu_log" || true)"
+        cacheable_hit_count="$(grep -c '^ASYNC_LOAD_CACHEABLE_REPLAY_HIT .* nc_plt_pending=0' "$consumer_qemu_log" || true)"
+        cacheable_submit_count="$(grep -c '^obmm_p1_submit .* chunks=1 bytes=64' "$consumer_qemu_log" || true)"
+        cacheable_plt_violation_count="$(grep -c '^ASYNC_LOAD_CACHEABLE_.* nc_plt_pending=[1-9]' "$consumer_qemu_log" || true)"
+        cacheable_pending_first="$(grep -n '^ASYNC_LOAD_CACHEABLE_PENDING ' "$consumer_qemu_log" | head -n 1 | cut -d: -f1)"
+        cacheable_submit_first="$(grep -n '^obmm_p1_submit .* chunks=1 bytes=64' "$consumer_qemu_log" | head -n 1 | cut -d: -f1)"
+        cacheable_fill_first="$(grep -n '^ASYNC_LOAD_CACHEABLE_FILL ' "$consumer_qemu_log" | head -n 1 | cut -d: -f1)"
+        if [[ "$kernel_esr_count" != "$async_load_events" ||
+              "$kernel_eret_wake_count" != "$async_load_events" ||
+              "$cacheable_pending_count" != "$async_load_events" ||
+              "$cacheable_fill_count" != "$async_load_events" ||
+              "$cacheable_hit_count" -lt "$async_load_operations" ||
+              "$cacheable_submit_count" != "$async_load_events" ||
+              "$cacheable_plt_violation_count" != "0" ||
+              -z "$cacheable_pending_first" ||
+              -z "$cacheable_submit_first" ||
+              -z "$cacheable_fill_first" ]] ||
+           (( cacheable_pending_first >= cacheable_submit_first ||
+              cacheable_submit_first >= cacheable_fill_first )); then
+          echo "ASYNC_LOAD Normal Cacheable ESR/CQ/replay evidence is incomplete" >&2
+          exit 1
+        fi
       fi
     elif [[ "$kernel_block_count" != "0" || "$kernel_wake_count" != "0" ]]; then
       echo "ASYNC_LOAD kernel-task event log remained active" >&2
@@ -734,6 +807,10 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   if (( KERNEL_TASK_REPLAY )); then
     print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=$async_load_coroutines completed=$async_load_operations event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
     print -r -- "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE event_log=$ASYNC_LOAD_EVENT_LOG operations=$async_load_operations blocked_tasks=$kernel_blocked_tasks blocks=$kernel_block_count wakes=$kernel_wake_count stats_wakeups=$(summary_field "$async_load_summary" wakeups) direct_el0_upcalls=0 status=pass"
+    if [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" &&
+          "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+      print -r -- "OBMM_ASYNC_LOAD_CACHEABLE_EVIDENCE fsc_0x3a=$kernel_esr_count eret_replay_wakes=$kernel_eret_wake_count pending=$cacheable_pending_count remote_submits=$cacheable_submit_count fills=$cacheable_fill_count cache_hits=$cacheable_hit_count nc_plt_violations=$cacheable_plt_violation_count pending_before_remote_submit=1 status=pass"
+    fi
     grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
     grep '^OBMM_ASYNC_LOAD_KERNEL_\(THREAD\|TASK_SUMMARY\)' "$consumer_log"
     if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then

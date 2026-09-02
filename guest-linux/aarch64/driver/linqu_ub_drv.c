@@ -109,6 +109,7 @@
 	(OBMM_ASYNC_LOAD_REG_STATS_BASE + 17 * 8)
 #define OBMM_ASYNC_LOAD_OBSERVABILITY_VALUES 17
 #define OBMM_ASYNC_LOAD_REG_REPLAY_STATS_BASE 0x400
+#define OBMM_ASYNC_LOAD_REG_PATH_STATS_BASE 0x420
 #define OBMM_ASYNC_LOAD_MAX_LOAD_TIMEOUT_NS 10000000000ULL
 #define OBMM_ASYNC_LOAD_PSTATE_NZCV_MASK \
 	(PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT)
@@ -150,6 +151,7 @@ static_assert(sizeof(struct obmm_async_load_event_v3) == 128);
 static_assert(sizeof(struct obmm_async_load_stats_v3) == 152);
 static_assert(sizeof(struct obmm_async_load_observability_v3) == 144);
 static_assert(sizeof(struct obmm_async_load_kernel_task_stats_v1) == 64);
+static_assert(sizeof(struct obmm_async_load_path_stats_v1) == 48);
 
 struct linqu_obmm_async_load_map {
 	bool allocated;
@@ -158,7 +160,7 @@ struct linqu_obmm_async_load_map {
 
 struct linqu_async_load_kernel_wait {
 	wait_queue_head_t waitq;
-	u64 plt_token;
+	u64 wait_key;
 	u64 context_id;
 	u64 context_cookie;
 	u64 fault_pc;
@@ -168,6 +170,7 @@ struct linqu_async_load_kernel_wait {
 	bool pending_seen;
 	bool completion_seen;
 	bool claimed;
+	bool cacheable;
 };
 
 struct linqu_async_load_file {
@@ -889,7 +892,7 @@ static bool linqu_async_load_owner(const struct linqu_async_load_file *ctx)
 static void linqu_async_load_kernel_wait_reset(
 	struct linqu_async_load_kernel_wait *wait)
 {
-	wait->plt_token = 0;
+	wait->wait_key = 0;
 	wait->context_id = 0;
 	wait->context_cookie = 0;
 	wait->fault_pc = 0;
@@ -899,6 +902,7 @@ static void linqu_async_load_kernel_wait_reset(
 	wait->pending_seen = false;
 	wait->completion_seen = false;
 	wait->claimed = false;
+	wait->cacheable = false;
 }
 
 static int linqu_async_load_kernel_event_locked(
@@ -909,58 +913,87 @@ static int linqu_async_load_kernel_event_locked(
 	u64 owner_generation = le64_to_cpu(event->owner_generation);
 	u64 context_id = le64_to_cpu(event->context_id);
 	u64 context_cookie = le64_to_cpu(event->reserved[0]);
-	u64 plt_token = le64_to_cpu(event->plt_token);
+	u64 wait_key = le64_to_cpu(event->plt_token);
 	u64 fault_pc = le64_to_cpu(event->fault_pc);
 	u64 effective_va = le64_to_cpu(event->effective_va);
 	u32 kind = le32_to_cpu(event->kind);
 	u32 status = le32_to_cpu(event->status);
 	u32 flags = le32_to_cpu(event->flags);
-	u16 slot = plt_token & 0xffff;
+	u32 index;
+	bool cacheable = flags & OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL;
 
 	if (owner_generation != ctx->owner_generation ||
 	    le64_to_cpu(event->reserved[1]) ||
-	    le64_to_cpu(event->reserved[2]) ||
-	    slot >= ctx->pending_load_entries)
+	    le64_to_cpu(event->reserved[2]))
 		goto protocol_error;
-	wait = &ctx->kernel_waits[slot];
+	wait = NULL;
 
 	switch (kind) {
 	case OBMM_ASYNC_LOAD_EVENT_PENDING:
-		if (status != OBMM_ASYNC_LOAD_STATUS_SUCCESS || flags ||
-		    wait->pending_seen || wait->completion_seen)
+		if (status != OBMM_ASYNC_LOAD_STATUS_SUCCESS ||
+		    flags & ~OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL)
 			goto protocol_error;
-		wait->plt_token = plt_token;
+		for (index = 0; index < ctx->pending_load_entries; index++) {
+			struct linqu_async_load_kernel_wait *candidate =
+				&ctx->kernel_waits[index];
+
+			if (candidate->pending_seen &&
+			    candidate->wait_key == wait_key)
+				goto protocol_error;
+			if (!wait && !candidate->pending_seen &&
+			    !candidate->completion_seen && !candidate->claimed)
+				wait = candidate;
+		}
+		if (!wait)
+			goto protocol_error;
+		wait->wait_key = wait_key;
 		wait->context_id = context_id;
 		wait->context_cookie = context_cookie;
 		wait->fault_pc = fault_pc;
 		wait->effective_va = effective_va;
 		wait->status = status;
 		wait->pending_seen = true;
+		wait->cacheable = cacheable;
 		ctx->kernel_stats.pending_events++;
 		if (remote_load_event_log)
 			dev_info(ctx->drv->dev,
-				 "remote-load pending context=0x%llx token=0x%llx pc=0x%llx va=0x%llx\n",
-				 context_id, plt_token, fault_pc, effective_va);
+				 "remote-load pending path=%s context=0x%llx wait_key=0x%llx pc=0x%llx va=0x%llx\n",
+				 cacheable ? "normal-cacheable" : "normal-nc",
+				 context_id, wait_key, fault_pc, effective_va);
 		return 0;
 	case OBMM_ASYNC_LOAD_EVENT_COMPLETE:
 	case OBMM_ASYNC_LOAD_EVENT_FAULT:
-		if (!wait->pending_seen || wait->plt_token != plt_token ||
-		    wait->context_id != context_id ||
+		for (index = 0; index < ctx->pending_load_entries; index++) {
+			struct linqu_async_load_kernel_wait *candidate =
+				&ctx->kernel_waits[index];
+
+			if (candidate->pending_seen &&
+			    candidate->wait_key == wait_key) {
+				wait = candidate;
+				break;
+			}
+		}
+		if (!wait || wait->context_id != context_id ||
 		    wait->context_cookie != context_cookie ||
 		    wait->fault_pc != fault_pc ||
 		    wait->effective_va != effective_va ||
 		    wait->completion_seen ||
+		    wait->cacheable != cacheable ||
 		    (kind == OBMM_ASYNC_LOAD_EVENT_COMPLETE &&
 		     !(flags & OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY)) ||
-		    flags & ~OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY)
+		    (kind == OBMM_ASYNC_LOAD_EVENT_FAULT &&
+		     flags & OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY) ||
+		    flags & ~(OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY |
+			      OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL))
 			goto protocol_error;
 		wait->status = status;
 		wait->completion_seen = true;
 		ctx->kernel_stats.completion_events++;
 		if (remote_load_event_log)
 			dev_info(ctx->drv->dev,
-				 "remote-load completion context=0x%llx token=0x%llx status=%u\n",
-				 context_id, plt_token, status);
+				 "remote-load completion path=%s context=0x%llx wait_key=0x%llx status=%u\n",
+				 cacheable ? "normal-cacheable" : "normal-nc",
+				 context_id, wait_key, status);
 		wake_up(&wait->waitq);
 		return 0;
 	default:
@@ -1172,8 +1205,10 @@ static int linqu_remote_load_fault(unsigned long far, unsigned long esr,
 		ctx->kernel_stats.task_sleeps++;
 	if (remote_load_event_log)
 		dev_info(drv->dev,
-			 "remote-load block pid=%d token=0x%llx pc=0x%llx\n",
-			 wait->task_pid, wait->plt_token, wait->fault_pc);
+			 "remote-load block path=%s pid=%d wait_key=0x%llx pc=0x%llx esr=0x%lx fsc=0x%lx\n",
+			 wait->cacheable ? "normal-cacheable" : "normal-nc",
+			 wait->task_pid, wait->wait_key, wait->fault_pc, esr,
+			 esr & ESR_ELx_FSC);
 	mutex_unlock(&ctx->lock);
 
 	if (ctx->load_timeout_ns) {
@@ -1199,15 +1234,16 @@ static int linqu_remote_load_fault(unsigned long far, unsigned long esr,
 	}
 	ctx->kernel_stats.task_wakeups++;
 	if (wait->status == OBMM_ASYNC_LOAD_STATUS_SUCCESS)
-		ret = linqu_async_load_resume_command(
-			ctx, wait->context_id, wait->plt_token, wait->fault_pc);
+		ret = wait->cacheable ? 0 : linqu_async_load_resume_command(
+			ctx, wait->context_id, wait->wait_key, wait->fault_pc);
 	else
 		ret = -EIO;
 	if (remote_load_event_log)
 		dev_info(drv->dev,
-			 "remote-load wake pid=%d token=0x%llx status=%u replay=%u\n",
-			 wait->task_pid, wait->plt_token, wait->status,
-			 ret == 0);
+			 "remote-load wake path=%s pid=%d wait_key=0x%llx status=%u resume=%s result=%d\n",
+			 wait->cacheable ? "normal-cacheable" : "normal-nc",
+			 wait->task_pid, wait->wait_key, wait->status,
+			 wait->cacheable ? "eret-replay" : "nc-replay-command", ret);
 	linqu_async_load_kernel_wait_reset(wait);
 
 out_unlock:
@@ -1482,7 +1518,8 @@ static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 	kernel_task_mode = request.flags & OBMM_ASYNC_LOAD_START_KERNEL_TASK;
 	required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
 		OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
-		OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN;
+		OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN |
+		OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY;
 	if (kernel_task_mode)
 		required_capabilities |= OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY;
 	else
@@ -1655,6 +1692,23 @@ static long linqu_async_load_get_kernel_task_stats(
 		-EFAULT : 0;
 }
 
+static long linqu_async_load_get_path_stats(
+	struct linqu_async_load_file *ctx, unsigned long arg)
+{
+	struct obmm_async_load_path_stats_v1 stats = { 0 };
+	struct linqu_ub_drv *drv = ctx->drv;
+	u64 *values = (u64 *)&stats;
+	u32 index;
+
+	if (!linqu_async_load_owner(ctx))
+		return -EPERM;
+	for (index = 0; index < 6; index++)
+		values[index] = readq(drv->obmm_async_load_mmio +
+				      OBMM_ASYNC_LOAD_REG_PATH_STATS_BASE + index * 8);
+	return copy_to_user((void __user *)arg, &stats, sizeof(stats)) ?
+		-EFAULT : 0;
+}
+
 static long linqu_async_load_ioctl(struct file *file, unsigned int cmd,
 				    unsigned long arg)
 {
@@ -1689,6 +1743,9 @@ static long linqu_async_load_ioctl(struct file *file, unsigned int cmd,
 		break;
 	case OBMM_ASYNC_LOAD_IOCTL_GET_KERNEL_TASK_STATS:
 		ret = linqu_async_load_get_kernel_task_stats(ctx, arg);
+		break;
+	case OBMM_ASYNC_LOAD_IOCTL_GET_PATH_STATS:
+		ret = linqu_async_load_get_path_stats(ctx, arg);
 		break;
 	default:
 		ret = -ENOTTY;

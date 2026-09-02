@@ -402,6 +402,7 @@ run_obmm_async_coroutine() {
     case "$token" in
       obmm_async_mode=*) args="$args --mode ${token#*=}" ;;
       obmm_async_load_completion=*) args="$args --async-load-completion ${token#*=}" ;;
+      obmm_async_load_memory=*) args="$args --async-load-memory ${token#*=}" ;;
       obmm_async_coroutines=*) args="$args --coroutines ${token#*=}" ;;
       obmm_async_threads=*) args="$args --threads ${token#*=}" ;;
       obmm_async_inflight=*) args="$args --inflight ${token#*=}" ;;

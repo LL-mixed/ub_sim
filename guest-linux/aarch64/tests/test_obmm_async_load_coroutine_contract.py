@@ -46,6 +46,10 @@ _Static_assert(OBMM_ASYNC_LOAD_CAP_SVC_CONTEXT_RESUME == (1ULL << 14),
                "SVC resume capability");
 _Static_assert(OBMM_ASYNC_LOAD_CAP_WFE_WAIT == (1ULL << 15),
                "WFE wait capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY == (1ULL << 16),
+               "Cacheable fill-replay capability");
+_Static_assert(OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL == (1U << 2),
+               "Cacheable fill event flag");
 _Static_assert(OBMM_ASYNC_LOAD_START_REPLAY_RETIRE == 1,
                "replay start flag");
 _Static_assert(OBMM_ASYNC_LOAD_START_KERNEL_TASK == 2,
@@ -72,6 +76,8 @@ _Static_assert(sizeof(struct obmm_async_load_replay_stats_v1) == 32,
                "replay stats size");
 _Static_assert(sizeof(struct obmm_async_load_kernel_task_stats_v1) == 64,
                "kernel-task stats size");
+_Static_assert(sizeof(struct obmm_async_load_path_stats_v1) == 48,
+               "path stats size");
 _Static_assert(offsetof(struct obmm_async_load_start_v3, upcall_entry) == 24,
                "upcall entry offset");
 _Static_assert(offsetof(struct obmm_async_load_event_v3, interrupted_pc) == 32,
@@ -487,7 +493,7 @@ def test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue():
     assert "env->pc" not in kernel_fault
 
     assert "ASYNC_LOAD_REG_IRQ_STATUS" in device
-    assert ".context_cookie = entry->load.context_cookie" in model
+    assert ".context_cookie = load->context_cookie" in model
     assert ".reserved[0] = cpu_to_le64(" in device
     assert "ubc_async_load_irq_set(state->ubc_dev, true)" in device
     assert "ubc_async_load_irq_set(state->ubc_dev, state->irq_status != 0)" in device
@@ -517,13 +523,69 @@ def test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue():
     assert "--threads N" in app
     assert "pthread_create" in app
     assert "async_load_scalar_load(address" in app
-    assert "scheduling=linux-task retirement=replay" in app
+    assert "scheduling=linux-task " in app
+    assert '"retirement=replay "' in app
     assert "OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY" in app
     assert "obmm_async_kernel_task_replay=1" in run_app
     assert 'args="$args --kernel-task-replay"' in run_app
     assert 'append_cmdline "obmm_async_kernel_task_replay=1"' in runner
     assert "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE" in runner
-    assert "remote-load block pid=" in runner
+    assert "remote-load block path=.* pid=" in runner
+
+
+def test_normal_cacheable_void_response_uses_fill_replay_without_nc_plt():
+    uapi = (
+        KERNEL_ROOT / "include" / "uapi" / "ub" / "obmm_async_load.h"
+    ).read_text()
+    driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+    device = (QEMU_ROOT / "hw" / "ub" / "ub_async_load_device.c").read_text()
+    model = (QEMU_ROOT / "hw" / "ub" / "ub_async_load.c").read_text()
+    ubc = (QEMU_ROOT / "hw" / "ub" / "ub_ubc.c").read_text()
+    helper = (QEMU_ROOT / "target" / "arm" / "tcg" / "helper-a64.c").read_text()
+    app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    runner = (ROOT / "scripts" / "run_ub_obmm_eval.sh").read_text()
+
+    assert "OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY" in uapi
+    assert "OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL" in uapi
+    assert "OBMM_ASYNC_LOAD_IOCTL_GET_PATH_STATS" in uapi
+    assert "load.normal_cacheable = async_load_probe_access_range" in helper
+    assert "full->extra.arm.pte_attrs" in helper
+    assert "ub_async_load_cacheable_pending(" in model
+    assert "ub_async_load_cacheable_complete(" in model
+    assert "stats.nc_plt_allocations++" in model
+    cache_pending = model.split(
+        "UbAsyncLoadPendingResult ub_async_load_cacheable_pending", 1
+    )[1].split("UbAsyncLoadCompletionResult ub_async_load_cacheable_complete", 1)[0]
+    assert "nc_plt" not in cache_pending
+    assert "ubc_obmm_cacheable_fill_lookup(" in ubc
+    assert "ubc_obmm_cacheable_fill_complete(" in ubc
+    assert "#define SIM_DEC_CACHE_LINE_SIZE     64" in ubc
+    assert "uint64_t valid_line_mask;" in ubc
+    assert "sim_dec_page_cache_range_valid(cache_entry" in ubc
+    assert "ASYNC_LOAD_CACHEABLE_PENDING" in device
+    assert "ASYNC_LOAD_CACHEABLE_FILL" in device
+    assert "ASYNC_LOAD_CACHEABLE_REPLAY_HIT" in device
+    assert "UB_ASYNC_LOAD_FUTURE_CACHEABLE" in device
+    assert "UB_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY" in device
+    assert "wait->cacheable ? 0 : linqu_async_load_resume_command" in driver
+    assert "esr=0x%lx fsc=0x%lx" in driver
+    assert 'wait->cacheable ? "eret-replay" : "nc-replay-command"' in driver
+    assert "OBMM_ASYNC_LOAD_REG_PATH_STATS_BASE" in driver
+    assert "--async-load-memory normal-nc|normal-cacheable" in app
+    assert "OBMM_IMPORT_CACHE_CC" in app
+    assert "path_stats.nc_plt_allocations" in app
+    assert "cacheable_fill_completed" in app
+    assert "obmm_async_load_memory=" in run_app
+    assert "--async-load-memory must be normal-nc or normal-cacheable" in runner
+    assert "SIM_DEC_PAGE_CACHE_PER_MAP=64" in runner
+    assert "async_load_coroutines * 64" in runner
+    assert "OBMM_ASYNC_LOAD_CACHEABLE_EVIDENCE" in runner
+    assert "remote-load block path=normal-cacheable .* fsc=0x3a" in runner
+    assert "resume=eret-replay result=0" in runner
+    assert "cacheable_pending_first >= cacheable_submit_first" in runner
+    assert "cacheable_submit_first >= cacheable_fill_first" in runner
+    assert "pending_before_remote_submit=1" in runner
 
 
 def test_async_load_timed_run_can_disable_per_event_logging():
@@ -724,6 +786,9 @@ class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
 
     def test_kernel_task_replay_contract(self):
         test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue()
+
+    def test_normal_cacheable_fill_replay_contract(self):
+        test_normal_cacheable_void_response_uses_fill_replay_without_nc_plt()
 
     def test_trace_off_contract(self):
         test_async_load_timed_run_can_disable_per_event_logging()

@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="940" viewBox="0 0 1720 940">
+  <defs>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #172033; }
+      .subtitle { font: 700 20px sans-serif; fill: #253652; }
+      .body { font: 17px sans-serif; fill: #172033; }
+      .small { font: 14px sans-serif; fill: #39465e; }
+      .cpu { fill: #eef5ff; stroke: #285da8; stroke-width: 2; rx: 12; }
+      .ubc { fill: #fff4e5; stroke: #ad620f; stroke-width: 2; rx: 12; }
+      .sw { fill: #edf9f1; stroke: #277c45; stroke-width: 2; rx: 12; }
+      .remote { fill: #f5efff; stroke: #7051a6; stroke-width: 2; rx: 12; }
+      .guard { fill: #fff0f0; stroke: #ad3434; stroke-width: 2; rx: 12; }
+      .line { stroke: #314a70; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .wake { stroke: #277c45; stroke-width: 2.6; fill: none; marker-end: url(#green); }
+      .dash { stroke: #ad3434; stroke-width: 2.2; stroke-dasharray: 7 6; fill: none; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#314a70"/>
+    </marker>
+    <marker id="green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#277c45"/>
+    </marker>
+  </defs>
+
+  <rect width="1720" height="940" fill="#ffffff"/>
+  <text x="860" y="48" text-anchor="middle" class="title">Normal Cacheable remote async LDR：void response → ESR → CQ/IRQ → replay</text>
+  <text x="860" y="79" text-anchor="middle" class="small">r4 two-node PASS：PENDING 先于 submit，2×FSC 0x3a，2×64-byte fill，NC PLT=0</text>
+
+  <text x="170" y="125" text-anchor="middle" class="subtitle">CPU core / ordinary cache</text>
+  <text x="570" y="125" text-anchor="middle" class="subtitle">Requester UBC</text>
+  <text x="1010" y="125" text-anchor="middle" class="subtitle">Linux EL1</text>
+  <text x="1480" y="125" text-anchor="middle" class="subtitle">Remote node</text>
+
+  <rect x="40" y="150" width="260" height="88" class="cpu"/>
+  <text x="170" y="183" text-anchor="middle" class="body">EL0 原 LDR</text>
+  <text x="170" y="212" text-anchor="middle" class="small">Normal Cacheable miss；PC 不前移</text>
+
+  <rect x="420" y="150" width="300" height="88" class="ubc"/>
+  <text x="570" y="183" text-anchor="middle" class="body">接收 remote miss</text>
+  <text x="570" y="212" text-anchor="middle" class="small">ordinary miss identity → wait_key</text>
+  <path d="M 300 194 L 420 194" class="line"/>
+
+  <rect x="420" y="278" width="300" height="104" class="ubc"/>
+  <text x="570" y="313" text-anchor="middle" class="body">立即发布 void response</text>
+  <text x="570" y="342" text-anchor="middle" class="small">PENDING CQE/event 先可见</text>
+  <text x="570" y="365" text-anchor="middle" class="small">随后 remote request 继续飞行</text>
+  <path d="M 570 238 L 570 278" class="line"/>
+
+  <rect x="850" y="278" width="320" height="104" class="sw"/>
+  <text x="1010" y="313" text-anchor="middle" class="body">ESR_EL1 Data Abort fast path</text>
+  <text x="1010" y="342" text-anchor="middle" class="small">FSC=REMOTE_PENDING；FAR=VA</text>
+  <text x="1010" y="365" text-anchor="middle" class="small">ELR=原 LDR PC</text>
+  <path d="M 720 330 L 850 330" class="line"/>
+
+  <rect x="850" y="422" width="320" height="104" class="sw"/>
+  <text x="1010" y="457" text-anchor="middle" class="body">fault handler 会合 wait_key</text>
+  <text x="1010" y="486" text-anchor="middle" class="small">current task → waitqueue</text>
+  <text x="1010" y="509" text-anchor="middle" class="small">Linux scheduler 运行其他 task</text>
+  <path d="M 1010 382 L 1010 422" class="line"/>
+
+  <rect x="1340" y="278" width="280" height="104" class="remote"/>
+  <text x="1480" y="313" text-anchor="middle" class="body">remote memory read</text>
+  <text x="1480" y="342" text-anchor="middle" class="small">返回 64-byte cache line + status</text>
+  <text x="1480" y="365" text-anchor="middle" class="small">local / remote 共用 fill contract</text>
+  <path d="M 720 303 L 1340 303" class="line"/>
+
+  <rect x="420" y="570" width="300" height="104" class="ubc"/>
+  <text x="570" y="605" text-anchor="middle" class="body">ordinary cache fill visible</text>
+  <text x="570" y="634" text-anchor="middle" class="small">data 不进入 NC PLT</text>
+  <text x="570" y="657" text-anchor="middle" class="small">发布 COMPLETE CQE → IRQ</text>
+  <path d="M 1480 382 L 1480 545 L 720 622" class="line"/>
+
+  <rect x="850" y="570" width="320" height="104" class="sw"/>
+  <text x="1010" y="605" text-anchor="middle" class="body">IRQ handler drain CQ</text>
+  <text x="1010" y="634" text-anchor="middle" class="small">按 wait_key wake_up(task)</text>
+  <text x="1010" y="657" text-anchor="middle" class="small">无需 arm NC replay token</text>
+  <path d="M 720 622 L 850 622" class="wake"/>
+
+  <rect x="850" y="714" width="320" height="104" class="sw"/>
+  <text x="1010" y="749" text-anchor="middle" class="body">fault handler return → ERET</text>
+  <text x="1010" y="778" text-anchor="middle" class="small">恢复原 task 与原 ELR</text>
+  <text x="1010" y="801" text-anchor="middle" class="small">标准 arm64 exception exit</text>
+  <path d="M 1010 674 L 1010 714" class="wake"/>
+
+  <rect x="40" y="714" width="260" height="104" class="cpu"/>
+  <text x="170" y="749" text-anchor="middle" class="body">原 LDR replay</text>
+  <text x="170" y="778" text-anchor="middle" class="small">普通 cache hit</text>
+  <text x="170" y="801" text-anchor="middle" class="small">architectural value 正常退休</text>
+  <path d="M 850 766 L 300 766" class="wake"/>
+
+  <rect x="380" y="842" width="960" height="64" class="guard"/>
+  <text x="860" y="870" text-anchor="middle" class="body">验收守卫：nc_plt_allocations=0　nc_plt_pending=0　nc_replay_consumed=0</text>
+  <text x="860" y="894" text-anchor="middle" class="small">wait_key 只关联 task 与 completion；remote data 只进入 ordinary fill path</text>
+  <path d="M 380 834 L 1340 834" class="dash"/>
+</svg>
