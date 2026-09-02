@@ -1,5 +1,9 @@
 # OBMM remote load：EL0 coroutine 与 Linux task 的 trace-off 对比
 
+> 2026-09-02 适用范围：本文数据绑定 2026-09-01 artifact，早于私有 HLT 删除、
+> SVC/WFE 收敛和 Normal Cacheable 实现。数值只描述该历史 QEMU revision；当前
+> replay-only revision 需要重新执行 paired matrix。
+
 日期：2026-09-01
 执行主机：`n4-910c`
 正式 campaign：`scheduler-compare-trace-off-20260901-r5`

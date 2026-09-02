@@ -1,7 +1,7 @@
 # ub_sim 与 Lingqu DataSystem 当前状态及完整 PoC 差距审计
 
 > 审计日期：2026-08-14；细粒度性能证据复核：2026-08-20；
-> W5 PTO UB GM 集成复核：2026-09-02
+> W5 PTO UB GM 与 async-load memory-type replay 复核：2026-09-02
 > 审计对象：`ub_sim` 当前工作区、Git 历史、根目录 `mem_service/` 子模块、
 > guest/QEMU/kernel 接入代码及现有验证文档
 > 结论状态：**底层组件和分段验证已经较完整，但完整 Lingqu DataSystem PoC
@@ -20,7 +20,7 @@
 - [`crates/sim-services`](../crates/sim-services/src/lib.rs) 与
   [`crates/sim-memory`](../crates/sim-memory/src/lib.rs) 提供确定性参考模型和评估
   工具；独立 daemon 的产品实现集中在根目录 `mem_service/`。
-- QEMU、kernel 和 guest 的 async load async-load 路径解决的是“远端普通 `LDR`
+- QEMU、kernel 和 guest 的 async-load 路径解决的是“远端普通 `LDR`
   变慢时如何在 guest EL0 切换协程”；`mem_service` 解决的是“这个远端 payload
   是什么对象、哪个版本、放在哪里、谁有权访问、如何校验和恢复”。两者需要
   组合，任何一方单独通过都不等价于完整 DataSystem PoC。
@@ -83,6 +83,31 @@ staging。详细证据见
 | PTO ISA | `66213f994248f84421645c963d9c32fd5597fea1` |
 | Simpler | `df0cf4ffa84d540c8a64a10c6786e91f7dbe5782` |
 
+### 1.3 2026-09-02 Async-load 增量结论
+
+当前 `ub_sim` revision 又完成了 async-load 架构收敛与两类 memory type 的独立
+two-node acceptance：
+
+- control ABI 4 + event ABI 3 统一为 replay-only；
+- 三个私有 HLT assist 已删除，EL0 coroutine 使用 SVC/WFE；
+- Linux-task mode 使用 FSC `0x3a`、waitqueue、CQ/IRQ 与标准 `ERET`；
+- Normal Cacheable 使用普通 64-byte fill/replay，`nc_plt_allocations=0`；
+- Normal NC 使用 requester UBC NC PLT，并精确消费 one-shot replay token；
+- Cacheable Linux-task、Normal NC Linux-task 和 Normal NC EL0-coroutine 均已通过；
+- shared-future refactor 后的 NC regression 已通过。
+
+锁定 revision：
+
+| 项目 | Revision |
+|---|---|
+| `ub_sim` | `8e2e274001306a040eb62bb2e65197205e600518` |
+| QEMU | `a23329e24ef4f4b37e024e72f19b2ac7fcd0b590` |
+| guest kernel | `e60874b8072d7dddce033377a2173200b8d8c855` |
+
+这批结果增强了 `ub_sim` 的透明远端访存与调度底座。它仍未与 `mem_service`
+ObjectRef、W5 PTO UB GM 消费点和 Block/DFS recovery 合并成同一 run，因此完整 Lingqu
+DataSystem PoC 的最终结论保持未完成。
+
 ## 2. 证据口径
 
 为避免把计划、代码和运行结果混为一谈，本文使用五类证据：
@@ -100,8 +125,8 @@ staging。详细证据见
 
 ## 3. 分时间点代码基线
 
-2026-08-20 复核时的仓库状态如下；2026-09-02 W5 direct-access 运行基线见
-1.2 节：
+2026-08-20 复核时的仓库状态如下；2026-09-02 W5 direct-access 与 async-load
+运行基线见 1.2、1.3 节：
 
 | 项目 | 2026-08-20 值 | 审计判断 |
 | --- | --- | --- |
@@ -139,7 +164,7 @@ staging。详细证据见
 | W5 hidden → PTO UB GM | `run_w5_lingqu_shmem_pto.py`、Memory Service hidden view、Simpler/PTO `pipeline_double`、in-place publish | 2026-09-02 当前 revision 的 2/8-node 2-step gate 已通过 |
 | guest daemon smoke | [`run_app`](../guest-linux/aarch64/initramfs/run_app) 的 `mem-service-serving-publish`/restart/verify | 已有局部 publish/restart 闭环 |
 | Rust memory path | `sim-cli lingqu-memory prefix-cache-service` 和 JSON store/decision store 仍存在 | 仍是模拟、分析和兼容路径，不能冒充独立服务产品路径 |
-| async load + coroutine scheduler | QEMU async-load assist + kernel UAPI + `obmm_coroutine_scheduler` + `obmm_async_coroutine` | 已形成独立 2-node ABI v2 验证路径 |
+| async load + software scheduler | QEMU/UBC + kernel UAPI/driver + EL0 coroutine 或 Linux task scheduler | control ABI 4/event ABI 3；NC 两种 scheduler 和 Cacheable Linux-task 已通过 |
 | W5 与 async load 合流 | 没有当前 revision 的无旁路模型验收 bundle | **尚未证明** |
 
 代码中仍广泛使用 `linqu_*` 历史拼写；概念和产品名按 `Lingqu` 表述。两种拼写
@@ -164,6 +189,10 @@ staging。详细证据见
 | `0e98c72`、`300974e` | runtime policy evaluator 与 coarse policy | 完成 2,240-run、7-seed 精确 bucket 策略 |
 | `f61764c` | runtime policy 可视化 | 增加 QEMU measured 与 native-calibrated L/C/W 三维图 |
 | `a23b5c2` | fine boundary validation | 完成 screening、tracing、70 endpoint formal merge 与 fail-closed 发布策略 |
+| `e925c07`，2026-08-31 | ABI v3 EL0 event ring | event payload 与 consumer progress 进入 EL0 mmap ring |
+| `43a1945`，2026-09-01 | Linux-task remote-load PoC | FSC `0x3a`、waitqueue、CQ/IRQ 与 ERET replay |
+| `3c85e90`，2026-09-02 | replay-only Normal NC | 删除私有 HLT，增加 SVC/WFE 与明确 NC PLT |
+| `8e2e274`，2026-09-02 | Normal Cacheable replay | 普通 64-byte fill、ESR/CQ/IRQ、ERET replay 与 PLT-zero gate |
 
 历史演进支持的判断是：系统已经从“若干 guest 内函数和 simulator model”推进到
 “独立服务 + 中立 provider + 系统仿真平台”。历史本身不能证明抽取后的所有接口
@@ -177,10 +206,10 @@ staging。详细证据见
   lifecycle 的历史运行证据，见
   [8-node final validation](2026-04-15-ubsim-eight-node-final-validation.md) 与
   [GVA/GSVA/OBMM/MESI status summary](sim_gva_gsva_obmm_mesi_stage_status_summary.md)。
-- submit/await explicit submit/await 与 async load ordinary-load/direct-EL0-upcall 均已实现；async load 的
-  context save/switch/resume 由 guest EL0 scheduler 完成，QEMU 负责建模事件投递、
-  pending load 和精确完成。详细设计见
-  [async load async-load design](plans/async-load-coroutine-scheduler-detailed-design.md)。
+- submit/await 与普通 `LDR` async load 均已实现。async load 支持 guest EL0
+  coroutine scheduler 与 Linux task scheduler；Normal Cacheable 复用普通 fill，
+  Normal NC 使用 requester UBC NC PLT。当前设计见
+  [async-load 实现总结](plans/async-load-implementation-summary.md)。
 - ABI v2 已有 2-node `49/49` formal acceptance，以及 4/8-node 各 `14/14`
   定向 scale-out 历史证据。该结论绑定已提交报告中的 QEMU/kernel/initramfs hash，
   适用范围限于对应 artifact 和已提交 revision。
@@ -257,8 +286,8 @@ staging。详细证据见
 | --- | --- | --- |
 | G1 baseline | gitlink/lock/HEAD、QEMU、kernel、initramfs 和 scenario fingerprint 唯一 | 已有机制；需随新 run 固化 |
 | G2 object publish | nodeA 通过 typed SDK 向独立 daemon 发布版本化 ObjectRef | 分段能力已有，联合 run 未验 |
-| G3 remote map/load | nodeB 由 OBMM provider 获取 mapping descriptor，并以普通 `LDR` 消费 | OBMM/async load test path 已通过 |
-| G4 EL0 scheduling | 至少两个 coroutine；日志证明 pending upcall、EL0 save/switch、complete upcall、resume | async load ABI v2 test path 已通过 |
+| G3 remote map/load | nodeB 由 OBMM provider 获取 mapping descriptor，并以普通 `LDR` 消费 | NC 与 Cacheable 独立 test path 已通过；DataSystem 联合 run 未验 |
+| G4 scheduling | 至少两个 runnable context；日志证明 pending、switch、completion、resume | EL0 coroutine 与 Linux task 分段 path 已通过；联合 run 未验 |
 | G5 model correctness | Qwen3 产生固定 token/checksum，且与同步 reference 一致 | 历史模型验证已有，async load 联合 run 未验 |
 | G6 durable commit | 结果先写 Block 并校验，再发布 DFS manifest/ObjectRef | 分层实现已有，联合 run 未验 |
 | G7 restart recovery | 重启独立 daemon 后用同一 key/version resolve，payload checksum 不变 | 本地 fixture 有，联合 run 未验 |
@@ -312,7 +341,7 @@ machine-readable manifest、raw evidence、aggregate summary 和
 | 困难 | 为什么难 | 处理原则 |
 | --- | --- | --- |
 | 控制面与数据面身份一致 | daemon ObjectRef、OBMM mapping key、async load pending load 和 durable ref 必须指向同一对象版本 | 统一 `run_id/object_id/version/generation`，跨层日志可 join |
-| ordinary load 的精确语义 | load 不能提前退休；complete/fault 必须只提交一次，EL0 context 不能由 QEMU 偷存 | 保持 ABI v2 precise exit/commit 和 generation-safe 状态机 |
+| ordinary load 的精确语义 | load 不能提前退休；complete/fault 必须只提交一次；Cacheable/NC result state 必须分离 | 保持 replay-only、generation-safe NC PLT 与普通 fill ordering |
 | 无旁路验证 | 历史兼容路径多，成功结果可能来自 JSON/file/in-process fallback | `--forbid-fallback`，对每个 payload 输出 provider provenance |
 | 多节点证据稳定性 | QEMU 端口、残留进程、外部 workload 和 artifact 变化会污染性能/正确性 | immutable raw、attempt/quarantine、唯一 fingerprint、整组 fail-closed |
 | 历史文档与当前 revision 漂移 | “曾经通过”容易被误读成“现在通过” | 报告绑定 commit/hash，并明确 historical/current |
@@ -357,6 +386,9 @@ machine-readable manifest、raw evidence、aggregate summary 和
 | fine boundary “仍在运行/partial” | 已过时；screening、tracing 和 1,960-run formal merge 均已完成 | 更新为正式 7-seed endpoint evidence；不外推到 full matrix |
 | Qwen3 W5 8-node/16-step 已通过 | 历史报告支持 | 保留为 C 类证据；不等价于当前独立服务 + async load PoC |
 | “完整 PoC 已完成约 70%” | 该数字仅能作为工程规划估算 | 改为 65%～75% 的组件就绪度规划区间，并明确假设 |
+| Cacheable async `LDR` 只存在 silicon 设计 | 已过时；`cacheable-esr-cq-20260902-r4` 已完成 QEMU 功能验收 | 更新为 success path 已通过；真实 cache/MSHR timing 与 RTL 仍未验证 |
+| 所有 async load 都需要通用 PLT | 不准确；Cacheable 使用普通 fill，只有 Normal NC 使用 NC PLT | 已按 memory type 明确状态归属 |
+| ABI v3 wait/wakeup 全程 kernel-free | 当前 SVC/WFE revision 不满足该字面范围 | 限定为 EL0-owned event handling；wakeup 经过 IRQ，resume 经过 SVC |
 
 ### 10.1 本次实际执行的验证
 

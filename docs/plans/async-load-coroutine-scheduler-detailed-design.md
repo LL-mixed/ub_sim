@@ -1,11 +1,14 @@
-# async load：普通 `LDR` + 自定义 EL0 upcall + guest EL0 coroutine scheduler
+# Async load ABI v2 历史设计：Direct EL0 Upcall 与 Coroutine Scheduler
 
-> 2026-08-31 更新：ABI v3 已用 mmap event ring 和三个 EL0 HLT assist 替换 ABI v2
-> 的 `GET_EVENT` / scheduler-enter ioctl hot path，patch 与 replay 的 2-node real guest
-> E2E 均已通过。现行 ABI、实现位置、时序与证据见
-> [ABI v3 kernel-free event ring 设计](async-load-abi-v3-kernel-free-event-ring.md)。
-> 本文第 4.2、4.4、7、9 节保留 ABI v2 的设计与历史证据，用于说明机制演进；这些
-> 段落不再定义当前 event data plane。
+> 适用范围：本文主体冻结在 2026-08-12 的 ABI v2，用于保存 direct EL0 upcall、
+> guest-owned context 和 producer/consumer r15 的历史设计证据。文中 `HLT`、
+> `GET_EVENT`、patch retirement 和 control ABI v2 均不定义 2026-09-02 的现行接口。
+>
+> 现行设计使用 control ABI 4、event ABI 3、replay-only retirement、
+> `SVC #0x5343/#0x5345`、`SEVL/WFE + completion IRQ`，并按 memory type 分为
+> Normal Cacheable 普通 fill 与 Normal NC PLT。当前入口见
+> [实现总结](async-load-implementation-summary.md)和
+> [ABI v3 EL0 event ring 与 SVC/WFE](async-load-abi-v3-kernel-free-event-ring.md)。
 
 > 命名说明：当前接口统一使用 `async load` / `async-load` / `async_load`。下文仍含
 > `p2b` 的字符串仅用于精确引用改名前的历史 evidence 路径或输出原文。
@@ -319,6 +322,11 @@ handler 可能先消费另一 coroutine 的 terminal event，却没有把当前 
 
 ### 4.3 原子 resume mechanism
 
+> 历史说明：本节解释 ABI v2 的 `HLT #0x5343` 模拟机制。现行实现已经删除该
+> HLT 拦截，改由 `SVC #0x5343` fast path 校验 context、安装 `pt_regs`，随后通过
+> 标准 exception exit 返回目标 context。现行过程见
+> [Normal NC replay 与 SVC/ERET 设计](2026-09-02-normal-nc-replay-plt-svc-eret-design.md#6-resume-abi)。
+
 这里的 **resume** 是“恢复 EL0 scheduler 已经选中的 coroutine context”，不是直接让
 远端 `LDR` 重新执行。这里的 **原子** 也不是 `LDXR/STXR`、CAS 或多核内存原子性，
 而是下面这条 guest-visible architectural invariant：
@@ -398,6 +406,9 @@ validate(B.context)
 | 从 B 的保存 PC 继续 | QEMU 模拟 core |
 
 ### 4.4 事件数据获取
+
+> 历史说明：本节的 `GET_EVENT` 属于 ABI v2。ABI v3 由 EL0 acquire-load mmap
+> event ring，并以 release-store 更新 consumer sequence。
 
 V2 由 `/dev/linqu-scc0` 的 `GET_EVENT` ioctl 从 core event queue 复制 event。direct-to-EL0
 描述的是 control transfer：QEMU 直接进入 EL0 upcall entry，而不是先进入 EL1 exception

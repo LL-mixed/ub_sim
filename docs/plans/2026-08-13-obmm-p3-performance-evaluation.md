@@ -9,12 +9,13 @@
 > 7-seed coarse runtime policy 和 1,960-case fine-grained formal boundary 已完成；
 > 4,942-case full matrix 于 2026-08-14 按用户要求安全暂停**
 >
-> ABI v3 当前状态（2026-08-31）：mmap event ring、EL0 atomic wait/wakeup、
-> scheduler-enter assist 与零 hot-path ioctl 已实现；patch/replay 的 2-node 10 ms
-> correctness E2E 均为 pass。现有 P3 数字全部来自 ABI v2，不能代表 ABI v3 的性能。
-> 恢复正式 P3 时需要使用 ABI v3 artifact 和 gate 从头采集，不得合并 ABI v2 raw evidence。
-> ABI v3 功能证据见
-> [kernel-free event ring 设计与实跑](async-load-abi-v3-kernel-free-event-ring.md)。
+> 当前状态（2026-09-02）：control ABI 4 + event ABI 3 已统一为 replay-only；私有
+> HLT 已删除，EL0 coroutine 使用 SVC/WFE，Linux-task 使用 ESR/CQ/IRQ/ERET；
+> Normal NC 与 Normal Cacheable success path 均已通过。现有 P3 数字来自更早的
+> ABI v2，2026-09-01 trace-off 数据也早于 SVC/WFE 与 Cacheable 收敛。两批数据都
+> 不能代表当前 revision 的性能。P3 4,942-case campaign 继续按用户要求暂停；恢复时
+> 必须用当前 artifact 新建 campaign，且不得合并旧 raw evidence。当前功能证据见
+> [async-load 实现总结](async-load-implementation-summary.md)。
 >
 > 设计基线：[P3 对比评估详细设计](p3-comparative-evaluation-detailed-design.md)
 

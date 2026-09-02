@@ -96,5 +96,5 @@
   <rect x="55" y="790" width="1570" height="135" class="note"/>
   <text x="840" y="830" text-anchor="middle" class="subtitle">当前验证范围</text>
   <text x="90" y="872" class="body">Normal NC 行已完成 EL0 coroutine 与 Linux-task two-node arm64 guest 实跑：每条路径均精确消费 2 个 replay token。</text>
-  <text x="90" y="907" class="body">Normal Cacheable 行是 silicon contract；当前 QEMU 没有可用于该项目验证的真实 cache/MSHR/fill hierarchy。</text>
+  <text x="90" y="907" class="body">Normal Cacheable 行已用 QEMU 功能 fill surrogate 完成 r4 two-node 验收；真实 cache/MSHR timing 与 RTL 仍待验证。</text>
 </svg>

@@ -1,83 +1,89 @@
-# Async-load ABI v3 kernel-free event ring 设计
+# Async-load ABI v3 EL0 event ring 与 SVC/WFE 设计
 
-## 1. 目标与验收边界
+初始日期：2026-08-31
 
-ABI v3 将 async-load 正常运行时的 event data plane 完整放到 guest EL0：
+现行修订：2026-09-02
+
+状态：event ABI v3 已实跑；control ABI 已升级为 v4；当前仅支持 replay retirement；
+私有 HLT assist 已删除
+
+## 1. 目标与边界
+
+ABI v3 解决 event payload 直达 EL0 的问题：
 
 - QEMU/计算单元发布 `PENDING`、`COMPLETE`、`FAULT` event；
-- EL0 coroutine scheduler 直接读取 event payload 并确认消费进度；
-- 全部 coroutine 阻塞时，EL0 使用 atomic wait assist 挂起当前 vCPU；
-- completion 到达后，QEMU/计算单元唤醒同一个 vCPU；
-- coroutine 正常退出后，EL0 使用 scheduler-enter assist 进入调度状态；
-- patch/replay completion policy 保持为 EL0 runtime policy。
+- EL0 coroutine scheduler 直接读取 descriptor；
+- EL0 直接确认 consumer progress；
+- event hot path 不调用 `GET_EVENT`、`poll`、futex 或 signal；
+- coroutine state、ready queue 和选择 policy 全部由 EL0 runtime 持有。
 
-kernel 负责 setup、ownership、DMA memory allocation/mapping、session lifecycle、
-map registration、统计读取与异常回收。`START` 到 `STOP` 之间的 event hot path
-禁止调用 `GET_EVENT`、`SCHEDULER_ENTER`、`poll`、futex、signal 或其他等待 syscall。
+2026-09-02 的架构收敛删除了三个 simulator-private HLT。当前复用 Arm 指令通路：
 
-ABI v3 acceptance 需要同时满足：
+- context resume：`SVC #0x5343`，guest kernel/driver fast path 安装目标 context；
+- all-blocked wait：`SEVL; WFE` + completion IRQ；
+- scheduler enter：`SVC #0x5345`。
 
-1. 每个 event 的 descriptor 在 producer sequence 发布前完整可见；
-2. EL0 使用 acquire load 观察 producer sequence；
-3. EL0 使用 release store 发布 consumer sequence；
-4. QEMU 校验 owner generation、sequence 单调性和 ring 容量；
-5. direct upcall 改写 EL0 PC 后立即退出当前 TB；
-6. all-blocked wait 的空队列检查与 vCPU halt 构成一个原子操作；
-7. completion 发布后能够唤醒 wait assist 挂起的 vCPU；
-8. patch/replay 2-node E2E 的 hot-path ioctl count 均为零。
+因此，“kernel-free”精确覆盖 event descriptor 的读取、校验、ack 和 coroutine
+状态转换。completion wakeup 会经过 EL1 IRQ，context resume 与 scheduler-enter
+会经过 EL1 SVC。文档和验收禁止将整个 wait/wakeup/resume 链路描述为 kernel-free。
 
-## 2. 总体数据流与映射布局
+当前 control ABI version 为 4，event ring layout 保持 version 3。success completion
+统一采用 replay：EL0 runtime 不 patch saved `Rt/PC`。
 
-![ABI v3 event ring 与 kernel-free wait/wakeup](async-load-abi-v3-event-ring-flow.svg)
+## 2. 映射布局
+
+![ABI v3 event ring、SVC resume 与 WFE/IRQ wakeup](async-load-abi-v3-event-ring-flow.svg)
 
 driver 为每个 async-load file allocation 分配两个 DMA-coherent mapping。
 
-### 2.1 Producer/event ring mapping
+### 2.1 Producer/event ring
 
-该 mapping 对 EL0 只读，由 QEMU/计算单元写入。开头是 64-byte producer header，
-包含 ABI version、depth、slot bytes、owner generation 与 producer sequence；其后
-紧跟 `depth` 个 128-byte event slot。
-
-producer sequence 从 0 开始。sequence 为 `N` 的 event 使用：
+该 mapping 对 owner EL0 只读，由 device 写入：
 
 ```text
-slot = (N - 1) % depth
+64-byte producer header
+  + depth * 128-byte event slot
 ```
 
-QEMU 先 DMA 写入 slot，执行 publish barrier，最后 DMA 写入
-`producer_sequence=N`。
+producer sequence 从 0 开始。sequence 为 `N` 的 event 使用
+`slot = (N - 1) % depth`。device 固定按以下顺序发布：
 
-### 2.2 Consumer mapping
+1. 写入完整 event descriptor；
+2. 执行 publish barrier；
+3. 更新 `producer_sequence=N`；
+4. 在需要时触发 direct upcall 或 IRQ。
 
-该 mapping 对 owner EL0 可读写，QEMU/计算单元只读。固定字段为 ABI version、owner
-generation、consumer sequence、wait count 与 scheduler-enter count，其余空间保留。
+### 2.2 Consumer page
 
-EL0 完成 event validation 和 state transition 后，以 release store 更新
-`consumer_sequence`。QEMU 在 publish、wait、resume、scheduler-enter 时读取并校验该值。
+该 mapping 对 owner EL0 可读写，device 只读。它包含 ABI version、owner
+generation、consumer sequence、wait count 与 scheduler-enter count。
+
+EL0 完成 descriptor validation 和 coroutine state transition 后，以 release store
+更新 `consumer_sequence`。device 读取 consumer progress 时使用 acquire ordering。
 
 以下情况进入 fail-stop：
 
 - consumer sequence 回退；
 - consumer sequence 超过 producer sequence；
 - owner generation 不匹配；
-- producer 与 consumer 的距离超过 depth；
+- producer 与 consumer 距离超过 ring depth；
 - descriptor sequence 与目标 sequence 不一致；
 - ring DMA read/write 失败。
 
-## 3. Event descriptor
+## 3. Event descriptor 与 replay 语义
 
-每个 slot 固定为 128 bytes。字段包含：
+event slot 固定为 128 bytes：
 
 ```c
 struct obmm_async_load_event_v3 {
     __u64 sequence;
     __u64 owner_generation;
     __u64 context_id;
-    __u64 plt_token;
+    __u64 plt_token;       /* ABI 字段名；Cacheable 路径承载 wait_key */
     __u64 interrupted_pc;
     __u64 fault_pc;
     __u64 effective_va;
-    __u64 value;
+    __u64 value;           /* replay-only success 不依赖该字段退休 */
     __u64 map_id;
     __u64 map_generation;
     __u64 model_phase_generation;
@@ -90,179 +96,174 @@ struct obmm_async_load_event_v3 {
 };
 ```
 
-`interrupted_pc` 只描述 direct upcall 打断的 EL0 instruction boundary。
-EL0 scheduler 已经处于 all-blocked wait 状态时，该字段为 0。
+字段 `plt_token` 的名称来自 ABI v3 初版。当前语义按 memory type 分流：
 
-## 4. CPU assist
+| memory type | 该字段语义 | completion result 所在位置 |
+|---|---|---|
+| Normal NC | NC replay token | requester UBC NC PLT |
+| Normal Cacheable | software `wait_key` | 普通 cache fill hierarchy |
 
-ABI v3 使用三个 simulator-private AArch64 assist：
+`interrupted_pc` 描述 direct upcall 打断的 EL0 instruction boundary。scheduler 已处于
+all-blocked wait 时，该字段可以为 0。
 
-| immediate | 名称 | 作用 |
-| --- | --- | --- |
-| `HLT #0x5343` | resume | 原子安装 EL0 选择的完整 coroutine context |
-| `HLT #0x5344` | wait | 原子检查 pending event；空队列时挂起 vCPU |
-| `HLT #0x5345` | scheduler-enter | coroutine 正常退出后原子屏蔽 direct upcall 并进入 EL0 scheduler state |
+## 4. 当前 CPU/OS assist
 
-这些 HLT immediate 只在 active async-load EL0 session 中具有自定义语义。其他
-session、其他 EL 或其他 immediate 沿用 QEMU 原行为。
+| instruction/event | 作用 | 所属层 |
+|---|---|---|
+| direct EL0 PC redirection | 在精确 EL0 boundary 进入注册 trampoline | QEMU/目标 core 扩展 |
+| `SVC #0x5343` | 校验并安装 EL0 选择的 context，按需 arm NC replay token | guest kernel/driver fast path |
+| `SEVL; WFE` | 清 event register 并等待 | 标准 AArch64 指令 |
+| completion IRQ | 唤醒 WFE，允许 EL0 继续 drain ring | device + 标准 IRQ path |
+| `SVC #0x5345` | 标记进入 scheduler context | guest kernel/driver fast path |
 
-### 4.1 Wait race closure
+两个 SVC immediate 只在 active owner-matched async-load session 中触发私有 fast path。
+其余 SVC 按现有 guest kernel 行为处理。
 
-wait helper 在 QEMU device lock/BQL 保护下执行：
+### 4.1 Context resume 原子边界
 
-1. 校验 session、owner CPU、`upcall_active` 和 consumer sequence；
-2. event model 已有 event 时，将一个 event 发布到 ring 并退出 TB；
-3. event model 为空时设置 `scheduler_waiting=true`、`cpu->halted=1`，随后退出 CPU loop；
-4. completion callback 在同一保护域中产生 event；
-5. callback 观察到 `scheduler_waiting` 后发布 event、清除 halted 并 kick vCPU。
+EL0 scheduler 先恢复目标 context 的 SIMD/FP/`TPIDR_EL0`，随后把 context image
+地址放入 `x0`，把 replay token 放入 `x1`，执行 `SVC #0x5343`。kernel fast path：
 
-这个顺序关闭“EL0 观察到空队列以后、vCPU 真正 halt 以前 completion 已到达”的
-lost-wakeup 窗口。
+1. 校验 owner、session、home CPU、context pointer 和 image；
+2. 对 Normal NC token 执行 replay-arm MMIO command；
+3. 把目标 GPR、SP、PC、NZCV 安装到当前 `pt_regs`；
+4. 返回标准 arm64 exception exit；
+5. 从目标 PC 继续。
+
+原子性限定为 guest-visible context install：软件不会执行混合两套 context 的中间
+指令。它不提供共享内存原子性。
+
+### 4.2 WFE lost-wakeup closure
+
+EL0 scheduler 找不到 READY coroutine 且仍有 `WAIT_REMOTE` 时：
+
+1. drain event ring；
+2. 执行 `SEVL; WFE` 清理本地 event register；
+3. 再次 acquire-load producer sequence；
+4. ring 非空时继续处理 event；
+5. ring 为空时执行第二次 `WFE`；
+6. completion 先 publish descriptor/sequence，再 raise IRQ；
+7. IRQ 唤醒 vCPU；
+8. EL0 返回后重新 drain ring。
+
+最后一次 CQ-empty 检查与第二次 WFE 之间出现 completion 时，已发布 CQE 或 event
+register 至少保留一个可观察依据。
 
 ## 5. Direct upcall 时序
 
-remote `LDR` 产生 PENDING event 时：
+remote `LDR` 产生 PENDING 时：
 
-1. async-load model 分配 PLT entry 并生成 PENDING；
-2. QEMU 将 PENDING descriptor 写入 event ring；
-3. QEMU release-publish producer sequence；
-4. QEMU 设置 `upcall_active`；
-5. QEMU 设置 `env->pc=upcall_entry`；
+1. async-load model 为 Normal NC 分配 NC PLT，或为 Cacheable 建立普通 fill future；
+2. device 把 PENDING descriptor 写入 ring；
+3. device release-publish producer sequence；
+4. device 提交 remote request；
+5. QEMU 设置 `upcall_active` 与 `env->pc=upcall_entry`；
 6. QEMU 调用 `cpu_loop_exit_noexc()`；
-7. EL0 assembly 保存全部 application context；
-8. EL0 dispatcher acquire-load producer sequence 并处理 event；
-9. EL0 release-store consumer sequence；
-10. EL0 scheduler 选择 READY coroutine 并执行 resume assist。
+7. EL0 assembly 保存 application context；
+8. dispatcher acquire-load producer sequence，处理 event；
+9. dispatcher release-store consumer sequence；
+10. scheduler 选择 READY coroutine，经 SVC resume。
 
-completion 到达且另一个 coroutine 正在运行时，completion 保留在 device event
-model 中。下一个 EL0 TB boundary 将 descriptor 发布到 ring 并触发 direct upcall。
+completion 在另一 coroutine 运行期间到达时，event 保留到下一个精确 EL0 TB
+boundary，随后以相同 direct upcall 方式交付。全部 coroutine 都处于 wait 状态时，
+completion 通过 IRQ 唤醒 WFE；EL0 从 ring 读取 payload。
 
-## 6. All-blocked 时序
+## 6. Kernel ABI 责任
 
-EL0 scheduler 找不到 READY coroutine 且仍存在 `WAIT_REMOTE` context 时：
+`QUERY_CAPS` 当前返回：
 
-1. drain event ring；
-2. 执行 wait assist；
-3. wait helper 发现已有 event 时直接发布并返回；
-4. wait helper 发现空队列时挂起 vCPU；
-5. remote completion 生成 event；
-6. QEMU 发布 descriptor 和 producer sequence；
-7. QEMU kick home vCPU；
-8. EL0 从 wait assist 下一条指令继续；
-9. scheduler drain event ring 并恢复 READY coroutine。
+- control ABI 4、event ABI 3；
+- context/event/ring layout；
+- `SVC_CONTEXT_RESUME`、`WFE_WAIT`、`EL0_SCHEDULER_ENTER`；
+- `REPLAY_RETIRE`、`NC_REPLAY_TOKEN`、`CACHEABLE_FILL_REPLAY`；
+- `KERNEL_FREE_EVENT_RING`；
+- kernel-task replay capability。
 
-## 7. Kernel ABI 责任
+driver 负责：
 
-`QUERY_CAPS` 返回：
+- 分配 coherent ring/page；
+- 实施 producer read-only 与 consumer read/write mmap 权限；
+- 验证 map/session/owner；
+- 注册 SVC fast path；
+- completion IRQ ack；
+- stop/release 时的 lifecycle cleanup。
 
-- ABI version 3；
-- event slot bytes；
-- event ring mmap offset/bytes；
-- consumer mmap offset/bytes；
-- resume/wait/scheduler-enter HLT immediate；
-- `KERNEL_FREE_EVENT_RING` 与 `EL0_WAIT_WAKE` capability。
+EL0 event hot path不使用 `GET_EVENT` 或 `SCHEDULER_ENTER` ioctl。SVC fast path 与 IRQ
+路径属于当前 ABI 的显式组成部分。
 
-driver open 阶段分配并清零两个 coherent mapping。driver mmap 规则：
+## 7. 实现位置
 
-- producer/event ring 只允许 `PROT_READ | MAP_SHARED`；
-- consumer page 允许 `PROT_READ | PROT_WRITE | MAP_SHARED`；
-- mapping 长度和 offset 必须与 caps 完全一致。
-
-`START` 将两个 DMA address、bytes、depth、owner generation 和 upcall entry 配置到
-QEMU device，然后启用 load interception。`STOP` 先停 interception 并回收 pending
-state，再释放 session。mapping 在 file release 时释放。
+| 层 | 文件 | 当前职责 |
+|---|---|---|
+| UAPI | `guest-linux/kernel_ub/include/uapi/ub/obmm_async_load.h` | control ABI 4、event ABI 3、caps、SVC immediate、path stats |
+| guest driver | `guest-linux/aarch64/driver/linqu_ub_drv.c` | coherent mappings、SVC handler、IRQ、session lifecycle |
+| QEMU model/device | `vendor/qemu_8.2.0_ub/hw/ub/ub_async_load*.c` | descriptor-first publish、sequence、NC PLT、Cacheable fill、wake |
+| AArch64 TCG | `vendor/qemu_8.2.0_ub/target/arm/tcg/helper-a64.c` | direct upcall、Cacheable/NC load interception、Data Abort mode |
+| EL0 runtime | `guest-linux/aarch64/libs/obmm_coroutine_scheduler/` | context save、ring consume、SVC resume、WFE wait、policy |
+| E2E app/gate | `guest-linux/aarch64/apps/obmm_async_coroutine/`、`run_ub_obmm_eval.sh` | producer/consumer、value、causal、path、cleanup gate |
 
 ## 8. Test contract
 
-静态 contract 必须断言：
+静态和构建 contract 需要断言：
 
-- runtime hot path 不包含 `OBMM_ASYNC_LOAD_IOCTL_GET_EVENT`；
-- runtime hot path 不包含 `OBMM_ASYNC_LOAD_IOCTL_SCHEDULER_ENTER`；
+- EL0 event hot path 不包含 `GET_EVENT` 或 `SCHEDULER_ENTER` ioctl；
 - runtime 映射 producer/event ring 与 consumer page；
-- assembly 包含 resume、wait、scheduler-enter 三个 assist；
-- QEMU direct delivery 在 event publish 成功后改写 PC并退出 TB；
-- driver 的 async-load file operations 包含 mmap；
-- producer mapping 拒绝 writable VMA。
+- assembly 包含 `svc #0x5343`、`svc #0x5345`、`sevl` 和 `wfe`；
+- QEMU 不拦截三个旧 HLT immediate；
+- QEMU direct delivery 在 event publish 后改写 PC 并退出 TB；
+- producer mapping 拒绝 writable VMA；
+- success completion 不 patch saved `Rt/PC`；
+- Normal Cacheable path的 NC PLT counter 恒为 0。
 
-2-node E2E 日志必须包含：
+two-node E2E 需要记录：
 
-- `abi=3`；
-- `event_delivery=ring`；
-- `kernel_hotpath_ioctls=0`；
-- PENDING 与 COMPLETE sequence；
-- 两个 coroutine 的 switch/resume；
-- patch/replay 的最终 value 校验；
-- wait/wakeup counter；
-- QEMU、driver 与 EL0 runtime 的 producer/consumer 最终值相等。
+- control/event ABI；
+- event delivery、PENDING/COMPLETE sequence；
+- context save/switch/resume；
+- WFE/IRQ wakeup；
+- replay exact-once；
+- producer 写值与 consumer `LDR` 结果；
+- producer/consumer final sequence；
+- artifact fingerprint；
+- residual QEMU count。
 
-## 9. 实现落点
+## 9. 验证状态
 
-| 层 | 主要文件 | ABI v3 责任 |
-| --- | --- | --- |
-| UAPI | `guest-linux/kernel_ub/include/uapi/ub/obmm_async_load.h` | 固化 ring header、128-byte descriptor、consumer page、caps/start v3 与三个 HLT immediate |
-| guest driver | `guest-linux/aarch64/driver/linqu_ub_drv.c` | 分配 coherent ring/page，实施只读/读写 mmap 权限，START 时向 QEMU 交付 DMA 地址 |
-| QEMU device/model | `vendor/qemu_8.2.0_ub/hw/ub/ub_async_load*.c` | descriptor-first publish、sequence/owner/capacity 校验、completion wakeup 与 fail-stop |
-| AArch64 TCG | `vendor/qemu_8.2.0_ub/target/arm/tcg/{translate-a64,helper-a64}.c` | direct-upcall TB exit，以及 resume/wait/scheduler-enter 三个 EL0 assist |
-| EL0 runtime | `guest-linux/aarch64/libs/obmm_coroutine_scheduler/` | acquire 消费、event state transition、release ack、协程调度与热路径计数 |
-| E2E app/gate | `guest-linux/aarch64/apps/obmm_async_coroutine/`、`run_ub_obmm_eval.sh` | 2-node producer/consumer 因果验证及 ABI v3 machine-readable gate |
-| P3 evaluator | `crates/sim-cli/src/{obmm_remote,obmm_eval}.rs` | 生成 `v3|...` 模型 spec，拒绝缺失 ring/wait/wakeup 证据的 async-load 样本 |
+### 9.1 当前 replay-only revision
 
-## 10. 2-node 实跑结果
+2026-09-02 在 `n4-910c1:/home/ll/ub_sim_nc_replay_20260902` 完成
+`normal-nc-replay-el0-20260902-r5`：
 
-2026-08-31 在 `n4-910c` 的隔离工作区
-`/home/ll/ub_sim_abi_v3_20260831` 顺序运行 patch 与 replay。两个 run 使用完全相同的
-QEMU、kernel、initramfs、scenario 与 remote-memory manifest：
+| evidence | result |
+|---|---:|
+| control ABI / event ABI | 4 / 3 |
+| nodeA writes / nodeB verified values | 2 / 2 |
+| PENDING / COMPLETE / FAULT | 2 / 2 / 0 |
+| direct EL0 upcalls | 2 |
+| context saves / restores / switches | 2 / 4 / 3 |
+| replay consumed / mismatch | 2 / 0 |
+| final pending | 0 |
+| residual QEMU | 0 |
+| terminal status | pass |
 
-| artifact | SHA-256 / contract hash |
-| --- | --- |
-| QEMU | `5374ab0046e70a335681edb5684209aa3fbb1f4b0551b4d58da1a9e600040ec9` |
-| kernel Image | `4aea7db353ce48baf9f1416f5d728a888cb402f79d19af978e2d8aa5532f8a35` |
-| initramfs | `0feec129e110e13ab10818a667b8e6f06004e173a07f3051cd954f6044317884` |
-| 10 ms scenario | `dde4d793e72725d1f0c2effc1b777fa07968a48c8f02187118bf113092671009` |
-| model file | `702bb3b440b9aa555b1c72dd9e39173edf10225a82d11ec57d16e52282543035` |
-| model contract | `fnv1a64:790d2188d12e4513` |
+该运行使用 SVC context resume、WFE + IRQ wakeup、replay-only NC PLT。完整证据和
+artifact hash 见
+[Normal NC replay 与 SVC/ERET 设计](2026-09-02-normal-nc-replay-plt-svc-eret-design.md)。
 
-共同结果：
+### 9.2 ABI v3 初版历史证据
 
-| 验收项 | patch | replay |
-| --- | ---: | ---: |
-| nodeA writes / nodeB verified values | 2 / 2 | 2 / 2 |
-| PENDING / COMPLETE / FAULT | 2 / 2 / 0 | 2 / 2 / 0 |
-| event ring consumed | 4 | 4 |
-| final producer / consumer sequence | 4 / 4 | 4 / 4 |
-| EL0 wait assists / actual wakeups | 4 / 2 | 4 / 2 |
-| scheduler-enter assists | 2 | 2 |
-| hot-path ioctls | 0 | 0 |
-| QEMU context saves/restores/switches/bytes | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
-| replay consumed / mismatch / ready high-water | 0 / 0 / 0 | 2 / 0 / 1 |
-| blocked-load causal switches | 1 | 1 |
-| QEMU remaining after cleanup | 0 | 0 |
-| terminal status | pass | pass |
+2026-08-31 的 patch/replay 两次 2-node run 证明 event ring descriptor-first
+publish、sequence、direct upcall 和 hot-path ioctl=0。该 revision 使用三个私有 HLT，
+并允许 patch retirement。它保留为 ABI 演进证据，不定义当前 instruction assist 或
+retirement contract。
 
-本机留存的完整 runner、guest 与 QEMU 日志位于：
+## 10. 当前限制
 
-- `out/abi-v3-event-ring/abi-v3-ring-patch-20260831-r1.log`；
-- `out/abi-v3-event-ring/abi-v3-ring-replay-20260831-r1.log`；
-- `out/abi-v3-event-ring/*_headless8/{nodeA,nodeB}_{guest,qemu}.log`。
-
-以上运行构成功能正确性证据。10 ms 固定延迟用于稳定暴露协程重叠、all-blocked wait
-和 wakeup，不能解释为性能结果。P3 全矩阵继续保持暂停；恢复 P3 时必须使用 ABI v3
-gate 和新 artifact 重新建立正式性能证据，ABI v2 的历史样本不能进入 ABI v3 聚合。
-
-## 11. 回归结果
-
-| 验证 | 环境 | 结果 |
-| --- | --- | --- |
-| `cargo test --workspace` | `n4-910c` ARM64 Linux | pass；所有 workspace unit/doc tests 完成，外部模型或 native runtime 依赖项按测试声明 ignored |
-| `python -m unittest discover guest-linux/aarch64/tests` | `n4-910c`，Python 3.12.14 | 358/358 pass |
-| async-load focused Python contract | macOS 与 `n4-910c` | 20/20 pass |
-| QEMU async-load / remote-model / backend unit | `n4-910c` ARM64 native | 9 + 7 + 6 = 22/22 pass |
-| QEMU wrapper build | macOS 与 `n4-910c` ARM64 native | pass |
-| guest kernel、driver、initramfs build | `n4-910c` ARM64 Linux | pass |
-| 2-node patch producer/consumer | `n4-910c` real QEMU guest | pass |
-| 2-node replay producer/consumer | `n4-910c` real QEMU guest | pass |
-| post-run QEMU residual check | `n4-910c` | 0 |
-
-远端系统默认 Python 3.9 无法执行仓库中已使用 PEP 604 union 与
-`Path.write_text(newline=...)` 的测试源码。本次全量 Python 回归使用隔离的 Python
-3.12.14 环境 `/home/ll/.local/envs/ub-sim-py312`，没有修改测试以适配旧解释器。
+- direct EL0 upcall 仍属于自定义 core 行为；
+- WFE wakeup 依赖 completion IRQ，包含 EL1 IRQ 固定成本；
+- SVC context resume 包含 EL1 fast-path 固定成本；
+- 一个 active owner、一个 home vCPU；
+- event ring depth 128、context 与 NC PLT capacity 各 64；
+- Cacheable EL0-coroutine success path 尚缺单独 two-node acceptance；
+- timeout/cancel/late/duplicate 的当前 revision real-guest matrix 尚未完成；
+- 当前 trace-off 性能数据早于 SVC/WFE 收敛，需要重新测量。

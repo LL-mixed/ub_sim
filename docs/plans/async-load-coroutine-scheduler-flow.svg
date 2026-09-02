@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="940"
      viewBox="0 0 1500 940" role="img" aria-labelledby="title desc">
-  <title id="title">async load direct EL0 upcall and EL0 coroutine scheduler</title>
+  <title id="title">Historical ABI v2 direct EL0 upcall and coroutine scheduler</title>
   <desc id="desc">QEMU simulates direct EL0 pending and completion upcalls.
   Guest EL0 assembly saves coroutine context and the guest EL0 scheduler owns
   ready queues, selection, result patching and context resume.</desc>
@@ -39,9 +39,9 @@
   </defs>
 
   <rect width="1500" height="940" fill="url(#bg)"/>
-  <text x="52" y="42" class="kicker">async load · CUSTOM DIRECT-TO-EL0 UPCALL</text>
-  <text x="52" y="84" class="title">QEMU 只交付事件；guest EL0 保存上下文、选择并恢复 coroutine</text>
-  <text x="52" y="114" class="subtitle">普通 LDR 保持未退休；调度策略和 Context Store 不在 QEMU，全部属于 EL0 runtime。</text>
+  <text x="52" y="42" class="kicker">HISTORICAL ABI V2 · CUSTOM DIRECT-TO-EL0 UPCALL</text>
+  <text x="52" y="84" class="title">ABI v2 历史机制：EL0 保存上下文、选择并恢复 coroutine</text>
+  <text x="52" y="114" class="subtitle">图中的 HLT 与 patch 已退出当前 ABI；现行接口使用 replay-only、SVC/WFE。</text>
 
   <g transform="translate(52 146)">
     <rect width="1396" height="610" rx="22" fill="#ffffff" stroke="#cfddd9"/>

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
-  <title id="title">GVA、GSVA 与 direct EL0 upcall coroutine 的硬件组件关系</title>
-  <desc id="desc">从 guest 软件、CPU、MMU、async-load assist、UBC、UB Link 到 home memory 的端到端机制图，并标出当前 PoC 与真实硬件边界。</desc>
+  <title id="title">GVA、GSVA 与 replay-only async load 的硬件组件关系</title>
+  <desc id="desc">从 guest 软件、CPU、MMU、普通 cache、NC PLT、UBC、UB Link 到 home memory 的端到端机制图，并区分目标硅片与功能仿真边界。</desc>
   <defs>
     <style>
       .bg { fill: #f8fafc; }
@@ -35,16 +35,16 @@
   </defs>
 
   <rect class="bg" x="0" y="0" width="1600" height="1120"/>
-  <text class="title" x="50" y="48">GVA、GSVA 与 Direct-EL0 Upcall Coroutine：硬件组件拆解</text>
-  <text class="subtitle" x="50" y="76">当前 PoC 将多个目标硬件块集中在 QEMU/SIM_DEC 中；图中按真实硬件职责重新拆分</text>
+  <text class="title" x="50" y="48">GVA、GSVA 与 Replay-only Async Load：硬件组件拆解</text>
+  <text class="subtitle" x="50" y="76">Cacheable 复用普通 MSHR/fill；Normal NC 使用 UBC NC PLT；CPU 复用 ESR、SVC、WFE 与 ERET</text>
 
   <rect class="panel" x="40" y="98" width="1520" height="152"/>
   <text class="section" x="60" y="126">Guest 软件与控制平面</text>
 
   <rect class="software" x="65" y="145" width="260" height="80"/>
-  <text class="label" x="195" y="171" text-anchor="middle">Application coroutines</text>
+  <text class="label" x="195" y="171" text-anchor="middle">Applications / threads</text>
   <text class="body" x="195" y="195" text-anchor="middle">普通 LDR / 显式 submit-await</text>
-  <text class="small" x="195" y="215" text-anchor="middle">业务逻辑和 ready work</text>
+  <text class="small" x="195" y="215" text-anchor="middle">coroutine 或 Linux task</text>
 
   <rect class="software" x="355" y="145" width="280" height="80"/>
   <text class="label" x="495" y="171" text-anchor="middle">Coroutine scheduler</text>
@@ -89,25 +89,25 @@
   <text class="small" x="170" y="614" text-anchor="middle">自定义行为，标准 Arm 未提供</text>
 
   <rect class="custom" x="300" y="485" width="210" height="148"/>
-  <text class="label" x="405" y="513" text-anchor="middle">Atomic Resume Assist</text>
-  <text class="body" x="405" y="540" text-anchor="middle">原子恢复 GPR / SIMD</text>
-  <text class="body" x="405" y="563" text-anchor="middle">SP / PC / flags / TLS</text>
-  <text class="body" x="405" y="586" text-anchor="middle">owner + generation 校验</text>
-  <text class="small" x="405" y="614" text-anchor="middle">PoC：HLT #0x5343 私有语义</text>
+  <text class="label" x="405" y="513" text-anchor="middle">SVC / ERET Resume</text>
+  <text class="body" x="405" y="540" text-anchor="middle">SVC fast path 校验 context</text>
+  <text class="body" x="405" y="563" text-anchor="middle">pt_regs 安装 GPR / SP / PC</text>
+  <text class="body" x="405" y="586" text-anchor="middle">标准 exception exit / ERET</text>
+  <text class="small" x="405" y="614" text-anchor="middle">idle：SEVL / WFE + completion IRQ</text>
 
   <rect class="custom" x="70" y="670" width="440" height="245"/>
-  <text class="label" x="290" y="699" text-anchor="middle">Async-Load Assist</text>
+  <text class="label" x="290" y="699" text-anchor="middle">Core async boundary</text>
   <rect class="standard" x="92" y="720" width="190" height="80"/>
-  <text class="label" x="187" y="747" text-anchor="middle">Pending-Load Table</text>
-  <text class="body" x="187" y="771" text-anchor="middle">64 entries · request identity</text>
-  <text class="small" x="187" y="791" text-anchor="middle">PENDING / COMPLETE / REPLAY</text>
+  <text class="label" x="187" y="747" text-anchor="middle">Pending delivery</text>
+  <text class="body" x="187" y="771" text-anchor="middle">Data Abort / direct EL0</text>
+  <text class="small" x="187" y="791" text-anchor="middle">精确 PC，不退休</text>
   <rect class="standard" x="300" y="720" width="188" height="80"/>
-  <text class="label" x="394" y="747" text-anchor="middle">Event FIFO</text>
-  <text class="body" x="394" y="771" text-anchor="middle">128 entries · home CPU kick</text>
-  <text class="small" x="394" y="791" text-anchor="middle">stale / duplicate / overflow</text>
+  <text class="label" x="394" y="747" text-anchor="middle">Resume</text>
+  <text class="body" x="394" y="771" text-anchor="middle">SVC / WFE / ERET</text>
+  <text class="small" x="394" y="791" text-anchor="middle">复用 Arm 指令通路</text>
   <rect class="standard" x="92" y="818" width="396" height="72"/>
-  <text class="label" x="290" y="846" text-anchor="middle">Replay matcher / patch completion</text>
-  <text class="body" x="290" y="871" text-anchor="middle">PC · VA · Rt · size · map generation · MMU · endian</text>
+  <text class="label" x="290" y="846" text-anchor="middle">Core keeps no outstanding table</text>
+  <text class="body" x="290" y="871" text-anchor="middle">no PLT · no context store · no scheduler policy</text>
 
   <rect class="panel" x="570" y="280" width="500" height="675"/>
   <text class="section" x="590" y="312">Initiator UBC / UMMU / coherence</text>
@@ -119,10 +119,10 @@
   <text class="small" x="705" y="431" text-anchor="middle">route generation · fail closed</text>
 
   <rect class="model" x="835" y="335" width="205" height="112"/>
-  <text class="label" x="937" y="363" text-anchor="middle">Async Request Engine</text>
-  <text class="body" x="937" y="388" text-anchor="middle">split-phase read/write</text>
-  <text class="body" x="937" y="410" text-anchor="middle">transaction → pending slot</text>
-  <text class="small" x="937" y="431" text-anchor="middle">timeout · cancel · terminal result</text>
+  <text class="label" x="937" y="363" text-anchor="middle">Async Request / Replay</text>
+  <text class="body" x="937" y="388" text-anchor="middle">transport future · CQ/IRQ</text>
+  <text class="body" x="937" y="410" text-anchor="middle">Normal NC：NC PLT + arm latch</text>
+  <text class="small" x="937" y="431" text-anchor="middle">Cacheable：ordinary MSHR / fill</text>
 
   <rect class="model" x="600" y="485" width="440" height="170"/>
   <text class="label" x="820" y="514" text-anchor="middle">GSVA Semantic Directory</text>
@@ -227,22 +227,22 @@
   <path class="async" d="M170 485 L170 447"/>
 
   <rect class="boundary" x="54" y="325" width="1001" height="615" rx="12"/>
-  <text class="small" x="74" y="937">PoC 中由 QEMU TCG + SIM_DEC/UBC 集中模拟；目标硅实现按虚线边界内的 CPU、async-load assist、MMU、route、coherence 模块拆分</text>
+  <text class="small" x="74" y="937">QEMU 用 page-cache line-valid bitmap 模拟 Cacheable fill；目标硅片复用普通 cache/MSHR/fill，并仅为 Normal NC 增加 NC PLT</text>
 
   <rect class="panel" x="40" y="980" width="1520" height="105"/>
   <text class="label" x="60" y="1008">主路径编号</text>
   <text class="body" x="60" y="1036">1 LDR 与地址转换</text>
   <text class="body" x="260" y="1036">2 GVA/GSVA route</text>
   <text class="body" x="470" y="1036">3 UB request</text>
-  <text class="body" x="650" y="1036">4 completion → load assist</text>
-  <text class="body" x="890" y="1036">5 event → upcall</text>
-  <text class="body" x="1080" y="1036">6 EL0 scheduler</text>
-  <text class="body" x="1270" y="1036">7 atomic resume</text>
+  <text class="body" x="650" y="1036">4 completion → fill / NC PLT</text>
+  <text class="body" x="890" y="1036">5 CQ/IRQ 或 upcall</text>
+  <text class="body" x="1080" y="1036">6 software scheduler</text>
+  <text class="body" x="1270" y="1036">7 SVC / ERET resume</text>
 
   <rect class="software" x="60" y="1053" width="22" height="16"/>
   <text class="small" x="90" y="1067">guest 软件</text>
   <rect class="custom" x="205" y="1053" width="22" height="16"/>
-  <text class="small" x="235" y="1067">Async load 自定义 CPU/load-assist 能力</text>
+  <text class="small" x="235" y="1067">Async load 自定义 delivery 与 NC PLT</text>
   <rect class="model" x="475" y="1053" width="22" height="16"/>
   <text class="small" x="505" y="1067">已有功能模型</text>
   <rect class="standard" x="660" y="1053" width="22" height="16"/>

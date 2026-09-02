@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1040" viewBox="0 0 1500 1040" role="img" aria-labelledby="title desc">
-  <title id="title">async load two-node producer consumer validation timeline</title>
+  <title id="title">Historical ABI v2 async load producer consumer validation</title>
   <desc id="desc">Node A exports and writes two values. Node B imports the same mapping. Coroutine zero blocks on an ordinary LDR, the EL0 scheduler switches to coroutine one, and coroutine one issues its LDR before coroutine zero completes. Both values are then completed and verified.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
@@ -24,8 +24,8 @@
   </defs>
 
   <rect x="0" y="0" width="1500" height="1040" fill="#FCFCFD"/>
-  <text x="60" y="52" class="title">async load 2-node 实际验收：producer 写值，consumer 的两个协程用普通 LDR 读取</text>
-  <text x="60" y="82" class="subtitle">通过条件：coroutine 1 的 LDR issue 必须发生在 coroutine 0 的 PENDING 与 COMPLETE 之间</text>
+  <text x="60" y="52" class="title">ABI v2 历史验收：producer 写值，两个 coroutine 用普通 LDR 读取</text>
+  <text x="60" y="82" class="subtitle">该图保留 patch-era r15 证据；现行接口已统一为 replay-only、SVC/WFE。</text>
 
   <rect x="55" y="110" width="300" height="62" rx="10" class="local"/>
   <rect x="405" y="110" width="300" height="62" rx="10" class="remote"/>

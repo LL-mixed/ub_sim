@@ -1,5 +1,10 @@
 # OBMM async load patch 与 replay 模式对比及 replay 设计
 
+> 2026-09-02 状态：本文保留 patch/replay 的历史机制与配对日志。现行 async-load
+> contract 已统一为 replay-only；Normal NC 和 Normal Cacheable 均从原 PC 重放
+> `LDR`。patch CLI、saved `Rt/PC` patch 和三个私有 HLT assist 已退出当前 ABI。
+> 当前实现见 [async-load 实现总结](async-load-implementation-summary.md)。
+
 > 命名说明：当前机制与接口统一称为 `async load`。文中小写 `p2b` 仅出现在改名前
 > 已生成且不可改写的 workspace、日志和 gate 文件名中。
 

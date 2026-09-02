@@ -2,6 +2,30 @@
 
 Workspace-local notes and implementation-specific design material can live here.
 
+Current async-load architecture and validation entry points:
+
+- [2026-09-02-async-ldr-latest-design-implementation.md](2026-09-02-async-ldr-latest-design-implementation.md)
+  - current architecture decision record for the minimal chip-side change set,
+    memory-type split, ESR/SVC/WFE/ERET reuse, and validated implementation
+- [plans/async-load-implementation-summary.md](plans/async-load-implementation-summary.md)
+  - source, CLI, evidence, and document navigation for control ABI 4, event
+    ABI 3, both scheduler modes, and both memory types
+- [plans/2026-09-02-normal-nc-replay-plt-svc-eret-design.md](plans/2026-09-02-normal-nc-replay-plt-svc-eret-design.md)
+  - Normal Non-cacheable replay contract, requester-UBC NC PLT, SVC/WFE EL0
+    coroutine path, Linux-task ERET path, and two-node evidence
+- [plans/2026-09-02-normal-cacheable-void-response-esr-cq-validation-design.md](plans/2026-09-02-normal-cacheable-void-response-esr-cq-validation-design.md)
+  - Normal Cacheable PENDING-before-submit, FSC `0x3a`, ordinary 64-byte fill,
+    CQ/IRQ wakeup, ERET replay, and NC-PLT-zero acceptance
+- [plans/2026-09-01-obmm-kernel-task-remote-load-poc.md](plans/2026-09-01-obmm-kernel-task-remote-load-poc.md)
+  - Linux-task scheduler path shared by Normal Cacheable and Normal NC
+- [plans/async-load-abi-v3-kernel-free-event-ring.md](plans/async-load-abi-v3-kernel-free-event-ring.md)
+  - EL0-owned event-ring processing, current SVC context resume, WFE/IRQ idle
+    wakeup, and the exact boundary of the historical `kernel-free` label
+- [2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md](2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md)
+  - current simulator-to-silicon component mapping: Cacheable uses ordinary
+    cache/MSHR/fill, Normal NC uses requester-UBC NC PLT, and legacy HLT
+    assists are excluded from the current contract
+
 Current validation entry points:
 
 - [plans/2026-08-25-sim-console-unified-control-plane.md](plans/2026-08-25-sim-console-unified-control-plane.md)
@@ -34,7 +58,8 @@ Current validation entry points:
   - design for a GSVA mode where OBMM shmem ranges use identical user VA, public UBA, and home VA across nodes
   - includes bootstrap dependency on existing OBMM bootstrap and manager queue bootstrap flow
 - [2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md](2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md)
-  - audited hardware-component breakdown of GVA, GSVA, OBMM, and async-load direct-EL0 upcall coroutine PoCs, including the current simulator-to-silicon boundary and joint-integration gaps
+  - audited GVA/GSVA/async-load hardware breakdown with memory-type state
+    ownership, simulator-to-silicon boundaries, and joint-integration gaps
 - [2026-06-24-w5-gva-gsva-dataplane-benefit-report.md](2026-06-24-w5-gva-gsva-dataplane-benefit-report.md)
   - host-core dataplane microbenchmark benefit report for W5 GVA/GSVA, including expanded legacy PA-to-UBA resolver baselines (`linear`, `direct`, `indexed`, `cached`)
 - [w5_test_env_inventory.md](w5_test_env_inventory.md)
@@ -59,7 +84,9 @@ Current validation entry points:
     publish; `sim_npu`, GVA, and GSVA remain experimental, optional, and
     default-disabled outside the acceptance path
 - [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
-  - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with async load, direct EL0 upcall, a pending-load table, and a guest EL0 coroutine scheduler
+  - historical feasibility design comparing submit/await and the original
+    direct-EL0 async-load concept; current memory-type state ownership lives in
+    the 2026-09-02 design documents
 - [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)
   - implementation-level P0 design for four synchronous baselines, strong scenario configuration, deterministic QEMU virtual-time latency/failure injection, three-clock observation, CLI, and reproducibility gates
 - [plans/p1-split-phase-backend-detailed-design.md](plans/p1-split-phase-backend-detailed-design.md)
@@ -67,19 +94,24 @@ Current validation entry points:
 - [plans/submit-await-detailed-design.md](plans/submit-await-detailed-design.md)
   - implementation-level submit/await design for the independent OBMM async endpoint, 64-byte SQ/CQ ABI, registered destination buffers, generation-safe futures, AArch64 EL0 stackful coroutines, CLI, and tests
 - [plans/async-load-coroutine-scheduler-detailed-design.md](plans/async-load-coroutine-scheduler-detailed-design.md)
-  - implementation-level async-load design for ordinary unretired AArch64 loads, load assist, pending-load table, guest EL0 coroutine scheduler, precise TCG exit/commit, fault service, CLI, and tests
+  - historical ABI v2 direct-EL0 coroutine design and producer/consumer
+    evidence; it does not define the current SVC/WFE replay-only ABI
 - [plans/2026-09-01-obmm-kernel-task-remote-load-poc.md](plans/2026-09-01-obmm-kernel-task-remote-load-poc.md)
-  - ESR_EL1 remote-pending extension, Linux task waitqueue scheduling, ABI v3 CQ/IRQ completion, PLT replay, two-node validation, and current limitations
+  - ESR_EL1 remote-pending extension, Linux task waitqueue scheduling,
+    CQ/IRQ completion, Cacheable fill replay, NC-PLT replay, and two-node results
 - [plans/2026-09-01-obmm-el0-coroutine-vs-kernel-task-trace-off.md](plans/2026-09-01-obmm-el0-coroutine-vs-kernel-task-trace-off.md)
-  - 30-case paired trace-off comparison of direct-EL0 coroutine and Linux-task scheduling across 1 us to 10 ms fixed remote latency, including makespan, throughput, P50/P95/P99, policy guidance, artifact identity, and safe-resume evidence
+  - historical 30-case paired trace-off comparison from the pre-SVC/WFE
+    artifact; current-revision performance requires a fresh campaign
 - [plans/p3-comparative-evaluation-detailed-design.md](plans/p3-comparative-evaluation-detailed-design.md)
   - implementation-level P3 design for scalar/range/transparency comparison bands, schedule-ahead isolation, fairness and statistics rules, invalidation gates, CLI, evidence artifacts, and break-even reporting
 - [plans/2026-08-13-obmm-p3-performance-evaluation.md](plans/2026-08-13-obmm-p3-performance-evaluation.md)
-  - audited ABI v2 performance results for 2-node acceptance, 4/8-node scale-out, the completed 2,240-case coarse policy matrix, and the separately paused 4,942-case full matrix
+  - audited ABI v2 performance history, completed coarse/fine matrices, and
+    the paused 4,942-case matrix; current ABI requires a new campaign
 - [plans/2026-08-17-obmm-runtime-policy-selection.md](plans/2026-08-17-obmm-runtime-policy-selection.md)
   - formal QEMU 7-seed sync/submit-await/async-load policy, completed 1,960-run fine-grained boundary validation, native Arm64 path-tax calibration, empty-ready-queue sync fast path, L/C/W deployment prior, evidence provenance, and remaining runtime-integration targets
 - [plans/2026-08-17-obmm-async-load-patch-replay-comparison-design.md](plans/2026-08-17-obmm-async-load-patch-replay-comparison-design.md)
-  - async-load patch/replay retirement semantics, replay ABI and implementation, exact-once rules, 2-node functional gates, and measured three-seed comparison
+  - historical patch/replay comparison and exact-once evidence; patch has
+    exited the current replay-only contract
 - [plans/p4-userfaultfd-baseline-detailed-design.md](plans/p4-userfaultfd-baseline-detailed-design.md)
   - implementation-level P4 design for the standard userfaultfd MISSING baseline, separate OBMM source and anonymous shadow ranges, handler-vCPU costs, page failure semantics, CLI, and tests
 - [plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md](plans/2026-08-12-obmm-remote-load-coroutine-implementation-validation.md)

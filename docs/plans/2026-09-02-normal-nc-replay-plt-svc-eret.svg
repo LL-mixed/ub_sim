@@ -27,7 +27,7 @@
   <text x="85" y="190" class="body">• eligible EL0 scalar LDR</text>
   <text x="85" y="222" class="body">• precise REMOTE_PENDING</text>
   <text x="85" y="254" class="body">• ESR / FAR / ELR</text>
-  <text x="85" y="286" class="body">• one-shot replay token latch</text>
+  <text x="85" y="286" class="body">• replay 原 PC / owner context</text>
   <text x="85" y="318" class="body">• standard SVC / ERET path</text>
 
   <rect x="55" y="405" width="360" height="190" class="box"/>
@@ -46,6 +46,7 @@
   <text x="575" y="326" class="body">保存：tag、map generation、address、size</text>
   <text x="575" y="358" class="body">保存：status、scalar value</text>
   <text x="575" y="390" class="body">不保存：PC、SP、Rt、task/coroutine context</text>
+  <text x="760" y="430" text-anchor="middle" class="small">UBC one-shot latch：owner/context + token + replay_pc</text>
 
   <rect x="545" y="448" width="205" height="110" class="box"/>
   <text x="648" y="483" text-anchor="middle" class="subtitle">Remote transport</text>
@@ -81,7 +82,7 @@
   <path d="M 1105 255 L 1020 255" class="arrow"/>
   <text x="1063" y="240" text-anchor="middle" class="small">arm token</text>
   <path d="M 1105 315 L 1060 315 L 1060 625 L 460 625 L 460 330 L 415 330" class="dash"/>
-  <text x="760" y="618" text-anchor="middle" class="small">standard exception exit + ERET 到原 LDR；replay request 携带 token</text>
+  <text x="760" y="618" text-anchor="middle" class="small">standard exception exit + ERET 到原 LDR；UBC 匹配 armed token</text>
   <path d="M 1105 535 L 1020 535" class="arrow"/>
   <text x="1063" y="520" text-anchor="middle" class="small">SVC</text>
 

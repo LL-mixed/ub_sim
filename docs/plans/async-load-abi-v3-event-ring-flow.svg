@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820"
      viewBox="0 0 1280 820" role="img"
      aria-labelledby="title description">
-  <title id="title">Async-load ABI v3 event ring and kernel-free wait/wakeup</title>
+  <title id="title">Async-load ABI v3 EL0 event ring with SVC and WFE</title>
   <desc id="description">
     QEMU publishes async-load events into a producer ring, the guest EL0
     coroutine scheduler consumes and acknowledges them through a consumer
-    page, and HLT assists provide wait, wakeup, scheduler entry, and resume
-    without a kernel hot-path call.
+    page. Context resume uses a private SVC fast path, while WFE plus a
+    completion IRQ closes the idle wait and wakeup path.
   </desc>
   <defs>
     <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9"
@@ -41,16 +41,16 @@
   </defs>
 
   <rect x="0" y="0" width="1280" height="820" fill="#ffffff"/>
-  <text x="48" y="48" class="title">Async-load ABI v3：EL0 event ring 与 kernel-free wait/wakeup</text>
-  <text x="48" y="76" class="subtitle">kernel 只参与 setup / teardown；START 到 STOP 之间的事件处理与协程切换不调用 ioctl、poll、futex 或 signal</text>
+  <text x="48" y="48" class="title">Async-load ABI v3：EL0 event ring、SVC resume 与 WFE/IRQ</text>
+  <text x="48" y="76" class="subtitle">event payload 由 EL0 直接处理；resume 经 SVC fast path，idle wakeup 经 completion IRQ</text>
 
   <rect x="48" y="112" width="270" height="184" rx="14"
         fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
   <text x="72" y="144" class="box-title">QEMU / simulated core</text>
-  <text x="72" y="174" class="body">• remote LDR interception + PLT</text>
+  <text x="72" y="174" class="body">• Cacheable fill / NC PLT</text>
   <text x="72" y="198" class="body">• PENDING / COMPLETE / FAULT</text>
   <text x="72" y="222" class="body">• descriptor-first DMA publish</text>
-  <text x="72" y="246" class="body">• vCPU halt / kick under BQL</text>
+  <text x="72" y="246" class="body">• direct upcall / completion IRQ</text>
   <text x="72" y="274" class="small">producer + wakeup owner</text>
 
   <rect x="382" y="112" width="270" height="184" rx="14"
@@ -68,7 +68,7 @@
   <text x="740" y="174" class="body">• save interrupted context</text>
   <text x="740" y="198" class="body">• validate + apply event</text>
   <text x="740" y="222" class="body">• choose READY coroutine</text>
-  <text x="740" y="246" class="body">• patch or replay retirement</text>
+  <text x="740" y="246" class="body">• replay-only retirement</text>
   <text x="740" y="274" class="small">consumer + scheduling policy owner</text>
 
   <rect x="1044" y="112" width="188" height="184" rx="14"
@@ -91,34 +91,34 @@
 
   <rect x="48" y="366" width="1184" height="64" rx="12"
         fill="#f1f5f9" stroke="#94a3b8"/>
-  <text x="72" y="394" class="box-title">Simulator-private AArch64 assists</text>
-  <text x="430" y="394" class="body">HLT #0x5343 resume</text>
-  <text x="650" y="394" class="body">HLT #0x5344 atomic wait</text>
-  <text x="918" y="394" class="body">HLT #0x5345 scheduler-enter</text>
-  <text x="72" y="416" class="small">仅 active async-load EL0 session 使用这些语义；其他 EL、session 与 immediate 保留 QEMU 原行为</text>
+  <text x="72" y="394" class="box-title">复用 Arm 指令通路</text>
+  <text x="360" y="394" class="body">SVC #0x5343 context resume</text>
+  <text x="650" y="394" class="body">SEVL / WFE idle wait</text>
+  <text x="900" y="394" class="body">SVC #0x5345 scheduler-enter</text>
+  <text x="72" y="416" class="small">两个 SVC 仅在 active owner-matched session 进入受控 fast path；旧的三个 HLT 拦截已删除</text>
 
   <text x="48" y="474" class="box-title">All-blocked wait / wakeup 时序</text>
   <text x="170" y="510" text-anchor="middle" class="step">EL0 scheduler</text>
-  <text x="550" y="510" text-anchor="middle" class="step">QEMU wait helper</text>
+  <text x="550" y="510" text-anchor="middle" class="step">guest EL1 IRQ path</text>
   <text x="900" y="510" text-anchor="middle" class="step">remote completion</text>
   <line x1="170" y1="524" x2="170" y2="780" class="lane"/>
   <line x1="550" y1="524" x2="550" y2="780" class="lane"/>
   <line x1="900" y1="524" x2="900" y2="780" class="lane"/>
 
   <path d="M170 552 H550" class="orange"/>
-  <text x="360" y="542" text-anchor="middle" class="small">1. HLT wait；携带 consumer state</text>
+  <text x="360" y="542" text-anchor="middle" class="small">1. SEVL; WFE；recheck ring；WFE</text>
   <rect x="496" y="570" width="108" height="44" rx="8"
         fill="#fff7ed" stroke="#c2410c"/>
-  <text x="550" y="588" text-anchor="middle" class="small">2. BQL 内检查 ring</text>
-  <text x="550" y="605" text-anchor="middle" class="small">设置 halted=1</text>
+  <text x="550" y="588" text-anchor="middle" class="small">2. vCPU 等待</text>
+  <text x="550" y="605" text-anchor="middle" class="small">EL0 不轮询 CQ</text>
   <path d="M900 642 H550" class="blue"/>
-  <text x="725" y="632" text-anchor="middle" class="small">3. COMPLETE arrives</text>
+  <text x="725" y="632" text-anchor="middle" class="small">3. COMPLETE publish + IRQ</text>
   <rect x="486" y="658" width="128" height="52" rx="8"
         fill="#eff6ff" stroke="#2563eb"/>
-  <text x="550" y="678" text-anchor="middle" class="small">4. publish descriptor</text>
-  <text x="550" y="696" text-anchor="middle" class="small">clear halted + kick</text>
+  <text x="550" y="678" text-anchor="middle" class="small">4. IRQ handler ACK</text>
+  <text x="550" y="696" text-anchor="middle" class="small">标准 exception return</text>
   <path d="M550 738 H170" class="green"/>
-  <text x="360" y="728" text-anchor="middle" class="small">5. return after HLT；drain ring</text>
+  <text x="360" y="728" text-anchor="middle" class="small">5. 返回 EL0；acquire-drain ring</text>
   <rect x="68" y="752" width="204" height="48" rx="8"
         fill="#f0fdf4" stroke="#15803d"/>
   <text x="170" y="772" text-anchor="middle" class="small">6. coroutine READY</text>

@@ -1,5 +1,11 @@
 # OBMM remote-load sync、submit/await、async load work-conserving 运行时选择表
 
+> 2026-09-02 适用范围：本文的 measured buckets 绑定旧 ABI artifact。当前 async-load
+> 已统一为 replay-only，并分为 Normal Cacheable 普通 fill 与 Normal NC PLT；EL0
+> coroutine 的 HLT assist 已迁移到 SVC/WFE。表中历史数值保留用于趋势分析，不能直接
+> 作为当前 revision 或目标硅片的在线策略阈值。恢复 P3 后需要按 memory type 与
+> scheduler mode 重建策略表。
+
 > 命名说明：当前机制名为 `async load`。文中小写 `p2b` 仅用于引用改名前的性能
 > evidence 目录原名。
 

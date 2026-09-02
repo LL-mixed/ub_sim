@@ -9,8 +9,9 @@
   <desc id="desc">
     模型和 serving client 经 typed SDK 访问独立 mem_service 控制面。控制面通过
     provider contract 选择 OBMM、Block 或 DFS。OBMM 热数据路径进入 ub_sim 的
-    guest、Linux UAPI 和 QEMU 模型；慢速普通远端 load 触发 async load direct EL0 upcall，
-    由 guest EL0 scheduler 切换和恢复协程。完整 PoC 仍需一条统一验收链覆盖全部环节。
+    guest、Linux UAPI 和 QEMU 模型；慢速普通远端 load 触发 direct EL0 upcall 或
+    ESR/CQ/IRQ，并由 EL0 coroutine 或 Linux task scheduler 切换 execution context。
+    Cacheable 与 Normal NC 分别使用普通 fill 和 NC PLT。完整 PoC 仍需统一验收链。
   </desc>
 
   <defs>
@@ -146,22 +147,22 @@
   <rect x="374" y="716" width="224" height="70" rx="10"
         fill="#ffffff" stroke="#94a3b8"/>
   <text class="label" x="486" y="746" text-anchor="middle">Linux UAPI / driver</text>
-  <text class="body" x="486" y="770" text-anchor="middle">mapping · event delivery</text>
+  <text class="body" x="486" y="770" text-anchor="middle">mapping · ESR/SVC · CQ/IRQ</text>
 
   <rect x="640" y="716" width="224" height="70" rx="10"
         fill="#ffffff" stroke="#94a3b8"/>
   <text class="label" x="752" y="746" text-anchor="middle">QEMU UB / SIM_DEC</text>
-  <text class="body" x="752" y="770" text-anchor="middle">latency · failure · completion</text>
+  <text class="body" x="752" y="770" text-anchor="middle">Cacheable fill · NC PLT · completion</text>
 
   <path class="arrow" d="M 332 751 L 364 751"/>
   <path class="arrow" d="M 598 751 L 630 751"/>
 
   <path class="arrow-accent" d="M 752 786 L 752 823 L 220 823 L 220 801"/>
   <text class="arrow-label" x="486" y="816" text-anchor="middle">
-    async load direct EL0 upcall：pending / complete / fault
+    async load：direct EL0 event 或 ESR + CQ/IRQ
   </text>
   <text class="small" x="486" y="849" text-anchor="middle">
-    guest EL0 scheduler 保存上下文、选择其他 coroutine，并在 completion 后恢复
+    EL0 coroutine / Linux task scheduler；completion 后从原 PC replay
   </text>
 
   <!-- Durable path -->

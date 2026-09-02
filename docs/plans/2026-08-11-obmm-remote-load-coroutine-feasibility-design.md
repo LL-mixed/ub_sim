@@ -1,5 +1,10 @@
 # OBMM 远端内存 Load 的 EL0 协程延迟隐藏：可行性分析与验证设计
 
+> 2026-09-02 适用范围：本文保存最初的分阶段可行性设计。async-load 现行实现已经
+> 收敛为 replay-only，删除私有 HLT，使用 SVC/WFE，并按 Normal Cacheable 普通
+> fill 与 Normal NC PLT 分流。当前事实源见
+> [async-load 实现总结](async-load-implementation-summary.md)。
+
 > 状态：P0、P1、submit/await、P4 沿用既有结果；async load 已按 direct-to-EL0 upcall + guest EL0
 > scheduler 的 ABI v2 重构，并在 `n4-910c` 通过 ARM64 Linux build、2-node 远端
 > QEMU guest E2E 和 phase gate，2-node producer/consumer 功能目标已完成。P3 ABI v2
@@ -205,7 +210,7 @@ branch 无法精确恢复全部 GPR。该契约不属于现有 Arm/Linux archite
   `LDR` 必须保持未退休，pending table 必须保存 PC、目标寄存器、memop、ordering、
   fault state 和 context ID；guest EL0 scheduler 再保存并换走 coroutine context。
 
-因此，关键问题不是“谁会不会修改 PC/SP”，而是：
+因此，关键问题可以归纳为：
 
 | 维度 | 显式 submit/await | async-load upcall |
 |---|---|---|
@@ -330,7 +335,7 @@ FREE
 response match 和 CQE 形成可复用实现范式，但 OBMM adapter 必须先完成 map/token/
 epoch/coherence 检查，且 provider completion 必须经上面的 sink router 返回。
 
-P1 完成的判断标准不是“submit/await CQ 已经能用”，而是同一个 backend unit model 能分别
+P1 完成要求同一个 backend unit model 能分别
 挂接 test sink、submit/await sink 和 async load sink，并通过 64 in-flight、乱序、duplicate、late、
 timeout、cancel、retire 和 queue-full/fail-closed 测试。
 

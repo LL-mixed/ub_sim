@@ -1,5 +1,10 @@
 # OBMM 远端 Load 协程 P0–P4 实施与验证报告（历史证据归档）
 
+> 2026-09-02 适用范围：本文的 async-load 主体冻结在 ABI v2。现行接口已经收敛到
+> control ABI 4 + event ABI 3、replay-only、SVC/WFE，并按 Normal Cacheable 普通
+> fill 与 Normal NC PLT 分流。当前实现与验证入口见
+> [async-load 实现总结](async-load-implementation-summary.md)。
+
 > 命名说明：当前机制名为 `async load`。文中小写 `p2b` 仅保留在改名前产生的
 > evidence 状态值、workspace、日志和 gate 文件原名中。
 

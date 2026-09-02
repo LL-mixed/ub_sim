@@ -3,7 +3,8 @@
 日期：2026-09-02
 
 状态：Normal NC replay-only 已完成 QEMU、Linux driver、EL0 runtime 与 two-node
-arm64 guest 端到端验证；Normal Cacheable fill/replay 保持为 silicon 目标契约
+arm64 guest 端到端验证；Normal Cacheable fill/replay 已在同日完成独立 two-node
+功能验收
 
 ## 1. 结论
 
@@ -30,11 +31,12 @@ PENDING，并允许 software 调度另一条 task/coroutine。completion 返回�
 
 ![Cacheable 与 Normal NC completion replay 路径](./2026-09-02-remote-completion-replay-paths.svg)
 
-当前 QEMU PoC 的端到端实现范围是 `O_SYNC` Normal NC mapping。Normal Cacheable
-路径在本文中是 silicon contract；当前 QEMU 模型没有真实 cache、MSHR 与 fill
-hierarchy，因此尚无 Cacheable async `LDR` 实跑结论。本文后续提到的
-Normal Cacheable 普通 fill/replay，均限定为 remote completion 返回后的处理方式与
-原 `LDR` 的完成方式。
+本文的主要验收对象是 `O_SYNC` Normal NC mapping。Normal Cacheable 已通过
+QEMU 功能 fill surrogate 验证：PENDING、FSC `0x3a`、Linux task sleep、64-byte
+remote line fill、CQ/IRQ wakeup、`ERET` 和原 `LDR` replay 均已闭环，同时
+`nc_plt_allocations=0`。QEMU 仍缺真实 cache、MSHR 与 coherence timing；因此
+Cacheable 实跑只形成 success-path 功能结论。详细证据见
+[Normal Cacheable void response、ESR 与 CQ/IRQ 验证](2026-09-02-normal-cacheable-void-response-esr-cq-validation-design.md)。
 
 ## 2. 硬件组件边界
 
@@ -47,12 +49,10 @@ CPU core 负责：
 - 识别受支持的 EL0 scalar `LDR`；
 - 在 UBC 接收远端请求后产生精确 `REMOTE_PENDING`；
 - 保存标准异常 PC、VA、PSTATE 和 syndrome；
-- 在 `ERET` 恢复前接收 one-shot replay token；
-- 将该 token 绑定到返回 PC 的下一次 eligible `LDR`；
-- replay load 完成后自动清除 token。
+- resume 后从原 PC 重新发出 eligible `LDR`；
+- 把 owner/context 与 fault PC 作为 requester UBC replay lookup 的输入。
 
-CPU core 不维护 per-outstanding-load table。one-shot latch 只覆盖从 resume 到
-replay `LDR` issue 的短窗口。
+CPU core 不维护 per-outstanding-load table 或 replay-token latch。
 
 ### 2.2 Cache 与 MSHR
 
@@ -70,8 +70,10 @@ MSHR 禁止保存：
 
 ### 2.3 Requester UBC 与 NC PLT
 
-Requester UBC 持有明确命名的 NC PLT。每个 entry 只服务一条尚未被 replay
-消费的 Normal NC dynamic load。
+Requester UBC 持有明确命名的 NC PLT 和 one-shot replay-arm latch。每个 PLT entry
+只服务一条尚未被 replay 消费的 Normal NC dynamic load。replay-arm latch 保存
+`{owner/context, token, replay_pc}`，只覆盖 resume 到下一次 eligible `LDR` 的短窗口。
+精确消费或 mismatch 后 latch 自动清除。
 
 最小 entry 为：
 
@@ -356,9 +358,20 @@ artifact SHA-256：
 | remote model manifest | `22906130f5e65f4b9956697c1d6d21393477d6c5f1fe5931e2ad6eb5a7fcdcd1` |
 | scenario | `dde4d793e72725d1f0c2effc1b777fa07968a48c8f02187118bf113092671009` |
 
+同日的 shared-future 后续 revision 又执行了两条 path-separation acceptance：
+
+| campaign | 关键结果 |
+|---|---|
+| `cacheable-esr-cq-20260902-r4` | 2 个 64-byte fill、2 个 FSC `0x3a`、2 个 ERET replay、`nc_plt_allocations=0`，pass |
+| `nc-future-reg-20260902-r2` | 2 个 NC PLT allocation、2 个 replay consume、Cacheable fill counters 为 0，pass |
+
+这两条运行使用后续 artifact，指纹和完整日志在 Cacheable 验证文档中单独记录；
+证据聚合没有跨 revision 混用。
+
 ### 12.2 尚未形成实跑结论的范围
 
-- Normal Cacheable remote completion 的真实 cache/MSHR/fill hierarchy；
+- Normal Cacheable 的 timing-accurate cache/MSHR/coherence hierarchy 与 RTL 行为；
+- Normal Cacheable 的 EL0-coroutine delivery；
 - Device memory 的透明 async `LDR`；
 - fault-at-original-`LDR` replay 与完整 `CANCEL_REQUESTED/ORPHANED` 生命周期；
 - timeout、cancel、late completion 的 two-node failure matrix；
@@ -383,9 +396,10 @@ hierarchy 验证。
 - 无残留 QEMU；
 - trace-off replay data-path log 与指标一致。
 
-第 12.1 节已经覆盖 replay-only 成功路径、workspace regression 与 cleanup。第 12.2
-节列出的 failure matrix、trace-off performance 和 Cacheable hierarchy 仍需单独完成，
-不得从当前 Normal NC 成功路径推导其结果。
+第 12.1 节已经覆盖 Normal NC replay-only 成功路径、workspace regression 与 cleanup。
+Normal Cacheable success path 的独立功能验收已经完成；第 12.2 节列出的 failure
+matrix、trace-off performance、Cacheable EL0-coroutine mode 和 timing-accurate
+hierarchy 仍需单独完成，禁止从当前功能日志推导其性能或 RTL 结论。
 
 完整 QEMU、guest kernel、two-node 和性能验证在 arm64 remote host 执行。local
 development machine 只运行静态检查与 lightweight unit/contract tests。
