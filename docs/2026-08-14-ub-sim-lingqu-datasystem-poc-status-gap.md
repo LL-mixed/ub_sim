@@ -1,6 +1,7 @@
 # ub_sim 与 Lingqu DataSystem 当前状态及完整 PoC 差距审计
 
-> 审计日期：2026-08-14；细粒度性能证据复核：2026-08-20
+> 审计日期：2026-08-14；细粒度性能证据复核：2026-08-20；
+> W5 PTO UB GM 集成复核：2026-09-02
 > 审计对象：`ub_sim` 当前工作区、Git 历史、根目录 `mem_service/` 子模块、
 > guest/QEMU/kernel 接入代码及现有验证文档
 > 结论状态：**底层组件和分段验证已经较完整，但完整 Lingqu DataSystem PoC
@@ -55,6 +56,33 @@ OBMM remote-load 的性能证据在本报告初次审计后继续推进。当前
 4,942-case full sensitivity campaign 继续保持暂停。fine formal endpoint 聚焦已发现的
 winner 翻转，覆盖域没有包含完整 jitter、tail、failure、range 和 scale-out sweep。
 
+### 1.2 2026-09-02 W5 PTO UB GM 增量结论
+
+当前 revision 已完成一条新的真实模型消费路径：Qwen3-0.6B W5 下游节点从
+Memory Service 取得上游 hidden ObjectRef 对应的 OBMM-backed view，将它
+materialize 为 PTO `AddressSpace::UB_GM`，通过 Simpler/PTO `TLOAD/TSTORE`
+处理完整 262,144 B hidden，并把 local output range 原地发布给下一段 W5 range。
+两节点和八节点 2-step campaign 均为 `validation.json status=pass`。八节点累计
+896 dispatch、1,792 `TLOAD`、896 `TSTORE`、14 次 in-place publish 和零 payload
+staging。详细证据见
+[PTO UB GM direct-access design](plans/2026-08-29-lingqu-shmem-pto-ub-gm-direct-access-design.md#916-w5-memory-service-hidden-state-两八节点正式结果)。
+
+这项结果关闭了本报告中的“Memory Service hidden object 如何进入实际 W5 PTO
+消费点”缺口。它还没有把普通 `LDR` 的 async-load/EL0 coroutine 路径并入同一个
+模型 campaign，也没有覆盖 Block/DFS commit、restart recovery、生产 PTO 算子和
+模型级数值精度。因此，本报告定义的完整 DataSystem 纵向 PoC 仍保持未完成状态。
+
+2026-09-02 的已验证锁定基线为：
+
+| 项目 | Revision |
+| --- | --- |
+| `ub_sim` | `e7dfda2b1335dd0bab1b216cd026d986815456d8` |
+| `mem_service` | `5878d6e02997d5b97e08b43946a1e297dfed0196` |
+| QEMU | `1a43e84b89bd998a9bb9032aaf90ea69acd9241f` |
+| guest kernel | `ed9ac25d7a3623452b858ddff2a7f3c5a9b6a8da` |
+| PTO ISA | `66213f994248f84421645c963d9c32fd5597fea1` |
+| Simpler | `df0cf4ffa84d540c8a64a10c6786e91f7dbe5782` |
+
 ## 2. 证据口径
 
 为避免把计划、代码和运行结果混为一谈，本文使用五类证据：
@@ -70,11 +98,12 @@ winner 翻转，覆盖域没有包含完整 jitter、tail、failure、range 和 
 本文所有“已完成”均说明属于哪类证据。没有重新执行的历史 QEMU 或模型结果，
 一律不表述为当前 revision 重新认证。
 
-## 3. 当前代码基线
+## 3. 分时间点代码基线
 
-2026-08-20 复核后的仓库状态如下：
+2026-08-20 复核时的仓库状态如下；2026-09-02 W5 direct-access 运行基线见
+1.2 节：
 
-| 项目 | 当前值 | 审计判断 |
+| 项目 | 2026-08-20 值 | 审计判断 |
 | --- | --- | --- |
 | `ub_sim` 已提交实现/数据基线 | `a23b5c2cc4f68ee32cc8c507d94a9979876ebaf7` | 包含 ABI v2 P3、coarse policy、fine formal boundary 与证据 provenance |
 | 与 `origin/master` 关系 | ahead 11；`origin/master=67c3ce5` | 远端主分支仍落后于当前完整基线 |
@@ -107,6 +136,7 @@ winner 翻转，覆盖域没有包含完整 jitter、tail、failure、range 和 
 | provider 边界 | [`mem_service_provider.h`](../mem_service/components/mem_service/mem_service_provider.h) | 已建立，core 保持 transport-neutral |
 | OBMM provider | [`mem_service_provider_obmm.c`](../mem_service/components/mem_service/providers/mem_service_provider_obmm.c) 与 conformance tests | 已实现；当前 revision 仍需随完整 PoC 重验 |
 | W5 bootstrap | [`run_w5_memory_service_bootstrap.sh`](../guest-linux/aarch64/scripts/run_w5_memory_service_bootstrap.sh) 调用独立 host binary | 已有独立服务接入面 |
+| W5 hidden → PTO UB GM | `run_w5_lingqu_shmem_pto.py`、Memory Service hidden view、Simpler/PTO `pipeline_double`、in-place publish | 2026-09-02 当前 revision 的 2/8-node 2-step gate 已通过 |
 | guest daemon smoke | [`run_app`](../guest-linux/aarch64/initramfs/run_app) 的 `mem-service-serving-publish`/restart/verify | 已有局部 publish/restart 闭环 |
 | Rust memory path | `sim-cli lingqu-memory prefix-cache-service` 和 JSON store/decision store 仍存在 | 仍是模拟、分析和兼容路径，不能冒充独立服务产品路径 |
 | async load + coroutine scheduler | QEMU async-load assist + kernel UAPI + `obmm_coroutine_scheduler` + `obmm_async_coroutine` | 已形成独立 2-node ABI v2 验证路径 |

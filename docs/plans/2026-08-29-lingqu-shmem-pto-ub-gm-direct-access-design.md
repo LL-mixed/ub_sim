@@ -1,11 +1,11 @@
 # 支持 PTO 通过`TLOAD/TSTORE` 直接访问 `UB_GM`
 
-> 日期：2026-08-29
+> 日期：2026-08-29；W5 Memory Service 集成复核：2026-09-02
 >
 > 审计基线：`ub_sim` `299888a84a77`
 >
 > 范围：guest Linux、QEMU UBC、`sim-qemu`、`sim-uapi`、`sim-runtime`、
->`sim-chipbackend-simpler`、Simpler、PTO ISA、OBMM
+>`sim-chipbackend-simpler`、Simpler、PTO ISA、Memory Service、OBMM、W5
 
 ## 1. 结论
 
@@ -21,7 +21,7 @@
 
 | 路径 | 当前真实执行链 | 已经证明 | 当前限制或剩余工作 |
 | --- | --- | --- | --- |
-| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment、ND/tail/cross-page/unaligned/stride/DN/NZ layout 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过；一个 producer 加七个 consumer 的八节点 demo 已通过统一 CLI 正式门禁 | 传统 `host_vector` 参数继续使用 host payload staging；扩展并发隔离、其他 recovery case，以及 P5 性能/真实上层 workload 接入属于后续工作，不阻塞本轮 direct-access PoC 收口 |
+| ChipBackend `host_vector` | QEMU UBC → `sim-qemu` → `sim-uapi` → `sim-runtime` → `sim-chipbackend-simpler` → Simpler/PTO | guest/QEMU bridge 能调起实际 Simpler/PTO callable；新增 `lingqu_shmem_memref` 分支已在两节点直接访问 UB GM backing；authorization lifecycle、ingress/preflight、released-import、retired-segment、shape/stride extent、跨 segment、ND/tail/cross-page/unaligned/stride/DN/NZ layout 和 PTO callback 执行阶段的 access conflict 已在同一两节点链路通过；一个 producer 加七个 consumer 的八节点 demo 已通过统一 CLI 正式门禁；Qwen3-0.6B W5 已在两节点和八节点把 Memory Service hidden object 直接交给 PTO，执行 `pipeline_double` 后原地发布输出 | 传统 `host_vector` 参数继续使用 host payload staging；单 QEMU 多 slot 隔离、系统性 recovery、通用 Lingqu `task/gm_tensor` callable 封装，以及 P5 性能/coalescing 属于后续工作 |
 | experimental `sim_npu` / `NPU_OP_VECTOR_ADD_U32` | QEMU `ub_npu.c` → `g_malloc()` → `ubc_gsva_device_read()` → C 循环 → `ubc_gsva_device_write()` | 可选实验路径中的 device CNA、GSVA acquire/read/write/fence 能工作 | 没有进入 Rust bridge、Simpler 或 PTO ISA；不属于默认 feature set |
 
 设计决定：
@@ -115,14 +115,15 @@ acceptance 不设置这些 token。
 | `vendor/simpler` | `8a6a28f405c8` |
 | `pypto_ws_hu_core` 上位设计 | `f43b084e281d` |
 
-这些 revision 记录最初审计输入。随后完成的 P0–P4I 实施证据如下；表中的 revision
+这些 revision 记录最初审计输入。随后完成的 P0–P4I 和 W5 集成证据如下；表中的 revision
 均为已经提交的阶段性代码。P2 的同步与可恢复 authorization 正向路径已经完成，
 P4A authorization timeout、P4B authorization lifecycle、P4C ingress/preflight
 负向矩阵、P4D callback execution access conflict、P4E released-import lifetime 和
 P4F retired-segment lifetime、P4G shape/stride extent 与跨 segment 边界已完成双机
 验证；P4H 又完成 contiguous ND、tail、cross-page 和 unaligned 四种正向布局的双机
-验证，P4I 完成 stride、DN 和 NZ 三种布局的双机验证。扩展并发、其他 recovery case
-以及 P5 继续作为后续工作。
+验证，P4I 完成 stride、DN 和 NZ 三种布局的双机验证。2026-09-02 又完成 W5
+Memory Service hidden-state 两节点与八节点集成。扩展并发、系统性 recovery、通用
+Lingqu callable 封装以及 P5 性能/coalescing 继续作为后续工作。
 
 | 阶段 | 仓库 | Revision | 已提交内容 |
 | --- | --- | --- | --- |
@@ -166,6 +167,13 @@ P4F retired-segment lifetime、P4G shape/stride extent 与跨 segment 边界已�
 | P4I | `vendor/qemu_8.2.0_ub` | `6e59331e3e` | strided PTO UB GM memref validation 与授权 view |
 | P4I | `ub_sim` | `09ef8af`、`c702e68`、`5e94760`、`b667ef9` | PTO/QEMU gitlink、三种 layout artifact、guest workload 与执行入口 |
 | P4I | `ub_sim` | `96b8a2c`、`58563d2`、`caac3ff` | strided public memref、PTO materialization 与 bridge view 传播 |
+| W5-A | `mem_service` | `5878d6e` | W5 hidden object view 与 OBMM provider-backed memref 集成契约 |
+| W5-A | `guest-linux/kernel_ub` | `ed9ac25` | W5 hidden mapping 与 guest execution 支持 |
+| W5-A | `ub_sim` | `edbd0fb` | Memory Service adapter、W5 hidden 接入和原地 publish |
+| W5-B | `ub_sim` | `1d21d6f`、`9c309c6`、`26e7b64`、`d475ccf`、`83dc22b` | 完整 hidden range tile 化、`pipeline_double`、语义门禁和原地发布门禁 |
+| W5-C | `vendor/qemu_8.2.0_ub` | `9a13cc9265`、`1a43e84b89` | SIM_DEC transient read 有界重试与并发 ERS2 event clear |
+| W5-C | `ub_sim` | `54227ae`、`aece55d` | QEMU pin、W5 remote-read completion 与并发 event clear 验证 |
+| Regression | `ub_sim` | `e7dfda2` | Python 3.9 contract infrastructure 兼容性修复 |
 
 P4D 的四组正式 campaign 已使用 `source-sha256.txt` 和完整 artifact fingerprint
 完成审计，详见 9.9 节。承载 P4D 的 `vendor/simpler@fb060537` 与
@@ -176,6 +184,7 @@ P4E 的两组正式 campaign 同样通过 source/artifact SHA-256 绑定实际�
 四组正式 campaign 又完成 shape/stride extent 和跨相邻 mapping 的 fail-closed 验证，
 详见 9.12 节。P4H 的八组正式 campaign 在两个远端主机完成四种正向 layout，详见
 9.13 节。P4I 的六组正式 campaign 进一步完成 stride、DN 和 NZ，详见 9.14 节。
+W5 2/8-node hidden-state evidence 见 9.16 节。
 
 ### 3.2 已贯通的 ChipBackend/Simpler/PTO 主链
 
@@ -286,10 +295,10 @@ layout 已由 P4H/P4I 补齐；多 dispatch 压力和其他 recovery case 保留
 | 能力 | 当前状态 | 目标改动 |
 | --- | --- | --- |
 | guest → QEMU UBC → Rust bridge | 已实现 | 保留 |
-| `IoOpcode::Dispatch` → ChipBackend | 已实现 | 增加 v2 control metadata |
+| `IoOpcode::Dispatch` → ChipBackend | v2 control metadata 已实现 | 保留并继续覆盖多 slot 并发 |
 | Simpler/PTO callable execution | 已实现 | 保留 |
-| `host_vector` payload | host `Vec` staging | 增加 UB GM 参数分支 |
-| OBMM export/import 与共享内存 backing | 已实现 | 用作 `lingqu_shmem_memref` backing |
+| `host_vector` payload | 传统参数使用 host `Vec` staging；`lingqu_shmem_memref` 参数绕过 staging | 保留两类参数的明确语义 |
+| OBMM export/import 与共享内存 backing | 已实现，并由 Memory Service provider 交给 W5 hidden object view | 保持 provider 边界和生命周期门禁 |
 | experimental GVA/GSVA mapping | 已实现部分实验能力 | 可选 adaptor；默认路径不依赖 |
 | experimental `sim_npu` GSVA read/write/fence | 已实现 | 保留独立 regression；不接入默认 PTO ingress |
 | `lingqu_shmem_memref` | ABI/type、runtime view、guest materialization 与 QEMU parser 已实现并通过两节点 E2E；authorization timeout/cancel 保持原输出不变，reset 后可重新 import/map；P4C mapping/requester/OOB/overflow/role-access preflight、P4D callback execution access conflict、P4E released-import、P4F retired-segment lifetime、P4G shape/stride/cross-segment 负向矩阵、P4H 四种正向 layout 和 P4I stride/DN/NZ 均通过 | 扩展并发矩阵属于后续稳健性工作 |
@@ -299,6 +308,7 @@ layout 已由 P4H/P4I 补齐；多 dispatch 压力和其他 recovery case 保留
 | backend authorization 后进入 bridge | P2 已实现同步 fast path 与 pending slot snapshot/resume；P4A/P4B 已验证 timeout/cancel exact-once failure completion、duplicate guard 和 reset 无 CQ cleanup/recovery | 多 slot、多 binding 和其他失败竞争属于后续压力扩展 |
 | 两节点 PTO direct E2E | n4-910c、n4-910c1 的同步、delayed-ready、timeout、cancel、duplicate、reset/recovery、六类 P4C preflight fault、两类 P4D execution fault、P4E released-import、P4F retired-segment、两类 P4G bounds fault、P4H 四种正向 layout 与 P4I stride/DN/NZ 均通过，默认路径无 NPU/GVA/GSVA 泄漏 | 扩展并发和其他 recovery coverage 属于后续工作 |
 | 八节点 PTO direct functional demo | n4-910c 上统一 CLI 已通过；Node 0 export，Node 1–7 分别在独立 lane 运行同一 Simpler/PTO callable；14 load、7 store、7 fence、7 completion ack、7 lane oracle、零 staging 和零 QEMU leftover 均通过 | 宿主 callable 真并行仍未证明；正式报告将当前 Simpler host-wide lock 记录为潜在串行化边界 |
+| W5 Memory Service hidden-state direct access | Qwen3-0.6B 2-step 已在 2/8-node 实跑通过；下游节点直接 acquire 已提交的 hidden ObjectRef，按 64 个 4 KiB tile 执行 PTO `pipeline_double`，随后把同一 local arena range 原地 publish；八节点累计 896 dispatch、1,792 `TLOAD`、896 `TSTORE`、零 staging | 当前 callable 是集成语义探针；生产模型算子、通用 `task/gm_tensor` API、真并行、完整 recovery 和性能边界仍需补齐 |
 
 ## 4. 修正后的目标架构
 
@@ -1782,9 +1792,10 @@ extent；NZ 使用 16×8 的连续 512 B block。三种 layout 均在写回后�
 guest contract suite 为 358/358 pass；两台机器结束后没有 QEMU 残留，n4-910c 的
 P3 evaluator PID `419618` 全程保持 `Tl`。
 
-P4I 完成当前 direct-access PoC 的复杂 layout 正向范围。多 dispatch 压力、通用
-callback/PTO/fence failure、guest exit 竞争、正式性能评估与真实 Lingqu workload
-接入列为后续扩展，不阻塞本轮目标收口。
+P4I 完成当前 direct-access PoC 的复杂 layout 正向范围。W5 Memory Service
+hidden-state 接入随后由 9.16 节补齐。多 dispatch 压力、通用
+callback/PTO/fence failure、guest exit 竞争、正式性能评估与通用 Lingqu
+`task/gm_tensor` 封装列为后续扩展。
 
 ### 9.15 八节点 functional demo 验收契约与正式结果
 
@@ -1887,17 +1898,148 @@ multi-dispatch concurrency gate，不纳入本节完成条件。
 | A5 manifest direct execution | `sim-cli host-vector`，16,384 elements | `completion=Success`，`all_match_expected=true` |
 | XML / format / whitespace | 本地轻量检查 | `xmllint`、`cargo fmt --all -- --check` 与 `git diff --check` 通过 |
 
-n4-910c 的系统 `python3` 为 3.9.9。该解释器枚举旧版 discovery 时会在现有
-DGX/W5 脚本的 `Path.write_text(newline=...)` 和 `Path | None` 处失败；项目已有的
-`ub-sim-py312` 环境执行同一 discovery 后 365/365 通过。最终验收以 Python 3.12
-结果为准。Simpler scene tests 使用 `out/test-envs/` 下的一次性 PyTorch 环境，未改写
+n4-910c 的系统 `python3` 为 3.9.9。2026-09-01 的旧版 discovery 曾在 DGX/W5
+脚本的 `Path.write_text(newline=...)` 和 `Path | None` 处暴露 Python 3.9
+兼容性问题，当时使用 `ub-sim-py312` 完成 365/365 验证。该兼容性缺口已由
+`ub_sim@e7dfda2` 修复；2026-09-02 系统 Python 3.9 的全量 discovery 已达到
+388/388。Simpler scene tests 使用 `out/test-envs/` 下的一次性 PyTorch 环境，未改写
 共享 Python 环境。测试结束后主机没有 QEMU 或 `sim-console` 残留，两份正式
 evidence 的 `qemu-leftovers.txt` 均为 0 byte。
 
 这组结果完成了“两个/八个 node 上的 demo app 通过现有 QEMU bridge 和 Simpler
 运行 PTO kernel，并用 `TLOAD/TSTORE` 访问 OBMM shared memory”的目标。宿主执行
 并行度、通用多 dispatch 隔离、更多 recovery case、Lingqu `task/gm_tensor` 上层
-封装与 P5 性能优化继续作为独立后续工作。
+封装与 P5 性能优化继续作为独立后续工作。9.16 节进一步记录 W5 Memory Service
+hidden-state 的实际接入结果。
+
+### 9.16 W5 Memory Service hidden-state 两/八节点正式结果
+
+2026-09-02 已把 direct-access 机制接入 Qwen3-0.6B W5 两步 decode 的 hidden-state
+边界。每个下游节点从 Memory Service 取得上游已提交 hidden ObjectRef 对应的
+OBMM-backed read view，同时为本节点 local arena 取得 write view。guest 将
+262,144 B hidden 切分为 64 个 4,096 B rank-5 tile；每个 tile 提交同一
+`pipeline_double` callable：输入 `a` 和 `b` 指向同一个 remote tile，输出 `f`
+指向 local tile，PTO 执行 `TLOAD(a)`、`TLOAD(b)`、`TADD` 和 `TSTORE(f)`。
+因此输出语义固定为 `f = 2 * input`。
+
+![W5 Memory Service hidden-state PTO UB GM 流水线](2026-09-02-w5-lingqu-shmem-pto-hidden-pipeline.svg)
+
+每个 tile 在 PTO completion 和数值校验后释放自己的 input/output lease。64 个
+tile 的输出必须形成一个连续 local arena range；全部通过后，程序使用首 tile 的
+backing offset 发布刚才写入的完整 range。这个步骤不会复制 262,144 B hidden。
+下一段 W5 range 通过正常 Memory Service ObjectRef 解析获得该输出。首节点没有上游
+hidden，所以每个 decode step 保留一次 copy-publish；下游节点均执行 PTO transform
+和原地 publish。
+
+#### 9.16.1 为什么这属于实际 W5 集成
+
+这条验证链同时满足以下约束：
+
+- W5 model code 接收 Memory Service view 与 geometry，不直接选择 OBMM transport；
+- OBMM provider 负责把已提交对象 materialize 为 `lingqu_shmem_memref`；
+- payload 不进入 `segment_payloads`，每个 dispatch 的
+  `segment_payload_staging_bytes=0`；
+- QEMU bridge、Rust/Simpler/PTO 和真实 `TLOAD/TSTORE` 全部处于执行路径；
+- 输出使用原 local Memory Service arena 的准确 range 原地 publish；
+- 两步 decode 继续产生最终 token，证明 transform 后的数据实际进入下一段计算。
+
+`pipeline_double` 是集成语义探针。它有意修改 hidden，用于同时验证 remote input、
+local output、数值语义、分 tile 链接和后续消费。最终 token 证明整条 decode 流程
+继续运行；它不承担生产模型质量 oracle。生产部署仍需把该 callable 替换为实际
+模型算子，并建立模型级数值门禁。
+
+#### 9.16.2 两节点正式 campaign
+
+正式 evidence 位于远端：
+
+`n4-910c1:/home/ll/ub_sim_w5_pto_20260902_r2/out/w5-lingqu-shmem-pto/`
+`w5-lingqu-shmem-pto-2node-pipeline-double-final-20260902-r1/`
+
+结构化结果为 `validation.json status=pass`、runner exit 0、artifact fingerprint
+前后一致、QEMU leftover 为空。计数如下：
+
+| 节点 | dispatch / semantic / completion | `TLOAD` | `TSTORE` | zero-staging | publish |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Node A | 0 / 0 / 0 | 0 | 0 | 0 | 2 copy |
+| Node B | 128 / 128 / 128 | 256 | 128 | 128 | 2 in-place |
+
+Node B 的 `128 = 2 decode steps × 64 tiles`。运行遇到 2 次 transient SIM_DEC
+shared-memory read timeout，QEMU 各执行一次有界重试；最终 read error 为 0，
+reentrant block、panic 和 non-finite 检查均为 0。最终 token IDs 为 `[264, 3644]`，
+文本为 `" a global"`。
+
+#### 9.16.3 八节点正式 campaign
+
+正式 evidence 位于远端：
+
+`n4-910c1:/home/ll/ub_sim_w5_pto_20260902_r2/out/w5-lingqu-shmem-pto/`
+`w5-lingqu-shmem-pto-8node-pipeline-double-retry-20260902-r2/`
+
+八节点结果同样为 `validation.json status=pass`、runner exit 0、artifact fingerprint
+前后一致、QEMU leftover 为空。Node A 完成 2 次 copy-publish；Node B 至 Node H
+各自完成 128 个 dispatch、128 个 semantic oracle、128 个 completion、256 个
+`TLOAD`、128 个 `TSTORE`、128 个 zero-staging gate 和 2 次 in-place publish。
+
+| 八节点总量 | 实测值 | 计算依据 |
+| --- | ---: | --- |
+| downstream hidden edges | 14 | 7 consumers × 2 decode steps |
+| PTO dispatch | 896 | 14 edges × 64 tiles |
+| `TLOAD` | 1,792 | 2 loads × 896 dispatch |
+| `TSTORE` | 896 | 1 store × 896 dispatch |
+| zero-staging dispatch | 896 | 每个 dispatch 均为 0 payload staging |
+| in-place publish | 14 | 每条 downstream hidden edge 一次 |
+| denied access / final read error | 0 / 0 | 结构化日志 gate |
+
+运行遇到 7 次 transient SIM_DEC read timeout，全部经一次有界重试完成；最终
+reentrant block、panic 和 non-finite 检查为 0。最终 token IDs 为 `[43065, 17]`，
+文本为 `" snippet2"`。W5 summary 同时记录 8/8 nodes pass、14 次 Memory Service
+boundary observation、`hidden_backend=obmm_shmem` 和 262,144 B f32 hidden。
+
+两份失败证据也被保留且没有计入正式结果：初始 r1 的 Node C 在一次 remote read
+timeout 后终止，推动 QEMU 增加只在 remote fault model 关闭时生效的有界重试；
+后续 r1 在 Node D 触发 `Blocked re-entrant IO on MemoryRegion: ubc-ers2`，推动 ERS2
+event clear 支持当前调用链的并发重入。最终 r2 的相同 8-node gate 中，两类问题的
+终态计数均为 0。
+
+#### 9.16.4 Artifact 与回归绑定
+
+| 项目 | SHA-256 或 revision |
+| --- | --- |
+| source host-vector manifest | `548d152c855b8bdadaaf0482e5298c5122414d92e70289bfa01d40514ad965aa` |
+| 2-node snapshot manifest | `5a7e3daf07c6a5000d35aac024181d496befec62f30ffb0780cdf7c7bd84dba3` |
+| 8-node snapshot manifest | `5c30f2431905023d3338ca06207c9e61a918781d2803ad3146f54f5b4465e343` |
+| artifact fingerprint | `0x7742272dc5b4e999` |
+| initramfs | `41e2208de36d47e930ddbadba39dbbc8a6e4c300eeabcd4f4667d51211bcd72c` |
+| QEMU binary | `7fb4c42013b9f4c2e28b093e5607e0c92ad715c038a6083b9f1b736ac820e101` |
+| root / QEMU / kernel / Memory Service | `e7dfda2` / `1a43e84b89` / `ed9ac25` / `5878d6e` |
+
+最终回归在 n4-910c1 完成：系统 Python 3.9 执行 guest contract discovery
+388/388 通过；`cargo test --workspace` 退出码为 0，workspace crate 与 doc tests
+全部通过。Rust 完整日志为
+`n4-910c1:/tmp/ub-sim-cargo-test-e7dfda2-r4.log`。运行结束后没有 QEMU 残留。
+
+#### 9.16.5 代码落点
+
+| 层 | 主要文件 | 已实现职责 |
+| --- | --- | --- |
+| 目标型 CLI | [`run_w5_lingqu_shmem_pto.py`](../../guest-linux/aarch64/scripts/run_w5_lingqu_shmem_pto.py) | 解析 2/8-node 参数、冻结 artifact、设置 W5 profile、汇总结构化 counters 和 leftover |
+| W5 model consumption | [`llm_infer.c`](../../guest-linux/aarch64/apps/llm_infer/llm_infer.c) | 取得 pre-resolved hidden view、执行 64-tile transform、逐 tile oracle、连续 range 检查和原地 publish request |
+| Memory Service compute adapter | [`lingqu_shmem_mem_service.c`](../../guest-linux/aarch64/libs/lingqu_shmem_pto/lingqu_shmem_mem_service.c) 与 [`lingqu_shmem_mem_service_obmm.c`](../../guest-linux/aarch64/libs/lingqu_shmem_pto/lingqu_shmem_mem_service_obmm.c) | 将 object payload view 与 local arena allocation materialize 为 read/write `lingqu_shmem_memref`，管理 mapping lease |
+| Memory Service publish | [`mem_service_model_range_publish_flow.c`](../../mem_service/components/mem_service/mem_service_model_range_publish_flow.c) | 校验 arena 范围、pointer 与 backing offset，跳过 hidden `memcpy` 并建立 runtime output ObjectRef |
+| Simpler artifact | [`prepare_simpler_host_artifacts.py`](../../guest-linux/aarch64/scripts/prepare_simpler_host_artifacts.py) | 生成 `pipeline_double` orchestration，使 `f = a + b` 且 `a`、`b` 可绑定同一 remote memref |
+| 多节点 gate | [`run_llm_infer_eight_node_guest.sh`](../../guest-linux/aarch64/scripts/run_llm_infer_eight_node_guest.sh) | 校验逐节点 transform/publish、精确 `TLOAD/TSTORE/fence` 和 zero-staging 数量 |
+| QEMU reliability | [`ub_ubc.c`](../../vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c) | shared-memory SIM_DEC read 有界重试；允许 ERS2 protocol event clear 的安全重入 |
+| Contract tests | [`test_w5_lingqu_shmem_pto.py`](../../guest-linux/aarch64/tests/test_w5_lingqu_shmem_pto.py) 与 [`test_lingqu_shmem_mem_service.py`](../../guest-linux/aarch64/tests/test_lingqu_shmem_mem_service.py) | CLI、manifest、adapter、公式、publish、counter 与 lifetime 合同 |
+
+#### 9.16.6 当前边界
+
+W5 hidden-state 机制接入和两/八节点 functional gate 已完成。以下项目仍需独立补齐：
+
+1. 用生产 PTO 算子替换 `pipeline_double`，增加模型级误差与 token oracle；
+2. 把专用 W5 adapter 收敛为通用 Lingqu `task/gm_tensor` callable API；
+3. 验证单 QEMU 多 slot 的真实重叠执行、binding 隔离与公平性；
+4. 系统覆盖 callback、fence、PTO failure 和 guest-exit 竞争恢复；
+5. 完成 P5 分段性能、tile size 与 callback/range coalescing 评估。
 
 ## 10. 分阶段实施计划
 
@@ -2275,25 +2417,26 @@ P4I 当前实施状态：
 
 预计工作量：5–8 个工程日。
 
-### P5：性能与真实上层 workload 集成（后续工作）
+### P5：性能、coalescing 与通用上层封装（部分完成）
 
-P5 不参与本轮 direct-access PoC 的完成判定。这里的“性能”是把一次 dispatch 拆成
+W5 Qwen3-0.6B Memory Service hidden-state 机制接入已完成，详见 9.16 节。P5 剩余的
+“性能”工作是把一次 dispatch 拆成
 validate、authorization、binding、TLOAD、layout transform、TSTORE、fence 和
 completion，评估 callback 次数、bytes、相对开销与可合并空间；QEMU wall-clock
 不用于承诺真实硬件绝对时延。
 
-“真实上层 workload 集成”是让 Lingqu 的 task/callable submission 自然携带
-`lingqu_shmem_memref`，runtime 自动 materialize `AddressSpace::UB_GM`。当前专用
-vector-add CLI 已经覆盖同一真实 QEMU/Rust/Simpler/PTO 数据路径，足以完成机制 PoC；
-接入完整 Lingqu application、模型 workload 或 Simpler L3+ mailbox 属于后续产品化
-工作。
+当前 W5 专用 adapter 已让模型边界自然取得 Memory Service hidden object view，
+runtime 会把它 materialize 为 `AddressSpace::UB_GM`。剩余的“通用上层封装”指把
+这套能力提升为 Lingqu `task/gm_tensor` 的公共 callable contract，让其他模型和
+算子无需复制 W5 专用 glue code。Simpler L3+ mailbox 只在 memref 确实需要穿越该
+边界时扩展。
 
 工作内容：
 
 - 分段统计 validate、authorization wait、binding、TLOAD read、layout transform、TSTORE write、fence 和 completion；
 - 对比当前 staged `host_vector` 与 `lingqu_shmem` `UB_GM`；
 - 评估 tile size、range coalescing 和 callback 数量；
-- 接入更高层 Lingqu callable/task submission；
+- 将 W5 已验证的 adapter 收敛为更高层 Lingqu callable/task submission；
 - memref 需要穿越 Simpler L3+ mailbox 时再设计对应 wire extension。
 
 退出条件：
@@ -2303,11 +2446,13 @@ vector-add CLI 已经覆盖同一真实 QEMU/Rust/Simpler/PTO 数据路径，足
 - QEMU wall-clock 数据不用于推断真实硬件绝对时延；
 - 形成可复现的性能报告与启用条件。
 
-预计工作量：4–6 个工程日，不包含完整模型 workload 接入。
+预计剩余工作量：4–6 个工程日，不包含生产模型算子开发。
 
 ## 11. CLI 与验证 gates
 
 ### 11.1 统一 CLI
+
+通用 direct-access vector demo 使用：
 
 ```bash
 cargo run --release -p sim-cli -- \
@@ -2322,7 +2467,25 @@ cargo run --release -p sim-cli -- \
   --evidence-dir out/lingqu-shmem-pto-eight-node/run-001
 ```
 
-CLI 负责：
+W5 Memory Service hidden-state 集成使用独立的目标型 CLI：
+
+```bash
+python3 guest-linux/aarch64/scripts/run_w5_lingqu_shmem_pto.py \
+  --manifest /path/to/pipeline_double/host_vector_manifest.json \
+  --node-count 8 \
+  --profile qwen3_0_6b_decode \
+  --qwen-weights-path /path/to/Qwen3-0.6B \
+  --decode-steps 2 \
+  --run-id w5-lingqu-shmem-pto-8node-run-001 \
+  --evidence-dir out/w5-lingqu-shmem-pto/run-001
+```
+
+Qwen profile 会自动启用完整 262,144 B hidden transform 和原地 publish。CLI 会冻结
+artifact snapshot、验证 `pipeline_double` manifest、锁定 fingerprint、生成
+`run-plan.json` 与 `validation.json`，并检查逐节点 dispatch/semantic/completion、
+`TLOAD/TSTORE`、零 staging、publish mode 和 QEMU leftover。
+
+通用 vector CLI 负责：
 
 - 检查 artifact manifest、ND geometry 和运行前后 fingerprint；
 - 根据 `--nodes 2|8` 选择专用 QEMU runner；
@@ -2348,7 +2511,8 @@ CLI 负责：
 | G3 | 远端 QEMU | mapping/lifetime/OOB/access/timeout 负向矩阵 |
 | G4 | 远端 QEMU | tail/cross-page/stride/DN/NZ |
 | G5 | 远端 QEMU | no-staging counters 与 request trace correlation |
-| G6 | 空闲远端性能环境 | 分段性能、range coalescing、重复 seeds |
+| G6 | 远端 QEMU | W5 Memory Service hidden 2/8-node、完整 range transform、原地 publish 与 decode continuity |
+| G7 | 空闲远端性能环境 | 分段性能、range coalescing、重复 seeds |
 
 本地开发机只运行已知轻量的 unit/contract/static checks。QEMU、多节点、集成和完整 suit 在远端目标执行。
 
@@ -2458,6 +2622,7 @@ PTO CPU simulator 在宿主执行，语义 requester 仍应代表模拟计算设
 | existing bridge 的 UB GM authorization/binding | P2 已实现同步 fast path、pending slot snapshot/resume、opaque endpoint-map reference、resume/callback mapping 重校验与 completion cleanup |
 | 两节点 PTO direct-access acceptance | n4-910c 与 n4-910c1 r9 均通过；默认 acceptance 无 NPU/GVA/GSVA 依赖 |
 | 两/八节点 demo app acceptance | n4-910c 的 completion-ack r13/r6 均通过；八节点为一个 producer、七个 consumer、七个独立 lane 和 dispatch，14 load、7 store、7 fence、7 ack、7 lane oracle、零 staging、零 leftover 均匹配 |
+| W5 Memory Service hidden-state 两/八节点 | Qwen3-0.6B 两步 decode 已通过；下游从已提交 ObjectRef acquire remote input 和 local output view，按 64 个 4 KiB tile 执行 `pipeline_double` 并原地 publish；八节点累计 896 dispatch、1,792 `TLOAD`、896 `TSTORE`、14 次 in-place publish、零 staging、零 denied access 和零 leftover |
 | authorization timeout fail-closed | P4A 已在 n4-910c 与 n4-910c1 通过；exact-once status 3 completion、零数据访问、完整 sentinel 和健康 guest 均有 evidence |
 | authorization cancel/duplicate/reset lifecycle | P4B 已在 n4-910c 与 n4-910c1 通过；覆盖 cancel exact-once CQ、late/duplicate guard、reset 无 CQ cleanup、旧 map 退役、sequence 单调和 reboot recovery |
 | mapping/requester/bounds/access preflight | P4C 已在 n4-910c 与 n4-910c1 共 12 个 campaign 通过；覆盖 bad generation、stale map、wrong requester、OOB、overflow 和 role/access mismatch，并证明零 authorization/binding/data callback |
@@ -2475,10 +2640,10 @@ retired-segment lifetime、P4G extent/mapping bounds、P4H V1/V1.1 positive layo
 P4I stride/DN/NZ 已完成运行验证。第 15 节定义的 direct-access PoC 已闭环：默认
 ChipBackend route 通过 PTO `TLOAD/TSTORE` 直接访问 `lingqu_shmem` backing，两节点
 与八节点 oracle、精确 callback bytes、completion ack、零 staging、代码/构建指纹和
-cleanup gate 全部通过。单 QEMU 多 slot 并发、其他 recovery、正式性能评估和真实
-上层 workload 接入作为后续工作。
-完整 Lingqu 模型 workload、任意复杂 layout、atomic store 和真实硬件验证不计入该
-最小 PoC 估算。
+cleanup gate 全部通过。W5 Memory Service hidden-state 机制接入也已在两节点和
+八节点通过。单 QEMU 多 slot 并发、系统性 recovery、正式性能评估、通用
+`task/gm_tensor` callable 封装和生产模型算子作为后续工作。
+任意复杂 layout、atomic store 和真实硬件验证不计入该最小 PoC 估算。
 
 ## 15. 最终验收标准
 
@@ -2498,20 +2663,29 @@ cleanup gate 全部通过。单 QEMU 多 slot 并发、其他 recovery、正式�
 - 提供统一 CLI 和自动化测试；
 - 双节点 QEMU acceptance 在远端实跑通过；
 - 八节点 QEMU acceptance 在远端实跑通过，并明确记录宿主 Simpler 潜在串行化；
+- W5 下游节点通过 Memory Service ObjectRef 取得 OBMM-backed hidden input；
+- W5 PTO callable 覆盖完整 262,144 B hidden range，并把输出原地 publish；
+- Qwen3-0.6B 两步 decode 在 2/8-node 均完成，结构化计数和数值 oracle 通过；
 - evidence 记录完整代码和构建指纹；
 - 测试结束后无残留 QEMU。
 
 experimental `NPU_OP_VECTOR_ADD_U32`、GVA 或 GSVA 的启用与通过不计作上述目标完成；默认 acceptance 必须在不依赖这些 experimental features 的条件下成立。
 
-## 16. 待评审决策
+## 16. 已冻结决策与后续评审
 
-实施前需要确认以下代码级决策：
+以下代码级决策已经实现并通过相应 gate：
 
-1. `lingqu_shmem_memref` 首先放在 `ub_sim` Lingqu adaptor，接口稳定后再评估进入上游 `libobmm`。本文建议采用该顺序。
-2. `IoOpcode::Dispatch` v2 control table 的精确 byte layout、CRC 和最大 memref 数量。
+1. `lingqu_shmem_memref` 位于 `ub_sim` Lingqu adapter；接口稳定后再评估进入上游 `libobmm`。
+2. `IoOpcode::Dispatch` v2 control table 已固定 byte layout、CRC 和 memref 数量约束。
 3. `pto_device_cna` 由默认 ChipBackend topology 明确分配，不从 experimental `sim_npu` 隐式继承。
-4. synthetic aperture 的编码、每 dispatch binding 上限和并发 dispatch 策略。
+4. synthetic aperture 使用 dispatch-local binding；当前单 dispatch 生命周期已经验证。
 5. registry 由 Simpler runtime 管理，PTO CPU ISA 负责 range interception。
 6. V1 支持 tail tile，V1.2 的 stride/DN/NZ 已由 P4I 完成。
+7. W5 通过 Memory Service adapter 获取 hidden object view，OBMM provider 细节不进入 model code。
+8. W5 output 在 PTO completion 和 lease cleanup 后按 backing offset 原地 publish。
 
-评审通过后从 P0/P1 开始实施。当前阶段不扩展 attached-NPU opcode，不设计通用 external-memory provider，也不提前修改 Simpler L3+ wire。`sim_npu`、GVA、GSVA 保持 experimental、optional、default disabled，不进入默认 feature set。
+后续评审只覆盖仍未冻结的范围：单 QEMU 多 slot 并发策略、通用
+`task/gm_tensor` callable API、failure recovery 矩阵、生产 PTO 算子和 P5 性能策略。
+attached-NPU opcode 与通用 external-memory provider 当前均无扩展计划；Simpler L3+
+wire 仅在 memref 需要穿越该边界时设计。`sim_npu`、GVA、GSVA 保持 experimental、
+optional、default disabled，不进入默认 feature set。

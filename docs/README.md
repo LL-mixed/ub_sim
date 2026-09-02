@@ -50,14 +50,14 @@ Current validation entry points:
 - [2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md](2026-08-14-ub-sim-lingqu-datasystem-poc-status-gap.md)
   - audited current-state report for the relationship between `ub_sim` and Lingqu DataSystem, completed capabilities, evidence boundaries, full-PoC gaps, risks, and an estimated delivery path
 - [plans/2026-08-29-lingqu-shmem-pto-ub-gm-direct-access-design.md](plans/2026-08-29-lingqu-shmem-pto-ub-gm-direct-access-design.md)
-  - audited target architecture and phased implementation plan for materializing
+  - implemented architecture, formal evidence, and remaining plan for materializing
     `lingqu_shmem_memref` as PTO `AddressSpace::UB_GM`, reusing the existing
     QEMU UBC → sim-qemu → ChipBackend → Simpler/PTO dispatch path and issuing
     direct `TLOAD/TSTORE` through a generic QEMU UB GM memory interface without
-    payload staging; synchronous and resumable authorization positive paths,
-    plus the fail-closed authorization-timeout path, are verified on n4-910c
-    and n4-910c1; `sim_npu`, GVA, and GSVA are recorded as experimental,
-    optional, default-disabled features outside the default acceptance path
+    payload staging; includes generic 2/8-node vector gates and the 2026-09-02
+    Qwen3-0.6B W5 Memory Service hidden-state 2/8-node pipeline with in-place
+    publish; `sim_npu`, GVA, and GSVA remain experimental, optional, and
+    default-disabled outside the acceptance path
 - [plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md](plans/2026-08-11-obmm-remote-load-coroutine-feasibility-design.md)
   - feasibility and validation design for hiding microsecond-scale OBMM remote-load latency, comparing explicit submit/await with async load, direct EL0 upcall, a pending-load table, and a guest EL0 coroutine scheduler
 - [plans/p0-baseline-latency-model-detailed-design.md](plans/p0-baseline-latency-model-detailed-design.md)

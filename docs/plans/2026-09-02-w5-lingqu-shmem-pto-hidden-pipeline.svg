@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1440" height="940" viewBox="0 0 1440 940" role="img"
+     aria-labelledby="title desc">
+  <title id="title">W5 Memory Service hidden-state PTO UB GM pipeline</title>
+  <desc id="desc">
+    An upstream W5 node publishes a hidden object through Memory Service.
+    A downstream node acquires an OBMM-backed remote input and a local output,
+    runs 64 PTO pipeline-double tile dispatches, and publishes the output range
+    in place for the next W5 range. The eight-node run totals 896 dispatches,
+    1792 loads, 896 stores, and zero payload staging.
+  </desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#344054"/>
+    </marker>
+    <style>
+      .title { font: 700 30px system-ui, sans-serif; fill: #101828; }
+      .subtitle { font: 500 16px system-ui, sans-serif; fill: #475467; }
+      .section { font: 700 20px system-ui, sans-serif; fill: #1d2939; }
+      .label { font: 700 17px system-ui, sans-serif; fill: #1d2939; }
+      .body { font: 500 15px system-ui, sans-serif; fill: #344054; }
+      .small { font: 500 13px system-ui, sans-serif; fill: #475467; }
+      .mono { font: 600 14px ui-monospace, monospace; fill: #182230; }
+      .metric { font: 700 21px system-ui, sans-serif; fill: #101828; }
+      .box { stroke: #667085; stroke-width: 1.5; rx: 14; }
+      .arrow { stroke: #344054; stroke-width: 2.2; fill: none;
+               marker-end: url(#arrow); }
+      .dash { stroke: #667085; stroke-width: 1.5; stroke-dasharray: 7 6;
+              fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="940" fill="#f8fafc"/>
+  <text x="56" y="58" class="title">
+    W5 hidden-state：Memory Service → PTO UB_GM
+  </text>
+  <text x="56" y="88" class="subtitle">
+    Qwen3-0.6B · 262,144 B f32 hidden · 64 × 4 KiB tile · 2-step decode
+  </text>
+
+  <rect x="54" y="124" width="260" height="170" class="box"
+        fill="#e0f2fe"/>
+  <text x="78" y="158" class="section">上游 W5 node</text>
+  <text x="78" y="192" class="label">Memory Service object</text>
+  <text x="78" y="220" class="body">已提交 ObjectRef</text>
+  <text x="78" y="246" class="body">hidden = 262,144 B</text>
+  <text x="78" y="272" class="small">provider backing: OBMM shmem</text>
+
+  <path d="M 314 209 L 388 209" class="arrow"/>
+  <text x="328" y="192" class="small">resolve</text>
+
+  <rect x="390" y="124" width="306" height="170" class="box"
+        fill="#dcfce7"/>
+  <text x="414" y="158" class="section">下游 acquire</text>
+  <text x="414" y="192" class="body">read lease → remote input view</text>
+  <text x="414" y="220" class="body">write lease → local output view</text>
+  <text x="414" y="248" class="mono">lingqu_shmem_memref</text>
+  <text x="414" y="274" class="mono">AddressSpace::UB_GM</text>
+
+  <path d="M 696 209 L 770 209" class="arrow"/>
+  <text x="708" y="192" class="small">64 tiles</text>
+
+  <rect x="772" y="124" width="612" height="170" class="box"
+        fill="#fef3c7"/>
+  <text x="796" y="158" class="section">每个 4 KiB tile：现有执行主链</text>
+  <text x="796" y="190" class="body">
+    guest Dispatch v2 → QEMU UBC → Rust bridge → Simpler → PTO
+  </text>
+  <rect x="798" y="211" width="124" height="49" rx="9"
+        fill="#dbeafe" stroke="#64748b"/>
+  <text x="823" y="241" class="mono">TLOAD a</text>
+  <path d="M 922 235 L 951 235" class="arrow"/>
+  <rect x="953" y="211" width="124" height="49" rx="9"
+        fill="#dbeafe" stroke="#64748b"/>
+  <text x="978" y="241" class="mono">TLOAD b</text>
+  <path d="M 1077 235 L 1106 235" class="arrow"/>
+  <rect x="1108" y="211" width="104" height="49" rx="9"
+        fill="#ede9fe" stroke="#64748b"/>
+  <text x="1131" y="241" class="mono">TADD</text>
+  <path d="M 1212 235 L 1241 235" class="arrow"/>
+  <rect x="1243" y="211" width="116" height="49" rx="9"
+        fill="#fecdd3" stroke="#64748b"/>
+  <text x="1262" y="241" class="mono">TSTORE f</text>
+  <text x="1090" y="281" class="small">a = b = remote input；f = local output；f = 2 × input</text>
+
+  <path d="M 1078 294 L 1078 350" class="arrow"/>
+  <rect x="772" y="352" width="612" height="150" class="box"
+        fill="#fce7f3"/>
+  <text x="796" y="387" class="section">完成一条 hidden edge</text>
+  <text x="796" y="420" class="body">64/64 tile completion + semantic oracle</text>
+  <text x="796" y="448" class="body">每个 tile 已完成 semantic oracle 并释放自己的 leases</text>
+  <text x="796" y="476" class="body">按 backing offset 原地 publish local output range</text>
+  <rect x="1170" y="388" width="184" height="76" rx="10"
+        fill="#ffffff" stroke="#98a2b3"/>
+  <text x="1190" y="418" class="label">payload copy</text>
+  <text x="1225" y="449" class="metric">0 B</text>
+
+  <path d="M 772 427 L 660 427 L 660 548 L 348 548" class="arrow"/>
+  <rect x="54" y="522" width="294" height="116" class="box"
+        fill="#e0e7ff"/>
+  <text x="78" y="558" class="section">下一段 W5 range</text>
+  <text x="78" y="590" class="body">通过新 ObjectRef 解析刚发布的 hidden</text>
+  <text x="78" y="616" class="small">输出成为下一条 edge 的 remote input</text>
+
+  <path d="M 202 522 L 202 316" class="dash"/>
+  <text x="86" y="418" class="small">decode pipeline 继续</text>
+
+  <rect x="54" y="684" width="1330" height="206" rx="18"
+        fill="#eef2f6" stroke="#667085" stroke-width="1.5"/>
+  <text x="80" y="724" class="section">8-node formal campaign：7 downstream consumers × 2 steps</text>
+
+  <rect x="80" y="752" width="228" height="104" rx="12"
+        fill="#dbeafe" stroke="#94a3b8"/>
+  <text x="100" y="783" class="label">PTO dispatch</text>
+  <text x="100" y="824" class="metric">896</text>
+  <text x="100" y="846" class="small">14 edges × 64 tiles</text>
+
+  <rect x="330" y="752" width="228" height="104" rx="12"
+        fill="#dcfce7" stroke="#94a3b8"/>
+  <text x="350" y="783" class="label">TLOAD / TSTORE</text>
+  <text x="350" y="824" class="metric">1,792 / 896</text>
+  <text x="350" y="846" class="small">2 reads + 1 write / dispatch</text>
+
+  <rect x="580" y="752" width="228" height="104" rx="12"
+        fill="#fef3c7" stroke="#94a3b8"/>
+  <text x="600" y="783" class="label">payload staging</text>
+  <text x="600" y="824" class="metric">0 B</text>
+  <text x="600" y="846" class="small">896/896 zero-staging gates</text>
+
+  <rect x="830" y="752" width="228" height="104" rx="12"
+        fill="#fce7f3" stroke="#94a3b8"/>
+  <text x="850" y="783" class="label">in-place publish</text>
+  <text x="850" y="824" class="metric">14</text>
+  <text x="850" y="846" class="small">one per downstream edge</text>
+
+  <rect x="1080" y="752" width="278" height="104" rx="12"
+        fill="#e0e7ff" stroke="#94a3b8"/>
+  <text x="1100" y="783" class="label">formal result</text>
+  <text x="1100" y="817" class="metric">8/8 nodes pass</text>
+  <text x="1100" y="846" class="small">denied=0 · leftover QEMU=0</text>
+
+  <text x="56" y="920" class="small">
+    Evidence: w5-lingqu-shmem-pto-8node-pipeline-double-retry-20260902-r2
+  </text>
+</svg>

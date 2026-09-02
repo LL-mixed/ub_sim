@@ -27,7 +27,7 @@ Lingqu DataSystem 已经从“Unified Bus 上四个并列基础数据服务”�
 
 ![Lingqu DataSystem 当前架构](lingqu_datasystem_architecture.svg)
 
-这不是对原始设计的背离，而是产品边界的收敛：应用不再面对四套互相平行、
+这体现了产品边界的收敛：应用无需面对四套互相平行、
 各自管理对象和传输的 API，而是通过统一 SDK/ObjectRef 使用数据能力，由控制面
 选择 placement 和 provider。
 
@@ -58,7 +58,7 @@ Lingqu DataSystem 已经从“Unified Bus 上四个并列基础数据服务”�
 - L0–L2 由 `simpler` 管理，L3–L6 由分布式 runtime 扩展；
 - 数据就绪和消费完成事件参与 DAG 解析及 ring slot 回收。
 
-因此，DataSystem 的本质不是附加存储，而是 runtime 数据依赖、对象生命周期和
+因此，DataSystem 的本质是 runtime 数据依赖、对象生命周期和
 跨层数据移动的基础设施。
 
 ## 3. 架构演进
@@ -141,7 +141,7 @@ Guest 组件逐步拆成：
 - serving/pretraining example 与 fail-closed fixture；
 - install/package/release/compat/ops certification contract。
 
-关键变化不是文件拆分，而是依赖方向被固定：core 不依赖模型、设备或 QEMU；
+关键变化在于依赖方向被固定：core 不依赖模型、设备或 QEMU；
 adapter 依赖 core；provider 只实现中立的 region/transfer/completion 契约。
 
 ### 3.6 2026-07～08：抽取独立 `mem_service`
@@ -245,7 +245,21 @@ exit，会改变执行路径。因此二者可以共享索引，但不能共享�
 | Redis-compatible `lingqu_db` | Object/mem service 提供稳定二进制对象 RPC | 已实现 Redis RESP 或完整 Redis command surface |
 | UB attached `lingqu_block` | 有 durable block sim、sealed backend、UB SSD GSVA path | 已完成通用生产 UB-SSU 服务与全硬件认证 |
 
-已经落地的是四种数据语义、组合方式和失败边界，而不是四个原样产品。
+当前已经落地四种数据语义、组合方式和失败边界；四个原样产品仍未全部形成。
+
+### 6.1 2026-09-02 `lingqu_shmem` 计算消费进展
+
+Qwen3-0.6B W5 已在 2/8-node 2-step campaign 中把 Memory Service hidden ObjectRef
+对应的 OBMM-backed view 直接 materialize 为 PTO `AddressSpace::UB_GM`。下游节点
+通过现有 QEMU/Rust/Simpler/PTO 主链执行真实 `TLOAD/TSTORE`，完成 64 个 4 KiB
+tile 后将 262,144 B local output range 原地发布。八节点正式结果包含 896 dispatch、
+1,792 `TLOAD`、896 `TSTORE`、14 次 in-place publish、零 payload staging 和零残留
+QEMU。实现、证据边界与剩余工作见
+[PTO UB GM direct-access design](plans/2026-08-29-lingqu-shmem-pto-ub-gm-direct-access-design.md#916-w5-memory-service-hidden-state-两八节点正式结果)。
+
+该结果证明 `lingqu_shmem` 可以承载 W5 hidden 的实际 PTO 计算消费。完整
+OpenSHMEM 语义兼容、通用 Lingqu `task/gm_tensor` API、生产 PTO 算子、真并行、
+系统性 recovery 和性能/coalescing 仍需后续工作。
 
 ## 7. 当前成熟度
 
@@ -270,7 +284,7 @@ Durable simulation 还保留一个明确的兼容性尾项：外部 catalog JSON
 
 ## 8. 架构原则与用户影响
 
-### 8.1 统一对象语义，而不是统一物理存储
+### 8.1 统一对象语义，保留多种物理存储
 
 统一的是 ObjectRef、version、checksum、placement 和 lifecycle；OBMM、Block、
 DFS、TCP、RoCE 仍保留各自特性。
@@ -297,7 +311,7 @@ Provider 只能注册 region、传输、等待 completion 和报告 capability/t
 ### 8.4 模型是 consumer，不是服务边界
 
 Qwen3、DeepSeek 和 Engram 是 adapter/consumer。新增模型应提供 geometry 和对象流
-builder，而不是把模型名加入 core API。
+builder，模型名不进入 core API。
 
 **用户影响：** 同一套 Memory Service 可以服务推理、预训练和未来模型，不需要为
 每个 workload 部署一套状态服务。
@@ -336,7 +350,7 @@ PyPTO hierarchy label 当成 UB 硬件对象，也不要因为二进制拼写是
 6. 继续要求所有 provider 通过同一 ownership、bounds、transfer、completion、
    checksum 和 fail-closed conformance suite。
 
-这条路线的本质是完成生产证据和契约闭环，而不是再次扩张服务命名和 API 表面。
+这条路线聚焦生产证据和契约闭环，避免继续扩张服务命名和 API 表面。
 
 ## 11. 主要资料入口
 
