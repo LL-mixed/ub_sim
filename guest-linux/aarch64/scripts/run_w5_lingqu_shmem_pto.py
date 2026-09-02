@@ -39,6 +39,7 @@ EXPECTED_UB_GM_LAYOUT = {
 }
 QWEN_HIDDEN_RANGE_BYTES = 262_144
 QWEN_FULL_RANGE_DECODE_TOKENS = 128
+W5_TRANSFORM_PROGRAM = "pipeline_double"
 
 
 def positive_int(value: str) -> int:
@@ -160,6 +161,12 @@ def validate_manifest_contract(manifest: pathlib.Path) -> dict[str, Any]:
     kernels = runtime.get("kernels") if isinstance(runtime, dict) else None
     if not isinstance(kernels, list) or len(kernels) != 3:
         raise RuntimeError("callable 1 requires exactly three host-vector kernels")
+    program = payload.get("host_vector_program")
+    if program != W5_TRANSFORM_PROGRAM:
+        raise RuntimeError(
+            "W5 chained hidden-state execution requires "
+            f"host_vector_program={W5_TRANSFORM_PROGRAM}, got {program!r}"
+        )
     return dict(layout)
 
 
@@ -246,7 +253,7 @@ def collect_validation(run_id: str,
         semantic_count = count_matches(
             guest_log,
             r"stage w5_pto_ub_gm_probe_semantic .*elements=1024 "
-            r"formula=\(2\*x\+1\)\*\(2\*x\+2\) .*status=ok",
+            r"formula=2\*x .*status=ok",
         )
         completion_count = count_matches(guest_log, r"stage w5_pto_ub_gm_probe_complete .*status=ok")
         transform_count = count_matches(
@@ -381,6 +388,7 @@ def resolved_plan(args: argparse.Namespace, run_id: str, evidence_dir: pathlib.P
         "manifest": str(args.manifest),
         "manifest_sha256": sha256_file(args.manifest),
         "ub_gm_layout": ub_gm_layout,
+        "transform_program": W5_TRANSFORM_PROGRAM,
         "access_bytes": ub_gm_layout["storage_bytes"],
         "hidden_bytes": hidden_bytes,
         "decode_hidden_bytes": hidden_bytes,
@@ -472,6 +480,7 @@ def main(argv: list[str]) -> int:
         "SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT": (
             "1" if plan["publish_output"] else "0"
         ),
+        "SIM_W5_PTO_UB_GM_PROGRAM": plan["transform_program"],
         "SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT": fingerprint_before,
         "SIM_W5_PTO_UB_GM_TIMEOUT_MS": str(args.timeout_ms),
         "SIM_W5_PTO_UB_GM_ACCESS_BYTES": str(plan["access_bytes"]),

@@ -125,6 +125,7 @@ SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
 SIM_W5_PTO_UB_GM_PROBE="${SIM_W5_PTO_UB_GM_PROBE:-0}"
 SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
+SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
 SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
 SIM_W5_PTO_UB_GM_TIMEOUT_MS="${SIM_W5_PTO_UB_GM_TIMEOUT_MS:-300000}"
 SIM_W5_PTO_UB_GM_ACCESS_BYTES="${SIM_W5_PTO_UB_GM_ACCESS_BYTES:-4096}"
@@ -503,6 +504,10 @@ validate_w5_pto_ub_gm_probe() {
     return 1
   fi
   if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
+    if [[ "$SIM_W5_PTO_UB_GM_PROGRAM" != "pipeline_double" ]]; then
+      trace "FAIL: W5 PTO UB_GM publish requires program=pipeline_double, got program=$SIM_W5_PTO_UB_GM_PROGRAM"
+      return 1
+    fi
     if [[ ! "$SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES" =~ '^[1-9][0-9]*$' ]]; then
       trace "FAIL: W5 PTO UB_GM publish requires positive hidden range bytes"
       return 1
@@ -512,7 +517,7 @@ validate_w5_pto_ub_gm_probe() {
       return 1
     fi
   fi
-  trace "prepare: W5 PTO UB_GM probe manifest=$SIMPLER_HOST_VECTOR_MANIFEST fingerprint=$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT cna_base=$SIM_LINGQU_SHMEM_PTO_CNA_BASE timeout_ms=$SIM_W5_PTO_UB_GM_TIMEOUT_MS access_bytes=$SIM_W5_PTO_UB_GM_ACCESS_BYTES publish_output=$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
+  trace "prepare: W5 PTO UB_GM probe manifest=$SIMPLER_HOST_VECTOR_MANIFEST fingerprint=$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT cna_base=$SIM_LINGQU_SHMEM_PTO_CNA_BASE timeout_ms=$SIM_W5_PTO_UB_GM_TIMEOUT_MS access_bytes=$SIM_W5_PTO_UB_GM_ACCESS_BYTES publish_output=$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT program=$SIM_W5_PTO_UB_GM_PROGRAM"
   return 0
 }
 
@@ -912,6 +917,7 @@ export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_W5_RUN_ID="$RUN_ID_BASE"
 export SIM_W5_PTO_UB_GM_PROBE="$SIM_W5_PTO_UB_GM_PROBE"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
+export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
 export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT"
 export SIM_W5_PTO_UB_GM_TIMEOUT_MS="$SIM_W5_PTO_UB_GM_TIMEOUT_MS"
 export SIM_W5_PTO_UB_GM_ACCESS_BYTES="$SIM_W5_PTO_UB_GM_ACCESS_BYTES"
@@ -1784,7 +1790,7 @@ validate_node_log() {
     fi
     pto_dispatches=$((pto_tiles * SIM_QWEN3_GUEST_DECODE_STEPS))
     pto_loads=$((2 * pto_dispatches))
-    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_config fingerprint=0x[0-9a-f]+ requester_cna=0x[0-9a-f]+ timeout_ms=[1-9][0-9]* publish_output=${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT} source=lingqu_memory_service target=simpler_pto address_space=UB_GM status=ok" "$node_id W5 PTO UB_GM probe config" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_config fingerprint=0x[0-9a-f]+ requester_cna=0x[0-9a-f]+ timeout_ms=[1-9][0-9]* publish_output=${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT} program=${SIM_W5_PTO_UB_GM_PROGRAM} source=lingqu_memory_service target=simpler_pto address_space=UB_GM status=ok" "$node_id W5 PTO UB_GM probe config" || return 1
     if (( idx == 1 )); then
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_pto_ub_gm_probe_skip node=1 step=[0-9]+ reason=no_upstream_hidden status=skipped" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id W5 PTO UB_GM source-node skip per step" || return 1
       if [[ "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" == "1" ]]; then
@@ -2137,6 +2143,7 @@ prepare_environment() {
     SIM_LINGQU_SHMEM_PTO_ENABLE="$SIM_LINGQU_SHMEM_PTO_ENABLE" \
     SIM_LINGQU_SHMEM_PTO_CNA_BASE="$SIM_LINGQU_SHMEM_PTO_CNA_BASE" \
     SIM_W5_RUN_ID="$RUN_ID_BASE" \
+    SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM" \
     SIM_QWEN3_DENSE_MODEL_ID="${SIM_QWEN3_DENSE_MODEL_ID:-}" \
     SIM_QWEN3_DENSE_MODEL_KEY="${SIM_QWEN3_DENSE_MODEL_KEY:-}" \
     SIM_QWEN3_DENSE_WEIGHTS_PATH="${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}" \

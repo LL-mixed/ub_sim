@@ -325,6 +325,49 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         )
         self.assertIn('manifest["ub_gm_access_fault"]', source)
 
+    def test_producer_exposes_pipeline_double_vector_program(self):
+        source = PRODUCER.read_text()
+
+        self.assertIn('"--host-vector-program"', source)
+        self.assertIn('choices=("quadratic", "pipeline_double")', source)
+        self.assertIn('manifest["host_vector_program"]', source)
+
+    def test_pipeline_double_orchestration_submits_one_external_add(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestration = producer.write_pipeline_double_vector_orchestration(
+                Path(temp_dir)
+            ).read_text()
+
+        self.assertIn("expected_arg_count = 3", orchestration)
+        self.assertIn("task_args.add_input(a);", orchestration)
+        self.assertIn("task_args.add_input(b);", orchestration)
+        self.assertIn("task_args.add_output(f);", orchestration)
+        self.assertEqual(orchestration.count("rt_submit_aiv_task("), 1)
+        self.assertIn("rt_submit_aiv_task(FUNC_ADD, task_args);", orchestration)
+        self.assertNotIn("FUNC_ADD_SCALAR", orchestration)
+        self.assertNotIn("FUNC_MUL", orchestration)
+
+    def test_pipeline_double_program_rejects_non_vector_profile(self):
+        completed = subprocess.run(
+            [
+                "python3",
+                str(PRODUCER),
+                "--profile",
+                "host_gemm",
+                "--host-vector-program",
+                "pipeline_double",
+                "--output-dir",
+                "/tmp/unused-host-gemm-output",
+                "--describe",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("only supported for --profile host_vector", completed.stderr)
+
     def test_standard_profiles_use_exported_orchestration_entry(self):
         producer = load_producer()
         vector = producer.PROFILE_SPECS["host_vector"]

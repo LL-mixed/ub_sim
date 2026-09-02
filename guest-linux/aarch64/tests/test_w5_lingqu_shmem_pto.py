@@ -27,6 +27,7 @@ def write_callable_one_manifest(path: pathlib.Path) -> None:
     path.write_text(
         json.dumps(
             {
+                "host_vector_program": "pipeline_double",
                 "ub_gm_layout": {
                     "profile": "nd",
                     "pto_layout": "ND",
@@ -92,6 +93,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
             self.assertEqual(plan["decode_hidden_bytes"], 262144)
             self.assertEqual(plan["decode_tokens"], 128)
             self.assertEqual(plan["tile_count"], 64)
+            self.assertEqual(plan["transform_program"], "pipeline_double")
             self.assertTrue(plan["publish_output"])
             self.assertEqual(plan["decode_steps"], 2)
             self.assertEqual(plan["ub_gm_layout"]["shape"], [1, 1, 1, 32, 32])
@@ -106,6 +108,18 @@ class W5LingquShmemPtoTest(unittest.TestCase):
             manifest.write_text(json.dumps(payload) + "\n")
 
             with self.assertRaisesRegex(RuntimeError, "canonical 32x32"):
+                module.validate_manifest_contract(manifest)
+
+    def test_cli_rejects_a_non_pipeline_host_vector_program(self):
+        module = load_cli_module()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = pathlib.Path(directory) / "manifest.json"
+            write_callable_one_manifest(manifest)
+            payload = json.loads(manifest.read_text())
+            payload["host_vector_program"] = "quadratic"
+            manifest.write_text(json.dumps(payload) + "\n")
+
+            with self.assertRaisesRegex(RuntimeError, "pipeline_double"):
                 module.validate_manifest_contract(manifest)
 
     def test_runtime_matches_qwen_tp_width_to_selected_cluster(self):
@@ -124,6 +138,10 @@ class W5LingquShmemPtoTest(unittest.TestCase):
             source,
         )
         self.assertIn('plan["decode_hidden_bytes"]', source)
+        self.assertIn(
+            '"SIM_W5_PTO_UB_GM_PROGRAM": plan["transform_program"]',
+            source,
+        )
 
     def test_w5_guest_acquires_object_view_and_local_ub_gm_memrefs(self):
         source = APP.read_text()
@@ -136,7 +154,8 @@ class W5LingquShmemPtoTest(unittest.TestCase):
         self.assertIn("address_space=UB_GM guest_inline_payload=0", source)
         self.assertIn("tload=direct tstore=direct guest_inline_payload=0", source)
         self.assertIn("w5_pto_ub_gm_probe_semantic", source)
-        self.assertIn("formula=(2*x+1)*(2*x+2)", source)
+        self.assertIn('pipeline_double ? "2*x"', source)
+        self.assertIn('" program=pipeline_double value=%s', source)
         self.assertIn("range_request.publish_payload_in_place = true", source)
         self.assertIn("w5_pto_ub_gm_hidden_publish", source)
         self.assertIn("SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT", source)
@@ -176,6 +195,8 @@ class W5LingquShmemPtoTest(unittest.TestCase):
         self.assertIn("SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA", source)
         self.assertIn("SIM_W5_PTO_UB_GM_ACCESS_BYTES", source)
         self.assertIn("SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT", source)
+        self.assertIn("SIM_W5_PTO_UB_GM_PROGRAM", source)
+        self.assertIn("program=pipeline_double", source)
         self.assertIn("backend=ub_ssd_gsva enabled=0", source)
         self.assertIn("payload_mode=(copy|in_place)", source)
 
@@ -197,7 +218,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
                 "stage w5_pto_ub_gm_probe_config status=ok\n"
                 "stage w5_pto_ub_gm_probe_submit status=ready\n"
                 "stage w5_pto_ub_gm_probe_semantic elements=1024 "
-                "formula=(2*x+1)*(2*x+2) status=ok\n"
+                "formula=2*x status=ok\n"
                 "stage w5_pto_ub_gm_probe_complete status=ok\n"
             )
             qemu_log = run_dir / "nodeB_qemu.log"
@@ -266,7 +287,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
                             "stage w5_pto_ub_gm_probe_submit "
                             f"step={step} tile={tile} status=ready",
                             "stage w5_pto_ub_gm_probe_semantic elements=1024 "
-                            "formula=(2*x+1)*(2*x+2) status=ok",
+                            "formula=2*x status=ok",
                             "stage w5_pto_ub_gm_probe_complete "
                             f"step={step} tile={tile} status=ok",
                         ]

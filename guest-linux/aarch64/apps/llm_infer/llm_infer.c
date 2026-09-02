@@ -9646,6 +9646,7 @@ static int run_w5_pto_ub_gm_hidden_tile(
     uint64_t artifact_fingerprint,
     uint32_t requester_cna,
     uint64_t timeout_ms,
+    bool pipeline_double,
     struct w5_pto_ub_gm_hidden_result *result_out)
 {
     struct lingqu_shmem_mem_service_context *context = NULL;
@@ -9819,19 +9820,21 @@ static int run_w5_pto_ub_gm_hidden_tile(
          index < (uint32_t)W5_PTO_UB_GM_PROBE_ELEMENTS;
          ++index) {
         float input_value;
-        float sum;
-        float plus_one;
-        float plus_two;
         float expected;
 
         memcpy(&input_value,
                input_view->data + tile_offset +
                    (uint64_t)index * sizeof(input_value),
                sizeof(input_value));
-        sum = input_value + input_value;
-        plus_one = sum + 1.0f;
-        plus_two = sum + 2.0f;
-        expected = plus_one * plus_two;
+        if (pipeline_double) {
+            expected = input_value + input_value;
+        } else {
+            float sum = input_value + input_value;
+            float plus_one = sum + 1.0f;
+            float plus_two = sum + 2.0f;
+
+            expected = plus_one * plus_two;
+        }
         memcpy(&expected_bits, &expected, sizeof(expected_bits));
         memcpy(&actual_bits,
                output_buffer.data + (uint64_t)index * sizeof(actual_bits),
@@ -9861,7 +9864,7 @@ static int run_w5_pto_ub_gm_hidden_tile(
     printf("[w4_guest] stage w5_pto_ub_gm_probe_semantic"
            " node=%u step=%" PRIu64 " tile=%" PRIu64
            " tile_offset=0x%016" PRIx64 " elements=%" PRIu64
-           " formula=(2*x+1)*(2*x+2)"
+           " formula=%s"
            " input_checksum=0x%016" PRIx64
            " output_checksum=0x%016" PRIx64 " status=ok\n",
            local_node + 1U,
@@ -9869,6 +9872,7 @@ static int run_w5_pto_ub_gm_hidden_tile(
            tile_index,
            tile_offset,
            (uint64_t)W5_PTO_UB_GM_PROBE_ELEMENTS,
+           pipeline_double ? "2*x" : "(2*x+1)*(2*x+2)",
            input_checksum,
            output_checksum);
     printf("[w4_guest] stage w5_pto_ub_gm_probe_complete"
@@ -9955,6 +9959,7 @@ static int run_w5_pto_ub_gm_hidden_transform(
     uint64_t artifact_fingerprint,
     uint32_t requester_cna,
     uint64_t timeout_ms,
+    bool pipeline_double,
     struct w5_pto_ub_gm_hidden_result *result_out)
 {
     struct w5_pto_ub_gm_hidden_result tile_result;
@@ -9997,6 +10002,7 @@ static int run_w5_pto_ub_gm_hidden_transform(
             artifact_fingerprint,
             requester_cna,
             timeout_ms,
+            pipeline_double,
             &tile_result);
         if (rc != 0) {
             fprintf(stderr,
@@ -10242,6 +10248,7 @@ int main(int argc, char **argv)
     bool qwen3_pre_resolved_range_input = false;
     bool w5_pto_ub_gm_probe_enabled = false;
     bool w5_pto_ub_gm_publish_output = false;
+    bool w5_pto_ub_gm_pipeline_double = false;
     uint64_t w5_pto_ub_gm_artifact_fingerprint = 0;
     uint64_t w5_pto_ub_gm_timeout_ms = 0;
     uint32_t w5_pto_ub_gm_requester_cna = 0;
@@ -10277,9 +10284,30 @@ int main(int argc, char **argv)
         env_bool_is_one("SIM_W5_PTO_UB_GM_PROBE");
     w5_pto_ub_gm_publish_output =
         env_bool_is_one("SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT");
+    const char *w5_pto_ub_gm_program =
+        getenv("SIM_W5_PTO_UB_GM_PROGRAM");
+    if (!w5_pto_ub_gm_program || w5_pto_ub_gm_program[0] == '\0') {
+        w5_pto_ub_gm_program = "quadratic";
+    }
+    w5_pto_ub_gm_pipeline_double =
+        strcmp(w5_pto_ub_gm_program, "pipeline_double") == 0;
+    if (strcmp(w5_pto_ub_gm_program, "quadratic") != 0 &&
+        !w5_pto_ub_gm_pipeline_double) {
+        fprintf(stderr,
+                "[w4_guest] fail W5 PTO UB_GM program unsupported value=%s\n",
+                w5_pto_ub_gm_program);
+        return 1;
+    }
     if (w5_pto_ub_gm_publish_output && !w5_pto_ub_gm_probe_enabled) {
         fprintf(stderr,
                 "[w4_guest] fail W5 PTO UB_GM publish requires probe enable\n");
+        return 1;
+    }
+    if (w5_pto_ub_gm_publish_output && !w5_pto_ub_gm_pipeline_double) {
+        fprintf(stderr,
+                "[w4_guest] fail W5 PTO UB_GM publish requires"
+                " program=pipeline_double value=%s\n",
+                w5_pto_ub_gm_program);
         return 1;
     }
     w5_pto_ub_gm_artifact_fingerprint = env_u64_base0_or_default(
@@ -10337,12 +10365,14 @@ int main(int argc, char **argv)
                " requester_cna=0x%08" PRIx32
                " timeout_ms=%" PRIu64
                " publish_output=%u"
+               " program=%s"
                " source=lingqu_memory_service target=simpler_pto"
                " address_space=UB_GM status=ok\n",
                w5_pto_ub_gm_artifact_fingerprint,
                w5_pto_ub_gm_requester_cna,
                w5_pto_ub_gm_timeout_ms,
-               w5_pto_ub_gm_publish_output ? 1U : 0U);
+               w5_pto_ub_gm_publish_output ? 1U : 0U,
+               w5_pto_ub_gm_program);
     }
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
@@ -13415,6 +13445,7 @@ decode_round_start:
                     w5_pto_ub_gm_artifact_fingerprint,
                     w5_pto_ub_gm_requester_cna,
                     w5_pto_ub_gm_timeout_ms,
+                    w5_pto_ub_gm_pipeline_double,
                     &w5_pto_ub_gm_hidden_result);
             } else {
                 pto_rc = run_w5_pto_ub_gm_hidden_tile(
@@ -13426,6 +13457,7 @@ decode_round_start:
                     w5_pto_ub_gm_artifact_fingerprint,
                     w5_pto_ub_gm_requester_cna,
                     w5_pto_ub_gm_timeout_ms,
+                    w5_pto_ub_gm_pipeline_double,
                     &w5_pto_ub_gm_hidden_result);
             }
             if (pto_rc != 0) {

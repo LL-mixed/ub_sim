@@ -908,6 +908,59 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_pipeline_double_vector_orchestration(build_dir: Path) -> Path:
+    source = build_dir / "host_vector_pipeline_double_orch.cpp"
+    source.write_text(
+        """\
+#include <cstdint>
+
+#include "pto_orchestration_api.h"
+
+#define FUNC_ADD 0
+
+extern "C" {
+
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {
+    (void)orch_args;
+    return PTO2OrchestrationConfig{.expected_arg_count = 3};
+}
+
+__attribute__((visibility("default"))) void
+aicpu_orchestration_entry(const ChipTaskArgs& orch_args) {
+    if (orch_args.tensor_count() != 3 || orch_args.scalar_count() != 0) {
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "pipeline_double expects 3 tensor args and no scalar args");
+        return;
+    }
+
+    const ChipTensor& a = orch_args.tensor(0).ref();
+    const ChipTensor& b = orch_args.tensor(1).ref();
+    const ChipTensor& f = orch_args.tensor(2).ref();
+    const uint64_t elements = a.numel();
+    if (elements == 0 || elements > UINT32_MAX ||
+        b.numel() != elements || f.numel() != elements) {
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "pipeline_double tensor logical sizes must match and fit u32");
+        return;
+    }
+
+    CoreTaskArgs task_args;
+    task_args.add_input(a);
+    task_args.add_input(b);
+    task_args.add_output(f);
+    rt_submit_aiv_task(FUNC_ADD, task_args);
+    LOG_INFO("[pipeline_double] Submitted one vector add task for f = a + b");
+}
+
+}  // extern "C"
+"""
+    )
+    return source
+
+
 def write_batched_matmul_orchestration(build_dir: Path, tile_batch: int) -> Path:
     source = build_dir / "matmul_batched_orch.cpp"
     source.write_text(
@@ -2848,6 +2901,12 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             for kernel in spec.kernels
         ],
     }
+    if args.profile == "host_vector":
+        payload["host_vector_program"] = args.host_vector_program
+        if args.host_vector_program == "pipeline_double":
+            payload["orchestration"] = (
+                "generated://host_vector_pipeline_double_orch.cpp"
+            )
     if args.profile in (
         "host_gemm",
         "host_fp32_gemm",
@@ -2993,6 +3052,11 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         builder, api_kind, runtime_name, build_dir, reuse_runtime
     )
     orch_source = example_root / spec.orch_source
+    if (
+        args.profile == "host_vector"
+        and args.host_vector_program == "pipeline_double"
+    ):
+        orch_source = write_pipeline_double_vector_orchestration(build_dir)
     if args.profile == "host_gemm":
         orch_source = write_host_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n
@@ -3225,6 +3289,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     if args.profile == "host_vector":
         manifest["ub_gm_access_fault"] = args.ub_gm_access_fault
         manifest["ub_gm_layout"] = vector_layout
+        manifest["host_vector_program"] = args.host_vector_program
     if args.profile == "host_gemm":
         manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {
@@ -3309,6 +3374,15 @@ def main() -> int:
     parser.add_argument("--vector-global-rows", type=int, default=None)
     parser.add_argument("--vector-global-cols", type=int, default=None)
     parser.add_argument(
+        "--host-vector-program",
+        choices=("quadratic", "pipeline_double"),
+        default="quadratic",
+        help=(
+            "select the host-vector orchestration graph; pipeline_double "
+            "submits one f=a+b task for chained W5 hidden-state execution"
+        ),
+    )
+    parser.add_argument(
         "--ub-gm-layout-profile",
         choices=UB_GM_LAYOUT_PROFILES,
         default="nd",
@@ -3337,6 +3411,10 @@ def main() -> int:
     )
     parser.add_argument("--describe", action="store_true")
     args = parser.parse_args()
+    if args.profile != "host_vector" and args.host_vector_program != "quadratic":
+        raise SystemExit(
+            "--host-vector-program is only supported for --profile host_vector"
+        )
 
     simpler_root = Path(args.simpler_root or default_simpler_root()).expanduser().resolve()
     if not simpler_root.exists():
