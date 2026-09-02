@@ -385,6 +385,15 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         )
         self.assertIn('" next_attempt=%d/%d transport=shared-memory', qemu_source)
 
+    def test_qemu_ers2_allows_interrupt_cause_clear_during_mmio(self):
+        qemu_source = QEMU_UBC.read_text()
+
+        self.assertIn("if (i == 2) {", qemu_source)
+        self.assertIn(
+            "ers->region.disable_reentrancy_guard = true;",
+            qemu_source,
+        )
+
     def test_p4g_bounds_protocol_is_wired_end_to_end(self):
         app_source = (APP_DIR / "lingqu_shmem_pto_direct.c").read_text()
         qemu_source = QEMU_UBC.read_text()
