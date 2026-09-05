@@ -4,18 +4,29 @@ Workspace-local notes and implementation-specific design material can live here.
 
 Current async-load architecture and validation entry points:
 
+- [2026-09-03-async-load-overall-solution-introduction.md](2026-09-03-async-load-overall-solution-introduction.md)
+  - current source-owned void-response contract for source-local and
+    remote-wire triggers, tokenless runnable-yield, fresh-transaction replay,
+    Cacheable fill, and Normal NC scalar completion
+- [2026-09-05-source-owned-void-response-validation-report.md](2026-09-05-source-owned-void-response-validation-report.md)
+  - QEMU unit evidence and the six-case source-local, remote-wire, dual-trigger,
+    Normal NC, and Normal Cacheable two-node acceptance matrix
+- [plans/2026-09-05-ub-void-response-predicate-policy-design.md](plans/2026-09-05-ub-void-response-predicate-policy-design.md)
+  - configurable latency, jitter, fault/recovery predicate and source-UBC
+    exactly-once transaction arbitration
 - [2026-09-02-async-ldr-latest-design-implementation.md](2026-09-02-async-ldr-latest-design-implementation.md)
-  - current architecture decision record for the minimal chip-side change set,
-    memory-type split, ESR/SVC/WFE/ERET reuse, and validated implementation
+  - earlier architecture decision record for the ESR/SVC/WFE/ERET and
+    memory-type exploration; superseded where it conflicts with the 2026-09-05
+    source-owned tokenless contract
 - [plans/async-load-implementation-summary.md](plans/async-load-implementation-summary.md)
   - source, CLI, evidence, and document navigation for control ABI 4, event
     ABI 3, both scheduler modes, and both memory types
 - [plans/2026-09-02-normal-nc-replay-plt-svc-eret-design.md](plans/2026-09-02-normal-nc-replay-plt-svc-eret-design.md)
-  - Normal Non-cacheable replay contract, requester-UBC NC PLT, SVC/WFE EL0
-    coroutine path, Linux-task ERET path, and two-node evidence
+  - historical Normal Non-cacheable PLT/SVC/WFE design and evidence; the
+    2026-09-05 contract removes PLT from the void-response path
 - [plans/2026-09-02-normal-cacheable-void-response-esr-cq-validation-design.md](plans/2026-09-02-normal-cacheable-void-response-esr-cq-validation-design.md)
-  - Normal Cacheable PENDING-before-submit, FSC `0x3a`, ordinary 64-byte fill,
-    CQ/IRQ wakeup, ERET replay, and NC-PLT-zero acceptance
+  - historical Normal Cacheable CQ/IRQ wakeup design and evidence; the
+    2026-09-05 contract uses runnable-yield and drops the old completion
 - [plans/2026-09-01-obmm-kernel-task-remote-load-poc.md](plans/2026-09-01-obmm-kernel-task-remote-load-poc.md)
   - Linux-task scheduler path shared by Normal Cacheable and Normal NC
 - [plans/async-load-abi-v3-kernel-free-event-ring.md](plans/async-load-abi-v3-kernel-free-event-ring.md)

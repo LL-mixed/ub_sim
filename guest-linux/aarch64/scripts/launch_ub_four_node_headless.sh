@@ -19,6 +19,8 @@ SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-host_vector}
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$WORKSPACE_ROOT/scenarios/mvp_4host_single_domain.yaml}"
 REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
 ASYNC_LOAD_MODEL="${ASYNC_LOAD_MODEL:-}"
+VOID_RESPONSE_POLICY="${VOID_RESPONSE_POLICY:-}"
+SOURCE_VOID_RESPONSE_POLICY="${SOURCE_VOID_RESPONSE_POLICY:-}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_headless4_${RANDOM}}"
@@ -89,6 +91,7 @@ start_node() {
   local node_append_extra="$APPEND_EXTRA linqu_ipourma_ipv4=$local_ip"
   local remote_model_args=()
   local async_load_args=()
+  local void_response_args=()
 
   if [[ -n "$REMOTE_MEMORY_MODEL_MANIFEST" ]]; then
     remote_model_args=(
@@ -98,6 +101,16 @@ start_node() {
   if [[ -n "$ASYNC_LOAD_MODEL" ]]; then
     async_load_args=(
       -global "ubc.async-load-model=$ASYNC_LOAD_MODEL"
+    )
+  fi
+  if [[ -n "$VOID_RESPONSE_POLICY" ]]; then
+    void_response_args=(
+      -global "ubc.void-response-policy=$VOID_RESPONSE_POLICY"
+    )
+  fi
+  if [[ -n "$SOURCE_VOID_RESPONSE_POLICY" ]]; then
+    void_response_args+=(
+      -global "ubc.source-void-response-policy=$SOURCE_VOID_RESPONSE_POLICY"
     )
   fi
 
@@ -123,6 +136,7 @@ start_node() {
         -display none \
         "${remote_model_args[@]}" \
         "${async_load_args[@]}" \
+        "${void_response_args[@]}" \
         -qmp unix:"$qmp_socket",server=on,wait=off \
         -chardev socket,id=mon0,host=127.0.0.1,port="$mon_port",server=on,wait=off,telnet=off \
         -mon chardev=mon0,mode=readline \
@@ -210,6 +224,8 @@ log "topology=$TOPOLOGY_FILE"
 log "append_extra=$APPEND_EXTRA"
 log "remote_memory_model_manifest=${REMOTE_MEMORY_MODEL_MANIFEST:-disabled}"
 log "async_load_model=${ASYNC_LOAD_MODEL:-disabled}"
+log "void_response_policy=${VOID_RESPONSE_POLICY:-disabled}"
+log "source_void_response_policy=${SOURCE_VOID_RESPONSE_POLICY:-disabled}"
 log "logs_dir=$(dirname "$CONTROL_LOG")"
 
 integer idx=0

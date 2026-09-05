@@ -102,6 +102,7 @@ qemu_source_signature() {
       printf '%s\n' \
         "$SRC_DIR/tests/unit/test-ub-obmm-remote.c" \
         "$SRC_DIR/tests/unit/test-ub-obmm-remote-model.c" \
+        "$SRC_DIR/tests/unit/test-ub-void-response-policy.c" \
         "$SRC_DIR/tests/unit/test-ub-async-load.c"
     } |
     while IFS= read -r file; do
@@ -500,6 +501,7 @@ write_qemu_build_stamp() {
 obmm_tests_ready() {
   [[ -x "$BUILD_DIR/tests/unit/test-ub-obmm-remote" &&
      -x "$BUILD_DIR/tests/unit/test-ub-obmm-remote-model" &&
+     -x "$BUILD_DIR/tests/unit/test-ub-void-response-policy" &&
      -x "$BUILD_DIR/tests/unit/test-ub-async-load" ]]
 }
 
@@ -548,6 +550,7 @@ if (( BUILD_OBMM_TESTS == 1 )); then
   BUILD_TARGETS+=(
     tests/unit/test-ub-obmm-remote
     tests/unit/test-ub-obmm-remote-model
+    tests/unit/test-ub-void-response-policy
     tests/unit/test-ub-async-load
   )
 fi

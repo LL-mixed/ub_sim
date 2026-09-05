@@ -19,6 +19,8 @@ USE_QMP="${USE_QMP:-0}"
 APP_SELECTION="${APP_SELECTION:-}"
 REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
 ASYNC_LOAD_MODEL="${ASYNC_LOAD_MODEL:-}"
+VOID_RESPONSE_POLICY="${VOID_RESPONSE_POLICY:-}"
+SOURCE_VOID_RESPONSE_POLICY="${SOURCE_VOID_RESPONSE_POLICY:-}"
 OBMM_ASYNC_ARGS="${OBMM_ASYNC_ARGS:-}"
 APPEND_EXTRA_WAS_SET=0
 if [[ -n "${APPEND_EXTRA+x}" ]]; then
@@ -103,6 +105,10 @@ Options:
                       Canonical QEMU remote-memory model manifest.
   --async-load-model SPEC
                       Canonical v2 event/upcall capacity spec.
+  --void-response-policy SPEC
+                      Destination UBC policy for eligible remote reads.
+  --source-void-response-policy SPEC
+                      Source UBC local policy for eligible remote reads.
   --obmm-async-args STR
                       Arguments for obmm_async_coroutine.
   --pto-manifest PATH Simpler host-vector manifest for PTO UB_GM dispatch.
@@ -754,6 +760,22 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       ASYNC_LOAD_MODEL="$2"
+      shift 2
+      ;;
+    --void-response-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "--void-response-policy requires a value" >&2
+        exit 2
+      fi
+      VOID_RESPONSE_POLICY="$2"
+      shift 2
+      ;;
+    --source-void-response-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "--source-void-response-policy requires a value" >&2
+        exit 2
+      fi
+      SOURCE_VOID_RESPONSE_POLICY="$2"
       shift 2
       ;;
     --obmm-async-args)
@@ -2159,6 +2181,7 @@ start_node() {
   local qemu_control_args=()
   local remote_model_args=()
   local async_load_args=()
+  local void_response_args=()
   local pto_ub_gm_args=()
   local pto_duplicate_completion="off"
   local pto_late_completion="off"
@@ -2190,6 +2213,16 @@ start_node() {
   if [[ -n "$ASYNC_LOAD_MODEL" ]]; then
     async_load_args=(
       -global "ubc.async-load-model=$ASYNC_LOAD_MODEL"
+    )
+  fi
+  if [[ -n "$VOID_RESPONSE_POLICY" ]]; then
+    void_response_args=(
+      -global "ubc.void-response-policy=$VOID_RESPONSE_POLICY"
+    )
+  fi
+  if [[ -n "$SOURCE_VOID_RESPONSE_POLICY" ]]; then
+    void_response_args+=(
+      -global "ubc.source-void-response-policy=$SOURCE_VOID_RESPONSE_POLICY"
     )
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
@@ -2269,6 +2302,7 @@ start_node() {
       -nographic \
       "${remote_model_args[@]}" \
       "${async_load_args[@]}" \
+      "${void_response_args[@]}" \
       "${pto_ub_gm_args[@]}" \
       "${serial_args[@]}" \
       "${qemu_extra[@]}" \

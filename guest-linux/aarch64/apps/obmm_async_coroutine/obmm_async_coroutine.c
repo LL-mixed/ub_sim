@@ -2592,6 +2592,7 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
     const char *failure_stage = "bootstrap-lookup";
     bool session_started = false;
     bool map_registered = false;
+    bool void_response_retry = false;
     bool pass;
     bool cacheable = app->config.async_load_memory ==
         ASYNC_LOAD_MEMORY_NORMAL_CACHEABLE;
@@ -2663,9 +2664,11 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
         ret = -errno;
         goto cleanup;
     }
+    void_response_retry =
+        caps.capabilities & OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY;
     if (caps.abi_version != OBMM_ASYNC_LOAD_ABI_VERSION ||
         !(caps.capabilities & OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY) ||
-        (cacheable &&
+        (!void_response_retry && cacheable &&
          !(caps.capabilities & OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY)) ||
         app->config.coroutines > caps.context_entries) {
         ret = -EOPNOTSUPP;
@@ -2770,11 +2773,25 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
         verified == app->config.iterations &&
         latency_count == app->config.iterations &&
         kernel_stats.faults == expected_async_events &&
+        kernel_stats.protocol_errors == 0 && kernel_stats.timeouts == 0 &&
+        kernel_stats.interrupted_waits == 0 &&
+        device_stats.direct_upcalls == 0;
+    if (void_response_retry) {
+        pass = pass && kernel_stats.pending_events == 0 &&
+            kernel_stats.completion_events == 0 &&
+            kernel_stats.task_sleeps == 0 &&
+            kernel_stats.task_wakeups == 0 &&
+            replay_stats.replay_consumed == 0 &&
+            replay_stats.replay_mismatch == 0 &&
+            path_stats.nc_plt_allocations == 0 &&
+            path_stats.nc_plt_pending_current == 0 &&
+            path_stats.cacheable_fill_pending == 0 &&
+            path_stats.cacheable_fill_completed == 0;
+    } else {
+        pass = pass &&
         kernel_stats.pending_events == expected_async_events &&
         kernel_stats.completion_events == expected_async_events &&
         kernel_stats.task_wakeups == expected_async_events &&
-        kernel_stats.protocol_errors == 0 && kernel_stats.timeouts == 0 &&
-        kernel_stats.interrupted_waits == 0 &&
         replay_stats.replay_consumed ==
             (cacheable ? 0 : app->config.iterations) &&
         replay_stats.replay_mismatch == 0 &&
@@ -2789,11 +2806,11 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
             (cacheable ? app->config.iterations : 0) &&
         path_stats.cacheable_fill_bytes ==
             (cacheable ? app->config.coroutines *
-                         ASYNC_LOAD_CACHE_LINE_BYTES : 0) &&
-        device_stats.direct_upcalls == 0;
+                         ASYNC_LOAD_CACHE_LINE_BYTES : 0);
+    }
     printf("OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY schema=1 abi=%u "
-           "memory=%s event_delivery=cq-irq scheduling=linux-task "
-           "retirement=replay "
+           "memory=%s event_delivery=%s scheduling=%s "
+           "retirement=replay late_completion=%s "
            "producer_node=%d consumer_node=%d source_export_mem_id=%llu "
            "threads=%u operations=%llu verified=%llu checksum=%016llx "
            "event_log=%s guest_ns_p50=%llu guest_ns_p95=%llu "
@@ -2807,6 +2824,9 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
            "cacheable_fill_bytes=%llu direct_el0_upcalls=%llu status=%s\n",
            OBMM_ASYNC_LOAD_ABI_VERSION,
            cacheable ? "normal-cacheable" : "normal-nc",
+           void_response_retry ? "void-response-data-abort" : "cq-irq",
+           void_response_retry ? "runnable-yield" : "linux-task",
+           void_response_retry ? "drop" : "deliver",
            app->config.producer_index,
            local_index, (unsigned long long)producer_meta.export_mem_id,
            app->config.coroutines, (unsigned long long)completed,

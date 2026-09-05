@@ -330,9 +330,15 @@ def test_build_run_and_launcher_contracts():
     for headless_launcher in (four_node_launcher, eight_node_launcher):
         assert "ubc.remote-memory-model-manifest=" in headless_launcher
         assert "ubc.async-load-model=" in headless_launcher
+        assert "ubc.void-response-policy=" in headless_launcher
+        assert "ubc.source-void-response-policy=" in headless_launcher
         assert "export QEMU_BIN=" in headless_launcher
         assert "export KERNEL_IMAGE=" in headless_launcher
         assert "export INITRAMFS_IMAGE=" in headless_launcher
+    assert "--void-response-policy" in eval_runner
+    assert "export VOID_RESPONSE_POLICY" in eval_runner
+    assert "--source-void-response-policy" in eval_runner
+    assert "export SOURCE_VOID_RESPONSE_POLICY" in eval_runner
     assert "OBMM_ASYNC_SUMMARY abi=%u" in app
     assert "OBMM_ASYNC_SELFTEST abi=%u" in app
     assert "OBMM_APP_ERROR schema=1 stage=%s" in app
@@ -342,6 +348,7 @@ def test_build_run_and_launcher_contracts():
     for target in (
         "tests/unit/test-ub-obmm-remote",
         "tests/unit/test-ub-obmm-remote-model",
+        "tests/unit/test-ub-void-response-policy",
         "tests/unit/test-ub-async-load",
     ):
         assert target in qemu_builder

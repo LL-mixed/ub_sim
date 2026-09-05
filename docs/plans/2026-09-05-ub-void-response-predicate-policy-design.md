@@ -1,11 +1,12 @@
 # UB void-response predicate policy 设计与验证
 
 日期：2026-09-05
-状态：实现完成；Normal NC 与 Normal Cacheable 两节点 acceptance 通过
+状态：source-local、remote-wire 与双触发实现完成；两种 memory type acceptance 通过
 
 ## 1. 目标与边界
 
-destination UBC 针对每笔 eligible remote read 独立判断：
+同一 predicate policy API 可以绑定到 source UBC 或 destination UBC。每个 binding 针对
+eligible remote read 独立判断：
 
 - 预计可在 threshold 内完成：返回 real response；
 - 预计延迟超过 threshold，或故障注入命中：先返回 UB void response；
@@ -17,7 +18,7 @@ policy 只负责 decision 与模拟 completion delay。UB wire encoding、source
 tracking、Data Abort、scheduler yield 和 load replay 都位于 policy 模块之外。后续增加新
 策略时，不需要复制 async-load data path。
 
-CPU-facing delivery 遵守一条固定 ownership 规则：发出 UB 访存事务并持有 outstanding
+CPU-facing delivery 遵守固定 ownership 规则：发出 UB 访存事务并持有 outstanding
 transaction 的 source UBC，是唯一可以向 requester core raise void response 的组件。
 void trigger 有两类来源：
 
@@ -26,8 +27,8 @@ void trigger 有两类来源：
 | source UBC 本地策略命中 | 无需等待 wire VOID | source UBC 将 transaction 置为 VOIDED 后 raise |
 | destination policy 命中 | destination 返回 wire-level UB VOID | source UBC 收到 VOID、将 transaction 置为 VOIDED 后 raise |
 
-destination UBC 不直接访问 source core。当前 QEMU v1 已实现并验证第二条路径；第一条
-路径属于下一步 source-local predicate 扩展。
+destination UBC 不直接访问 source core。当前 QEMU v1 已实现并验证两条路径；双触发
+测试还覆盖了后到 trigger 不产生第二次 Data Abort 的 exactly-once 约束。
 
 ## 2. 模块接口
 
@@ -44,7 +45,7 @@ destination UBC 不直接访问 source core。当前 QEMU v1 已实现并验证�
 | `request_id` | 当前 UB read request ID | deterministic jitter key |
 | `remote_address` | destination remote UBA | deterministic jitter key |
 | `length` | read bytes | deterministic jitter key |
-| `arrival_ns` | destination 接收时间 | 预留给窗口、trace 与队列策略 |
+| `arrival_ns` | 当前 binding 观察请求的时间 | 预留给窗口、trace 与队列策略 |
 
 输出 `UbVoidResponseDecision`：
 
@@ -90,7 +91,7 @@ decision 顺序：
 
 ### 4.1 destination UBC
 
-source 仅在 kernel-task ordinary-load 路径设置
+source 仅在 kernel-task ordinary-load 路径且 remote-side policy enabled 时设置
 `UBC_SIM_DEC_READ_FLAG_VOID_ELIGIBLE`。destination UBC 收到 request 后：
 
 1. 验证 eligibility 和 policy enabled；
@@ -106,6 +107,8 @@ source 仅在 kernel-task ordinary-load 路径设置
 source 为每笔请求保留 `UbcObmmAsyncChild` transaction record，以 `{peer_cna, req_id}`
 匹配 response：
 
+- source-local policy enabled 时，发送 remote read 后立即调用同一 `decide()` API；
+- source-local `send_void=1` 时，record 直接进入 `voided` 并执行 CPU-facing raise；
 - first response 为 real：将 payload/status inline 返回当前 load；
 - first response 为 wire-level void：record 进入 `voided`，source UBC 经 load helper
   向本地 requester core raise precise Data Abort；
@@ -117,7 +120,7 @@ source 为每笔请求保留 `UbcObmmAsyncChild` transaction record，以 `{peer
 这里的 `req_id` 属于 UB transaction protocol。它不构成 software wait key，也不传给
 ESR/EL1/task。
 
-source-local predicate 接入后也必须进入相同的逻辑状态迁移：
+两条 trigger 进入相同的逻辑状态迁移：
 
 ```text
 ACTIVE --source-local policy--> VOIDED --source UBC raises Data Abort
@@ -125,8 +128,8 @@ ACTIVE --remote wire VOID-----> VOIDED --source UBC raises Data Abort
 ```
 
 每笔 transaction 只允许一次 `ACTIVE → VOIDED`。两个 trigger 发生竞争时，完成状态迁移
-的一方负责 raise；后到的 VOID cause 只记录或丢弃，不再次通知 core。当前 QEMU v1 的
-事件循环串行化 remote response 分支；硬件实现需要对该状态迁移提供原子保护。
+的一方负责 raise；后到的 VOID cause 记录为 `race-lost`，不再次通知 core。当前 QEMU
+事件循环串行化该状态迁移；硬件实现需要对 transaction state transition 提供原子保护。
 
 ### 4.3 EL1 与 replay
 
@@ -156,21 +159,27 @@ completion。
 
 ## 6. CLI
 
-两个入口均支持同一 option：
+两个入口均支持以下 options：
 
 ```text
 --void-response-policy SPEC
+--source-void-response-policy SPEC
 ```
 
 - `guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh`
 - `guest-linux/aarch64/scripts/run_ub_obmm_eval.sh`
 
-4/8-node headless launcher 通过 `VOID_RESPONSE_POLICY` 接收 eval runner 透传，并向每个 QEMU
-实例添加：
+4/8-node headless launcher 通过 `VOID_RESPONSE_POLICY` 和
+`SOURCE_VOID_RESPONSE_POLICY` 接收 eval runner 透传，并向每个 QEMU 实例添加：
 
 ```text
 -global ubc.void-response-policy=SPEC
+-global ubc.source-void-response-policy=SPEC
 ```
+
+`void-response-policy` 控制 destination remote-side decision；
+`source-void-response-policy` 控制 source-local decision。两者可以单独启用，也可以同时
+启用。
 
 示例：基准 1 us，threshold 2 us，正负 200 ns jitter，前两笔请求强制 void 后恢复：
 
@@ -185,10 +194,14 @@ completion。
 |---|---|---|
 | `UB_VOID_RESPONSE_DECISION` | destination | remote-side request 输入、delay、jitter、action、reason |
 | `UB_VOID_RESPONSE_TX` | destination | wire-level UB VOID 已发送；不直接通知 source core |
-| `UB_VOID_RESPONSE_RX` | source | source transaction 已标记 voided，进入唯一 CPU-facing raise 入口 |
+| `UB_VOID_RESPONSE_SOURCE_DECISION` | source | source-local request 输入、delay、jitter、action、reason |
+| `UB_VOID_RESPONSE_LOCAL_TRIGGER` | source | source-local trigger 赢得 transaction 仲裁 |
+| `UB_VOID_RESPONSE_RX` | source | remote wire VOID 赢得 transaction 仲裁 |
+| `UB_VOID_RESPONSE_CPU_RAISE` | source | source UBC 完成唯一一次 CPU-facing raise |
+| `UB_VOID_RESPONSE_TRIGGER_RACE_LOST` | source | 后到 trigger 未生成第二次 raise |
 | `UB_VOID_RESPONSE_LATE_DROP` | source | late real completion 已丢弃并清理 |
 | `remote-load void-response ... action=runnable-yield` | source guest | EL1 未阻塞 task，执行 scheduler yield |
-| `OBMM_ASYNC_LOAD_VOID_RESPONSE_EVIDENCE` | acceptance runner | decision/TX/RX/drop/yield 因果计数 |
+| `OBMM_ASYNC_LOAD_VOID_RESPONSE_EVIDENCE` | acceptance runner | 两类 decision、raise、race、drop 与 yield 因果计数 |
 
 ## 8. 验证结果
 
@@ -215,25 +228,25 @@ policy unit test 覆盖 disabled、threshold、fault/recovery、deterministic ji
 v1|enabled=1|threshold_ns=2000|latency_ns=1000|jitter_ns=0|fault_voids=2|seed=1
 ```
 
-| 项目 | Normal NC | Normal Cacheable |
-|---|---:|---:|
-| run ID | `void-predicate-nc-20260905-r2` | `void-predicate-cacheable-20260905-r2` |
-| producer writes / consumer verified | 2 / 2 | 2 / 2 |
-| void decisions / TX / RX | 2 / 2 / 2 | 2 / 2 / 2 |
-| late drops / runnable yields | 2 / 2 | 2 / 2 |
-| recovery 后 real decisions | 2 | 2 |
-| pending / completion / sleep / wake | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
-| NC PLT allocations | 0 | 0 |
-| Cacheable fill bytes / hits | 0 / 0 | 128 / 2 |
-| protocol errors / timeouts | 0 / 0 | 0 / 0 |
-| QEMU cleanup | pass | pass |
-| terminal status | pass | pass |
+| trigger 配置 | memory | source raises | local / remote raises | race-lost | verified | 结果 |
+|---|---|---:|---:|---:|---:|---|
+| source-local | Normal NC | 2 | 2 / 0 | 0 | 2/2 | pass |
+| source-local | Normal Cacheable | 2 | 2 / 0 | 0 | 2/2 | pass |
+| remote-wire | Normal NC | 2 | 0 / 2 | 0 | 2/2 | pass |
+| remote-wire | Normal Cacheable | 2 | 0 / 2 | 0 | 2/2 | pass |
+| 两者同时启用 | Normal NC | 2 | 2 / 0 | 2 | 2/2 | pass |
+| 两者同时启用 | Normal Cacheable | 2 | 2 / 0 | 2 | 2/2 | pass |
+
+所有 case 都满足：late drops=2、runnable yields=2、pending/completion/sleep/wake=0、
+protocol errors=0、timeouts=0、NC PLT allocations=0、QEMU cleanup=pass。Cacheable case
+还满足 fill bytes=128、replay hits=2。完整 run ID、命令、因果计数和日志位置见
+`docs/2026-09-05-source-owned-void-response-validation-report.md`。
 
 artifact fingerprints 两个 run 一致：
 
-- QEMU SHA-256：`f876f3d6c66af7aff6b29c235f3b3ef11c340024c1258d97ced7055662ec8cd3`
+- QEMU SHA-256：`bf676bba7d799b324bc9fc1afeb786596824b9823242d2b29c2eb2384d8d357f`
 - kernel SHA-256：`f3788367dfb0e926c687bdaf2ebfa1e1494280874a0a9003d428d6d0e12ad279`
-- initramfs SHA-256：`dfb39105b68076e1e5124360fcb12d0073ec1ba2bb5ab0f45c6757f60bebe507`
+- initramfs SHA-256：`f98b9b4fe8eff5659a4bb0e9fe3e4323e38bbbe0c534b1254ae134741cf354b3`
 
 ## 9. 已知限制与下一步
 
@@ -243,8 +256,8 @@ artifact fingerprints 两个 run 一致：
   故障、周期性故障或概率故障模型；
 - policy stats 进入 QEMU log，当前没有独立 query command；
 - predicate 使用配置的 latency/jitter 做决定，没有直接读取 destination queue occupancy；
-- source-local predicate 尚未接入；当前 v1 通过 destination policy 返回 wire VOID，再由
-  source UBC raise CPU-facing void；
+- source-local predicate 在 remote request 发送后立即评估配置模型；当前没有基于实际
+  已等待时间的 delayed trigger；
 - QEMU virtual timer/model/trace 属于 simulation-only 层；silicon contract 只要求
   eligibility、predicate decision、UB void response 和 source transaction cleanup；
 - 多 requester/core 并发、queue-pressure predicate、长时间持续 void 的 fairness/backoff

@@ -15,13 +15,15 @@ plane uses only ordinary aligned 1/2/4/8-byte scalar loads. All modes share the
 same access generator, payload verification, and checksum definition.
 `async-load --kernel-task-replay --threads N` selects the Linux process/thread
 PoC. Every pthread issues an ordinary scalar load. A remote pending load enters
-EL1 through the implementation-defined remote-load data-abort reason, sleeps on
-the driver waitqueue, and resumes at the unchanged faulting PC after a CQ event
-and IRQ. `--async-load-memory normal-nc` retires the repeated load through the
-NC PLT replay entry. `--async-load-memory normal-cacheable` completes a normal
-64-byte cache-line fill, returns from the fault handler through `ERET`, and lets
-the repeated load read the filled line; this path allocates no NC PLT entry.
-Linux-task mode does not enter the EL0 coroutine scheduler.
+EL1 through the implementation-defined remote-load data-abort reason. The
+completion-driven mode sleeps on the driver waitqueue and resumes at the
+unchanged faulting PC after a CQ event and IRQ. When either void-response policy
+is enabled, the handler keeps the task runnable, calls `schedule()`, and returns
+through `ERET`; the repeated load issues a fresh UB transaction. The source UBC
+drops and retires the old transaction's late real response without CQ/IRQ.
+Normal NC and Normal Cacheable both use this tokenless replay contract. A
+successful Cacheable replay fills the ordinary 64-byte cache line. Linux-task
+mode does not enter the EL0 coroutine scheduler.
 
 Producer/consumer performance runs may assign multiple remote loads to every
 coroutine or pthread. `--iterations` must be a multiple of `--coroutines` or

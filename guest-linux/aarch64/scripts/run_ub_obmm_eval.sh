@@ -8,6 +8,8 @@ NODE_COUNT=""
 SCENARIO_CONFIG=""
 REMOTE_MEMORY_MODEL_MANIFEST=""
 ASYNC_LOAD_MODEL=""
+VOID_RESPONSE_POLICY=""
+SOURCE_VOID_RESPONSE_POLICY=""
 OBMM_ASYNC_ARGS=""
 RUN_ID=""
 TIMEOUT_SEC=180
@@ -20,6 +22,9 @@ KERNEL_TASK_REPLAY=0
 ASYNC_LOAD_EVENT_LOG=on
 ASYNC_LOAD_CONTEXTS=""
 ASYNC_LOAD_ITERATIONS=""
+VOID_RESPONSE_POLICY_ENABLED=0
+SOURCE_VOID_RESPONSE_POLICY_ENABLED=0
+VOID_RESPONSE_DELIVERY_ENABLED=0
 
 usage() {
   cat <<'EOF'
@@ -29,6 +34,8 @@ Usage: run_ub_obmm_eval.sh \
   --remote-memory-model-manifest PATH \
   --obmm-async-args "ARGS" \
   [--async-load-model SPEC] \
+  [--void-response-policy SPEC] \
+  [--source-void-response-policy SPEC] \
   [--run-id ID] [--timeout-sec N]
 
 Runs one OBMM evaluation case on all nodes, validates one machine-readable
@@ -84,6 +91,16 @@ while (( $# )); do
     --async-load-model)
       require_value "$1" "${2-}"
       ASYNC_LOAD_MODEL="$2"
+      shift 2
+      ;;
+    --void-response-policy)
+      require_value "$1" "${2-}"
+      VOID_RESPONSE_POLICY="$2"
+      shift 2
+      ;;
+    --source-void-response-policy)
+      require_value "$1" "${2-}"
+      SOURCE_VOID_RESPONSE_POLICY="$2"
       shift 2
       ;;
     --obmm-async-args)
@@ -143,6 +160,15 @@ fi
 if [[ "$RUN_ID" == *[^A-Za-z0-9._-]* ]]; then
   echo "--run-id may contain only letters, digits, dot, underscore, and dash" >&2
   exit 2
+fi
+if [[ "|$VOID_RESPONSE_POLICY|" == *"|enabled=1|"* ]]; then
+  VOID_RESPONSE_POLICY_ENABLED=1
+fi
+if [[ "|$SOURCE_VOID_RESPONSE_POLICY|" == *"|enabled=1|"* ]]; then
+  SOURCE_VOID_RESPONSE_POLICY_ENABLED=1
+fi
+if (( VOID_RESPONSE_POLICY_ENABLED || SOURCE_VOID_RESPONSE_POLICY_ENABLED )); then
+  VOID_RESPONSE_DELIVERY_ENABLED=1
 fi
 
 OBMM_SHARED_BASE="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-obmm-eval}"
@@ -338,6 +364,8 @@ fi
 export APPEND_EXTRA
 export REMOTE_MEMORY_MODEL_MANIFEST
 export ASYNC_LOAD_MODEL
+export VOID_RESPONSE_POLICY
+export SOURCE_VOID_RESPONSE_POLICY
 export RUN_ID
 export SIM_UAPI_SCENARIO_CONFIG="$SCENARIO_CONFIG"
 
@@ -452,7 +480,21 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     async_load_coroutines="$(summary_field "$async_load_summary" threads)"
     async_load_operations="$(summary_field "$async_load_summary" operations)"
     async_load_source_mem_id="$(summary_field "$async_load_summary" source_export_mem_id)"
-    if [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" ]]; then
+    if (( VOID_RESPONSE_DELIVERY_ENABLED )); then
+      async_load_events="$(grep -c '^UB_VOID_RESPONSE_CPU_RAISE ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      async_load_replay_consumed=0
+      async_load_nc_plt_allocations=0
+      async_load_cacheable_fill_pending=0
+      async_load_cacheable_replay_hits_min=0
+      async_load_cacheable_fill_bytes="$(summary_field "$async_load_summary" cacheable_fill_bytes)"
+      async_load_event_delivery="void-response-data-abort"
+      async_load_scheduling="runnable-yield"
+      async_load_late_completion="drop"
+      async_load_pending=0
+      async_load_completions=0
+      async_load_sleeps=0
+      async_load_wakeups=0
+    elif [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" ]]; then
       async_load_events="$async_load_coroutines"
       async_load_replay_consumed=0
       async_load_nc_plt_allocations=0
@@ -466,6 +508,23 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       async_load_cacheable_fill_pending=0
       async_load_cacheable_replay_hits_min=0
       async_load_cacheable_fill_bytes=0
+      async_load_event_delivery="cq-irq"
+      async_load_scheduling="linux-task"
+      async_load_late_completion="deliver"
+      async_load_pending="$async_load_events"
+      async_load_completions="$async_load_events"
+      async_load_sleeps="$async_load_events"
+      async_load_wakeups="$async_load_events"
+    fi
+    if (( ! VOID_RESPONSE_DELIVERY_ENABLED )) &&
+       [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" ]]; then
+      async_load_event_delivery="cq-irq"
+      async_load_scheduling="linux-task"
+      async_load_late_completion="deliver"
+      async_load_pending="$async_load_events"
+      async_load_completions="$async_load_events"
+      async_load_sleeps="$async_load_events"
+      async_load_wakeups="$async_load_events"
     fi
     kernel_block_count="$(grep -c 'remote-load block path=.* pid=' "$consumer_log" || true)"
     kernel_wake_count="$(grep -c 'remote-load wake path=.* pid=' "$consumer_log" || true)"
@@ -473,18 +532,20 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     if [[ "$async_load_coroutines" != <2-> ||
           "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
           "$(summary_field "$async_load_summary" abi)" != "4" ||
-          "$(summary_field "$async_load_summary" event_delivery)" != "cq-irq" ||
-          "$(summary_field "$async_load_summary" scheduling)" != "linux-task" ||
+          "$(summary_field "$async_load_summary" event_delivery)" != "$async_load_event_delivery" ||
+          "$(summary_field "$async_load_summary" scheduling)" != "$async_load_scheduling" ||
           "$(summary_field "$async_load_summary" retirement)" != "replay" ||
+          "$(summary_field "$async_load_summary" late_completion)" != "$async_load_late_completion" ||
           "$(summary_field "$async_load_summary" memory)" != "$ASYNC_LOAD_MEMORY" ||
           "$(summary_field "$async_load_summary" event_log)" != "$ASYNC_LOAD_EVENT_LOG" ||
           "$(summary_field "$async_load_export" writes)" != "$async_load_coroutines" ||
           "$async_load_operations" != "$ASYNC_LOAD_ITERATIONS" ||
           "$(summary_field "$async_load_summary" verified)" != "$async_load_operations" ||
           "$(summary_field "$async_load_summary" faults)" != "$async_load_events" ||
-          "$(summary_field "$async_load_summary" pending)" != "$async_load_events" ||
-          "$(summary_field "$async_load_summary" completions)" != "$async_load_events" ||
-          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_events" ||
+          "$(summary_field "$async_load_summary" pending)" != "$async_load_pending" ||
+          "$(summary_field "$async_load_summary" completions)" != "$async_load_completions" ||
+          "$(summary_field "$async_load_summary" sleeps)" != "$async_load_sleeps" ||
+          "$(summary_field "$async_load_summary" wakeups)" != "$async_load_wakeups" ||
           "$(summary_field "$async_load_summary" protocol_errors)" != "0" ||
           "$(summary_field "$async_load_summary" timeouts)" != "0" ||
           "$(summary_field "$async_load_summary" interrupted_waits)" != "0" ||
@@ -504,7 +565,56 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       echo "ASYNC_LOAD cacheable replay did not observe the filled line" >&2
       exit 1
     fi
-    if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+    if (( VOID_RESPONSE_DELIVERY_ENABLED )); then
+      void_decision_count="$(grep -c '^UB_VOID_RESPONSE_DECISION .* action=void ' "$RUN_DIR/nodeA_qemu.log" || true)"
+      real_decision_count="$(grep -c '^UB_VOID_RESPONSE_DECISION .* action=real ' "$RUN_DIR/nodeA_qemu.log" || true)"
+      void_tx_count="$(grep -c '^UB_VOID_RESPONSE_TX ' "$RUN_DIR/nodeA_qemu.log" || true)"
+      source_void_decision_count="$(grep -c '^UB_VOID_RESPONSE_SOURCE_DECISION .* action=void ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      source_wait_decision_count="$(grep -c '^UB_VOID_RESPONSE_SOURCE_DECISION .* action=wait ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      source_raise_count="$(grep -c '^UB_VOID_RESPONSE_CPU_RAISE ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      source_raise_local_count="$(grep -c '^UB_VOID_RESPONSE_CPU_RAISE .* cause=source-policy ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      source_raise_remote_count="$(grep -c '^UB_VOID_RESPONSE_CPU_RAISE .* cause=remote-wire ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      local_trigger_count="$(grep -c '^UB_VOID_RESPONSE_LOCAL_TRIGGER ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      remote_rx_count="$(grep -c '^UB_VOID_RESPONSE_RX ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      trigger_race_lost_count="$(grep -c '^UB_VOID_RESPONSE_TRIGGER_RACE_LOST ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      late_drop_count="$(grep -c '^UB_VOID_RESPONSE_LATE_DROP ' "$RUN_DIR/nodeB_qemu.log" || true)"
+      runnable_yield_count="$(grep -c 'remote-load void-response .* action=runnable-yield' "$consumer_log" || true)"
+      expected_runnable_yields=0
+      if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
+        expected_runnable_yields="$async_load_events"
+      fi
+      if [[ "$source_raise_count" != "$async_load_events" ||
+            "$(( source_raise_local_count + source_raise_remote_count ))" != "$source_raise_count" ||
+            "$local_trigger_count" != "$source_raise_local_count" ||
+            "$remote_rx_count" != "$source_raise_remote_count" ||
+            "$late_drop_count" != "$async_load_events" ||
+            "$runnable_yield_count" != "$expected_runnable_yields" ||
+            "$kernel_block_count" != "0" || "$kernel_wake_count" != "0" ]]; then
+        echo "ASYNC_LOAD source-owned void-response evidence is incomplete" >&2
+        exit 1
+      fi
+      if (( VOID_RESPONSE_POLICY_ENABLED )); then
+        if [[ "$void_tx_count" != "$void_decision_count" ||
+              "$real_decision_count" -lt "$async_load_operations" ]]; then
+          echo "ASYNC_LOAD remote-wire predicate evidence is incomplete" >&2
+          exit 1
+        fi
+      elif [[ "$void_decision_count" != "0" || "$void_tx_count" != "0" ]]; then
+        echo "ASYNC_LOAD observed an unconfigured remote-wire predicate" >&2
+        exit 1
+      fi
+      if (( SOURCE_VOID_RESPONSE_POLICY_ENABLED )); then
+        if [[ "$local_trigger_count" != "$source_void_decision_count" ||
+              "$source_wait_decision_count" -lt "$async_load_operations" ]]; then
+          echo "ASYNC_LOAD source-local predicate evidence is incomplete" >&2
+          exit 1
+        fi
+      elif [[ "$source_void_decision_count" != "0" ||
+              "$local_trigger_count" != "0" ]]; then
+        echo "ASYNC_LOAD observed an unconfigured source-local predicate" >&2
+        exit 1
+      fi
+    elif [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
       if [[ "$kernel_block_count" != "$async_load_events" ||
             "$kernel_wake_count" != "$async_load_events" ||
             "$kernel_blocked_tasks" != "$async_load_coroutines" ]]; then
@@ -807,14 +917,20 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   if (( KERNEL_TASK_REPLAY )); then
     print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=$async_load_coroutines completed=$async_load_operations event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
     print -r -- "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE event_log=$ASYNC_LOAD_EVENT_LOG operations=$async_load_operations blocked_tasks=$kernel_blocked_tasks blocks=$kernel_block_count wakes=$kernel_wake_count stats_wakeups=$(summary_field "$async_load_summary" wakeups) direct_el0_upcalls=0 status=pass"
-    if [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" &&
+    if (( VOID_RESPONSE_DELIVERY_ENABLED )); then
+      print -r -- "OBMM_ASYNC_LOAD_VOID_RESPONSE_EVIDENCE source_raises=$source_raise_count local_raises=$source_raise_local_count remote_raises=$source_raise_remote_count local_void_decisions=$source_void_decision_count local_wait_decisions=$source_wait_decision_count remote_void_decisions=$void_decision_count remote_real_decisions=$real_decision_count remote_tx=$void_tx_count remote_rx=$remote_rx_count race_lost=$trigger_race_lost_count late_drops=$late_drop_count runnable_yields=$runnable_yield_count status=pass"
+    elif [[ "$ASYNC_LOAD_MEMORY" == "normal-cacheable" &&
           "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
       print -r -- "OBMM_ASYNC_LOAD_CACHEABLE_EVIDENCE fsc_0x3a=$kernel_esr_count eret_replay_wakes=$kernel_eret_wake_count pending=$cacheable_pending_count remote_submits=$cacheable_submit_count fills=$cacheable_fill_count cache_hits=$cacheable_hit_count nc_plt_violations=$cacheable_plt_violation_count pending_before_remote_submit=1 status=pass"
     fi
     grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\)' "$producer_log"
     grep '^OBMM_ASYNC_LOAD_KERNEL_\(THREAD\|TASK_SUMMARY\)' "$consumer_log"
     if [[ "$ASYNC_LOAD_EVENT_LOG" == "on" ]]; then
-      grep 'remote-load \(pending\|block\|completion\|wake\)' "$consumer_log"
+      if (( VOID_RESPONSE_DELIVERY_ENABLED )); then
+        grep 'remote-load void-response .* action=runnable-yield' "$consumer_log" || true
+      else
+        grep 'remote-load \(pending\|block\|completion\|wake\)' "$consumer_log"
+      fi
     fi
   else
     print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id coroutines=$async_load_coroutines completed=$async_load_operations event_log=$ASYNC_LOAD_EVENT_LOG status=pass"

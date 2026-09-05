@@ -48,6 +48,8 @@ _Static_assert(OBMM_ASYNC_LOAD_CAP_WFE_WAIT == (1ULL << 15),
                "WFE wait capability");
 _Static_assert(OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY == (1ULL << 16),
                "Cacheable fill-replay capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY == (1ULL << 17),
+               "void-response retry capability");
 _Static_assert(OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL == (1U << 2),
                "Cacheable fill event flag");
 _Static_assert(OBMM_ASYNC_LOAD_START_REPLAY_RETIRE == 1,
@@ -523,14 +525,78 @@ def test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue():
     assert "--threads N" in app
     assert "pthread_create" in app
     assert "async_load_scalar_load(address" in app
-    assert "scheduling=linux-task " in app
-    assert '"retirement=replay "' in app
+    assert 'void_response_retry ? "runnable-yield" : "linux-task"' in app
+    assert '"retirement=replay late_completion=%s "' in app
     assert "OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY" in app
     assert "obmm_async_kernel_task_replay=1" in run_app
     assert 'args="$args --kernel-task-replay"' in run_app
     assert 'append_cmdline "obmm_async_kernel_task_replay=1"' in runner
     assert "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE" in runner
     assert "remote-load block path=.* pid=" in runner
+
+
+def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
+    uapi = (
+        KERNEL_ROOT / "include" / "uapi" / "ub" / "obmm_async_load.h"
+    ).read_text()
+    policy_header = (
+        QEMU_ROOT / "include" / "hw" / "ub" / "ub_void_response_policy.h"
+    ).read_text()
+    policy = (QEMU_ROOT / "hw" / "ub" / "ub_void_response_policy.c").read_text()
+    ubc_header = (QEMU_ROOT / "include" / "hw" / "ub" / "ub_ubc.h").read_text()
+    ubc = (QEMU_ROOT / "hw" / "ub" / "ub_ubc.c").read_text()
+    device = (QEMU_ROOT / "hw" / "ub" / "ub_async_load_device.c").read_text()
+    driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
+    launcher = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+
+    assert "OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY" in uapi
+    assert "UbVoidResponsePolicyConfig" in policy_header
+    assert "threshold_ns" in policy_header
+    assert "latency_ns" in policy_header
+    assert "jitter_ns" in policy_header
+    assert "fault_voids" in policy_header
+    assert "ub_void_response_policy_decide" in policy
+    assert "UB_VOID_RESPONSE_FAULT_INJECTION" in policy
+    assert "UBC_SIM_DEC_READ_FLAG_VOID_ELIGIBLE" in ubc_header
+    assert "UBC_SIM_DEC_READ_STATUS_VOID" in ubc_header
+    assert "UB_VOID_RESPONSE_DECISION" in ubc
+    assert "UB_VOID_RESPONSE_TX" in ubc
+    assert "UB_VOID_RESPONSE_RX" in ubc
+    assert "UB_VOID_RESPONSE_CPU_RAISE" in ubc
+    assert "UB_VOID_RESPONSE_LOCAL_TRIGGER" in ubc
+    assert "UB_VOID_RESPONSE_TRIGGER_RACE_LOST" in ubc
+    assert "UB_VOID_RESPONSE_LATE_DROP" in ubc
+    assert "ubc_obmm_async_child_try_void" in ubc
+    assert "UBC_VOID_TRIGGER_SOURCE_POLICY" in ubc
+    assert "UBC_VOID_TRIGGER_REMOTE_WIRE" in ubc
+    assert "child->voided = true" in ubc
+    late_drop = ubc.split("static void ubc_voided_transaction_bh", 1)[1].split(
+        "static bool ubc_handle_sim_dec_async_read_resp", 1
+    )[0]
+    assert "OBMM_REMOTE_STATUS_VOIDED" in late_drop
+    assert "child->complete" in late_drop
+    assert "ubc_async_load_irq_set" not in late_drop
+    assert "ub_async_load_cpu_take_kernel_fault" in device
+    tokenless_complete = device.split(
+        "if (result->status == OBMM_REMOTE_STATUS_VOIDED)", 1
+    )[1].split("ub_async_load_complete_future", 1)[0]
+    assert "ub_async_load_future_release" in tokenless_complete
+    assert "ubc_async_load_irq_set" not in tokenless_complete
+    remote_fault = driver.split(
+        "static int linqu_remote_load_fault", 1
+    )[1].split("static const struct arm64_remote_load_fault_ops", 1)[0]
+    assert "OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY" in remote_fault
+    assert "set_current_state(TASK_RUNNING)" in remote_fault
+    assert "schedule();" in remote_fault
+    tokenless_fault = remote_fault.split(
+        "OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY", 1
+    )[1].split("mutex_lock(&ctx->lock);", 2)[1]
+    assert "wait_event" not in tokenless_fault
+    assert "wait_key" not in tokenless_fault
+    assert "--void-response-policy" in launcher
+    assert "ubc.void-response-policy=" in launcher
+    assert "--source-void-response-policy" in launcher
+    assert "ubc.source-void-response-policy=" in launcher
 
 
 def test_normal_cacheable_void_response_uses_fill_replay_without_nc_plt():
@@ -786,6 +852,9 @@ class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
 
     def test_kernel_task_replay_contract(self):
         test_kernel_task_replay_uses_data_abort_cq_irq_and_linux_waitqueue()
+
+    def test_void_response_policy_contract(self):
+        test_void_response_policy_controls_wire_fault_and_tokenless_retry()
 
     def test_normal_cacheable_fill_replay_contract(self):
         test_normal_cacheable_void_response_uses_fill_replay_without_nc_plt()

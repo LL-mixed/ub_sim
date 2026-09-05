@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
-  <title id="title">Destination predicate 与 source UBC CPU-facing delivery boundary</title>
+  <title id="title">Source/destination predicate 与 source UBC CPU-facing delivery boundary</title>
   <desc id="desc">展示 destination wire decision，以及 source UBC 汇聚 local policy 与 remote wire VOID 后独占 CPU-facing void delivery。</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#315f92"/></marker>
@@ -67,5 +67,5 @@
 
   <text x="55" y="930" class="head">Extension seam</text>
   <text x="250" y="930" class="body">queue occupancy · destination health · range policy · periodic fault/recovery · tail latency · trace-driven decisions</text>
-  <text x="55" y="966" class="small">当前 QEMU v1 验证 remote wire 分支；source-local predicate、runtime update 和多 requester 压力测试仍待补充</text>
+  <text x="55" y="966" class="small">当前 QEMU v1 已验证 source-local、remote wire 与 exactly-once 仲裁；runtime update 和多 requester 压力测试仍待补充</text>
 </svg>

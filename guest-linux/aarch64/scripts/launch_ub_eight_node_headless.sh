@@ -115,6 +115,8 @@ SIM_W5_SERVING_QUEUE="${SIM_W5_SERVING_QUEUE:-0}"
 SIM_UAPI_SCENARIO_CONFIG="${SIM_UAPI_SCENARIO_CONFIG:-$DEFAULT_SCENARIO_CONFIG}"
 REMOTE_MEMORY_MODEL_MANIFEST="${REMOTE_MEMORY_MODEL_MANIFEST:-}"
 ASYNC_LOAD_MODEL="${ASYNC_LOAD_MODEL:-}"
+VOID_RESPONSE_POLICY="${VOID_RESPONSE_POLICY:-}"
+SOURCE_VOID_RESPONSE_POLICY="${SOURCE_VOID_RESPONSE_POLICY:-}"
 SIM_LINGQU_SHMEM_PTO_ENABLE="${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}"
 SIM_LINGQU_SHMEM_PTO_CNA_BASE="${SIM_LINGQU_SHMEM_PTO_CNA_BASE:-0xf001}"
 OUT_DIR="$ROOT_DIR/out"
@@ -244,6 +246,7 @@ start_node() {
   local qemu_pid
   local remote_model_args=()
   local async_load_args=()
+  local void_response_args=()
   local oe_disk_args=()
   local append_args
 
@@ -275,6 +278,16 @@ start_node() {
   if [[ -n "$ASYNC_LOAD_MODEL" ]]; then
     async_load_args=(
       -global "ubc.async-load-model=$ASYNC_LOAD_MODEL"
+    )
+  fi
+  if [[ -n "$VOID_RESPONSE_POLICY" ]]; then
+    void_response_args=(
+      -global "ubc.void-response-policy=$VOID_RESPONSE_POLICY"
+    )
+  fi
+  if [[ -n "$SOURCE_VOID_RESPONSE_POLICY" ]]; then
+    void_response_args+=(
+      -global "ubc.source-void-response-policy=$SOURCE_VOID_RESPONSE_POLICY"
     )
   fi
 
@@ -432,7 +445,8 @@ start_node() {
       -nodefaults \
       -display none \
       "${remote_model_args[@]}" \
-      "${async_load_args[@]}" \
+    "${async_load_args[@]}" \
+    "${void_response_args[@]}" \
       "${pto_ub_gm_args[@]}" \
       -qmp unix:"$qmp_socket",server=on,wait=off \
       -chardev socket,id=mon0,path="$mon_socket",server=on,wait=off \
@@ -516,6 +530,8 @@ log "cluster_node_count=$SIM_W5_CLUSTER_NODE_COUNT"
 log "append_extra=$APPEND_EXTRA"
 log "remote_memory_model_manifest=${REMOTE_MEMORY_MODEL_MANIFEST:-disabled}"
 log "async_load_model=${ASYNC_LOAD_MODEL:-disabled}"
+log "void_response_policy=${VOID_RESPONSE_POLICY:-disabled}"
+log "source_void_response_policy=${SOURCE_VOID_RESPONSE_POLICY:-disabled}"
 log "lingqu_shmem_pto_enable=$SIM_LINGQU_SHMEM_PTO_ENABLE"
 log "lingqu_shmem_pto_cna_base=$SIM_LINGQU_SHMEM_PTO_CNA_BASE"
 log "ub_sim_port_num=$PORT_NUM"

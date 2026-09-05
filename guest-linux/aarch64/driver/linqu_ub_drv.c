@@ -1177,6 +1177,20 @@ static int linqu_remote_load_fault(unsigned long far, unsigned long esr,
 	}
 	mutex_unlock(&drv->queue_lock);
 
+	if (ctx->capabilities & OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY) {
+		mutex_lock(&ctx->lock);
+		ctx->kernel_stats.faults++;
+		mutex_unlock(&ctx->lock);
+		if (remote_load_event_log)
+			dev_info(drv->dev,
+				 "remote-load void-response pid=%d pc=0x%llx va=0x%lx action=runnable-yield\n",
+				 task_pid_nr(current), regs->pc, far);
+		set_current_state(TASK_RUNNING);
+		schedule();
+		linqu_async_load_ctx_put(ctx);
+		return 0;
+	}
+
 	mutex_lock(&ctx->lock);
 	ctx->kernel_stats.faults++;
 	ret = linqu_async_load_drain_kernel_events_locked(ctx);
@@ -1516,10 +1530,15 @@ static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 	if (!linqu_async_load_owner(ctx))
 		return -EPERM;
 	kernel_task_mode = request.flags & OBMM_ASYNC_LOAD_START_KERNEL_TASK;
-	required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
-		OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
-		OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN |
-		OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY;
+	if (kernel_task_mode &&
+	    (ctx->capabilities & OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY))
+		required_capabilities = OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
+			OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY;
+	else
+		required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
+			OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
+			OBMM_ASYNC_LOAD_CAP_NC_REPLAY_TOKEN |
+			OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY;
 	if (kernel_task_mode)
 		required_capabilities |= OBMM_ASYNC_LOAD_CAP_KERNEL_TASK_REPLAY;
 	else

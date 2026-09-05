@@ -23,7 +23,8 @@ voided transaction 的迟到 real completion 在 source UBC 内丢弃并完成 t
   trigger；二者汇入同一个 `ACTIVE → VOIDED → precise Data Abort` 入口；
 - destination UBC 可以根据 remote-side policy 返回 wire-level UB VOID；它不直接访问或
   signal source core；
-- 当前 QEMU v1 验证的是 remote-side policy → wire VOID → source UBC raise 分支；
+- 当前 QEMU v1 已验证 source-local policy 与 remote-side policy 两条分支，以及两条
+  分支同时命中时的 exactly-once 仲裁；
 - `req_id + peer` 只属于 UBC 内部 transaction tracking，不进入 ESR、driver 或 task；
 - fault handler 通过 precise exception 的 `current` 找到发出该 `LDR` 的 task；handler
   不保存 key，不把 task 改成 sleeping；
@@ -59,14 +60,21 @@ PC replay 并发起新 transaction。旧 transaction 的迟到 scalar payload �
 
 <div style="break-after: page;"></div>
 
-## 4. Destination void-response policy 模块
+## 4. Void-response predicate policy 模块
 
-![Destination UBC predicate policy](./2026-09-03-async-load-overall-page4-ubc.svg)
+![Source 与 destination UBC predicate policy](./2026-09-03-async-load-overall-page4-ubc.svg)
 
-当前 policy 模块是 destination UBC 的独立 remote-side decision seam。输入仅包含请求
-身份、地址、长度和到达时间；输出包含 `send_void`、预计 completion delay、jitter、
-reason。`send_void=1` 表示 destination 在 UB 线路上返回 VOID。source UBC 收到该报文
-后执行 transaction 状态迁移并向自己的 requester core raise CPU-facing void。
+当前 policy 模块提供一套可复用 decision API。输入包含请求身份、地址、长度和观察
+时间；输出包含 `send_void`、预计 completion delay、jitter、reason。该 API 绑定到两个
+位置：
+
+- source-local binding：source UBC 发出 remote read 后立即评估；命中时直接迁移自身
+  transaction，并向 requester core raise CPU-facing void；
+- remote-side binding：destination UBC 收到 eligible request 后评估；命中时在 UB 线路
+  上返回 VOID。source UBC 收到该报文后迁移 transaction 并执行 CPU-facing raise。
+
+两条 binding 使用独立 policy state 和 fault counter。source UBC 的 transaction record
+负责 exactly-once 仲裁，后到的 trigger 只形成 `race-lost` 记录。
 
 当前 v1 支持：
 
@@ -80,17 +88,22 @@ QEMU 启动配置：
 ```text
 --void-response-policy \
   'v1|enabled=1|threshold_ns=2000|latency_ns=1000|jitter_ns=200|fault_voids=2|seed=1'
+
+--source-void-response-policy \
+  'v1|enabled=1|threshold_ns=2000|latency_ns=1000|jitter_ns=200|fault_voids=2|seed=1'
 ```
 
 `off` 为默认值。`jitter_ns` 不得大于 `latency_ns`；latency、jitter 和 threshold 的上限
 均为 10 秒。配置由 `run_ub_dual_node_apps.sh` 与 `run_ub_obmm_eval.sh` 透传给
-`ubc.void-response-policy`。
+`ubc.void-response-policy` 和 `ubc.source-void-response-policy`。前者控制 destination
+返回 wire VOID，后者控制 source-local trigger。
 
 当前配置粒度为每个 QEMU UBC 实例，启动后保持不变。后续可在同一 request/decision
 接口内增加 queue occupancy、destination health、地址范围、周期性故障、故障恢复窗口、
 尾延迟和 trace-driven policy；UB wire response、source transaction cleanup 与 software
 fault contract 无需随策略扩展。
 
-source-local predicate 可以复用相同 decision API，但需要以 source outstanding
-transaction 的等待时间、重试预算和本地拥塞状态作为输入。该分支尚未接入当前 QEMU
-v1。无论采用哪一种 predicate，CPU-facing raise 的 ownership 都保留在 source UBC。
+当前 v1 的两条 binding 都使用配置给出的 latency/jitter 和 fault window。它们没有读取
+实时 queue occupancy，也没有根据 transaction 已等待时间延迟触发。后续可扩展 source
+本地拥塞、destination health、地址范围、周期性故障、恢复窗口、尾延迟和 trace-driven
+输入。CPU-facing raise 的 ownership 始终保留在 source UBC。
