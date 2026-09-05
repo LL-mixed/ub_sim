@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Destination predicate 与 source UBC CPU-facing delivery boundary</title>
+  <desc id="desc">展示 destination wire decision，以及 source UBC 汇聚 local policy 与 remote wire VOID 后独占 CPU-facing void delivery。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#315f92"/></marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#a43b3b"/></marker>
+    <style>
+      .title{font:600 38px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.sub{font:400 19px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#46546a}.head{font:600 21px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.body{font:400 16px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#263247}.small{font:400 14px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#46546a}.mono{font:500 15px "SFMono-Regular",Consolas,monospace;fill:#263247}.label{font:600 15px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#315f92}.danger{font:600 14px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#a43b3b}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="#f7f9fc"/>
+  <text x="55" y="62" class="title">Void predicate 与 source UBC CPU-delivery boundary</text>
+  <text x="55" y="96" class="sub">destination 产生 wire decision；只有 source UBC 可以向 requester core raise void</text>
+
+  <rect x="55" y="145" width="300" height="220" rx="16" fill="#eaf1ff" stroke="#6f8fbe" stroke-width="2"/>
+  <text x="85" y="186" class="head">Eligible read request</text>
+  <text x="85" y="226" class="mono">source_cna</text>
+  <text x="85" y="256" class="mono">request_id</text>
+  <text x="85" y="286" class="mono">remote_address + length</text>
+  <text x="85" y="316" class="mono">arrival_ns</text>
+  <text x="85" y="346" class="small">eligibility 由 source mode 指定</text>
+
+  <rect x="430" y="125" width="500" height="350" rx="18" fill="#f1edfa" stroke="#9178b3" stroke-width="2"/>
+  <text x="460" y="168" class="head">ub_void_response_policy</text>
+  <rect x="465" y="195" width="430" height="105" rx="12" fill="#ffffff" stroke="#b9acd0"/>
+  <text x="490" y="228" class="mono">latency_ns ± deterministic jitter</text>
+  <text x="490" y="260" class="mono">effective_delay &gt; threshold_ns</text>
+  <text x="490" y="286" class="small">request identity + seed 保证可复现</text>
+  <rect x="465" y="325" width="430" height="110" rx="12" fill="#fff1ee" stroke="#d5a098"/>
+  <text x="490" y="360" class="mono">evaluated &lt; fault_voids → force VOID</text>
+  <text x="490" y="392" class="body">前 N 笔故障；之后恢复 threshold 判定</text>
+  <text x="490" y="420" class="small">模块记录 evaluated / void / real / fault</text>
+
+  <rect x="1010" y="145" width="535" height="220" rx="16" fill="#fff3dc" stroke="#c58a32" stroke-width="2"/>
+  <text x="1040" y="186" class="head">Decision output</text>
+  <text x="1040" y="226" class="mono">send_void: bool</text>
+  <text x="1040" y="256" class="mono">completion_delay_ns</text>
+  <text x="1040" y="286" class="mono">jitter_ns + fault_injected</text>
+  <text x="1040" y="316" class="mono">reason</text>
+  <text x="1040" y="346" class="small">disabled / within / threshold / fault</text>
+
+  <path d="M355 255H430" fill="none" stroke="#315f92" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M930 255H1010" fill="none" stroke="#315f92" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="55" y="535" width="690" height="330" rx="18" fill="#fff1ee" stroke="#c66a5d" stroke-width="2"/>
+  <text x="85" y="578" class="head">Source UBC：CPU-facing void delivery</text>
+  <text x="85" y="614" class="body">trigger A：source-local policy 命中</text>
+  <text x="85" y="646" class="body">trigger B：destination wire VOID 到达 source</text>
+  <text x="85" y="678" class="body">source UBC：ACTIVE → VOIDED；raise precise Data Abort</text>
+  <text x="85" y="710" class="body">EL1：current runnable；schedule()；ERET replay</text>
+  <text x="85" y="742" class="body">late real：drop payload；cleanup；无第二次 core notification</text>
+  <rect x="85" y="775" width="630" height="55" rx="10" fill="#ffffff" stroke="#d5a098"/>
+  <text x="110" y="810" class="mono">sole raiser = source UBC；wait_key / PLT / CQ / IRQ = none</text>
+
+  <rect x="855" y="535" width="690" height="330" rx="18" fill="#edf8f2" stroke="#5a987f" stroke-width="2"/>
+  <text x="885" y="578" class="head">send_void = 0</text>
+  <text x="885" y="620" class="body">destination：按 completion_delay 发送 real data/status</text>
+  <text x="885" y="654" class="body">source：用 {peer_cna, req_id} 命中 transaction</text>
+  <text x="885" y="688" class="body">Cacheable：普通 HA/cache line fill</text>
+  <text x="885" y="722" class="body">Normal NC：scalar data 直接返回当前 LDR</text>
+  <rect x="885" y="765" width="630" height="65" rx="10" fill="#ffffff" stroke="#96c6b2"/>
+  <text x="910" y="805" class="mono">load retires; transaction cleanup</text>
+
+  <path d="M1160 365C1030 450 590 470 430 535" fill="none" stroke="#a43b3b" stroke-width="4" marker-end="url(#arrow-red)"/>
+  <text x="760" y="458" class="danger">wire-level UB VOID → source UBC</text>
+  <path d="M1390 365C1435 430 1350 485 1240 535" fill="none" stroke="#315f92" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <text x="55" y="930" class="head">Extension seam</text>
+  <text x="250" y="930" class="body">queue occupancy · destination health · range policy · periodic fault/recovery · tail latency · trace-driven decisions</text>
+  <text x="55" y="966" class="small">当前 QEMU v1 验证 remote wire 分支；source-local predicate、runtime update 和多 requester 压力测试仍待补充</text>
+</svg>

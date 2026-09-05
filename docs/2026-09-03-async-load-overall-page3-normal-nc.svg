@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Normal Non-cacheable remote async LDR 流程</title>
+  <desc id="desc">展示 source-local policy 或 remote wire VOID 如何由 source UBC 统一转换为 CPU-facing void，并与 Normal NC scalar replay 配合。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#9a510c"/></marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#a43b3b"/></marker>
+    <style>
+      .title{font:600 38px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.sub{font:400 19px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#46546a}.head{font:600 20px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.body{font:400 16px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#263247}.small{font:400 14px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#46546a}.step{font:600 18px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033;text-anchor:middle}.mono{font:500 15px "SFMono-Regular",Consolas,monospace;fill:#263247}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="#f7f9fc"/>
+  <text x="55" y="62" class="title">Normal NC：fresh transaction replay，无 PLT payload retention</text>
+  <text x="55" y="96" class="sub">旧 transaction 的 scalar response 在 source UBC 丢弃；replayed LDR 依靠新 request 获取 data</text>
+
+  <rect x="55" y="130" width="1490" height="235" rx="18" fill="#fff7e8" stroke="#c58a32" stroke-width="2"/>
+  <text x="85" y="170" class="head">REAL path</text>
+  <g>
+    <rect x="85" y="200" width="245" height="115" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="115" cy="230" r="18" fill="#d5e3fb"/><text x="115" y="236" class="step">1</text><text x="145" y="237" class="head">Core NC LDR</text><text x="110" y="276" class="body">绕过 HA/cache</text><text x="110" y="301" class="small">ordinary scalar load</text>
+    <rect x="390" y="200" width="245" height="115" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="420" cy="230" r="18" fill="#f8dfaf"/><text x="420" y="236" class="step">2</text><text x="450" y="237" class="head">Source UBC</text><text x="415" y="276" class="body">创建 transaction record</text><text x="415" y="301" class="mono">{peer, req_id}</text>
+    <rect x="695" y="200" width="245" height="115" rx="12" fill="#f1edfa" stroke="#9178b3"/><circle cx="725" cy="230" r="18" fill="#e5dcf4"/><text x="725" y="236" class="step">3</text><text x="755" y="237" class="head">Destination</text><text x="720" y="276" class="body">predicate = REAL</text><text x="720" y="301" class="small">read scalar data</text>
+    <rect x="1000" y="200" width="245" height="115" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="1030" cy="230" r="18" fill="#f8dfaf"/><text x="1030" y="236" class="step">4</text><text x="1060" y="237" class="head">Source return</text><text x="1025" y="276" class="body">inline scalar response</text><text x="1025" y="301" class="small">无 cache fill</text>
+    <rect x="1305" y="200" width="180" height="115" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="1335" cy="230" r="18" fill="#d5e3fb"/><text x="1335" y="236" class="step">5</text><text x="1365" y="237" class="head">Retire</text><text x="1330" y="276" class="body">Rt = scalar data</text>
+  </g>
+  <path d="M330 258H390M635 258H695M940 258H1000M1245 258H1305" fill="none" stroke="#9a510c" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="55" y="410" width="1490" height="490" rx="18" fill="#fff1ee" stroke="#c66a5d" stroke-width="2"/>
+  <text x="85" y="450" class="head">VOID path + fresh replay</text>
+  <g>
+    <rect x="85" y="485" width="245" height="135" rx="12" fill="#f1edfa" stroke="#9178b3"/><circle cx="115" cy="515" r="18" fill="#e5dcf4"/><text x="115" y="521" class="step">1</text><text x="145" y="522" class="head">Void trigger</text><text x="110" y="560" class="body">source-local policy</text><text x="110" y="588" class="body">or remote wire VOID</text><text x="110" y="610" class="small">当前 QEMU：remote 分支</text>
+    <rect x="375" y="485" width="245" height="135" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="405" cy="515" r="18" fill="#f8dfaf"/><text x="405" y="521" class="step">2</text><text x="435" y="522" class="head">Source UBC</text><text x="400" y="560" class="mono">ACTIVE → VOIDED</text><text x="400" y="588" class="body">raise Data Abort</text><text x="400" y="610" class="small">唯一 CPU-facing 发起方</text>
+    <rect x="665" y="485" width="245" height="135" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="695" cy="515" r="18" fill="#d5e3fb"/><text x="695" y="521" class="step">3</text><text x="725" y="522" class="head">Data Abort</text><text x="690" y="560" class="body">current task 已知</text><text x="690" y="588" class="mono">TASK_RUNNING</text><text x="690" y="610" class="small">schedule() yield</text>
+    <rect x="955" y="485" width="245" height="135" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="985" cy="515" r="18" fill="#d5e3fb"/><text x="985" y="521" class="step">4</text><text x="1015" y="522" class="head">ERET replay</text><text x="980" y="560" class="body">原 PC / 原 LDR</text><text x="980" y="588" class="body">发出新 transaction</text><text x="980" y="610" class="small">无 replay latch</text>
+    <rect x="1245" y="485" width="240" height="135" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="1275" cy="515" r="18" fill="#f8dfaf"/><text x="1275" y="521" class="step">5</text><text x="1305" y="522" class="head">New REAL</text><text x="1270" y="560" class="body">返回新 scalar data</text><text x="1270" y="588" class="body">replayed LDR retires</text>
+  </g>
+  <path d="M330 552H375M620 552H665M910 552H955M1200 552H1245" fill="none" stroke="#a43b3b" stroke-width="4" marker-end="url(#arrow-red)"/>
+
+  <rect x="215" y="700" width="520" height="145" rx="14" fill="#ffffff" stroke="#d5a098"/>
+  <text x="245" y="738" class="head">Old scalar completion</text>
+  <text x="245" y="775" class="body">source 命中 VOIDED transaction</text>
+  <text x="245" y="806" class="mono">drop scalar payload; cleanup record</text>
+  <text x="245" y="830" class="small">不通知 core；不生成 CQ/IRQ</text>
+  <path d="M455 620V700" fill="none" stroke="#a43b3b" stroke-width="4" marker-end="url(#arrow-red)"/>
+
+  <rect x="845" y="700" width="520" height="145" rx="14" fill="#ffffff" stroke="#d5a098"/>
+  <text x="875" y="738" class="head">State boundary</text>
+  <text x="875" y="775" class="mono">software wait_key = 0</text>
+  <text x="875" y="806" class="mono">NC PLT / replay latch = 0</text>
+  <text x="875" y="830" class="small">UBC 仅保留 outstanding transaction record</text>
+</svg>

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Normal Cacheable remote async LDR 流程</title>
+  <desc id="desc">展示 source-local policy 或 remote wire VOID 如何由 source UBC 统一转换为 CPU-facing void，并与 Normal Cacheable HA fill 配合。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#315f92"/></marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#a43b3b"/></marker>
+    <style>
+      .title{font:600 38px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.sub{font:400 19px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#46546a}.head{font:600 20px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.body{font:400 16px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#263247}.small{font:400 14px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#46546a}.step{font:600 18px Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033;text-anchor:middle}.mono{font:500 15px "SFMono-Regular",Consolas,monospace;fill:#263247}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="#f7f9fc"/>
+  <text x="55" y="62" class="title">Normal Cacheable：voided payload 禁止进入 HA</text>
+  <text x="55" y="96" class="sub">只有获得 real response 的当前 transaction 才能完成普通 cache line fill</text>
+
+  <rect x="55" y="130" width="1490" height="235" rx="18" fill="#edf8f2" stroke="#5a987f" stroke-width="2"/>
+  <text x="85" y="170" class="head">REAL path</text>
+  <g>
+    <rect x="85" y="200" width="230" height="115" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="115" cy="230" r="18" fill="#d5e3fb"/><text x="115" y="236" class="step">1</text><text x="145" y="237" class="head">Core LDR</text><text x="110" y="276" class="body">Normal Cacheable VA</text><text x="110" y="301" class="small">line miss</text>
+    <rect x="360" y="200" width="230" height="115" rx="12" fill="#e8f7f1" stroke="#4e927b"/><circle cx="390" cy="230" r="18" fill="#d5efe5"/><text x="390" y="236" class="step">2</text><text x="420" y="237" class="head">HA miss</text><text x="385" y="276" class="body">普通 MSHR/fill state</text><text x="385" y="301" class="small">read → source UBC</text>
+    <rect x="635" y="200" width="250" height="115" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="665" cy="230" r="18" fill="#f8dfaf"/><text x="665" y="236" class="step">3</text><text x="695" y="237" class="head">Destination</text><text x="660" y="276" class="body">predicate = REAL</text><text x="660" y="301" class="small">返回 64-byte line</text>
+    <rect x="930" y="200" width="250" height="115" rx="12" fill="#e8f7f1" stroke="#4e927b"/><circle cx="960" cy="230" r="18" fill="#d5efe5"/><text x="960" y="236" class="step">4</text><text x="990" y="237" class="head">HA fill</text><text x="955" y="276" class="body">line replay-visible</text><text x="955" y="301" class="small">普通 coherence 顺序</text>
+    <rect x="1225" y="200" width="260" height="115" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="1255" cy="230" r="18" fill="#d5e3fb"/><text x="1255" y="236" class="step">5</text><text x="1285" y="237" class="head">LDR retires</text><text x="1250" y="276" class="body">从 cache 读取 data</text><text x="1250" y="301" class="small">无 Data Abort</text>
+  </g>
+  <path d="M315 258H360M590 258H635M885 258H930M1180 258H1225" fill="none" stroke="#315f92" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="55" y="410" width="1490" height="490" rx="18" fill="#fff1ee" stroke="#c66a5d" stroke-width="2"/>
+  <text x="85" y="450" class="head">VOID path + fresh replay</text>
+  <g>
+    <rect x="85" y="485" width="245" height="135" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="115" cy="515" r="18" fill="#f8dfaf"/><text x="115" y="521" class="step">1</text><text x="145" y="522" class="head">Void trigger</text><text x="110" y="560" class="body">source-local policy</text><text x="110" y="588" class="body">or remote wire VOID</text><text x="110" y="610" class="small">当前 QEMU：remote 分支</text>
+    <rect x="375" y="485" width="245" height="135" rx="12" fill="#fff3dc" stroke="#c58a32"/><circle cx="405" cy="515" r="18" fill="#f8dfaf"/><text x="405" y="521" class="step">2</text><text x="435" y="522" class="head">Source UBC</text><text x="400" y="560" class="mono">ACTIVE → VOIDED</text><text x="400" y="588" class="body">raise Data Abort</text><text x="400" y="610" class="small">唯一 CPU-facing 发起方</text>
+    <rect x="665" y="485" width="245" height="135" rx="12" fill="#f1edfa" stroke="#9178b3"/><circle cx="695" cy="515" r="18" fill="#e5dcf4"/><text x="695" y="521" class="step">3</text><text x="725" y="522" class="head">Core + EL1</text><text x="690" y="560" class="body">precise Data Abort</text><text x="690" y="588" class="mono">TASK_RUNNING</text><text x="690" y="610" class="small">schedule() yield</text>
+    <rect x="955" y="485" width="245" height="135" rx="12" fill="#eaf1ff" stroke="#6f8fbe"/><circle cx="985" cy="515" r="18" fill="#d5e3fb"/><text x="985" y="521" class="step">4</text><text x="1015" y="522" class="head">ERET replay</text><text x="980" y="560" class="body">回到原 LDR</text><text x="980" y="588" class="body">新 req_id / transaction</text><text x="980" y="610" class="small">重新走 predicate</text>
+    <rect x="1245" y="485" width="240" height="135" rx="12" fill="#e8f7f1" stroke="#4e927b"/><circle cx="1275" cy="515" r="18" fill="#d5efe5"/><text x="1275" y="521" class="step">5</text><text x="1305" y="522" class="head">New REAL</text><text x="1270" y="560" class="body">普通 HA line fill</text><text x="1270" y="588" class="body">replayed LDR retires</text>
+  </g>
+  <path d="M330 552H375M620 552H665M910 552H955M1200 552H1245" fill="none" stroke="#a43b3b" stroke-width="4" marker-end="url(#arrow-red)"/>
+
+  <rect x="215" y="700" width="520" height="145" rx="14" fill="#ffffff" stroke="#d5a098"/>
+  <text x="245" y="738" class="head">Old real completion</text>
+  <text x="245" y="775" class="body">source 命中 VOIDED transaction</text>
+  <text x="245" y="806" class="mono">drop 64-byte payload; cleanup record</text>
+  <text x="245" y="830" class="small">不 fill HA；不发 CQ/IRQ；不通知 core</text>
+  <path d="M455 620V700" fill="none" stroke="#a43b3b" stroke-width="4" marker-end="url(#arrow-red)"/>
+
+  <rect x="845" y="700" width="520" height="145" rx="14" fill="#ffffff" stroke="#96c6b2"/>
+  <text x="875" y="738" class="head">Acceptance invariant</text>
+  <text x="875" y="775" class="mono">NC PLT allocations = 0</text>
+  <text x="875" y="806" class="mono">pending / completion / sleep / wake = 0</text>
+  <text x="875" y="830" class="small">只有 New REAL 的 data 可以进入 HA</text>
+</svg>
