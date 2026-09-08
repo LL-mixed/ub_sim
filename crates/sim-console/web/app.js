@@ -274,8 +274,7 @@ function showFeedback(message, error = true, source = "") {
   elements.feedback.hidden = !message;
   elements.feedback.textContent = message || "";
   elements.feedback.dataset.source = message ? source : "";
-  elements.feedback.style.color = error ? "#713029" : "#075f50";
-  elements.feedback.style.background = error ? "#fbe5e2" : "#dff1ec";
+  elements.feedback.className = message ? `feedback ${error ? "error" : "ok"}` : "feedback";
 }
 
 function renderCategories() {

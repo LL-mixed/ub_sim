@@ -3,8 +3,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="dark">
     <title>UB Simulator Control</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314b8a6'/%3E%3Ctext x='16' y='21.5' font-family='Menlo,monospace' font-size='13' font-weight='800' text-anchor='middle' fill='%23052e2a'%3EUB%3C/text%3E%3C/svg%3E">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
@@ -17,9 +18,14 @@
         </div>
       </div>
       <div class="header-status">
-        <span id="api-indicator" class="status-dot unknown" aria-hidden="true"></span>
-        <span id="api-status">Connecting</span>
-        <button id="refresh-button" class="icon-command" type="button" title="Refresh state" aria-label="Refresh state">Refresh</button>
+        <div class="health-pill">
+          <span id="api-indicator" class="status-dot unknown" aria-hidden="true"></span>
+          <span id="api-status">Connecting</span>
+        </div>
+        <button id="refresh-button" class="icon-command" type="button" title="Refresh state" aria-label="Refresh state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+          <span>Refresh</span>
+        </button>
       </div>
     </header>
 
@@ -49,8 +55,14 @@
             <p id="selection-summary">Choose a registered entry from the catalog.</p>
           </div>
           <div class="selection-actions">
-            <button id="start-button" class="primary-command" type="button" disabled>Start run</button>
-            <button id="stop-button" class="danger-command" type="button" hidden>Stop run</button>
+            <button id="start-button" class="primary-command" type="button" disabled>
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a.8.8 0 0 0 1.22.68l10.2-6.5a.8.8 0 0 0 0-1.36L9.22 4.82A.8.8 0 0 0 8 5.5Z"/></svg>
+              <span>Start run</span>
+            </button>
+            <button id="stop-button" class="danger-command" type="button" hidden>
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.6"/></svg>
+              <span>Stop run</span>
+            </button>
           </div>
         </div>
 
@@ -112,7 +124,7 @@
               <span id="node-input-status" class="node-input-status" aria-live="polite"></span>
             </div>
             <div class="node-input-row">
-              <span class="terminal-prompt" aria-hidden="true">&gt;</span>
+              <span class="terminal-prompt" aria-hidden="true">&#10095;</span>
               <input id="node-input" type="text" maxlength="4095" autocomplete="off" spellcheck="false">
               <button id="send-node-input" class="primary-command" type="submit">Send</button>
             </div>

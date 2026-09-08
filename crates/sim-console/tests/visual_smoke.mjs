@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
@@ -182,14 +183,20 @@ console.log(`desktop=${desktop}`);
 console.log(`mobile=${mobile}`);
 
 async function screenshot(width, height, output) {
+  const profileDir = await mkdtemp(path.join(os.tmpdir(), "sim-console-chrome-"));
   const browser = spawn(
     chrome,
     [
       "--headless=new",
       "--disable-gpu",
+      "--no-sandbox",
+      "--disable-crashpad",
+      "--disable-breakpad",
+      "--disable-crash-reporter",
       "--hide-scrollbars",
       "--allow-file-access-from-files",
       "--remote-debugging-pipe",
+      `--user-data-dir=${profileDir}`,
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"] },
@@ -264,6 +271,7 @@ async function screenshot(width, height, output) {
     await protocol.send("Browser.close").catch(() => {});
     await Promise.race([waitForExit(browser), delay(2000)]);
     if (browser.exitCode === null) browser.kill("SIGKILL");
+    await rm(profileDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
