@@ -56,6 +56,14 @@ if [[ "$SIM_W5_GUEST_ENGINE" == "openEuler" ]]; then
   fi
 fi
 SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION="${SIM_MEM_SERVICE_LAZY_REMOTE_ACTIVATION:-0}"
+# QEMU defaults experimental features off (vendor/qemu_8.2.0_ub "Default
+# experimental NPU and GSVA off"). The W4/W5 memory-service data plane
+# publishes model range records through the ub-ssd GSVA backend, which relies
+# on the implicit OBMM GSVA bootstrap routes, so always opt in to gsva here
+# unless the caller already listed it.
+if [[ ",${UB_SIM_EXPERIMENTAL_FEATURES:-}," != *",gsva,"* ]]; then
+  UB_SIM_EXPERIMENTAL_FEATURES="${UB_SIM_EXPERIMENTAL_FEATURES:+${UB_SIM_EXPERIMENTAL_FEATURES},}gsva"
+fi
 
 w5_profile_default_w4_backend() {
   case "$1" in
@@ -2137,6 +2145,7 @@ prepare_environment() {
   trace "prepare: launch headless env run_id=$RUN_ID_BASE"
   set +e
   ENV_FILE="$env_file" RUN_ID="$RUN_ID_BASE" APPEND_EXTRA="$APPEND_BASE" QEMU_MEM="$QEMU_MEM" UB_SIM_PORT_NUM="$PORT_NUM" \
+    UB_SIM_EXPERIMENTAL_FEATURES="$UB_SIM_EXPERIMENTAL_FEATURES" \
     SIM_W5_GUEST_ENGINE="$SIM_W5_GUEST_ENGINE" SIM_W5_OE_DISK_IMAGE="${SIM_W5_OE_DISK_IMAGE:-}" \
     INITRAMFS_IMAGE="$RUN_INITRAMFS_IMAGE" RDINIT="/bin/run_app" \
     UB_FM_SHARED_DIR="$UB_FM_SHARED_DIR" \
