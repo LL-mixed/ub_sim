@@ -838,6 +838,42 @@ run_obmm_pool() {
   run_binary "linqu_ub_obmm_pool" /bin/linqu_ub_obmm_pool
 }
 
+run_obmm_test() {
+  local token=""
+
+  read_cmdline
+  for token in $cmdline; do
+    case "$token" in
+      obmm_test_local_ip=*)
+        export LINQU_UB_LOCAL_IP="${token#*=}"
+        ;;
+      obmm_test_all_ips=*)
+        export LINQU_UB_ALL_IPS="${token#*=}"
+        ;;
+      obmm_test_port=*)
+        export OBMM_TEST_PORT="${token#*=}"
+        ;;
+      obmm_test_group_exclude=*)
+        export OBMM_TEST_GROUP_EXCLUDE="${token#*=}"
+        ;;
+      obmm_test_group_include=*)
+        export OBMM_TEST_GROUP_INCLUDE="${token#*=}"
+        ;;
+      obmm_test_include=*)
+        export OBMM_TEST_INCLUDE="${token#*=}"
+        ;;
+      obmm_test_exclude=*)
+        export OBMM_TEST_EXCLUDE="${token#*=}"
+        ;;
+      obmm_test_timeout_scale=*)
+        export OBMM_TEST_TIMEOUT_SCALE="${token#*=}"
+        ;;
+    esac
+  done
+
+  run_binary "linqu_obmm_test" /bin/linqu_obmm_test
+}
+
 run_gva_direct() {
   local args=""
   local token=""
@@ -923,6 +959,11 @@ run_default_actions() {
 
   if has_flag "linqu_ub_udma=1"; then
     run_binary "linqu_ub_udma" /bin/linqu_ub_udma || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_obmm_test=1"; then
+    run_obmm_test || rc=$?
     ran_any="1"
   fi
 
