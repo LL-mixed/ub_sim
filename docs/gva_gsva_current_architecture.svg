@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1280" viewBox="0 0 1920 1280" role="img" aria-labelledby="title desc">
+  <title id="title">GVA and GSVA: service access, parallel backends, and visibility</title>
+  <desc id="desc">GVA and GSVA appear at the left as client access semantics. Memory Service resolves object identity and placement. OBMM memory pool and UB-SSD are parallel backends. The control plane does not proxy payloads. GSVA address lifecycle and explicit imported-view refresh are distinct mechanisms.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#385363"/></marker>
+    <marker id="control" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#167565"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#20313b;letter-spacing:0}
+      .title{font-size:48px;font-weight:700}.head{font-size:28px;font-weight:700}
+      .label{font-size:23px;font-weight:700}.body{font-size:21px}.small{font-size:18px}
+      .muted{fill:#576c78}.teal{fill:#116e60}.red{fill:#9e374b}
+      .line{fill:none;stroke:#385363;stroke-width:3;marker-end:url(#arrow)}
+      .ctl{fill:none;stroke:#167565;stroke-width:3;stroke-dasharray:9 7;marker-end:url(#control)}
+      .box{fill:#fff;stroke:#bed0d8;stroke-width:2;rx:8}
+    </style>
+  </defs>
+  <rect width="1920" height="1280" fill="#f6f9fb"/>
+  <rect x="0" y="0" width="1920" height="12" fill="#126f62"/>
+  <text x="60" y="86" class="title">GVA / GSVA</text>
+  <text x="60" y="128" class="body muted">Current simulator design and implementation boundaries · 2026-09-08</text>
+  <text x="60" y="190" class="head">01  Service access and parallel backing resources</text>
+  <rect x="60" y="220" width="310" height="305" class="box"/>
+  <text x="84" y="264" class="label">Client access semantics</text>
+  <text x="84" y="318" class="head teal">GVA</text>
+  <text x="84" y="350" class="body">VA + PTE offset = UBA</text>
+  <text x="84" y="414" class="head teal">GSVA identity profile</text>
+  <text x="84" y="446" class="body">user VA = UBA = home VA</text>
+  <text x="84" y="490" class="small muted">Same address, checked lifetime</text>
+  <path d="M370 345 H455" class="line"/>
+  <text x="381" y="328" class="small">resolve</text>
+  <rect x="465" y="220" width="670" height="205" class="box"/>
+  <text x="495" y="265" class="head">Memory Service</text>
+  <text x="495" y="306" class="body">Object identity · Placement · Version · Lifecycle</text>
+  <text x="495" y="344" class="body">Return a descriptor / handle to the client</text>
+  <text x="495" y="391" class="small teal">Control plane does not proxy payload bytes</text>
+  <path d="M1135 308 H1200 V277 H1280" class="line"/>
+  <path d="M1200 308 V474 H1280" class="line"/>
+  <text x="1155" y="388" class="small muted">placement</text>
+  <rect x="1290" y="220" width="570" height="155" rx="8" fill="#e4f2ed" stroke="#65a595" stroke-width="2"/>
+  <text x="1320" y="263" class="head">OBMM memory pool</text>
+  <text x="1320" y="303" class="body">Physical allocation · Export / import · Mapping</text>
+  <text x="1320" y="343" class="small">libobmm + OBMM provider / guest adapter</text>
+  <rect x="1290" y="405" width="570" height="155" rx="8" fill="#fbeee3" stroke="#c39773" stroke-width="2"/>
+  <text x="1320" y="448" class="head">UB-SSD</text>
+  <text x="1320" y="488" class="body">Block identity · Version · Read / write</text>
+  <text x="1320" y="528" class="small">Storage endpoint with GSVA buffer descriptors</text>
+  <text x="1320" y="599" class="label teal">Parallel backends; no dependency edge</text>
+  <rect x="465" y="455" width="670" height="125" rx="8" fill="#eef4fa" stroke="#a4bed4" stroke-width="2"/>
+  <text x="490" y="495" class="label">GVA manager + kernel address management</text>
+  <text x="490" y="531" class="body">Aperture · Segment · Fixed mapping · Route setup</text>
+  <text x="490" y="561" class="small muted">Address allocation and physical allocation stay distinct</text>
+  <path d="M800 455 V430" class="ctl"/>
+  <path d="M800 580 V650" class="ctl"/>
+  <rect x="60" y="650" width="1800" height="145" class="box"/>
+  <text x="85" y="686" class="label">Direct data plane, after resolution</text>
+  <text x="85" y="728" class="body">Client / provider</text>
+  <path d="M280 722 H335" class="line"/>
+  <text x="355" y="728" class="body">GVA route</text>
+  <path d="M485 722 H540" class="line"/>
+  <text x="560" y="728" class="body">GSVA key / token / epoch / coherence</text>
+  <path d="M970 722 H1025" class="line"/>
+  <text x="1045" y="728" class="body">UB routing and link</text>
+  <path d="M1280 722 H1335" class="line"/>
+  <text x="1355" y="728" class="body">Selected backend endpoint</text>
+  <text x="85" y="770" class="small muted">QEMU simulation: ARM TLB-fill integration and backend helpers; feature activation is configuration-dependent.</text>
+  <text x="60" y="862" class="head">02  GSVA segment lifecycle</text>
+  <text x="1020" y="862" class="head">03  Imported-view reader visibility</text>
+  <rect x="60" y="890" width="850" height="292" class="box"/>
+  <rect x="1020" y="890" width="840" height="292" class="box"/>
+  <text x="88" y="932" class="label">Reserve aperture</text>
+  <path d="M300 925 H350" class="line"/>
+  <text x="375" y="932" class="label">Allocate segment</text>
+  <path d="M587 925 H635" class="line"/>
+  <text x="660" y="932" class="label">Map / acquire</text>
+  <path d="M755 955 V998 H670" class="line"/>
+  <text x="458" y="1005" class="label">Revoke / retire</text>
+  <path d="M440 998 H388" class="line"/>
+  <text x="88" y="1005" class="label">ACK + cleanup + TLB</text>
+  <path d="M205 1030 V1070 H325" class="line"/>
+  <text x="345" y="1077" class="label teal">Reuse with a higher epoch</text>
+  <text x="88" y="1147" class="small red">Timeout or stale identity: reject access; do not relocate silently.</text>
+  <text x="1048" y="932" class="label">Refresh metadata</text>
+  <path d="M1260 925 H1300" class="line"/>
+  <text x="1320" y="932" class="label">Confirm publication sequence</text>
+  <path d="M1700 953 V993 H1675" class="line"/>
+  <text x="1430" y="1000" class="label">Refresh token bytes</text>
+  <path d="M1405 993 H1360" class="line"/>
+  <text x="1048" y="1000" class="label">Check step + checksum</text>
+  <path d="M1168 1025 V1069 H1315" class="line"/>
+  <text x="1335" y="1076" class="label teal">Return current token</text>
+  <text x="1048" y="1116" class="small red">Sync failure or inconsistent publication: reject this read.</text>
+  <text x="1048" y="1152" class="small muted">Notification delivery alone does not refresh imported bytes.</text>
+  <text x="60" y="1235" class="small muted">Scope: implemented simulator mechanisms and validated W5 reader fix. Unified production allocator, failover, and joint async-load acceptance remain open.</text>
+</svg>

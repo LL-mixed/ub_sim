@@ -64,10 +64,20 @@ Current validation entry points:
 - [sim_ub_eight_node_full_mesh_design.md](sim_ub_eight_node_full_mesh_design.md)
   - eight-node scale-up design notes, including configurable `port_num` and FM-owned `EID/CNA` constraints
 - [sim_gva_simulation_design.md](sim_gva_simulation_design.md)
-  - design for adding explicit GVA simulation semantics on top of the current OBMM/SIM_DEC/QEMU UB Link path
+  - current GVA architecture: service access semantics, parallel OBMM memory
+    and UB-SSD backing, implemented ARM MMU routing, and remaining manager gaps;
+    includes an editable SVG and a spatial device illustration generated from
+    its architecture semantics
 - [sim_gsva_shared_virtual_address_design.md](sim_gsva_shared_virtual_address_design.md)
-  - design for a GSVA mode where OBMM shmem ranges use identical user VA, public UBA, and home VA across nodes
-  - includes bootstrap dependency on existing OBMM bootstrap and manager queue bootstrap flow
+  - current GSVA address identity, physical/address/object allocation boundaries,
+    manager bootstrap, segment lifecycle, coherence, and imported-view visibility
+- [sim_gva_gsva_implementation_spec.md](sim_gva_gsva_implementation_spec.md)
+  - 2026-09-08 code and UAPI inventory, descriptor profile limits, CLI/test
+    entrypoints, W5 token-reader fix, evidence boundaries, and remaining work
+- [plans/2026-09-08-gva-gsva-service-completion-plan.md](plans/2026-09-08-gva-gsva-service-completion-plan.md)
+  - implementation sequence for independent allocation and mapping, dynamic
+    generations, W5 integration, recovery, pressure and async-load validation;
+    separates missing implementation from missing evidence
 - [2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md](2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md)
   - audited GVA/GSVA/async-load hardware breakdown with memory-type state
     ownership, simulator-to-silicon boundaries, and joint-integration gaps
