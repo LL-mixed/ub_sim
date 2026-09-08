@@ -137,6 +137,24 @@ int main(void)
             "cached = (!mode || mode[0] == '\\0' ||", ubc
         )
 
+    def test_eight_node_runner_opts_back_in_to_gsva(self):
+        runner = (
+            ROOT
+            / "guest-linux"
+            / "aarch64"
+            / "scripts"
+            / "run_llm_infer_eight_node_guest.sh"
+        ).read_text()
+        self.assertIn('*",gsva,"*', runner)
+        self.assertIn(
+            'UB_SIM_EXPERIMENTAL_FEATURES="${UB_SIM_EXPERIMENTAL_FEATURES:+${UB_SIM_EXPERIMENTAL_FEATURES},}gsva"',
+            runner,
+        )
+        self.assertIn(
+            'UB_SIM_EXPERIMENTAL_FEATURES="$UB_SIM_EXPERIMENTAL_FEATURES" \\',
+            runner,
+        )
+
     def test_qemu_mirror_header_compiles_and_matches_wire_contract(self):
         _compile_header(QEMU_ABI_HEADER, "cc", "c", "c11")
         public = HEADER.read_text()
