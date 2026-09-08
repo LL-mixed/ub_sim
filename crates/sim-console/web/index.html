@@ -53,40 +53,57 @@
       </aside>
 
       <section class="control-pane" aria-label="Launch configuration">
-        <div class="selection-band">
-          <div class="selection-copy">
-            <div id="selection-category" class="eyebrow">Select a demo</div>
-            <h2 id="selection-title">No demo selected</h2>
-            <p id="selection-summary">Choose a registered entry from the catalog.</p>
-          </div>
-          <div class="selection-actions">
-            <button id="start-button" class="primary-command" type="button" disabled>
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a.8.8 0 0 0 1.22.68l10.2-6.5a.8.8 0 0 0 0-1.36L9.22 4.82A.8.8 0 0 0 8 5.5Z"/></svg>
-              <span>Start run</span>
-            </button>
-          </div>
-        </div>
-
         <div class="config-band">
+          <div class="selection-band">
+            <div class="selection-copy">
+              <div id="selection-category" class="eyebrow">Select a demo</div>
+              <h2 id="selection-title">No demo selected</h2>
+              <p id="selection-summary">Choose a registered entry from the catalog.</p>
+              <div id="selection-tags" class="token-row selection-tags"></div>
+            </div>
+          </div>
+
           <dl class="demo-facts">
             <div><dt>Topology</dt><dd id="fact-topology">-</dd></div>
             <div><dt>Nodes</dt><dd id="fact-nodes">-</dd></div>
             <div><dt>Model</dt><dd id="fact-model">-</dd></div>
             <div><dt>Estimate</dt><dd id="fact-duration">-</dd></div>
           </dl>
-          <label class="target-field">
-            <span>Execution target</span>
-            <select id="execution-target" aria-label="Execution target"></select>
-            <small id="target-description">Select where the cluster will build and run.</small>
-          </label>
-          <form id="parameter-form" class="parameter-form"></form>
-          <div class="requirements-block">
-            <h3>Host requirements</h3>
+
+          <div class="config-section">
+            <h3 class="config-heading">Execution target</h3>
+            <label class="target-field">
+              <select id="execution-target" aria-label="Execution target"></select>
+            </label>
+            <p id="target-description" class="config-hint">Select where the cluster will build and run.</p>
+          </div>
+
+          <form id="parameter-form" class="config-section parameter-form"></form>
+
+          <div class="config-section requirements-block">
+            <h3 class="config-heading">Host requirements</h3>
             <div id="requirements" class="token-row"></div>
           </div>
+
           <div id="demo-readiness" class="readiness-banner checking">
             Checking launch readiness...
           </div>
+
+          <div class="config-section demo-history-block">
+            <h3 class="config-heading">Recent runs for this demo</h3>
+            <div id="demo-history" class="demo-history"></div>
+          </div>
+        </div>
+
+        <div class="launch-bar">
+          <p id="launch-readiness" class="launch-readiness checking">
+            <span class="readiness-dot checking" aria-hidden="true"></span>
+            <span id="launch-readiness-text">Select a demo to launch.</span>
+          </p>
+          <button id="start-button" class="primary-command" type="button" disabled>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a.8.8 0 0 0 1.22.68l10.2-6.5a.8.8 0 0 0 0-1.36L9.22 4.82A.8.8 0 0 0 8 5.5Z"/></svg>
+            <span>Start run</span>
+          </button>
         </div>
       </section>
 

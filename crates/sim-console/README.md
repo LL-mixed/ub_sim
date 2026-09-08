@@ -176,7 +176,11 @@ cargo run -p sim-console -- \
 ## Web Workspace
 
 The web UI splits into a launch view (catalog, configuration, run history) and
-a run workspace view. Opening a run — or starting one — switches to the run
+a run workspace view. In the launch view, catalog cards show a per-target
+readiness dot plus node/duration stats, the configuration column groups target,
+parameters, and requirements into sections with the demo's recent runs below,
+and a sticky launch bar keeps the readiness summary and start action visible
+without scrolling. Opening a run — or starting one — switches to the run
 workspace, which shows a phase stepper (launch, boot, cluster ready, workload,
 result), the cluster topology with per-node status, run facts, and the latest
 activity line above a resizable log band with per-node log tabs. When a run

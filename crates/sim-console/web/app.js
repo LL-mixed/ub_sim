@@ -41,6 +41,7 @@ const elements = {
   selectionCategory: document.querySelector("#selection-category"),
   selectionTitle: document.querySelector("#selection-title"),
   selectionSummary: document.querySelector("#selection-summary"),
+  selectionTags: document.querySelector("#selection-tags"),
   startButton: document.querySelector("#start-button"),
   stopButton: document.querySelector("#stop-button"),
   factTopology: document.querySelector("#fact-topology"),
@@ -52,6 +53,9 @@ const elements = {
   parameterForm: document.querySelector("#parameter-form"),
   requirements: document.querySelector("#requirements"),
   demoReadiness: document.querySelector("#demo-readiness"),
+  launchReadiness: document.querySelector("#launch-readiness"),
+  launchReadinessText: document.querySelector("#launch-readiness-text"),
+  demoHistory: document.querySelector("#demo-history"),
   runTitle: document.querySelector("#run-title"),
   runMeta: document.querySelector("#run-meta"),
   runStatus: document.querySelector("#run-status"),
@@ -359,6 +363,9 @@ function renderCatalog() {
     return;
   }
   for (const demo of demos) {
+    const readiness = state.readiness.find(
+      (item) => item.demo_id === demo.id && item.target_id === state.selectedTargetId,
+    );
     const button = document.createElement("button");
     button.type = "button";
     button.className = `catalog-item${demo.id === state.selectedDemoId ? " selected" : ""}`;
@@ -366,16 +373,56 @@ function renderCatalog() {
     top.className = "item-topline";
     const title = document.createElement("strong");
     title.textContent = demo.title;
-    const count = document.createElement("span");
-    count.className = "node-count";
-    count.textContent = `${demo.node_count}N`;
+    const dot = document.createElement("span");
+    const dotState = readiness ? (readiness.ready ? "ready" : "blocked") : "checking";
+    dot.className = `readiness-dot ${dotState}`;
+    dot.title = readiness
+      ? readiness.ready
+        ? `Ready on ${state.selectedTargetId}`
+        : `Blocked on ${state.selectedTargetId}: ${readiness.issues.map((issue) => issue.message).join("; ")}`
+      : `Checking readiness on ${state.selectedTargetId}`;
+    top.append(title, dot);
     const summary = document.createElement("p");
     summary.textContent = demo.summary;
-    top.append(title, count);
-    button.append(top, summary);
+    const stats = document.createElement("div");
+    stats.className = "item-stats";
+    stats.append(
+      catalogStat(
+        "M5 3.5h14l3 5.5v11.5H2V9l3-5.5Zm0 5.5h14M12 9v11.5",
+        `${demo.node_count} node${demo.node_count === 1 ? "" : "s"}`,
+      ),
+      catalogStat(
+        "M12 7v5l3.2 2M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z",
+        formatDuration(demo.estimated_duration_secs * 1000),
+      ),
+    );
+    if (demo.model) {
+      stats.append(catalogStat("M4 7h16M4 12h16M4 17h10", demo.model));
+    }
+    button.append(top, summary, stats);
     button.addEventListener("click", () => selectDemo(demo.id));
     elements.catalogList.append(button);
   }
+}
+
+function catalogStat(path, text) {
+  const stat = document.createElement("span");
+  stat.className = "item-stat";
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  shape.setAttribute("d", path);
+  icon.append(shape);
+  const label = document.createElement("span");
+  label.textContent = text;
+  stat.append(icon, label);
+  return stat;
 }
 
 function selectDemo(demoId) {
@@ -464,6 +511,13 @@ function renderSelection() {
   elements.selectionCategory.textContent = demo.category;
   elements.selectionTitle.textContent = demo.title;
   elements.selectionSummary.textContent = demo.summary;
+  elements.selectionTags.replaceChildren();
+  for (const tag of [...(demo.tags || []), ...(demo.data_plane || [])]) {
+    const token = document.createElement("span");
+    token.className = "token";
+    token.textContent = tag;
+    elements.selectionTags.append(token);
+  }
   elements.factTopology.textContent = titleCase(demo.topology);
   elements.factNodes.textContent = String(demo.node_count);
   elements.factModel.textContent = demo.model || "Not model-specific";
@@ -479,14 +533,28 @@ function renderSelection() {
     elements.requirements.append(token);
   }
 
+  const launchDot = elements.launchReadiness.querySelector(".readiness-dot");
   if (!readiness) {
+    elements.demoReadiness.hidden = false;
     elements.demoReadiness.className = "readiness-banner checking";
     elements.demoReadiness.textContent = "Checking launch readiness...";
+    elements.launchReadiness.className = "launch-readiness checking";
+    launchDot.className = "readiness-dot checking";
+    elements.launchReadinessText.textContent = `Checking launch readiness on ${target?.title || state.selectedTargetId}...`;
   } else if (readiness.ready) {
-    elements.demoReadiness.className = "readiness-banner ready";
-    elements.demoReadiness.textContent = `Ready to build and run on ${target?.title || state.selectedTargetId}.`;
+    elements.demoReadiness.hidden = true;
+    elements.demoReadiness.replaceChildren();
+    elements.launchReadiness.className = "launch-readiness ready";
+    launchDot.className = "readiness-dot ready";
+    elements.launchReadinessText.textContent = `Ready to build and run on ${target?.title || state.selectedTargetId}.`;
   } else {
+    elements.demoReadiness.hidden = false;
     elements.demoReadiness.className = "readiness-banner blocked";
+    elements.launchReadiness.className = "launch-readiness blocked";
+    launchDot.className = "readiness-dot blocked";
+    elements.launchReadinessText.textContent =
+      `Blocked: ${readiness.issues[0]?.message || "launch readiness failed"}` +
+      (readiness.issues.length > 1 ? ` (+${readiness.issues.length - 1} more)` : "");
     elements.demoReadiness.replaceChildren();
     const title = document.createElement("strong");
     title.textContent = "Launch blocked";
@@ -530,6 +598,39 @@ function renderSelection() {
     : readiness?.ready
       ? `Start ${demo.title} on ${target?.title || state.selectedTargetId}`
       : "Resolve launch readiness before starting";
+
+  renderDemoHistory(demo);
+}
+
+function renderDemoHistory(demo) {
+  const runs = state.runs.filter((run) => run.demo_id === demo.id).slice(0, 5);
+  elements.demoHistory.replaceChildren();
+  if (!runs.length) {
+    const empty = document.createElement("p");
+    empty.className = "config-hint";
+    empty.textContent = "No runs recorded for this demo yet.";
+    elements.demoHistory.append(empty);
+    return;
+  }
+  for (const run of runs) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `demo-history-item${isLive(run.status) ? " live" : ""}`;
+    const verdict = document.createElement("span");
+    verdict.className = `verdict-icon ${run.status}`;
+    verdict.setAttribute("aria-hidden", "true");
+    const status = document.createElement("span");
+    status.className = "demo-history-status";
+    status.textContent = run.status;
+    const meta = document.createElement("span");
+    meta.className = "demo-history-meta";
+    meta.textContent =
+      `${run.target_id} · ${runTiming(run)} · ` +
+      `${relativeTime(run.finished_at_ms || run.started_at_ms || run.created_at_ms)}`;
+    item.append(verdict, status, meta);
+    item.addEventListener("click", () => selectRun(run.id));
+    elements.demoHistory.append(item);
+  }
 }
 
 /* ------------------------------------------------------------------ run view */
@@ -1009,7 +1110,9 @@ function renderRuns() {
   for (const run of state.runs) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `run-item${run.id === state.selectedRunId ? " selected" : ""}`;
+    button.className =
+      `run-item${run.id === state.selectedRunId ? " selected" : ""}` +
+      `${isLive(run.status) ? " live" : ""}`;
     const top = document.createElement("div");
     top.className = "run-item-topline";
     const title = document.createElement("strong");
@@ -1017,7 +1120,9 @@ function renderRuns() {
     const status = document.createElement("span");
     setStatusBadge(status, run.status);
     const detail = document.createElement("p");
-    detail.textContent = `${run.target_id} / ${shortRevision(run.source_revision)} / ${run.id} / ${runTiming(run)}`;
+    detail.textContent =
+      `${run.target_id} · ${runTiming(run)} · ` +
+      `${relativeTime(run.finished_at_ms || run.started_at_ms || run.created_at_ms)}`;
     top.append(title, status);
     button.append(top, detail);
     button.addEventListener("click", () => selectRun(run.id));
@@ -1315,6 +1420,17 @@ function formatTimestamp(milliseconds) {
   const date = new Date(milliseconds);
   const pad = (value) => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function relativeTime(milliseconds) {
+  if (!milliseconds) return "-";
+  const delta = Math.max(0, Date.now() - milliseconds);
+  if (delta < 60_000) return "just now";
+  const minutes = Math.floor(delta / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function titleCase(value) {

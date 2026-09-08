@@ -195,11 +195,14 @@ await screenshot(1440, 1000, desktop);
 await screenshot(390, 844, mobile);
 for (const output of [desktop, mobile]) {
   await assertNonEmpty(output);
+  await assertNonEmpty(output.replace(/\.png$/, "-launch.png"));
   await assertNonEmpty(output.replace(/\.png$/, "-result.png"));
 }
 console.log(`desktop=${desktop}`);
+console.log(`desktop-launch=${desktop.replace(/\.png$/, "-launch.png")}`);
 console.log(`desktop-result=${desktop.replace(/\.png$/, "-result.png")}`);
 console.log(`mobile=${mobile}`);
+console.log(`mobile-launch=${mobile.replace(/\.png$/, "-launch.png")}`);
 console.log(`mobile-result=${mobile.replace(/\.png$/, "-result.png")}`);
 
 async function screenshot(width, height, output) {
@@ -287,6 +290,14 @@ async function screenshot(width, height, output) {
     );
     await writeFile(output, Buffer.from(captured.data, "base64"));
     await assertParameterDraftSurvivesRefresh(protocol, sessionId);
+    await assertLaunchView(protocol, sessionId);
+    const launchOutput = output.replace(/\.png$/, "-launch.png");
+    const launchCaptured = await protocol.send(
+      "Page.captureScreenshot",
+      { format: "png", fromSurface: true, captureBeyondViewport: false },
+      sessionId,
+    );
+    await writeFile(launchOutput, Buffer.from(launchCaptured.data, "base64"));
     await assertTargetPreparation(protocol, sessionId);
     await assertResultPanel(protocol, sessionId);
     const resultOutput = output.replace(/\.png$/, "-result.png");
@@ -329,6 +340,32 @@ async function assertRunViewEntry(protocol, sessionId) {
     !state.livePillHidden
   ) {
     throw new Error(`run workspace entry state is invalid: ${JSON.stringify(state)}`);
+  }
+}
+
+async function assertLaunchView(protocol, sessionId) {
+  const launch = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({barText: document.querySelector('#launch-readiness-text').textContent, barClass: document.querySelector('#launch-readiness').className, readyDots: document.querySelectorAll('.catalog-item .readiness-dot.ready').length, stats: document.querySelectorAll('.catalog-item .item-stat').length, tags: document.querySelectorAll('#selection-tags .token').length, historyLive: document.querySelectorAll('#demo-history .demo-history-item.live').length, bannerHidden: document.querySelector('#demo-readiness').hidden, startDisabled: document.querySelector('#start-button').disabled, factTiles: document.querySelectorAll('.demo-facts > div').length})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const state = launch.result.value;
+  if (
+    state.barText !== "Ready to build and run on n4-910c1." ||
+    state.barClass !== "launch-readiness ready" ||
+    state.readyDots !== 1 ||
+    state.stats !== 2 ||
+    state.tags !== 4 ||
+    state.historyLive !== 1 ||
+    !state.bannerHidden ||
+    !state.startDisabled ||
+    state.factTiles !== 4
+  ) {
+    throw new Error(`launch view rendering failed: ${JSON.stringify(state)}`);
   }
 }
 
@@ -428,7 +465,7 @@ async function assertTargetPreparation(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({button: document.querySelector('.prepare-target-command')?.textContent, disabled: document.querySelector('.prepare-target-command')?.disabled, banner: document.querySelector('#demo-readiness').textContent})",
+        "({button: document.querySelector('.prepare-target-command')?.textContent, disabled: document.querySelector('.prepare-target-command')?.disabled, banner: document.querySelector('#demo-readiness').textContent, bannerHidden: document.querySelector('#demo-readiness').hidden, barText: document.querySelector('#launch-readiness-text').textContent, blockedDots: document.querySelectorAll('.catalog-item .readiness-dot.blocked').length})",
       returnByValue: true,
     },
     sessionId,
@@ -436,7 +473,10 @@ async function assertTargetPreparation(protocol, sessionId) {
   if (
     blocked.result.value.button !== "Prepare target farm" ||
     blocked.result.value.disabled ||
-    !blocked.result.value.banner.includes("Git source repository is missing")
+    !blocked.result.value.banner.includes("Git source repository is missing") ||
+    blocked.result.value.bannerHidden ||
+    !blocked.result.value.barText.startsWith("Blocked:") ||
+    blocked.result.value.blockedDots !== 1
   ) {
     throw new Error(`target preparation action is unavailable: ${JSON.stringify(blocked.result.value)}`);
   }
@@ -450,7 +490,7 @@ async function assertTargetPreparation(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({requests: window.__targetPreparationRequests, feedback: document.querySelector('#feedback').textContent, readiness: document.querySelector('#demo-readiness').textContent, buttonCount: document.querySelectorAll('.prepare-target-command').length})",
+        "({requests: window.__targetPreparationRequests, feedback: document.querySelector('#feedback').textContent, barText: document.querySelector('#launch-readiness-text').textContent, bannerHidden: document.querySelector('#demo-readiness').hidden, buttonCount: document.querySelectorAll('.prepare-target-command').length, readyDots: document.querySelectorAll('.catalog-item .readiness-dot.ready').length})",
       returnByValue: true,
     },
     sessionId,
@@ -459,8 +499,10 @@ async function assertTargetPreparation(protocol, sessionId) {
     prepared.result.value.requests.length !== 1 ||
     prepared.result.value.requests[0].method !== "POST" ||
     prepared.result.value.feedback !== "Prepared n4-910c1: 1 demos ready, 0 blocked." ||
-    !prepared.result.value.readiness.includes("Ready to build and run") ||
-    prepared.result.value.buttonCount !== 0
+    prepared.result.value.barText !== "Ready to build and run on n4-910c1." ||
+    !prepared.result.value.bannerHidden ||
+    prepared.result.value.buttonCount !== 0 ||
+    prepared.result.value.readyDots !== 1
   ) {
     throw new Error(`target preparation did not complete: ${JSON.stringify(prepared.result.value)}`);
   }
