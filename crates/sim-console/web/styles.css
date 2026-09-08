@@ -464,15 +464,10 @@ p {
 
 .category-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
-  padding: 10px;
-  overflow-x: auto;
+  padding: 10px 10px 11px;
   border-bottom: 1px solid var(--line);
-  scrollbar-width: none;
-}
-
-.category-tabs::-webkit-scrollbar {
-  display: none;
 }
 
 .category-tab {

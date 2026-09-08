@@ -38,6 +38,23 @@ const demo = {
   ],
 };
 
+const demo2 = {
+  id: "w5-qwen-8",
+  title: "W5 Qwen PP / 8 Nodes",
+  summary: "Eight-node W5 pipeline decode with Qwen3-0.6B.",
+  category: "W5 Inference",
+  topology: "pipeline",
+  lifecycle: "finite",
+  node_count: 8,
+  model: "Qwen3-0.6B",
+  estimated_duration_secs: 1800,
+  tags: ["w5", "pipeline", "qwen3"],
+  data_plane: ["OBMM", "GSVA"],
+  requirements: ["QEMU", "guest kernel", "initramfs", "model weights"],
+  controls: ["stop"],
+  parameters: [],
+};
+
 const nodes = Array.from({ length: 2 }, (_, index) => ({
   id: `node${String.fromCharCode(65 + index)}`,
   label: `Node ${String.fromCharCode(65 + index)}`,
@@ -60,7 +77,7 @@ const run = {
 
 const responses = {
   "/api/v1/health": { status: "ready" },
-  "/api/v1/catalog": { version: 1, demos: [demo] },
+  "/api/v1/catalog": { version: 1, demos: [demo, demo2] },
   "/api/v1/targets": {
     version: 1,
     default_target: "n4-910c1",
@@ -291,6 +308,7 @@ async function screenshot(width, height, output) {
     await writeFile(output, Buffer.from(captured.data, "base64"));
     await assertParameterDraftSurvivesRefresh(protocol, sessionId);
     await assertLaunchView(protocol, sessionId);
+    await assertCategoryTabsVisible(protocol, sessionId);
     const launchOutput = output.replace(/\.png$/, "-launch.png");
     const launchCaptured = await protocol.send(
       "Page.captureScreenshot",
@@ -358,7 +376,7 @@ async function assertLaunchView(protocol, sessionId) {
     state.barText !== "Ready to build and run on n4-910c1." ||
     state.barClass !== "launch-readiness ready" ||
     state.readyDots !== 1 ||
-    state.stats !== 2 ||
+    state.stats !== 5 ||
     state.tags !== 4 ||
     state.historyLive !== 1 ||
     !state.bannerHidden ||
@@ -366,6 +384,34 @@ async function assertLaunchView(protocol, sessionId) {
     state.factTiles !== 4
   ) {
     throw new Error(`launch view rendering failed: ${JSON.stringify(state)}`);
+  }
+}
+
+async function assertCategoryTabsVisible(protocol, sessionId) {
+  const tabs = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "(() => { const tabs = document.querySelector('.category-tabs'); const container = tabs.getBoundingClientRect(); const labels = [...tabs.querySelectorAll('.category-tab')].map((tab) => { const rect = tab.getBoundingClientRect(); return {text: tab.textContent, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom}; }); return {flexWrap: getComputedStyle(tabs).flexWrap, scrollWidth: tabs.scrollWidth, clientWidth: tabs.clientWidth, containerLeft: container.left, containerRight: container.right, labels}; })()",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const state = tabs.result.value;
+  const allVisible = state.labels.every(
+    (tab) =>
+      tab.left >= state.containerLeft - 1 && tab.right <= state.containerRight + 1,
+  );
+  if (
+    state.flexWrap !== "wrap" ||
+    state.scrollWidth > state.clientWidth + 1 ||
+    state.labels.length !== 3 ||
+    state.labels[0].text !== "All" ||
+    state.labels[1].text !== "URMA and RPC" ||
+    state.labels[2].text !== "W5 Inference" ||
+    !allVisible
+  ) {
+    throw new Error(`category tabs are not fully visible: ${JSON.stringify(state)}`);
   }
 }
 
