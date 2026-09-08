@@ -13,11 +13,15 @@ const state = {
   selectedNodeId: null,
   logCursor: 0,
   logLines: [],
+  processLogCache: [],
   parameterDrafts: {},
   refreshing: false,
   sendingNodeInput: false,
   nodeInputFeedback: "",
   preparingTargetId: null,
+  view: null,
+  userChoseView: false,
+  resultDrainedFor: null,
 };
 
 const elements = {
@@ -25,6 +29,11 @@ const elements = {
   apiStatus: document.querySelector("#api-status"),
   feedback: document.querySelector("#feedback"),
   refreshButton: document.querySelector("#refresh-button"),
+  liveRunPill: document.querySelector("#live-run-pill"),
+  liveRunLabel: document.querySelector("#live-run-label"),
+  workspace: document.querySelector("#workspace"),
+  runView: document.querySelector("#run-view"),
+  backToCatalog: document.querySelector("#back-to-catalog"),
   catalogSearch: document.querySelector("#catalog-search"),
   categoryTabs: document.querySelector("#category-tabs"),
   catalogList: document.querySelector("#catalog-list"),
@@ -44,11 +53,19 @@ const elements = {
   requirements: document.querySelector("#requirements"),
   demoReadiness: document.querySelector("#demo-readiness"),
   runTitle: document.querySelector("#run-title"),
+  runMeta: document.querySelector("#run-meta"),
   runStatus: document.querySelector("#run-status"),
   runElapsed: document.querySelector("#run-elapsed"),
+  phaseStepper: document.querySelector("#phase-stepper"),
   topology: document.querySelector("#topology"),
   nodeDetail: document.querySelector("#node-detail"),
-  logBand: document.querySelector(".log-band"),
+  resultPanel: document.querySelector("#result-panel"),
+  runFacts: document.querySelector("#run-facts"),
+  activityPanel: document.querySelector("#activity-panel"),
+  activityLine: document.querySelector("#activity-line"),
+  logBand: document.querySelector("#log-band"),
+  logResizeHandle: document.querySelector("#log-resize-handle"),
+  logTabs: document.querySelector("#log-tabs"),
   logTitle: document.querySelector("#log-title"),
   logOutput: document.querySelector("#log-output"),
   processLog: document.querySelector("#process-log"),
@@ -105,6 +122,11 @@ const ANSI_COLORS = [
 ];
 
 const ANSI_SEQUENCE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][\s\S]*?\x1b\\|.)/g;
+
+function stripAnsi(text) {
+  ANSI_SEQUENCE.lastIndex = 0;
+  return text.replace(ANSI_SEQUENCE, "");
+}
 
 function defaultAnsiStyle() {
   return {
@@ -277,6 +299,28 @@ function showFeedback(message, error = true, source = "") {
   elements.feedback.className = message ? `feedback ${error ? "error" : "ok"}` : "feedback";
 }
 
+/* ------------------------------------------------------------------ views */
+
+function setView(view, userInitiated = false) {
+  state.view = view;
+  if (userInitiated) state.userChoseView = true;
+  elements.workspace.hidden = view !== "launch";
+  elements.runView.hidden = view !== "run";
+  document.body.dataset.view = view;
+  renderLivePill();
+}
+
+function renderLivePill() {
+  const liveRun = state.runs.find((run) => isLive(run.status));
+  const show = Boolean(liveRun) && state.view === "launch";
+  elements.liveRunPill.hidden = !show;
+  if (show) {
+    elements.liveRunLabel.textContent = `${liveRun.demo_title} · ${runTiming(liveRun)}`;
+  }
+}
+
+/* ------------------------------------------------------------------ catalog */
+
 function renderCategories() {
   const categories = ["All", ...new Set(state.catalog.map((demo) => demo.category))];
   elements.categoryTabs.replaceChildren();
@@ -336,13 +380,8 @@ function renderCatalog() {
 
 function selectDemo(demoId) {
   state.selectedDemoId = demoId;
-  state.selectedRunId = null;
-  state.selectedNodeId = null;
-  resetLog();
   renderCatalog();
   renderSelection();
-  renderRunWorkspace();
-  renderRuns();
 }
 
 function renderTargets() {
@@ -493,27 +532,84 @@ function renderSelection() {
       : "Resolve launch readiness before starting";
 }
 
-function previewNodes(demo) {
-  return Array.from({ length: demo.node_count }, (_, index) => ({
-    id: `node${String.fromCharCode(65 + index)}`,
-    label: `Node ${String.fromCharCode(65 + index)}`,
-    status: "unknown",
-    log_path: null,
-  }));
+/* ------------------------------------------------------------------ run view */
+
+const RUN_PHASES = [
+  { id: "launch", label: "Launch" },
+  { id: "boot", label: "Boot nodes" },
+  { id: "ready", label: "Cluster ready" },
+  { id: "workload", label: "Workload" },
+  { id: "result", label: "Result" },
+];
+
+const WORKLOAD_MARKER = /decode_token:|decode_output:|\[mem_service\] stage|run_app|verdict=|status=pass|] pass/i;
+
+function derivePhaseIndex(run, logText) {
+  if (!run) return -1;
+  if (!isLive(run.status)) return RUN_PHASES.length - 1;
+  if (run.status === "queued" || run.status === "starting") return 0;
+  const nodes = run.nodes || [];
+  if (WORKLOAD_MARKER.test(logText)) return 3;
+  const anyPending = nodes.some((node) => ["unknown", "booting"].includes(node.status));
+  if (anyPending || !nodes.length) return 1;
+  return 2;
 }
 
-function renderRunWorkspace() {
-  const demo = selectedDemo();
+function renderPhaseStepper(run) {
+  const logText = state.processLogCache.length
+    ? state.processLogCache.join("\n")
+    : state.logLines.join("\n");
+  const current = derivePhaseIndex(run, logText);
+  const terminal = run && !isLive(run.status);
+  elements.phaseStepper.replaceChildren();
+  RUN_PHASES.forEach((phase, index) => {
+    const item = document.createElement("li");
+    let phaseState = "pending";
+    if (index < current) phaseState = "done";
+    else if (index === current) phaseState = terminal ? `done ${run.status}` : "active";
+    item.className = `phase ${phaseState}`;
+    const dot = document.createElement("span");
+    dot.className = "phase-dot";
+    const copy = document.createElement("span");
+    copy.className = "phase-label";
+    copy.textContent = phase.label;
+    item.append(dot, copy);
+    if (index < RUN_PHASES.length - 1) {
+      const link = document.createElement("span");
+      link.className = "phase-link";
+      item.append(link);
+    }
+    elements.phaseStepper.append(item);
+  });
+}
+
+function renderRunView() {
   const run = selectedRun();
-  if (!demo) return;
-  const nodes = run ? run.nodes : previewNodes(demo);
-  elements.runTitle.textContent = run
-    ? `${run.demo_title} / ${run.target_id} / ${shortRevision(run.source_revision)} / ${run.id}`
-    : `Topology preview / ${state.selectedTargetId || "no target"}`;
-  setStatusBadge(elements.runStatus, run ? run.status : "idle");
-  elements.runElapsed.textContent = run ? runTiming(run) : "Not started";
-  elements.stopButton.hidden = !run || !isLive(run.status) || !(demo.controls || []).includes("stop");
-  elements.topology.className = `topology ${demo.topology}`;
+  const demo = run ? state.catalog.find((item) => item.id === run.demo_id) || selectedDemo() : null;
+  renderLivePill();
+  if (!run) {
+    return;
+  }
+
+  elements.runTitle.textContent = run.demo_title;
+  elements.runMeta.textContent = `${run.target_id} / ${shortRevision(run.source_revision)} / ${run.id}`;
+  setStatusBadge(elements.runStatus, run.status);
+  elements.runElapsed.textContent = runTiming(run);
+  elements.stopButton.hidden =
+    !isLive(run.status) || !((demo?.controls) || []).includes("stop");
+
+  renderPhaseStepper(run);
+  renderTopology(run, demo);
+  renderRunFacts(run, demo);
+  renderActivity(run);
+  renderResultPanel(run);
+  renderLogTabs(run);
+  renderNodeInput(run, demo);
+}
+
+function renderTopology(run, demo) {
+  const nodes = run.nodes || [];
+  elements.topology.className = `topology ${demo?.topology || "mesh"}`;
   elements.topology.replaceChildren();
 
   nodes.forEach((node, index) => {
@@ -529,7 +625,7 @@ function renderRunWorkspace() {
     status.textContent = node.status;
     const role = document.createElement("span");
     role.className = "node-role";
-    role.textContent = nodeRole(demo, index);
+    role.textContent = demo ? nodeRole(demo, index) : "";
     top.append(name, status);
     button.append(top, role);
     button.addEventListener("click", () => selectNode(node.id));
@@ -540,19 +636,78 @@ function renderRunWorkspace() {
   if (node) {
     elements.nodeDetail.textContent = `${node.label} / ${node.status} / ${node.log_path || "process log until node log is discovered"}`;
   } else {
-    elements.nodeDetail.textContent = run
-      ? "Select a node to inspect node-specific output."
-      : "Preview only. Start the run to observe node state.";
+    elements.nodeDetail.textContent = "Select a node to inspect node-specific output.";
   }
+}
+
+function renderRunFacts(run, demo) {
+  const facts = [
+    ["Demo", run.demo_id],
+    ["Target", run.target_id],
+    ["Revision", shortRevision(run.source_revision)],
+    ["Created", formatTimestamp(run.created_at_ms)],
+    ["Started", run.started_at_ms ? formatTimestamp(run.started_at_ms) : "pending"],
+    ["Finished", run.finished_at_ms ? formatTimestamp(run.finished_at_ms) : (isLive(run.status) ? "running" : "pending")],
+    ["Duration", runTiming(run)],
+  ];
+  if (run.exit_code !== null && run.exit_code !== undefined) {
+    facts.push(["Exit code", String(run.exit_code)]);
+  }
+  const parameters = Object.entries(run.parameters || {});
+  if (parameters.length) {
+    facts.push(["Parameters", parameters.map(([key, value]) => `${key}=${value}`).join(" ")]);
+  }
+  if (demo?.model) facts.push(["Model", demo.model]);
+
+  elements.runFacts.replaceChildren();
+  for (const [label, value] of facts) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    detail.textContent = value;
+    elements.runFacts.append(term, detail);
+  }
+}
+
+function renderActivity(run) {
+  const lines = state.logLines.length ? state.logLines : state.processLogCache;
+  let latest = "";
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const clean = stripAnsi(lines[index]).trim();
+    if (clean) {
+      latest = clean;
+      break;
+    }
+  }
+  elements.activityLine.textContent = latest || "Waiting for output...";
+  elements.activityLine.title = latest;
+}
+
+function renderLogTabs(run) {
+  const nodeButtons = elements.logTabs.querySelectorAll(".node-tab-command");
+  nodeButtons.forEach((button) => button.remove());
+  for (const node of run.nodes || []) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `secondary-command log-source-command node-tab-command${state.selectedNodeId === node.id ? " active" : ""}`;
+    button.textContent = node.label;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-pressed", String(state.selectedNodeId === node.id));
+    button.addEventListener("click", () => selectLogSource(node.id));
+    elements.logTabs.append(button);
+  }
+  const node = (run.nodes || []).find((item) => item.id === state.selectedNodeId);
   elements.logTitle.textContent = node ? `${node.label} log` : "Process log";
   elements.processLog.classList.toggle("active", !node);
   elements.processLog.setAttribute("aria-pressed", String(!node));
-  const nodeInputSupported = (demo.controls || []).includes("node_input");
-  const nodeInputAvailable = Boolean(run && node && isLive(run.status) && nodeInputSupported);
+}
+
+function renderNodeInput(run, demo) {
+  const node = (run.nodes || []).find((item) => item.id === state.selectedNodeId);
+  const nodeInputSupported = ((demo?.controls) || []).includes("node_input");
+  const nodeInputAvailable = Boolean(node && isLive(run.status) && nodeInputSupported);
   let nodeInputAvailability = "";
-  if (!run) {
-    nodeInputAvailability = "Start a run, then select a node.";
-  } else if (!isLive(run.status)) {
+  if (!isLive(run.status)) {
     nodeInputAvailability = "This run has ended. Start a new run to use its node consoles.";
   } else if (!node) {
     nodeInputAvailability = "Select a running node above.";
@@ -582,9 +737,264 @@ function selectLogSource(nodeId) {
   state.selectedNodeId = nodeId;
   state.nodeInputFeedback = "";
   resetLog();
-  renderRunWorkspace();
+  renderRunView();
   void refreshLogs();
 }
+
+/* ------------------------------------------------------------------ run results */
+
+const RESULT_MARKERS = [
+  "decode_output:",
+  "decode_token:",
+  "timing_step:",
+  "timing_node:",
+  "timing_bottleneck:",
+  "summary:",
+];
+
+function unescapeQuoted(value) {
+  return value.replace(/\\(.)/g, (_, character) => {
+    if (character === "n") return "\n";
+    if (character === "t") return "\t";
+    return character;
+  });
+}
+
+function parseKeyValues(body) {
+  const pairs = {};
+  for (const chunk of body.split(/\s+/)) {
+    const at = chunk.indexOf("=");
+    if (at <= 0) continue;
+    pairs[chunk.slice(0, at)] = chunk.slice(at + 1);
+  }
+  return pairs;
+}
+
+function extractRunResult(run, logLines) {
+  const result = {
+    status: run.status,
+    message: run.message || "",
+    exitCode: run.exit_code ?? null,
+    generatedText: null,
+    tokenIds: null,
+    unavailableReason: null,
+    tokens: [],
+    steps: [],
+    bottleneck: null,
+    summary: {},
+    hasStructuredOutput: false,
+  };
+  for (const rawLine of logLines) {
+    const line = stripAnsi(rawLine);
+    let body = null;
+    for (const marker of RESULT_MARKERS) {
+      const at = line.indexOf(marker);
+      // Anchored markers only: a marker must start the line or follow a
+      // non-word character (timestamp/bracket prefixes). This keeps prefixed
+      // lines such as "engram_timing_step:" or "w5_device_summary:" from
+      // being misparsed as "timing_step:" / "summary:" records.
+      if (at >= 0 && (at === 0 || /\W/.test(line[at - 1])) && (body === null || at < body.at)) {
+        body = { at, text: line.slice(at) };
+      }
+    }
+    if (!body) continue;
+    const text = body.text;
+    if (text.startsWith("decode_output:")) {
+      result.hasStructuredOutput = true;
+      const pieces = /token_pieces="((?:[^"\\]|\\.)*)"/.exec(text);
+      if (pieces) result.generatedText = unescapeQuoted(pieces[1]);
+      const ids = /token_ids=\[([^\]]*)\]/.exec(text);
+      if (ids) {
+        result.tokenIds = ids[1]
+          .split(",")
+          .map((value) => Number.parseInt(value.trim(), 10))
+          .filter((value) => Number.isFinite(value));
+      }
+      const unavailable = /unavailable\s+reason=(\S+)/.exec(text);
+      if (unavailable) result.unavailableReason = unavailable[1];
+    } else if (text.startsWith("decode_token:")) {
+      result.hasStructuredOutput = true;
+      const step = /\bstep=(\d+)/.exec(text);
+      const node = /\bnode=(\S+)/.exec(text);
+      const token = /\btoken=(\d+)/.exec(text);
+      const piece = /piece="((?:[^"\\]|\\.)*)"/.exec(text);
+      result.tokens.push({
+        step: step ? Number.parseInt(step[1], 10) : null,
+        node: node ? node[1] : "",
+        token: token ? Number.parseInt(token[1], 10) : null,
+        piece: piece ? unescapeQuoted(piece[1]) : "",
+      });
+    } else if (text.startsWith("timing_step:")) {
+      result.hasStructuredOutput = true;
+      const pairs = parseKeyValues(text.slice("timing_step:".length));
+      result.steps.push({
+        step: Number.parseInt(pairs.step, 10),
+        roundMs: Number.parseInt(pairs.round_ms, 10),
+        criticalNode: pairs.critical_node || "",
+      });
+    } else if (text.startsWith("timing_bottleneck:")) {
+      result.hasStructuredOutput = true;
+      const pairs = parseKeyValues(text.slice("timing_bottleneck:".length));
+      result.bottleneck = {
+        step: Number.parseInt(pairs.slowest_step, 10),
+        roundMs: Number.parseInt(pairs.round_ms, 10),
+        criticalNode: pairs.critical_node || "",
+      };
+    } else if (text.startsWith("summary:")) {
+      result.hasStructuredOutput = true;
+      Object.assign(result.summary, parseKeyValues(text.slice("summary:".length)));
+    }
+  }
+  result.steps.sort((a, b) => a.step - b.step);
+  return result;
+}
+
+function renderResultPanel(run) {
+  const terminal = !isLive(run.status);
+  elements.resultPanel.hidden = !terminal;
+  if (!terminal) return;
+
+  const drained = state.resultDrainedFor === run.id || state.processLogCache.length > 0;
+  const result = extractRunResult(run, state.processLogCache);
+  elements.resultPanel.replaceChildren();
+
+  const verdict = document.createElement("div");
+  verdict.className = `verdict-banner ${run.status}`;
+  const verdictIcon = document.createElement("span");
+  verdictIcon.className = "verdict-icon";
+  verdictIcon.textContent = run.status === "passed" ? "✓" : run.status === "failed" ? "✕" : "■";
+  const verdictCopy = document.createElement("div");
+  const verdictTitle = document.createElement("strong");
+  verdictTitle.textContent =
+    run.status === "passed" ? "Run passed" : run.status === "failed" ? "Run failed" : "Run stopped";
+  const verdictDetail = document.createElement("span");
+  const detailParts = [run.message || ""];
+  if (result.exitCode !== null) detailParts.push(`exit code ${result.exitCode}`);
+  detailParts.push(`duration ${runTiming(run)}`);
+  verdictDetail.textContent = detailParts.filter(Boolean).join(" · ");
+  verdictCopy.append(verdictTitle, verdictDetail);
+  verdict.append(verdictIcon, verdictCopy);
+  elements.resultPanel.append(verdict);
+
+  if (!drained) {
+    const pending = document.createElement("p");
+    pending.className = "result-pending";
+    pending.textContent = "Collecting final output...";
+    elements.resultPanel.append(pending);
+    return;
+  }
+
+  if (result.unavailableReason) {
+    const unavailable = document.createElement("p");
+    unavailable.className = "result-pending";
+    unavailable.textContent = `Inference output unavailable: ${result.unavailableReason}`;
+    elements.resultPanel.append(unavailable);
+  }
+
+  if (result.generatedText !== null) {
+    const card = document.createElement("div");
+    card.className = "generated-text-card";
+    const label = document.createElement("span");
+    label.className = "eyebrow";
+    label.textContent = "Generated text";
+    const text = document.createElement("p");
+    text.className = "generated-text";
+    text.textContent = result.generatedText;
+    card.append(label, text);
+    const meta = document.createElement("div");
+    meta.className = "generated-meta";
+    const observed = result.summary.decode_steps_observed;
+    const expected = result.summary.decode_steps_expected;
+    const passedNodes = result.summary.passed_nodes;
+    const chips = [];
+    if (result.tokenIds) chips.push(`${result.tokenIds.length} tokens`);
+    if (observed !== undefined && expected !== undefined) chips.push(`decode steps ${observed}/${expected}`);
+    if (passedNodes) chips.push(`nodes ${passedNodes}`);
+    for (const chip of chips) {
+      const item = document.createElement("span");
+      item.className = "token";
+      item.textContent = chip;
+      meta.append(item);
+    }
+    card.append(meta);
+    elements.resultPanel.append(card);
+  }
+
+  if (result.tokens.length) {
+    const section = document.createElement("div");
+    section.className = "token-stream";
+    const label = document.createElement("span");
+    label.className = "eyebrow";
+    label.textContent = "Decode stream";
+    const stream = document.createElement("div");
+    stream.className = "token-chip-row";
+    for (const token of result.tokens) {
+      const chip = document.createElement("span");
+      chip.className = "token-chip";
+      chip.title = `step ${token.step} · ${token.node} · token ${token.token}`;
+      const piece = document.createElement("span");
+      piece.className = "token-chip-piece";
+      piece.textContent = token.piece || `�${token.token}`;
+      const step = document.createElement("span");
+      step.className = "token-chip-step";
+      step.textContent = `#${token.step}`;
+      chip.append(piece, step);
+      stream.append(chip);
+    }
+    section.append(label, stream);
+    elements.resultPanel.append(section);
+  }
+
+  if (result.steps.length) {
+    const section = document.createElement("div");
+    section.className = "timing-section";
+    const label = document.createElement("span");
+    label.className = "eyebrow";
+    label.textContent = "Step latency";
+    const bars = document.createElement("div");
+    bars.className = "timing-bars";
+    const maxRound = Math.max(...result.steps.map((step) => step.roundMs || 0), 1);
+    for (const step of result.steps) {
+      const row = document.createElement("div");
+      row.className = "timing-row";
+      const stepLabel = document.createElement("span");
+      stepLabel.className = "timing-step-label";
+      stepLabel.textContent = `step ${step.step}`;
+      const track = document.createElement("div");
+      track.className = "timing-track";
+      const fill = document.createElement("div");
+      fill.className = "timing-fill";
+      fill.style.width = `${Math.max(2, Math.round(((step.roundMs || 0) / maxRound) * 100))}%`;
+      track.append(fill);
+      const value = document.createElement("span");
+      value.className = "timing-value";
+      value.textContent = `${step.roundMs} ms${step.criticalNode ? ` · ${step.criticalNode}` : ""}`;
+      row.append(stepLabel, track, value);
+      bars.append(row);
+    }
+    section.append(label, bars);
+    if (result.bottleneck && Number.isFinite(result.bottleneck.roundMs)) {
+      const bottleneck = document.createElement("p");
+      bottleneck.className = "timing-bottleneck";
+      bottleneck.textContent =
+        `Bottleneck: step ${result.bottleneck.step} · ${result.bottleneck.roundMs} ms · ${result.bottleneck.criticalNode}`;
+      section.append(bottleneck);
+    }
+    elements.resultPanel.append(section);
+  }
+
+  if (!result.hasStructuredOutput) {
+    const nodes = (run.nodes || []).map((node) => `${node.label} ${node.status}`).join(" · ");
+    const generic = document.createElement("p");
+    generic.className = "result-pending";
+    generic.textContent = nodes
+      ? `Final node state: ${nodes}. Full output is available in the log below.`
+      : "No structured result markers were emitted. Full output is available in the log below.";
+    elements.resultPanel.append(generic);
+  }
+}
+
+/* ------------------------------------------------------------------ run history */
 
 function renderRuns() {
   elements.runCount.textContent = `${state.runs.length} ${state.runs.length === 1 ? "run" : "runs"}`;
@@ -624,9 +1034,10 @@ function selectRun(runId) {
   state.readiness = [];
   state.selectedNodeId = null;
   resetLog();
+  setView("run", true);
   renderCatalog();
   renderSelection();
-  renderRunWorkspace();
+  renderRunView();
   renderRuns();
   void refreshLogs();
 }
@@ -634,8 +1045,12 @@ function selectRun(runId) {
 function resetLog() {
   state.logCursor = 0;
   state.logLines = [];
+  state.processLogCache = [];
+  state.resultDrainedFor = null;
   renderLogText(state.selectedRunId ? "Waiting for output..." : "No active run.");
 }
+
+/* ------------------------------------------------------------------ actions */
 
 async function startRun() {
   const demo = selectedDemo();
@@ -659,6 +1074,7 @@ async function startRun() {
     state.selectedRunId = run.id;
     state.selectedNodeId = null;
     resetLog();
+    setView("run", true);
     renderAll();
     showFeedback(`Started ${run.id}`, false);
     setTimeout(() => showFeedback(""), 2500);
@@ -736,28 +1152,71 @@ async function sendNodeInput(event) {
     elements.nodeInputStatus.textContent = state.nodeInputFeedback;
   } finally {
     state.sendingNodeInput = false;
-    renderRunWorkspace();
+    renderRunView();
   }
+}
+
+/* ------------------------------------------------------------------ polling */
+
+async function fetchLogChunk(run, cursor, nodeId) {
+  const query = new URLSearchParams({ cursor: String(cursor) });
+  if (nodeId) query.set("node", nodeId);
+  return api(`/api/v1/runs/${encodeURIComponent(run.id)}/logs?${query}`);
 }
 
 async function refreshLogs() {
   const run = selectedRun();
   if (!run) return;
-  const query = new URLSearchParams({ cursor: String(state.logCursor) });
-  if (state.selectedNodeId) query.set("node", state.selectedNodeId);
+  const terminal = !isLive(run.status);
+  const drain = terminal && state.resultDrainedFor !== run.id;
   try {
-    const chunk = await api(`/api/v1/runs/${encodeURIComponent(run.id)}/logs?${query}`);
-    if (chunk.lines.length) {
-      state.logLines.push(...chunk.lines);
-      if (state.logLines.length > 2000) state.logLines.splice(0, state.logLines.length - 2000);
-      renderLogText(state.logLines.join("\n"));
-      if (elements.followLog.checked) elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
+    if (!state.selectedNodeId) {
+      let iterations = 0;
+      let received = 0;
+      do {
+        const chunk = await fetchLogChunk(run, state.logCursor, null);
+        received = chunk.lines.length;
+        if (received) {
+          state.logLines.push(...chunk.lines);
+          if (state.logLines.length > 2000) state.logLines.splice(0, state.logLines.length - 2000);
+          state.processLogCache = state.logLines.slice();
+          renderLogText(state.logLines.join("\n"));
+          if (elements.followLog.checked) elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
+        }
+        state.logCursor = chunk.next_cursor;
+        iterations += 1;
+      } while (drain && received > 0 && iterations < 48);
+    } else {
+      const chunk = await fetchLogChunk(run, state.logCursor, state.selectedNodeId);
+      if (chunk.lines.length) {
+        state.logLines.push(...chunk.lines);
+        if (state.logLines.length > 2000) state.logLines.splice(0, state.logLines.length - 2000);
+        renderLogText(state.logLines.join("\n"));
+        if (elements.followLog.checked) elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
+      }
+      state.logCursor = chunk.next_cursor;
+      if (drain && !state.processLogCache.length) {
+        let cursor = 0;
+        let received = 0;
+        let iterations = 0;
+        do {
+          const processChunk = await fetchLogChunk(run, cursor, null);
+          received = processChunk.lines.length;
+          state.processLogCache.push(...processChunk.lines);
+          if (state.processLogCache.length > 2000) {
+            state.processLogCache.splice(0, state.processLogCache.length - 2000);
+          }
+          cursor = processChunk.next_cursor;
+          iterations += 1;
+        } while (received > 0 && iterations < 48);
+      }
     }
-    state.logCursor = chunk.next_cursor;
+    if (drain) state.resultDrainedFor = run.id;
     if (elements.feedback.dataset.source === "log-refresh") showFeedback("");
   } catch (error) {
     showFeedback(`Log refresh failed: ${error.message}`, true, "log-refresh");
   }
+  renderRunView();
 }
 
 async function refreshAll() {
@@ -796,6 +1255,11 @@ async function refreshAll() {
       state.selectedRunId = null;
       state.selectedNodeId = null;
       resetLog();
+      if (state.view === "run") setView("launch");
+    }
+    if (!state.userChoseView) {
+      const activeRun = state.runs.find((run) => isLive(run.status));
+      setView(activeRun ? "run" : "launch");
     }
     renderAll();
     await refreshLogs();
@@ -810,7 +1274,7 @@ async function refreshAll() {
 function renderAll() {
   renderCatalog();
   renderSelection();
-  renderRunWorkspace();
+  renderRunView();
   renderRuns();
 }
 
@@ -846,23 +1310,36 @@ function formatDuration(milliseconds) {
   return `${hours}h ${minutes % 60}m`;
 }
 
+function formatTimestamp(milliseconds) {
+  if (!milliseconds) return "-";
+  const date = new Date(milliseconds);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function titleCase(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+/* ------------------------------------------------------------------ events */
+
 elements.catalogSearch.addEventListener("input", renderCatalog);
 elements.executionTarget.addEventListener("change", () => {
   state.selectedTargetId = elements.executionTarget.value;
-  state.selectedRunId = null;
-  state.selectedNodeId = null;
   state.readiness = [];
-  resetLog();
   renderAll();
   void refreshAll();
 });
 elements.refreshButton.addEventListener("click", () => {
   state.readiness = [];
   void refreshAll();
+});
+elements.backToCatalog.addEventListener("click", () => {
+  setView("launch", true);
+});
+elements.liveRunPill.addEventListener("click", () => {
+  const liveRun = state.runs.find((run) => isLive(run.status));
+  if (liveRun) selectRun(liveRun.id);
 });
 elements.startButton.addEventListener("click", startRun);
 elements.stopButton.addEventListener("click", stopRun);
@@ -873,5 +1350,28 @@ elements.clearLog.addEventListener("click", () => {
   renderLogText("View cleared. New output will continue from the current cursor.");
 });
 
+elements.logResizeHandle.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const startY = event.clientY;
+  const startHeight = elements.logBand.getBoundingClientRect().height;
+  const maxHeight = Math.max(220, window.innerHeight - 260);
+  document.body.classList.add("log-resizing");
+  elements.logResizeHandle.setPointerCapture(event.pointerId);
+  const onMove = (moveEvent) => {
+    const next = Math.min(maxHeight, Math.max(170, startHeight + (startY - moveEvent.clientY)));
+    elements.logBand.style.height = `${next}px`;
+  };
+  const onUp = () => {
+    document.body.classList.remove("log-resizing");
+    elements.logResizeHandle.removeEventListener("pointermove", onMove);
+    elements.logResizeHandle.removeEventListener("pointerup", onUp);
+    elements.logResizeHandle.removeEventListener("pointercancel", onUp);
+  };
+  elements.logResizeHandle.addEventListener("pointermove", onMove);
+  elements.logResizeHandle.addEventListener("pointerup", onUp);
+  elements.logResizeHandle.addEventListener("pointercancel", onUp);
+});
+
+setView("launch");
 void refreshAll();
 setInterval(refreshAll, 1000);

@@ -92,8 +92,20 @@ const mockApi = `
         "[ub_rpc] nodeB response returned to nodeA",
         "iteration 1: dual-node apps pass",
         "interactive shells ready; use node input or Stop to terminate",
-        "\u001b[1;34mbin\u001b[0m \u001b[32mready\u001b[0m <node-output>",
-        "\u001b[38;5;208mindexed\u001b[0m \u001b[38;2;10;20;30mrgb\u001b[0m",
+        "decode_output: token_ids=[9707, 11, 358]",
+        "decode_output: token_pieces=\"Hello, I\"",
+        "decode_token: step=0 node=nodeA token=9707 piece=\"Hello\" runner_up=123 margin_milli=456 text_checksum=0xabc",
+        "decode_token: step=1 node=nodeB token=11 piece=\",\" runner_up=100 margin_milli=200 text_checksum=0xdef",
+        "decode_token: step=2 node=nodeA token=358 piece=\" I\" runner_up=90 margin_milli=150 text_checksum=0x123",
+        "timing_step: step=0 round_ms=120 critical_node=nodeA workers=2/2 max_worker_ms=100 avg_worker_ms=90 max_input_wait_ms=10 max_compute_window_ms=50 max_submit_ms=5 max_publish_ms=5 max_barrier_ms=0",
+        "timing_step: step=1 round_ms=180 critical_node=nodeB workers=2/2 max_worker_ms=150 avg_worker_ms=140 max_input_wait_ms=20 max_compute_window_ms=60 max_submit_ms=6 max_publish_ms=4 max_barrier_ms=0",
+        "timing_step: step=2 round_ms=140 critical_node=nodeA workers=2/2 max_worker_ms=120 avg_worker_ms=110 max_input_wait_ms=15 max_compute_window_ms=55 max_submit_ms=5 max_publish_ms=5 max_barrier_ms=0",
+        "timing_bottleneck: slowest_step=1 round_ms=180 critical_node=nodeB",
+        "summary: decode_steps_expected=3 decode_steps_observed=3 worker_timing_records=6 passed_nodes=2/2 handoff_timing_records=0 idle_timing_records=0",
+        "engram_timing_step: records=3 steps=3/3 modes=copy max_latency_ms=9 max_latency_step=2 max_latency_node=nodeB",
+        "w5_device_summary: records=2 tensor_consumers=2 devices=ub:0 backends=ub ops=copy nodes=nodeA,nodeB",
+        "[1;34mbin[0m [32mready[0m <node-output>",
+        "[38;5;208mindexed[0m [38;2;10;20;30mrgb[0m",
       ],
     })};
     window.__nodeInputRequests = [];
@@ -152,7 +164,11 @@ const mockApi = `
           headers: { "Content-Type": "application/json" },
         });
       }
-      const payload = path.includes("/logs") ? logChunk : responses[path];
+      let payload = responses[path];
+      if (path.includes("/logs")) {
+        const cursor = new URLSearchParams(url.split("?")[1] || "").get("cursor") || "0";
+        payload = cursor === "0" ? logChunk : { next_cursor: Number(cursor), lines: [] };
+      }
       if (payload === undefined) {
         return new Response(JSON.stringify({ error: "fixture endpoint missing" }), {
           status: 404,
@@ -177,10 +193,14 @@ await writeFile(fixturePage, fixture);
 
 await screenshot(1440, 1000, desktop);
 await screenshot(390, 844, mobile);
-await assertNonEmpty(desktop);
-await assertNonEmpty(mobile);
+for (const output of [desktop, mobile]) {
+  await assertNonEmpty(output);
+  await assertNonEmpty(output.replace(/\.png$/, "-result.png"));
+}
 console.log(`desktop=${desktop}`);
+console.log(`desktop-result=${desktop.replace(/\.png$/, "-result.png")}`);
 console.log(`mobile=${mobile}`);
+console.log(`mobile-result=${mobile.replace(/\.png$/, "-result.png")}`);
 
 async function screenshot(width, height, output) {
   const profileDir = await mkdtemp(path.join(os.tmpdir(), "sim-console-chrome-"));
@@ -226,7 +246,7 @@ async function screenshot(width, height, output) {
     await protocol.send("Page.enable", {}, sessionId);
     await protocol.send("Page.navigate", { url: `file://${fixturePage}` }, sessionId);
     await delay(1800);
-    await assertParameterDraftSurvivesRefresh(protocol, sessionId);
+    await assertRunViewEntry(protocol, sessionId);
     await assertProcessLogRoundTrip(protocol, sessionId);
     await assertAnsiLogRendering(protocol, sessionId);
     await assertLogRefreshFeedbackClears(protocol, sessionId);
@@ -266,12 +286,86 @@ async function screenshot(width, height, output) {
       sessionId,
     );
     await writeFile(output, Buffer.from(captured.data, "base64"));
+    await assertParameterDraftSurvivesRefresh(protocol, sessionId);
     await assertTargetPreparation(protocol, sessionId);
+    await assertResultPanel(protocol, sessionId);
+    const resultOutput = output.replace(/\.png$/, "-result.png");
+    const resultCaptured = await protocol.send(
+      "Page.captureScreenshot",
+      { format: "png", fromSurface: true, captureBeyondViewport: false },
+      sessionId,
+    );
+    await writeFile(resultOutput, Buffer.from(resultCaptured.data, "base64"));
   } finally {
     await protocol.send("Browser.close").catch(() => {});
     await Promise.race([waitForExit(browser), delay(2000)]);
     if (browser.exitCode === null) browser.kill("SIGKILL");
     await rm(profileDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function assertRunViewEntry(protocol, sessionId) {
+  const view = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({runViewHidden: document.querySelector('#run-view').hidden, workspaceHidden: document.querySelector('#workspace').hidden, phases: [...document.querySelectorAll('.phase')].map((item) => item.className), activePhase: document.querySelector('.phase.active .phase-label')?.textContent || null, tiles: document.querySelectorAll('.node-tile').length, activity: document.querySelector('#activity-line').textContent, resultHidden: document.querySelector('#result-panel').hidden, livePillHidden: document.querySelector('#live-run-pill').hidden})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const state = view.result.value;
+  if (
+    state.runViewHidden ||
+    !state.workspaceHidden ||
+    state.phases.length !== 5 ||
+    state.activePhase !== "Workload" ||
+    state.phases[0] !== "phase done" ||
+    state.phases[3] !== "phase active" ||
+    state.phases[4] !== "phase pending" ||
+    state.tiles !== 2 ||
+    !state.activity ||
+    !state.resultHidden ||
+    !state.livePillHidden
+  ) {
+    throw new Error(`run workspace entry state is invalid: ${JSON.stringify(state)}`);
+  }
+}
+
+async function assertResultPanel(protocol, sessionId) {
+  await protocol.send(
+    "Runtime.evaluate",
+    { expression: "document.querySelector('.run-item').click()" },
+    sessionId,
+  );
+  await delay(1500);
+  const panel = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "(() => { const panel = document.querySelector('#result-panel'); const chips = [...panel.querySelectorAll('.token-chip-piece')].map((chip) => chip.textContent); const meta = [...panel.querySelectorAll('.generated-meta .token')].map((chip) => chip.textContent); const rows = [...panel.querySelectorAll('.timing-row')].map((row) => ({label: row.querySelector('.timing-step-label').textContent, value: row.querySelector('.timing-value').textContent, width: row.querySelector('.timing-fill').style.width})); return {runViewHidden: document.querySelector('#run-view').hidden, hidden: panel.hidden, verdict: panel.querySelector('.verdict-banner strong')?.textContent || null, verdictClass: panel.querySelector('.verdict-banner')?.className || '', generated: panel.querySelector('.generated-text')?.textContent || null, meta, chips, rows, bottleneck: panel.querySelector('.timing-bottleneck')?.textContent || null, phases: [...document.querySelectorAll('.phase')].map((item) => item.className)}; })()",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const result = panel.result.value;
+  if (
+    result.runViewHidden ||
+    result.hidden ||
+    result.verdict !== "Run passed" ||
+    !result.verdictClass.includes("passed") ||
+    result.generated !== "Hello, I" ||
+    result.chips.join("|") !== "Hello|,| I" ||
+    !result.meta.includes("3 tokens") ||
+    !result.meta.includes("decode steps 3/3") ||
+    !result.meta.includes("nodes 2/2") ||
+    result.rows.length !== 3 ||
+    result.rows[0].label !== "step 0" ||
+    result.rows[1].width !== "100%" ||
+    result.bottleneck !== "Bottleneck: step 1 · 180 ms · nodeB" ||
+    !result.phases.every((name) => name.includes("done"))
+  ) {
+    throw new Error(`result panel rendering failed: ${JSON.stringify(result)}`);
   }
 }
 
@@ -373,6 +467,30 @@ async function assertTargetPreparation(protocol, sessionId) {
 }
 
 async function assertParameterDraftSurvivesRefresh(protocol, sessionId) {
+  await protocol.send(
+    "Runtime.evaluate",
+    { expression: "document.querySelector('#back-to-catalog').click()" },
+    sessionId,
+  );
+  await delay(150);
+  const launch = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({workspaceHidden: document.querySelector('#workspace').hidden, runViewHidden: document.querySelector('#run-view').hidden, livePillHidden: document.querySelector('#live-run-pill').hidden, livePillLabel: document.querySelector('#live-run-label').textContent})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const launchState = launch.result.value;
+  if (
+    launchState.workspaceHidden ||
+    !launchState.runViewHidden ||
+    launchState.livePillHidden ||
+    !launchState.livePillLabel.includes("URMA RPC")
+  ) {
+    throw new Error(`launch view return failed: ${JSON.stringify(launchState)}`);
+  }
   await protocol.send(
     "Runtime.evaluate",
     {

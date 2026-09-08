@@ -173,6 +173,20 @@ cargo run -p sim-console -- \
   run fixture-cluster --set delay_ms=20
 ```
 
+## Web Workspace
+
+The web UI splits into a launch view (catalog, configuration, run history) and
+a run workspace view. Opening a run — or starting one — switches to the run
+workspace, which shows a phase stepper (launch, boot, cluster ready, workload,
+result), the cluster topology with per-node status, run facts, and the latest
+activity line above a resizable log band with per-node log tabs. When a run
+reaches a terminal state, the workspace drains the process log and renders a
+result panel: verdict banner, plus structured inference output when the harness
+emits `decode_output:`/`decode_token:` markers (generated text, token stream)
+and `timing_step:`/`timing_bottleneck:` markers (per-step latency bars and the
+slowest step). Runs without structured markers fall back to final node states
+and the raw log.
+
 ## Current Control Boundary
 
 The first implementation provides run start/stop, process logs, node discovery,

@@ -18,6 +18,10 @@
         </div>
       </div>
       <div class="header-status">
+        <button id="live-run-pill" class="live-run-pill" type="button" hidden>
+          <span class="status-dot ok" aria-hidden="true"></span>
+          <span id="live-run-label">Run active</span>
+        </button>
         <div class="health-pill">
           <span id="api-indicator" class="status-dot unknown" aria-hidden="true"></span>
           <span id="api-status">Connecting</span>
@@ -31,7 +35,8 @@
 
     <div id="feedback" class="feedback" role="status" hidden></div>
 
-    <main class="workspace">
+    <!-- ==================================================== launch view -->
+    <main class="workspace" id="workspace" aria-label="Launchpad">
       <aside class="catalog-pane" aria-label="Demo catalog">
         <div class="pane-heading">
           <div>
@@ -47,7 +52,7 @@
         <div id="catalog-list" class="catalog-list"></div>
       </aside>
 
-      <section class="control-pane" aria-label="Selected demo and active run">
+      <section class="control-pane" aria-label="Launch configuration">
         <div class="selection-band">
           <div class="selection-copy">
             <div id="selection-category" class="eyebrow">Select a demo</div>
@@ -58,10 +63,6 @@
             <button id="start-button" class="primary-command" type="button" disabled>
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a.8.8 0 0 0 1.22.68l10.2-6.5a.8.8 0 0 0 0-1.36L9.22 4.82A.8.8 0 0 0 8 5.5Z"/></svg>
               <span>Start run</span>
-            </button>
-            <button id="stop-button" class="danger-command" type="button" hidden>
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.6"/></svg>
-              <span>Stop run</span>
             </button>
           </div>
         </div>
@@ -87,49 +88,6 @@
             Checking launch readiness...
           </div>
         </div>
-
-        <div class="run-band">
-          <div class="run-heading">
-            <div>
-              <span class="eyebrow">Cluster</span>
-              <h2 id="run-title">Topology preview</h2>
-            </div>
-            <div id="run-status-block" class="run-status-block">
-              <span id="run-status" class="status-badge idle">Idle</span>
-              <span id="run-elapsed">Not started</span>
-            </div>
-          </div>
-          <div id="topology" class="topology" aria-label="Cluster topology"></div>
-          <div id="node-detail" class="node-detail">
-            <span>Select a node to inspect its log.</span>
-          </div>
-        </div>
-
-        <div class="log-band">
-          <div class="log-toolbar">
-            <div>
-              <span class="eyebrow">Live output</span>
-              <h2 id="log-title">Process log</h2>
-            </div>
-            <div class="log-actions">
-              <button id="process-log" class="secondary-command log-source-command active" type="button" aria-pressed="true">Process log</button>
-              <label class="follow-control"><input id="follow-log" type="checkbox" checked> Follow</label>
-              <button id="clear-log" class="secondary-command" type="button">Clear view</button>
-            </div>
-          </div>
-          <pre id="log-output" class="log-output" tabindex="0"><code>No active run.</code></pre>
-          <form id="node-input-form" class="node-input-form" hidden>
-            <div class="node-input-heading">
-              <label id="node-input-label" for="node-input">Node console</label>
-              <span id="node-input-status" class="node-input-status" aria-live="polite"></span>
-            </div>
-            <div class="node-input-row">
-              <span class="terminal-prompt" aria-hidden="true">&#10095;</span>
-              <input id="node-input" type="text" maxlength="4095" autocomplete="off" spellcheck="false">
-              <button id="send-node-input" class="primary-command" type="submit">Send</button>
-            </div>
-          </form>
-        </div>
       </section>
 
       <aside class="runs-pane" aria-label="Run history">
@@ -141,6 +99,97 @@
         </div>
         <div id="run-list" class="run-list"></div>
       </aside>
+    </main>
+
+    <!-- ==================================================== run workspace view -->
+    <main class="run-view" id="run-view" aria-label="Run workspace" hidden>
+      <div class="run-hero">
+        <button id="back-to-catalog" class="icon-command" type="button" title="Back to catalog" aria-label="Back to catalog">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+          <span>Catalog</span>
+        </button>
+        <div class="run-hero-copy">
+          <span class="eyebrow">Run workspace</span>
+          <h2 id="run-title">No run selected</h2>
+          <p id="run-meta" class="run-meta"></p>
+        </div>
+        <div class="run-hero-status">
+          <div id="run-status-block" class="run-status-block">
+            <span id="run-status" class="status-badge idle">Idle</span>
+            <span id="run-elapsed">Not started</span>
+          </div>
+          <button id="stop-button" class="danger-command" type="button" hidden>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.6"/></svg>
+            <span>Stop run</span>
+          </button>
+        </div>
+      </div>
+
+      <ol class="phase-stepper" id="phase-stepper" aria-label="Run phases"></ol>
+
+      <div class="run-main">
+        <div class="run-primary">
+          <section class="topology-panel" aria-label="Cluster topology">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">Cluster</span>
+                <h3>Topology</h3>
+              </div>
+              <span id="node-detail" class="node-detail-hint">Select a node to inspect its log.</span>
+            </div>
+            <div id="topology" class="topology"></div>
+          </section>
+
+          <section id="result-panel" class="result-panel" aria-label="Run result" hidden></section>
+        </div>
+
+        <aside class="run-side">
+          <section class="run-facts-panel" aria-label="Run facts">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">Run</span>
+                <h3>Facts</h3>
+              </div>
+            </div>
+            <dl id="run-facts" class="run-facts"></dl>
+          </section>
+          <section class="activity-panel" id="activity-panel" aria-label="Latest activity">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">Live</span>
+                <h3>Latest activity</h3>
+              </div>
+            </div>
+            <p id="activity-line" class="activity-line">Waiting for output...</p>
+          </section>
+        </aside>
+      </div>
+
+      <div class="log-band" id="log-band">
+        <div class="log-resize-handle" id="log-resize-handle" role="separator" aria-orientation="horizontal" aria-label="Resize log panel" title="Drag to resize log panel"></div>
+        <div class="log-toolbar">
+          <div class="log-tabs" id="log-tabs" role="tablist" aria-label="Log source">
+            <button id="process-log" class="secondary-command log-source-command active" type="button" role="tab" aria-pressed="true">Process log</button>
+          </div>
+          <span id="log-title" class="log-title">Process log</span>
+          <div class="log-actions">
+            <label class="follow-control"><input id="follow-log" type="checkbox" checked> Follow</label>
+            <button id="clear-log" class="secondary-command" type="button">Clear view</button>
+          </div>
+        </div>
+        <pre id="log-output" class="log-output" tabindex="0"><code>No active run.</code></pre>
+        <form id="node-input-form" class="node-input-form" hidden>
+          <div class="node-input-heading">
+            <label id="node-input-label" for="node-input">Node console</label>
+            <span id="node-input-status" class="node-input-status" aria-live="polite"></span>
+          </div>
+          <div class="node-input-row">
+            <span class="terminal-prompt" aria-hidden="true">&#10095;</span>
+            <input id="node-input" type="text" maxlength="4095" autocomplete="off" spellcheck="false">
+            <button id="send-node-input" class="primary-command" type="submit">Send</button>
+          </div>
+        </form>
+      </div>
     </main>
 
     <script src="/app.js" defer></script>
