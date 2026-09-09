@@ -69,6 +69,10 @@ class ObmmTestGuestWiringTest(unittest.TestCase):
         )
         self.assertNotEqual(0, result.returncode)
         self.assertIn("missing", result.stderr)
+        self.assertNotIn("build_qemu_binary", result.stderr)
+        source = RUN_SCRIPT.read_text(encoding="utf-8")
+        self.assertLess(source.index('for required in '),
+                        source.index('QEMU_BIN="$(ensure_qemu_ub_binary'))
 
 
 if __name__ == "__main__":
