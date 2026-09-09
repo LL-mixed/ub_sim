@@ -11,12 +11,12 @@
 [submodule "vendor/simpler"]
 	path = vendor/simpler
 	url = ../simpler.git
-	branch = main
+	branch = ub_sim
 	ignore = all
 [submodule "vendor/pto-isa"]
 	path = vendor/pto-isa
 	url = ../pto-isa.git
-	branch = main
+	branch = ub_sim
 	ignore = all
 [submodule "vendor/pypto"]
 	path = vendor/pypto
@@ -31,7 +31,7 @@
 [submodule "mem_service"]
 	path = mem_service
 	url = https://github.com/LL-mixed/mem_service
-	branch = master
+	branch = ub_sim
 [submodule "vendor/obmm"]
 	path = vendor/obmm
 	url = https://atomgit.com/openeuler/obmm.git
