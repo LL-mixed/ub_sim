@@ -48,7 +48,6 @@ RUN_INITRAMFS="$OUT_DIR/initramfs.${RUN_ID}.cpio.gz"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
-QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 
 CONDUCTOR_BIN="$OBMM_TEST_BUILD_DIR/src/conductor/obmm-test-conductor"
 ORCHESTRATOR_BIN="$OBMM_TEST_BUILD_DIR/src/orchestrator/obmm-test-orchestrator"
@@ -60,6 +59,7 @@ for required in "$KERNEL_IMAGE" "$BASE_INITRAMFS" "$CONDUCTOR_BIN" "$ORCHESTRATO
   fi
 done
 
+QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$BASE_INITRAMFS"
 if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
   APPEND_EXTRA="${APPEND_EXTRA} pmd_mapping=25%"
