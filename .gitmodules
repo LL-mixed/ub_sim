@@ -10,12 +10,12 @@
 	ignore = all
 [submodule "vendor/simpler"]
 	path = vendor/simpler
-	url = https://github.com/hw-native-sys/simpler.git
+	url = ../simpler.git
 	branch = main
 	ignore = all
 [submodule "vendor/pto-isa"]
 	path = vendor/pto-isa
-	url = https://github.com/hw-native-sys/pto-isa.git
+	url = ../pto-isa.git
 	branch = main
 	ignore = all
 [submodule "vendor/pypto"]
