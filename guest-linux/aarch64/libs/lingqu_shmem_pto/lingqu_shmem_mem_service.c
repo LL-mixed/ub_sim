@@ -136,12 +136,13 @@ release_backend:
     return rc;
 }
 
-int lingqu_shmem_mem_service_acquire_local(
+static int acquire_local_buffer(
     struct lingqu_shmem_mem_service_context *context,
     const struct lingqu_shmem_memref_spec *spec,
     struct lingqu_shmem_memref **memref_out,
     struct lingqu_shmem_mem_service_local_buffer *buffer_out,
-    struct lingqu_shmem_mem_service_lease **lease_out)
+    struct lingqu_shmem_mem_service_lease **lease_out,
+    bool model_kv)
 {
     struct lingqu_shmem_mem_service_region_binding binding;
     struct lingqu_shmem_mem_service_local_buffer buffer;
@@ -149,7 +150,7 @@ int lingqu_shmem_mem_service_acquire_local(
     struct lingqu_shmem_memref_spec adjusted_spec;
     int rc;
 
-    if (!context || !context->ops->acquire_local || !spec || !memref_out ||
+    if (!context || !spec || !memref_out ||
         !buffer_out || !lease_out || spec->byte_length == 0 ||
         spec->byte_offset != 0) {
         return -EINVAL;
@@ -157,9 +158,13 @@ int lingqu_shmem_mem_service_acquire_local(
     *memref_out = NULL;
     *lease_out = NULL;
     memset(buffer_out, 0, sizeof(*buffer_out));
+    if (model_kv ? !context->ops->acquire_local_kv : !context->ops->acquire_local) {
+        return -EOPNOTSUPP;
+    }
     memset(&binding, 0, sizeof(binding));
     memset(&buffer, 0, sizeof(buffer));
-    rc = context->ops->acquire_local(context->backend_context,
+    rc = (model_kv ? context->ops->acquire_local_kv : context->ops->acquire_local)(
+                                     context->backend_context,
                                      spec->byte_length,
                                      64,
                                      &binding,
@@ -210,6 +215,26 @@ release_backend:
     (void)context->ops->release(
         context->backend_context, binding.backend_lease);
     return rc;
+}
+
+int lingqu_shmem_mem_service_acquire_local(
+    struct lingqu_shmem_mem_service_context *context,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out,
+    struct lingqu_shmem_mem_service_lease **lease_out)
+{
+    return acquire_local_buffer(context, spec, memref_out, buffer_out, lease_out, false);
+}
+
+int lingqu_shmem_mem_service_acquire_local_kv(
+    struct lingqu_shmem_mem_service_context *context,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out,
+    struct lingqu_shmem_mem_service_lease **lease_out)
+{
+    return acquire_local_buffer(context, spec, memref_out, buffer_out, lease_out, true);
 }
 
 int lingqu_shmem_mem_service_release(

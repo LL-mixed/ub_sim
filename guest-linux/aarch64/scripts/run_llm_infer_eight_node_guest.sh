@@ -132,6 +132,8 @@ SIMPLER_HOST_VECTOR_MANIFEST="${SIMPLER_HOST_VECTOR_MANIFEST:-/tmp/simpler-host-
 SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-matmul-artifacts/host_matmul_manifest.json}"
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
 SIM_W5_PTO_UB_GM_PROBE="${SIM_W5_PTO_UB_GM_PROBE:-0}"
+SIM_W5_QWEN3_PTO="${SIM_W5_QWEN3_PTO:-0}"
+export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
 SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
 SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
 SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
@@ -483,6 +485,16 @@ validate_w5_profile_runtime() {
 }
 
 validate_w5_pto_ub_gm_probe() {
+  if [[ "$SIM_W5_QWEN3_PTO" == "1" ]]; then
+    if [[ "$SIM_W5_PTO_UB_GM_PROBE" != "0" || "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" != "0" ||
+          "$SIM_LINGQU_SHMEM_PTO_ENABLE" != "1" || -z "$SIM_UAPI_W5_PROFILE" ||
+          -z "$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT" ||
+          ! -f "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ]]; then
+      trace "FAIL: model PTO requires callable-3 manifest/fingerprint, direct access and no callable-1 probe"
+      return 1
+    fi
+    return 0
+  fi
   if [[ "$SIM_W5_PTO_UB_GM_PROBE" != "1" ]]; then
     return 0
   fi
@@ -924,6 +936,8 @@ export SIM_UAPI_W5_PROFILE="$SIM_UAPI_W5_PROFILE"
 export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_W5_RUN_ID="$RUN_ID_BASE"
 export SIM_W5_PTO_UB_GM_PROBE="$SIM_W5_PTO_UB_GM_PROBE"
+export SIM_W5_QWEN3_PTO="$SIM_W5_QWEN3_PTO"
+export SIM_W5_QWEN3_PTO_TOKEN_TABLE="/tmp/qwen3_pto_token_table.bin"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
 export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
 export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT"
@@ -1334,6 +1348,16 @@ EOF
   chmod +x "$runner"
 }
 
+stage_qwen3_pto_token_table() {
+  if [[ "$SIM_W5_QWEN3_PTO" != "1" ]]; then
+    return 0
+  fi
+  mkdir -p "$RUN_INITRAMFS_DIR/tmp"
+  python3 "$ROOT_DIR/scripts/prepare_qwen3_pto_token_table.py" \
+    --weights "$SIM_QWEN3_DENSE_WEIGHTS_PATH" \
+    --output "$RUN_INITRAMFS_DIR/tmp/qwen3_pto_token_table.bin"
+}
+
 build_w4_initramfs() {
   local base_initramfs="$OUT_DIR/initramfs.cpio.gz"
 
@@ -1351,6 +1375,7 @@ build_w4_initramfs() {
   stage_w5_memory_shortpath_kv_stream || return 1
   stage_w5_memory_prefix_cache_kv_stream || return 1
   stage_w5_serving_requests_file || return 1
+  stage_qwen3_pto_token_table || return 1
   write_w4_initramfs_runner || return 1
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -1401,6 +1426,7 @@ build_w4_openEuler_initramfs() {
   stage_w5_memory_shortpath_kv_stream || return 1
   stage_w5_memory_prefix_cache_kv_stream || return 1
   stage_w5_serving_requests_file || return 1
+  stage_qwen3_pto_token_table || return 1
   write_w4_initramfs_runner || return 1
   # openEuler boot half: /init becomes init_switch_root; add LVM2 userland and
   # the UB modules that ship as =m on top of the unpacked base tree.
@@ -1790,6 +1816,19 @@ validate_node_log() {
   fi
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % SIM_W5_CLUSTER_NODE_COUNT + 1))
+
+  if [[ "$SIM_W5_QWEN3_PTO" == "1" ]]; then
+    assert_log_count "$log_file" "stage w5_qwen3_pto_range_complete node=${idx} .*callable=3 numerical_backend=simpler_pto .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id complete PTO model ranges" || return 1
+    assert_log_count "$log_file" "assessment model_pto_complete=true service_probe=not_run" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id PTO completion gate" || return 1
+    assert_log_count "$log_file" "stage w5_pto_ub_gm_hidden_publish node=${idx} .*publish_mode=in_place .*source=simpler_pto_ub_gm .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id PTO hidden publication" || return 1
+    assert_log_absent "$log_file" "stage uapi_model_range_runtime_forward" "$node_id reference model execution" || return 1
+    assert_log_absent "$log_file" "\\[w4_guest\\] fail" "$node_id model PTO failure" || return 1
+    if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
+      assert_log_count "$log_file" "stage model_terminal_token_result_publish .*publisher=terminal_node" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id terminal token publication" || return 1
+    fi
+    assert_log_has "$log_file" "\\[w4_guest\\] pass" "$node_id pass" || return 1
+    return 0
+  fi
 
   if [[ "$SIM_W5_PTO_UB_GM_PROBE" == "1" ]]; then
     if [[ "$SIM_W5_PTO_UB_GM_PROGRAM" == "pipeline_double" ]]; then

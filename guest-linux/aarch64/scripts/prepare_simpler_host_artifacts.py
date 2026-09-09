@@ -186,6 +186,44 @@ class ProfileSpec:
 
 
 PROFILE_SPECS = {
+    "host_qwen3_range": ProfileSpec(
+        profile="HostVector",
+        example="qwen3_pto",
+        manifest_name="qwen3_pto_range_manifest.json",
+        callable_hint="qwen3_pto_range",
+        orch_source="qwen3_pto_range_orch.cpp",
+        orch_function="build_qwen3_pto_range_graph",
+        kernels=(KernelSpec(0, "qwen3_pto_range_kernel.cpp", "aiv"),),
+        args_template=(
+            {"kind": "input", "name": "hidden"},
+            {"kind": "input", "name": "previous_kv"},
+            {"kind": "input", "name": "token_ids"},
+            {"kind": "output", "name": "hidden_output"},
+            {"kind": "inout", "name": "next_kv"},
+            {"kind": "output", "name": "logits"},
+            {"kind": "input", "name": "private_constants"},
+        ) + tuple({"kind": "scalar_u64", "name": name} for name in (
+            "first", "end", "layers", "past", "tokens", "hidden", "intermediate",
+            "query_heads", "kv_heads", "head_dim", "vocab", "attention_scale_bits")),
+    ),
+    "host_qwen3_operator": ProfileSpec(
+        profile="HostVector",
+        example="qwen3_pto",
+        manifest_name="qwen3_pto_operator_manifest.json",
+        callable_hint="qwen3_pto_operator",
+        orch_source="qwen3_pto_orch.cpp",
+        orch_function="build_qwen3_pto_operator_graph",
+        kernels=(KernelSpec(0, "qwen3_pto_kernel.cpp", "aiv"),),
+        args_template=(
+            {"kind": "input", "name": "source"},
+            {"kind": "input", "name": "weight"},
+            {"kind": "input", "name": "auxiliary"},
+            {"kind": "output", "name": "output"},
+            {"kind": "scalar_u64", "name": "operation"},
+            {"kind": "scalar_u64", "name": "parameter"},
+            {"kind": "scalar_f32_bits", "name": "scale"},
+        ),
+    ),
     "host_vector": ProfileSpec(
         profile="HostVector",
         example="vector_example",
@@ -428,6 +466,8 @@ def resolve_pto_isa_root(simpler_root: Path, explicit: str | None) -> Path:
 
 
 def resolve_example_root(simpler_root: Path, spec: ProfileSpec) -> Path:
+    if spec.example == "qwen3_pto":
+        return repo_root() / "guest-linux/aarch64/libs/lingqu_shmem_pto"
     if spec.generated:
         return Path(f"generated:{spec.example}")
     candidates = [
@@ -3290,6 +3330,10 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         manifest["ub_gm_access_fault"] = args.ub_gm_access_fault
         manifest["ub_gm_layout"] = vector_layout
         manifest["host_vector_program"] = args.host_vector_program
+    if args.profile == "host_qwen3_operator":
+        manifest["pto_ub_gm_callable"] = {"id": 2, "contract": "qwen3_operator_v1"}
+    if args.profile == "host_qwen3_range":
+        manifest["pto_ub_gm_callable"] = {"id": 3, "contract": "qwen3_range_v1"}
     if args.profile == "host_gemm":
         manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {

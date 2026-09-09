@@ -29,6 +29,12 @@ struct lingqu_shmem_mem_service_backend_ops {
         struct lingqu_shmem_mem_service_local_buffer *buffer_out);
     int (*release)(void *backend_context, void *backend_lease);
     void (*destroy)(void *backend_context);
+    int (*acquire_local_kv)(
+        void *backend_context,
+        uint64_t bytes,
+        uint64_t align,
+        struct lingqu_shmem_mem_service_region_binding *binding_out,
+        struct lingqu_shmem_mem_service_local_buffer *buffer_out);
 };
 
 int lingqu_shmem_mem_service_context_create_for_backend(

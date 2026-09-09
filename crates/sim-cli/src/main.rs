@@ -127,9 +127,13 @@ mod lingqu_shmem_pto;
 mod obmm_eval;
 mod obmm_remote;
 mod obmm_scale;
+mod qwen3_pto;
 mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
+    if qwen3_pto::run_if_requested()?.is_some() {
+        return Ok(());
+    }
     if let Some(args) = lingqu_shmem_pto::args()? {
         return lingqu_shmem_pto::run(args);
     }
@@ -15001,6 +15005,7 @@ fn w5_boundary_input_fingerprints_from_summary(
 fn parse_w5_hidden_dtype(value: &str) -> anyhow::Result<sim_core::TensorDType> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "opaque" => Ok(sim_core::TensorDType::Opaque),
+        "f16" => Ok(sim_core::TensorDType::F16),
         "f32" => Ok(sim_core::TensorDType::F32),
         "u8" => Ok(sim_core::TensorDType::U8),
         "u32" => Ok(sim_core::TensorDType::U32),
@@ -28032,6 +28037,14 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         assert!(err_text.contains(sim_memory::LINGQU_EXECUTION_ARTIFACT_MANIFEST_PATH));
         assert!(!response_path.exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn w5_hidden_dtype_parser_accepts_explicit_f16_storage() {
+        let dtype = super::parse_w5_hidden_dtype("F16").unwrap();
+        assert_eq!(dtype, sim_core::TensorDType::F16);
+        assert_eq!(dtype.byte_width(), Some(2));
+        assert!(super::parse_w5_hidden_dtype("f16-invalid").is_err());
     }
 
     #[test]

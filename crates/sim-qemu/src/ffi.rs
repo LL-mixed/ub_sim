@@ -9,8 +9,9 @@ use sim_services::object::LingquObmmObjectRefWire;
 use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
 use sim_uapi::{
-    pto_ub_gm_host_vector_callable_fingerprint, PtoUbGmDispatchV2Req,
-    PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+    pto_ub_gm_registered_callable_fingerprint, PtoUbGmDispatchV2Req,
+    PTO_UB_GM_HOST_VECTOR_CALLABLE_ID, PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID,
+    PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID,
 };
 
 use crate::ub_gm_abi::{
@@ -119,10 +120,15 @@ impl LinquUbBridge {
     }
 
     fn query_ub_gm_callable_v1(&self, callable_id: u64) -> Result<u64, LingquPtoUbGmError> {
-        if callable_id != PTO_UB_GM_HOST_VECTOR_CALLABLE_ID {
+        if !matches!(
+            callable_id,
+            PTO_UB_GM_HOST_VECTOR_CALLABLE_ID
+                | PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID
+                | PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID
+        ) {
             return Err(LingquPtoUbGmError::UnsupportedCallable);
         }
-        pto_ub_gm_host_vector_callable_fingerprint().map_err(|error| {
+        pto_ub_gm_registered_callable_fingerprint(callable_id).map_err(|error| {
             eprintln!(
                 "SIM_QEMU_UB_GM_CALLABLE_QUERY_FAILED callable={} error={}",
                 callable_id, error
@@ -148,7 +154,7 @@ impl LinquUbBridge {
             &control,
             memrefs,
             scalars,
-            PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+            control.callable_id,
             expected_fingerprint,
             access.pto_device_cna,
         )?;

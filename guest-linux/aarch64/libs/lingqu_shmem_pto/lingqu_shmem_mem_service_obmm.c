@@ -5,6 +5,7 @@
 #include "components/mem_service/mem_service.h"
 #include "components/mem_service/mem_service_cluster_runtime.h"
 #include "components/mem_service/mem_service_obmm_objects.h"
+#include "components/mem_service/mem_service_model_runtime.h"
 #include "libs/obmm_async/obmm_async.h"
 
 #include <errno.h>
@@ -196,17 +197,19 @@ static int obmm_compute_acquire(
         context, runtime, slot, view->backing_offset, binding_out);
 }
 
-static int obmm_compute_acquire_local(
+static int obmm_compute_allocate_local(
     void *backend_context,
     uint64_t bytes,
     uint64_t align,
     struct lingqu_shmem_mem_service_region_binding *binding_out,
-    struct lingqu_shmem_mem_service_local_buffer *buffer_out)
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out,
+    bool model_kv)
 {
     struct lingqu_shmem_mem_service_obmm_context *context = backend_context;
     struct mem_service_cluster_runtime *runtime;
     struct mem_service_cluster_slot *slot;
     uint64_t offset = 0;
+    uint64_t block_bytes, block_count, reserved_bytes;
     int rc;
 
     if (!context || !context->async_runtime || bytes == 0 || !binding_out ||
@@ -220,8 +223,13 @@ static int obmm_compute_acquire_local(
     }
     slot = &runtime->slots[runtime->local_idx];
     if (!slot->is_local || !slot->region.addr || slot->region.len == 0 ||
-        slot->mem_id == 0 ||
-        mem_service_payload_arena_alloc(runtime, bytes, align, &offset) != 0) {
+        slot->mem_id == 0) {
+        return -ENODEV;
+    }
+    rc = model_kv ? mem_service_model_kv_state_alloc(
+        runtime, bytes, &offset, &block_bytes, &block_count, &reserved_bytes) :
+        mem_service_payload_arena_alloc(runtime, bytes, align, &offset);
+    if (rc != 0) {
         return -ENOSPC;
     }
     rc = obmm_compute_bind_slot(context, runtime, slot, offset, binding_out);
@@ -236,6 +244,24 @@ static int obmm_compute_acquire_local(
         .owner_node = (uint32_t)runtime->local_idx,
     };
     return 0;
+}
+
+static int obmm_compute_acquire_local(
+    void *backend_context, uint64_t bytes, uint64_t align,
+    struct lingqu_shmem_mem_service_region_binding *binding_out,
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out)
+{
+    return obmm_compute_allocate_local(
+        backend_context, bytes, align, binding_out, buffer_out, false);
+}
+
+static int obmm_compute_acquire_local_kv(
+    void *backend_context, uint64_t bytes, uint64_t align,
+    struct lingqu_shmem_mem_service_region_binding *binding_out,
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out)
+{
+    return obmm_compute_allocate_local(
+        backend_context, bytes, align, binding_out, buffer_out, true);
 }
 
 static int obmm_compute_release(void *backend_context, void *backend_lease)
@@ -277,6 +303,7 @@ static void obmm_compute_destroy(void *backend_context)
 static const struct lingqu_shmem_mem_service_backend_ops obmm_compute_ops = {
     .acquire = obmm_compute_acquire,
     .acquire_local = obmm_compute_acquire_local,
+    .acquire_local_kv = obmm_compute_acquire_local_kv,
     .release = obmm_compute_release,
     .destroy = obmm_compute_destroy,
 };

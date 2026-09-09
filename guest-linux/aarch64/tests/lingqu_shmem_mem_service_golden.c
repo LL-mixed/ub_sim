@@ -23,6 +23,8 @@ struct fake_backend {
     uint64_t next_offset;
     uint32_t acquire_count;
     uint32_t acquire_local_count;
+    uint32_t acquire_local_kv_count;
+    int kv_error;
     uint32_t release_count;
 };
 
@@ -101,9 +103,22 @@ static int fake_acquire_local(
     return 0;
 }
 
+static int fake_acquire_local_kv(
+    void *backend_context, uint64_t bytes, uint64_t align,
+    struct lingqu_shmem_mem_service_region_binding *binding_out,
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out)
+{
+    struct fake_backend *backend = backend_context;
+    (void)align;
+    backend->acquire_local_kv_count++;
+    if (backend->kv_error) return backend->kv_error;
+    return fake_acquire_local(backend_context, bytes, 256, binding_out, buffer_out);
+}
+
 static const struct lingqu_shmem_mem_service_backend_ops fake_ops = {
     .acquire = fake_acquire,
     .acquire_local = fake_acquire_local,
+    .acquire_local_kv = fake_acquire_local_kv,
     .release = fake_release,
 };
 
@@ -213,6 +228,17 @@ int main(void)
     CHECK(lingqu_shmem_mem_service_acquire(
               context, &view, &spec, &memref, &lease) == -EINVAL);
     CHECK(backend.acquire_count == 1);
+    CHECK(lingqu_shmem_mem_service_close(context) == 0);
+
+    struct lingqu_shmem_mem_service_backend_ops no_kv_ops = fake_ops;
+    no_kv_ops.acquire_local_kv = NULL;
+    spec.byte_offset = 0;
+    CHECK(lingqu_shmem_mem_service_context_create_for_backend(
+              &no_kv_ops, &backend, false, &context) == 0);
+    CHECK(lingqu_shmem_mem_service_acquire_local_kv(
+              context, &spec, &memref, &local_buffer, &lease) == -EOPNOTSUPP);
+    CHECK(!memref && !lease && !local_buffer.data);
+    CHECK(backend.acquire_local_count == 1);
     CHECK(lingqu_shmem_mem_service_close(context) == 0);
 
     puts("lingqu_shmem_mem_service_golden=pass");

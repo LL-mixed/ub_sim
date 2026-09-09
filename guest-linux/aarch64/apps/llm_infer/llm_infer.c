@@ -33,6 +33,7 @@
 #include "lingqu_shmem_sim.h"
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
+#include "qwen3_pto_guest.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
@@ -262,6 +263,7 @@ struct llm_model_range_runtime_forward {
     uint8_t output_payload[W4_QWEN3_MAX_HIDDEN_RANGE_BYTES];
     uint8_t *kv_payload;
     uint64_t kv_payload_capacity;
+    bool kv_payload_borrowed;
 };
 
 struct w5_pto_ub_gm_hidden_result {
@@ -290,7 +292,7 @@ static void model_range_runtime_forward_release(
     if (!runtime) {
         return;
     }
-    free(runtime->kv_payload);
+    if (!runtime->kv_payload_borrowed) free(runtime->kv_payload);
     memset(runtime, 0, sizeof(*runtime));
 }
 
@@ -2323,6 +2325,68 @@ static int model_read_terminal_token_record_for_step(
             return -1;
         }
     }
+    return 0;
+}
+
+static int model_pto_terminal_record(const struct qwen3_pto_guest_output *output,
+                                     uint64_t decode_step,
+                                     struct llm_terminal_token_record *record)
+{
+    const char *path = getenv("SIM_W5_QWEN3_PTO_TOKEN_TABLE");
+    uint64_t header[4];
+    uint64_t vocab = llm_infer_qwen3_vocab_size();
+    uint64_t top[4] = {0};
+    float scores[4] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
+    FILE *file;
+    if (!path || !output->logits.data || output->logits.len != vocab * 4 || vocab < 4)
+        return -EINVAL;
+    file = fopen(path, "rb");
+    if (!file) return -errno;
+    if (fread(header, sizeof(header), 1, file) != 1 ||
+        header[0] != UINT64_C(0x515750544f545854) || header[1] != 1 ||
+        header[2] != vocab || header[3] != 32) { fclose(file); return -EINVAL; }
+    memset(record, 0, sizeof(*record));
+    for (uint64_t token = 0; token < vocab; ++token) {
+        float value;
+        memcpy(&value, output->logits.data + token * 4, 4);
+        if (!isfinite(value)) { fclose(file); return -ERANGE; }
+        for (unsigned int rank = 0; rank < 4; ++rank) {
+            if (value <= scores[rank]) continue;
+            for (unsigned int move = 3; move > rank; --move) {
+                scores[move] = scores[move - 1]; top[move] = top[move - 1];
+            }
+            scores[rank] = value; top[rank] = token;
+            break;
+        }
+    }
+    record->candidate_count = 4;
+    for (unsigned int rank = 0; rank < 4; ++rank) {
+        uint64_t piece[4];
+        uint32_t bits;
+        if (fseek(file, (long)(32 + top[rank] * 32), SEEK_SET) != 0 ||
+            fread(piece, sizeof(piece), 1, file) != 1 || !piece[0] || !piece[1]) {
+            fclose(file); return -EINVAL;
+        }
+        memcpy(&bits, &scores[rank], 4);
+        record->candidate_tokens[rank] = top[rank];
+        record->candidate_logit_bits[rank] = bits;
+        record->candidate_text_checksums[rank] =
+            qwen3_pto_sample_text_checksum(decode_step, top[rank], piece);
+        record->candidate_piece_bytes[rank] = piece[1];
+        record->candidate_piece_word0[rank] = piece[2];
+        record->candidate_piece_word1[rank] = piece[3];
+    }
+    fclose(file);
+    record->sampled_token = top[0]; record->runner_up_token = top[1];
+    record->margin_milli = (uint64_t)((scores[0] - scores[1]) * 1000.0f);
+    record->logits_checksum = w4_qwen3_hidden_payload_checksum(output->logits.data, output->logits.len);
+    record->full_vocab_logits_checksum = record->logits_checksum;
+    record->full_vocab_checked_token_count = vocab;
+    record->top_logit_bits = record->candidate_logit_bits[0];
+    record->runner_up_logit_bits = record->candidate_logit_bits[1];
+    record->text_checksum = record->candidate_text_checksums[0];
+    record->piece_word0 = record->candidate_piece_word0[0];
+    record->piece_word1 = record->candidate_piece_word1[0];
     return 0;
 }
 
@@ -10247,6 +10311,10 @@ int main(int argc, char **argv)
     bool qwen3_shortpath_terminal_committed = false;
     bool qwen3_pre_resolved_range_input = false;
     bool w5_pto_ub_gm_probe_enabled = false;
+    bool w5_qwen3_pto = false;
+    struct qwen3_pto_guest_operation *qwen3_pto_operation = NULL;
+    struct qwen3_pto_guest_output qwen3_pto_output = {0};
+    struct mem_service_object_payload_view qwen3_pto_previous_kv = {0};
     bool w5_pto_ub_gm_publish_output = false;
     bool w5_pto_ub_gm_pipeline_double = false;
     uint64_t w5_pto_ub_gm_artifact_fingerprint = 0;
@@ -10282,6 +10350,11 @@ int main(int argc, char **argv)
     resource_assertions_enabled = env_bool_is_one("SIM_W4_RESOURCE_ASSERTIONS");
     w5_pto_ub_gm_probe_enabled =
         env_bool_is_one("SIM_W5_PTO_UB_GM_PROBE");
+    w5_qwen3_pto = env_bool_is_one("SIM_W5_QWEN3_PTO");
+    if (w5_qwen3_pto && (w5_pto_ub_gm_probe_enabled || !is_qwen3_profile())) {
+        fprintf(stderr, "[w4_guest] fail model PTO requires Qwen3 and excludes mechanism probes\n");
+        return 1;
+    }
     w5_pto_ub_gm_publish_output =
         env_bool_is_one("SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT");
     const char *w5_pto_ub_gm_program =
@@ -10314,7 +10387,7 @@ int main(int argc, char **argv)
         "SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT", 0);
     w5_pto_ub_gm_timeout_ms = env_u64_or_default(
         "SIM_W5_PTO_UB_GM_TIMEOUT_MS", 300000ULL);
-    if (w5_pto_ub_gm_probe_enabled) {
+    if (w5_pto_ub_gm_probe_enabled || w5_qwen3_pto) {
         char requester_cna_text[64];
         char direct_enabled_text[16];
         char *end = NULL;
@@ -11910,6 +11983,7 @@ decode_round_start:
         guest_decode_step == 0;
     memset(&counts, 0, sizeof(counts));
     memset(&runtime_forward, 0, sizeof(runtime_forward));
+    memset(&qwen3_pto_previous_kv, 0, sizeof(qwen3_pto_previous_kv));
     model_runtime_forward_ready = false;
     qwen3_round_input_token_count = 0;
     qwen3_round_decode_position = 0;
@@ -13199,6 +13273,7 @@ decode_round_start:
                 }
                 kv_resolved_ms = monotonic_ms();
                 if (previous_kv_view.data && previous_kv_view.len > 0) {
+                    qwen3_pto_previous_kv = previous_kv_view;
                     write_segment_bytes(ep_mmio,
                                         W4_QWEN3_OBJECT_REF_TABLE_OFFSET +
                                             ((uint64_t)object_ref_write_index *
@@ -13286,6 +13361,89 @@ decode_round_start:
 
     compute_start_ms = monotonic_ms();
     compute_window_ms = compute_start_ms;
+    if (w5_qwen3_pto) {
+        struct qwen3_pto_guest_geometry geometry = {
+            .first = round_layer_start, .end = round_layer_end,
+            .layers = llm_infer_qwen3_total_layers(),
+            .past = guest_decode_step ? qwen3_round_decode_position - 1 : 0,
+            .tokens = guest_decode_step ? 1 : qwen3_round_input_token_count,
+            .hidden = env_u64_or_default("SIM_QWEN3_DENSE_HIDDEN_SIZE", 0),
+            .intermediate = env_u64_or_default("SIM_QWEN3_DENSE_INTERMEDIATE_SIZE", 0),
+            .query_heads = env_u64_or_default("SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS", 0),
+            .kv_heads = llm_infer_qwen3_kv_heads(),
+            .head_dim = llm_infer_qwen3_head_dim(),
+            .vocab = llm_infer_qwen3_vocab_size(),
+        };
+        struct lingqu_shmem_pto_completion completion;
+        uint32_t tokens[1024];
+        float scale = 1.0f / sqrtf((float)geometry.head_dim);
+        memcpy(&geometry.scale_bits, &scale, sizeof(scale));
+        if (!qwen3_round_input_token_count || geometry.tokens > 1024 ||
+            qwen3_engram_config.enabled || qwen3_memory_decision_config.shortpath_execute ||
+            (geometry.first && !qwen3_pre_resolved_range_input)) {
+            fprintf(stderr, "[w4_guest] fail model PTO input or optional reuse configuration\n");
+            goto out;
+        }
+        for (uint32_t i = 0; i < geometry.tokens; ++i) {
+            uint64_t token = qwen3_round_input_tokens[guest_decode_step ?
+                qwen3_round_input_token_count - 1 : i];
+            if (token >= geometry.vocab) goto out;
+            tokens[i] = token;
+        }
+        uint64_t request_id = UINT64_C(0x5157000000000000) |
+            ((uint64_t)round_dispatch_node << 32) | (guest_decode_step + 1);
+        int pto_rc = qwen3_pto_guest_prepare(&geometry,
+            geometry.first ? &qwen3_pre_resolved_range_input_view : NULL,
+            geometry.past ? &qwen3_pto_previous_kv : NULL,
+            tokens, request_id, w5_pto_ub_gm_artifact_fingerprint,
+            w5_pto_ub_gm_requester_cna, &qwen3_pto_operation);
+        if (!pto_rc) pto_rc = qwen3_pto_guest_submit(qwen3_pto_operation,
+            w5_pto_ub_gm_timeout_ms, &qwen3_pto_output, &completion);
+        if (pto_rc || qwen3_pto_output.hidden.len != w4_runtime_handoff_hidden_bytes(guest_decode_step)) {
+            fprintf(stderr, "[w4_guest] fail model PTO dispatch node=%u step=%" PRIu64 " rc=%d\n",
+                    round_dispatch_node + 1, guest_decode_step, pto_rc);
+            goto out;
+        }
+        runtime_forward.node = round_dispatch_node;
+        runtime_forward.layer_start = geometry.first;
+        runtime_forward.layer_end = geometry.end;
+        runtime_forward.layer_count = geometry.end - geometry.first;
+        runtime_forward.real_layers = runtime_forward.layer_count;
+        runtime_forward.next_node = round_next_node;
+        runtime_forward.payload_bytes = qwen3_pto_output.hidden.len;
+        runtime_forward.payload_offset = qwen3_pto_output.hidden.backing_offset;
+        runtime_forward.payload_checksum = w4_qwen3_hidden_payload_checksum(
+            qwen3_pto_output.hidden.data, qwen3_pto_output.hidden.len);
+        runtime_forward.output_checksum = runtime_forward.payload_checksum;
+        runtime_forward.input_checksum = geometry.first ?
+            qwen3_pre_resolved_range_input_view.checksum :
+            w4_qwen3_hidden_payload_checksum((const uint8_t *)tokens, geometry.tokens * 4);
+        runtime_forward.kv_payload = qwen3_pto_output.kv.data;
+        runtime_forward.kv_payload_borrowed = true;
+        runtime_forward.kv_payload_bytes = qwen3_pto_output.kv.len;
+        runtime_forward.kv_payload_checksum = w4_qwen3_hidden_payload_checksum(
+            qwen3_pto_output.kv.data, qwen3_pto_output.kv.len);
+        runtime_forward.range_checksum = runtime_forward.payload_checksum ^ runtime_forward.kv_payload_checksum;
+        w5_pto_ub_gm_hidden_result = (struct w5_pto_ub_gm_hidden_result){
+            .data = qwen3_pto_output.hidden.data, .len = qwen3_pto_output.hidden.len,
+            .backing_offset = qwen3_pto_output.hidden.backing_offset,
+            .checksum = runtime_forward.payload_checksum, .tile_count = geometry.tokens,
+        };
+        counts.chipbackend = counts.success = 1;
+        model_runtime_forward_ready = true;
+        compute_done_ms = monotonic_ms();
+        compute_window_ms = compute_done_ms - compute_start_ms;
+        publish_ms = publish_start_ms = compute_done_ms;
+        verify_done_ms = compute_done_ms;
+        printf("[w4_guest] stage w5_qwen3_pto_range_complete node=%u step=%" PRIu64
+               " layers=[%u,%u) tokens=%u past=%u callable=3 numerical_backend=simpler_pto"
+               " hidden_bytes=%" PRIu64 " kv_bytes=%" PRIu64
+               " kv_offset=0x%016" PRIx64 " status=ok\n",
+               round_dispatch_node + 1, guest_decode_step, geometry.first, geometry.end,
+               geometry.tokens, geometry.past, runtime_forward.payload_bytes,
+               runtime_forward.kv_payload_bytes, qwen3_pto_output.kv.backing_offset);
+        goto model_pto_ready;
+    }
     base_submit_ms = monotonic_ms();
     mmio_write64(ep_mmio, REG_CMDQ_BASE_LO, cmdq_phys);
     mmio_write64(ep_mmio, REG_CQ_BASE_LO, cq_phys);
@@ -13465,6 +13623,7 @@ decode_round_start:
             }
         }
     }
+model_pto_ready:
     if (model_runtime_forward_ready && enable_db_cluster) {
         uint32_t dispatch_node = 0U;
         struct mem_service_obmm_range_flow_request range_request;
@@ -13487,7 +13646,7 @@ decode_round_start:
         range_request.hidden_range_bytes =
             w4_runtime_handoff_hidden_bytes(guest_decode_step);
         range_request.kv_state_bytes = runtime_forward.kv_payload_bytes;
-        if (is_deepseek_v4_flash_profile()) {
+        if (is_deepseek_v4_flash_profile() || w5_qwen3_pto) {
             goto model_publish_runtime_range;
         }
         {
@@ -13724,8 +13883,8 @@ model_publish_runtime_range:
             uint64_t hidden_publish_checksum = runtime_forward.payload_checksum;
             bool hidden_publish_in_place = false;
 
-            if (w5_pto_ub_gm_publish_output &&
-                qwen3_pre_resolved_range_input) {
+            if (w5_qwen3_pto || (w5_pto_ub_gm_publish_output &&
+                qwen3_pre_resolved_range_input)) {
                 if (!w5_pto_ub_gm_hidden_result.data ||
                     w5_pto_ub_gm_hidden_result.len !=
                         runtime_forward.payload_bytes ||
@@ -13755,6 +13914,10 @@ model_publish_runtime_range:
                 range_request.publish_payload_offset =
                     w5_pto_ub_gm_hidden_result.backing_offset;
             }
+            if (w5_qwen3_pto) {
+                range_request.publish_kv_in_place = true;
+                range_request.publish_kv_offset = qwen3_pto_output.kv.backing_offset;
+            }
             range_publish_start_ms = monotonic_ms();
             if (mem_service_range_flow_publish_runtime_output(
                     &db_service,
@@ -13775,7 +13938,7 @@ model_publish_runtime_range:
             }
             range_publish_done_ms = monotonic_ms();
             range_publish_ms = range_publish_done_ms - range_publish_start_ms;
-            if (w5_pto_ub_gm_publish_output) {
+            if (w5_pto_ub_gm_publish_output || w5_qwen3_pto) {
                 printf("[w4_guest] stage w5_pto_ub_gm_hidden_publish"
                        " node=%u step=%" PRIu64 " bytes=%" PRIu64
                        " offset=0x%016" PRIx64
@@ -13838,9 +14001,10 @@ model_publish_runtime_range:
             if (terminal_publish_start_ms == 0) {
                 terminal_publish_start_ms = monotonic_ms();
             }
-            if (model_read_terminal_token_record_for_step(ep_mmio,
+            if ((w5_qwen3_pto ? model_pto_terminal_record(&qwen3_pto_output, terminal_logits_decode_step, &terminal_token) :
+                 model_read_terminal_token_record_for_step(ep_mmio,
                                                           terminal_logits_decode_step,
-                                                          &terminal_token) != 0) {
+                                                          &terminal_token)) != 0) {
                 fprintf(stderr,
                         "[w4_guest] fail model terminal token record read failed"
                         " role=%s step=%" PRIu64 " logits_step=%" PRIu64 "\n",
@@ -13967,7 +14131,7 @@ model_publish_runtime_range:
             model_log_terminal_logits_observation(dispatch_node,
                                                   decode_step,
                                                   &terminal_token,
-                                                  "uapi_real_logits");
+                                                  w5_qwen3_pto ? "pto_ub_gm_logits" : "uapi_real_logits");
             if (mem_service_range_flow_publish_terminal_token(
                     &db_service,
                     &range_request,
@@ -14014,6 +14178,7 @@ model_publish_runtime_range:
         }
     }
 model_after_compute_publish:
+    if (w5_qwen3_pto) goto qwen3_no_work_item_service_coverage;
     publish_done_ms = monotonic_ms();
     if (terminal_publish_done_ms > terminal_publish_start_ms) {
         terminal_publish_ms = terminal_publish_done_ms - terminal_publish_start_ms;
@@ -14049,6 +14214,12 @@ model_after_compute_publish:
            counts.success, counts.retryable, counts.fatal);
 
 qwen3_no_work_item_service_coverage:
+    if (w5_qwen3_pto) {
+        if (!model_runtime_forward_ready || counts.chipbackend != 1 || counts.fatal) goto out;
+        printf("[w4_guest] assessment model_pto_complete=true service_probe=not_run"
+               " dispatch_path=simpler_pto_ub_gm\n");
+        goto qwen3_after_service_coverage;
+    }
     if (!qwen3_work_item_materialized) {
         printf("[w4_guest] assessment service_coverage=0/5"
                " dispatch_path=step_scheduler_no_work_item"
@@ -14403,6 +14574,10 @@ qwen3_after_service_coverage:
                    barrier_ms,
                    monotonic_ms() - round_start_ms);
         }
+        if (qwen3_pto_operation) {
+            if (qwen3_pto_guest_release(qwen3_pto_operation) != 0) goto out;
+            qwen3_pto_operation = NULL;
+        }
         if (cq != MAP_FAILED) {
             munmap(cq, PAGE_SIZE_BYTES);
             cq = MAP_FAILED;
@@ -14429,6 +14604,10 @@ qwen3_after_service_coverage:
     }
 
 out:
+    if (qwen3_pto_operation) {
+        int release_rc = qwen3_pto_guest_release(qwen3_pto_operation);
+        if (release_rc) fprintf(stderr, "[w4_guest] model PTO release retained rc=%d\n", release_rc);
+    }
     if (qwen3_engram_config.token_projection) {
         free(qwen3_engram_config.token_projection);
         qwen3_engram_config.token_projection = NULL;
