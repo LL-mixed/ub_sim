@@ -161,12 +161,14 @@ pub enum TensorDType {
     U64,
     F32,
     Opaque,
+    F16,
 }
 
 impl TensorDType {
     pub fn byte_width(self) -> Option<u64> {
         match self {
             Self::U8 => Some(1),
+            Self::F16 => Some(2),
             Self::U32 | Self::F32 => Some(4),
             Self::U64 => Some(8),
             Self::Opaque => None,

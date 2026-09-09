@@ -52,6 +52,7 @@ impl HiddenDecodePolicy {
     pub fn from_dtype(dtype: TensorDType) -> Option<Self> {
         match dtype {
             TensorDType::F32 => Some(Self::F32),
+            TensorDType::F16 => Some(Self::F16),
             _ => None,
         }
     }
@@ -91,11 +92,10 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
         if fraction == 0 {
             sign
         } else {
-            // Subnormal: convert to normal by shifting and adjusting exponent
-            let shift = fraction.leading_zeros() - 6; // 6 = leading_zeros of 0b1_0000_0000_00 (0x400)
+            let shift = fraction.leading_zeros() - 5;
             let adjusted_frac = (fraction << shift) & 0x03ff;
-            let adjusted_exp = 1 - shift as u32;
-            sign | (((adjusted_exp + 127 - 15) << 23) | ((adjusted_frac as u32) << 13))
+            let adjusted_exp = 113 - shift;
+            sign | ((adjusted_exp << 23) | ((adjusted_frac as u32) << 13))
         }
     } else if exponent == 0x1f {
         sign | 0x7f800000 | ((fraction as u32) << 13)
@@ -129,7 +129,11 @@ pub fn decode_payload_to_f32(
                 .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("f32 bytes")))
                 .collect()
         }
-        TensorDType::Opaque => match policy {
+        TensorDType::F16 | TensorDType::Opaque => match if dtype == TensorDType::F16 {
+            HiddenDecodePolicy::F16
+        } else {
+            policy
+        } {
             HiddenDecodePolicy::F16 => {
                 if payload.len() != expected_elems * 2 {
                     return Err(SimilarityError::PayloadSizeMismatch {
@@ -338,6 +342,26 @@ mod tests {
                 .unwrap();
         assert!((decoded[0] - 1.0).abs() < 1e-3);
         assert!((decoded[1] - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn explicit_f16_dtype_preserves_subnormals_and_ignores_opaque_policy() {
+        let payload: Vec<u8> = [0x0001u16, 0x03ff, 0x0400, 0xbc00, 0x8000]
+            .iter()
+            .flat_map(|bits| bits.to_le_bytes())
+            .collect();
+        let decoded =
+            decode_payload_to_f32(&payload, TensorDType::F16, &[5], HiddenDecodePolicy::BF16)
+                .unwrap();
+        assert_eq!(decoded[0], 2.0f32.powi(-24));
+        assert_eq!(decoded[1], 1023.0 * 2.0f32.powi(-24));
+        assert_eq!(decoded[2], 2.0f32.powi(-14));
+        assert_eq!(decoded[3], -1.0);
+        assert_eq!(decoded[4].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(
+            HiddenDecodePolicy::from_dtype(TensorDType::F16),
+            Some(HiddenDecodePolicy::F16)
+        );
     }
 
     #[test]

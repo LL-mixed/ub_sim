@@ -4,7 +4,8 @@ mod pto_ub_gm;
 
 pub use pto_ub_gm::{
     run_host_vector_ub_gm_bridge_dispatch, run_host_vector_ub_gm_dispatch,
-    HostVectorUbGmDispatchReport,
+    run_qwen3_pto_operator_checks, run_qwen3_pto_range_check, HostVectorUbGmDispatchReport,
+    Qwen3PtoOperatorCheck, Qwen3PtoRangeCheck,
 };
 
 use std::collections::BTreeMap;

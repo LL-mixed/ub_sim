@@ -8,6 +8,8 @@ mod deepseek_v4_flash_official_range_runtime;
 mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_runtime;
+mod qwen3_pto_range;
+pub use qwen3_pto_range::Qwen3PtoRangeGeometry;
 
 pub use deepseek_v4_flash_gguf_runtime::{
     deepseek_v4_flash_embedding_hc, execute_deepseek_gguf_layer_through_simpler,
@@ -220,6 +222,8 @@ pub struct PtoUbGmDispatchV2Req {
 }
 
 pub const PTO_UB_GM_HOST_VECTOR_CALLABLE_ID: u64 = 1;
+pub const PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID: u64 = 2;
+pub const PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRangeDispatchReq {
@@ -927,6 +931,14 @@ struct SimplerRuntimeManifestEnvelope {
     host_fp4_gemm: Option<GemmManifest>,
     #[serde(default)]
     host_q8_block_dot: Option<GemmManifest>,
+    #[serde(default)]
+    pto_ub_gm_callable: Option<PtoUbGmCallableContract>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PtoUbGmCallableContract {
+    id: u64,
+    contract: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1751,7 +1763,7 @@ impl LocalGuestUapiSurface {
             Some(access) if access.pto_device_cna != req.requester_cna => {
                 Err("pto_ub_gm_access_denied".to_string())
             }
-            Some(access) => run_host_vector_ub_gm_chipbackend(&self.topology, &task, &req, access),
+            Some(access) => run_pto_ub_gm_chipbackend(&self.topology, &task, &req, access),
         };
         Ok(CompletionEvent {
             op_id: req.op_id,
@@ -4679,12 +4691,15 @@ fn qwen3_range_forward_hidden_tensor_metadata(
     summary: &Qwen3DenseReferenceRangeForwardSummary,
 ) -> (Option<TensorDType>, Vec<u64>, Option<TensorLayout>) {
     let payload_len = summary.output_tensor_payload.len() as u64;
-    if payload_len == summary.output_tensor_bytes
-        && payload_len % std::mem::size_of::<f32>() as u64 == 0
-    {
+    let element_bytes = match summary.output_tensor_dtype {
+        TensorDType::F16 => 2,
+        TensorDType::F32 => 4,
+        _ => return (None, vec![payload_len], None),
+    };
+    if payload_len == summary.output_tensor_bytes && payload_len % element_bytes == 0 {
         (
-            Some(TensorDType::F32),
-            vec![payload_len / std::mem::size_of::<f32>() as u64],
+            Some(summary.output_tensor_dtype),
+            vec![payload_len / element_bytes],
             Some(TensorLayout::Contiguous),
         )
     } else {
@@ -6098,6 +6113,7 @@ fn run_qwen3_dense_profile_runtime(
             .unwrap_or(output_tensor_checksum),
         input_tensor_bytes: hidden_bytes,
         output_tensor_bytes: hidden_bytes,
+        output_tensor_dtype: TensorDType::F16,
         output_tensor_payload,
         kv_state_bytes,
         kv_state_checksum,
@@ -6811,6 +6827,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
         ]),
         input_tensor_bytes: u64::from(contract.hidden_bytes),
         output_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_dtype: TensorDType::F32,
         output_tensor_payload,
         kv_state_bytes,
         kv_state_checksum,
@@ -7413,6 +7430,7 @@ fn run_deepseek_v4_flash_geometry_smoke_range_runtime(
         ]),
         input_tensor_bytes: u64::from(contract.hidden_bytes),
         output_tensor_bytes: u64::from(contract.hidden_bytes),
+        output_tensor_dtype: TensorDType::F32,
         output_tensor_payload,
         kv_state_bytes,
         kv_state_checksum,
@@ -15990,17 +16008,24 @@ fn run_host_vector_chipbackend(
     Ok(produced)
 }
 
-fn run_host_vector_ub_gm_chipbackend(
+fn run_pto_ub_gm_chipbackend(
     topology: &SimTopology,
     task: &TaskKey,
     req: &PtoUbGmDispatchV2Req,
     access: PtoUbGmAccessRegistration,
 ) -> Result<(), String> {
-    validate_host_vector_ub_gm_args(req)?;
-    let manifest_path = simpler_manifest_path()?;
+    match req.callable_id {
+        PTO_UB_GM_HOST_VECTOR_CALLABLE_ID => validate_host_vector_ub_gm_args(req)?,
+        PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID => validate_qwen3_operator_ub_gm_args(req)?,
+        PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => {
+            qwen3_pto_range::validate(req)?;
+        }
+        _ => return Err("pto_ub_gm_unsupported_callable".to_string()),
+    }
+    let manifest_path = pto_ub_gm_manifest_path(req.callable_id)?;
     let manifest = load_simpler_runtime_manifest(&manifest_path)?;
     let expected_fingerprint = pto_ub_gm_callable_fingerprint(&manifest)?;
-    if req.callable_id != PTO_UB_GM_HOST_VECTOR_CALLABLE_ID
+    if req.callable_id != pto_ub_gm_manifest_callable_id(&manifest)?
         || req.artifact_fingerprint != expected_fingerprint
     {
         return Err("pto_ub_gm_unsupported_callable".to_string());
@@ -16012,10 +16037,38 @@ fn run_host_vector_ub_gm_chipbackend(
         .first()
         .map(|ubpu| ubpu.node_id)
         .ok_or_else(|| "missing_ubpu_node".to_string())?;
+    let mut runtime_args = req.args.clone();
+    let private_constants = if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
+        Some(qwen3_pto_range::private_constants(
+            &qwen3_pto_range::validate(req)?,
+        )?)
+    } else {
+        None
+    };
+    let private_constant_bytes = private_constants
+        .as_ref()
+        .map_or(0, |bytes| bytes.len() as u64);
+    let private_segment = SegmentHandle(0x5157_5054_4f00_0001);
+    if private_constants.is_some() {
+        runtime_args.insert(
+            6,
+            SimplerRuntimeArg::InputSegment {
+                endpoint: MemoryEndpoint {
+                    node: ubpu_node,
+                    segment: private_segment,
+                    offset: 0,
+                },
+                bytes: private_constant_bytes,
+            },
+        );
+    }
     let backend_spec =
-        host_vector_backend_spec_from_manifest_envelope(manifest, platform, req.args.clone());
+        host_vector_backend_spec_from_manifest_envelope(manifest, platform, runtime_args);
     let _dispatch_lock = host_vector_dispatch_lock_guard()?;
     let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
+    if let Some(constants) = private_constants {
+        runtime.seed_host_segment(ubpu_node, private_segment, constants);
+    }
     runtime
         .register_pto_ub_gm_access(access)
         .map_err(str::to_string)?;
@@ -16026,7 +16079,7 @@ fn run_host_vector_ub_gm_chipbackend(
                 DispatchRequest {
                     task: task.clone(),
                     function: FunctionLabel {
-                        name: "host_vector_ub_gm_v2".into(),
+                        name: format!("pto_ub_gm_callable_{}", req.callable_id),
                         level: PlLevel::L2,
                     },
                     backend_spec: Some(backend_spec),
@@ -16058,8 +16111,12 @@ fn run_host_vector_ub_gm_chipbackend(
         }
     })();
     runtime.clear_pto_ub_gm_access();
-    if runtime.host_payload_bytes() != 0 {
+    if runtime.host_payload_bytes() != private_constant_bytes {
         return Err("pto_ub_gm_payload_staging_detected".to_string());
+    }
+    if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
+        eprintln!("qwen3-pto-range: request={} private_constants_bytes={} shared_payload_staging_bytes=0 status={}",
+            req.request_id, private_constant_bytes, if run_result.is_ok() { "pass" } else { "fail" });
     }
     run_result
 }
@@ -16096,6 +16153,80 @@ fn validate_host_vector_ub_gm_args(req: &PtoUbGmDispatchV2Req) -> Result<(), Str
         if expected_bytes != view.byte_length {
             return Err("pto_ub_gm_bad_memref".to_string());
         }
+    }
+    Ok(())
+}
+
+fn validate_qwen3_operator_ub_gm_args(req: &PtoUbGmDispatchV2Req) -> Result<(), String> {
+    if req.request_id == 0 || req.args.len() != 7 {
+        return Err("pto_ub_gm_bad_control_table".to_string());
+    }
+    let mut shapes = Vec::with_capacity(4);
+    for (index, arg) in req.args[..4].iter().enumerate() {
+        let SimplerRuntimeArg::UbGmMemref {
+            binding,
+            view,
+            usage,
+        } = arg
+        else {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        };
+        let expected = if index == 3 {
+            BufferUsage::Output
+        } else {
+            BufferUsage::Input
+        };
+        if binding.request_id != req.request_id
+            || *usage != expected
+            || view.shape.len() != 2
+            || view.strides.len() != 2
+            || !matches!(view.dtype, 0 | 1)
+        {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        }
+        let bytes = if view.dtype == 0 { 4 } else { 2 };
+        if strided_view_extent_bytes(&view.shape, &view.strides, bytes)? != view.byte_length {
+            return Err("pto_ub_gm_bad_memref".to_string());
+        }
+        shapes.push((u64::from(view.shape[0]), u64::from(view.shape[1])));
+    }
+    let mut scalars = Vec::with_capacity(3);
+    for arg in &req.args[4..] {
+        let SimplerRuntimeArg::ScalarU64(value) = arg else {
+            return Err("pto_ub_gm_bad_control_table".to_string());
+        };
+        if *value > u64::from(u32::MAX) {
+            return Err("pto_ub_gm_bad_control_table".to_string());
+        }
+        scalars.push(*value);
+    }
+    let (op, parameter, scale_bits) = (scalars[0], scalars[1], scalars[2]);
+    let (a, b, c, y) = (shapes[0], shapes[1], shapes[2], shapes[3]);
+    let scale = f32::from_bits(scale_bits as u32);
+    if matches!(op, 5 | 8) {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("qwen3_pto_invalid_scale".to_string());
+        }
+    } else if scale_bits != 0 {
+        return Err("qwen3_pto_unused_scale".to_string());
+    }
+    if !matches!(op, 1 | 5) && parameter != 0 {
+        return Err("qwen3_pto_unused_parameter".to_string());
+    }
+    let valid = match op {
+        1 => parameter < a.0 && y.0 <= a.0 - parameter && a.1 == y.1,
+        2 => a == y && b == (1, a.1) && a.1 <= 4096,
+        3 => a.1 == b.1 && y == (a.0, b.0) && a.1 <= 4096,
+        4 => {
+            a == y && a.1 % 2 == 0 && a.1 <= 4096 && b.1 == a.1 / 2 && (b.0 == 2 || b.0 == a.0 * 2)
+        }
+        5 => a == y && b == c && a.1 == b.1 && parameter + a.0 == b.0 && a.1 <= 4096 && b.0 <= 4096,
+        6 | 7 => a == b && a == y,
+        8 => a == y && a.1 <= 4096,
+        _ => false,
+    };
+    if !valid {
+        return Err("qwen3_pto_geometry_mismatch".to_string());
     }
     Ok(())
 }
@@ -16602,6 +16733,72 @@ fn simpler_manifest_path() -> Result<PathBuf, String> {
 pub fn pto_ub_gm_host_vector_callable_fingerprint() -> Result<u64, String> {
     let manifest_path = simpler_manifest_path()?;
     pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest_path)
+}
+
+fn pto_ub_gm_manifest_callable_id(
+    manifest: &SimplerRuntimeManifestEnvelope,
+) -> Result<u64, String> {
+    match &manifest.pto_ub_gm_callable {
+        None => Ok(PTO_UB_GM_HOST_VECTOR_CALLABLE_ID),
+        Some(contract)
+            if contract.id == PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID
+                && contract.contract == "qwen3_operator_v1"
+                && manifest.simpler_runtime.orch_function_name
+                    == "build_qwen3_pto_operator_graph" =>
+        {
+            Ok(contract.id)
+        }
+        Some(contract)
+            if contract.id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID
+                && contract.contract == "qwen3_range_v1"
+                && manifest.simpler_runtime.orch_function_name == "build_qwen3_pto_range_graph" =>
+        {
+            Ok(contract.id)
+        }
+        _ => Err("pto_ub_gm_unsupported_callable".to_string()),
+    }
+}
+
+fn pto_ub_gm_manifest_path(callable_id: u64) -> Result<PathBuf, String> {
+    match callable_id {
+        PTO_UB_GM_HOST_VECTOR_CALLABLE_ID => simpler_manifest_path(),
+        PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID => {
+            let path = std::env::var("SIMPLER_QWEN3_PTO_MANIFEST")
+                .map(PathBuf::from)
+                .map_err(|_| "missing_simpler_qwen3_pto_manifest".to_string())?;
+            if !simpler_manifest_has_compatible_capi_abi(&path) {
+                return Err("incompatible_simpler_qwen3_pto_manifest".to_string());
+            }
+            Ok(path)
+        }
+        PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => {
+            let path = std::env::var("SIMPLER_QWEN3_PTO_RANGE_MANIFEST")
+                .map(PathBuf::from)
+                .map_err(|_| "missing_simpler_qwen3_pto_range_manifest")?;
+            if !simpler_manifest_has_compatible_capi_abi(&path) {
+                return Err("incompatible_simpler_qwen3_pto_range_manifest".into());
+            }
+            Ok(path)
+        }
+        _ => Err("pto_ub_gm_unsupported_callable".to_string()),
+    }
+}
+
+pub fn pto_ub_gm_registered_callable_fingerprint(callable_id: u64) -> Result<u64, String> {
+    let path = pto_ub_gm_manifest_path(callable_id)?;
+    let (manifest_id, fingerprint) = pto_ub_gm_callable_from_manifest(&path)?;
+    if manifest_id != callable_id {
+        return Err("pto_ub_gm_unsupported_callable".to_string());
+    }
+    Ok(fingerprint)
+}
+
+pub fn pto_ub_gm_callable_from_manifest(path: &Path) -> Result<(u64, u64), String> {
+    let manifest = load_simpler_runtime_manifest(path)?;
+    Ok((
+        pto_ub_gm_manifest_callable_id(&manifest)?,
+        pto_ub_gm_callable_fingerprint(&manifest)?,
+    ))
 }
 
 pub fn pto_ub_gm_host_vector_callable_fingerprint_from_manifest(
@@ -17438,7 +17635,18 @@ fn pto_ub_gm_callable_fingerprint(
     manifest: &SimplerRuntimeManifestEnvelope,
 ) -> Result<u64, String> {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.host_vector.v1");
+    match pto_ub_gm_manifest_callable_id(manifest)? {
+        PTO_UB_GM_HOST_VECTOR_CALLABLE_ID => {
+            fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.host_vector.v1")
+        }
+        PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID => {
+            fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.qwen3_operator.v1")
+        }
+        PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => {
+            fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.qwen3_range.v1")
+        }
+        _ => return Err("pto_ub_gm_unsupported_callable".to_string()),
+    }
     fingerprint_field(
         &mut hash,
         manifest.platform.as_deref().unwrap_or("a2a3sim").as_bytes(),
@@ -23209,6 +23417,7 @@ struct Qwen3DenseReferenceRangeForwardSummary {
     final_layer_output_checksum: u64,
     input_tensor_bytes: u64,
     output_tensor_bytes: u64,
+    output_tensor_dtype: TensorDType,
     output_tensor_payload: Vec<u8>,
     kv_state_bytes: u64,
     kv_state_checksum: u64,
@@ -26395,6 +26604,7 @@ fn qwen3_dense_reference_range_forward_summary_from_contract(
         final_layer_output_checksum,
         input_tensor_bytes: HIDDEN_BYTES,
         output_tensor_bytes: HIDDEN_BYTES,
+        output_tensor_dtype: TensorDType::F32,
         output_tensor_payload,
         kv_state_bytes: kv_state_payload.len() as u64,
         kv_state_checksum: qwen3_dense_reference_range_object_payload_checksum(&kv_state_payload),
@@ -26523,6 +26733,7 @@ fn qwen3_dense_reference_range_forward_summary_from_runtime_outputs(
         final_layer_output_checksum: output_tensor_checksum,
         input_tensor_bytes: HIDDEN_BYTES,
         output_tensor_bytes: HIDDEN_BYTES,
+        output_tensor_dtype: TensorDType::F32,
         output_tensor_payload,
         kv_state_bytes: 0,
         kv_state_checksum: 0,
@@ -29324,6 +29535,12 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
         (sign << 31) | (((exponent - 15 + 127) as u32) << 23) | (fraction << 13)
     };
     f32::from_bits(f32_bits)
+}
+
+/// Reproduce the existing reference W5 wire boundary in numerical auditors.
+/// PTO's independent TCVT path remains unchanged.
+pub fn qwen3_reference_f16_handoff(value: f32) -> f32 {
+    f16_bits_to_f32(f32_to_f16_bits(value))
 }
 
 fn f32_to_f16_bits(value: f32) -> u16 {
@@ -42568,6 +42785,7 @@ mod tests {
                     final_layer_output_checksum: hidden_checksum,
                     input_tensor_bytes: HIDDEN_BYTES as u64,
                     output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_dtype: sim_core::TensorDType::F32,
                     output_tensor_payload: hidden_payload,
                     kv_state_bytes: KV_BYTES as u64,
                     kv_state_checksum: kv_checksum,
@@ -42738,6 +42956,7 @@ mod tests {
                     final_layer_output_checksum: hidden_checksum,
                     input_tensor_bytes: HIDDEN_BYTES as u64,
                     output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_dtype: sim_core::TensorDType::F32,
                     output_tensor_payload: hidden_payload,
                     kv_state_bytes: KV_BYTES as u64,
                     kv_state_checksum: kv_checksum,
@@ -43376,6 +43595,7 @@ mod tests {
                     final_layer_output_checksum: hidden_checksum,
                     input_tensor_bytes: HIDDEN_BYTES as u64,
                     output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_dtype: sim_core::TensorDType::F32,
                     output_tensor_payload: hidden_payload.clone(),
                     kv_state_bytes: KV_BYTES as u64,
                     kv_state_checksum: kv_checksum,
@@ -43417,6 +43637,7 @@ mod tests {
                     final_layer_output_checksum: hidden_checksum,
                     input_tensor_bytes: HIDDEN_BYTES as u64,
                     output_tensor_bytes: HIDDEN_BYTES as u64,
+                    output_tensor_dtype: sim_core::TensorDType::F32,
                     output_tensor_payload: hidden_payload,
                     kv_state_bytes: KV_BYTES as u64,
                     kv_state_checksum: kv_checksum,
@@ -44700,6 +44921,59 @@ outputs:
     }
 
     #[test]
+    fn qwen3_range_metadata_matches_fp16_hidden_payload() {
+        let profile = super::QWEN3_DENSE_REFERENCE_PROFILE;
+        let hidden: Vec<f32> = (0..profile.hidden_size)
+            .map(|index| (index % 17) as f32 / 8.0 - 1.0)
+            .collect();
+        let payload = super::qwen3_dense_profile_hidden_sequence_range_payload(
+            &profile,
+            &[hidden.clone()],
+            hidden.len() * 2,
+        )
+        .unwrap();
+        let summary = super::Qwen3DenseReferenceRangeForwardSummary {
+            node: 0,
+            layer_start: 0,
+            layer_end: 1,
+            layer_count: 1,
+            next_node: 1,
+            pipeline_nodes: 2,
+            total_layers: profile.num_hidden_layers,
+            hidden_bytes: payload.len() as u64,
+            input_tensor_checksum: 0,
+            output_tensor_checksum: 0,
+            range_layer_checksum: 0,
+            real_layer_execution_count: 1,
+            first_layer_output_checksum: 0,
+            final_layer_output_checksum: 0,
+            input_tensor_bytes: payload.len() as u64,
+            output_tensor_bytes: payload.len() as u64,
+            output_tensor_dtype: sim_core::TensorDType::F16,
+            output_tensor_payload: payload,
+            kv_state_bytes: 0,
+            kv_state_checksum: 0,
+            kv_state_payload: Vec::new(),
+            engram_context_report: None,
+        };
+        assert_eq!(
+            super::qwen3_range_forward_hidden_tensor_metadata(&summary),
+            (
+                Some(sim_core::TensorDType::F16),
+                vec![profile.hidden_size],
+                Some(sim_core::TensorLayout::Contiguous),
+            )
+        );
+        let decoded = super::qwen3_dense_profile_hidden_sequence_from_payload(
+            &profile,
+            &summary.output_tensor_payload,
+            1,
+        )
+        .unwrap();
+        assert_eq!(decoded, vec![hidden]);
+    }
+
+    #[test]
     fn host_vector_ub_gm_v2_args_require_exact_request_and_strided_f32_views() {
         let request_id = 42;
         let mut req = super::PtoUbGmDispatchV2Req {
@@ -44791,6 +45065,85 @@ outputs:
     }
 
     #[test]
+    fn qwen3_operator_ub_gm_contract_covers_every_operation_and_rejects_mismatches() {
+        let cases = [
+            (1, [(5, 128), (1, 1), (1, 1), (2, 128)], 3),
+            (2, [(2, 128), (1, 128), (1, 1), (2, 128)], 0),
+            (3, [(3, 19), (67, 19), (1, 1), (3, 67)], 0),
+            (4, [(2, 128), (4, 64), (1, 1), (2, 128)], 0),
+            (5, [(2, 128), (4, 128), (4, 128), (2, 128)], 2),
+            (6, [(2, 128), (2, 128), (1, 1), (2, 128)], 0),
+            (7, [(2, 128), (2, 128), (1, 1), (2, 128)], 0),
+            (8, [(2, 128), (1, 1), (1, 1), (2, 128)], 0),
+        ];
+        for (op, shapes, parameter) in cases {
+            let mut args = Vec::new();
+            for (index, (rows, cols)) in shapes.into_iter().enumerate() {
+                let mut arg = ub_gm_vector_arg(
+                    91,
+                    (index + 1) as u64,
+                    index as u64,
+                    if index == 3 {
+                        sim_core::SimplerUbGmAccess::Write
+                    } else {
+                        sim_core::SimplerUbGmAccess::Read
+                    },
+                    if index == 3 {
+                        sim_core::BufferUsage::Output
+                    } else {
+                        sim_core::BufferUsage::Input
+                    },
+                );
+                let sim_core::SimplerRuntimeArg::UbGmMemref { view, .. } = &mut arg else {
+                    unreachable!();
+                };
+                view.dtype = if index == 0 { 1 } else { 0 };
+                view.shape = vec![rows, cols];
+                view.strides = vec![cols, 1];
+                view.byte_length = u64::from(rows * cols) * if index == 0 { 2 } else { 4 };
+                args.push(arg);
+            }
+            args.extend(
+                [
+                    op,
+                    parameter,
+                    if matches!(op, 5 | 8) {
+                        u64::from(1f32.to_bits())
+                    } else {
+                        0
+                    },
+                ]
+                .map(sim_core::SimplerRuntimeArg::ScalarU64),
+            );
+            let mut req = super::PtoUbGmDispatchV2Req {
+                op_id: 7,
+                request_id: 91,
+                callable_id: 2,
+                artifact_fingerprint: 9,
+                requester_cna: 0x10001,
+                args,
+            };
+            assert_eq!(
+                super::validate_qwen3_operator_ub_gm_args(&req),
+                Ok(()),
+                "op={op}"
+            );
+            let valid = req.clone();
+            req.args[4] = sim_core::SimplerRuntimeArg::ScalarU64(99);
+            assert!(super::validate_qwen3_operator_ub_gm_args(&req).is_err());
+            req = valid.clone();
+            req.args[6] = sim_core::SimplerRuntimeArg::ScalarU64(u64::from(f32::NAN.to_bits()));
+            assert!(super::validate_qwen3_operator_ub_gm_args(&req).is_err());
+            req = valid;
+            let sim_core::SimplerRuntimeArg::UbGmMemref { view, .. } = &mut req.args[0] else {
+                unreachable!();
+            };
+            view.byte_length += 1;
+            assert!(super::validate_qwen3_operator_ub_gm_args(&req).is_err());
+        }
+    }
+
+    #[test]
     fn host_vector_callable_fingerprint_uses_manifest_artifact_bytes() {
         let root = std::env::temp_dir().join(format!(
             "ub_sim_pto_ub_gm_fingerprint_{}",
@@ -44871,6 +45224,20 @@ outputs:
             super::pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest_path)
                 .expect("fingerprint mutated artifact");
         assert_ne!(first, changed);
+
+        let mut qwen3_manifest = manifest;
+        qwen3_manifest["pto_ub_gm_callable"] = serde_json::json!({
+            "id": 2, "contract": "qwen3_operator_v1"
+        });
+        qwen3_manifest["simpler_runtime"]["orch_function_name"] =
+            serde_json::json!("build_qwen3_pto_operator_graph");
+        std::fs::write(&manifest_path, serde_json::to_vec(&qwen3_manifest).unwrap()).unwrap();
+        let (id, fingerprint) = super::pto_ub_gm_callable_from_manifest(&manifest_path).unwrap();
+        assert_eq!(id, 2);
+        assert_ne!(fingerprint, changed);
+        qwen3_manifest["pto_ub_gm_callable"]["contract"] = serde_json::json!("unknown");
+        std::fs::write(&manifest_path, serde_json::to_vec(&qwen3_manifest).unwrap()).unwrap();
+        assert!(super::pto_ub_gm_callable_from_manifest(&manifest_path).is_err());
 
         std::fs::remove_dir_all(&root).expect("remove fingerprint fixture directory");
     }

@@ -451,15 +451,14 @@ fn default_e2e_runner(nodes: u32) -> PathBuf {
 fn run_p3_fingerprint(manifest: PathBuf) -> anyhow::Result<()> {
     let manifest = std::fs::canonicalize(&manifest)
         .with_context(|| format!("failed to resolve manifest {}", manifest.display()))?;
-    let artifact_fingerprint =
-        sim_uapi::pto_ub_gm_host_vector_callable_fingerprint_from_manifest(&manifest)
-            .map_err(anyhow::Error::msg)
-            .context("failed to fingerprint PTO UB_GM callable artifacts")?;
+    let (callable_id, artifact_fingerprint) = sim_uapi::pto_ub_gm_callable_from_manifest(&manifest)
+        .map_err(anyhow::Error::msg)
+        .context("failed to fingerprint PTO UB_GM callable artifacts")?;
     let envelope = LingquShmemPtoFingerprintEnvelope {
         command: "lingqu-shmem-pto-e2e",
         implementation_phase: "p3_guest_runtime",
         manifest: manifest.display().to_string(),
-        callable_id: sim_uapi::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+        callable_id,
         artifact_fingerprint,
         artifact_fingerprint_hex: format!("0x{artifact_fingerprint:016x}"),
     };

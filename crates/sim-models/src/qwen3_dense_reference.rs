@@ -4447,6 +4447,43 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
     hidden: &[f32],
     chunk_rows: usize,
 ) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
+    full_vocab_logits_collect_for_profile(
+        profile,
+        tensors,
+        tensor_payloads,
+        hidden,
+        chunk_rows,
+        None,
+    )
+}
+
+/// Opt-in numerical oracle output in token-ID order. Default inference keeps
+/// returning only its summary and does not allocate this full-vocabulary view.
+pub fn full_vocab_logits_values_from_hidden_for_profile(
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    hidden: &[f32],
+) -> Result<(Qwen3DenseReferenceFullVocabLogitsSummary, Vec<f32>), String> {
+    let mut values = Vec::new();
+    let summary = full_vocab_logits_collect_for_profile(
+        profile,
+        tensors,
+        None,
+        hidden,
+        4096,
+        Some(&mut values),
+    )?;
+    Ok((summary, values))
+}
+
+fn full_vocab_logits_collect_for_profile(
+    profile: Qwen3DenseReferenceProfile,
+    tensors: &BTreeMap<String, Qwen3DenseReferenceWeightTensorMetadata>,
+    tensor_payloads: Option<&BTreeMap<String, Vec<u8>>>,
+    hidden: &[f32],
+    chunk_rows: usize,
+    mut values: Option<&mut Vec<f32>>,
+) -> Result<Qwen3DenseReferenceFullVocabLogitsSummary, String> {
     const TOP_CANDIDATE_COUNT: usize = 4;
 
     validate_profile(profile)?;
@@ -4510,6 +4547,9 @@ pub fn full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
                 .enumerate()
                 .map(|(col, value)| value * weights[row_base + col])
                 .sum::<f32>();
+            if let Some(output) = values.as_deref_mut() {
+                output.push(logit);
+            }
             if logit > top_logit {
                 runner_up_token_id = top_token_id;
                 runner_up_logit = top_logit;
@@ -5668,6 +5708,75 @@ fn read_file_range(path: &str, offset: u64, bytes: u64) -> Result<Vec<u8>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_vocab_values_preserve_token_order_across_chunks() {
+        let profile = Qwen3DenseReferenceProfile {
+            vocab_size: 6,
+            hidden_size: 4,
+            intermediate_size: 4,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
+            head_dim: 2,
+            tp_nodes: 2,
+            ..QWEN3_DENSE_REFERENCE_PROFILE
+        };
+        let mut tensors = BTreeMap::new();
+        let mut payloads = BTreeMap::new();
+        for (name, shape, values) in [
+            ("model.norm.weight", vec![4], vec![1.0; 4]),
+            (
+                "lm_head.weight",
+                vec![6, 4],
+                (0..24).map(|i| i as f32 / 16.0 - 0.5).collect(),
+            ),
+        ] {
+            tensors.insert(
+                name.into(),
+                Qwen3DenseReferenceWeightTensorMetadata {
+                    dtype: Qwen3DenseReferenceWeightDType::F32,
+                    shape,
+                    data_offsets: None,
+                    source_file: None,
+                    data_base_offset: 0,
+                },
+            );
+            payloads.insert(name.into(), f32_payload(&values));
+        }
+        let hidden = [1.0, -2.0, 3.0, 0.5];
+        let denom = ((1.0f32 + 4.0 + 9.0 + 0.25) / 4.0 + 1e-6).sqrt();
+        for chunk in [1, 4, 16] {
+            let mut values = Vec::new();
+            let summary = full_vocab_logits_collect_for_profile(
+                profile,
+                &tensors,
+                Some(&payloads),
+                &hidden,
+                chunk,
+                Some(&mut values),
+            )
+            .unwrap();
+            let regular = full_vocab_logits_from_hidden_with_chunk_and_payloads_for_profile(
+                profile,
+                &tensors,
+                Some(&payloads),
+                &hidden,
+                chunk,
+            )
+            .unwrap();
+            assert_eq!(summary.aggregate_checksum, regular.aggregate_checksum);
+            assert_eq!(values.len(), 6);
+            for (token, actual) in values.iter().enumerate() {
+                let expected: f32 = hidden
+                    .iter()
+                    .enumerate()
+                    .map(|(col, h)| h / denom * ((token * 4 + col) as f32 / 16.0 - 0.5))
+                    .sum();
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+    }
 
     fn test_topology() -> SimTopology {
         let config = sim_config::ScenarioConfig::from_yaml_str(TEST_YAML).expect("valid config");

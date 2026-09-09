@@ -2337,6 +2337,7 @@ fn validate_tensor_dtype(dtype: TensorDType, _field: &'static str) -> MemoryResu
         | TensorDType::U32
         | TensorDType::U64
         | TensorDType::F32
+        | TensorDType::F16
         | TensorDType::Opaque => Ok(()),
     }
 }
@@ -10906,6 +10907,7 @@ fn tensor_dtype_tag(dtype: TensorDType) -> u64 {
         TensorDType::U64 => 3,
         TensorDType::F32 => 4,
         TensorDType::Opaque => 5,
+        TensorDType::F16 => 6,
     }
 }
 

@@ -50,6 +50,17 @@ int lingqu_shmem_mem_service_acquire_local(
     struct lingqu_shmem_mem_service_local_buffer *buffer_out,
     struct lingqu_shmem_mem_service_lease **lease_out);
 
+/* Reserve a complete tiered model-KV block span for in-place publication.
+ * The returned memref covers payload bytes; allocator padding stays private.
+ * A backend without this allocation contract returns -EOPNOTSUPP.
+ */
+int lingqu_shmem_mem_service_acquire_local_kv(
+    struct lingqu_shmem_mem_service_context *context,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_local_buffer *buffer_out,
+    struct lingqu_shmem_mem_service_lease **lease_out);
+
 /* Release after the PTO completion for every dispatch using the memref. */
 int lingqu_shmem_mem_service_release(
     struct lingqu_shmem_mem_service_lease *lease);
