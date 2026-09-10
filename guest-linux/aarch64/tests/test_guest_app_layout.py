@@ -3833,6 +3833,22 @@ def test_obmm_async_coroutine_builds_against_pinned_libobmm():
     assert "$(ROOT)/common/obmm_vendor_adaptor_sim.c" in app_makefile
 
 
+def test_metadata_consumers_link_managed_allocation_and_provider_directory():
+    builder = (ROOT / "scripts/build_initramfs.sh").read_text()
+    consumers = [
+        line for line in builder.splitlines()
+        if line.startswith('"$AARCH64_LINUX_CC"')
+        and '"$MEM_SERVICE_METADATA_SRC"' in line
+    ]
+    assert len(consumers) == 4
+    for name in ("ALLOCATION", "PROVIDER_DIRECTORY"):
+        source = f'"$MEM_SERVICE_{name}_SRC"'
+        assert all(source in line for line in consumers)
+        assert f'write_signature_line "mem_service_{name.lower()}_src" {source}' in builder
+        common_sources = builder.split("local common_mem_service_sources=(", 1)[1].split(")", 1)[0]
+        assert source in common_sources
+
+
 def test_source_tree_does_not_track_app_build_outputs_or_demo_ignores():
     repo_root = ROOT.parents[1]
     gitignore = (repo_root / ".gitignore").read_text()
