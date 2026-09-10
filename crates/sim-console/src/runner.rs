@@ -799,6 +799,17 @@ impl RunManager {
                     remedy: "Use Prepare target farm to install the reviewed compiler toolchain."
                         .to_string(),
                 });
+            } else if let Some(pin) = line.strip_prefix("SIMPLER_DEPENDENCY_UNREADY\t") {
+                simpler_toolchain_issues.push(ReadinessIssue {
+                    code: "remote_simpler_dependency_unready".to_string(),
+                    message: format!(
+                        "Target {} lacks the complete Simpler PTO-ISA checkout {}",
+                        target.id,
+                        short_revision(pin)
+                    ),
+                    remedy: "Prepare the target farm to seed Simpler's pinned dependency."
+                        .to_string(),
+                });
             } else if let Some(path) = line.strip_prefix("BOOTSTRAP_FILE_MISSING\t") {
                 common_issues.push(ReadinessIssue {
                     code: "remote_bootstrap_file_missing".to_string(),
@@ -2050,6 +2061,13 @@ fn remote_probe_command(
     }
     for (mirror, expected) in source_dependencies(local_repo_root, "HEAD", target)? {
         let source_path = format!("{source_repo}/{}", mirror.path);
+        if mirror.path == "vendor/simpler/build/pto-isa" {
+            command.push_str(&format!(
+                "if [ \"$(git -C {path} rev-parse HEAD 2>/dev/null || true)\" != {expected} ] || ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --ignore-submodules=all --quiet {expected} --; then printf 'SIMPLER_DEPENDENCY_UNREADY\\t%s\\n' {expected}; fi; ",
+                path = shell_quote(&source_path), expected = shell_quote(&expected),
+            ));
+            continue;
+        }
         command.push_str(&format!(
             "if ! git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null; then printf 'SUBMODULE_OBJECT_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; else actual=$(git -C {path} rev-parse HEAD 2>/dev/null || true); if [ \"$actual\" != {expected} ]; then printf 'SUBMODULE_HEAD_MISMATCH\\t%s\\t%s\\t%s\\n' {display_path} {display_expected} \"${{actual:-missing}}\"; elif ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --ignore-submodules=all --quiet {expected} --; then printf 'SUBMODULE_CHECKOUT_DIRTY\\t%s\\t%s\\n' {display_path} {display_expected}; fi; fi; ",
             path = shell_quote(&source_path),
@@ -3312,6 +3330,7 @@ mod tests {
             .unwrap();
         assert_eq!(nested.0.fetch_url, top.0.fetch_url);
         assert!(probe.contains("vendor/simpler/build/pto-isa"));
+        assert!(probe.contains("SIMPLER_DEPENDENCY_UNREADY"));
         assert!(probe.contains(&nested.1));
     }
 
