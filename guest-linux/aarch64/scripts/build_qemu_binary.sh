@@ -103,7 +103,9 @@ qemu_source_signature() {
         "$SRC_DIR/tests/unit/test-ub-obmm-remote.c" \
         "$SRC_DIR/tests/unit/test-ub-obmm-remote-model.c" \
         "$SRC_DIR/tests/unit/test-ub-void-response-policy.c" \
-        "$SRC_DIR/tests/unit/test-ub-async-load.c"
+        "$SRC_DIR/tests/unit/test-ub-async-load.c" \
+        "$SRC_DIR/tests/unit/test-linqu-bridge-lock.c" \
+        "$SRC_DIR/include/hw/ub/linqu_bridge_lock.h"
     } |
     while IFS= read -r file; do
       [[ -f "$file" ]] || continue
@@ -502,7 +504,8 @@ obmm_tests_ready() {
   [[ -x "$BUILD_DIR/tests/unit/test-ub-obmm-remote" &&
      -x "$BUILD_DIR/tests/unit/test-ub-obmm-remote-model" &&
      -x "$BUILD_DIR/tests/unit/test-ub-void-response-policy" &&
-     -x "$BUILD_DIR/tests/unit/test-ub-async-load" ]]
+     -x "$BUILD_DIR/tests/unit/test-ub-async-load" &&
+     -x "$BUILD_DIR/tests/unit/test-linqu-bridge-lock" ]]
 }
 
 TEST_TARGETS_READY=1
@@ -552,6 +555,7 @@ if (( BUILD_OBMM_TESTS == 1 )); then
     tests/unit/test-ub-obmm-remote-model
     tests/unit/test-ub-void-response-policy
     tests/unit/test-ub-async-load
+    tests/unit/test-linqu-bridge-lock
   )
 fi
 echo "[build_qemu_binary] building ${BUILD_TARGETS[*]}" >&2
