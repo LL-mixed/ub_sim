@@ -1588,7 +1588,7 @@ fn run_checked_output(
     ))))
 }
 
-fn ssh_reuse_options() -> Result<[String; 6], RunManagerError> {
+fn ssh_reuse_options() -> Result<[String; 10], RunManagerError> {
     let uid = unsafe { libc::geteuid() };
     let directory = PathBuf::from(format!("/tmp/sim-console-ssh-{uid}"));
     match fs::DirBuilder::new().mode(0o700).create(&directory) {
@@ -1611,6 +1611,10 @@ fn ssh_reuse_options() -> Result<[String; 6], RunManagerError> {
         "ControlPersist=60".to_string(),
         "-o".to_string(),
         format!("ControlPath={}/%C", directory.display()),
+        "-o".to_string(),
+        "ServerAliveInterval=15".to_string(),
+        "-o".to_string(),
+        "ServerAliveCountMax=3".to_string(),
     ])
 }
 
@@ -1642,6 +1646,7 @@ async fn ssh_output_with_retry(
     command: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<std::process::Output> {
+    command.kill_on_drop(true);
     for attempt in 0..3 {
         let output = tokio::time::timeout(timeout, command.output())
             .await
@@ -1799,6 +1804,7 @@ fn ssh_command(target: &ExecutionTarget) -> Result<Command, RunManagerError> {
         .as_deref()
         .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
     let mut command = Command::new("ssh");
+    command.kill_on_drop(true);
     command
         .args(ssh_reuse_options()?)
         .arg("-T")
@@ -2339,7 +2345,7 @@ fn remote_log_archive_command(
     let repo_root = remote_repo_root(target)?;
     let pattern = format!("*{run_id}*");
     Ok(format!(
-        "set -eu; cd {repo}; tmp=$(mktemp -d); cleanup() {{ rm -rf \"$tmp\"; }}; trap cleanup EXIT; find guest-linux/aarch64/logs -type f -path {pattern} \\( -name 'node*_guest.log' -o -name 'node*_qemu.log' \\) -print 2>/dev/null | while IFS= read -r file; do base=$(basename \"$file\"); tail -c 262144 \"$file\" > \"$tmp/$base\"; done; tar -C \"$tmp\" -cf - .",
+        "set -eu; cd {repo}; tmp=$(mktemp -d); cleanup() {{ rm -rf \"$tmp\"; }}; trap cleanup EXIT; find guest-linux/aarch64/logs -type f -path {pattern} \\( -name 'node*_guest.log' -o -name 'node*_qemu.log' \\) -print 2>/dev/null | while IFS= read -r file; do base=$(basename \"$file\"); limit=262144; case \"$base\" in *_qemu.log) limit=8192;; esac; tail -c \"$limit\" \"$file\" > \"$tmp/$base\"; done; tar -C \"$tmp\" -cf - .",
         repo = shell_quote(repo_root),
         pattern = shell_quote(&pattern),
     ))
@@ -3266,6 +3272,11 @@ mod tests {
         let stop = remote_stop_command(&target, "sim-console-42").unwrap();
         assert!(stop.contains("kill -TERM -- \"-$pid\""));
         assert!(stop.contains("process-group.pid"));
+        let archive = remote_log_archive_command(&target, "sim-console-42").unwrap();
+        assert!(archive.contains("*sim-console-42*"));
+        assert!(archive.contains("limit=262144"));
+        assert!(archive.contains("*_qemu.log) limit=8192;;"));
+        assert!(archive.contains("tail -c \"$limit\" \"$file\""));
         let input = remote_node_input_command(
             &target,
             &NodeInputDefinition {
@@ -3682,6 +3693,8 @@ mod tests {
         let options = ssh_reuse_options().unwrap();
         assert!(options.iter().any(|arg| arg == "ControlMaster=auto"));
         assert!(options.iter().any(|arg| arg == "ControlPersist=60"));
+        assert!(options.iter().any(|arg| arg == "ServerAliveInterval=15"));
+        assert!(options.iter().any(|arg| arg == "ServerAliveCountMax=3"));
         let path = options[5].strip_prefix("ControlPath=").unwrap();
         let directory = Path::new(path).parent().unwrap();
         assert_eq!(
@@ -3692,6 +3705,27 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+
+    #[tokio::test]
+    async fn timed_out_probe_terminates_its_child() {
+        let root = TempDir::new().unwrap();
+        let pid_file = root.path().join("pid");
+        let mut command = Command::new("python3");
+        command.args([
+            "-c",
+            "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)",
+        ]).arg(&pid_file);
+        let result = ssh_output_with_retry(&mut command, Duration::from_secs(1)).await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        let pid: i32 = fs::read_to_string(pid_file).unwrap().parse().unwrap();
+        for _ in 0..100 {
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed-out probe process {pid} survived cancellation");
     }
 
     #[test]

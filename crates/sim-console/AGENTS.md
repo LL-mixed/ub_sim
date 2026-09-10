@@ -83,6 +83,9 @@ Simulator and guest logs remain under their existing `logs/` directories.
   OpenSSH removes idle sockets after 60 seconds. Bounded
   retries may handle explicit pre-authentication handshake failures; never
   replay workloads after an ambiguous disconnect or a workload failure.
+- Timed-out SSH probes and log collectors must be killed. Retain at most
+  8 KiB per QEMU host log during polling; guest log tails retain their existing
+  limit. Keepalive detection bounds an unresponsive SSH transport.
 
 ## API And State
 
