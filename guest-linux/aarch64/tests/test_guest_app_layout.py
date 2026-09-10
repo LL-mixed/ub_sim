@@ -1600,7 +1600,31 @@ def test_mem_service_has_component_and_cli_entrypoints():
     ):
         assert source in llm_infer_link
     assert "${=LIBOBMM_CFLAGS} ${=LIBOBMM_SRCS}" in llm_infer_link
-    assert '"$MEM_SERVICE_CLI_SRC" "$MEM_SERVICE_DAEMON_SRC" "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_METADATA_SRC" "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_KEYS_SRC" "$MEM_SERVICE_OBJECT_REFS_SRC" "$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC" "$MEM_SERVICE_UB_SSD_GSVA_IO_SRC" "$MEM_SERVICE_RECORDS_SRC" -lm -o "$MEM_SERVICE_CLI_BIN"' in build_script
+    mem_service_cli_link = next(
+        line
+        for line in build_script.splitlines()
+        if line.endswith('-o "$MEM_SERVICE_CLI_BIN"')
+    )
+    for source in (
+        '"$MEM_SERVICE_CLI_SRC"',
+        '"$MEM_SERVICE_DAEMON_SRC"',
+        '"$MEM_SERVICE_CLIENT_SRC"',
+        '"$MEM_SERVICE_WIRE_CLIENT_SRC"',
+        '"$MEM_SERVICE_METADATA_SRC"',
+        '"$MEM_SERVICE_PROVIDER_SRC"',
+        '"$MEM_SERVICE_PROVIDER_OBMM_SRC"',
+        '"$MEM_SERVICE_KEYS_SRC"',
+        '"$MEM_SERVICE_OBJECT_REFS_SRC"',
+        '"$MEM_SERVICE_UB_SSD_GSVA_BACKEND_SRC"',
+        '"$MEM_SERVICE_UB_SSD_GSVA_IO_SRC"',
+        '"$MEM_SERVICE_RECORDS_SRC"',
+    ):
+        assert source in mem_service_cli_link
+    # The guest CLI links the OBMM provider plus libobmm so object-session
+    # map/unmap/write/read can run against real /dev/obmm in the guest.
+    assert "-DMEM_SERVICE_OBJECT_SESSION_OBMM" in mem_service_cli_link
+    assert "${=LIBOBMM_CFLAGS}" in mem_service_cli_link
+    assert "${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS}" in mem_service_cli_link
     assert "-DMEM_SERVICE_ENABLE_QWEN3_INSPECT" in build_script
     mem_service_qwen3_link = next(
         line
@@ -3046,6 +3070,7 @@ def test_pretraining_client_runs_against_independent_mem_service_daemon():
     assert "all: linqu_pretraining_client" in makefile
     assert "components/mem_service/mem_service_client.c" in makefile
     assert "components/mem_service/mem_service_wire_client.c" in makefile
+    assert "components/mem_service/mem_service_provider.c" in makefile
     assert "components/mem_service/mem_service_keys.c" in makefile
     assert "components/mem_service/mem_service_object_refs.c" in makefile
     assert "components/mem_service/mem_service_records.c" in makefile
@@ -3071,6 +3096,7 @@ def test_pretraining_client_runs_against_independent_mem_service_daemon():
     assert "PRETRAINING_CLIENT_APP_BIN=" in build_script
     assert "write_signature_line \"pretraining_client_app_src\"" in build_script
     assert '"$PRETRAINING_CLIENT_APP_SRC" "$MEM_SERVICE_CLIENT_SRC"' in build_script
+    assert '"$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_PROVIDER_SRC"' in build_script
     assert 'cp "$PRETRAINING_CLIENT_APP_BIN" "$INITRAMFS_DIR/bin/linqu_pretraining_client"' in build_script
     assert "run_pretraining_client_mem_service" in run_app
     assert "linqu_pretraining_client_mem_service=1" in run_app
