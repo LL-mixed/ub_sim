@@ -78,6 +78,11 @@ Simulator and guest logs remain under their existing `logs/` directories.
 - Stop must terminate the remote run, not only the local SSH client. A remote
   run is not terminal until the SSH adapter exits and launcher cleanup has had
   a chance to run.
+- Reuse target SSH connections with control sockets in a private mode-0700
+  `/tmp/sim-console-ssh-<uid>/` directory, named by OpenSSH's connection hash.
+  OpenSSH removes idle sockets after 60 seconds. Bounded
+  retries may handle explicit pre-authentication handshake failures; never
+  replay workloads after an ambiguous disconnect or a workload failure.
 
 ## API And State
 

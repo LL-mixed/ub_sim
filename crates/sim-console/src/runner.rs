@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
@@ -724,27 +724,19 @@ impl RunManager {
     ) -> Result<Vec<DemoReadiness>, RunManagerError> {
         let mut command = ssh_command(target)?;
         command.arg(remote_probe_command(target, &self.inner.repo_root)?);
-        let output = match tokio::time::timeout(
+        let output = match ssh_output_with_retry(
+            &mut command,
             Duration::from_secs(target.connect_timeout_secs.unwrap_or(10) + 5),
-            command.output(),
         )
         .await
         {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => {
+            Ok(output) => output,
+            Err(error) => {
                 return Ok(self.remote_target_blocked_readiness(
                     target,
                     "target_unreachable",
                     format!("Failed to contact target {}: {error}", target.id),
                     "Check SSH connectivity and the target registry entry.",
-                ));
-            }
-            Err(_) => {
-                return Ok(self.remote_target_blocked_readiness(
-                    target,
-                    "target_unreachable",
-                    format!("Timed out contacting target {}", target.id),
-                    "Check SSH connectivity and host load, then refresh readiness.",
                 ));
             }
         };
@@ -1545,7 +1537,7 @@ pub fn run_remote_worker(plan_path: &Path) -> Result<(), RunManagerError> {
         .arg(prepare)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    run_checked(&mut prepare_command, "prepare remote worktree")?;
+    run_ssh_prepare_with_retry(&mut prepare_command)?;
     fs::remove_file(&bundle_path).ok();
 
     println!(
@@ -1596,6 +1588,77 @@ fn run_checked_output(
     ))))
 }
 
+fn ssh_reuse_options() -> Result<[String; 6], RunManagerError> {
+    let uid = unsafe { libc::geteuid() };
+    let directory = PathBuf::from(format!("/tmp/sim-console-ssh-{uid}"));
+    match fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(RunManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "SSH control directory must be private and owned by the current user",
+        )));
+    }
+    Ok([
+        "-o".to_string(),
+        "ControlMaster=auto".to_string(),
+        "-o".to_string(),
+        "ControlPersist=60".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}/%C", directory.display()),
+    ])
+}
+
+fn handshake_failed(output: &std::process::Output) -> bool {
+    output.status.code() == Some(255)
+        && String::from_utf8_lossy(&output.stderr)
+            .contains("Connection timed out during banner exchange")
+}
+
+fn run_ssh_prepare_with_retry(command: &mut StdCommand) -> Result<(), RunManagerError> {
+    for attempt in 0..3 {
+        let output = command.stderr(Stdio::piped()).output()?;
+        std::io::stderr().write_all(&output.stderr)?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if attempt == 2 || !handshake_failed(&output) {
+            return Err(RunManagerError::Io(std::io::Error::other(format!(
+                "prepare remote worktree failed with {}",
+                output.status
+            ))));
+        }
+        eprintln!("[sim-console] SSH handshake timed out; reconnecting before target preparation (attempt {})", attempt + 2);
+    }
+    unreachable!()
+}
+
+async fn ssh_output_with_retry(
+    command: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    for attempt in 0..3 {
+        let output = tokio::time::timeout(timeout, command.output())
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "SSH command timed out")
+            })??;
+        if attempt == 2 || !handshake_failed(&output) {
+            return Ok(output);
+        }
+        eprintln!(
+            "[sim-console] SSH handshake timed out; reconnecting (attempt {})",
+            attempt + 2
+        );
+    }
+    unreachable!()
+}
+
 fn ssh_command_std(target: &ExecutionTarget) -> Result<StdCommand, RunManagerError> {
     let host = target
         .ssh_host
@@ -1603,6 +1666,7 @@ fn ssh_command_std(target: &ExecutionTarget) -> Result<StdCommand, RunManagerErr
         .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
     let mut command = StdCommand::new("ssh");
     command
+        .args(ssh_reuse_options()?)
         .arg("-T")
         .arg("-o")
         .arg("BatchMode=yes")
@@ -1736,6 +1800,7 @@ fn ssh_command(target: &ExecutionTarget) -> Result<Command, RunManagerError> {
         .ok_or_else(|| RunManagerError::UnknownTarget(target.id.clone()))?;
     let mut command = Command::new("ssh");
     command
+        .args(ssh_reuse_options()?)
         .arg("-T")
         .arg("-o")
         .arg("BatchMode=yes")
@@ -3570,6 +3635,62 @@ mod tests {
         assert_eq!(
             final_node_status("fixture", RunStatus::Running, NodeStatus::Passed),
             NodeStatus::Passed
+        );
+    }
+
+    const SSH_FAILURE_FIXTURE: &str = "import pathlib, sys\np=pathlib.Path(sys.argv[1])\nn=int(p.read_text())+1 if p.exists() else 1\np.write_text(str(n))\nmode=sys.argv[2]\nif mode == 'once' and n > 1: sys.exit(0)\nprint('client_loop: send disconnect: Broken pipe' if mode == 'ambiguous' else 'Connection timed out during banner exchange', file=sys.stderr)\nsys.exit(255)\n";
+
+    #[test]
+    fn preparation_retries_only_handshake_failures_and_bounds_attempts() {
+        for (mode, attempts, success) in [
+            ("once", "2", true),
+            ("always", "3", false),
+            ("ambiguous", "1", false),
+        ] {
+            let root = TempDir::new().unwrap();
+            let count = root.path().join("attempts");
+            let mut command = StdCommand::new("python3");
+            command
+                .args(["-c", SSH_FAILURE_FIXTURE])
+                .arg(&count)
+                .arg(mode);
+            assert_eq!(run_ssh_prepare_with_retry(&mut command).is_ok(), success);
+            assert_eq!(fs::read_to_string(count).unwrap(), attempts);
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_recovers_a_handshake_timeout_without_replaying_disconnects() {
+        for (mode, attempts, success) in [("once", "2", true), ("ambiguous", "1", false)] {
+            let root = TempDir::new().unwrap();
+            let count = root.path().join("attempts");
+            let mut command = Command::new("python3");
+            command
+                .args(["-c", SSH_FAILURE_FIXTURE])
+                .arg(&count)
+                .arg(mode);
+            let output = ssh_output_with_retry(&mut command, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert_eq!(output.status.success(), success);
+            assert_eq!(fs::read_to_string(count).unwrap(), attempts);
+        }
+    }
+
+    #[test]
+    fn ssh_connection_reuse_uses_a_private_directory() {
+        let options = ssh_reuse_options().unwrap();
+        assert!(options.iter().any(|arg| arg == "ControlMaster=auto"));
+        assert!(options.iter().any(|arg| arg == "ControlPersist=60"));
+        let path = options[5].strip_prefix("ControlPath=").unwrap();
+        let directory = Path::new(path).parent().unwrap();
+        assert_eq!(
+            fs::symlink_metadata(directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
         );
     }
 
