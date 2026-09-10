@@ -21,7 +21,7 @@ use crate::domain::{
     ReadinessIssue, ResolvedCommand, RunRecord, RunStatus, StartRunRequest,
     TargetPreparationResult,
 };
-use crate::target::{ExecutionTarget, ExecutionTargetKind, TargetRegistry};
+use crate::target::{ExecutionTarget, ExecutionTargetKind, SubmoduleMirror, TargetRegistry};
 
 const MAX_LOG_LINES: usize = 500;
 const MAX_NODE_INPUT_BYTES: usize = 4096;
@@ -236,16 +236,13 @@ impl RunManager {
             prepared_files.push(relative_path.clone());
         }
         let mut prepared_submodules = Vec::new();
-        for mirror in &target.submodule_mirrors {
-            let expected = submodule_commit_at_revision(
-                &self.inner.repo_root,
-                &source_revision,
-                &mirror.path,
-            )?;
+        for (mirror, expected) in
+            source_dependencies(&self.inner.repo_root, &source_revision, &target)?
+        {
             let remote_repo = format!("{source_repo}/{}", mirror.path);
             let output = run_remote_command_output(
                 &target,
-                remote_source_mirror_prepare_command(mirror, &remote_repo, &expected),
+                remote_source_mirror_prepare_command(&mirror, &remote_repo, &expected),
                 TARGET_PREPARATION_TIMEOUT,
                 &format!("prepare source mirror {}", mirror.path),
             )
@@ -254,7 +251,14 @@ impl RunManager {
                 .lines()
                 .any(|line| line == "MIRROR_NEEDS_CHECKOUT_PACK")
             {
-                let local_repo = self.inner.repo_root.join(&mirror.path);
+                let local_repo =
+                    self.inner
+                        .repo_root
+                        .join(if mirror.path == "vendor/simpler/build/pto-isa" {
+                            "vendor/pto-isa"
+                        } else {
+                            &mirror.path
+                        });
                 let pack_path = preparation_root.join(format!("{}.pack", expected));
                 create_checkout_pack(&local_repo, &expected, &pack_path)?;
                 let remote_pack = format!("{remote_bundle_root}/{}.pack", expected);
@@ -1077,6 +1081,9 @@ impl RunManager {
                 record.message = Some(format!("process wait failed: {error}"));
             }
         }
+        if record.status == RunStatus::Failed {
+            let _ = append_host_diagnostics(&self.inner.repo_root, &self.inner.state_root, record);
+        }
         if let Err(error) = self.refresh_nodes(record) {
             record.message = Some(format!(
                 "{}; node refresh failed: {error}",
@@ -1098,6 +1105,7 @@ impl RunManager {
             if let Some(path) = discovered.get(&node.id) {
                 node.log_path = Some(relative_display(&self.inner.repo_root, path));
                 node.status = classify_node_log(path)?;
+                node.status = final_node_status(&record.demo_id, record.status, node.status);
                 if record.status == RunStatus::Passed && node.status != NodeStatus::Failed {
                     node.status = NodeStatus::Passed;
                 }
@@ -1477,13 +1485,13 @@ pub fn run_remote_worker(plan_path: &Path) -> Result<(), RunManagerError> {
 
     let source_repo = remote_workspace_source_repo(&plan.target)?;
     let mut mirror_fetches = String::new();
-    for mirror in &plan.target.submodule_mirrors {
-        let expected =
-            submodule_commit_at_revision(&plan.local_repo_root, &source_head, &mirror.path)?;
+    for (mirror, expected) in
+        source_dependencies(&plan.local_repo_root, &source_head, &plan.target)?
+    {
         let target_path = format!("{repo_root}/{}", mirror.path);
         let source_path = format!("{source_repo}/{}", mirror.path);
         mirror_fetches.push_str(&remote_mirror_fetch_command(
-            mirror,
+            &mirror,
             &target_path,
             &source_path,
             &expected,
@@ -1640,6 +1648,53 @@ fn submodule_commit_at_revision(
         ))));
     }
     Ok(fields[2].to_string())
+}
+
+fn source_dependencies(
+    repo_root: &Path,
+    revision: &str,
+    target: &ExecutionTarget,
+) -> Result<Vec<(SubmoduleMirror, String)>, RunManagerError> {
+    let mut dependencies = target
+        .submodule_mirrors
+        .iter()
+        .map(|mirror| {
+            Ok((
+                mirror.clone(),
+                submodule_commit_at_revision(repo_root, revision, &mirror.path)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, RunManagerError>>()?;
+    if let Some((_, simpler_revision)) = dependencies
+        .iter()
+        .find(|(mirror, _)| mirror.path == "vendor/simpler")
+    {
+        let output = StdCommand::new("git")
+            .arg("-C")
+            .arg(repo_root.join("vendor/simpler"))
+            .args(["show", &format!("{simpler_revision}:pto_isa.pin")])
+            .output()?;
+        let pin = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !output.status.success()
+            || pin.len() != 40
+            || !pin.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(RunManagerError::MissingRequirement(
+                "committed Simpler pto_isa.pin is missing or invalid".to_string(),
+            ));
+        }
+        let mut mirror = target
+            .submodule_mirrors
+            .iter()
+            .find(|mirror| mirror.path == "vendor/pto-isa")
+            .cloned()
+            .ok_or_else(|| {
+                RunManagerError::MissingRequirement("reviewed PTO-ISA mirror".to_string())
+            })?;
+        mirror.path = "vendor/simpler/build/pto-isa".to_string();
+        dependencies.push((mirror, pin));
+    }
+    Ok(dependencies)
 }
 
 fn submodule_checkout_mismatch(
@@ -1993,8 +2048,7 @@ fn remote_probe_command(
             path = shell_quote(path),
         ));
     }
-    for mirror in &target.submodule_mirrors {
-        let expected = submodule_commit_at_head(local_repo_root, &mirror.path)?;
+    for (mirror, expected) in source_dependencies(local_repo_root, "HEAD", target)? {
         let source_path = format!("{source_repo}/{}", mirror.path);
         command.push_str(&format!(
             "if ! git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null; then printf 'SUBMODULE_OBJECT_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; else actual=$(git -C {path} rev-parse HEAD 2>/dev/null || true); if [ \"$actual\" != {expected} ]; then printf 'SUBMODULE_HEAD_MISMATCH\\t%s\\t%s\\t%s\\n' {display_path} {display_expected} \"${{actual:-missing}}\"; elif ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --ignore-submodules=all --quiet {expected} --; then printf 'SUBMODULE_CHECKOUT_DIRTY\\t%s\\t%s\\n' {display_path} {display_expected}; fi; fi; ",
@@ -2202,7 +2256,7 @@ fn remote_log_archive_command(
     let repo_root = remote_repo_root(target)?;
     let pattern = format!("*{run_id}*");
     Ok(format!(
-        "set -eu; cd {repo}; tmp=$(mktemp -d); cleanup() {{ rm -rf \"$tmp\"; }}; trap cleanup EXIT; find guest-linux/aarch64/logs -type f -path {pattern} -name 'node*_guest.log' -print 2>/dev/null | while IFS= read -r file; do base=$(basename \"$file\"); tail -c 262144 \"$file\" > \"$tmp/$base\"; done; tar -C \"$tmp\" -cf - .",
+        "set -eu; cd {repo}; tmp=$(mktemp -d); cleanup() {{ rm -rf \"$tmp\"; }}; trap cleanup EXIT; find guest-linux/aarch64/logs -type f -path {pattern} \\( -name 'node*_guest.log' -o -name 'node*_qemu.log' \\) -print 2>/dev/null | while IFS= read -r file; do base=$(basename \"$file\"); tail -c 262144 \"$file\" > \"$tmp/$base\"; done; tar -C \"$tmp\" -cf - .",
         repo = shell_quote(repo_root),
         pattern = shell_quote(&pattern),
     ))
@@ -2475,6 +2529,44 @@ fn discover_mirrored_node_logs(
         }
     }
     Ok(result)
+}
+
+fn append_host_diagnostics(
+    repo_root: &Path,
+    state_root: &Path,
+    record: &RunRecord,
+) -> std::io::Result<()> {
+    let mut output = OpenOptions::new()
+        .append(true)
+        .open(repo_root.join(&record.process_log_path))?;
+    for node in &record.nodes {
+        let path = state_root
+            .join(&record.id)
+            .join("remote-node-logs")
+            .join(format!("{}_qemu.log", node.id));
+        let Ok(mut file) = File::open(path) else {
+            continue;
+        };
+        let size = file.metadata()?.len();
+        file.seek(SeekFrom::Start(size.saturating_sub(8192)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        writeln!(
+            output,
+            "\n[sim-console] {} host diagnostics (last 8192 bytes):",
+            node.id
+        )?;
+        output.write_all(&bytes)?;
+    }
+    Ok(())
+}
+
+fn final_node_status(demo_id: &str, run: RunStatus, observed: NodeStatus) -> NodeStatus {
+    if demo_id.starts_with("w5-") && run != RunStatus::Passed && observed == NodeStatus::Passed {
+        NodeStatus::Ready
+    } else {
+        observed
+    }
 }
 
 fn classify_node_log(path: &Path) -> Result<NodeStatus, RunManagerError> {
@@ -3202,6 +3294,25 @@ mod tests {
         assert!(probe.contains("SUBMODULE_HEAD_MISMATCH"));
         assert!(probe.contains("SUBMODULE_CHECKOUT_DIRTY"));
         assert!(probe.contains("--ignore-submodules=all"));
+        let dependencies = source_dependencies(&repo_root, "HEAD", target).unwrap();
+        let nested = dependencies
+            .iter()
+            .find(|(mirror, _)| mirror.path == "vendor/simpler/build/pto-isa")
+            .unwrap();
+        let simpler = submodule_commit_at_head(&repo_root, "vendor/simpler").unwrap();
+        let pin = git_output(
+            &repo_root.join("vendor/simpler"),
+            &["show", &format!("{simpler}:pto_isa.pin")],
+        )
+        .unwrap();
+        assert_eq!(nested.1, pin.trim());
+        let top = dependencies
+            .iter()
+            .find(|(mirror, _)| mirror.path == "vendor/pto-isa")
+            .unwrap();
+        assert_eq!(nested.0.fetch_url, top.0.fetch_url);
+        assert!(probe.contains("vendor/simpler/build/pto-isa"));
+        assert!(probe.contains(&nested.1));
     }
 
     #[test]
@@ -3419,5 +3530,64 @@ mod tests {
 
         fs::write(&log, "[ub_obmm_pool] pass\n[w4_guest] fail\n").unwrap();
         assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Failed);
+    }
+
+    #[test]
+    fn w5_step_pass_waits_for_final_run_validation() {
+        for run in [RunStatus::Running, RunStatus::Failed, RunStatus::Stopped] {
+            assert_eq!(
+                final_node_status("w5-qwen-8", run, NodeStatus::Passed),
+                NodeStatus::Ready
+            );
+        }
+        assert_eq!(
+            final_node_status("w5-qwen-8", RunStatus::Passed, NodeStatus::Passed),
+            NodeStatus::Passed
+        );
+        assert_eq!(
+            final_node_status("w5-qwen-8", RunStatus::Passed, NodeStatus::Failed),
+            NodeStatus::Failed
+        );
+        assert_eq!(
+            final_node_status("fixture", RunStatus::Running, NodeStatus::Passed),
+            NodeStatus::Passed
+        );
+    }
+
+    #[test]
+    fn failed_run_host_diagnostics_are_bounded_and_visible_in_process_log() {
+        let root = TempDir::new().unwrap();
+        let state = root.path().join("out/runs");
+        let logs = state.join("failed/remote-node-logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(root.path().join("process.log"), "launcher failed\n").unwrap();
+        fs::write(
+            logs.join("nodeA_qemu.log"),
+            format!("{}free(): double free detected\n", "x".repeat(20000)),
+        )
+        .unwrap();
+        let record = RunRecord {
+            id: "failed".to_string(),
+            demo_id: "w5-qwen-8".to_string(),
+            demo_title: "Fixture".to_string(),
+            target_id: "local".to_string(),
+            source_revision: None,
+            status: RunStatus::Failed,
+            created_at_ms: 0,
+            started_at_ms: None,
+            finished_at_ms: Some(1),
+            pid: None,
+            exit_code: Some(1),
+            parameters: BTreeMap::new(),
+            nodes: topology_nodes(2),
+            process_log_path: "process.log".to_string(),
+            message: None,
+        };
+        append_host_diagnostics(root.path(), &state, &record).unwrap();
+        let output = fs::read_to_string(root.path().join("process.log")).unwrap();
+        assert!(output.starts_with("launcher failed\n"));
+        assert!(output.contains("nodeA host diagnostics"));
+        assert!(output.contains("free(): double free detected"));
+        assert!(output.len() < 8400);
     }
 }

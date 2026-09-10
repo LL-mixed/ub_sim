@@ -67,6 +67,10 @@ Simulator and guest logs remain under their existing `logs/` directories.
   install the fixed GCC 15 Conda toolchain below the target user's home and
   expose versioned user-local compiler links. Never alias an older compiler as
   `gcc-15` or `g++-15`.
+- Simpler preparation and readiness must include its own committed
+  `pto_isa.pin` dependency, separately from the top-level PTO-ISA gitlink.
+  Provision the complete exact checkout in the source cache and each managed
+  worktree using reviewed sources or a verified checkout pack.
 - Target bootstrap files must be repository-relative, reviewed in the target
   registry, and copied from the console repository into the remote source
   cache. Remote runs copy them into the managed worktree after checkout. The
@@ -82,6 +86,9 @@ Simulator and guest logs remain under their existing `logs/` directories.
   `stopped`. Terminal states never transition back to a live state.
 - Node state is derived from declared topology and observed logs. Unknown data
   must remain `unknown`; do not manufacture health.
+- W5 step-level PASS markers are progress. A node is passed only after all
+  requested rounds and successful final run validation. Preserve bounded
+  remote host diagnostics so compiler and QEMU failures are visible to users.
 - Persist metadata atomically so a backend restart can display prior runs.
 
 ## Frontend
