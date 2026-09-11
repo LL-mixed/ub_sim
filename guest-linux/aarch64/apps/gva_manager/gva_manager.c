@@ -15,6 +15,7 @@
 #include "../../libs/gva_manager/gva_manager.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -97,6 +98,7 @@ struct gva_mgr_aperture_msg {
 struct gva_mgr_config {
     bool bootstrap;
     bool dump_routes;
+    bool dump_obmm_regions;
     bool allocate_segment;
     bool retire_segment;
     bool reuse_segment;
@@ -182,6 +184,108 @@ static int dump_gva_routes(void)
     fclose(fp);
     log_msg("result=done action=dump-routes lines=%u", count);
     return 0;
+}
+
+#ifndef GVA_MGR_OBMM_SYSFS_ROOT
+#define GVA_MGR_OBMM_SYSFS_ROOT "/sys/devices/obmm"
+#endif
+
+static int read_region_attribute(const char *name, const char *attribute,
+                                 char *value, size_t capacity)
+{
+    char path[512];
+    FILE *fp;
+    size_t len;
+    int ret = -1;
+
+    if (snprintf(path, sizeof(path), "%s/%s/%s", GVA_MGR_OBMM_SYSFS_ROOT,
+                 name, attribute) >= (int)sizeof(path))
+        return -1;
+    fp = fopen(path, "r");
+    if (!fp)
+        return -1;
+    if (fgets(value, capacity, fp)) {
+        len = strlen(value);
+        if (len > 1 && value[len - 1] == '\n' && fgetc(fp) == EOF && !ferror(fp)) {
+            value[len - 1] = '\0';
+            ret = 0;
+        }
+    }
+    if (fclose(fp))
+        ret = -1;
+    return ret;
+}
+
+/* Read-only, non-atomic enumeration. Compare only at quiescent checkpoints.
+ * Sysfs does not enumerate GSVA reservations or process VMAs. */
+static int dump_obmm_regions(void)
+{
+    struct region_sample { uint64_t size; bool imported; bool valid; } *samples = NULL;
+    struct dirent **entries = NULL;
+    uint64_t counts[2] = {0}, bytes[2] = {0};
+    int n, i, ret = -1;
+
+    n = scandir(GVA_MGR_OBMM_SYSFS_ROOT, &entries, NULL, alphasort);
+    if (n < 0)
+        goto out;
+    samples = calloc(n ? (size_t)n : 1, sizeof(*samples));
+    if (!samples)
+        goto out;
+    for (i = 0; i < n; i++) {
+        const char *name = entries[i]->d_name;
+        const char *id;
+        char type[32], value[64], *end;
+        uint64_t size;
+        int kind;
+
+        if (strncmp(name, "obmm_shmdev", 11))
+            continue;
+        id = name + 11;
+        if (!*id || strspn(id, "0123456789") != strlen(id) ||
+            read_region_attribute(name, "type", type, sizeof(type)) ||
+            read_region_attribute(name, "size", value, sizeof(value)))
+            goto out;
+        if (!strcmp(type, "export"))
+            kind = 0;
+        else if (!strcmp(type, "import"))
+            kind = 1;
+        else
+            goto out;
+        if (strncmp(value, "0x", 2) || !value[2] ||
+            strspn(value + 2, "0123456789abcdefABCDEF") != strlen(value + 2))
+            goto out;
+        errno = 0;
+        size = strtoull(value, &end, 16);
+        if (errno || *end || !size || UINT64_MAX - bytes[kind] < size)
+            goto out;
+        counts[kind]++;
+        bytes[kind] += size;
+        samples[i].size = size;
+        samples[i].imported = kind;
+        samples[i].valid = true;
+    }
+    /* Never emit a successful partial census after an unreadable region. */
+    for (i = 0; i < n; i++) {
+        if (samples[i].valid)
+            printf("obmm-kernel-region: id=%s type=%s bytes=%" PRIu64 "\n",
+                   entries[i]->d_name + 11,
+                   samples[i].imported ? "import" : "export", samples[i].size);
+    }
+    printf("obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
+           "export_handles=%" PRIu64 " export_bytes=%" PRIu64
+           " import_handles=%" PRIu64 " import_bytes=%" PRIu64 "\n",
+           counts[0], bytes[0], counts[1], bytes[1]);
+    ret = fflush(stdout) == 0 && !ferror(stdout) ? 0 : -1;
+out:
+    if (n >= 0) {
+        for (i = 0; i < n; i++)
+            free(entries[i]);
+        free(entries);
+    }
+    free(samples);
+    if (ret)
+        log_msg("dump-obmm-regions failed; census unavailable or incomplete");
+    return ret;
 }
 
 static void log_kernel_aperture_proc(void)
@@ -440,7 +544,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         uint64_t parsed64;
         int parsed32;
 
-        if (strcmp(argv[i], "--check-allocator") == 0) {
+        if (strcmp(argv[i], "--dump-obmm-regions") == 0) {
+            cfg->bootstrap = false;
+            cfg->dump_obmm_regions = true;
+        } else if (strcmp(argv[i], "--check-allocator") == 0) {
             cfg->bootstrap = false;
             cfg->check_allocator = true;
         } else if (strcmp(argv[i], "--bootstrap") == 0) {
@@ -566,11 +673,14 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "[--coh-recovery] "
                     "[--retire-segment] [--reuse-segment]\n"
                     "       gva_manager --check-allocator --node-id N --node-count C\n"
-                    "       gva_manager --dump-routes\n");
+                    "       gva_manager --dump-routes\n"
+                    "       gva_manager --dump-obmm-regions\n");
             return -EINVAL;
         }
     }
 
+    if (cfg->dump_obmm_regions)
+        return argc == 2 ? 0 : -EINVAL;
     if (cfg->dump_routes)
         return 0;
     if (cfg->desc_alloc || cfg->desc_query || cfg->desc_retire || cfg->check_allocator) {
@@ -2585,6 +2695,8 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    if (cfg.dump_obmm_regions)
+        return dump_obmm_regions() == 0 ? 0 : 1;
     if (cfg.dump_routes)
         return dump_gva_routes() == 0 ? 0 : 1;
 

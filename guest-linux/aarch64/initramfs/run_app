@@ -856,6 +856,8 @@ mem_service_object_share_managed() (
     --aperture-size 0x1000000 || exit 1
   /bin/linqu_mem_service_obmm_provider_conformance --node-id "$node" \
     --node-count 2 --generation "$incarnation" || exit 1
+  echo "mem_service kernel-regions: phase=baseline"
+  /bin/linqu_gva_manager --dump-obmm-regions || exit 1
   mem_service_object_share_wait_daemon "$connect" "$daemon_pid" || exit 1
   /bin/linqu_mem_service provider-register --connect "$connect" \
     --node-id "guest-node-$node" --incarnation "$incarnation" \
@@ -946,6 +948,8 @@ mem_service_object_share_managed() (
   done
   /bin/linqu_mem_service health --connect "$connect" || exit 1
   /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
+  echo "mem_service kernel-regions: phase=drained"
+  /bin/linqu_gva_manager --dump-obmm-regions || exit 1
   role=provider
   [ "$node" = "0" ] || role=consumer
   log "mem_service object-share: status=ok node=$node role=$role backend=obmm"

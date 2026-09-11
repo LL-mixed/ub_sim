@@ -23,6 +23,16 @@ def sample(live, node=1):
     )
 
 
+def kernel_samples():
+    return "".join(
+        f"mem_service kernel-regions: phase={phase}\n"
+        "obmm-kernel-region: id=1 type=export bytes=2097152\n"
+        "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
+        "export_handles=1 export_bytes=2097152 import_handles=0 import_bytes=0\n"
+        for phase in ("baseline", "drained")
+    )
+
+
 class MappingResourceValidationTests(unittest.TestCase):
     def test_both_nodes_have_baseline_live_and_drained_resources(self):
         for node, sequence in ((0, [0, 1, 1, 0, 0]), (1, [0, 1, 1, 0])):
@@ -46,7 +56,7 @@ class MappingResourceValidationTests(unittest.TestCase):
     def test_cli_validates_complete_log_and_rejects_empty_log(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "guest.log"
-            for text, code in (("".join(sample(x) for x in [0, 1, 1, 0]), 0), ("", 1)):
+            for text, code in (("".join(sample(x) for x in [0, 1, 1, 0]) + kernel_samples(), 0), ("", 1)):
                 log.write_text(text)
                 result = subprocess.run(
                     ["python3", str(SCRIPT), "--log", str(log), "--node", "1",
@@ -54,3 +64,16 @@ class MappingResourceValidationTests(unittest.TestCase):
                     text=True, capture_output=True, timeout=10,
                 )
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+
+    def test_kernel_census_requires_identical_region_ids_types_and_sizes(self):
+        valid = kernel_samples()
+        module.validate_kernel_regions(valid)
+        for text in ("", valid + valid, valid.replace("phase=drained", "phase=baseline"),
+                     valid.replace("id=1", "id=2", 1),
+                     valid.replace("export_bytes=2097152", "export_bytes=0"),
+                     valid.replace("type=export", "type=unknown"),
+                     valid.replace("consistency=non_atomic", "consistency=atomic"),
+                     valid.replace("obmm-kernel-region: id=1 type=export bytes=2097152\n", "", 1),
+                     valid.replace("obmm-kernel-region: id=1", "obmm-kernel-region: id=-1")):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                module.validate_kernel_regions(text)

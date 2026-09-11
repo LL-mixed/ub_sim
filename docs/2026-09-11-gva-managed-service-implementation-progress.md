@@ -18,6 +18,9 @@ raw mapping 入口和 kernel 实际资源枚举仍不在该计量内，零值无
 计量，禁止将单调分配策略下的对象计数清零解读为已具备地址空间循环重用。
 r45 已增加 OBMM endpoint 资源快照与双 guest 存活期采样，核对本进程持有的
 export/import、VMA、逻辑视图及清理残留；该诊断不提供 kernel 全局资源枚举。
+r46/r48 续作增加已注册 OBMM region 的 sysfs 枚举命令与基线比较。定向测试通过，
+双 guest 最终验收失败于 nodeB QEMU 堆损坏退出，peer 的最终枚举尚未完成；详见
+本记录末尾失败证据。此项没有改变 M1/AM1 未完成状态。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
 release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
@@ -619,6 +622,76 @@ r45 继续使用不可变 kernel/QEMU r16；运行前通过产物及 host harnes
 包含 r43/r44 服务全量、r44/r45 root 和 guest 成败日志、容器状态、双方 guest
 日志、冻结变更及指纹。大体积 root archive、二进制和 QEMU trace 保留在远端
 `/home/ll/gva-manager-integration/mapping-20260911.UkR8At` 及配套 reclaim 实验目录。
+
+## M1.4 续作：已注册 kernel region 枚举与 QEMU 崩溃证据
+
+现有 `gva_manager` 增加只读命令：
+
+```text
+/bin/linqu_gva_manager --dump-obmm-regions
+```
+
+该命令读取 `/sys/devices/obmm/obmm_shmdev*/type` 与 `size`，输出每个 region ID、
+类型和字节数，以及版本化汇总；不需要打开 `/dev/obmm`，不执行 bootstrap 或分配。
+目录缺失、条目读取失败、非法类型/大小、总字节数溢出均返回失败，且不输出成功的
+部分枚举。命令独立使用，混合其他操作参数会被拒绝。
+
+内核依据为 `obmm_shm_dev.c` 的 root device/region 注册，以及 `obmm_sysfs_ub.c`
+的只读属性。此范围仅包含 sysfs 已注册 region，输出显式声明
+`scope=sysfs consistency=non_atomic`。它不提供 GSVA segment/retired 枚举、进程
+VMA、去重物理池占用、正在销毁或已移除 sysfs 的内部对象。两个相同的静止点
+观察不能证明并发期间从未产生孤儿资源，也不能证明 CPU fencing 已完成。
+
+双 guest 入口在 conformance 后、worker 启动前记录 baseline；每个节点完成其全部
+session 后记录 drained。现有 Python 校验器要求两个阶段顺序完整、region 明细
+与汇总相符，且最终 ID/类型/大小集合等于基线；只比较总数不足以排除替换或泄漏。
+新测试覆盖正常明细、空目录、缺失/非法属性、溢出、参数冲突、缺失/错序快照、
+ID 不一致及伪造汇总。测试使用编译期指定的临时 sysfs fixture，生产构建使用上述
+固定真实路径；fixture 不能作为真实 kernel 运行证据。
+
+所有实际构建、完整套件与 guest 执行位于 n4-910c1：
+
+| 验证 | 结果与边界 |
+| --- | --- |
+| gva_manager 与资源校验器定向 | 11/11 通过，3.152 秒；包含实际编译并执行新增 CLI |
+| gva_manager 静态 guest 二进制 | 通过现有 Makefile 构建 |
+| root unittest r46 | 433 项：414 通过、5 跳过、5 failures、9 errors，40.203 秒；全量未通过 |
+| root layout pytest r46 | 72 通过、2 失败，1.25 秒；全量未通过 |
+| guest r46 | 0/1：组包误保留旧 mem_service，缺少 mapping ledger/provider snapshot；校验器拒绝，未计为通过 |
+| guest r48 | 0/1，runner exit code 31；nodeB QEMU 在第二轮末尾 SIGABRT，peer 未完成最终枚举 |
+
+root 全量失败项与 r45 相同：归档缺少 Git metadata 触发源码锁及其依赖入口失败，
+layout 另有旧锁定 package checksum 预期。未放宽这些检查。本轮未修改 mem_service，
+沿用提交 b05334b 及 r44 全量证据，没有将旧服务二进制的 r46 guest 结果计入新组合。
+初次测试容器使用了重复 shell entrypoint，退出 126；修正容器启动参数后上述
+定向/完整测试才实际运行。该启动失败也已留档。
+
+r48 显式替换 rootfs 中的 manager 与服务 CLI，并保存内部文件指纹。运行前通过
+外部 artifact/harness SHA-256 校验，使用不可变 kernel/QEMU r16。双方 baseline
+均观察到 0 export、0 import；home 完成两轮 session、6 次回收并输出全零 drained。
+peer 第一轮成功，第二轮完成数据校验、unmap、release 及 returned barrier 分配，
+日志随后停止；该节点没有第二轮成功或 drained 证据。不得把 home 正例推广到双方。
+
+nodeB QEMU 原始日志末尾为 `corrupted double-linked list`。宿主机 coredumpctl
+记录 PID 1236100、SIGABRT、时间 2026-09-11 15:39:50 UTC，匹配本次 nodeB 命令行。
+已导出 core 并尝试用同一不可变 QEMU 二进制运行 gdb；系统 core 被截断，线程栈
+地址不可读取，当前无法定位原始写坏内存的位置。没有仅凭最后一条 guest 操作就
+认定 GSVA unmap 为根因，也没有通过重跑成功来关闭这个缺陷。
+
+| 冻结输入及产物 | SHA-256 |
+| --- | --- |
+| 五文件变更 kernel-census-r46-changes.tar.gz | `a788c5d5cfe5e5074b31c1cf25db6d7eaf160cdb03d245c53c87ca7766a71a53` |
+| linqu_gva_manager-r46（r48 复用） | `cf0334e9d9b340f83da5d229250cce7b99ccab91c4d3cfc9b11b1ea1cf279e23` |
+| r48 rootfs 内 linqu_mem_service | `16d50f0aec979b4a47b5a0d42aafbb1f0d48b3a2d9cb5bbf093901bd183c94f5` |
+| r48 rootfs 内 run_app | `b446b3910692d165dd7410b23689e67354cad7f7b0b5e2dfb7bd2c2be89480ce` |
+| managed-share-r48.cpio.gz | `87beb24912822becc7ec7201408bce829316ffb17f01626a2b0ea254611ae3d6` |
+| 资源校验器 | `8cb01bb73393ee2714aa15c2eeecdc7f4481610ebb4c0f68e05a5e316188174d` |
+
+小型证据包 `out/gva-manager-integration/verified-census-r48-evidence.tar.gz`，SHA-256
+为 `7fa854d82590834de8221c4fb4fdb96b33bfebaddd441c62730c7ecdf3aa9f65`，包含定向与
+完整测试日志、失败 guest 日志、QEMU 崩溃尾部、core 信息/gdb 结果、容器状态、
+配置、源码与产物指纹。core、完整 QEMU trace 和二进制仅保留在远端实验目录。
+下一步须用可读完整栈或内存检查构建复现 QEMU 损坏，再恢复双方资源回收验收。
 
 ## 下一批的前置条件与未完成项
 

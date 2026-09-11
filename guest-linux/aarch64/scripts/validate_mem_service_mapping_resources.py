@@ -46,6 +46,43 @@ def validate(text, node, iterations, size):
         raise ValueError(f"resource sequence mismatch: {samples}, expected {expected}")
 
 
+def validate_kernel_regions(text):
+    """Compare quiescent sysfs observations; this cannot prove VMA fencing."""
+    observations = []
+    phase = None
+    regions = {}
+    for line in text.splitlines():
+        if line.startswith("mem_service kernel-regions:"):
+            if phase is not None or len(observations) >= 2:
+                raise ValueError("overlapping or extra kernel census")
+            phase = line.removeprefix("mem_service kernel-regions: phase=")
+            if phase != ("baseline", "drained")[len(observations)]:
+                raise ValueError("unexpected kernel census phase")
+            regions = {}
+        elif line.startswith("obmm-kernel-region:"):
+            fields = dict(item.split("=", 1) for item in line.split()[1:])
+            region_id, size = int(fields["id"]), int(fields["bytes"])
+            kind = fields["type"]
+            if (phase is None or region_id < 0 or region_id in regions or
+                    size <= 0 or kind not in ("export", "import")):
+                raise ValueError("invalid or duplicate kernel region")
+            regions[region_id] = (kind, size)
+        elif line.startswith("obmm-kernel-regions:"):
+            fields = dict(item.split("=", 1) for item in line.split()[1:])
+            if (phase is None or fields["version"] != "1" or fields["scope"] != "sysfs" or
+                    fields["consistency"] != "non_atomic"):
+                raise ValueError("invalid kernel census summary")
+            for kind in ("export", "import"):
+                sizes = [size for typ, size in regions.values() if typ == kind]
+                if (int(fields[f"{kind}_handles"]) != len(sizes) or
+                        int(fields[f"{kind}_bytes"]) != sum(sizes)):
+                    raise ValueError("kernel census summary differs from region records")
+            observations.append(regions)
+            phase = None
+    if phase is not None or len(observations) != 2 or observations[0] != observations[1]:
+        raise ValueError("kernel regions did not return to observed baseline")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
@@ -56,10 +93,13 @@ def main():
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
     try:
-        validate(args.log.read_text(), args.node, args.iterations, args.size)
+        text = args.log.read_text()
+        validate(text, args.node, args.iterations, args.size)
+        validate_kernel_regions(text)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
+    print(f"kernel_regions=pass node={args.node} consistency=non_atomic")
 
 
 if __name__ == "__main__":

@@ -124,9 +124,11 @@ class GvaManagerLibraryTest(unittest.TestCase):
         vendor = ROOT / "vendor" / "obmm" / "src" / "libobmm"
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "linqu_gva_manager"
+            sysfs = pathlib.Path(directory) / "obmm-sysfs"
             include = stage_uapi(binary.parent)
             subprocess.run(
                 [compiler, "-O2", "-Wall", "-Wextra", "-D__EXPORTED_HEADERS__",
+                 f'-DGVA_MGR_OBMM_SYSFS_ROOT="{sysfs}"',
                  "-pthread", "-I", str(include), "-I", str(GUEST / "common"),
                  "-I", str(GUEST / "libs" / "obmm_queue"), "-I", str(vendor),
                  "-idirafter", str(kernel / "include" / "uapi"),
@@ -145,6 +147,47 @@ class GvaManagerLibraryTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("gva_manager --alloc", result.stderr)
                 self.assertNotIn("open /dev/obmm", result.stdout)
+                self.check_region_census(binary, sysfs)
+
+    def check_region_census(self, binary, sysfs):
+        def run(code, *extra):
+            result = subprocess.run(
+                [str(binary), "--dump-obmm-regions", *extra],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+            if code:
+                self.assertNotIn("obmm-kernel-region", result.stdout)
+            return result.stdout
+
+        run(1)  # Missing sysfs is unavailable, not a valid empty census.
+        sysfs.mkdir()
+        self.assertIn("export_handles=0 export_bytes=0 import_handles=0 import_bytes=0", run(0))
+        run(2, "--alloc")
+        regions = []
+        for name, kind, size in (("obmm_shmdev1", "export", "0x200000"),
+                                 ("obmm_shmdev2", "import", "0x400000")):
+            region = sysfs / name
+            region.mkdir()
+            (region / "type").write_text(kind + "\n")
+            (region / "size").write_text(size + "\n")
+            regions.append(region)
+        valid = run(0)
+        self.assertIn("id=1 type=export bytes=2097152", valid)
+        self.assertIn("id=2 type=import bytes=4194304", valid)
+        self.assertIn("export_handles=1 export_bytes=2097152 import_handles=1 import_bytes=4194304", valid)
+        for bad in ("0x0\n", "-1\n", "0x10000000000000000\n", "0x1junk\n", "0x1\nextra", "0x1"):
+            with self.subTest(size=bad):
+                (regions[1] / "size").write_text(bad)
+                run(1)
+        (regions[1] / "size").write_text("0x400000\n")
+        (regions[1] / "type").write_text("unknown\n")
+        run(1)
+        (regions[1] / "type").write_text("export\n")
+        (regions[0] / "size").write_text("0xffffffffffffffff\n")
+        run(1)  # Sum overflow must not wrap into a plausible baseline.
+        (regions[1] / "type").unlink()
+        run(1)  # Disappearing/unreadable entry invalidates the whole observation.
 
 
 if __name__ == "__main__":
