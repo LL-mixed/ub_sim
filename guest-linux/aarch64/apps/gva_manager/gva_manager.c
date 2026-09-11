@@ -12,6 +12,7 @@
 #include "obmm_common.h"
 #include "obmm_mpmc_queue.h"
 #include "obmm_spsc_queue.h"
+#include "../../libs/gva_manager/gva_manager.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -105,6 +106,7 @@ struct gva_mgr_config {
     bool desc_alloc;
     bool desc_query;
     bool desc_retire;
+    bool check_allocator;
     int node_id;
     int node_count;
     uint64_t generation;
@@ -438,7 +440,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         uint64_t parsed64;
         int parsed32;
 
-        if (strcmp(argv[i], "--bootstrap") == 0) {
+        if (strcmp(argv[i], "--check-allocator") == 0) {
+            cfg->bootstrap = false;
+            cfg->check_allocator = true;
+        } else if (strcmp(argv[i], "--bootstrap") == 0) {
             cfg->bootstrap = true;
         } else if (strcmp(argv[i], "--alloc") == 0) {
             cfg->bootstrap = false;
@@ -560,6 +565,7 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "[--access-flags F] [--import-segment] [--rotate-token] "
                     "[--coh-recovery] "
                     "[--retire-segment] [--reuse-segment]\n"
+                    "       gva_manager --check-allocator --node-id N --node-count C\n"
                     "       gva_manager --dump-routes\n");
             return -EINVAL;
         }
@@ -567,13 +573,13 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
 
     if (cfg->dump_routes)
         return 0;
-    if (cfg->desc_alloc || cfg->desc_query || cfg->desc_retire) {
+    if (cfg->desc_alloc || cfg->desc_query || cfg->desc_retire || cfg->check_allocator) {
         int actions = (cfg->desc_alloc ? 1 : 0) + (cfg->desc_query ? 1 : 0) +
-                      (cfg->desc_retire ? 1 : 0);
+                      (cfg->desc_retire ? 1 : 0) + (cfg->check_allocator ? 1 : 0);
 
         if (actions != 1)
             return -EINVAL;
-        if (cfg->desc_alloc) {
+        if (cfg->desc_alloc || cfg->check_allocator) {
             if (cfg->node_id < 0)
                 cfg->node_id = 0;
             if (cfg->node_count < 1 || cfg->node_count > MAX_NODES ||
@@ -1890,7 +1896,7 @@ static int allocate_manager_segment_desc(int obmm_fd,
     cmd.access_flags = cfg->access_flags ? cfg->access_flags :
                         (OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE);
 
-    if (ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &cmd) != 0)
+    if (gva_manager_allocate_segment(obmm_fd, &cmd) != 0)
         return -errno;
     *desc = cmd.desc;
     return 0;
@@ -1906,10 +1912,8 @@ static int retire_manager_segment_desc(int obmm_fd,
     cmd.epoch = desc->epoch;
     cmd.timeout_ms = 5000;
 
-    if (ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &cmd) != 0)
+    if (gva_manager_retire_segment(obmm_fd, &cmd) != 0)
         return -errno;
-    if (cmd.status != OBMM_GSVA_RETIRE_COMMITTED || cmd.error != 0)
-        return -EIO;
     return 0;
 }
 
@@ -1975,14 +1979,20 @@ static int run_segment_protocol(const struct gva_mgr_config *cfg,
         }
         log_gsva_desc("manager-alloc", &desc);
         if (cfg->import_segment) {
+            struct obmm_cmd_export exported = {0};
+
             backing.export_cna = local_cna;
-            if (obmm_do_export_fixed_uba(obmm_fd, &backing, desc.size,
-                                         desc.home_va) != 0) {
+            if (gva_manager_export_segment(obmm_fd, &desc, &exported) != 0) {
                 ret = -errno;
-                log_msg("manager backing fixed UBA export failed ret=%d",
-                        ret);
+                log_msg("manager backing fixed UBA export failed ret=%d"
+                        " export_mem_id=%#" PRIx64 " reconciliation_required=1",
+                        ret, (uint64_t)exported.mem_id);
                 return ret;
             }
+            backing.export_mem_id = exported.mem_id;
+            backing.remote_uba = exported.uba;
+            backing.size = desc.size;
+            backing.token_id = exported.tokenid;
             have_backing = true;
             log_msg("manager backing export segment_id=%#" PRIx64
                     " export_mem_id=%#" PRIx64 " home_va=%#" PRIx64
@@ -2131,22 +2141,8 @@ static int register_kernel_aperture(int obmm_fd, const struct gva_mgr_config *cf
     req.node_count = (uint32_t)cfg->node_count;
     req.flags = OBMM_GSVA_APERTURE_F_ACTIVE;
 
-    if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &req) != 0) {
-        log_msg("kernel aperture register failed errno=%d", errno);
-        return -1;
-    }
-    if (ioctl(obmm_fd, OBMM_CMD_GSVA_APERTURE_QUERY, &query) != 0) {
-        log_msg("kernel aperture query failed errno=%d", errno);
-        return -1;
-    }
-    if (!(query.flags & OBMM_GSVA_APERTURE_F_ACTIVE) ||
-        query.base != cfg->aperture_base ||
-        query.size != cfg->aperture_size ||
-        query.generation != cfg->generation) {
-        log_msg("kernel aperture query mismatch base=%#" PRIx64
-                " size=%#" PRIx64 " generation=%#" PRIx64
-                " flags=%#" PRIx64,
-                query.base, query.size, query.generation, query.flags);
+    if (gva_manager_register_aperture(obmm_fd, &req, &query) != 0) {
+        log_msg("kernel aperture register/query failed errno=%d", errno);
         return -1;
     }
 
@@ -2173,10 +2169,99 @@ static void log_gsva_desc(const char *action,
             desc->token_value);
 }
 
+static int check_kernel_allocator(int fd, const struct gva_mgr_config *cfg)
+{
+    struct obmm_gsva_segment_desc_v1 owned[8] = {0};
+    struct obmm_cmd_gsva_alloc_segment_v1 request = {0};
+    struct obmm_cmd_gsva_aperture clear = {0};
+    struct obmm_cmd_gsva_aperture probe = {0};
+    const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+    unsigned count = 0, checks = 0;
+    int result = -1;
+
+    if (page == 0 || page > cfg->aperture_size / 16 ||
+        cfg->aperture_size > UINT64_MAX - page ||
+        (cfg->aperture_base & (page * 8 - 1)))
+        return -EINVAL;
+    if (register_kernel_aperture(fd, cfg) != 0)
+        return -1;
+
+    request.version = OBMM_GSVA_ABI_VERSION;
+    request.home_node_id = (uint32_t)cfg->node_id;
+    request.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+    request.access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
+
+    /* Keep every successful reservation, including unexpected successes. */
+#define PROBE(bytes, align, address, expected) do { \
+    int rc; \
+    request.size = (bytes); \
+    request.alignment = (align); \
+    request.requested_home_va = (address); \
+    rc = ioctl(fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &request); \
+    if (rc == 0) \
+        owned[count++] = request.desc; \
+    checks++; \
+    if (((expected) == 0 && rc != 0) || \
+        ((expected) != 0 && (rc == 0 || errno != (expected)))) { \
+        log_msg("allocator check=%u failed rc=%d errno=%d expected=%d", \
+                checks, rc, errno, (expected)); \
+        goto out; \
+    } \
+} while (0)
+
+    PROBE(cfg->aperture_size + page, page, 0, ENOSPC);
+    PROBE(page, page * 3, 0, EINVAL);
+    PROBE(page * 3, page, 0, 0);
+    if (owned[0].home_va != cfg->aperture_base)
+        goto out;
+    PROBE(page * 2, page * 8, 0, 0);
+    if (owned[1].home_va != cfg->aperture_base + page * 8)
+        goto out;
+    PROBE(page, page, cfg->aperture_base + page, EBUSY);
+    PROBE(page * 8, page, cfg->aperture_base, EBUSY);
+    PROBE(page * 2, page, cfg->aperture_base + cfg->aperture_size - page, EINVAL);
+    PROBE(page * 2, page, 0, 0);
+    if (owned[2].home_va != cfg->aperture_base + page * 3)
+        goto out;
+
+    clear.generation = cfg->generation;
+    checks++;
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_CLEAR, &clear) == 0 || errno != EBUSY)
+        goto out;
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_QUERY, &probe) != 0)
+        goto out;
+    probe.node_id = (probe.node_id + 1) % probe.node_count;
+    if (probe.node_id == (uint32_t)cfg->node_id)
+        probe.node_count++;
+    checks++;
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &probe) == 0 || errno != EBUSY)
+        goto out;
+    checks++;
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_QUERY, &probe) != 0 ||
+        probe.node_id != (uint32_t)cfg->node_id ||
+        probe.node_count != (uint32_t)cfg->node_count ||
+        probe.base != cfg->aperture_base || probe.size != cfg->aperture_size ||
+        !(probe.flags & OBMM_GSVA_APERTURE_F_ACTIVE))
+        goto out;
+    result = 0;
+out:
+    while (count) {
+        if (retire_manager_segment_desc(fd, &owned[--count]) != 0)
+            result = -1;
+    }
+    log_msg("result=%s action=gsva-allocator-check checks=%u",
+            result == 0 ? "done" : "fail", checks);
+#undef PROBE
+    return result;
+}
+
 static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
                                      int obmm_fd)
 {
     int ret;
+
+    if (cfg->check_allocator)
+        return check_kernel_allocator(obmm_fd, cfg);
 
     if (cfg->desc_alloc) {
         struct obmm_cmd_gsva_alloc_segment_v1 cmd = {0};
@@ -2199,7 +2284,7 @@ static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
         cmd.requested_p_tag = cfg->requested_p_tag;
         cmd.access_flags = cfg->access_flags;
 
-        if (ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &cmd) != 0) {
+        if (gva_manager_allocate_segment(obmm_fd, &cmd) != 0) {
             log_msg("result=fail action=gsva-segment-alloc stage=alloc errno=%d",
                     errno);
             return -1;
@@ -2220,7 +2305,7 @@ static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
         cmd.segment_id = cfg->segment_id;
         cmd.home_va = cfg->query_home_va;
 
-        if (ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_SEGMENT, &cmd) != 0) {
+        if (gva_manager_query_segment(obmm_fd, &cmd) != 0) {
             log_msg("result=fail action=gsva-segment-query errno=%d",
                     errno);
             return -1;
@@ -2242,7 +2327,7 @@ static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
         cmd.epoch = cfg->epoch;
         cmd.timeout_ms = cfg->retire_timeout_ms;
 
-        if (ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &cmd) != 0) {
+        if (gva_manager_retire_segment(obmm_fd, &cmd) != 0) {
             log_msg("result=fail action=gsva-segment-retire errno=%d"
                     " status=%u error=%u",
                     errno, cmd.status, cmd.error);
@@ -2529,7 +2614,7 @@ int main(int argc, char **argv)
     local_cna = (uint32_t)local_cna_u64;
     local_meta.export_cna = local_cna;
 
-    if (cfg.desc_alloc || cfg.desc_query || cfg.desc_retire) {
+    if (cfg.desc_alloc || cfg.desc_query || cfg.desc_retire || cfg.check_allocator) {
         if (run_descriptor_cli_action(&cfg, obmm_fd) == 0)
             rc = 0;
         goto out;

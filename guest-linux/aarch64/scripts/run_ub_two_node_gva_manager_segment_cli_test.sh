@@ -2,6 +2,20 @@
 set -euo pipefail
 setopt null_glob
 
+if (( $# > 1 )); then
+  echo "usage: $0 [config.env]" >&2
+  exit 2
+fi
+if (( $# == 1 )); then
+  if [[ ! -f "$1" ]]; then
+    echo "config file not found: $1" >&2
+    exit 2
+  fi
+  set -a
+  source "${1:A}"
+  set +a
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
@@ -34,7 +48,7 @@ if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
   APPEND_EXTRA="${APPEND_EXTRA} pmd_mapping=25%"
 fi
 
-mkdir -p "$LOG_DIR/${RUN_ID}"
+mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}"
 NODEA_GUEST_LOG="$LOG_DIR/${RUN_ID}/nodeA_guest.log"
 NODEB_GUEST_LOG="$LOG_DIR/${RUN_ID}/nodeB_guest.log"
 NODEA_QEMU_LOG="$LOG_DIR/${RUN_ID}/nodeA_qemu.log"
@@ -133,6 +147,10 @@ validate_segment_cli_logs() {
   local guest_log
 
   for guest_log in "$NODEA_GUEST_LOG" "$NODEB_GUEST_LOG"; do
+    if ! grep -q 'result=done action=gsva-allocator-check checks=11' "$guest_log"; then
+      echo "[gva-mgr-segcli] FAIL: allocator checks incomplete in $guest_log" >&2
+      return 1
+    fi
     if ! grep -q 'result=done action=gsva-segment-alloc' "$guest_log" ||
        ! grep -q 'result=done action=gsva-segment-query' "$guest_log" ||
        ! grep -q 'result=done action=gsva-segment-retire' "$guest_log"; then
@@ -169,8 +187,8 @@ echo "[gva-mgr-segcli] FM links ready"
 echo "[gva-mgr-segcli] waiting for test completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
-  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -q 'result=done action=gsva-segment-alloc' "$NODEA_GUEST_LOG" && \
-     [[ -f "$NODEB_GUEST_LOG" ]] && grep -q 'result=done action=gsva-segment-alloc' "$NODEB_GUEST_LOG"; then
+  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -q 'linqu_gva_manager segment_cli done' "$NODEA_GUEST_LOG" && \
+     [[ -f "$NODEB_GUEST_LOG" ]] && grep -q 'linqu_gva_manager segment_cli done' "$NODEB_GUEST_LOG"; then
     cleanup
     sleep 0.5
     validate_segment_cli_logs

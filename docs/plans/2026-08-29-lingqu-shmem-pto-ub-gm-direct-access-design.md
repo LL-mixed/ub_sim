@@ -1804,7 +1804,7 @@ callback/PTO/fence failure、guest exit 竞争、正式性能评估与通用 Lin
 lane 上运行 callable 1。每个 lane 包含 input A、input B 和 output 三个 view；七个
 output view 不重叠。Node 0 从原始 export mapping 验证全部七组结果。
 
-![八节点 Lingqu shmem PTO UB GM functional demo](2026-09-01-lingqu-shmem-pto-ub-gm-eight-node-demo.svg)
+![八节点 Lingqu shmem PTO UB GM 功能验证](2026-09-01-lingqu-shmem-pto-ub-gm-eight-node-validation.svg)
 
 八节点 ND demo 的冻结契约如下：
 

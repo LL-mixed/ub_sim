@@ -1,0 +1,199 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include "gva_manager.h"
+
+#include <errno.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+static int fail(int error)
+{
+    errno = error;
+    return -1;
+}
+
+static int power_of_two(uint64_t value)
+{
+    return value && !(value & (value - 1));
+}
+
+static int valid_range(uint64_t base, uint64_t size, uint64_t alignment)
+{
+    return power_of_two(alignment) && size && size <= UINT64_MAX - base &&
+           !(base & (alignment - 1));
+}
+
+static int valid_descriptor(const struct obmm_gsva_segment_desc_v1 *desc)
+{
+    const uint32_t required = OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY |
+                              OBMM_GSVA_SEG_F_TOKEN_VALUE_REQUIRED |
+                              OBMM_GSVA_SEG_F_ACTIVE;
+    long page_size = sysconf(_SC_PAGESIZE);
+
+    return page_size > 0 && desc->version == OBMM_GSVA_ABI_VERSION &&
+           (desc->flags & required) == required &&
+           !(desc->flags & OBMM_GSVA_SEG_F_RETIRED) &&
+           desc->segment_id && desc->epoch && desc->home_cna &&
+           desc->home_va && desc->token_id && desc->token_value &&
+           desc->node_count && desc->owner_node_id < desc->node_count &&
+           valid_range(desc->home_va, desc->size, (uint64_t)page_size) &&
+           !(desc->size & ((uint64_t)page_size - 1));
+}
+
+int gva_manager_register_aperture(
+    int fd, const struct obmm_cmd_gsva_aperture *request,
+    struct obmm_cmd_gsva_aperture *observed)
+{
+    struct obmm_cmd_gsva_aperture copy;
+    long page_size = sysconf(_SC_PAGESIZE);
+
+    if (!request || !observed || page_size <= 0 ||
+        !valid_range(request->base, request->size, (uint64_t)page_size) ||
+        (request->size & ((uint64_t)page_size - 1)) ||
+        !request->node_count || request->node_id >= request->node_count)
+        return fail(EINVAL);
+    copy = *request;
+    copy.flags |= OBMM_GSVA_APERTURE_F_ACTIVE;
+    memset(observed, 0, sizeof(*observed));
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &copy) != 0 ||
+        ioctl(fd, OBMM_CMD_GSVA_APERTURE_QUERY, observed) != 0)
+        return -1;
+    if (!(observed->flags & OBMM_GSVA_APERTURE_F_ACTIVE) ||
+        observed->base != copy.base || observed->size != copy.size ||
+        observed->generation != copy.generation ||
+        observed->node_id != copy.node_id ||
+        observed->node_count != copy.node_count)
+        return fail(EPROTO);
+    return 0;
+}
+
+int gva_manager_allocate_segment(
+    int fd, struct obmm_cmd_gsva_alloc_segment_v1 *command)
+{
+    struct obmm_cmd_gsva_alloc_segment_v1 request;
+    const struct obmm_gsva_segment_desc_v1 *desc;
+    uint64_t alignment;
+    long page_size = sysconf(_SC_PAGESIZE);
+
+    if (!command || page_size <= 0)
+        return fail(EINVAL);
+    request = *command;
+    alignment = request.alignment ? request.alignment : (uint64_t)page_size;
+    if (request.version != OBMM_GSVA_ABI_VERSION ||
+        alignment < (uint64_t)page_size ||
+        !valid_range(request.requested_home_va, request.size, alignment) ||
+        (request.size & ((uint64_t)page_size - 1)))
+        return fail(EINVAL);
+    if (ioctl(fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, command) != 0)
+        return -1;
+    desc = &command->desc;
+    if (!valid_descriptor(desc) || desc->size != request.size ||
+        (desc->home_va & (alignment - 1)) ||
+        (request.requested_home_va &&
+         desc->home_va != request.requested_home_va) ||
+        desc->owner_node_id != request.home_node_id ||
+        desc->cache_policy != request.cache_policy ||
+        desc->access_flags != request.access_flags ||
+        (request.requested_p_tag != OBMM_GSVA_P_TAG_AUTO &&
+         desc->p_tag != request.requested_p_tag))
+        return fail(EPROTO);
+    return 0;
+}
+
+int gva_manager_query_segment(
+    int fd, struct obmm_cmd_gsva_query_segment_v1 *command)
+{
+    uint64_t id, address;
+
+    if (!command || command->version != OBMM_GSVA_ABI_VERSION ||
+        (!command->segment_id && !command->home_va))
+        return fail(EINVAL);
+    id = command->segment_id;
+    address = command->home_va;
+    if (ioctl(fd, OBMM_CMD_GSVA_QUERY_SEGMENT, command) != 0)
+        return -1;
+    if (!valid_descriptor(&command->desc) ||
+        (id && command->desc.segment_id != id) ||
+        (address && command->desc.home_va != address))
+        return fail(EPROTO);
+    return 0;
+}
+
+int gva_manager_export_segment(
+    int fd, const struct obmm_gsva_segment_desc_v1 *segment,
+    struct obmm_cmd_export *export_out)
+{
+    struct obmm_cmd_gsva_query_segment_v1 query = {0};
+    const struct obmm_gsva_segment_desc_v1 *actual = &query.desc;
+
+    if (!export_out)
+        return fail(EINVAL);
+    memset(export_out, 0, sizeof(*export_out));
+    if (!segment || !valid_descriptor(segment))
+        return fail(EINVAL);
+    query.version = OBMM_GSVA_ABI_VERSION;
+    query.segment_id = segment->segment_id;
+    query.home_va = segment->home_va;
+    if (gva_manager_query_segment(fd, &query) != 0)
+        return -1;
+    if (actual->flags != segment->flags || actual->size != segment->size ||
+        actual->epoch != segment->epoch || actual->home_cna != segment->home_cna ||
+        actual->owner_node_id != segment->owner_node_id ||
+        actual->node_count != segment->node_count ||
+        actual->cache_policy != segment->cache_policy ||
+        actual->p_tag != segment->p_tag || actual->access_flags != segment->access_flags ||
+        actual->token_id != segment->token_id || actual->token_value != segment->token_value)
+        return fail(ESTALE);
+    export_out->length = 1;
+    export_out->size[0] = segment->size;
+    export_out->flags = OBMM_EXPORT_FLAG_ALLOW_MMAP | OBMM_EXPORT_FLAG_GSVA_FIXED_UBA;
+    export_out->uba = segment->home_va;
+    if (ioctl(fd, OBMM_CMD_EXPORT, export_out) != 0)
+        return -1;
+    if (export_out->uba != segment->home_va ||
+        export_out->size[0] != segment->size ||
+        !export_out->mem_id || !export_out->tokenid)
+        return fail(EPROTO);
+    return 0;
+}
+
+int gva_manager_unexport_segment(
+    int fd, const struct obmm_gsva_segment_desc_v1 *segment,
+    const struct obmm_cmd_export *exported)
+{
+    struct obmm_cmd_gsva_query_segment_v1 query = {0};
+    struct obmm_cmd_unexport command = {0};
+
+    if (!segment || !exported || !valid_descriptor(segment) ||
+        !exported->mem_id || !exported->tokenid || exported->length != 1 ||
+        exported->uba != segment->home_va || exported->size[0] != segment->size ||
+        !(exported->flags & OBMM_EXPORT_FLAG_GSVA_FIXED_UBA))
+        return fail(EINVAL);
+    query.version = OBMM_GSVA_ABI_VERSION;
+    query.segment_id = segment->segment_id;
+    query.home_va = segment->home_va;
+    if (gva_manager_query_segment(fd, &query))
+        return -1;
+    if (memcmp(&query.desc, segment, sizeof(*segment)))
+        return fail(ESTALE);
+    command.mem_id = exported->mem_id;
+    return ioctl(fd, OBMM_CMD_UNEXPORT, &command);
+}
+
+int gva_manager_retire_segment(
+    int fd, struct obmm_cmd_gsva_retire_segment_v1 *command)
+{
+    uint64_t epoch;
+
+    if (!command || command->version != OBMM_GSVA_ABI_VERSION ||
+        !command->segment_id || !command->epoch)
+        return fail(EINVAL);
+    epoch = command->epoch;
+    if (ioctl(fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, command) != 0)
+        return -1;
+    if (command->status != OBMM_GSVA_RETIRE_COMMITTED || command->error ||
+        command->committed_epoch != epoch)
+        return fail(EPROTO);
+    return 0;
+}

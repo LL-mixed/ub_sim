@@ -1,8 +1,22 @@
 # GVA / GSVA 服务能力补齐：实施方向与阶段计划
 
-日期：2026-09-08；修订 3：按 `rrr0908.md` 第二轮 review 补齐控制通道设计。
+日期：2026-09-08；修订 4（2026-09-11）：将计划范围收敛到 OBMM 内存 backing
+及 GVA/GSVA 服务主线，保留修订 3 的控制通道设计与历史审计依据。
 状态：实施决策已明确；远端 readiness、模型 artifact 和发布授权仍待执行时确认。
 以下里程碑均未由本次文档工作完成。
+
+2026-09-09 补充：[gva_manager 接入实施计划](2026-09-09-mem-service-gva-manager-integration-plan.md)
+细化地址管理主线，记录后续 managed allocation/provider 代码进展，并把同一全局对象
+的 CPU load/store、TLOAD/TSTORE 联合访问与安全地址重用纳入硬验收。地址管理按该文
+AM1 至 AM4 推进；下文原有源码计数和里程碑状态保留为修订 3 的历史盘点，
+不能用于判断最新代码尚未实现这些控制接口。性能等其他工作仍由本总计划追踪。
+
+2026-09-11 实施记录见
+[受管理 GVA 服务实施与验证记录](../2026-09-11-gva-managed-service-implementation-progress.md)。
+本轮接通常驻 worker、正常释放、取消与迟到发布、session 可见性操作及双 guest
+入口；r20 已通过两轮 64 KiB 双向 CPU 共享、可见性、同代重新映射、双方只读及
+guard page 探针与正常回收。完整负例和实际资源统计仍待补齐；M1/AM1 保持未完成，
+后续阶段未被计为通过。本次范围调整不改变已有验收结论。
 
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
@@ -17,8 +31,8 @@ W5 集成、故障恢复及资源压力验证。每个阶段必须产生可运�
 本计划展开 [实现规格第 8 节](../sim_gva_gsva_implementation_spec.md#8-剩余工作与优先级)。
 机制基线为 ub_sim `39576eb`、mem_service `e4a8a58`、kernel `85fb35d`、
 QEMU `f201ebe`、libobmm `53011ee`。原稿编写时根仓库为 `80cb36f`。
-本次修订核对的根仓库为 `ec01ba1ea8b42c11f5bd7ff86996c52197c50645`，
-上述子模块 checkout 仍与 gitlink 一致。`ec01ba1` 是本轮设计依据；M1 的执行基线
+修订 3 核对的根仓库为 `ec01ba1ea8b42c11f5bd7ff86996c52197c50645`，
+当时上述子模块 checkout 与 gitlink 一致。`ec01ba1` 是原设计依据；M1 的执行基线
 应为文档获授权提交后选定的干净 commit，届时登记完整 SHA，不自动跟随移动的 HEAD。
 
 review 是问题输入，不等同于本次重测。本文未登录目标机、同步模型、构建或运行 guest。
@@ -30,10 +44,9 @@ review 是问题输入，不等同于本次重测。本文未登录目标机、�
 | --- | --- | --- |
 | 地址 bootstrap、segment 分配/查询/退役 | [gva_manager](../../guest-linux/aarch64/apps/gva_manager/gva_manager.c) 与 [kernel UAPI](../../guest-linux/kernel_ub/include/uapi/ub/gsva.h) | 接入已有管理机制，不新建第二套地址分配权威 |
 | 通用 provider 及映射接口 | [provider API](../../mem_service/components/mem_service/mem_service_provider.h)、[OBMM provider](../../mem_service/components/mem_service/providers/mem_service_provider_obmm.c) | 复用 register/map/publish/invalidate/wait-visible/unmap，保持 SDK 中立 |
-| 服务端与存储日志 | [daemon](../../mem_service/components/mem_service/mem_service_daemon.c) | 已有 journal、compaction 和恢复逻辑；先核对覆盖字段，再扩展 GSVA 状态恢复 |
+| 服务端与持久化日志 | [daemon](../../mem_service/components/mem_service/mem_service_daemon.c) | 已有 journal、compaction 和恢复逻辑；先核对覆盖字段，再扩展 GSVA 状态恢复 |
 | 服务对象分配 | [OBMM objects](../../mem_service/components/mem_service/mem_service_obmm_objects.c) | payload arena 当前线性推进；record 回收不能直接证明 payload 空间也已回收 |
 | W5 GSVA 描述符 | [GSVA access helper](../../mem_service/components/mem_service/mem_service_gsva_access.h) | 当前 epoch 固定、token value 来自 token ID，必须接入真实管理状态 |
-| 存储 backing 引用 | [UB-SSD backend](../../mem_service/components/mem_service/mem_service_ub_ssd_gsva_backend.h) | 复用 block 身份/版本/校验，保留独立于内存映射的访问机制 |
 | reader 可见性修复 | [2026-09-07 调查](../2026-09-07-w5-terminal-token-visibility-investigation.md) | 保留 metadata/payload refresh 与发布序列检查，作为必须保住的回归 |
 
 源码核对对 review 作三项更正：
@@ -55,20 +68,12 @@ review 是问题输入，不等同于本次重测。本文未登录目标机、�
 
 ## 2. 架构约束
 
-![职责、生命周期和读取顺序的 SVG](../gva_gsva_current_architecture.svg)
-
-![客户端与并列 backing 的空间架构插画](../gva_gsva_current_architecture.generated.png)
-
-[SVG 原图](../gva_gsva_current_architecture.svg) 保留完整逻辑；
-[PNG 插画](../gva_gsva_current_architecture.generated.png) 只展示架构职责，设备外形为示意。
-图像来源和模型版本核验限制见 [生成记录](../gva_gsva_current_architecture.imagegen.md)。
-
 1. 服务先启动，provider 和地址基础设施在基础设施阶段准备。停止全部 infer
    客户端不能导致服务退出；服务可在零 provider 时运行，但必须报告数据面未就绪。
 2. mem_service core 只管理中立的对象、版本、租约、能力与生命周期。
    GSVA key、CNA、OBMM export/import 和 kernel 调用封装在 provider/平台适配层。
-3. OBMM pool 与 UB-SSD 是并列 backing。前者提供映射内存，后者提供块 I/O。
-   不具备映射能力的 backing 对 map 请求返回明确不支持；不能伪造固定地址映射。
+3. 本计划使用 OBMM pool 提供内存 backing，验证真实 export/import 与有界映射。
+   provider 不具备所需映射能力时返回明确不支持；不能伪造固定地址映射。
 4. 服务返回描述符和状态；payload 在客户端/provider endpoint 之间直接访问。
    daemon 不能注册另一个进程的普通 heap 指针，也不能充当 payload 中转站。
 5. 复用现有 gva_manager 的地址权威、kernel registry 与 libobmm 物理分配。
@@ -86,7 +91,7 @@ review 是问题输入，不等同于本次重测。本文未登录目标机、�
 
 | 资源 | 唯一管理责任 | 对外可见内容 |
 | --- | --- | --- |
-| 物理 backing | 对应 provider 调用 OBMM pool 或存储分配机制 | 中立容量/能力及不透明 backing handle |
+| 物理 backing | 对应 provider 调用 OBMM pool 分配机制 | 中立容量/能力及不透明 backing handle |
 | 全局地址 segment | 现有地址管理端和 kernel registry | 经校验的 segment 绑定；GSVA 专用字段由映射 provider 解释 |
 | 对象及其引用 | mem_service 对象管理 | object ID、内容版本、分配代际、引用/租约状态、访问能力 |
 
@@ -117,7 +122,7 @@ token lease 是不同身份；需要定义关联及校验规则，不能简单�
 | publish / wait-visible | 对指定范围确认发布、可见字节及 checksum |
 | acquire / release | 管理持有引用和释放幂等性，防止提前回收 |
 | retire / revoke | 暂停新访问并使旧身份失效，暴露 pending/timeout 状态 |
-| read / write | 对块 backing 使用显式 I/O，保持与 map 能力的差异 |
+| read / write | 在客户端有界内存映射上读写对象；payload 不经过控制面 |
 
 复用 [客户端](../../mem_service/components/mem_service/mem_service_client.h)、
 [wire client](../../mem_service/components/mem_service/mem_service_wire_client.h)
@@ -283,14 +288,12 @@ M1 仅支持显式声明的初始 profile；不具备能力时拒绝请求。
 
 在现有 `run_ub_dual_node_apps.sh` 增加一个 `mem_service_object_share` app 选择项及
 配置文件参数，接通上述基础设施启动和两个 session；这个 app 名称表示组合用例，
-不新增同名可执行组件。配置区分 OBMM/SSD、角色、大小、迭代与故障场景。
+不新增同名可执行组件。配置指定 OBMM provider、角色、大小、迭代与故障场景。
 新选择项及参数属于待实现接口，不作为当前可运行命令列出。
 
-M1 OBMM 和 UB-SSD **都要求两独立客户端跨 guest**：A 写、B 读相同对象后释放。
-SSD 由 home 节点的数据 endpoint 执行块 I/O，客户端 buffer 经数据 provider 到达该
-endpoint；同一 SDK 管理对象身份，不要求 SSD block 本身 mmap。
-可复用 backend 编码与设备 I/O，不能用旧 daemon `put-object` 中转代替新路径。
-SSD 是 M1 的独立子交付，不能因 OBMM 用例通过就将整个 M1 标为完成。
+M1 的 OBMM 共享**要求两独立客户端跨 guest**：A 写、B 读相同对象，再由 B 写回、
+A 校验，最后解除映射并释放。payload 直接访问同一 home export，不能用旧 daemon
+`put-object` 中转代替新路径。正常共享通过后，仍须完成边界、失败和资源统计验收。
 
 M1 就增加可查询的 resource stats，使用新增 allocation-stats 操作，保持旧 status
 响应兼容。至少区分 live objects、backing allocated bytes、address reserved bytes、
@@ -315,8 +318,8 @@ provider 上报实际资源结果；客户端断连的映射不能仅根据 RPC 
 - OBMM provider 复用现有 mapping API；将 GSVA 专用绑定留在 provider/adapter。
   实现并验证 §3.6 的 bootstrap、固定 export 与 descriptor 版本化。
   先补齐 kernel 区间冲突、对齐和并发分配检查，再接受变长分配请求。
-- 首批覆盖 OBMM 映射共享；同阶段另测 UB-SSD 分配、显式写读和释放。
-  两者都由两个客户端跨 guest 访问同一对象，能力查询准确区分 map 与块 I/O。
+- 覆盖 OBMM 映射共享，由两个客户端跨 guest 访问同一对象，核对实际 VA、
+  访问权限、可见性与回收结果。
 - 复用现有 example/CLI，增加必要子命令与配置读取；不另起一套 launcher。
 
 验收：两个客户端写读相同数据；重复 allocate/release 幂等；越界、固定地址
@@ -325,7 +328,7 @@ provider 上报实际资源结果；客户端断连的映射不能仅根据 RPC 
 停止客户端后服务仍可接收新的客户端。provider 未就绪时数据请求明确拒绝。
 
 代码落点：`mem_service_client.*`、`mem_service_daemon.c`、对象管理、
-`providers/mem_service_provider_obmm.*`、UB-SSD adapter；确有 ABI 缺口才修改 kernel。
+`providers/mem_service_provider_obmm.*`；确有 ABI 缺口才修改 kernel。
 
 ### M2：真实代际与 W5 客户端集成
 
@@ -412,12 +415,12 @@ ABA。重启后的 provider incarnation 必须变化；旧事务排空或 fencin
 **交付：**基于已实现路径给出容量回收、命中与性能的稳定观测。该阶段以实验为主，
 出现失败时只修对应问题，不能把测量任务扩张成泛化重构。
 
-- 两客户端基础负载先交错分配/释放，再混合 prefix、decode KV、hidden 和 SSD block。
+- 两客户端基础负载先交错分配/释放，再混合 prefix、decode KV 和 hidden 内存对象。
   覆盖不同大小、最长有效 prefix、TTL/版本失效及容量驱逐，记录对象和字节计数。
 - 请求按 W5 统一入口顺序接收，允许各 PP stage 处理不同请求；根据实际能力设计
   交错运行。不为了本计划引入第二套入口或未经需求确认的并发调度器。
-- 内存 backing 耗尽不能自动变成 SSD backing。显式迁移策略需单独配置和记录，
-  且新版本发布前保持旧对象的合法引用或明确阻止访问。
+- 内存 backing 耗尽必须返回明确错误，不能自动切换 backing 类型或提前回收
+  仍有合法引用的对象。
 - 先记录每轮的 allocation、resolve、map、publish/visibility、transfer、
   TTFT、TPOT、总耗时、有效 cache hit 和实际重算 token 数，再解释收益来源。
 - 复用已拆分的 legacy baseline 与明确选定的传统网络 provider；分别记录
@@ -458,7 +461,7 @@ incarnation 边界；M2 完成后、M5 首次联调前再锁定双方完整 SHA 
 
 | 顺序 | 工作 | 可以交付给使用者的结果 |
 | --- | --- | --- |
-| 1 | M1，先 OBMM 两客户端，再同服务的 SSD 分配/I/O | 独立基础设施能够提供真实对象访问 |
+| 1 | M1，OBMM 两客户端共享、正常回收与失败矩阵 | 独立基础设施能够提供真实内存对象访问 |
 | 2 | M2，动态身份后尽早接 W5 | serving 消费同一能力，旧引用失效行为正确 |
 | 3 | M3，回收与恢复 | 异常和重启下不会重复分配或返回假有效对象 |
 | 4 | M4，压力与收益 | 已运行工作负载下的容量边界和收益报告 |
@@ -534,15 +537,15 @@ sim-console、PTO/async-load、Rust 与其他计划的未提交改动由其所�
 
 ### 6.2 M1 小批次与命令集
 
-M1 按四笔候选提交组织；是否实际 commit 仍按授权执行。每笔都有 CLI/SDK 行为测试，
+M1 按三笔候选提交组织；沿用既有批次标识，移除的批次不复用编号，避免历史记录歧义。
+是否实际 commit 仍按授权执行。每笔都有 CLI/SDK 行为测试，
 完整跑受影响仓库测试集；只在相关接口改变时追加对应 QEMU 用例，不每笔重跑所有拓扑。
 
 | 候选批次 | 实现与最小功能证据 | 验证集合 |
 | --- | --- | --- |
 | M1.1 | 新增 wire-over-TCP 主服务/client、显式接入模式与行为测试；新 wire/SDK 分配、引用、stats、兼容及幂等事务；stub 只用于 backing 单元测试 | T-service（包含新增 T-control）；无需先恢复 QEMU target readiness |
 | M1.2 | 跨 guest TCP 控制与 provider 注册、常驻 ownership、地址分配修正、严格 GSVA、双客户端写读和正常回收 | T-service、T-guest、T-provider、T-address、T-share-memory；进入 guest 阶段前完成固定基线 T-provider |
-| M1.3 | 同一对象服务的跨 guest SSD 写读释放，控制面无 payload | T-service、受影响的 T-guest、T-share-ssd；共享生命周期有改动则加 T-share-memory |
-| M1.4 | 失败回滚、边界、耗尽、幂等、隔离统计；清理全部回归失败 | T-service、T-guest、两种 T-share 及其故障配置；n4-910c 独立复现 |
+| M1.4 | 失败回滚、边界、耗尽、幂等、隔离统计；清理全部回归失败 | T-service、T-guest、T-share-memory 及其故障配置；n4-910c 独立复现 |
 
 以下命令在准备好的远端执行；T-service 的工作目录为 mem_service，其他为 ub_sim：
 
@@ -560,7 +563,7 @@ python3 -m unittest discover -s guest-linux/aarch64/tests
 ./guest-linux/aarch64/scripts/run_ub_two_node_gsva_arm_mmu_acceptance.sh
 ```
 
-T-share-memory / T-share-ssd 是待实现的 `mem_service_object_share` 选择项，使用同一
+T-share-memory 使用 `mem_service_object_share` 的 OBMM 共享用例与既有
 runner 的配置文件参数。M1.2 必须随代码登记最终可直接执行的命令和默认配置；
 此处不把尚未存在的参数写成可运行范例。配置包含有限故障集，不另增故障脚本集合。
 kernel/QEMU 若有实际修改，同批补其受影响单元测试与真实 T-address 行为验收。
@@ -584,7 +587,7 @@ schema 单元验证，不能将 T-control 或 M1.1 标记为通过。M1.2 再以
 
 M1 无需新增 sim-console 页面或 Web run 类型；先交付 CLI、现有 headless runner 和
 报告。复用 target 准备能力即可，Web 展示可在后续单独授权任务中做 catalog 接入。
-M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.3。
+M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.4 的完整失败矩阵。
 
 ## 7. 提交和推进约束
 
@@ -626,7 +629,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | B3 | kernel 地址权威分配，provider 传回描述符；客户端不自行挑址 | 已定，§3.6 |
 | B4 | guest 基础设施编排依赖与查询；provider 完成真实 canary 才就绪 | 已定，§3.6 |
 | B5 | 现有 CLI 新增有界 session 模式，现有 dual-node runner 增加组合用例 | 已定，§3.7；接口待实现 |
-| B6 | OBMM 和 SSD 都要求两客户端跨 guest，SSD 保留显式 I/O | 已定，§3.7、M1.3 |
+| B6 | OBMM 共享要求两客户端跨 guest，通过同一对象完成双向写读与释放 | 修订 4 收敛范围，§3.7、M1.2 |
 | B7 | M1 就暴露资源 stats，交叉核对 provider/kernel，不把累计计数要求为零 | 已定，§3.7 |
 | C1 | provider 读 kernel alloc/query 的真实身份；不够的字段显式声明 profile 或扩展 | 已定，§3.6；M2 完成动态更新 |
 | C2 | 已有 3-node 分支；复用配置和 placement 逻辑，按实际失败补公共路径 | 已澄清，M2 |
@@ -635,7 +638,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | C5 | 当前 query 不足以证明全量/retired/进程映射恢复；M1 先列明缺口 | 已澄清，M3 表；实际扩展需测试 |
 | D1 | 本次无 commit/push 授权，发布时逐仓库明确范围 | 已定，§7 |
 | D2 | M1 不新增 Web UI；复用准备能力，CLI/headless 先交付 | 已定，§6.2 |
-| D3 | 四笔候选能力提交，完整受影响测试集加定点真实用例 | 已定，§6.2 |
+| D3 | 三笔候选能力提交，保留既有批次标识；完整受影响测试集加定点真实用例 | 修订 4 调整，§6.2 |
 | R2-1 | 采纳：当前主 wire 服务和 client 仅有 Unix 通道；M1.1 新增 wire-over-TCP 主监听、client、配置与 T-control | 设计已定、实现未开始，§3.5.1、§6.2 |
 | R2-2 | 采纳并明确为必需：显式可信 guest 网络模式、精确 bind、非空 peer allowlist、节点身份匹配和网络操作集合；metrics 保持原限制 | 设计已定、实现未开始，§3.5.1、T-control |
 

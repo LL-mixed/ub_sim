@@ -1,0 +1,131 @@
+import pathlib
+import platform
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+SERVICE = ROOT / "mem_service"
+COMPONENT = SERVICE / "components" / "mem_service"
+PROVIDERS = COMPONENT / "providers"
+MANAGER = ROOT / "guest-linux" / "aarch64" / "libs" / "gva_manager"
+
+
+class MemServiceGvaWorkerTest(unittest.TestCase):
+    def test_managed_guest_path_uses_worker_owned_backing(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        managed = source.split("mem_service_object_share_managed() (", 1)[1].split(
+            "\nrun_mem_service_object_share()", 1)[0]
+        for required in ("ip link set lo up", "serve-allocations", "--bootstrap",
+                         "allocation_granularity_bytes=2097152",
+                         "provider_import_region_bytes=2097152",
+                         "op=publish_data", "op=wait_visible", "op=release",
+                         "op=retire", "state=retired", 'wait "$worker_pid"'):
+            self.assertIn(required, managed)
+        for forbidden in ("descriptor_hex=", "op=publish key=", "op=reclaim key=",
+                          "llm_infer", "put-object", "materialize-object"):
+            self.assertNotIn(forbidden, managed)
+
+    @unittest.skipUnless(shutil.which("zsh"), "requires zsh")
+    def test_share_runner_rejects_missing_config_before_launch(self):
+        runner = ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            for args in (["--config"], ["--config", str(pathlib.Path(directory) / "missing")]):
+                result = subprocess.run(["zsh", str(runner)] + args,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("config file not found", result.stderr)
+                self.assertNotIn("starting node", result.stdout)
+
+    @unittest.skipUnless(platform.system() == "Linux", "native Linux build test")
+    def test_build_option_invalidates_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            app = root / "apps" / "mem_service"
+            app.mkdir(parents=True)
+            shutil.copyfile(SERVICE / "apps/mem_service/Makefile", app / "Makefile")
+            for name in ("components", "common", "libs", "vendor", "kernel_ub"):
+                (root / name).symlink_to(SERVICE / name, target_is_directory=True)
+            for enabled in (True, False, True):
+                built = subprocess.run(
+                    ["make", "-s", "-C", str(app),
+                     f"GVA_MANAGER_ROOT={MANAGER if enabled else ''}",
+                     "linqu_mem_service_provider_obmm"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                self.assertEqual(built.returncode, 0, built.stderr)
+                usage = subprocess.run([str(app / "linqu_mem_service_provider_obmm")],
+                                       capture_output=True, text=True, timeout=10)
+                self.assertEqual(usage.returncode, 2)
+                self.assertEqual("serve-allocations" in usage.stderr, enabled)
+
+    def test_worker_build_and_startup_guards(self):
+        native = platform.system() == "Linux" and platform.machine() == "aarch64"
+        compiler = shutil.which("cc" if native else "aarch64-linux-gnu-gcc")
+        if not compiler:
+            self.skipTest("requires AArch64 compiler")
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "obmm-worker"
+            sources = [
+                PROVIDERS / "mem_service_provider_obmm_cli.c",
+                PROVIDERS / "mem_service_provider_obmm_worker.c",
+                PROVIDERS / "mem_service_provider_obmm.c",
+                COMPONENT / "mem_service_provider.c",
+                COMPONENT / "mem_service_client.c",
+                COMPONENT / "mem_service_wire_client.c",
+                MANAGER / "gva_manager.c",
+                SERVICE / "vendor/obmm/src/libobmm/libobmm.c",
+                SERVICE / "common/obmm_vendor_adaptor_sim.c",
+            ]
+            command = [compiler, "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+                       "-DMEM_SERVICE_OBMM_MANAGED_WORKER", "-D__EXPORTED_HEADERS__"]
+            for include in [SERVICE, MANAGER, SERVICE / "vendor/obmm/src/libobmm",
+                            SERVICE / "kernel_ub/include/uapi", SERVICE / "kernel_ub/include"]:
+                command.extend(["-I", str(include)])
+            built = subprocess.run(command + list(map(str, sources)) + ["-o", str(binary)],
+                                   capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            golden = pathlib.Path(directory) / "worker-golden"
+            wrapped = ["gva_manager_allocate_segment", "gva_manager_export_segment",
+                       "mem_service_client_publish_allocation", "gva_manager_unexport_segment",
+                       "gva_manager_retire_segment", "mem_service_client_reclaim_allocation",
+                       "open", "close", "ioctl", "mem_service_client_provider_refresh",
+                       "mem_service_client_poll_allocation", "mem_service_client_provider_deregister"]
+            built = subprocess.run(
+                command + [str(ROOT / "guest-linux/aarch64/tests/mem_service_gva_worker_golden.c")]
+                + list(map(str, sources[2:]))
+                + [f"-Wl,--wrap={name}" for name in wrapped] + ["-o", str(golden)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(built.returncode, 0, built.stderr)
+            if not native:
+                return
+            result = subprocess.run([str(golden)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gva_worker_transaction=pass", result.stdout)
+            config = pathlib.Path(directory) / "worker.conf"
+            state = pathlib.Path(directory) / "worker.state"
+            good = (f"connect=unix:{directory}/absent.sock\nnode_id=nodeA\n"
+                    f"state_file={state}\nincarnation=1\nreadiness_generation=1\n"
+                    "allocation_granularity_bytes=2097152\n")
+            for content in ["", good + "unknown=1\n", good + "node_id=duplicate\n",
+                            good.replace("incarnation=1", "incarnation=-1"),
+                            good.replace("allocation_granularity_bytes=2097152\n", ""),
+                            good.replace("allocation_granularity_bytes=2097152", "allocation_granularity_bytes=3")]:
+                config.write_text(content)
+                result = subprocess.run([str(binary), "serve-allocations", "--config", str(config)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse(state.exists())
+            config.write_text(good)
+            state.write_text("unreconciled reservation\n")
+            result = subprocess.run([str(binary), "serve-allocations", "--config", str(config)],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("reconciliation required", result.stderr)
+            self.assertEqual(state.read_text(), "unreconciled reservation\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

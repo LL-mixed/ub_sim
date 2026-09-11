@@ -78,6 +78,10 @@ Current validation entry points:
   - implementation sequence for independent allocation and mapping, dynamic
     generations, W5 integration, recovery, pressure and async-load validation;
     separates missing implementation from missing evidence
+- [plans/2026-09-09-mem-service-gva-manager-integration-plan.md](plans/2026-09-09-mem-service-gva-manager-integration-plan.md)
+  - integrate the existing manager into service-owned address management;
+    records current managed-allocation progress, concrete gaps, CPU/PTO
+    shared-backing milestones, and acceptance criteria for safe address reuse
 - [2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md](2026-08-20-gva-gsva-upcall-coroutine-hardware-mechanisms.md)
   - audited GVA/GSVA/async-load hardware breakdown with memory-type state
     ownership, simulator-to-silicon boundaries, and joint-integration gaps

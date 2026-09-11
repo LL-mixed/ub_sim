@@ -2,6 +2,17 @@
 set -euo pipefail
 setopt null_glob
 
+if [[ "${1:-}" == "--config" ]]; then
+  if (( $# < 2 )) || [[ ! -f "$2" ]]; then
+    echo "config file not found: ${2:-missing path}" >&2
+    exit 2
+  fi
+  set -a
+  source "${2:A}"
+  set +a
+  shift 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
@@ -40,6 +51,15 @@ COH_TEST_TOKEN_VALUE="${COH_TEST_TOKEN_VALUE:-0}"
 COH_TEST_GENERATION="${COH_TEST_GENERATION:-1}"
 COH_TEST_VERBOSE="${COH_TEST_VERBOSE:-1}"
 MEM_SERVICE_OBMM_PROVIDER_GENERATION="${MEM_SERVICE_OBMM_PROVIDER_GENERATION:-101}"
+MEM_SERVICE_OBJECT_SHARE_BACKEND="${MEM_SERVICE_OBJECT_SHARE_BACKEND:-loopback}"
+MEM_SERVICE_OBJECT_SHARE_SIZE="${MEM_SERVICE_OBJECT_SHARE_SIZE:-4096}"
+MEM_SERVICE_OBJECT_SHARE_FAULT="${MEM_SERVICE_OBJECT_SHARE_FAULT:-none}"
+MEM_SERVICE_OBJECT_SHARE_ITERATIONS="${MEM_SERVICE_OBJECT_SHARE_ITERATIONS:-1}"
+MEM_SERVICE_OBJECT_SHARE_SEED="${MEM_SERVICE_OBJECT_SHARE_SEED:-41}"
+MEM_SERVICE_OBJECT_SHARE_ADDRESS="${MEM_SERVICE_OBJECT_SHARE_ADDRESS:-}"
+MEM_SERVICE_OBJECT_SHARE_PORT="${MEM_SERVICE_OBJECT_SHARE_PORT:-12347}"
+MEM_SERVICE_OBJECT_SHARE_INCARNATION="${MEM_SERVICE_OBJECT_SHARE_INCARNATION:-7}"
+MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX="${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX:-}"
 GVA_DIRECT_MODE="${GVA_DIRECT_MODE:-write-read}"
 GVA_DIRECT_LOCAL_VA="${GVA_DIRECT_LOCAL_VA:-0x710000000000}"
 GVA_DIRECT_HOME_VA="${GVA_DIRECT_HOME_VA:-0x720000000000}"
@@ -81,6 +101,7 @@ usage() {
 Usage: run_ub_dual_node_apps.sh [options]
 
 Options:
+  --config PATH     Load an environment config before other options (first argument).
   --app NAME          App to validate. Repeat or pass comma-separated names.
                       Names: chat, rpc, tcp_each_server, udma, obmm_pool,
                       obmm_dataplane_microbench, obmm_async_coroutine,
@@ -89,7 +110,7 @@ Options:
                       ssd_gsva_test, mem_service,
                       mem_service_obmm_provider_conformance, llm_infer,
                       llm_infer_mem_service, pretraining_client_mem_service,
-                      lingqu_shmem_pto_direct.
+                      lingqu_shmem_pto_direct, mem_service_object_share.
                       Default: chat,rpc,tcp_each_server.
   --run-id ID        Stable run id used for log/report names.
   --run-secs SECS    Per-app pass/fail wait timeout.
@@ -223,6 +244,9 @@ append_app_selection() {
       ;;
     lingqu_shmem_pto_direct)
       flag="linqu_shmem_pto_direct=1"
+      ;;
+    mem_service_object_share)
+      flag="linqu_mem_service_object_share=1"
       ;;
     "")
       return 0
@@ -2059,6 +2083,64 @@ validate_mem_service_obmm_provider_qemu_log() {
     "${node_name} OBMM provider remote import evidence" || return 1
 }
 
+validate_mem_service_object_share_log() {
+  local node_name="$1"
+  local log_file="$2"
+  local node_idx="0"
+  local role="provider"
+  if [[ "$node_name" == "nodeB" ]]; then
+    node_idx="1"
+    role="consumer"
+  fi
+  assert_log_absent "$log_file" \
+    "mem_service object-share: status=fail" \
+    "${node_name} mem_service object share failure" || return 1
+  assert_log_has "$log_file" \
+    "mem_service object-share: status=ok node=${node_idx} role=${role} backend=${MEM_SERVICE_OBJECT_SHARE_BACKEND}" \
+    "${node_name} mem_service object share result" || return 1
+  assert_log_has "$log_file" \
+    "result=ok ops=" \
+    "${node_name} mem_service object share session completion" || return 1
+  if [[ "$node_name" == "nodeA" ]]; then
+    assert_log_has "$log_file" \
+      "data_plane_ready=1" \
+      "${node_name} mem_service object share provider readiness" || return 1
+    if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" == "obmm" ]]; then
+      assert_log_has "$log_file" "obmm-worker generation=.*state=active" \
+        "${node_name} automatic backing publication" || return 1
+      assert_log_has "$log_file" "obmm-worker generation=.*state=retired" \
+        "${node_name} actual backing reclaim" || return 1
+    else
+      assert_log_has "$log_file" \
+        "action=publish key=obj-share-.*status=ok" \
+        "${node_name} mem_service object share publish evidence" || return 1
+    fi
+    assert_log_has "$log_file" \
+      "live_objects=0" \
+      "${node_name} mem_service object share resource drain" || return 1
+  else
+    assert_log_has "$log_file" \
+      "action=read key=obj-share-.*status=ok" \
+      "${node_name} mem_service object share read evidence" || return 1
+  fi
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" == "obmm" ]]; then
+    assert_log_has "$log_file" "action=read key=obj-share-.*status=ok" \
+      "${node_name} cross-client payload read" || return 1
+    assert_log_has "$log_file" "action=publish_data key=obj-share-.*status=ok" \
+      "${node_name} payload publication" || return 1
+    assert_log_has "$log_file" "action=wait_visible key=obj-share-.*status=ok" \
+      "${node_name} payload visibility" || return 1
+    assert_log_has "$log_file" "peer_canary=ok" \
+      "${node_name} SDK endpoint canary" || return 1
+    assert_log_has "$log_file" "cpu_fault_probe=probe_readonly offset=0 signal=(7|11)" \
+      "${node_name} CPU readonly protection" || return 1
+    if (( MEM_SERVICE_OBJECT_SHARE_SIZE <= 2031616 )); then
+      assert_log_has "$log_file" "cpu_fault_probe=probe_guard offset=[0-9]+ signal=(7|11)" \
+        "${node_name} CPU logical-view guard" || return 1
+    fi
+  fi
+}
+
 validate_gva_direct_log() {
   local node_name="$1"
   local log_file="$2"
@@ -2626,6 +2708,7 @@ run_iteration() {
   local obmm_gsva_enabled=0
   local obmm_coh_test_enabled=0
   local mem_service_obmm_provider_enabled=0
+  local mem_service_object_share_enabled=0
   local gva_direct_enabled=0
   local gsva_query_enabled=0
   local npu_test_enabled=0
@@ -2639,6 +2722,8 @@ run_iteration() {
   local nodeb_obmm_coh_test_append=""
   local nodea_mem_service_obmm_provider_append=""
   local nodeb_mem_service_obmm_provider_append=""
+  local nodea_mem_service_object_share_append=""
+  local nodeb_mem_service_object_share_append=""
   local nodea_ssd_gsva_test_append=""
   local nodeb_ssd_gsva_test_append=""
   local nodea_w4_guest_append=""
@@ -2682,6 +2767,9 @@ run_iteration() {
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_mem_service_obmm_provider_conformance=1"* ]]; then
     mem_service_obmm_provider_enabled=1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_mem_service_object_share=1"* ]]; then
+    mem_service_object_share_enabled=1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
     gva_direct_enabled=1
@@ -2739,6 +2827,32 @@ run_iteration() {
     nodea_mem_service_obmm_provider_append="mem_service_obmm_provider_node_id=0"
     nodeb_mem_service_obmm_provider_append="mem_service_obmm_provider_node_id=1"
   fi
+  if [[ "$mem_service_object_share_enabled" -eq 1 ]]; then
+    append_cmdline_if_missing \
+      "mem_service_object_share_backend=${MEM_SERVICE_OBJECT_SHARE_BACKEND}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_size=${MEM_SERVICE_OBJECT_SHARE_SIZE}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_fault=${MEM_SERVICE_OBJECT_SHARE_FAULT}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_iterations=${MEM_SERVICE_OBJECT_SHARE_ITERATIONS}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_seed=${MEM_SERVICE_OBJECT_SHARE_SEED}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_port=${MEM_SERVICE_OBJECT_SHARE_PORT}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_incarnation=${MEM_SERVICE_OBJECT_SHARE_INCARNATION}"
+    if [[ -n "$MEM_SERVICE_OBJECT_SHARE_ADDRESS" ]]; then
+      append_cmdline_if_missing \
+        "mem_service_object_share_address=${MEM_SERVICE_OBJECT_SHARE_ADDRESS}"
+    fi
+    if [[ -n "$MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX" ]]; then
+      append_cmdline_if_missing \
+        "mem_service_object_share_descriptor_hex=${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX}"
+    fi
+    nodea_mem_service_object_share_append="linqu_node_idx=0 linqu_node_count=2"
+    nodeb_mem_service_object_share_append="linqu_node_idx=1 linqu_node_count=2"
+  fi
   if [[ "$gva_direct_enabled" -eq 1 ]]; then
     append_cmdline_if_missing "gva_direct_mode=${GVA_DIRECT_MODE}"
     append_cmdline_if_missing "gva_direct_size=${GVA_DIRECT_SIZE}"
@@ -2764,10 +2878,10 @@ run_iteration() {
     nodea_lingqu_shmem_pto_append="linqu_node_idx=0 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEA_CNA"
     nodeb_lingqu_shmem_pto_append="linqu_node_idx=1 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA"
   fi
-  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_mem_service_obmm_provider_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append} ${nodea_lingqu_shmem_pto_append}"
+  nodea_app_append="${nodea_obmm_coh_test_append} ${nodea_mem_service_obmm_provider_append} ${nodea_mem_service_object_share_append} ${nodea_ssd_gsva_test_append} ${nodea_w4_guest_append} ${nodea_lingqu_shmem_pto_append}"
   nodea_app_append="${nodea_app_append#"${nodea_app_append%%[![:space:]]*}"}"
   nodea_app_append="${nodea_app_append%"${nodea_app_append##*[![:space:]]}"}"
-  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_mem_service_obmm_provider_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append} ${nodeb_lingqu_shmem_pto_append}"
+  nodeb_app_append="${nodeb_obmm_coh_test_append} ${nodeb_mem_service_obmm_provider_append} ${nodeb_mem_service_object_share_append} ${nodeb_ssd_gsva_test_append} ${nodeb_w4_guest_append} ${nodeb_lingqu_shmem_pto_append}"
   nodeb_app_append="${nodeb_app_append#"${nodeb_app_append%%[![:space:]]*}"}"
   nodeb_app_append="${nodeb_app_append%"${nodeb_app_append##*[![:space:]]}"}"
 
@@ -3255,6 +3369,38 @@ run_iteration() {
     esac
   fi
 
+  if [[ "$mem_service_object_share_enabled" -eq 1 ]]; then
+    wait_for_log_pass_or_fail "$nodea_guest_log" \
+      "mem_service object-share: status=ok node=0" \
+      "mem_service object-share: status=fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeA mem_service object share failed" >&2
+        return 31
+        ;;
+      *)
+        echo "iteration ${iter}: nodeA mem_service object share timed out" >&2
+        return 31
+        ;;
+    esac
+
+    wait_for_log_pass_or_fail "$nodeb_guest_log" \
+      "mem_service object-share: status=ok node=1" \
+      "mem_service object-share: status=fail" "$RUN_SECS"
+    case "$?" in
+      0) ;;
+      1)
+        echo "iteration ${iter}: nodeB mem_service object share failed" >&2
+        return 31
+        ;;
+      *)
+        echo "iteration ${iter}: nodeB mem_service object share timed out" >&2
+        return 31
+        ;;
+    esac
+  fi
+
   if [[ "$gva_direct_enabled" -eq 1 ]]; then
     wait_for_log_pass_or_fail "$nodea_guest_log" "\\[gva_direct\\] result=done" \
       "\\[gva_direct\\] result=fail" "$RUN_SECS"
@@ -3563,6 +3709,12 @@ run_iteration() {
       "nodeA" "$nodea_qemu_log" || return 1
     validate_mem_service_obmm_provider_qemu_log \
       "nodeB" "$nodeb_qemu_log" || return 1
+  fi
+  if [[ "$APPEND_EXTRA" == *"linqu_mem_service_object_share=1"* ]]; then
+    validate_mem_service_object_share_log \
+      "nodeA" "$nodea_guest_log" || return 1
+    validate_mem_service_object_share_log \
+      "nodeB" "$nodeb_guest_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
     validate_gva_direct_log "nodeA" "$nodea_guest_log" || return 1

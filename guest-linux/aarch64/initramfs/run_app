@@ -565,6 +565,457 @@ run_mem_service_obmm_provider_conformance() {
     /bin/linqu_mem_service_obmm_provider_conformance $args
 }
 
+# T-share object share (M1.2 cross-guest managed object lifecycle). nodeA
+# (linqu_node_idx=0) runs the control-plane daemon on the trusted guest
+# network plus concurrent producer/provider object-sessions; nodeB
+# (linqu_node_idx=1) runs the consumer object-session with data-plane
+# map/write/read through the selected provider backend. backend=loopback
+# exercises the full deterministic choreography with an in-process fixed
+# address mapping; backend=obmm maps the real exported GSVA region and
+# requires a descriptor published via mem_service_object_share_descriptor_hex.
+mem_service_object_share_wait_daemon() {
+  local connect="$1"
+  local daemon_pid="$2"
+  local i=0
+  local health_out=""
+  local uptime=""
+  local ignored=""
+  local deadline=0
+
+  read -r uptime ignored </proc/uptime
+  deadline=$((${uptime%%.*} + 60))
+
+  while true; do
+    health_out="$(/bin/linqu_mem_service health --connect "$connect" \
+      --timeout-ms 1000 --max-attempts 1 2>&1)"
+    case "$health_out" in
+      *status=ok*) return 0 ;;
+    esac
+    if [ -n "$daemon_pid" ] && ! kill -0 "$daemon_pid" >/dev/null 2>&1; then
+      return 1
+    fi
+    i=$((i + 1))
+    read -r uptime ignored </proc/uptime
+    if [ "${uptime%%.*}" -ge "$deadline" ] || [ "$i" -ge 1200 ]; then
+      log "managed daemon readiness timed out: $health_out"
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
+mem_service_object_share_run_provider() {
+  local backend="$1"
+  local size="$2"
+  local iterations="$3"
+  local port="$4"
+  local incarnation="$5"
+  local address="$6"
+  local descriptor_hex="$7"
+  local connect="$8"
+  local daemon_conf="/tmp/mem_service_object_share.daemon.conf"
+  local store="/tmp/mem_service_object_share.store"
+  local daemon_pid=""
+  local i=1
+  local key=""
+  local barrier_key=""
+  local gen_obj=0
+  local gen_barrier=0
+  local desc="$descriptor_hex"
+  local producer_conf=""
+  local provider_conf=""
+  local producer_log=""
+  local provider_log=""
+  local producer_pid=""
+  local provider_pid=""
+  local producer_rc=0
+  local provider_rc=0
+
+  if [ -z "$desc" ]; then
+    # The loopback provider maps the published fixed address in-process and
+    # never decodes descriptor bytes, so a placeholder descriptor is fine.
+    desc="deadbeef"
+  fi
+
+  {
+    echo "listen=tcp:10.0.0.1:$port"
+    echo "store=$store"
+    echo "node_id=guest-node-0"
+    echo "cluster_id=linqu-object-share"
+    echo "auth_mode=trusted-guest-network"
+    echo "network_peer=guest-node-0@10.0.0.1"
+    echo "network_peer=guest-node-1@10.0.0.2"
+    echo "required_provider=guest-node-0"
+    echo "provider_lease_ms=120000"
+    echo "allocation_home_provider=guest-node-0"
+  } > "$daemon_conf"
+
+  /bin/busybox rm -f "$store" "$store.journal"
+  log "start linqu_mem_service daemon for mem_service object share"
+  /bin/linqu_mem_service serve --config "$daemon_conf" \
+    >/tmp/mem_service_object_share.daemon.stdout \
+    2>/tmp/mem_service_object_share.daemon.stderr &
+  daemon_pid=$!
+
+  if ! mem_service_object_share_wait_daemon "$connect" "$daemon_pid"; then
+    /bin/busybox cat /tmp/mem_service_object_share.daemon.stderr >&2 || true
+    kill "$daemon_pid" >/dev/null 2>&1 || true
+    wait "$daemon_pid" >/dev/null 2>&1 || true
+    log "mem_service object-share: status=fail node=0 role=provider backend=$backend reason=daemon_ready"
+    return 1
+  fi
+
+  if ! /bin/linqu_mem_service provider-register --connect "$connect" \
+      --node-id guest-node-0 --incarnation "$incarnation" \
+      --readiness-generation 1 --capabilities 1; then
+    kill "$daemon_pid" >/dev/null 2>&1 || true
+    wait "$daemon_pid" >/dev/null 2>&1 || true
+    log "mem_service object-share: status=fail node=0 role=provider backend=$backend reason=provider_register"
+    return 1
+  fi
+  if ! /bin/linqu_mem_service status --connect "$connect"; then
+    kill "$daemon_pid" >/dev/null 2>&1 || true
+    wait "$daemon_pid" >/dev/null 2>&1 || true
+    log "mem_service object-share: status=fail node=0 role=provider backend=$backend reason=status"
+    return 1
+  fi
+
+  while [ "$i" -le "$iterations" ]; do
+    key="obj-share-$i"
+    barrier_key="barrier-share-$i"
+    # Allocation generations come from the daemon table-level counter: the
+    # shared object is allocated first, the consumer barrier second.
+    gen_obj=$((2 * i - 1))
+    gen_barrier=$((2 * i))
+    producer_conf="/tmp/mem_service_object_share.producer.$i.conf"
+    provider_conf="/tmp/mem_service_object_share.provider.$i.conf"
+    producer_log="/tmp/mem_service_object_share.producer.$i.log"
+    provider_log="/tmp/mem_service_object_share.provider.$i.log"
+
+    {
+      echo "session_id=producer"
+      echo "connect=$connect"
+      echo "op=allocate key=$key idempotency_key=p-alloc-$i size_bytes=$size capabilities=map"
+      echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=100"
+      echo "op=wait_state key=$barrier_key state=allocating timeout_ms=60000 poll_ms=100"
+      echo "op=retire key=$key idempotency_key=p-ret-$i expected_generation=$gen_obj"
+      echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=100"
+      echo "op=wait_state key=$barrier_key state=retired timeout_ms=60000 poll_ms=100"
+      echo "op=stats"
+    } > "$producer_conf"
+
+    {
+      echo "session_id=provider"
+      echo "connect=$connect"
+      echo "op=wait_state key=$key state=allocating timeout_ms=60000 poll_ms=100"
+      echo "op=publish key=$key node_id=guest-node-0 incarnation=$incarnation generation=$gen_obj descriptor_hex=$desc address=$address address_len=$size"
+      echo "op=wait_state key=$key state=retiring timeout_ms=60000 poll_ms=100"
+      echo "op=wait_state key=$barrier_key state=retired timeout_ms=60000 poll_ms=100"
+      echo "op=reclaim key=$key node_id=guest-node-0 incarnation=$incarnation generation=$gen_obj confirmed=1"
+    } > "$provider_conf"
+
+    /bin/linqu_mem_service object-session --config "$producer_conf" \
+      >"$producer_log" 2>&1 &
+    producer_pid=$!
+    /bin/linqu_mem_service object-session --config "$provider_conf" \
+      >"$provider_log" 2>&1 &
+    provider_pid=$!
+    wait "$producer_pid"
+    producer_rc=$?
+    wait "$provider_pid"
+    provider_rc=$?
+    /bin/busybox cat "$producer_log"
+    /bin/busybox cat "$provider_log"
+    if [ "$producer_rc" -ne 0 ] || [ "$provider_rc" -ne 0 ]; then
+      kill "$daemon_pid" >/dev/null 2>&1 || true
+      wait "$daemon_pid" >/dev/null 2>&1 || true
+      log "mem_service object-share: status=fail node=0 role=provider backend=$backend reason=session iteration=$i"
+      return 1
+    fi
+    i=$((i + 1))
+  done
+
+  kill "$daemon_pid" >/dev/null 2>&1 || true
+  wait "$daemon_pid" >/dev/null 2>&1 || true
+  log "mem_service object-share: status=ok node=0 role=provider backend=$backend"
+  return 0
+}
+
+mem_service_object_share_run_consumer() {
+  local backend="$1"
+  local size="$2"
+  local fault="$3"
+  local iterations="$4"
+  local seed="$5"
+  local connect="$6"
+  local provider_line="provider=session-loopback"
+  local i=1
+  local key=""
+  local barrier_key=""
+  local gen_obj=0
+  local gen_barrier=0
+  local consumer_conf=""
+  local consumer_log=""
+  local consumer_rc=0
+
+  if [ "$backend" = "obmm" ]; then
+    provider_line="provider=obmm"
+  fi
+
+  if ! mem_service_object_share_wait_daemon "$connect" ""; then
+    log "mem_service object-share: status=fail node=1 role=consumer backend=$backend reason=daemon_reachable"
+    return 1
+  fi
+
+  while [ "$i" -le "$iterations" ]; do
+    key="obj-share-$i"
+    barrier_key="barrier-share-$i"
+    gen_obj=$((2 * i - 1))
+    gen_barrier=$((2 * i))
+    consumer_conf="/tmp/mem_service_object_share.consumer.$i.conf"
+    consumer_log="/tmp/mem_service_object_share.consumer.$i.log"
+
+    {
+      echo "session_id=consumer"
+      echo "connect=$connect"
+      echo "$provider_line"
+      echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=100"
+      echo "op=acquire key=$key idempotency_key=c-acq-$i expected_generation=$gen_obj"
+      echo "op=inspect key=$key expect_state=active expect_generation=$gen_obj expect_holder_count=1"
+      echo "op=map key=$key flags=readwrite"
+      echo "op=write key=$key offset=0 len=$size seed=$seed"
+      echo "op=read key=$key offset=0 len=$size seed=$seed"
+      if [ "$fault" = "read_mismatch" ]; then
+        echo "op=read key=$key offset=0 len=$size seed=$((seed + 1)) expect_status=checksum_mismatch"
+      fi
+      echo "op=unmap key=$key"
+      echo "op=allocate key=$barrier_key idempotency_key=c-bar-$i size_bytes=$size capabilities=map"
+      echo "op=wait_state key=$key state=retiring timeout_ms=60000 poll_ms=100"
+      echo "op=release key=$key idempotency_key=c-rel-$i expected_generation=$gen_obj"
+      echo "op=retire key=$barrier_key idempotency_key=c-bar-ret-$i expected_generation=$gen_barrier"
+    } > "$consumer_conf"
+
+    /bin/linqu_mem_service object-session --config "$consumer_conf" \
+      >"$consumer_log" 2>&1
+    consumer_rc=$?
+    /bin/busybox cat "$consumer_log"
+    if [ "$consumer_rc" -ne 0 ]; then
+      log "mem_service object-share: status=fail node=1 role=consumer backend=$backend reason=session iteration=$i"
+      return 1
+    fi
+    i=$((i + 1))
+  done
+
+  log "mem_service object-share: status=ok node=1 role=consumer backend=$backend"
+  return 0
+}
+
+mem_service_object_share_managed() (
+  node="$1"
+  size="$2"
+  iterations="$3"
+  seed="$4"
+  port="$5"
+  incarnation="$6"
+  connect="tcp:10.0.0.1:$port"
+  daemon_pid=""
+  worker_pid=""
+  cleanup_managed_share() {
+    if [ -n "$worker_pid" ]; then
+      kill "$worker_pid" 2>/dev/null || true
+      wait "$worker_pid" 2>/dev/null || true
+    fi
+    if [ -n "$daemon_pid" ]; then
+      kill "$daemon_pid" 2>/dev/null || true
+      wait "$daemon_pid" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_managed_share EXIT
+  # Self-connections to the node's configured address use the local route.
+  # BusyBox initramfs does not bring loopback up automatically.
+  /bin/busybox ip link set lo up || exit 1
+  if [ "$node" = "0" ]; then
+    {
+      echo "listen=$connect"
+      echo "store=/tmp/managed-share.store"
+      echo "node_id=guest-node-0"
+      echo "cluster_id=managed-share"
+      echo "auth_mode=trusted-guest-network"
+      echo "network_peer=guest-node-0@10.0.0.1"
+      echo "network_peer=guest-node-1@10.0.0.2"
+      echo "required_provider=guest-node-0"
+      echo "required_provider=guest-node-1"
+      echo "allocation_home_provider=guest-node-0"
+      echo "provider_lease_ms=30000"
+    } >/tmp/managed-share.daemon.conf
+    /bin/linqu_mem_service serve --config /tmp/managed-share.daemon.conf &
+    daemon_pid=$!
+  fi
+  /bin/linqu_gva_manager --bootstrap --node-id "$node" --node-count 2 \
+    --generation "$incarnation" --aperture-base 0x700000000000 \
+    --aperture-size 0x1000000 || exit 1
+  /bin/linqu_mem_service_obmm_provider_conformance --node-id "$node" \
+    --node-count 2 --generation "$incarnation" || exit 1
+  mem_service_object_share_wait_daemon "$connect" "$daemon_pid" || exit 1
+  /bin/linqu_mem_service provider-register --connect "$connect" \
+    --node-id "guest-node-$node" --incarnation "$incarnation" \
+    --readiness-generation "$incarnation" --capabilities 1 || exit 1
+  {
+    echo "connect=$connect"
+    echo "node_id=guest-node-$node"
+    echo "incarnation=$incarnation"
+    echo "readiness_generation=$incarnation"
+    echo "state_file=/tmp/managed-share.worker.state"
+    echo "allocation_granularity_bytes=2097152"
+  } >/tmp/managed-share.worker.conf
+  /bin/linqu_mem_service_provider_obmm serve-allocations \
+    --config /tmp/managed-share.worker.conf &
+  worker_pid=$!
+  i=1
+  while [ "$i" -le "$iterations" ]; do
+    config="/tmp/managed-share.session.$i.conf"
+    key="obj-share-$i"
+    sent="obj-sent-$i"
+    returned="obj-returned-$i"
+    {
+      echo "session_id=client-$node"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "provider=obmm"
+      echo "provider_node_id=$node"
+      echo "provider_node_count=2"
+      echo "provider_generation=$((incarnation + i))"
+      echo "provider_import_region_bytes=2097152"
+      if [ "$node" = "0" ]; then
+        echo "op=allocate key=$key idempotency_key=alloc-$i size_bytes=$size capabilities=map"
+        echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
+        echo "op=acquire key=$key idempotency_key=acq-a-$i"
+        echo "op=map key=$key flags=read"
+        echo "op=probe_readonly key=$key"
+        echo "op=unmap key=$key"
+        echo "op=map key=$key flags=readwrite"
+        # Leave at least one full page even on a 64 KiB-page deployment.
+        if [ "$size" -le 2031616 ]; then
+          echo "op=probe_guard key=$key"
+        fi
+        echo "op=write key=$key offset=0 len=$size seed=$seed"
+        echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
+        echo "op=allocate key=$sent idempotency_key=sent-$i size_bytes=65536 capabilities=map"
+        echo "op=wait_state key=$returned state=active timeout_ms=60000 poll_ms=50"
+        echo "op=wait_visible key=$key offset=0 len=$size seed=$((seed + 1))"
+        echo "op=read key=$key offset=0 len=$size seed=$((seed + 1))"
+        echo "op=unmap key=$key"
+        echo "op=release key=$key idempotency_key=rel-a-$i"
+        echo "op=retire key=$key idempotency_key=retire-$i"
+        echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
+        echo "op=retire key=$sent idempotency_key=retire-sent-$i"
+        echo "op=wait_state key=$sent state=retired timeout_ms=60000 poll_ms=50"
+        echo "op=retire key=$returned idempotency_key=retire-returned-$i"
+        echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
+        echo "op=stats"
+      else
+        echo "op=wait_state key=$sent state=active timeout_ms=60000 poll_ms=50"
+        echo "op=acquire key=$key idempotency_key=acq-b-$i"
+        echo "op=map key=$key flags=read"
+        echo "op=probe_readonly key=$key"
+        echo "op=unmap key=$key"
+        echo "op=map key=$key flags=readwrite"
+        if [ "$size" -le 2031616 ]; then
+          echo "op=probe_guard key=$key"
+        fi
+        echo "op=wait_visible key=$key offset=0 len=$size seed=$seed"
+        echo "op=read key=$key offset=0 len=$size seed=$seed"
+        echo "op=write key=$key offset=0 len=$size seed=$((seed + 1))"
+        echo "op=publish_data key=$key offset=0 len=$size seed=$((seed + 1))"
+        echo "op=unmap key=$key"
+        echo "op=release key=$key idempotency_key=rel-b-$i"
+        echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
+        echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
+      fi
+    } >"$config"
+    /bin/linqu_mem_service object-session --config "$config" || exit 1
+    i=$((i + 1))
+  done
+  /bin/linqu_mem_service health --connect "$connect" || exit 1
+  /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
+  role=provider
+  [ "$node" = "0" ] || role=consumer
+  log "mem_service object-share: status=ok node=$node role=$role backend=obmm"
+  # The headless runner owns infrastructure shutdown after both clients pass.
+  # Keep home exports and the daemon alive independently of client sessions.
+  wait "$worker_pid"
+)
+
+run_mem_service_object_share() {
+  local node_idx=""
+  local node_count=""
+  local backend=""
+  local size=""
+  local fault=""
+  local iterations=""
+  local seed=""
+  local port=""
+  local incarnation=""
+  local address=""
+  local descriptor_hex=""
+  local connect=""
+
+  node_idx="$(cmdline_value linqu_node_idx 0)"
+  node_count="$(cmdline_value linqu_node_count 2)"
+  backend="$(cmdline_value mem_service_object_share_backend loopback)"
+  size="$(cmdline_value mem_service_object_share_size 4096)"
+  fault="$(cmdline_value mem_service_object_share_fault none)"
+  iterations="$(cmdline_value mem_service_object_share_iterations 1)"
+  seed="$(cmdline_value mem_service_object_share_seed 41)"
+  port="$(cmdline_value mem_service_object_share_port 12347)"
+  incarnation="$(cmdline_value mem_service_object_share_incarnation 7)"
+  address="$(cmdline_value mem_service_object_share_address 17179869184)"
+  descriptor_hex="$(cmdline_value mem_service_object_share_descriptor_hex '')"
+  connect="tcp:10.0.0.1:$port"
+
+  if [ ! -x /bin/linqu_mem_service ]; then
+    log "mem_service object-share: status=fail node=$node_idx role=unknown backend=$backend reason=cli_missing"
+    return 2
+  fi
+  if [ "$node_count" != "2" ]; then
+    log "mem_service object-share: status=fail node=$node_idx role=unknown backend=$backend reason=node_count"
+    return 2
+  fi
+  if [ "$backend" != "loopback" ] && [ "$backend" != "obmm" ]; then
+    log "mem_service object-share: status=fail node=$node_idx role=unknown backend=$backend reason=backend"
+    return 2
+  fi
+  if [ "$backend" = "obmm" ]; then
+    if [ -n "$descriptor_hex" ] || [ "$fault" != "none" ]; then
+      log "mem_service object-share: status=fail node=$node_idx backend=obmm reason=unsupported_config"
+      return 2
+    fi
+    if ! mem_service_object_share_managed "$node_idx" "$size" "$iterations" \
+        "$seed" "$port" "$incarnation"; then
+      log "mem_service object-share: status=fail node=$node_idx backend=obmm reason=managed_session"
+      return 1
+    fi
+    return 0
+  fi
+
+  case "$node_idx" in
+    0)
+      mem_service_object_share_run_provider "$backend" "$size" "$iterations" \
+        "$port" "$incarnation" "$address" "$descriptor_hex" "$connect"
+      return $?
+      ;;
+    1)
+      mem_service_object_share_run_consumer "$backend" "$size" "$fault" \
+        "$iterations" "$seed" "$connect"
+      return $?
+      ;;
+    *)
+      log "mem_service object-share: status=fail node=$node_idx role=unknown backend=$backend reason=node_index"
+      return 2
+      ;;
+  esac
+}
+
 run_gva_manager_bootstrap() {
   local args="--bootstrap"
   local token=""
@@ -734,6 +1185,14 @@ run_gva_manager_segment_cli() {
   /bin/busybox cat "$retire_log"
   if [ "$rc" -ne 0 ]; then
     log "gva_manager segment_cli retire failed rc=$rc segment_id=$segment_id epoch=$epoch"
+    return "$rc"
+  fi
+  /bin/linqu_gva_manager --check-allocator --node-id "$node_id" \
+    --node-count "$node_count" --aperture-base "$aperture_base" \
+    --aperture-size "$aperture_size"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "gva_manager allocator check failed rc=$rc"
     return "$rc"
   fi
   log "linqu_gva_manager segment_cli done"
@@ -1004,6 +1463,11 @@ run_default_actions() {
 
   if has_flag "linqu_mem_service_obmm_provider_conformance=1"; then
     run_mem_service_obmm_provider_conformance || rc=$?
+    ran_any="1"
+  fi
+
+  if has_flag "linqu_mem_service_object_share=1"; then
+    run_mem_service_object_share || rc=$?
     ran_any="1"
   fi
 
