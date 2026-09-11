@@ -890,10 +890,13 @@ mem_service_object_share_managed() (
         echo "op=allocate key=$key idempotency_key=alloc-$i size_bytes=$size capabilities=map"
         echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
         echo "op=acquire key=$key idempotency_key=acq-a-$i"
+        echo "op=stats"
         echo "op=map key=$key flags=read"
+        echo "op=stats"
         echo "op=probe_readonly key=$key"
         echo "op=unmap key=$key"
         echo "op=map key=$key flags=readwrite"
+        echo "op=stats"
         # Leave at least one full page even on a 64 KiB-page deployment.
         if [ "$size" -le 2031616 ]; then
           echo "op=probe_guard key=$key"
@@ -905,6 +908,7 @@ mem_service_object_share_managed() (
         echo "op=wait_visible key=$key offset=0 len=$size seed=$((seed + 1))"
         echo "op=read key=$key offset=0 len=$size seed=$((seed + 1))"
         echo "op=unmap key=$key"
+        echo "op=stats"
         echo "op=release key=$key idempotency_key=rel-a-$i"
         echo "op=retire key=$key idempotency_key=retire-$i"
         echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
@@ -916,10 +920,13 @@ mem_service_object_share_managed() (
       else
         echo "op=wait_state key=$sent state=active timeout_ms=60000 poll_ms=50"
         echo "op=acquire key=$key idempotency_key=acq-b-$i"
+        echo "op=stats"
         echo "op=map key=$key flags=read"
+        echo "op=stats"
         echo "op=probe_readonly key=$key"
         echo "op=unmap key=$key"
         echo "op=map key=$key flags=readwrite"
+        echo "op=stats"
         if [ "$size" -le 2031616 ]; then
           echo "op=probe_guard key=$key"
         fi
@@ -928,6 +935,7 @@ mem_service_object_share_managed() (
         echo "op=write key=$key offset=0 len=$size seed=$((seed + 1))"
         echo "op=publish_data key=$key offset=0 len=$size seed=$((seed + 1))"
         echo "op=unmap key=$key"
+        echo "op=stats"
         echo "op=release key=$key idempotency_key=rel-b-$i"
         echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
         echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"

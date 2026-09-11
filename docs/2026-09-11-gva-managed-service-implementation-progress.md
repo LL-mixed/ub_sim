@@ -16,6 +16,8 @@ CPU/PTO 联合访问、安全重用、恢复、多 home 和 W5 新路径
 raw mapping 入口和 kernel 实际资源枚举仍不在该计量内，零值无法独立证明整个
 数据面不存在映射。allocator 高水位、可重用地址与对象 live reservation 也需独立
 计量，禁止将单调分配策略下的对象计数清零解读为已具备地址空间循环重用。
+r45 已增加 OBMM endpoint 资源快照与双 guest 存活期采样，核对本进程持有的
+export/import、VMA、逻辑视图及清理残留；该诊断不提供 kernel 全局资源枚举。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
 release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
@@ -540,6 +542,83 @@ SHA-256 为 `5ab8976e784c867c62242c87f76701961528c7dd495768bd7a6dcb55e3385a57`�
 查询或 CLOSE 不可确认时，SDK 清零 base/len/flags 并保留实际 VMA 等待恢复；
 不能把 SDK 禁止访问描述为 CPU 页权限已经撤销。原 raw map/unmap API 不自动
 记账。现有幂等记录容量仍为 64，长运行容量规划、回收策略及安全地址重用未完成。
+
+## M1.4 续作：endpoint 资源快照与双 guest 存活期核对
+
+mem_service 提交 `b05334b86e645f6bd538f077ba47e4bde0407671` 新增
+`mem_service_provider_obmm_endpoint_resources_v1()`。object-session 的 `op=stats`
+在 OBMM endpoint 打开时输出 `provider-resources`，包含 export/import handle 数量
+及跨度、持有的 VMA 数量/字节、可访问逻辑视图、待清理映射和关闭不确定状态。
+接口位于具体 provider，未在服务核心引入平台类型，未修改既有 endpoint/binding
+公开结构布局。调用者须与 endpoint 操作串行使用该接口。
+
+统计范围与限制：
+
+- export/import bytes 是各 handle 跨度之和，可能指向同一 backing；不能相加作为
+  去重后的物理池占用。worker 全局物理池统计仍需补齐。
+- VMA bytes 包含 guard/reservation；accessible bytes 表示 SDK 逻辑范围。
+  逻辑访问归零不能证明 CPU 页权限已撤销。endpoint 标记 closing 时，仍存活的
+  可访问视图同时计入 accessible 与 cleanup，避免隐藏尚可访问的实际映射。
+- 本地 home 使用既有 export FD 映射；peer 才建立 import handle。二者均具有
+  VMA，并进入控制面 mapping ledger。服务的 `import_mappings` 字段统计这些
+  受管理映射，不能直接等同于 OBMM import ioctl 的次数。
+- 快照只枚举当前 endpoint 保留的所有权记录；关闭后的 endpoint 查询返回失败，
+  不以有效零快照掩盖诊断对象消失。kernel 孤儿资源与重启核对仍未覆盖。
+
+同时修复 export 成功、descriptor 编码失败、unexport 回滚失败时丢弃所有权记录
+的路径：保留 export slot 并进入 closing，拒绝新工作，后续 checked close 可重试。
+region handle 耗尽时在 export 前拒绝，防止编号回绕。包装测试覆盖正常/失败回滚、
+重试释放、关闭期仍可访问的视图、部分 munmap、close 不确定和计数溢出。
+
+guest `run_app` 每轮在 acquire 后、readonly map 后、readwrite map 后及最终
+unmap 后采样，home 在回收后另采样。新增命令行校验器
+`guest-linux/aarch64/scripts/validate_mem_service_mapping_resources.py`，接入双节点
+runner，校验序列、逻辑/VMA/import 范围及清理残留。新增 3 项纯 Python 测试覆盖
+双节点、缺失/伪造/残留/错序日志与 CLI 退出状态；本机 3/3 通过，0.071 秒。
+本机 shell 语法、C 交叉语法与 diff whitespace 检查通过；未运行本机完整套件。
+
+远端 n4-910c1 验证结果：
+
+| 验证 | 结果与边界 |
+| --- | --- |
+| 最终服务 r44 全量 | 16 模块、17 隔离分片、225 个唯一 test ID：221 通过、4 环境跳过、0 失败；所有容器退出 0，最长分片 306.053 秒 |
+| 双 guest r44 | runner 失败：初版校验器误要求 home 持有远端 import；保留失败日志，未计为通过 |
+| 双 guest r45 | 修正 home/peer 预期并增加回归后，runner 1/1 PASS；两轮 64 KiB 双向共享、双方 readonly/guard 探针、同代重映射、6 次回收通过 |
+| root unittest r45 全量 | 432 项：413 通过、5 跳过、5 failures、9 errors，40.741 秒；全量未通过 |
+| root layout pytest r45 | 72 通过、2 失败，1.25 秒；全量未通过 |
+
+r45 共核对 home 10 个、peer 8 个资源快照。存活期服务 mapping 数量观察到 2；
+home import handles/bytes 为 0，peer 为 1/2097152；各 endpoint 的 VMA 为
+2 个、2097152 字节，逻辑视图为 65536 字节。unmap 后该 endpoint 的 import、VMA
+及逻辑视图回到 0；每个 session 存活期保留 1 个 2 MiB canary export 基线。
+最终服务 live_objects、backing_allocated_bytes、address_reserved_bytes、live_refs、
+in_flight、quarantined_objects、quarantined_bytes、import_mappings 均为 0。
+nodeB remote_reads=1048795、remote_writes=131092，双方 read_timeouts、read_errors、
+write_errors 均为 0；运行后未遗留 QEMU 进程。
+
+root r44 首次归档环境缺少子模块源码，结果为 432 项中 370 通过、5 跳过、4 failures、
+53 errors；layout 为 72 通过、2 失败。r45 补齐只读 kernel/QEMU/OBMM 源码依赖，
+11 个改动依赖文件与本地 SHA-256 一致，新增资源校验测试通过。剩余失败包括源码
+archive 缺少 Git metadata 引发的版本锁检查及依赖入口失败，以及 layout 仍要求
+旧锁定版本的 package checksum。该环境无法证明正式 checkout 全量通过；没有
+伪造 Git metadata、放宽锁检查或更新旧 pin 对应的黄金值。服务的 4 项跳过仍为
+arm64 deb 工具链及独立服务仓库缺少的 3 项下游契约。
+
+| 冻结输入及产物 | SHA-256 |
+| --- | --- |
+| 最终服务 resources-r44b-changes.tar.gz（基于 8b8ee14） | `67b4f342ac8275e98aa09f7798af6fbfb7162e0573e50ebd9c7f2e138033df9e` |
+| root archive（846c63a） | `715a07334019274b9ca8c4c9e8ddd78e3cbdad2b356aec97669b45183331ad9e` |
+| 最终 root 四文件变更 resources-r45-root-changes.tar.gz | `17949bbeaa1d2640e304096e92e3f01e255d2df271920b19499c1ae1cf6b2d38` |
+| linqu_mem_service-r44（r45 复用） | `16d50f0aec979b4a47b5a0d42aafbb1f0d48b3a2d9cb5bbf093901bd183c94f5` |
+| managed-share-r44.cpio.gz（r45 复用） | `148eaf17ac00c33cf3b5a697fa7143e3c9dbd729c567726ed1f4be3d21a6afb4` |
+| r45 校验器 | `71faaea96aa190b34faea370f774b41c3047af5f5650fb0d5864cfad2da5ebfd` |
+
+r45 继续使用不可变 kernel/QEMU r16；运行前通过产物及 host harness SHA-256 校验。
+证据包 `out/gva-manager-integration/verified-r45-evidence.tar.gz` 的 SHA-256 为
+`f017c84492ccb977a262d3b221e613b1d3c45294e4222cdd24f5ace8436060a6`。
+包含 r43/r44 服务全量、r44/r45 root 和 guest 成败日志、容器状态、双方 guest
+日志、冻结变更及指纹。大体积 root archive、二进制和 QEMU trace 保留在远端
+`/home/ll/gva-manager-integration/mapping-20260911.UkR8At` 及配套 reclaim 实验目录。
 
 ## 下一批的前置条件与未完成项
 

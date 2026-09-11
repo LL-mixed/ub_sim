@@ -2124,6 +2124,10 @@ validate_mem_service_object_share_log() {
       "${node_name} mem_service object share read evidence" || return 1
   fi
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" == "obmm" ]]; then
+    python3 "${SCRIPT_DIR}/validate_mem_service_mapping_resources.py" \
+      --log "$log_file" --node "$node_idx" \
+      --iterations "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" \
+      --size "$MEM_SERVICE_OBJECT_SHARE_SIZE" || return 1
     assert_log_has "$log_file" "action=read key=obj-share-.*status=ok" \
       "${node_name} cross-client payload read" || return 1
     assert_log_has "$log_file" "action=publish_data key=obj-share-.*status=ok" \
