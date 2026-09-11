@@ -14,9 +14,10 @@ CPU/PTO 联合访问、安全重用、恢复、多 home 和 W5 新路径
 服务的 import_mappings 仍缺少实际客户端/provider 映射上报；当前为零不能证明
 数据面不存在映射。allocator 高水位、可重用地址与对象 live reservation 也需独立
 计量，禁止将单调分配策略下的对象计数清零解读为已具备地址空间循环重用。
-object-session 的本地 holder 跟踪仍只覆盖当前 view；跨 key 操作可能丢失本地
-泄漏提示，服务端实际引用仍保留。M1.4 需补齐多 key/session 跟踪及中途退出负例，
-当前正例通过显式 release 和最终服务统计验证回收，不能推广为所有序列均无泄漏。
+object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
+查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
+release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
+服务端仍为引用权威；跨进程恢复、实际映射计量和完整失败矩阵仍待实现与验收。
 
 r20 实验使用提交前的隔离开发快照与预构建 initramfs，未放宽正式构建的源码
 锁定检查，不能作为发布认证。总计划修订 4 已移除 SSD 交付，本记录的后续任务
@@ -27,7 +28,8 @@ r20 实验使用提交前的隔离开发快照与预构建 initramfs，未放宽
 
 | 仓库 | 本地提交 |
 | --- | --- |
-| mem_service | `3fde02f135fa8f066089f5e6b1d7505f96dc64de` |
+| mem_service 首批 | `3fde02f135fa8f066089f5e6b1d7505f96dc64de` |
+| mem_service holder 续作 | `aa539204a402395df31175eeaa95989b8ad90f20` |
 | kernel | `021a7dc9111aac81a9f1586ad093dd72840de8ec` |
 | QEMU | `43d078eabc12cbb8dc8bdd8d5e433392e8d869b6` |
 
@@ -73,14 +75,16 @@ r20 实验使用提交前的隔离开发快照与预构建 initramfs，未放宽
 | mem_service 第一轮全量 | 204 项：198 通过、4 跳过、1 failure、1 error；不能计为通过 |
 | mem_service 第二轮全量 | 207 项：195 通过、4 跳过、7 failures、1 error；3250.802 秒；不能计为通过 |
 | mem_service 第三轮全量 | 208 项：204 通过、4 环境跳过，1479.438 秒；冻结的 r10 服务快照通过 |
-| mem_service 最新全量 r17 | 209 项：205 通过、4 环境跳过，2773.130 秒，零失败；冻结的 r15 功能源码，覆盖新增 CPU 探针和逻辑映射保护 |
+| mem_service 全量 r17 | 209 项：205 通过、4 环境跳过，2773.130 秒，零失败；冻结的 r15 功能源码，覆盖新增 CPU 探针和逻辑映射保护 |
+| mem_service 最新全量 r23/r24 | 215 项：211 通过、4 环境跳过，零失败；全部 13 个模块分 4 个隔离组运行，包含新增 6 项 holder 回归 |
 | ub_sim guest unittest 全量 r14 | 427 项：411 通过、5 跳过、4 failures、7 errors，93.434 秒；未通过。源码锁检查明确拒绝未提交的 mem_service，W5 bootstrap 随之中止 |
 | ub_sim guest unittest 全量 r19 | 429 项：413 通过、5 跳过、4 failures、7 errors，348.591 秒；新增 view-release 定向测试通过，剩余失败仍为源码锁门槛及依赖该门槛的 W5 入口 |
 | guest app layout pytest r15 | 74 项：70 通过、4 失败，1.36 秒；新增共享探针/runner 检查通过。基线已有 app 清单遗漏、package checksum 黄金值过期、docs/demo 命名冲突；不能计作全量通过 |
 | guest app layout pytest r19 | 74/74，1.14 秒；补齐 obmm_test 与 PTO app 的现有矩阵入口，按 c042d66 锁定契约更新黄金值，将已有图改名为 validation 并同步引用；图内容 SHA256 不变 |
 | 新 QEMU 配套单测 | 31/31：OBMM remote 6、remote model 7、void response 5、async load 11、bridge lock 2 |
 | 新 kernel r16 与 helper | 完整 Image、modules_prepare 和匹配的 linqu_ub_drv.ko 构建通过 |
-| 双 guest 最终组合 r20 | runner 1/1 PASS；两轮 64 KiB 双向共享、双方各两次 readonly/guard 探针、同代重映射、6 个对象真实回收；远端读/写错误及超时均为 0 |
+| 双 guest 组合 r20 | runner 1/1 PASS；两轮 64 KiB 双向共享、双方各两次 readonly/guard 探针、同代重映射、6 个对象真实回收；远端读/写错误及超时均为 0 |
+| 双 guest 最新组合 r24 | runner 1/1 PASS；新 holder 版本重复通过 r20 的两轮共享、保护探针、同代重映射和 6 次回收；远端读/写错误及超时均为 0 |
 
 第一轮全量失败包括源码包中的 macOS `._*` 附属文件影响 vendored aggregate，
 以及断连触发 SIGPIPE。已重打无附属文件快照并修复 SIGPIPE。
@@ -94,6 +98,71 @@ r17 使用容器内显式可执行的临时文件系统运行全部服务测试�
 构建输出时停止，r16 因临时挂载默认 noexec 而停止；这两次未完成运行不计作通过。
 r17 运行期间功能源码保持冻结；之后仅补充 provider 验证记录及修正集成文档的
 MEM_SERVICE_ROOT 默认路径，没有修改已测试的功能代码。
+
+## M1.4 续作：CLI holder 跟踪与 r24 双 guest 验证
+
+首批根仓库开发检查点为 `be4acc23cedbcd59007653416b2fd6825c902050`，包含本总计划
+的内存 backing 范围修订、guest 集成和既有验证记录；不包含未获授权的无关修改。
+随后继续修复 object-session 的本地持有状态：
+
+- 按 key/generation/session 保存所有本进程成功确认的引用，查询其他对象不清除
+  记录；为其他 session 执行 acquire 不授予当前 session 映射资格。
+- 活跃映射独立保存 backing 长度，readonly/guard 探针按该映射及其 holder 核对，
+  不依赖最后一次 inspect 选择的对象。当前仍只允许一个活跃映射。
+- 对本进程已经处理的成功 acquire/release 幂等键记账。旧 acquire 重放不恢复
+  已释放的本地资格；旧 release 重放不移除后来重新获得的引用。
+- 正常结束及操作失败退出均列出全部已知未释放 holder。仍要求显式 unmap/release，
+  不在异常退出时推测释放安全性，不代替服务端引用记录或跨进程恢复协议。
+
+新增 6 项 CLI/daemon 真实子进程回归。旧提交在 r22 暴露 5 项行为失败；另 1 项
+测试最初把映射参数写成 `read,write`，修正为现有 CLI 接受的 `readwrite` 后，
+r24 单独回放旧提交仍失败于跨 key 查询后 probe 的 `readable_mapping_required`。
+修复版完整 object-session 组 36/36 通过，包含上述全部 6 项；未放宽断言或预算。
+
+服务套件在远端按模块分组执行，各组使用独立容器及可执行 tmpfs，入口均为
+`python3 -m unittest -v <模块列表>`。覆盖 `tests/` 全部 13 个 test 模块：
+
+- runtime：`tests.test_mem_service_daemon_runtime`。
+- session：`tests.test_mem_service_object_session`。
+- control：`tests.test_mem_service_allocation_ops`、
+  `tests.test_mem_service_provider_backed_allocation`、
+  `tests.test_mem_service_provider_directory`、`tests.test_mem_service_network_control`。
+- providers：`tests.test_mem_service_record_recycling`、`tests.test_mem_service_obmm_provider`、
+  `tests.test_mem_service_tcp_provider`、`tests.test_mem_service_roce_provider`、
+  `tests.test_mem_service_terminal_token_visibility`、`tests.test_mem_service_kv_reserved`、
+  `tests.test_repository_contract`。
+
+功能源码在各组执行期间保持冻结；session 组使用修正测试参数后的 r24 快照，
+其余三组使用相同功能源码的 r23 快照。r22 串行运行在切换隔离并行组时中止，
+r23 session 组在发现上述测试参数错误后中止，均不计作通过。
+
+| 隔离组 | 结果 | 用时 |
+| --- | --- | --- |
+| runtime r23 | 76 项：75 通过、1 工具链跳过 | 866.109 秒 |
+| session r24 | 36/36 通过 | 319.142 秒 |
+| control r23 | 40/40 通过 | 358.468 秒 |
+| providers r23 | 63 项：60 通过、3 下游环境跳过 | 23.881 秒 |
+
+合计 215 项、211 通过、4 跳过、零失败。各组并行且起始时间不同，上表耗时不相加
+作为总体墙钟时间。本机 `cc -fsyntax-only -Wall -Wextra` 和 `git diff --check`
+均通过。根仓库全量仍保留 r19 的源码锁失败记录，本轮未把服务套件通过写成根仓库
+全量通过。原有兼容测试随完整服务套件执行，不扩展总计划的内存 backing 范围。
+
+r24 通过项目 Makefile 重建启用 OBMM 的 CLI，使用独立 rootfs/initramfs 运行
+`run_ub_dual_node_apps.sh --config <managed-share-r24.env> --app mem_service_object_share`。
+复用 r20 已核验的 kernel r16、helper 和 QEMU r16，runner 1/1 PASS：两轮 64 KiB
+双向 payload 校验、双方 readonly/guard CPU 探针、同代重映射和 6 次真实回收均通过。
+最终 live_objects/backing_allocated_bytes/address_reserved_bytes/live_refs/in_flight/
+quarantined_objects/quarantined_bytes 均为 0。节点 B 累计 remote_reads=1048794、
+remote_writes=131092，read_timeouts/read_errors/write_errors 均为 0。
+这些计数证明该用例通过，不能替代尚未实现的实际 import 映射统计和安全地址重用验收。
+
+| r24 续作源码与产物 | SHA-256 |
+| --- | --- |
+| apps/mem_service/mem_service.c | `b79c9f09958f07767b97bf66f0343b469494c09c43388128f18961a2f75b29df` |
+| tests/test_mem_service_object_session.py | `af29ccbf0f3fc999eaefab632375c5e5b44f9c4579161faf28ebd792c8ad96bc` |
+| linqu_mem_service-r24 | `1f1ec7b5ae5ee98ed5412dbb8cb56901b63f436d347f62b2cb7997463893527a` |
+| managed-share-r24.cpio.gz | `c3bc1dfee33c26b562b46d3e048b3e25b65d66cd4e93c1d5d9b97caf4fe6caba` |
 
 ## Guest 失败记录及修复依据
 
@@ -233,10 +302,16 @@ r20 两端 guest、runner、helper build、QEMU 单测及 r19 根仓库回归日
 生成证据包 `out/gva-manager-integration/verified-r20-evidence-complete.tar.gz`，SHA-256
 为 `3d04fe556463e06411ddaa37d24f998ce2384dfe3ca7d2be3eaf0a89a7f61a97`。
 该包不包含体积较大的 QEMU 原始 trace；原始 trace 保留在远端实验目录。
-最新服务全量日志为 `out/gva-manager-integration/service-suite-r17.log`，SHA-256 为
+r17 服务全量日志为 `out/gva-manager-integration/service-suite-r17.log`，SHA-256 为
 `9625a792e7efe94d00723554835de2d3348b14ce20b9b375599ee41ba2c69032`。
 4 个跳过项分别为 arm64 deb 工具链检查，以及独立服务仓库不含 ub_sim 文件的
 3 项下游契约检查；不能将跳过项视为对应环境已经验证。
+
+r24 续作证据包为 `out/gva-manager-integration/verified-r24-evidence.tar.gz`，SHA-256
+为 `fcb4f653f00aa56a1b3c5bfa072ae902a9bf1b2a814ad081d206735ca968d1ac`。
+包含四组完整服务日志、r22/r24 旧版本失败日志、r24 CLI 构建与 runner 日志和双方
+guest 日志；较大的 QEMU trace 与版本化产物继续保留在远端。本次测试容器已退出，
+检查远端未遗留 QEMU 进程，既有其他容器未停止。
 
 ## 下一批的前置条件与未完成项
 
@@ -248,4 +323,4 @@ mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必�
 后续实现仍包括 M1.4 的完整失败矩阵和实际映射计量，以及 AM2 的 CPU/PTO
 联合访问、AM3 的恢复/重用、AM4 的多 home/W5/独立
 发布。总计划 M2-M5 对应的动态身份、恢复、压力与 replay 联合失效同样未关闭。
-正式源码锁恢复通过后，仍需逐项实现和运行验收，不能由 r20 的 CPU 正例推定完成。
+正式源码锁恢复通过后，仍需逐项实现和运行验收，不能由 r20/r24 的 CPU 正例推定完成。
