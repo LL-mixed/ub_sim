@@ -164,6 +164,78 @@ remote_writes=131092，read_timeouts/read_errors/write_errors 均为 0。
 | linqu_mem_service-r24 | `1f1ec7b5ae5ee98ed5412dbb8cb56901b63f436d347f62b2cb7997463893527a` |
 | managed-share-r24.cpio.gz | `c3bc1dfee33c26b562b46d3e048b3e25b65d66cd4e93c1d5d9b97caf4fe6caba` |
 
+## M1.4 续作：映射事务控制面与 r34 完整回归
+
+在 holder 跟踪提交之后，新增 `mapping-transition` CLI、typed SDK 与 wire `0x7d`。
+core 保存独立 mapping ID、对象 generation、holder session 和 pending/active/closing
+状态，尚存事务阻止 holder release；统计区分已确认 import 与未完成事务。
+每个 holder 可持有多个 mapping ID，ID 在当前服务生命周期内不复用。该控制接口
+不执行 provider import/unmap，现有 object-session 自动接线与真实 guest 计量尚未完成，
+不能将诊断命令上报的数量作为 kernel 资源快照或重启恢复证据。
+
+远端专用目录为 `n4-910c1:/home/ll/gva-manager-integration/mapping-20260911.UkR8At`。
+r25 的 4 项控制事务回归通过（34.557 秒）；r27 改为 CLI 经 typed SDK 调用，新增
+readiness 丢失后清理测试，5/5 通过（43.561 秒）。r28 的 schema、release、package、
+upgrade/rollback、compat、old/new compatibility、API/ABI 共 7 个契约入口通过。
+新 schema 为 38 operations、216 fields、16730 bytes，校验值 `0x62fe2d5d`；
+全部关联 manifest 由项目 print 目标生成，并核对传递依赖校验值。
+
+r25 构建暴露 schema 超过原 16384-byte 渲染缓冲；扩大到 32768 后 r26 得到实际
+长度与校验值。r27 保留关联契约旧校验值时仍失败，按依赖顺序更新后 r28 通过。
+另补齐 release manifest 遗漏的 managed 操作，并新增与 schema 操作集合一致性测试。
+
+r29 完整套件启动后，新增加的 home incarnation 替换回归在冻结的 r29 源码上失败：
+旧对象获得 mapping_id=2 的 pending 事务（`mapping-red-r30.log`，1 failure，8.796 秒）。
+修正为 begin/confirm 在幂等重放前与执行前均核对对象绑定的 home incarnation；
+已有事务的 inspect/close/finish/cancel 保持可用。r29 providers 组 63 项中 60 通过、
+3 环境跳过（24.123 秒）；其余三个组因上述明确的代码修正停止，不计作全量通过。
+r30 定向回放上述 home 替换负例通过（8.699 秒），并验证旧 begin 幂等应答无法
+绕过新准入检查。r30 完整套件共 222 项，216 通过、4 环境跳过、2 errors；
+日志为 `service-suite-r30-<组名>.log`。session 43/43（402.322 秒）、control
+40/40（376.019 秒）；providers 60 通过、3 跳过（23.789 秒）；runtime
+73 通过、1 跳过、2 errors（886.620 秒）。本轮未通过，未据此提交。
+冻结源码位于 `/tmp/gva-mapping-r30.4jcors`；daemon SHA-256 为
+`f8a4cc91c947c71aa89f2b97d301a20083b4427400d150bd4fa579dfb85a2de5`，
+新测试模块 SHA-256 为
+`c810d39c49f6c5970fc4f3fd32fcb1899b5c223cabe59e2a35e33ee55339bb19`，
+均已与当时本机待提交源码核对一致。
+
+安装态的两项 errors 均来自 `install-smoke`；r31 独立回放同一错误（18.666 秒），
+r32 直接执行 Make 确认在第 979 行比较旧 schema checksum 时失败。
+已同步 Makefile 安装门禁中遗漏的四处 schema checksum/operation/field 断言，
+并让测试包装输出失败命令的 stdout/stderr。所有 manifest 保持 CLI 生成结果。
+r33 在 `/tmp/gva-mapping-r33.9dYyDg` 冻结该修正，按测试 ID 分成 17 个独立容器
+重跑完整 222 项，每个容器有独立构建目录和 2 CPU/4 GiB 上限。两项安装回归
+均通过；本轮为 217 通过、4 跳过、1 error。唯一 error 为发布认证 verifier
+在 10 秒命令预算内触发冷构建超时；测试此前依赖其他用例留下的 host binary。
+已将 host binary 构建改为显式前置步骤（独立 120 秒构建预算），认证命令仍维持
+10 秒限制。r34 冻结在 `/tmp/gva-mapping-r34.II7FDb`，以相同 17 分片重跑全部
+222 项，每容器上限 4 CPU/4 GiB。17 个分片全部退出 0：218 通过、4 环境跳过，
+无 failure/error；按测试 ID 核对 222 项无重复、无遗漏。runtime 为 75 通过、
+1 跳过，session 43/43、control 40/40、providers 为 60 通过、3 跳过。
+最长分片 284.219 秒。未放宽认证判据或跳过失败用例。
+
+22 个提交文件的 SHA-256 已逐一与 r34 冻结源码核对一致，独立仓库提交为
+`5b2f959047da63fd9c7aa66ccf4b76bb301ac24f`
+（`Track managed mapping transactions and enforce lifecycle gates`）。
+服务仓库提交后工作树干净；未 push，父仓库 gitlink/lock 保持原 pin。
+证据包为 `out/gva-manager-integration/verified-r34-evidence.tar.gz`，SHA-256 为
+`32e74e36dc01fa8cc288a80a0bfba844eeaf2f63daaffccef094d159e036909b`。
+其中包含完整分片日志、历史失败日志、容器退出状态、分片入口和源码校验清单。
+4 个跳过项仍是 arm64 deb 工具链检查及 3 项独立服务仓库缺失的下游契约检查。
+本批未重跑真实 guest，也未改变根仓库 r19 源码锁失败的结论；M1/AM1 仍未完成。
+
+下一步自动接线前还需处理已定位的失败路径：中立 provider wrapper 在无效 map
+返回后的 unmap 失败被忽略；OBMM map 失败时 unimport 结果被忽略，且旧
+`obmm_unmap_region()` 为 void 并忽略 munmap 结果。必须先保留未确认资源与可重试
+清理状态，才能允许 SDK 对 pending 事务发 cancel/finish；禁止把一般错误码视为
+资源已清空的证明。
+
+r31b 独立 provider 故障注入已复现 wrapper 缺口：`map_rc=-1`、
+`teardown_calls=1`、`retained_handle=0`、`retained_binding=0`，退出码 1。
+这是生产 wrapper 的受控回滚负例，未执行设备映射；初版 r31 probe 缺少 readiness
+回调，未到达 map，保留为无效诊断，不计作该问题的证据。
+
 ## Guest 失败记录及修复依据
 
 | Run ID | 观察结果 | 处理 |
