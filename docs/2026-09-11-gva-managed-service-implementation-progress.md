@@ -11,13 +11,15 @@ QEMU 发送队列计数错误后通过。r20 另通过双方只读/guard page CP
 均未完成整阶段验收。
 CPU/PTO 联合访问、安全重用、恢复、多 home 和 W5 新路径
 尚未获得本轮通过证据。禁止以历史 W5 结果代替这些验收。
-服务的 import_mappings 仍缺少实际客户端/provider 映射上报；当前为零不能证明
+受管理 SDK 与 object-session 已接通实际映射的事务上报；独立客户端存活期间计数
+为 1、提前 release 被拒绝、清理后归零的远端进程回归已通过（见本记录末尾续作）。
+raw mapping 入口和 kernel 实际资源枚举仍不在该计量内，零值无法独立证明整个
 数据面不存在映射。allocator 高水位、可重用地址与对象 live reservation 也需独立
 计量，禁止将单调分配策略下的对象计数清零解读为已具备地址空间循环重用。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
 release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
-服务端仍为引用权威；跨进程恢复、实际映射计量和完整失败矩阵仍待实现与验收。
+服务端仍为引用权威；跨进程恢复、kernel 资源核对和完整失败矩阵仍待实现与验收。
 
 r20 实验使用提交前的隔离开发快照与预构建 initramfs，未放宽正式构建的源码
 锁定检查，不能作为发布认证。总计划修订 4 已移除 SSD 交付，本记录的后续任务
@@ -463,6 +465,82 @@ r24 续作证据包为 `out/gva-manager-integration/verified-r24-evidence.tar.gz
 guest 日志；较大的 QEMU trace 与版本化产物继续保留在远端。本次测试容器已退出，
 检查远端未遗留 QEMU 进程，既有其他容器未停止。
 
+## M1.4 续作：SDK 自动映射事务与真实进程计数
+
+新增 `mem_service_client_map_managed_allocation()` 和
+`mem_service_client_unmap_managed_allocation()`，使用独立 lifecycle 结构，保留
+旧 client record、mapping、provider binding 及 wire 布局。object-session 自动
+调用新接口，map 的 operation ID 来自 128-bit 系统随机 nonce。业务调用方无需
+手动发送 mapping-transition；控制面仅接收元数据，实际映射仍在客户端 provider。
+
+正常顺序为 BEGIN、核对 pending、provider map、CONFIRM、核对 active；解除时
+核对当前状态、CLOSE、provider unmap、FINISH。失败的 map 在确认无残留后 CANCEL。
+任何应答或 provider 清理不确定均保留 lifecycle；即使本地 handle 已清理，也需
+取得 FINISH/CANCEL 的确定应答，才允许释放 holder。BEGIN 使用单次 wire attempt，
+防止底层自动重试以 readiness 拒绝覆盖先前未收到的成功应答。后续恢复使用相同
+operation ID。历史 active/closing 应答无法授予当前进程实际 handle 的清理权。
+
+新增测试 `tests.test_mem_service_managed_mapping` 包含两项 unittest：
+
+- 真实 daemon 和独立 object-session 进程完成 map/write/read 后，由外部进程
+  检查 `live_refs=1`、`import_mappings=1`，尝试提前 release 并确认拒绝；随后
+  retire、unmap、release，检查两项计数归零。旧 cd94554 在 r38 明确失败于
+  `import_mappings=0`；SDK 初版 r39 与已有 cleanup 回归共 2/2 通过，11.087 秒。
+- 编译并执行真实 SDK/provider wrapper，注入控制应答丢失、wire timeout、
+  provider unmap 失败和旧 BEGIN 重放，共 11 个 C 场景；检查不重复 map、
+  不丢失 handle/事务、撤销 SDK 访问，以及无 handle 时不结束 active/closing。
+  此项包装控制调用以注入故障，不能代替实际网络故障或 kernel 资源枚举。
+
+r38 的首次实现版部署在文件传输全部结束前启动，实际消费旧源码，因此该次
+focused 日志也保留失败，不计作新实现结果。r39 在核对三个功能文件的本地/远端
+SHA-256 一致后重跑。后续 r40/r41/r42 使用完成传输并校验的冻结 archive 覆盖
+cd94554 基线，测试期间不修改各自源码快照。
+
+r40 完整服务套件 225 项：221 通过、4 环境跳过，17 个分片全部退出 0，最长
+361.508 秒。它尚未包含 BEGIN timeout/自动重试和旧 active/closing 的最终保护，
+不能替代最终版回归。r41 同样为 225 项、221 通过、4 跳过，17 分片全部退出 0，
+最长 335.488 秒；r41 双 guest 两轮共享、双方保护探针和 6 次回收通过。
+新增旧 active/closing 应答回归在 r41 SDK 上实测失败于预期的 cleanup-required
+断言（10.694 秒），证明最终保护确实需要补齐；该负例日志保留。
+r42 最终版对应 mem_service 提交
+`8b8ee14d949bc1747649120bc19f5ab20d613e54`，独立仓库工作区干净，尚未推送。
+完整 16 个测试模块分 17 个隔离分片执行，225 个 selected test ID 无重复：
+221 通过、4 环境跳过、零失败，所有容器退出 0；最长分片 295.349 秒。
+跳过仍为 1 项 arm64 deb 工具链与 3 项独立仓库缺少下游 ub_sim 文件的契约。
+本机仅运行两份 C 文件的 `cc -fsyntax-only -Wall -Wextra -Werror` 和
+`git diff --check`，全部通过；未在本机运行工作负载或完整套件。
+
+r42 双 guest runner 1/1 PASS，两轮各 64 KiB 双向数据校验、双方 readonly/guard
+探针、同代重映射与 6 次真实回收通过。nodeA 两轮 session 用时 46080/45597 ms，
+nodeB 为 46162/45476 ms。最终 live_objects、backing_allocated_bytes、
+address_reserved_bytes、import_mappings、live_refs、in_flight、quarantined_objects
+均为 0。节点 B remote_reads=1048794、remote_writes=131092，read_timeouts、
+read_errors、write_errors 均为 0；运行结束检查无 QEMU 遗留。
+SDK map 的成功路径必须收到当前 active 确认，guest 日志记录了最终计数归零；
+映射存活期间数值为 1 的直接观测来自上述独立进程回归，guest 尚未增加峰值采样。
+
+| r42 冻结输入及产物 | SHA-256 |
+| --- | --- |
+| 相对 cd94554 的 8 文件源码 archive | `3a453d451d78a5dbd2a077edfe19bff191ceade419a8a99c3385d3b33effdd17` |
+| linqu_mem_service-r42 | `efee57ff64560cbfad34bbd548c5c2afdb89b1790991975542dc931508f32f29` |
+| managed-share-r42.cpio.gz | `d7abb86194bb38be9c1036db84e7cb0422377f05fdb607a6f5b54fcdc7d1cc69` |
+
+继续使用核验过的 kernel r16，并将不可变 QEMU r16 只读绑定到 runner 使用路径。
+runner 执行前先通过 `guest-artifacts-r42.sha256` 校验全部四个输入文件。该组合为
+独立开发快照验证，正式源码锁和发布认证状态未改变。
+
+证据包 `out/gva-manager-integration/verified-r42-evidence.tar.gz` 已从远端取回，
+SHA-256 为 `5ab8976e784c867c62242c87f76701961528c7dd495768bd7a6dcb55e3385a57`，
+本地/远端一致且 archive 成员检查通过。包含 r40/r41/r42 全量测试日志、原始
+失败回归、构建日志、容器退出状态、r41/r42 runner 和双方 guest 日志、产物指纹
+及冻结变更 archive。大型 QEMU trace 与二进制继续保留在远端；本批测试容器
+已全部退出并移除，未停止其他任务容器。
+
+本次仍不提供 daemon 重启恢复、失联 holder fencing 或 kernel 映射枚举。控制
+查询或 CLOSE 不可确认时，SDK 清零 base/len/flags 并保留实际 VMA 等待恢复；
+不能把 SDK 禁止访问描述为 CPU 页权限已经撤销。原 raw map/unmap API 不自动
+记账。现有幂等记录容量仍为 64，长运行容量规划、回收策略及安全地址重用未完成。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -470,7 +548,7 @@ guest 日志；较大的 QEMU trace 与版本化产物继续保留在远端。�
 mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必须拒绝。
 本轮未增加绕过开关，未修改父仓库 pin，也未把已知失败计作通过。
 
-后续实现仍包括 M1.4 的完整失败矩阵和实际映射计量，以及 AM2 的 CPU/PTO
+后续实现仍包括 M1.4 的完整失败矩阵、kernel 资源核对和映射计量验收，以及 AM2 的 CPU/PTO
 联合访问、AM3 的恢复/重用、AM4 的多 home/W5/独立
 发布。总计划 M2-M5 对应的动态身份、恢复、压力与 replay 联合失效同样未关闭。
 正式源码锁恢复通过后，仍需逐项实现和运行验收，不能由 r20/r24 的 CPU 正例推定完成。
