@@ -236,6 +236,38 @@ r31b 独立 provider 故障注入已复现 wrapper 缺口：`map_rc=-1`、
 这是生产 wrapper 的受控回滚负例，未执行设备映射；初版 r31 probe 缺少 readiness
 回调，未到达 map，保留为无效诊断，不计作该问题的证据。
 
+### 后续 r35：失败映射的清理归属
+
+在 `5b2f959` 后继续实现中立 wrapper、SDK 和 object-session 的清理状态保留。
+无效 map 返回且回滚失败时，返回 `MEM_SERVICE_MAPPING_CLEANUP_REQUIRED`，
+保留 owner/handle 和对象 key/generation，清零 base/len/flags；unmap 失败也禁止
+继续访问，并保留重试所需的 handle。CLI 不再直接丢弃失败映射状态，报告
+`map_cleanup_required`，在清理完成前阻止 release；退出清理仍失败时报告
+`cleanup_pending` 并保留 endpoint 归属。未修改 public record/binding 结构布局。
+
+新增可执行回归覆盖错误长度、错误固定地址、错误 memory kind、带 handle 的失败
+返回、空地址、干净回滚、正常映射解除失败后的访问撤销、重复清理以及无 unmap
+回调时提前拒绝。n4-910c1 定向回归通过（1 项，2.260 秒），日志为
+`mapping-cleanup-focused-r35.log`。它使用受控 provider 回调，未访问真实设备。
+本机 C 语法与 diff 空白检查通过；10 个改动文件与
+`/tmp/gva-mapping-r35.rSDihR` 冻结快照逐一核对 SHA-256 一致。
+
+r35 的 17 个隔离分片全部退出 0，完整 223 项中 219 通过、4 环境跳过；
+测试 ID 无重复、无遗漏。最长分片 280.219 秒。日志为
+`service-suite-r35-<组名>-<分片>.log`，提交前再次逐一核对 10 个文件的 SHA-256。
+独立仓库提交为 `bec4a97957b17dc7d2cd200f95ae6ab2e5e72a34`
+（`Retain failed mapping cleanup ownership across SDK and CLI`），提交后工作树干净。
+证据包 `out/gva-manager-integration/verified-r35-evidence.tar.gz` 的 SHA-256 为
+`ece97b168da8116487359b26313f8b68bd1bdf4f12fadd339d55e4a24bc34f91`。
+未 push，父仓库 gitlink/lock 未改；未新增真实 guest 验收结果。
+OBMM 内部部分 VMA/import 回滚、映射事务自动接线及实际 guest 计量仍待完成；
+此次 SDK 修正不能证明 provider 内部已保留所有失败资源。
+
+r36 独立 OBMM 负例对冻结 r35 源码执行：import 返回有效身份，模拟设备 open
+失败后再令 unimport 失败；结果为 `map_rc=-1 imports=1 unimports=1 active_slot=0
+handle=0`，退出码 1，确认 provider 丢失了未清理 import 的跟踪状态。该受控负例
+及源码随 r35 证据包保留，未执行真实设备操作，修复尚未完成。
+
 ## Guest 失败记录及修复依据
 
 | Run ID | 观察结果 | 处理 |
