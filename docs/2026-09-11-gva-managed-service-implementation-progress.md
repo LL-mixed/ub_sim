@@ -266,7 +266,53 @@ OBMM 内部部分 VMA/import 回滚、映射事务自动接线及实际 guest �
 r36 独立 OBMM 负例对冻结 r35 源码执行：import 返回有效身份，模拟设备 open
 失败后再令 unimport 失败；结果为 `map_rc=-1 imports=1 unimports=1 active_slot=0
 handle=0`，退出码 1，确认 provider 丢失了未清理 import 的跟踪状态。该受控负例
-及源码随 r35 证据包保留，未执行真实设备操作，修复尚未完成。
+及源码随 r35 证据包保留，未执行真实设备操作；后续修复与验收见下节。
+
+### 后续 r36/r37：OBMM 部分回滚与 endpoint 清理
+
+本批为严格视图逐项保存实际创建的 VMA，回滚仅解除归属明确的范围；解除失败
+保留 slot、import ID、fd 与映射 handle。确认全部 VMA 已解除后才关闭 fd、执行
+unimport；任何失败保留清理状态并拒绝范围访问。close 结果不确定时保留隔离状态，
+不盲目重试可能已经复用的 fd 编号。新增 `endpoint_close_checked()`，关闭失败
+保留上下文并拒绝新注册/映射，旧 void 接口保持兼容并报告未完成清理；CLI 把
+关闭失败传播为非零退出码。
+
+OBMM 的 7 项定向回归通过（6.723 秒），覆盖新增的 import/open/unimport 失败、
+部分 VMA 回滚、预先存在的映射保护、范围访问拒绝、fd 编号不重试和 endpoint
+unexport 失败保留。r36 完整 223 项为 219 通过、4 环境跳过，17 分片全部退出 0，
+最长分片 286.184 秒。8 个改动文件与 `/tmp/gva-mapping-r36.tES9Re` 逐一核对
+SHA-256 一致。
+
+新 CLI 与 initramfs 构建通过，分别为
+`2d29160fd1dccb9a7bcb84cfca87d394ec2d29969ed7a751a176061411e4c193` 和
+`d7bfac873823283673d245d202e7288967752983efda00ea1abbf7aecc05face`。
+双 guest r36 失败：实验构建目录实际 QEMU 为
+`a2ad02dc1f807353d297b0b222b1b07b8b0e71566191cb93150ac0414e87fe32`，与 r24
+已验收产物不同，nodeB QEMU 明确报告 `GSVA_UNMAP: bad version 2`。
+客户端在 unmap 失败后保留 holder 并报告 `cleanup_pending`；nodeA 等待返回对象
+超时。此轮不能作为正确版本组合的验收通过，日志与配置保留。
+
+r37 显式只读绑定已验收的 QEMU 文件（`75851f6a…`），启动前用
+`guest-artifacts-r37.sha256` 核对 QEMU、kernel、CLI 和 initramfs 四项均通过，
+运行相同两轮 64 KiB 双向共享、同代重映射、页保护及回收用例，runner 退出 0。
+两端 session 均两轮成功（provider 每轮 23 ops，consumer 每轮 15 ops）；
+`reclaim_ok_count=6`，结束时 live_objects/live_refs/backing_allocated_bytes/
+address_reserved_bytes/in_flight/quarantined_objects/quarantined_bytes 均为 0。
+nodeB 记录 `remote_reads=1048794`、`remote_writes=131092`，read_timeouts、
+read_errors、write_errors 均为 0；本轮未出现 cleanup_pending/unmap_failed/kernel
+panic，已检查无遗留 QEMU 进程。未接入自动上报的 import_mappings 计量仍不覆盖
+实际映射峰值，不能用结束时的零计数推定该项完成。
+
+服务提交为 `cd94554b8cd5dd5c983c192c4d8218c048776187`
+（`Preserve OBMM rollback ownership and report endpoint cleanup failures`），
+提交前再次核对 8 个文件与测试快照一致，提交后服务工作树干净。证据包为
+`out/gva-manager-integration/verified-r37-evidence.tar.gz`，SHA-256 为
+`f76fd074ffd6885c7ed5499583ae002044d8375fbf10348db2b61d6f1799c3c0`。
+包含完整服务日志、受控负例、r36 失败与 r37 成功的 guest 日志、构建日志、
+QEMU 统计摘录、配置与启动前哈希清单；较大的完整 QEMU trace 保留在远端。
+首次打包因 tar 选项位置错误未通过，文件改名为 `.incomplete.tar.gz` 保留；
+重新打包退出 0、检查成员清单并核对本地/远端 SHA-256 一致后才登记上述证据包。
+该隔离预构建组合不修改父仓库源码锁，也不代表正式发布认证已完成。
 
 ## Guest 失败记录及修复依据
 
