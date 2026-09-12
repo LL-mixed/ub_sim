@@ -18,9 +18,10 @@ raw mapping 入口和 kernel 实际资源枚举仍不在该计量内，零值无
 计量，禁止将单调分配策略下的对象计数清零解读为已具备地址空间循环重用。
 r45 已增加 OBMM endpoint 资源快照与双 guest 存活期采样，核对本进程持有的
 export/import、VMA、逻辑视图及清理残留；该诊断不提供 kernel 全局资源枚举。
-r46/r48 续作增加已注册 OBMM region 的 sysfs 枚举命令与基线比较。定向测试通过，
-双 guest 最终验收失败于 nodeB QEMU 堆损坏退出，peer 的最终枚举尚未完成；详见
-本记录末尾失败证据。此项没有改变 M1/AM1 未完成状态。
+r46/r48 续作增加已注册 OBMM region 的 sysfs 枚举命令与基线比较。r48 双 guest
+失败于 nodeB QEMU 堆损坏退出；r52 挂接调试器后完整运行通过，双方最终枚举回到
+基线，但未复现并定位 r48 崩溃。独立发现的 CMDQ 日志越界已修复并提交，优化版
+内存检查构建继续进行；详见本记录末尾。M1/AM1 仍未完成。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
 release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
@@ -692,6 +693,58 @@ nodeB QEMU 原始日志末尾为 `corrupted double-linked list`。宿主机 core
 完整测试日志、失败 guest 日志、QEMU 崩溃尾部、core 信息/gdb 结果、容器状态、
 配置、源码与产物指纹。core、完整 QEMU trace 和二进制仅保留在远端实验目录。
 下一步须用可读完整栈或内存检查构建复现 QEMU 损坏，再恢复双方资源回收验收。
+
+## 2026-09-12 续作：CMDQ 日志越界修复与 r52 基线恢复
+
+在 n4-910c1 构建独立诊断镜像 `ub-sim-gva-asan:r49`，通过项目
+`build_qemu_binary.sh --with-obmm-tests` 构建同源 QEMU。r49 使用
+`--enable-sanitizers --enable-debug`，2066 个构建步骤全部完成，容器退出 0。
+镜像指纹 `91938125e2123a51f6ff3c2a66b4b908458bb5e5f093bd18506dc9f177929c32`，
+QEMU 指纹 `ae3c50524823fd47f811c6b2534e8b9138b916de6b11a9634292d489258ff10f`。
+该二进制运行 5 组 QEMU 单测共 31 项全部通过；不能据此证明实际 guest 回收通过。
+
+r50 使用 kernel r16、initramfs r48，显式核对 artifact/harness 指纹；运行预算
+480 秒、最大 650 秒。两端最终日志仍在内核控制队列阶段，未完成共享用例，runner
+0/1、exit code 31。ASan 独立日志只有 makecontext/swapcontext 支持范围警告；
+QEMU 日志中的 UBSan 则给出确定的数组越界：`ubc_process_cmdq()` 打印
+`UBCCmdqDesc.data[6]` 和 `[7]`，而真实数组长度为 6。debug 构建未获得此前
+堆损坏的定位结果；该次失败保留，不能记作成功复现或无内存错误。
+
+QEMU 提交 `334fea06b2` 将写入/回读日志限制为 `data[0..5]`，保留全部有效 payload
+诊断，不改变描述符布局和协议行为。新增 root 测试
+`test_qemu_cmdq_diagnostics.py` 提取真实描述符定义和生产诊断代码，用单个描述符、
+成功/失败两种回读结果运行 UBSan。旧代码两个子场景均失败于越界访问，修复后
+本机轻量回归通过，0.449 秒；远端通过，0.406 秒。本机未运行完整套件或 guest。
+这是独立确认的越界读取，当前没有证据证明它导致 r48 的堆元数据损坏。
+
+r51 root 完整 unittest：434 项中 415 通过、5 跳过、5 failures、9 errors，
+50.565 秒。失败项仍为归档环境 Git metadata/源码锁及依赖入口。初次 layout
+使用的 QEMU 构建镜像没有 pytest，因此未执行；随后在原 guest-test 镜像执行
+r51b，72 通过、2 失败，1.24 秒，仍为旧锁定 checksum 与缺少 Git metadata。
+没有将这些结果标记为全量通过。代码和回归文件本地/远端 SHA-256 已核对一致：
+
+- `ub_ubc-r51.c`：`58b5e39f99994f157b76cef2962483ccd201d208d10da750b16781f2454c5846`。
+- 新测试：`89b69f5f5e11f48cce03c57a78c2ad998e336d0558d37309831584f744482d73`。
+
+r52 在同一测试环境使用不可变原版 QEMU r16、kernel r16 和 initramfs r48，并在
+两端 QEMU 存活时挂接 gdb。runner 1/1 PASS，双方各两轮共享完成；18 个 endpoint
+快照与双方 sysfs baseline/drained 校验全部通过，最终各节点已注册 export/import
+的数量和字节数均回到 0。gdb 记录两端正常退出，没有捕获崩溃。该结果补上 r48
+未取得的 peer 最终枚举证据，但不能关闭 r48 故障，也不能证明调试器不影响时序。
+r52 仍使用修复前的 QEMU，不能作为提交 334fea06b2 的集成验收。
+
+优化版内存检查构建 `qemu-asan-build-r51` 使用独立 build-r51 目录，仅将已修复
+的 `ub_ubc.c` 只读覆盖到冻结源码；保留 ASan/UBSan 与调试符号、恢复默认优化。
+截至本检查点仍在运行，尚无最终产物或该版本的 guest 结果。不得用 r49 的构建
+或单测结果替代 r51。初次启动发生在 env 传输完成前，Docker 拒绝创建；确认传输
+退出且源码指纹相同后，才启动当前容器。旧二进制、源码快照和失败日志均保留。
+
+证据包 `out/gva-manager-integration/verified-r52-checkpoint-evidence.tar.gz`，SHA-256
+为 `01c8003a56985aba11ac7b875c95a8413d1ac6a0bbd25a0730ecb28aab0f5c7f`。
+包含已结束的 r49/r50/r51 测试与 r52 运行日志、修复前后回归、gdb 输出、镜像/构建
+配置、容器状态及冻结源码。进行中的 r51 构建日志未作为终态证据归档。
+远端诊断目录为 `/home/ll/gva-manager-integration/asan-20260911.Z8ORls`；完整 QEMU
+trace 和二进制留在远端，未覆盖旧版本。
 
 ## 下一批的前置条件与未完成项
 
