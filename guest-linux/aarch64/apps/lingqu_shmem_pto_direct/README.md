@@ -87,7 +87,18 @@ fault=none，以及已有 PTO manifest/fingerprint/CNA 配置。它校验 cross-
 `LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS` 传递，默认 0 表示不启用；配合现有
 `LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS` 制造迟到完成，authorization timeout
 须大于该延迟。校验器的 `--require-timeout-recovery` 要求两次恢复及原有全部数据、
-backing、callback 和资源清理证据。该用例仍为单线程，不关闭 AM2 并发验收。
+backing、callback 和资源清理证据。
+
+受管理模式现在由 SDK mapping owner 接管同一 holder。`access_threads=0..8`
+控制 consumer 的只读 CPU 工作线程数，默认 0；host 配置使用
+`LINGQU_SHMEM_PTO_ACCESS_THREADS`。各线程借用同一 backing 的输入 A，在两次
+PTO 操作期间持续核对数据。第二次超时拒绝 owner close 和新借用，原 completion
+后才释放计算 pin，线程 join 后才关闭映射。普通等待模式单独验证 CPU pin 在用
+拒绝关闭。验收器 `--access-threads N` 要求对应数量的线程及 owner 计数证据。
+r146/r147 已在双 guest 验证 4 个 CPU 线程与两次顺序 PTO dispatch：延迟和普通
+等待均完成真实数据校验、停止接纳后的原映射读取及全部资源清理。r148 通过同一
+二进制的旧 direct 入口回归。当前仅覆盖单 home、单对象和 cross-page 256-byte
+视图；多请求计算并发、home 互换及 PTO 权限/范围完整矩阵仍待验收，AM2 未完成。
 
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when

@@ -76,6 +76,7 @@ LINGQU_SHMEM_PTO_GENERATION="${LINGQU_SHMEM_PTO_GENERATION:-101}"
 LINGQU_SHMEM_PTO_TOKEN_VALUE="${LINGQU_SHMEM_PTO_TOKEN_VALUE:-0}"
 LINGQU_SHMEM_PTO_TIMEOUT_MS="${LINGQU_SHMEM_PTO_TIMEOUT_MS:-120000}"
 LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS="${LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS:-0}"
+LINGQU_SHMEM_PTO_ACCESS_THREADS="${LINGQU_SHMEM_PTO_ACCESS_THREADS:-0}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
 LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
@@ -470,6 +471,7 @@ validate_lingqu_shmem_pto_config() {
     "token-value:$LINGQU_SHMEM_PTO_TOKEN_VALUE" \
     "timeout-ms:$LINGQU_SHMEM_PTO_TIMEOUT_MS" \
     "submit-timeout-ms:$LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS" \
+    "access-threads:$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
     "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
     "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA" \
@@ -517,6 +519,11 @@ validate_lingqu_shmem_pto_config() {
   fi
   if (( LINGQU_SHMEM_PTO_TIMEOUT_MS == 0 )); then
     echo "PTO timeout must be nonzero" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_ACCESS_THREADS > 8 )) ||
+     { (( LINGQU_SHMEM_PTO_ACCESS_THREADS != 0 )) && ! managed_pto_selected; }; then
+    echo "access threads require managed cpu-pto and a count in 0..8" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS != 0 )); then
@@ -660,6 +667,7 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_TOKEN_VALUE=$((LINGQU_SHMEM_PTO_TOKEN_VALUE))
   LINGQU_SHMEM_PTO_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_TIMEOUT_MS))
   LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS))
+  LINGQU_SHMEM_PTO_ACCESS_THREADS=$((LINGQU_SHMEM_PTO_ACCESS_THREADS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS))
   LINGQU_SHMEM_PTO_CANCEL_AFTER_MS=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS))
@@ -678,6 +686,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_token_value=$LINGQU_SHMEM_PTO_TOKEN_VALUE"
   append_cmdline_if_missing "lingqu_shmem_pto_timeout_ms=$LINGQU_SHMEM_PTO_TIMEOUT_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_submit_timeout_ms=$LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS"
+  append_cmdline_if_missing "lingqu_shmem_pto_access_threads=$LINGQU_SHMEM_PTO_ACCESS_THREADS"
   append_cmdline_if_missing "lingqu_shmem_pto_cancel_after_ms=$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
   append_cmdline_if_missing "lingqu_shmem_pto_fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE"
@@ -3775,6 +3784,7 @@ run_iteration() {
       python3 "${SCRIPT_DIR}/validate_managed_pto.py" \
         --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
         --qemu-b "$nodeb_qemu_log" \
+        --access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
         "${recovery_args[@]}" \
         --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1
     else

@@ -255,6 +255,15 @@ metadata 与 compute leases，只等待原 op ID，不再次提交 slot。待完
 用独立的短 submit 等待和总恢复时限验证迟到 completion，继续保留实际数据及清理
 判据。这一增量仍采用外部串行化，多线程 shared owner 单独实现和验收。
 
+统一 owner 在中立 SDK 中实施：同一 provider channel 的多个对象共用 access
+domain 锁，接管现有 managed mapping/lifecycle 和 holder，不重复 map 或 acquire。
+有界 CPU/compute borrow 计量同一对象的访问寿命，计算 pin 另记原 operation 的
+in-flight。close 先停止新接纳，已有访问退出后才 unmap/release；清理失败继续
+持有原上下文。线程全部退出后再 destroy 进程内句柄，不能让 concurrent close
+与 API 调用竞争 free。raw provider 只在 domain 运行前后使用；数据竞争和跨进程
+撤销仍需各自的可见性与恢复协议。实现出口同时要求原生并发 fixture 和真实
+双节点 CLI 验证，现有单线程结果不能覆盖它。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。
@@ -405,7 +414,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
-| AM2 | 进行中：r139/r142 单线程四种读写组合、r141 原 completion 超时恢复通过；完整阶段未完成 | 并发 owner、PTO 权限/范围负例及 home 互换 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：同一 backing、两次 dispatch、4 LOAD/2 STORE/2 fence、零 staging、资源回到基线；r143 旧入口兼容通过，A07-A11 整项仍未关闭 |
+| AM2 | 进行中：四种读写组合、原 completion 恢复，以及 r146/r147 四线程 CPU/shared owner 子集通过；完整阶段未完成 | PTO 权限/范围负例、home 互换及多请求计算并发 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：同一 backing、两次顺序 dispatch、4 LOAD/2 STORE/2 fence、零 staging；在用 owner 拒绝关闭和新借用，全部资源归零，r148 旧入口兼容通过；A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
 

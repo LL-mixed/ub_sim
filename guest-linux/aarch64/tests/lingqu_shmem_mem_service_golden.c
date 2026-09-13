@@ -9,6 +9,9 @@
 #include "components/mem_service/mem_service_client.h"
 #include "lingqu_shmem_mem_service_backend.h"
 #include "lingqu_shmem_pto.h"
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+#include "components/mem_service/mem_service_mapping_owner.h"
+#endif
 
 #define CHECK(condition)                                                    \
     do {                                                                    \
@@ -216,6 +219,143 @@ static int test_managed_view_attachment(void)
     return 0;
 }
 
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+static unsigned owner_unmaps, owner_releases;
+
+int mem_service_client_mapping_transition(
+    const struct mem_service_client *client, const char *key, const char *session,
+    uint64_t generation, uint64_t id, enum mem_service_client_mapping_action action,
+    const char *operation, struct mem_service_client_mapping_transaction *out,
+    enum mem_service_wire_status *status)
+{
+    (void)client; (void)key; (void)session; (void)operation;
+    CHECK(action == MEM_SERVICE_CLIENT_MAPPING_INSPECT);
+    *out = (struct mem_service_client_mapping_transaction){
+        .mapping_id = id, .generation = generation, .state = 2,
+    };
+    *status = MEM_SERVICE_WIRE_STATUS_OK;
+    return 0;
+}
+
+int mem_service_client_unmap_managed_allocation(
+    const struct mem_service_client *client, const struct mem_service_provider_channel *channel,
+    struct mem_service_client_object_mapping *mapping,
+    struct mem_service_client_mapping_lifecycle *lifecycle,
+    enum mem_service_wire_status *status)
+{
+    (void)client; (void)channel;
+    ++owner_unmaps;
+    mapping->binding.mapped = false;
+    lifecycle->pending = false;
+    *status = MEM_SERVICE_WIRE_STATUS_OK;
+    return 0;
+}
+
+int mem_service_client_release_object(
+    const struct mem_service_client *client, const char *key, const char *operation,
+    const char *session, bool has_generation, uint64_t generation,
+    struct mem_service_client_allocation *out, enum mem_service_wire_status *status)
+{
+    (void)client; (void)operation; (void)session;
+    CHECK(has_generation && owner_unmaps == 1);
+    ++owner_releases;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->key, sizeof(out->key), "%s", key);
+    out->generation = generation;
+    *status = MEM_SERVICE_WIRE_STATUS_OK;
+    return 0;
+}
+
+static int test_owned_attachment(void)
+{
+    struct fake_backend backend = {0};
+    const struct mem_service_provider_ops provider_ops = {0};
+    struct mem_service_provider provider = {
+        .ops = &provider_ops, .state = MEM_SERVICE_PROVIDER_STATE_READY,
+        .capabilities = MEM_SERVICE_PROVIDER_CAP_PEER_MAPPING,
+    };
+    struct mem_service_provider_channel channel = {
+        .provider = &provider, .required_capabilities = MEM_SERVICE_PROVIDER_CAP_PEER_MAPPING,
+    };
+    struct mem_service_client client = {.connect_spec = "unix:/fixture"};
+    struct mem_service_client_object_mapping mapping = {
+        .key = "owned-object", .generation = 7, .base = backend.payload + 128,
+        .len = 64, .flags = MEM_SERVICE_CLIENT_MAP_READ,
+        .binding = {.owner = &provider, .mapped = true,
+                    .mapping = {.handle = 17, .base = backend.payload + 128, .len = 64}},
+    };
+    struct mem_service_client_mapping_lifecycle lifecycle = {
+        .operation_id = "owned-map", .session_id = "client", .pending = true,
+        .transaction = {.mapping_id = 11, .generation = 7, .state = 2},
+    };
+    struct lingqu_shmem_memref_spec spec = {
+        .byte_offset = 16, .byte_length = 48, .rank = 1, .dtype = 0,
+        .access = LINGQU_SHMEM_ACCESS_READ, .shape = {12}, .strides = {1},
+    };
+    struct mem_service_access_domain *domain;
+    struct mem_service_mapping_owner *owner;
+    struct mem_service_mapping_owner_stats stats;
+    struct lingqu_shmem_mem_service_context *context;
+    struct lingqu_shmem_mem_service_lease *lease;
+    struct lingqu_shmem_memref *memref;
+    enum mem_service_wire_status status;
+    CHECK(!mem_service_access_domain_create(&client, &channel, &domain));
+    CHECK(!mem_service_mapping_owner_adopt(domain, &mapping, &lifecycle,
+                                          "owned-release", 8, &owner, &status));
+    CHECK(!lingqu_shmem_mem_service_context_create_for_backend(&fake_ops, &backend, false, &context));
+    for (unsigned fault = 0; fault < 5; ++fault) {
+        struct lingqu_shmem_memref_spec changed = spec;
+        if (fault == 0) changed.access = LINGQU_SHMEM_ACCESS_WRITE;
+        if (fault == 1) changed.byte_offset = UINT64_MAX;
+        if (fault == 2) changed.rank = 0;
+        backend.invalid_binding = fault == 3;
+        backend.acquire_error = fault == 4 ? -EIO : 0;
+        backend.release_error = -EAGAIN;
+        CHECK(lingqu_shmem_mem_service_acquire_owned(context, owner, &changed, &memref, &lease));
+        CHECK(!memref);
+        CHECK(!mem_service_mapping_owner_inspect(owner, &stats));
+        CHECK(stats.compute_pins == (fault < 2 ? 0 : 1));
+        if (fault < 2) CHECK(!lease);
+        else {
+            CHECK(lease && lingqu_shmem_mem_service_active_leases(context) == 1);
+            CHECK(lingqu_shmem_mem_service_lease_begin(lease, 99) == -EINVAL);
+            CHECK(lingqu_shmem_mem_service_release(lease) == -EAGAIN);
+            backend.release_error = 0;
+            CHECK(!lingqu_shmem_mem_service_release(lease));
+        }
+    }
+    backend.acquire_error = backend.release_error = 0;
+    backend.invalid_binding = false;
+    CHECK(!lingqu_shmem_mem_service_acquire_owned(context, owner, &spec, &memref, &lease));
+    CHECK(lease && memref && !owner_unmaps && !owner_releases);
+    CHECK(!lingqu_shmem_mem_service_lease_begin(lease, 91));
+    unsigned releases = backend.release_count;
+    CHECK(lingqu_shmem_mem_service_release(lease) == -EBUSY);
+    CHECK(backend.release_count == releases);
+    CHECK(lingqu_shmem_mem_service_lease_complete(lease, 92) == -ESTALE);
+    CHECK(mem_service_mapping_owner_close(owner, &status) == -EBUSY);
+    CHECK(!mem_service_mapping_owner_inspect(owner, &stats));
+    CHECK(stats.closing && stats.compute_pins == 1 && stats.in_flight_pins == 1);
+    CHECK(!owner_unmaps && !owner_releases);
+    CHECK(!lingqu_shmem_mem_service_lease_complete(lease, 91));
+    CHECK(lingqu_shmem_mem_service_lease_complete(lease, 91) == -ESTALE);
+    backend.release_error = -EIO;
+    CHECK(lingqu_shmem_mem_service_release(lease) == -EIO);
+    CHECK(!mem_service_mapping_owner_inspect(owner, &stats));
+    CHECK(stats.compute_pins == 1 && !stats.in_flight_pins);
+    CHECK(lingqu_shmem_mem_service_lease_begin(lease, 99) == -EINVAL);
+    CHECK(mem_service_mapping_owner_close(owner, &status) == -EBUSY);
+    backend.release_error = 0;
+    CHECK(!lingqu_shmem_mem_service_release(lease));
+    CHECK(!mem_service_mapping_owner_close(owner, &status));
+    CHECK(owner_unmaps == 1 && owner_releases == 1);
+    CHECK(!lingqu_shmem_mem_service_close(context));
+    CHECK(!mem_service_mapping_owner_destroy(owner));
+    CHECK(!mem_service_access_domain_destroy(domain));
+    return 0;
+}
+#endif
+
 int main(void)
 {
     struct fake_backend backend = { 0 };
@@ -382,6 +522,9 @@ int main(void)
     CHECK(lingqu_shmem_mem_service_close(context) == 0);
 
     CHECK(!test_managed_view_attachment());
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    CHECK(!test_owned_attachment());
+#endif
     puts("lingqu_shmem_mem_service_golden=pass");
     return 0;
 }

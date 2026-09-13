@@ -22,7 +22,7 @@ MEM_SERVICE_PUBLISH = (
 )
 
 
-def _compile(compiler, output):
+def _compile(compiler, output, owned=False):
     subprocess.run(
         [
             compiler,
@@ -31,6 +31,9 @@ def _compile(compiler, output):
             "-Wall",
             "-Wextra",
             "-Werror",
+            *(["-DLINGQU_SHMEM_MANAGED_MAPPING", "-pthread",
+               str(ROOT / "mem_service/components/mem_service/mem_service_mapping_owner.c")]
+              if owned else []),
             "-I",
             str(ROOT),
             "-I",
@@ -87,6 +90,14 @@ class LingquShmemMemServiceTest(unittest.TestCase):
             _compile("cc", binary)
             output = subprocess.check_output([str(binary)], text=True)
         self.assertEqual(output.strip(), "lingqu_shmem_mem_service_golden=pass")
+
+    def test_owned_backend_retains_sdk_pin_until_original_completion_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "mem-service-owned-golden"
+            _compile("cc", binary, owned=True)
+            result = subprocess.run([str(binary)], check=True, text=True,
+                                    capture_output=True, timeout=15)
+        self.assertEqual(result.stdout.strip(), "lingqu_shmem_mem_service_golden=pass")
 
     def test_obmm_backend_cross_compiles_without_warnings(self):
         compiler = shutil.which("aarch64-linux-gnu-gcc")

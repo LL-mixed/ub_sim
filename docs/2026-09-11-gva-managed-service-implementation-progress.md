@@ -1,6 +1,6 @@
 # 受管理 GVA 服务实施与验证记录
 
-日期：2026-09-11。对应总计划 M1 与地址管理补充计划 AM1。
+始记日期：2026-09-11。对应总计划 M1 与地址管理补充计划 AM1/AM2；续作按日期和 run ID 追加。
 
 ## 当前验收边界
 
@@ -9,8 +9,9 @@
 QEMU 发送队列计数错误后通过。r20 另通过双方只读/guard page CPU 故障探针、
 同代重新映射及连续两轮共享回收。AM1 权限/边界等完整矩阵仍待补齐，M1 和 AM1
 均未完成整阶段验收。
-CPU/PTO 联合访问、安全重用、恢复、多 home 和 W5 新路径
-尚未获得本轮通过证据。禁止以历史 W5 结果代替这些验收。
+CPU/PTO 联合访问的单线程、原 completion 恢复及四线程 CPU/shared owner 子集
+已通过，最新证据见末尾 r146-r148；安全重用、完整恢复、多 home 和 W5 新路径
+仍未通过。禁止以这些子集或历史 W5 结果代替完整阶段验收。
 受管理 SDK 与 object-session 已接通实际映射的事务上报；独立客户端存活期间计数
 为 1、提前 release 被拒绝、清理后归零的远端进程回归已通过（见本记录末尾续作）。
 raw mapping 入口和 kernel 实际资源枚举仍不在该计量内，零值无法独立证明整个
@@ -1853,3 +1854,85 @@ r141 最终 CLI 构建通过，SHA-256 为
 归档包含 r139b/r140/r141 完整测试、最终源码、两版 CLI/rootfs、r140–r143 原始
 guest 日志及配置、容器配置和前后校验记录。原始材料继续保留，不包含整份网络
 审计日志。共用 kernel/QEMU/driver/callable 的来源引用前批已核验归档。
+
+## 2026-09-14 续作：共享 mapping owner 与四线程 CPU/PTO（r144-r148 子集通过）
+
+中立 SDK 新增可选 mapping owner，接管已有 managed mapping/lifecycle 和同一
+holder；成功后清空旧句柄，失败保留原归属，不重复 map/acquire。同一 provider
+channel 的多个对象共用 access domain 锁；CPU/compute borrow 检查精确范围、
+权限及 pin 上限。计算 pin 记录原 operation ID，超时与取消不能完成它，in-flight
+时拒绝 release 和可能注销 registration 的 apply。close 停止新接纳，等全部
+pin 退出后才 unmap/release；清理失败保留 owner 供重试。所有调用线程 join 后
+才 destroy；旧 raw API 继续要求外部串行化。此约定管理寿命，不替代数据发布、
+跨进程撤销或通用裸指针的使用纪律。
+
+SDK 安装新增可选 source/header 和 pkg-config 字段，旧三份 SDK sources 及
+wire/record ABI 保持不变；调用方显式链接 mapping owner source 与 `-pthread`。
+完整包清单同时补入此前漏列的 allocation/provider-directory 公共头；由真实
+CLI 生成的 package/release manifests 已同步。最终为 14 headers、4 client
+sources、56 installed files，package 长度 9814、checksum `0x9462b0e1`。
+
+根仓库 compute adapter 新增 `acquire_owned`、`lease_begin/complete`，注册与
+清理进入同一 domain 锁；提交/等待在锁外进行。失败可返回 cleanup-only lease，
+保留 backend/provider/owner pin，不能重新 begin。managed CLI 使用同一 owner
+完成主 CPU 访问和两次顺序 PTO；`access_threads=0..8` 控制额外只读线程。
+线程在已发布、不再修改的输入 A 上持续执行 load 和独立校验，并确认 close
+停止接纳之后每个线程仍完成一次原映射读取，随后 join 和清理。
+
+### 实测结果与验收边界
+
+| 运行 | 实际结果 |
+| --- | --- |
+| r146 延迟四线程 | 5 ms 初次等待、100 ms authorization delay；原 op `20260914201/20260914202` 各恢复一次，未重复提交。第二次 pending 时 CPU/compute/in-flight pins 为 5/3/3，close 返回 EBUSY、新借用返回 ECANCELED。4 线程完成 285 次输入校验，全部在停止接纳后继续读取 |
+| r147 普通四线程 | 同一二进制和工件，无短等待或授权延迟；原 op `20260914211/20260914212` 直接完成，无 timeout/recovery。计算完成后 CPU/compute/in-flight pins 为 5/0/0，仍拒绝关闭及新借用。4 线程完成 183 次输入校验，全部确认停止接纳后的读取 |
+| r148 旧 direct 入口 | 同一最终 rootfs；consumer 原 op `1327819274321921` 成功，producer `lanes_verified=1 completion_acks=1`，只证明旧入口正常路径兼容 |
+
+两轮 managed 用例继续通过同 key/generation、CPU 严格同址、同一实际 backing、
+4 LOAD/2 STORE/2 fence、C/D 独立 oracle、零 staging 和 kernel region 回到
+基线的全部判据。两端 owner 最终 CPU/compute/in-flight/mapping/holder 均归零。
+三轮 runner/container 均 exit 0，分别独立检查无 QEMU 遗留；源码、七项运行
+输入及九个 callable 文件的运行后 SHA 均保持不变。
+
+实际规模仍为两个 guest、一个 home、一个 64 KiB 对象、四个 CPU 线程、
+cross-page 256-byte 视图和两次顺序计算。`owner_verified=true`、
+`scope=multi-thread-cross-page`、`am2_complete=false`。多请求计算并发、
+home 互换、PTO 权限/范围实际负例和更大分片矩阵仍未完成；A07-A11 整项未关闭。
+
+### 测试、已保留失败和源码组合
+
+- SDK 八线程/双 owner 原生 fixture 完成 800 次受锁回调；权限、bounds、容量、
+  adopt 身份、错误 completion、pending release/apply、unmap 失败及 release
+  回包丢失重试均有行为测试。SDK 和根适配层的轻量 ASan/UBSan fixture 通过，
+  无诊断；这些使用边界替身，真实数据证据引用上面的 guest。
+- r144c/r145 完整服务测试先暴露两处漏改的旧清单计数断言（52 vs 56），
+  均已修正。失败日志保留；未修改测试期望来掩盖未安装文件。
+- r145b 最终服务完整 240 项分 14 组执行，全部容器 exit 0：235 通过、5 跳过。
+  77 个 runtime/install 方法的执行清单与原测试清单逐项相同。自网卡监听项另在
+  所需网络环境通过（1 项、7.824 秒），总计 236 个不同测试已通过、4 项仍跳过：
+  deb 交叉打包工具链缺失，以及三项 standalone 环境缺少 ub_sim 布局。
+- r145b 首次清单提取把 Python 输出中的方法名重复拼接，门禁拒绝并未启动
+  下游作业；修正提取方式后精确匹配。错误与正确清单都保留，未改原测试日志。
+- r145 根适配层/CLI/parser/endpoint 定向 27 项为 25 通过、2 跳过，6.853 秒。
+  根完整 487 项为 468 通过、5 跳过、5 失败、9 错误，52.284 秒；14 个终态
+  ID 与 r143c 完全相同。layout 为 72 通过、2 个既有失败，1.23 秒。完整根
+  测试仍未全绿，未关闭锁定源码/发布门禁。
+- r143b/r143c 是上一批提交前文档复验：完整根均为 483 项及同 14 个失败 ID。
+  r143b 的归档混入 AppleDouble 文件，layout 额外失败；使用明确禁止 macOS
+  metadata/xattrs 的归档参数后，r143c 恢复为 72 通过、原 2 失败。两轮都保留。
+
+服务源码已形成干净提交
+`6f090162536f0a92235587b13519306f28f3eaec`，在最终根构建和 guest 前完成。
+CLI SHA-256 为 `392f9237f9eafc45607f01f0ac134ea1a0a3c7bd74e433fafc45d808b8e703d6`，
+rootfs 为 `04af5fb43e6e2d665050bb33c59a29e310d0e2ec3a985a8a5a4d21f091f70729`。
+复用 r139 QEMU、r109 kernel、r138 driver 和 r136 callable；daemon、worker、
+manager 指纹未变化。实际使用冻结源码增量验证组合；父仓库 gitlink/lock 未更新，
+未 push，不能宣称 fresh clone 已可复现。没有在本地运行模型、QEMU 或完整套件。
+
+归档 `verified-r143b-r148-mapping-owner-evidence.tar.gz` 已取回本地，141 个
+精确成员、14908265 bytes、权限 0600；gzip、成员顺序、大小和 SHA 与远端一致。
+SHA-256 为 `e87a0b05dae7fc84f9930a76fde88d0e9416d4bc2c6c6daf4e4147ffe7ca7a1f`。
+其中包含本批成功和失败的完整测试、源码快照、CLI/rootfs、三轮原始 guest/QEMU
+日志与配置、清单提取失败材料、47 个已结束容器的配置/状态及前后校验记录。
+原始材料继续保留，未上传或纳入整份网络审计日志；不可变共用工件引用前批归档。
+下一项为同一 managed backing 的实际 PTO 权限/范围负例，保持原数据路径和严格
+completion/资源判据。完整目标继续进行，尚未达到发布或阶段关闭条件。

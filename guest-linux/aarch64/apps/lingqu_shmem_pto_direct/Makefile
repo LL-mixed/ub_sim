@@ -33,11 +33,12 @@ SOURCES += \
 	$(MEM_SERVICE_COMPONENT)/mem_service_client.c \
 	$(MEM_SERVICE_COMPONENT)/mem_service_wire_client.c \
 	$(MEM_SERVICE_COMPONENT)/mem_service_provider.c \
+	$(MEM_SERVICE_COMPONENT)/mem_service_mapping_owner.c \
 	$(MEM_SERVICE_COMPONENT)/providers/mem_service_provider_obmm.c
 CPPFLAGS += -DLINGQU_SHMEM_MANAGED_MAPPING -I$(AARCH64_ROOT) -I$(MEM_SERVICE_ROOT)
 # Drop the unselected legacy arena adapter and its model-runtime dependencies.
 CFLAGS += -ffunction-sections -fdata-sections
-LDFLAGS += -Wl,--gc-sections
+LDFLAGS += -Wl,--gc-sections -pthread
 endif
 
 all: $(TARGET)

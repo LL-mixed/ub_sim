@@ -142,6 +142,7 @@ MEM_SERVICE_METADATA_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_m
 MEM_SERVICE_ALLOCATION_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_allocation.c"
 MEM_SERVICE_PROVIDER_DIRECTORY_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_provider_directory.c"
 MEM_SERVICE_PROVIDER_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_provider.c"
+MEM_SERVICE_MAPPING_OWNER_SRC="$MEM_SERVICE_ROOT/components/mem_service/mem_service_mapping_owner.c"
 MEM_SERVICE_PROVIDER_OBMM_SRC="$MEM_SERVICE_ROOT/components/mem_service/providers/mem_service_provider_obmm.c"
 MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_SRC="$MEM_SERVICE_ROOT/tests/mem_service_obmm_provider_conformance.c"
 MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_BIN="$OUT_DIR/linqu_mem_service_obmm_provider_conformance"
@@ -338,6 +339,8 @@ current_initramfs_signature() {
   write_signature_line "mem_service_allocation_src" "$MEM_SERVICE_ALLOCATION_SRC"
   write_signature_line "mem_service_provider_directory_src" "$MEM_SERVICE_PROVIDER_DIRECTORY_SRC"
   write_signature_line "mem_service_provider_src" "$MEM_SERVICE_PROVIDER_SRC"
+  write_signature_line "mem_service_mapping_owner_src" "$MEM_SERVICE_MAPPING_OWNER_SRC"
+  write_signature_line "mem_service_mapping_owner_header" "$MEM_SERVICE_ROOT/components/mem_service/mem_service_mapping_owner.h"
   write_signature_line "mem_service_provider_obmm_src" "$MEM_SERVICE_PROVIDER_OBMM_SRC"
   write_signature_line "mem_service_obmm_provider_conformance_src" "$MEM_SERVICE_OBMM_PROVIDER_CONFORMANCE_SRC"
   write_signature_line "mem_service_obmm_worker_src" "$MEM_SERVICE_OBMM_WORKER_SRC"
@@ -735,7 +738,7 @@ mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
   -o "$OBMM_ASYNC_COROUTINE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -Werror -std=gnu11 \
   -DLINGQU_SHMEM_MANAGED_MAPPING -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections -I"$ROOT_DIR" -I"$MEM_SERVICE_ROOT" \
+  -Wl,--gc-sections -pthread -I"$ROOT_DIR" -I"$MEM_SERVICE_ROOT" \
   -I"$ROOT_DIR/common" \
   -I"$ROOT_DIR/libs/lingqu_shmem_pto" \
   -I"$ROOT_DIR/libs/obmm_async" \
@@ -746,6 +749,7 @@ mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
   "$LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC" \
   "$LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC" \
   "$LINGQU_SHMEM_PTO_MANAGED_SRC" \
+  "$MEM_SERVICE_MAPPING_OWNER_SRC" \
   "$LINGQU_SHMEM_MEM_SERVICE_SRC" "$LINGQU_SHMEM_MEM_SERVICE_OBMM_SRC" \
   "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" \
   "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_PROVIDER_OBMM_SRC" \

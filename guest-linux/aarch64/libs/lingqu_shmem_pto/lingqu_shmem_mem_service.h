@@ -11,6 +11,7 @@ extern "C" {
 struct mem_service_object_payload_view;
 struct mem_service_client_object_mapping;
 struct mem_service_client_mapping_lifecycle;
+struct mem_service_mapping_owner;
 struct lingqu_shmem_mem_service_context;
 struct lingqu_shmem_mem_service_lease;
 
@@ -59,6 +60,29 @@ int lingqu_shmem_mem_service_acquire_managed(
     const struct lingqu_shmem_memref_spec *spec,
     struct lingqu_shmem_memref **memref_out,
     struct lingqu_shmem_mem_service_lease **lease_out);
+
+/* Pin the existing SDK owner and serialize attachment/cleanup in its domain.
+ * All owners used with one compute context must share one access domain.
+ * Raw acquire variants must not run concurrently with this context's owners.
+ * One caller owns each lease. Join all callers before context/owner destroy.
+ * Failure can return a cleanup-only lease; retain and retry release.
+ */
+int lingqu_shmem_mem_service_acquire_owned(
+    struct lingqu_shmem_mem_service_context *context,
+    struct mem_service_mapping_owner *owner,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_lease **lease_out);
+
+/* Owned leases only. Begin before submission; complete only after the same
+ * original operation has actually completed. Timeout/cancel cannot complete.
+ * Submit and wait outside domain callbacks. An unresolved operation retains
+ * the lease, mapping, registration and holder, including on a failed submit.
+ */
+int lingqu_shmem_mem_service_lease_begin(
+    struct lingqu_shmem_mem_service_lease *lease, uint64_t operation_id);
+int lingqu_shmem_mem_service_lease_complete(
+    struct lingqu_shmem_mem_service_lease *lease, uint64_t operation_id);
 
 /*
  * Reserve a local Memory Service payload-arena range and expose it as a PTO

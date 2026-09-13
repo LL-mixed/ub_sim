@@ -5,12 +5,14 @@
 #include "lingqu_shmem_pto_endpoint.h"
 #include "lingqu_shmem_sim.h"
 #include "components/mem_service/mem_service_client.h"
+#include "components/mem_service/mem_service_mapping_owner.h"
 #include "components/mem_service/providers/mem_service_provider_obmm.h"
 
 #include <errno.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,11 +25,12 @@
 #define VECTOR_ELEMENTS 64U
 #define VECTOR_BYTES (VECTOR_ELEMENTS * sizeof(float))
 #define METADATA_BYTES 4096U
+#define MAX_ACCESS_THREADS 8U
 
 struct managed_config {
     char connect[128], key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
     uint64_t generation, fingerprint, timeout_ms, submit_timeout_ms;
-    uint32_t node, requester;
+    uint32_t node, requester, access_threads;
     bool recovery_expected;
 };
 
@@ -40,6 +43,10 @@ struct managed_state {
     struct mem_service_client_allocation allocation;
     struct mem_service_client_object_mapping mapping;
     struct mem_service_client_mapping_lifecycle lifecycle;
+    struct mem_service_access_domain *domain;
+    struct mem_service_mapping_owner *owner;
+    struct mem_service_mapping_lease *cpu_pin;
+    uint64_t mapping_id;
     struct lingqu_shmem_mem_service_context *compute;
     struct lingqu_shmem_mem_service_lease *leases[3];
     struct lingqu_shmem_pto_endpoint *endpoint;
@@ -47,6 +54,12 @@ struct managed_state {
     void *metadata;
     char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
     bool held, completion_unknown;
+    pthread_mutex_t workers_lock;
+    pthread_cond_t workers_condition;
+    pthread_t workers[MAX_ACCESS_THREADS];
+    unsigned workers_started, workers_ready, worker_checks, workers_observed_seal;
+    bool workers_stop, owner_sealed;
+    int worker_error;
 };
 
 static uint64_t now_ms(void)
@@ -91,7 +104,8 @@ static bool valid_connect(const char *spec)
 static int read_config(const char *path, struct managed_config *config)
 {
     const char *names[] = {"connect", "key", "node_id", "generation",
-        "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms"};
+        "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
+        "access_threads"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -135,6 +149,8 @@ static int read_config(const char *path, struct managed_config *config)
                     config->timeout_ms = number; break;
             case 7: if (!number || number > 600000) goto out;
                     config->submit_timeout_ms = number; break;
+            case 8: if (number > MAX_ACCESS_THREADS) goto out;
+                    config->access_threads = (uint32_t)number; break;
             default: goto out;
             }
         }
@@ -168,30 +184,55 @@ static float expected_value(unsigned vector, unsigned element)
     return vector == 2 ? c : (c + b + 1.0f) * (c + b + 2.0f);
 }
 
-static int verify_vector(struct managed_state *state, unsigned vector, const char *path)
+struct vector_check {
+    struct managed_state *state;
+    unsigned vector;
+    const char *path;
+};
+
+static int verify_vector_callback(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
 {
+    struct vector_check *check = opaque;
+    struct managed_state *state = check->state;
+    unsigned vector = check->vector;
+    (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
     float expected[VECTOR_ELEMENTS];
     for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i)
         expected[i] = expected_value(vector, i);
     uint64_t checksum = mem_service_provider_checksum64(expected, sizeof(expected));
-    int rc = mem_service_provider_channel_wait_range_visible(&state->channel,
-        &state->mapping.binding, vector_offset(vector), VECTOR_BYTES, checksum,
+    int rc = mem_service_provider_channel_wait_range_visible(channel,
+        &mapping->binding, vector_offset(vector), VECTOR_BYTES, checksum,
         state->config.timeout_ms, &completion);
     if (rc) return rc;
-    const void *actual = (const uint8_t *)state->mapping.base + vector_offset(vector);
+    const void *actual = (const uint8_t *)mapping->base + vector_offset(vector);
     if (memcmp(actual, expected, sizeof(expected))) return -EIO;
     printf("MANAGED_PTO node=%u path=%s vector=%u version=%u checksum=%016" PRIx64
-           " bytes=%zu cpu_verify=pass\n", state->config.node, path, vector,
+           " bytes=%zu cpu_verify=pass\n", state->config.node, check->path, vector,
            vector < 2 ? 1 : vector, checksum, sizeof(expected));
     return 0;
 }
 
-static int seed_inputs(struct managed_state *state)
+static int verify_vector(struct managed_state *state, unsigned vector, const char *path)
 {
+    struct vector_check check = {state, vector, path};
+    return mem_service_mapping_lease_apply(state->cpu_pin, verify_vector_callback, &check);
+}
+
+static int seed_inputs_callback(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    (void)opaque; (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
     for (unsigned vector = 0; vector < 4; ++vector) {
-        uint8_t *base = (uint8_t *)state->mapping.base + vector_offset(vector);
+        uint8_t *base = (uint8_t *)mapping->base + vector_offset(vector);
         for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i) {
             if (vector < 2) {
                 float value = expected_value(vector, i);
@@ -202,10 +243,9 @@ static int seed_inputs(struct managed_state *state)
             }
         }
     }
-    uint64_t checksum = mem_service_provider_checksum64(state->mapping.base,
-                                                       state->mapping.len);
-    int rc = mem_service_provider_channel_publish_range(&state->channel,
-        &state->mapping.binding, 0, state->mapping.len, checksum, &completion);
+    uint64_t checksum = mem_service_provider_checksum64(mapping->base, mapping->len);
+    int rc = mem_service_provider_channel_publish_range(channel,
+        &mapping->binding, 0, mapping->len, checksum, &completion);
     if (!rc) printf("MANAGED_PTO node=0 inputs_published=1 version=1 bytes=%u\n",
                     MANAGED_BYTES);
     return rc;
@@ -329,12 +369,163 @@ static int release_compute(struct managed_state *state)
     return 0;
 }
 
+static int adopt_mapping(struct managed_state *state)
+{
+    enum mem_service_wire_status status;
+    char release_operation[80];
+    snprintf(release_operation, sizeof(release_operation), "pto-release-%s", state->session);
+    state->mapping_id = state->lifecycle.transaction.mapping_id;
+    int rc = mem_service_access_domain_create(&state->client, &state->channel, &state->domain);
+    if (!rc) rc = mem_service_mapping_owner_adopt(state->domain, &state->mapping,
+        &state->lifecycle, release_operation, MAX_ACCESS_THREADS + 4, &state->owner, &status);
+    if (rc) return rc;
+    state->held = false; /* This exact holder now belongs to the SDK owner. */
+    struct mem_service_mapping_access_view view;
+    rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
+        0, MANAGED_BYTES, MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE,
+        &state->cpu_pin, &view);
+    if (!rc) printf("MANAGED_OWNER node=%u state=adopted generation=%" PRIu64
+        " mapping_id=%" PRIu64 " cpu_pins=1 holder_transferred=1\n",
+        state->config.node, state->allocation.generation, state->mapping_id);
+    return rc;
+}
+
+static void *cpu_worker(void *opaque)
+{
+    struct managed_state *state = opaque;
+    struct mem_service_mapping_lease *pin = NULL;
+    struct mem_service_mapping_access_view view;
+    int rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
+        vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_READ, &pin, &view);
+    bool ready = false, observed_seal = false;
+    do {
+        pthread_mutex_lock(&state->workers_lock);
+        bool stop = state->workers_stop, sealed = state->owner_sealed;
+        pthread_mutex_unlock(&state->workers_lock);
+        if (stop) break;
+        if (!rc) {
+            const volatile float *actual = view.base;
+            for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i)
+                if (actual[i] != expected_value(0, i)) { rc = -EIO; break; }
+        }
+        pthread_mutex_lock(&state->workers_lock);
+        if (!ready) { ++state->workers_ready; ready = true; }
+        if (rc) state->worker_error = rc;
+        else {
+            ++state->worker_checks;
+            if (sealed && !observed_seal) {
+                ++state->workers_observed_seal;
+                observed_seal = true;
+            }
+        }
+        pthread_cond_broadcast(&state->workers_condition);
+        pthread_mutex_unlock(&state->workers_lock);
+        if (!rc) usleep(1000);
+    } while (!rc);
+    if (pin) {
+        int release_rc = mem_service_mapping_lease_release(pin);
+        if (release_rc) {
+            pthread_mutex_lock(&state->workers_lock);
+            state->worker_error = release_rc;
+            pthread_cond_broadcast(&state->workers_condition);
+            pthread_mutex_unlock(&state->workers_lock);
+        }
+    }
+    return NULL;
+}
+
+static int start_workers(struct managed_state *state)
+{
+    for (unsigned i = 0; i < state->config.access_threads; ++i) {
+        int rc = pthread_create(&state->workers[i], NULL, cpu_worker, state);
+        if (rc) return -rc;
+        ++state->workers_started;
+    }
+    pthread_mutex_lock(&state->workers_lock);
+    while (state->workers_ready < state->workers_started)
+        pthread_cond_wait(&state->workers_condition, &state->workers_lock);
+    int rc = state->worker_error;
+    pthread_mutex_unlock(&state->workers_lock);
+    return rc;
+}
+
+static int probe_owner_close(struct managed_state *state, bool in_flight)
+{
+    struct mem_service_mapping_owner_stats stats;
+    enum mem_service_wire_status status;
+    if (mem_service_mapping_owner_close(state->owner, &status) != -EBUSY) return -EPROTO;
+    int rc = mem_service_mapping_owner_inspect(state->owner, &stats);
+    if (rc) return rc;
+    unsigned expected_compute = in_flight ? 3 : 0;
+    if (!stats.closing || !stats.mapping_pending || !stats.holder_pending ||
+        stats.cpu_pins != 1 + state->workers_started ||
+        stats.compute_pins != expected_compute || stats.in_flight_pins != expected_compute)
+        return -EPROTO;
+    struct mem_service_mapping_lease *blocked = NULL;
+    struct mem_service_mapping_access_view view;
+    rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
+        vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_READ, &blocked, &view);
+    if (rc != -ECANCELED || blocked) return -EPROTO;
+    pthread_mutex_lock(&state->workers_lock);
+    state->owner_sealed = true;
+    while (state->workers_observed_seal < state->workers_started && !state->worker_error)
+        pthread_cond_wait(&state->workers_condition, &state->workers_lock);
+    rc = state->worker_error;
+    pthread_mutex_unlock(&state->workers_lock);
+    if (!rc) printf("MANAGED_OWNER node=1 state=closing cpu_pins=%u compute_pins=%u "
+        "in_flight_pins=%u close_guard=pass admission_guard=pass threads=%u operation_id=%" PRIu64 "\n",
+        stats.cpu_pins, stats.compute_pins, stats.in_flight_pins, state->workers_started,
+        in_flight ? state->config.generation + 2 : 0);
+    return rc;
+}
+
+static int stop_workers(struct managed_state *state)
+{
+    pthread_mutex_lock(&state->workers_lock);
+    state->workers_stop = true;
+    pthread_mutex_unlock(&state->workers_lock);
+    for (unsigned i = 0; i < state->workers_started; ++i) {
+        int rc = pthread_join(state->workers[i], NULL);
+        if (rc) return -rc;
+    }
+    if (state->worker_error) return state->worker_error;
+    printf("MANAGED_OWNER node=1 state=workers-drained threads=%u checks=%u "
+        "after_seal_threads=%u cpu_verify=pass\n", state->workers_started,
+        state->worker_checks, state->workers_observed_seal);
+    state->workers_started = 0;
+    return 0;
+}
+
 static int close_mapping(struct managed_state *state)
 {
     enum mem_service_wire_status status;
     char idem[80];
     int rc = release_compute(state);
     if (rc) return rc;
+    if (state->workers_started) return -EBUSY;
+    if (state->cpu_pin) {
+        rc = mem_service_mapping_lease_release(state->cpu_pin);
+        if (rc) return rc;
+        state->cpu_pin = NULL;
+    }
+    if (state->owner) {
+        rc = mem_service_mapping_owner_close(state->owner, &status);
+        if (rc) return rc;
+        struct mem_service_mapping_owner_stats stats;
+        rc = mem_service_mapping_owner_inspect(state->owner, &stats);
+        if (rc || stats.cpu_pins || stats.compute_pins || stats.in_flight_pins ||
+            stats.mapping_pending || stats.holder_pending) return -EPROTO;
+        rc = mem_service_mapping_owner_destroy(state->owner);
+        if (rc) return rc;
+        state->owner = NULL;
+        printf("MANAGED_OWNER node=%u state=drained cpu_pins=0 compute_pins=0 "
+               "in_flight_pins=0 mapping_pending=0 holder_pending=0\n", state->config.node);
+    }
+    if (state->domain) {
+        rc = mem_service_access_domain_destroy(state->domain);
+        if (rc) return rc;
+        state->domain = NULL;
+    }
     if (state->lifecycle.pending || state->mapping.binding.mapped) {
         rc = mem_service_client_unmap_managed_allocation(&state->client, &state->channel,
             &state->mapping, &state->lifecycle, &status);
@@ -367,8 +558,8 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
             .strides = {VECTOR_ELEMENTS, 1},
             .access = i == 2 ? LINGQU_SHMEM_ACCESS_WRITE : LINGQU_SHMEM_ACCESS_READ,
         };
-        rc = lingqu_shmem_mem_service_acquire_managed(state->compute, &state->mapping,
-            &state->lifecycle, &spec, &memrefs[i], &state->leases[i]);
+        rc = lingqu_shmem_mem_service_acquire_owned(state->compute, state->owner,
+            &spec, &memrefs[i], &state->leases[i]);
         if (rc) return rc;
         args[i] = (struct lingqu_shmem_pto_memref_arg) {.memref = memrefs[i], .arg_index = i};
     }
@@ -392,11 +583,15 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
         }
     }
     if (lingqu_shmem_mem_service_active_leases(state->compute) != 3) return -EPROTO;
+    for (unsigned i = 0; i < 3; ++i) {
+        rc = lingqu_shmem_mem_service_lease_begin(state->leases[i], request.op_id);
+        if (rc) return rc;
+    }
     printf("MANAGED_PTO node=1 dispatch=%u op_id=%" PRIu64 " generation=%" PRIu64
         " mapping_id=%" PRIu64 " offsets=%" PRIu64 ",%" PRIu64 ",%" PRIu64
         " tensor_bytes=%zu retained_leases=3 release_guard=pass\n",
-        round, request.op_id, state->mapping.generation,
-        state->lifecycle.transaction.mapping_id, vector_offset(vectors[0]),
+        round, request.op_id, state->allocation.generation,
+        state->mapping_id, vector_offset(vectors[0]),
         vector_offset(vectors[1]), vector_offset(vectors[2]), (size_t)VECTOR_BYTES);
     state->completion_unknown = true;
     rc = lingqu_shmem_pto_endpoint_submit(state->endpoint, &slot,
@@ -414,6 +609,10 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
             }
         }
         if (lingqu_shmem_mem_service_active_leases(state->compute) != 3) return -EPROTO;
+        if (round == 2) {
+            rc = probe_owner_close(state, true);
+            if (rc) return rc;
+        }
         printf("MANAGED_PTO_WAIT node=1 dispatch=%u op_id=%" PRIu64
             " state=timeout retained_leases=3 close_guard=pass release_guard=pass\n",
             round, request.op_id);
@@ -428,6 +627,11 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
         }
     }
     if (rc) return rc;
+    if (completion.op_id != request.op_id) return -EPROTO;
+    for (unsigned i = 0; i < 3; ++i) {
+        rc = lingqu_shmem_mem_service_lease_complete(state->leases[i], request.op_id);
+        if (rc) return rc;
+    }
     state->completion_unknown = false;
     if (state->config.recovery_expected && !recovered) return -EPROTO;
     printf("MANAGED_PTO node=1 dispatch=%u completion_op=%" PRIu64
@@ -442,9 +646,10 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
 static int run_data(struct managed_state *state)
 {
     int rc = map_object(state);
+    if (!rc) rc = adopt_mapping(state);
     if (rc) return rc;
     if (!state->config.node) {
-        rc = seed_inputs(state);
+        rc = mem_service_mapping_lease_apply(state->cpu_pin, seed_inputs_callback, NULL);
         if (!rc) rc = verify_vector(state, 2, "remote-tstore-cpu");
         if (!rc) rc = verify_vector(state, 3, "remote-tstore-tload-cpu");
         if (!rc) rc = wait_allocation(state, "active", true);
@@ -461,8 +666,11 @@ static int run_data(struct managed_state *state)
     if (state->metadata == MAP_FAILED) { state->metadata = NULL; return -errno; }
     memset(state->metadata, 0, METADATA_BYTES);
     if (mlock(state->metadata, METADATA_BYTES)) return -errno;
-    rc = dispatch_vector(state, 1);
+    rc = start_workers(state);
+    if (!rc) rc = dispatch_vector(state, 1);
     if (!rc) rc = dispatch_vector(state, 2);
+    if (!rc && !state->owner_sealed) rc = probe_owner_close(state, false);
+    if (!rc) rc = stop_workers(state);
     return rc;
 }
 
@@ -479,12 +687,16 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     if (validate_only) {
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=cross-page "
             "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
-            " recovery_expected=%u\n", config.node, MANAGED_BYTES, VECTOR_ELEMENTS,
-            config.submit_timeout_ms, config.recovery_expected ? 1 : 0);
+            " recovery_expected=%u access_threads=%u\n", config.node, MANAGED_BYTES, VECTOR_ELEMENTS,
+            config.submit_timeout_ms, config.recovery_expected ? 1 : 0, config.access_threads);
         return 0;
     }
     state = calloc(1, sizeof(*state));
     if (!state) return 1;
+    rc = pthread_mutex_init(&state->workers_lock, NULL);
+    if (rc) { free(state); return 1; }
+    rc = pthread_cond_init(&state->workers_condition, NULL);
+    if (rc) { pthread_mutex_destroy(&state->workers_lock); free(state); return 1; }
     state->config = config;
     snprintf(state->session, sizeof(state->session), "managed-pto-%u-%" PRIu64,
               config.node, config.generation);
@@ -530,6 +742,8 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     printf("MANAGED_PTO_RESULT node=%u status=pass key=%s generation=%" PRIu64
         " mapping_closed=1 holder_released=1 compute_leases=0\n",
         config.node, config.key, state->allocation.generation);
+    pthread_cond_destroy(&state->workers_condition);
+    pthread_mutex_destroy(&state->workers_lock);
     free(state);
     return 0;
 failed:

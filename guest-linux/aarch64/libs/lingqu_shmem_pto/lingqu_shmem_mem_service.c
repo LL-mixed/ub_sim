@@ -4,6 +4,9 @@
 #include "components/mem_service/lingqu_object_service.h"
 #include "components/mem_service/mem_service.h"
 #include "components/mem_service/mem_service_client.h"
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+#include "components/mem_service/mem_service_mapping_owner.h"
+#endif
 
 #include <errno.h>
 #include <stdatomic.h>
@@ -25,6 +28,7 @@ struct lingqu_shmem_mem_service_lease {
     struct lingqu_shmem_memref *memref;
     void *backend_lease;
     bool backend_acquired;
+    struct mem_service_mapping_lease *owner_pin;
 };
 
 static bool object_view_valid(
@@ -152,23 +156,21 @@ release_lease:
     return rollback_lease(lease, lease_out, rc);
 }
 
-int lingqu_shmem_mem_service_acquire_managed(
-    struct lingqu_shmem_mem_service_context *context,
+static int bind_managed(
+    struct lingqu_shmem_mem_service_lease *lease,
     const struct mem_service_client_object_mapping *mapping,
     const struct mem_service_client_mapping_lifecycle *lifecycle,
     const struct lingqu_shmem_memref_spec *spec,
-    struct lingqu_shmem_memref **memref_out,
-    struct lingqu_shmem_mem_service_lease **lease_out)
+    struct lingqu_shmem_memref **memref_out)
 {
+    struct lingqu_shmem_mem_service_context *context = lease->context;
     const uint64_t rights = MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE;
     struct lingqu_shmem_mem_service_region_binding binding = {0};
-    struct lingqu_shmem_mem_service_lease *lease;
     int rc;
 
-    if (!context || !mapping || !lifecycle || !spec || !memref_out || !lease_out)
+    if (!mapping || !lifecycle || !spec || !memref_out)
         return -EINVAL;
     *memref_out = NULL;
-    *lease_out = NULL;
     if (!context->ops->acquire_managed) return -EOPNOTSUPP;
     if (!mapping->key[0] || !memchr(mapping->key, '\0', sizeof(mapping->key)) ||
         !mapping->generation || !mapping->binding.mapped || !mapping->binding.owner ||
@@ -187,24 +189,115 @@ int lingqu_shmem_mem_service_acquire_managed(
         !spec->access || (spec->access & ~rights) || !mapping->flags ||
         (mapping->flags & ~rights)) return -EINVAL;
     if (spec->access & ~mapping->flags) return -EACCES;
-    lease = create_lease(context);
-    if (!lease) return -ENOMEM;
     rc = context->ops->acquire_managed(context->backend_context, mapping,
                                      spec->access, &binding);
     lease->backend_lease = binding.backend_lease;
     lease->backend_acquired = rc == 0 || binding.backend_lease != NULL;
-    if (rc != 0) return rollback_lease(lease, lease_out, rc);
+    if (rc != 0) return rc;
     if (binding.region.mapped_addr != mapping->base ||
         binding.region.mapped_length != mapping->len || binding.object_byte_offset ||
         !binding.region.ub_gm_addr || !binding.region.opaque_mapping_ref) {
-        return rollback_lease(lease, lease_out, -ESTALE);
+        return -ESTALE;
     }
     rc = lingqu_shmem_sim_region_create(&binding.region, &lease->region);
     if (!rc) rc = lingqu_shmem_memref_create(lease->region, spec, &lease->memref);
-    if (rc) return rollback_lease(lease, lease_out, rc);
+    if (rc) return rc;
     *memref_out = lease->memref;
+    return 0;
+}
+
+int lingqu_shmem_mem_service_acquire_managed(
+    struct lingqu_shmem_mem_service_context *context,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_lease **lease_out)
+{
+    if (!context || !mapping || !lifecycle || !spec || !memref_out || !lease_out)
+        return -EINVAL;
+    *memref_out = NULL;
+    *lease_out = NULL;
+    struct lingqu_shmem_mem_service_lease *lease = create_lease(context);
+    if (!lease) return -ENOMEM;
+    int rc = bind_managed(lease, mapping, lifecycle, spec, memref_out);
+    if (rc) return rollback_lease(lease, lease_out, rc);
     *lease_out = lease;
     return 0;
+}
+
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+struct owned_binding_request {
+    struct lingqu_shmem_mem_service_lease *lease;
+    const struct lingqu_shmem_memref_spec *spec;
+    struct lingqu_shmem_memref **memref_out;
+};
+
+static int bind_owned(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    struct owned_binding_request *request = opaque;
+    (void)channel;
+    if (view->offset != request->spec->byte_offset ||
+        view->len != request->spec->byte_length ||
+        view->flags != request->spec->access) return -ESTALE;
+    return bind_managed(request->lease, mapping, lifecycle,
+                        request->spec, request->memref_out);
+}
+#endif
+
+int lingqu_shmem_mem_service_acquire_owned(
+    struct lingqu_shmem_mem_service_context *context,
+    struct mem_service_mapping_owner *owner,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_lease **lease_out)
+{
+    if (!context || !owner || !spec || !memref_out || !lease_out) return -EINVAL;
+    *memref_out = NULL;
+    *lease_out = NULL;
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    if (!context->ops->acquire_managed) return -EOPNOTSUPP;
+    struct lingqu_shmem_mem_service_lease *lease = create_lease(context);
+    if (!lease) return -ENOMEM;
+    struct mem_service_mapping_access_view view;
+    int rc = mem_service_mapping_owner_acquire(owner, MEM_SERVICE_MAPPING_ACCESS_COMPUTE,
+        spec->byte_offset, spec->byte_length, spec->access, &lease->owner_pin, &view);
+    if (rc) return rollback_lease(lease, lease_out, rc);
+    struct owned_binding_request request = {lease, spec, memref_out};
+    rc = mem_service_mapping_lease_apply(lease->owner_pin, bind_owned, &request);
+    if (rc) return rollback_lease(lease, lease_out, rc);
+    *lease_out = lease;
+    return 0;
+#else
+    return -EOPNOTSUPP;
+#endif
+}
+
+int lingqu_shmem_mem_service_lease_begin(
+    struct lingqu_shmem_mem_service_lease *lease, uint64_t operation_id)
+{
+    if (!lease || !operation_id) return -EINVAL;
+    if (!lease->memref || !lease->region || !lease->backend_acquired) return -EINVAL;
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    if (lease->owner_pin)
+        return mem_service_mapping_lease_begin(lease->owner_pin, operation_id);
+#endif
+    return -EOPNOTSUPP;
+}
+
+int lingqu_shmem_mem_service_lease_complete(
+    struct lingqu_shmem_mem_service_lease *lease, uint64_t operation_id)
+{
+    if (!lease || !operation_id) return -EINVAL;
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    if (lease->owner_pin)
+        return mem_service_mapping_lease_complete(lease->owner_pin, operation_id);
+#endif
+    return -EOPNOTSUPP;
 }
 
 static int acquire_local_buffer(
@@ -299,7 +392,7 @@ int lingqu_shmem_mem_service_acquire_local_kv(
     return acquire_local_buffer(context, spec, memref_out, buffer_out, lease_out, true);
 }
 
-int lingqu_shmem_mem_service_release(
+static int release_resources(
     struct lingqu_shmem_mem_service_lease *lease)
 {
     struct lingqu_shmem_mem_service_context *context;
@@ -333,8 +426,41 @@ int lingqu_shmem_mem_service_release(
         lease->backend_acquired = false;
         lease->backend_lease = NULL;
     }
+    return 0;
+}
+
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+static int release_owned_resources(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    (void)channel; (void)mapping; (void)lifecycle; (void)view;
+    return release_resources(opaque);
+}
+#endif
+
+int lingqu_shmem_mem_service_release(
+    struct lingqu_shmem_mem_service_lease *lease)
+{
+    if (!lease || !lease->context) return -EINVAL;
+    int rc;
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    if (lease->owner_pin) {
+        rc = mem_service_mapping_lease_apply(lease->owner_pin, release_owned_resources, lease);
+        if (rc) return rc;
+        rc = mem_service_mapping_lease_release(lease->owner_pin);
+        if (rc) return rc;
+        lease->owner_pin = NULL;
+    } else
+#endif
+    {
+        rc = release_resources(lease);
+        if (rc) return rc;
+    }
     atomic_fetch_sub_explicit(
-        &context->active_leases, 1, memory_order_acq_rel);
+        &lease->context->active_leases, 1, memory_order_acq_rel);
     memset(lease, 0, sizeof(*lease));
     free(lease);
     return 0;

@@ -87,12 +87,28 @@ class ManagedPtoCliTest(unittest.TestCase):
                 self.assertEqual(self.run_config({**CONFIG, "submit_timeout_ms": value}).returncode, 2)
         self.assertEqual(self.run_config(extra="submit_timeout_ms=5\nsubmit_timeout_ms=6\n").returncode, 2)
 
+    def test_access_threads_is_bounded_and_validate_only_has_no_side_effects(self):
+        for count in ("0", "4", "8"):
+            result = self.run_config({**CONFIG, "access_threads": count})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"access_threads={count}", result.stdout)
+            self.assertIn("network_operations=0", result.stdout)
+        for count in ("9", "-1", "bad", "4294967296"):
+            self.assertEqual(self.run_config({**CONFIG, "access_threads": count}).returncode, 2)
+        self.assertEqual(self.run_config(extra="access_threads=4\naccess_threads=4\n").returncode, 2)
+
 
 class ManagedPtoContractTest(unittest.TestCase):
     def test_same_mapping_two_dispatches_and_fail_closed_lifetime(self):
         source = (APP / "lingqu_shmem_pto_managed.c").read_text()
         self.assertIn("mem_service_client_map_managed_allocation", source)
-        self.assertIn("lingqu_shmem_mem_service_acquire_managed", source)
+        self.assertIn("lingqu_shmem_mem_service_acquire_owned", source)
+        self.assertIn("mem_service_mapping_owner_adopt", source)
+        self.assertIn("lingqu_shmem_mem_service_lease_begin", source)
+        self.assertIn("lingqu_shmem_mem_service_lease_complete", source)
+        self.assertIn("pthread_join", source)
+        self.assertIn("probe_owner_close(state, true)", source)
+        self.assertIn("mem_service_mapping_lease_apply(state->cpu_pin", source)
         self.assertIn("unsigned vectors[3] = {round == 1 ? 0 : 2, 1, round + 1}", source)
         self.assertIn("dispatch_vector(state, 1)", source)
         self.assertIn("dispatch_vector(state, 2)", source)
@@ -113,6 +129,7 @@ class ManagedPtoContractTest(unittest.TestCase):
         runner = (ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh").read_text()
         self.assertIn("-DLINGQU_SHMEM_MANAGED_MAPPING", build)
         self.assertIn('"$LINGQU_SHMEM_PTO_MANAGED_SRC"', build)
+        self.assertIn('"$MEM_SERVICE_MAPPING_OWNER_SRC"', build)
         self.assertIn('"$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_PROVIDER_OBMM_SRC"', build)
         self.assertIn("--managed-config /tmp/managed-share.pto.conf", run_app)
         self.assertIn('access="${8:-cpu}"', run_app)
@@ -121,6 +138,8 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn('"${SCRIPT_DIR}/validate_managed_pto.py"', runner)
         self.assertIn("MANAGED_PTO_RESULT .*status=fail", runner)
         self.assertIn("lingqu_shmem_pto_submit_timeout_ms", run_app)
+        self.assertIn("lingqu_shmem_pto_access_threads", run_app)
+        self.assertIn('--access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS"', runner)
         self.assertIn("--require-timeout-recovery", runner)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")

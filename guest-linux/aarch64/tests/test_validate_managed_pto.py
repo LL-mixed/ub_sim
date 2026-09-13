@@ -62,7 +62,84 @@ def fixture():
     return guests, "\n".join(qemu)
 
 
+def owned_fixture(recovery=False, threads=4):
+    guests, qemu = fixture()
+    for node in (0, 1):
+        first, rest = guests[node].split("\n", 1)
+        adopted = f"MANAGED_OWNER node={node} state=adopted generation=7 mapping_id=9 "
+        guests[node] = first + "\n" + adopted + "cpu_pins=1 holder_transferred=1\n" + rest
+        marker = f"MANAGED_PTO_RESULT node={node} "
+        drained = f"MANAGED_OWNER node={node} state=drained cpu_pins=0 compute_pins=0 "
+        guests[node] = guests[node].replace(marker,
+            drained + "in_flight_pins=0 mapping_pending=0 holder_pending=0\n" + marker)
+    if recovery:
+        for round_ in (1, 2):
+            marker = f"MANAGED_PTO node=1 dispatch={round_} completion_op="
+            waiting = f"MANAGED_PTO_WAIT node=1 dispatch={round_} op_id={100+round_} "
+            guests[1] = guests[1].replace(marker, waiting + "state=timeout retained_leases=3 "
+                "close_guard=pass release_guard=pass\n" + waiting +
+                f"state=recovered completion_op={100+round_} pending_op=0\n" + marker)
+    compute = 3 if recovery else 0
+    closing = f"MANAGED_OWNER node=1 state=closing cpu_pins={threads+1} compute_pins={compute} "
+    closing += f"in_flight_pins={compute} close_guard=pass admission_guard=pass threads={threads} "
+    closing += f"operation_id={102 if recovery else 0}\n"
+    marker = "MANAGED_PTO_WAIT node=1 dispatch=2 op_id=102 state=timeout" if recovery else (
+        "MANAGED_OWNER node=1 state=drained")
+    guests[1] = guests[1].replace(marker, closing + marker)
+    marker = "MANAGED_OWNER node=1 state=drained"
+    workers = f"MANAGED_OWNER node=1 state=workers-drained threads={threads} checks={threads*10} "
+    workers += f"after_seal_threads={threads} cpu_verify=pass\n"
+    guests[1] = guests[1].replace(marker, workers + marker)
+    return guests, qemu
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_owner_requires_identity_counts_post_seal_reads_and_original_completion(self):
+        for recovery in (False, True):
+            for threads in (0, 4, 8):
+                guests, qemu = owned_fixture(recovery, threads)
+                result = validator.validate(guests, qemu, recovery, threads)
+                self.assertTrue(result["owner_verified"])
+                self.assertEqual(result["access_threads"], threads)
+                self.assertFalse(result["am2_complete"])
+            guests, qemu = owned_fixture(recovery)
+            for before, after in (("cpu_pins=5", "cpu_pins=1"),
+                                  ("admission_guard=pass", "admission_guard=fail"),
+                                  ("after_seal_threads=4", "after_seal_threads=3"),
+                                  ("checks=40", "checks=0"),
+                                  ("holder_pending=0", "holder_pending=1"),
+                                  ("holder_transferred=1", "holder_transferred=0"),
+                                  ("state=adopted generation=7", "state=adopted generation=8"),
+                                  ("operation_id=102" if recovery else "operation_id=0",
+                                   "operation_id=999")):
+                with self.subTest(recovery=recovery, field=before), self.assertRaises(ValueError):
+                    validator.validate([guests[0], guests[1].replace(before, after)],
+                                       qemu, recovery, 4)
+            lines = guests[1].splitlines()
+            guard = next(line for line in lines if "MANAGED_OWNER node=1 state=closing" in line)
+            lines.remove(guard)
+            lines.insert(2, guard)
+            with self.assertRaises(ValueError):
+                validator.validate([guests[0], "\n".join(lines)], qemu, recovery, 4)
+        guests, qemu = fixture()
+        with self.assertRaisesRegex(ValueError, "owner lifecycle sequence"):
+            validator.validate(guests, qemu, access_threads=4)
+
+    def test_owner_cli_gate_requires_matching_thread_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [pathlib.Path(directory) / name for name in ("a.log", "b.log", "q.log")]
+            guests, qemu = owned_fixture(True)
+            for path, contents in zip(paths, guests + [qemu]):
+                path.write_text(contents)
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]),
+                       "--node-b", str(paths[1]), "--qemu-b", str(paths[2]),
+                       "--require-timeout-recovery", "--access-threads"]
+            result = subprocess.run(command + ["4"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(json.loads(result.stdout)["owner_verified"])
+            self.assertEqual(subprocess.run(command + ["3"], capture_output=True).returncode, 1)
+            self.assertEqual(subprocess.run(command + ["9"], capture_output=True).returncode, 2)
+
     def test_timeout_requires_original_completion_and_retained_resources(self):
         guests, qemu = fixture()
         with self.assertRaisesRegex(ValueError, "timeout recovery evidence"):

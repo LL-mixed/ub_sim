@@ -18,7 +18,7 @@ The metadata builder and endpoint never copy tensor payload bytes. They do not
 expose QEMU, SIM_DEC, GVA, or GSVA identities through the public
 `lingqu_shmem_memref` programming model. OBMM registration and public memref
 lifetime ownership belong to the dedicated guest adaptor and workload layer.
-The current lifetime API is single-threaded; concurrent create/destroy and
+The raw region/memref lifetime API requires external serialization;
 multiple in-flight dispatches remain part of the P4 concurrency gate. The
 caller must keep the underlying mapping and OBMM registration active until
 all in-flight objects have been finished and every memref has been destroyed.
@@ -75,8 +75,8 @@ materializes the temporary data-plane view.
 的 release；已销毁的 memref 不可再次使用。acquire 的失败路径也遵守该约定：
 若回滚未完成，返回非零错误和非空 `lease_out`，仅用于继续清理，不交付 memref
 或本地输出 buffer。backend 在失败返回时通过 `backend_lease` 交回已有资源，
-release 失败不得销毁该句柄。本约定保持当前单线程使用边界；endpoint 的原操作
-超时恢复遵循上节契约，多线程 owner 仍须独立实现及验证。
+release 失败不得销毁该句柄。raw acquire/release 保持外部串行化约定；endpoint 的
+原操作超时恢复遵循上节契约，并发 owned 接口遵循下文 access domain 约定。
 
 受管理对象使用 `lingqu_shmem_mem_service_acquire_managed()`，输入为同一 SDK
 返回并持有的 object mapping 与 active mapping lifecycle，保留现有 key/generation
@@ -88,12 +88,35 @@ OBMM provider；未启用的构建返回 `-EOPNOTSUPP`，旧 W5 acquire 接口�
 调用方保留同一 holder/lifecycle，并串行化 mapping、compute 和清理操作。
 AM2 的单线程双节点用例已验证四种实际数据组合和原 completion 超时恢复，详见
 `docs/2026-09-11-gva-managed-service-implementation-progress.md` 的 r139–r142。
-统一并发 owner、完整权限/范围矩阵及 home 互换仍待验收，单线程约定保持不变。
+raw managed 接口保持串行化约定；并发 owned 接口的局部实测见下文，完整
+权限/范围矩阵及 home 互换仍待验收。
 
 无模型的受管理客户端通过 `lingqu_shmem_mem_service_open_managed()` 打开仅支持
 managed mapping 的 compute context。该 context 不依赖旧 payload arena 或模型
 runtime；legacy acquire 返回 `-EOPNOTSUPP`。部署构建链接启用 managed 功能的
 平台 adapter，保留旧 `open()` 的行为，调用方无须选择传输。
+
+并发接入使用 `lingqu_shmem_mem_service_acquire_owned()`，输入为 Memory Service
+SDK 的同一 mapping owner 和有界 tensor spec。它先取得 compute pin，再在共享
+access domain 锁内完成原映射的注册；退出时在同一锁内注销，最后释放 compute
+pin。失败回滚仍遵守非空 cleanup-only lease 的约定。每个 lease 由单个调用方
+使用；同一 compute context 的所有 owner 必须属于同一 access domain。
+context 和 owner 的 destroy 必须在所有调用线程 join 后执行。
+调用方在提交前用 `lingqu_shmem_mem_service_lease_begin()` 标记原 operation，
+确认该 operation 的实际 completion 后才调用 `lease_complete()`。等待和 submit
+在 domain 回调外执行，未完成的 pin 拒绝 release。旧 raw acquire 仍要求外部
+串行化，不能与同一 channel 的 owner 操作并发混用。SDK 的八线程/双 owner
+原生 fixture 和本适配层边界测试均已通过；真实 guest 证据及边界如下。
+managed-config 新增 `access_threads=0..8`，默认 0；consumer 的工作线程分别持有
+同一 owner 的只读 CPU pin，持续校验已发布且不再修改的输入 A，跨越两次 PTO
+dispatch。第二次超时时检查 owner close 返回 busy 并停止新借用，已有线程继续
+访问；原 completion 后停止并 join 工作线程，再释放主 CPU pin 和 holder。
+普通等待模式在两个 dispatch 完成后检查 CPU 在用拒绝关闭，不声称此时计算在用。
+独立 `MANAGED_OWNER` 日志记录实际 pin、线程校验和关闭结果；验收器按配置检查。
+r146 延迟用例在第二次 PTO pending 时记录 CPU/compute/in-flight pins 为 5/3/3，
+r147 普通用例在计算完成后记录 5/0/0；两者均拒绝 close 和新借用，4 个 CPU
+线程在停止接纳后都继续完成原映射读取，最终全部 pins、mapping、holder 归零。
+这仅证明双节点、单 home、单对象和两次顺序计算的并发 CPU 寿命子集，AM2 未完成。
 
 Local output follows a two-address rule. `lingqu_shmem_memref` carries the
 self-import alias address registered for Simpler/PTO `TSTORE`. The returned

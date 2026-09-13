@@ -46,7 +46,7 @@ def oracle_checksum(vector):
     return f"{checksum:016x}"
 
 
-def validate(guests, qemu, require_timeout_recovery=False):
+def validate(guests, qemu, require_timeout_recovery=False, access_threads=None):
     # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
     guests = [text.replace("\r\n", "\n") for text in guests]
     maps, dispatches = [], []
@@ -135,10 +135,64 @@ def validate(guests, qemu, require_timeout_recovery=False):
                        for index, request in enumerate(requests) for phase in phases],
             "PTO submission, wait and completion order mismatch")
     validate_callbacks(qemu, maps[0], requests)
+    if access_threads is not None:
+        validate_owners(guests, maps, requests, require_timeout_recovery, access_threads)
     return {"status": "pass", "nodes": 2, "objects": 1, "dispatches": 2,
             "load_callbacks": 4, "store_callbacks": 2, "fences": 2,
-            "scope": "single-thread-cross-page", "timeout_recoveries": len(waits) // 2,
+            "scope": "multi-thread-cross-page" if access_threads else "single-thread-cross-page",
+            "owner_verified": access_threads is not None, "access_threads": access_threads,
+            "timeout_recoveries": len(waits) // 2,
             "am2_complete": False}
+
+
+def validate_owners(guests, maps, requests, recovery, threads):
+    require(0 <= threads <= 8, "invalid access thread count")
+    for node, text in enumerate(guests):
+        rows = records(text, "MANAGED_OWNER")
+        states = ["adopted", "drained"] if node == 0 else [
+            "adopted", "closing", "workers-drained", "drained"]
+        require([r["state"] for r in rows] == states and
+                all(number(r, "node") == node for r in rows), "owner lifecycle sequence mismatch")
+        adopted, drained = rows[0], rows[-1]
+        require(adopted["generation"] == maps[node]["generation"] and
+                adopted["mapping_id"] == maps[node]["mapping_id"] and
+                adopted["cpu_pins"] == adopted["holder_transferred"] == "1",
+                "owner did not adopt the existing mapping and holder")
+        require(all(drained[k] == "0" for k in ("cpu_pins", "compute_pins", "in_flight_pins",
+                "mapping_pending", "holder_pending")), "owner resources not drained")
+        lines = text.splitlines()
+        owner_positions = [i for i, line in enumerate(lines) if line.startswith("MANAGED_OWNER ")]
+        result_position = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_RESULT "))
+        require(owner_positions[-1] < result_position, "owner drained after success report")
+        first_verify = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ")
+                            and "cpu_verify=" in line)
+        require(owner_positions[0] < first_verify, "CPU accessed before owner adoption")
+        if node == 0:
+            continue
+        closing, workers = rows[1:3]
+        compute = 3 if recovery else 0
+        require(number(closing, "threads") == threads and
+                number(closing, "cpu_pins") == threads + 1 and
+                number(closing, "compute_pins") == number(closing, "in_flight_pins") == compute and
+                closing["close_guard"] == closing["admission_guard"] == "pass" and
+                closing["operation_id"] == (requests[1] if recovery else "0"),
+                "owner in-use close/admission guard mismatch")
+        require(number(workers, "threads") == number(workers, "after_seal_threads") == threads and
+                number(workers, "checks") >= threads and workers["cpu_verify"] == "pass",
+                "worker CPU verification or post-seal access missing")
+        completion_position = next(i for i, line in enumerate(lines)
+                                   if line.startswith("MANAGED_PTO node=1 dispatch=2 completion_op="))
+        require(completion_position < owner_positions[2], "workers drained before original completion")
+        if recovery:
+            submit_position = next(i for i, line in enumerate(lines)
+                                   if line.startswith("MANAGED_PTO node=1 dispatch=2 op_id="))
+            timeout_position = next(i for i, line in enumerate(lines)
+                                    if line.startswith("MANAGED_PTO_WAIT node=1 dispatch=2 ") and
+                                    "state=timeout" in line)
+            require(submit_position < owner_positions[1] < timeout_position < completion_position,
+                    "owner guard outside original pending operation")
+        else:
+            require(completion_position < owner_positions[1], "CPU-only guard before compute completion")
 
 
 def validate_callbacks(text, mapping, requests):
@@ -207,12 +261,13 @@ def main():
     parser.add_argument("--qemu-b", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-timeout-recovery", action="store_true")
+    parser.add_argument("--access-threads", type=int, choices=range(9))
     args = parser.parse_args()
     paths = [args.node_a, args.node_b, args.qemu_b]
     try:
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
-        result = validate(text[:2], text[2], args.require_timeout_recovery)
+        result = validate(text[:2], text[2], args.require_timeout_recovery, args.access_threads)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:
