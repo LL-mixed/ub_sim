@@ -105,6 +105,11 @@ int main(void) {
                                          r" \{.*?\n\} " + name + ";", header, re.S)[0])
         function = source.split("void ubc_handle_gsva_io(", 1)[1].split(
             "\nbool ubc_void_response_policy_enabled", 1)[0]
+        limits = "#define UBC_SIM_DEC_MAX_MSG_PAYLOAD " + source.split(
+            "#define UBC_SIM_DEC_MAX_MSG_PAYLOAD ", 1)[1].split(
+            "#define UBC_SIM_DEC_READ_WAIT_USEC", 1)[0]
+        sender = source.rsplit("static MemTxResult ubc_sim_dec_remote_io(", 1)[1]
+        self.assertIn("strict ? UBC_GSVA_IO_CHUNK_MAX :", sender)
         program = r"""
 #include <stdint.h>
 #include <stdbool.h>
@@ -115,6 +120,7 @@ int main(void) {
 #define UBC_SIM_DEC_READ_STATUS_SUCCESS 0
 #define UBC_SIM_DEC_READ_STATUS_ERROR 1
 #define UBC_MSG_SUB_SIM_DEC_READ_RESP 3
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 typedef int MemTxResult;
 #define MEMTX_OK 0
 typedef struct { bool ummu; } BusControllerDev;
@@ -122,22 +128,25 @@ typedef struct { int unused; } UBLinkState;
 static UBLinkState link;
 static unsigned transfers, replies;
 static int dma_error;
-static uint8_t output[32];
+static uint32_t expected_len = 8;
+static uint64_t expected_address = 0x700000000000ULL;
+static uint8_t output[4095];
 static UBLinkState *ubc_find_active_link(BusControllerDev *dev, uint32_t *peer)
 { (void)dev; assert(*peer == 8); return &link; }
 static int ubc_dma_read_local_data_tid_strict(BusControllerDev *dev, uint64_t address,
                                            void *bytes, uint32_t len, uint32_t token)
-{ (void)dev; assert(address == 0x700000000000ULL && token == 97 && len == 8);
+{ (void)dev; assert(address == expected_address && token == 97 && len == expected_len);
   transfers++; memset(bytes, 0x5a, len); return dma_error; }
 static int ubc_dma_write_local_data_tid_strict(BusControllerDev *dev, uint64_t address,
                                             const void *bytes, uint32_t len, uint32_t token)
-{ (void)dev; assert(address == 0x700000000000ULL && token == 97 && len == 8);
-  assert(*(const uint8_t *)bytes == 0x6b); transfers++; return dma_error; }
+{ (void)dev; assert(address == expected_address && token == 97 && len == expected_len);
+  for (uint32_t i = 0; i < len; ++i) assert(((const uint8_t *)bytes)[i] == 0x6b);
+  transfers++; return dma_error; }
 static int ubc_send_msg_over_link(BusControllerDev *dev, UBLinkState *active,
                                  uint32_t peer, uint32_t sub, const void *bytes, uint32_t len)
 { (void)dev; assert(active == &link && peer == 8 && sub == 3 && len <= sizeof(output));
   replies++; memset(output, 0, sizeof(output)); memcpy(output, bytes, len); return 0; }
-""" + "\n".join(declarations) + "\nvoid ubc_handle_gsva_io(" + function + r"""
+""" + "\n".join(declarations) + "\n" + limits + "\nvoid ubc_handle_gsva_io(" + function + r"""
 int main(void) {
   BusControllerDev dev = {.ummu = true};
   uint8_t bytes[sizeof(UBCGsvaIoReq) + 8] = {0};
@@ -167,6 +176,46 @@ int main(void) {
   ubc_handle_gsva_io(&dev, bytes, sizeof(bytes) - 1, 8);
   dev.ummu = false; ubc_handle_gsva_io(&dev, bytes, sizeof(bytes), 8);
   assert(transfers == 4 && replies == 4);
+  dev.ummu = true;
+  uint8_t packet[UBC_SIM_DEC_MAX_MSG_PAYLOAD] = {0};
+  UBCGsvaIoReq *tensor = (UBCGsvaIoReq *)packet;
+  const uint32_t sizes[] = {1, 8, 256, UBC_GSVA_IO_CHUNK_MAX};
+  for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+    expected_len = sizes[i];
+    expected_address = 0x700000000f80ULL;
+    *tensor = (UBCGsvaIoReq){.magic = UBC_GSVA_IO_MAGIC, .version = 1,
+        .request = {.req_id = 70 + i, .token_id = 97,
+                    .remote_uba = expected_address, .read_len = expected_len}};
+    transfers = replies = 0;
+    ubc_handle_gsva_io(&dev, packet, sizeof(*tensor), 8);
+    assert(transfers == 1 && replies == 1 && response->status == 0);
+    assert(response->req_id == 70 + i && response->data_len == expected_len);
+    for (uint32_t j = 0; j < expected_len; ++j)
+      assert(output[sizeof(*response) + j] == 0x5a);
+    tensor->write = 1;
+    memset(packet + sizeof(*tensor), 0x6b, expected_len);
+    ubc_handle_gsva_io(&dev, packet, sizeof(*tensor) + expected_len, 8);
+    assert(transfers == 2 && replies == 2 && response->status == 0);
+    assert(response->data_len == expected_len);
+    for (uint32_t j = 0; j < expected_len; ++j)
+      assert(output[sizeof(*response) + j] == 0x6b);
+    dma_error = 1;
+    ubc_handle_gsva_io(&dev, packet, sizeof(*tensor) + expected_len, 8);
+    assert(transfers == 3 && replies == 3 && response->status == 1);
+    assert(!response->data_len);
+    dma_error = 0;
+  }
+  transfers = replies = 0;
+  tensor->write = 0;
+  tensor->request.read_len = UBC_GSVA_IO_CHUNK_MAX + 1;
+  ubc_handle_gsva_io(&dev, packet, sizeof(*tensor), 8);
+  tensor->request.read_len = 256;
+  tensor->request.remote_uba = UINT64_MAX - 128;
+  ubc_handle_gsva_io(&dev, packet, sizeof(*tensor), 8);
+  tensor->request.remote_uba = expected_address;
+  tensor->write = 1;
+  ubc_handle_gsva_io(&dev, packet, sizeof(*tensor) + 255, 8);
+  assert(!transfers && !replies);
   return 0;
 }
 """

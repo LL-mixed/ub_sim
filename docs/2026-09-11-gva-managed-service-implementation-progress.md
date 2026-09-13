@@ -1726,3 +1726,64 @@ home kernel checked-export 的 17 组身份/格式负例、consumer provider 的
 独立发布，以及 n4-910c 的独立复现。总计划 M2-M5 的动态身份、恢复、压力与 replay
 联合失效同样未关闭。
 正式源码锁恢复通过后，仍需逐项实现和运行验收，不能由 r20/r24 的 CPU 正例推定完成。
+
+## 2026-09-14 续作：managed PTO 首次实跑与逐层修复（单线程子集通过）
+
+r136 实际双节点 CPU 同址映射和输入校验通过，首次严格 PTO 注册返回 EACCES。
+OBMM 在设置 PTE 后清空 VMA 的读写标志，原 driver 因而错误拒绝实际可读写映射。
+r137 改为持有 mmap/PTE 锁，逐页核对 OBMM file/region 身份、物理连续性及页表权限；
+当前只接受页粒度 O_SYNC import，cacheable 和大页视图明确返回 unsupported。
+这些视图仍需动态权限寿命协议。13 项 driver 定向测试全部通过，0.533 秒；
+模块在第二目标编译通过。提交为 `190befcce6c78f37f246553d4349eaef54e9cd96`。
+
+r137 实跑成功取得三个 compute lease，并通过在用 release 返回 EBUSY 的检查，
+首次 dispatch 仍以 `pto_ub_gm_access_denied` 结束。OBMM 的 AArch64 RW PTE
+清除硬件 PTE_RDONLY，却不设置软件 PTE_WRITE/DBM；r138 改为检查实际 user/AP
+权限，增加软件写位与硬件只读位不一致的 fixture。13 项测试通过，0.547 秒；
+提交为 `3ac17bb34dbcb9a51b5b9d28336005084b87ce31`。
+
+r138 实跑建立三个严格 GSVA binding：segment `0xc4c2000000000001`、
+home VA `0x700000000000`、epoch/lease epoch 均为 1、实际 backing token 97。
+第一次跨页 TLOAD 请求长度 256 bytes，接收端仍只允许 8 bytes，请求被拒绝后
+发送端超时；completion 为 `pto_ub_gm_callback_failed`。未产生成功 LOAD/STORE，
+不能据此认定 CPU/PTO 数据共享通过。r136/r137/r138 runner 均 exit 1，三轮结束后
+分别独立查询确认无 QEMU 遗留。保留全部失败日志，不用旧 CPU 或 legacy PTO 结果替代。
+
+r138 同时修复 serial CRLF 的证据解析：仅对解析文本归一化，SHA 继续基于原始
+日志字节计算。先复现拒绝有效 CRLF 的失败，再通过 4 项 parser/CLI 测试，0.075 秒；
+提交为 `926561095dfea6bd9a63cbad95f60adb1816a19c`。该结果仅验证日志工具。
+
+r139 使严格 CPU/PTO backing I/O 共用有界分片上限，完整计入请求及响应头部，
+保留精确长度、token、translation 与地址溢出检查。生产 receiver 的原生 fixture
+覆盖 1、8、256 bytes 和最大合法分片，以及非法长度、跨页地址和失败不传数据。
+3 项测试通过，0.145 秒；QEMU 通过项目 wrapper 编译，6 组原生测试共 40 项通过。
+QEMU SHA-256 为 `e850e2d57057886442a402e94db2e663d562a26a082ca94571a98d469bd0baf7`。
+复用 r138 rootfs，SHA-256 为
+`7a6e6703d6101d3188b9a17589a126dd2f7cd25d8761cd5bea071ed992a8a286`。
+完整 root r137 为 479 项，460 通过、5 跳过、5 失败、9 错误，51.402 秒；
+r138/r139 均为 480 项，461 通过、5 跳过、5 失败、9 错误，分别 50.913/51.005 秒。
+终态失败 ID 连续排序比较相同；layout 均为 72/74 通过。完整测试尚未全绿。
+r139 双节点运行最终 runner/container 均 exit 0。两端 CPU VA 都为
+`0x700000000000`，持有同一 key/generation；六个严格 binding 指向同一实际
+segment/epoch/lease epoch/backing token。两次原生 completion 成功，合计
+4 次 LOAD、2 次 STORE、2 次 fence，每次 dispatch 读取 512 bytes、写入 256 bytes，
+`segment_payload_staging_bytes=0`。第二次 TLOAD 输入地址等于第一次 TSTORE 输出
+地址。CPU/CPU、CPU/TLOAD、TSTORE/CPU、TSTORE/TLOAD 的六次 CPU 校验均符合
+独立浮点 oracle：C checksum `d602274b27b2bb23`，D 为 `c90bc7e9a551a6b3`。
+
+两个客户端均关闭 mapping、释放 holder，compute leases 归零；home segment 退役，
+`live_objects=0`，两端 kernel region 清单回到基线。控制服务 put/materialize 次数
+均为 0。独立进程查询无 QEMU 遗留；运行后重新核对输入、源码和九个 callable
+工件 SHA 全部相同，fingerprint 仍为 `0xc8bd48ef54c247e5`。
+QEMU 修复提交为 `280082d7b7c71a8ac802767a39974e4fd5781805`。
+校验结果明确记录 `scope=single-thread-cross-page`、`am2_complete=false`。
+这次仅覆盖一个 home、一个对象、两次顺序 dispatch；home 互换、并发 owner、
+超时恢复、PTO 权限/越界实际负例仍待完成，AM2、A07/A08 完整出口保持未完成。
+
+最终归档 `verified-r135-r139-managed-cpu-pto-evidence.tar.gz` 已取回本地，
+121 个精确成员、101212798 bytes、权限 0600，gzip、完整成员顺序、大小及 SHA
+与远端一致。SHA-256 为
+`a3b4d9d1e5882e8800ec4427f784b5aaeae87157e33d3dc53d8eca03866dd283`。
+归档包含三次失败及 r139 成功的原始 guest 日志、源码增量、配置、完整测试、
+driver/rootfs/QEMU 和不可变 callable 工件；原始证据继续保留。共用 kernel、
+daemon、worker、manager 的来源仍引用前批已核验归档。未 push 或改变父仓库 pin。
