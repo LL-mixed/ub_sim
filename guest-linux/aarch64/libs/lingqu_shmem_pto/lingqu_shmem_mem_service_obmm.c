@@ -7,6 +7,10 @@
 #include "components/mem_service/mem_service_obmm_objects.h"
 #include "components/mem_service/mem_service_model_runtime.h"
 #include "libs/obmm_async/obmm_async.h"
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+#include "components/mem_service/mem_service_client.h"
+#include "components/mem_service/providers/mem_service_provider_obmm.h"
+#endif
 
 #include <errno.h>
 #include <stdint.h>
@@ -23,6 +27,9 @@ struct lingqu_shmem_mem_service_obmm_context {
 
 struct lingqu_shmem_mem_service_obmm_lease {
     struct obmm_async_map map;
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    struct mem_service_provider_obmm_mapping_pin *pin;
+#endif
 };
 
 static int obmm_compute_ensure_local_alias(
@@ -169,6 +176,46 @@ static int obmm_compute_bind_slot(
     return 0;
 }
 
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+static int obmm_compute_acquire_managed(
+    void *backend_context,
+    const struct mem_service_client_object_mapping *mapping,
+    uint64_t access_flags,
+    struct lingqu_shmem_mem_service_region_binding *binding_out)
+{
+    struct lingqu_shmem_mem_service_obmm_context *context = backend_context;
+    struct lingqu_shmem_mem_service_obmm_lease *lease;
+    struct mem_service_provider_obmm_pinned_mapping view;
+    uint64_t mapping_ref;
+    int rc;
+
+    if (!context || !context->async_runtime || !mapping || !binding_out)
+        return -EINVAL;
+    memset(binding_out, 0, sizeof(*binding_out));
+    lease = calloc(1, sizeof(*lease));
+    if (!lease) return -ENOMEM;
+    rc = mem_service_provider_obmm_mapping_pin_acquire(
+        &mapping->binding, access_flags, &lease->pin, &view);
+    if (rc) {
+        if (lease->pin) binding_out->backend_lease = lease;
+        else free(lease);
+        return rc;
+    }
+    binding_out->backend_lease = lease;
+    rc = obmm_async_map_register_strict_pto(context->async_runtime, view.obmm_fd,
+        view.mem_id, view.base, view.len, &lease->map);
+    if (rc) return rc;
+    rc = lingqu_shmem_pto_obmm_mapping_ref(lease->map.id, lease->map.generation,
+                                         &mapping_ref);
+    if (rc) return rc;
+    binding_out->region = (struct lingqu_shmem_sim_region_desc) {
+        .mapped_addr = view.base, .mapped_length = view.len,
+        .ub_gm_addr = lease->map.local_pa, .opaque_mapping_ref = mapping_ref,
+    };
+    return 0;
+}
+#endif
+
 static int obmm_compute_acquire(
     void *backend_context,
     const struct mem_service_object_payload_view *view,
@@ -278,6 +325,12 @@ static int obmm_compute_release(void *backend_context, void *backend_lease)
             return rc;
         }
     }
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    if (lease->pin) {
+        rc = mem_service_provider_obmm_mapping_pin_release(&lease->pin);
+        if (rc != 0) return rc;
+    }
+#endif
     memset(lease, 0, sizeof(*lease));
     free(lease);
     return 0;
@@ -310,6 +363,9 @@ static const struct lingqu_shmem_mem_service_backend_ops obmm_compute_ops = {
     .acquire_local_kv = obmm_compute_acquire_local_kv,
     .release = obmm_compute_release,
     .destroy = obmm_compute_destroy,
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    .acquire_managed = obmm_compute_acquire_managed,
+#endif
 };
 
 int lingqu_shmem_mem_service_open(

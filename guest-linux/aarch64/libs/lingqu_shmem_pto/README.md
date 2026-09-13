@@ -56,6 +56,17 @@ materializes the temporary data-plane view.
 release 失败不得销毁该句柄。本约定保持当前单线程使用边界，多线程 owner 和
 超时 completion 恢复仍需单独实现及验证。
 
+受管理对象使用 `lingqu_shmem_mem_service_acquire_managed()`，输入为同一 SDK
+返回并持有的 object mapping 与 active mapping lifecycle，保留现有 key/generation
+空间；不将内容 version 当作分配 generation。只接受逻辑范围内的 tensor geometry
+和原映射允许的权限。平台构建显式启用 `LINGQU_SHMEM_MANAGED_MAPPING`，并链接
+OBMM provider；未启用的构建返回 `-EOPNOTSUPP`，旧 W5 acquire 接口保持兼容。
+平台 adapter 先 pin 原 SDK mapping，再调用严格 V2 PTO 注册，只使用 driver
+返回的真实 PA。注销失败保留 registration 和 provider pin；注销成功后才释放 pin。
+调用方保留同一 holder/lifecycle，并串行化 mapping、compute 和清理操作。
+这是同一映射的接入契约；四种实际数据组合、统一并发 owner 和可恢复超时仍须
+由 AM2 后续验证完成，现有单线程约定不因此改变。
+
 Local output follows a two-address rule. `lingqu_shmem_memref` carries the
 self-import alias address registered for Simpler/PTO `TSTORE`. The returned
 `lingqu_shmem_mem_service_local_buffer.data` points at the original local

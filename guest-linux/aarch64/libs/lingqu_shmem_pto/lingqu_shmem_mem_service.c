@@ -3,6 +3,7 @@
 
 #include "components/mem_service/lingqu_object_service.h"
 #include "components/mem_service/mem_service.h"
+#include "components/mem_service/mem_service_client.h"
 
 #include <errno.h>
 #include <stdatomic.h>
@@ -148,6 +149,61 @@ int lingqu_shmem_mem_service_acquire(
 
 release_lease:
     return rollback_lease(lease, lease_out, rc);
+}
+
+int lingqu_shmem_mem_service_acquire_managed(
+    struct lingqu_shmem_mem_service_context *context,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_lease **lease_out)
+{
+    const uint64_t rights = MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE;
+    struct lingqu_shmem_mem_service_region_binding binding = {0};
+    struct lingqu_shmem_mem_service_lease *lease;
+    int rc;
+
+    if (!context || !mapping || !lifecycle || !spec || !memref_out || !lease_out)
+        return -EINVAL;
+    *memref_out = NULL;
+    *lease_out = NULL;
+    if (!context->ops->acquire_managed) return -EOPNOTSUPP;
+    if (!mapping->key[0] || !memchr(mapping->key, '\0', sizeof(mapping->key)) ||
+        !mapping->generation || !mapping->binding.mapped || !mapping->binding.owner ||
+        !mapping->binding.mapping.handle || !mapping->base ||
+        !mapping->len || mapping->base != mapping->binding.mapping.base ||
+        mapping->len != mapping->binding.mapping.len || !lifecycle->pending ||
+        lifecycle->terminal_action || lifecycle->transaction.state != 2 ||
+        !lifecycle->operation_id[0] ||
+        !memchr(lifecycle->operation_id, '\0', sizeof(lifecycle->operation_id)) ||
+        !lifecycle->session_id[0] ||
+        !memchr(lifecycle->session_id, '\0', sizeof(lifecycle->session_id)) ||
+        !lifecycle->transaction.mapping_id ||
+        lifecycle->transaction.generation != mapping->generation) return -ESTALE;
+    if (!spec->byte_length || spec->byte_offset > mapping->len ||
+        spec->byte_length > mapping->len - spec->byte_offset ||
+        !spec->access || (spec->access & ~rights) || !mapping->flags ||
+        (mapping->flags & ~rights)) return -EINVAL;
+    if (spec->access & ~mapping->flags) return -EACCES;
+    lease = create_lease(context);
+    if (!lease) return -ENOMEM;
+    rc = context->ops->acquire_managed(context->backend_context, mapping,
+                                     spec->access, &binding);
+    lease->backend_lease = binding.backend_lease;
+    lease->backend_acquired = rc == 0 || binding.backend_lease != NULL;
+    if (rc != 0) return rollback_lease(lease, lease_out, rc);
+    if (binding.region.mapped_addr != mapping->base ||
+        binding.region.mapped_length != mapping->len || binding.object_byte_offset ||
+        !binding.region.ub_gm_addr || !binding.region.opaque_mapping_ref) {
+        return rollback_lease(lease, lease_out, -ESTALE);
+    }
+    rc = lingqu_shmem_sim_region_create(&binding.region, &lease->region);
+    if (!rc) rc = lingqu_shmem_memref_create(lease->region, spec, &lease->memref);
+    if (rc) return rollback_lease(lease, lease_out, rc);
+    *memref_out = lease->memref;
+    *lease_out = lease;
+    return 0;
 }
 
 static int acquire_local_buffer(

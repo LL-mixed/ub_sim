@@ -39,6 +39,11 @@ struct lingqu_shmem_mem_service_backend_ops {
         uint64_t align,
         struct lingqu_shmem_mem_service_region_binding *binding_out,
         struct lingqu_shmem_mem_service_local_buffer *buffer_out);
+    int (*acquire_managed)(
+        void *backend_context,
+        const struct mem_service_client_object_mapping *mapping,
+        uint64_t access_flags,
+        struct lingqu_shmem_mem_service_region_binding *binding_out);
 };
 
 int lingqu_shmem_mem_service_context_create_for_backend(

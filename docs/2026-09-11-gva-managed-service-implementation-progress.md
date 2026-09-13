@@ -1647,6 +1647,36 @@ r130b 排序比较相同。layout 72/74 通过，1.23 秒。实际 OBMM callback
 43374 bytes、权限 0600；gzip、列表、大小和 SHA 与远端一致，SHA-256 为
 `652c7997ba1abf5430735a6ad9a1302ec1fbd6da45e368088eb7794963f37e31`。
 
+## 2026-09-13 续作：managed mapping 接入 PTO（r133/r134 局部验证）
+
+OBMM provider 为已存在的严格 import 增加进程内 compute pin，校验真实 provider
+归属、mapping handle、逻辑范围及实际 VMA 权限；不额外 import、不建立新 alias。
+pin 存在时 unmap/close 保留原映射；endpoint 进入 closing 后拒绝新 pin，已有 pin
+仍可释放。该 API 为平台私有接口，不进入 core/wire，保持外部串行化约定。
+
+Memory Service/PTO bridge 新增 `acquire_managed()`，复用 SDK mapping/lifecycle
+及 key/generation。平台先 pin 实际视图，再严格注册 PTO；注销失败保留注册与 pin，
+pin 释放失败保留清理 lease。未启用该平台构建选项的旧 W5 接口仍兼容，不执行降级。
+
+r133 完整服务 237 项：离线容器 232 通过、5 跳过；补跑独立 listener 用例通过，
+最终 233 通过、4 项环境跳过。8 个分组均 exit 0，最长 820.620 秒。
+provider 原生 pin fixture 通过，1.613 秒。r134c 的 bridge/OBMM callback/Qwen3
+相关 11 项为 10 通过、1 项交叉编译器环境跳过，1.867 秒；新增 fixture 实际调用
+生产 adapter，以边界替身验证注册失败、注销失败及 unpin 失败的归属保持。
+本地对应 11 项为 9 通过、2 项 Linux fixture 跳过，1.676 秒。
+
+远端 root r133 为 468 项，449 通过、5 跳过、5 失败、9 错误，46.465 秒；
+r134c 为 469 项，450 通过、5 跳过、5 失败、9 错误，46.601 秒。两轮终态的
+14 个失败 ID 与 r132 排序比较一致。layout 仍为 72/74 通过，r134c 1.24 秒。
+15 个实际源码/测试/说明文件与远端执行快照逐项 SHA 核对一致。
+r134 首轮误配了 noexec 临时目录和 layout 模块路径；失败日志全部保留，
+r134c 复用原镜像、可执行 tmpfs 及正确 pytest 入口，最终结论只引用终态复验。
+
+本批未构建或运行新的 guest rootfs，没有真实 managed PTO 数据结果。
+下一项是现有 direct CLI 的 managed-config 模式及同对象两次 callable-1 dispatch，
+覆盖 CPU/CPU、CPU/TLOAD、TSTORE/CPU、TSTORE/TLOAD；并发 owner、超时恢复及
+AM2 全部出口仍未完成。未 push、未更新父仓库 gitlink/lock。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时

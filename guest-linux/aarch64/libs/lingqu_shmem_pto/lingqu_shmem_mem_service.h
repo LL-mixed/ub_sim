@@ -9,6 +9,8 @@ extern "C" {
 #endif
 
 struct mem_service_object_payload_view;
+struct mem_service_client_object_mapping;
+struct mem_service_client_mapping_lifecycle;
 struct lingqu_shmem_mem_service_context;
 struct lingqu_shmem_mem_service_lease;
 
@@ -37,6 +39,19 @@ int lingqu_shmem_mem_service_open(
 int lingqu_shmem_mem_service_acquire(
     struct lingqu_shmem_mem_service_context *context,
     const struct mem_service_object_payload_view *view,
+    const struct lingqu_shmem_memref_spec *spec,
+    struct lingqu_shmem_memref **memref_out,
+    struct lingqu_shmem_mem_service_lease **lease_out);
+
+/* Attach to the same active SDK managed mapping, retaining its provider view.
+ * Keep the holder and lifecycle until all compute leases and the mapping are
+ * closed. No provider selection or descriptor parsing is exposed here.
+ * Failed acquire may return a cleanup-only lease, as with the other variants.
+ */
+int lingqu_shmem_mem_service_acquire_managed(
+    struct lingqu_shmem_mem_service_context *context,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
     const struct lingqu_shmem_memref_spec *spec,
     struct lingqu_shmem_memref **memref_out,
     struct lingqu_shmem_mem_service_lease **lease_out);

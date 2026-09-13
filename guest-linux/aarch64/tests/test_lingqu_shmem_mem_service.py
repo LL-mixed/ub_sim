@@ -53,6 +53,15 @@ def _compile(compiler, output):
 class LingquShmemMemServiceTest(unittest.TestCase):
     @unittest.skipUnless(platform.system() == "Linux", "Linux OBMM backend fixture")
     def test_obmm_release_retains_registration_on_failure(self):
+        self._check_obmm_fixture("lingqu_shmem_mem_service_obmm_cleanup_golden.c",
+                                 "lingqu_shmem_mem_service_obmm_cleanup=pass attempts=3")
+
+    @unittest.skipUnless(platform.system() == "Linux", "Linux OBMM backend fixture")
+    def test_managed_obmm_attachment_retains_pin_until_unregister(self):
+        self._check_obmm_fixture("lingqu_shmem_mem_service_managed_obmm_golden.c",
+                                 "managed_obmm_attachment=pass strict_registration=1 retained_pin=1")
+
+    def _check_obmm_fixture(self, source, expected):
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "obmm-cleanup-golden"
             subprocess.run([
@@ -64,13 +73,13 @@ class LingquShmemMemServiceTest(unittest.TestCase):
                 "-I", str(ROOT / "vendor/obmm/src/libobmm"),
                 "-idirafter", str(ROOT / "guest-linux/kernel_ub/include/uapi"),
                 "-idirafter", str(ROOT / "guest-linux/kernel_ub/include"),
-                str(GUEST_ROOT / "tests/lingqu_shmem_mem_service_obmm_cleanup_golden.c"),
+                str(GUEST_ROOT / "tests" / source),
+                str(LIB_DIR / "lingqu_shmem_pto_guest.c"),
                 "-o", str(binary),
             ], check=True)
             result = subprocess.run([str(binary)], check=True, capture_output=True,
                                     text=True)
-            self.assertEqual(result.stdout.strip(),
-                             "lingqu_shmem_mem_service_obmm_cleanup=pass attempts=3")
+            self.assertEqual(result.stdout.strip(), expected)
 
     def test_fake_backend_golden_covers_lease_and_wire_offset(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -84,9 +93,10 @@ class LingquShmemMemServiceTest(unittest.TestCase):
         if not compiler:
             self.skipTest("aarch64 cross compiler is unavailable")
         with tempfile.TemporaryDirectory() as directory:
-            for source_name in (
-                "lingqu_shmem_mem_service.c",
-                "lingqu_shmem_mem_service_obmm.c",
+            for source_name, managed in (
+                ("lingqu_shmem_mem_service.c", False),
+                ("lingqu_shmem_mem_service_obmm.c", False),
+                ("lingqu_shmem_mem_service_obmm.c", True),
             ):
                 output = pathlib.Path(directory) / f"{source_name}.o"
                 subprocess.run(
@@ -98,6 +108,7 @@ class LingquShmemMemServiceTest(unittest.TestCase):
                         "-Wextra",
                         "-Werror",
                         "-D_GNU_SOURCE",
+                        *(["-DLINGQU_SHMEM_MANAGED_MAPPING"] if managed else []),
                         "-I",
                         str(ROOT),
                         "-I",

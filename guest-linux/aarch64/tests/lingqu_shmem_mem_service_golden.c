@@ -6,6 +6,7 @@
 
 #include "components/mem_service/lingqu_object_service.h"
 #include "components/mem_service/mem_service.h"
+#include "components/mem_service/mem_service_client.h"
 #include "lingqu_shmem_mem_service_backend.h"
 #include "lingqu_shmem_pto.h"
 
@@ -29,6 +30,7 @@ struct fake_backend {
     int release_error;
     int acquire_error;
     bool invalid_binding;
+    unsigned managed_acquire_count;
 };
 
 static int fake_acquire(
@@ -120,12 +122,90 @@ static int fake_acquire_local_kv(
     return fake_acquire_local(backend_context, bytes, 256, binding_out, buffer_out);
 }
 
+static int fake_acquire_managed(void *backend_context,
+    const struct mem_service_client_object_mapping *mapping, uint64_t access,
+    struct lingqu_shmem_mem_service_region_binding *binding)
+{
+    struct fake_backend *backend = backend_context;
+    if (!mapping || !binding || !access) return -EINVAL;
+    ++backend->managed_acquire_count;
+    *binding = (struct lingqu_shmem_mem_service_region_binding) {
+        .region = {.mapped_addr = mapping->base, .mapped_length = mapping->len,
+                   .ub_gm_addr = 0x300000, .opaque_mapping_ref = 0x705},
+        .backend_lease = backend,
+    };
+    if (backend->invalid_binding) binding->region.mapped_addr = backend->payload;
+    return backend->acquire_error;
+}
+
 static const struct lingqu_shmem_mem_service_backend_ops fake_ops = {
     .acquire = fake_acquire,
     .acquire_local = fake_acquire_local,
     .acquire_local_kv = fake_acquire_local_kv,
     .release = fake_release,
+    .acquire_managed = fake_acquire_managed,
 };
+
+static int test_managed_view_attachment(void)
+{
+    struct fake_backend backend = {0};
+    struct mem_service_provider provider = {0};
+    struct mem_service_client_object_mapping mapping = {
+        .key = "managed-object", .generation = 7, .base = backend.payload + 128,
+        .len = 64, .flags = MEM_SERVICE_CLIENT_MAP_READ,
+        .binding = {.owner = &provider, .mapped = true,
+                    .mapping = {.handle = 17, .base = backend.payload + 128, .len = 64}},
+    };
+    struct mem_service_client_mapping_lifecycle lifecycle = {
+        .operation_id = "map-operation", .session_id = "client-session", .pending = true,
+        .transaction = {.mapping_id = 11, .generation = 7, .state = 2},
+    };
+    struct lingqu_shmem_memref_spec spec = {
+        .byte_offset = 16, .byte_length = 48, .rank = 1, .dtype = 0,
+        .access = LINGQU_SHMEM_ACCESS_READ, .shape = {12}, .strides = {1},
+    };
+    struct lingqu_shmem_mem_service_context *context = NULL;
+    struct lingqu_shmem_mem_service_lease *lease = NULL;
+    struct lingqu_shmem_memref *memref = NULL;
+    CHECK(!lingqu_shmem_mem_service_context_create_for_backend(&fake_ops, &backend, false, &context));
+    CHECK(!lingqu_shmem_mem_service_acquire_managed(context, &mapping, &lifecycle, &spec, &memref, &lease));
+    CHECK(lease && memref && backend.managed_acquire_count == 1 && !backend.acquire_count);
+    CHECK(!lingqu_shmem_mem_service_release(lease));
+    lease = NULL; memref = NULL;
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        struct mem_service_client_object_mapping changed = mapping;
+        struct mem_service_client_mapping_lifecycle changed_lifecycle = lifecycle;
+        struct lingqu_shmem_memref_spec changed_spec = spec;
+        if (fault == 0) changed.generation++;
+        if (fault == 1) changed_lifecycle.pending = false;
+        if (fault == 2) changed_lifecycle.transaction.state = 3;
+        if (fault == 3) changed.binding.mapping.base = backend.payload;
+        if (fault == 4) changed.binding.mapping.len--;
+        if (fault == 5) changed_spec.access = LINGQU_SHMEM_ACCESS_WRITE;
+        if (fault == 6) changed_spec.byte_offset = UINT64_MAX;
+        if (fault == 7) changed_lifecycle.terminal_action = MEM_SERVICE_CLIENT_MAPPING_FINISH;
+        if (fault == 8) memset(changed.key, 'x', sizeof(changed.key));
+        CHECK(lingqu_shmem_mem_service_acquire_managed(context, &changed, &changed_lifecycle,
+              &changed_spec, &memref, &lease) != 0);
+        CHECK(!lease && !memref && backend.managed_acquire_count == 1 && !backend.acquire_count);
+    }
+    backend.invalid_binding = true;
+    backend.release_error = -EIO;
+    CHECK(lingqu_shmem_mem_service_acquire_managed(context, &mapping, &lifecycle,
+          &spec, &memref, &lease) == -ESTALE);
+    CHECK(lease && !memref && lingqu_shmem_mem_service_active_leases(context) == 1);
+    backend.release_error = 0;
+    CHECK(!lingqu_shmem_mem_service_release(lease));
+    CHECK(!lingqu_shmem_mem_service_close(context));
+    struct lingqu_shmem_mem_service_backend_ops legacy_only = fake_ops;
+    legacy_only.acquire_managed = NULL;
+    CHECK(!lingqu_shmem_mem_service_context_create_for_backend(&legacy_only, &backend, false, &context));
+    CHECK(lingqu_shmem_mem_service_acquire_managed(context, &mapping, &lifecycle,
+          &spec, &memref, &lease) == -EOPNOTSUPP);
+    CHECK(!lease && !memref);
+    CHECK(!lingqu_shmem_mem_service_close(context));
+    return 0;
+}
 
 int main(void)
 {
@@ -292,6 +372,7 @@ int main(void)
     }
     CHECK(lingqu_shmem_mem_service_close(context) == 0);
 
+    CHECK(!test_managed_view_attachment());
     puts("lingqu_shmem_mem_service_golden=pass");
     return 0;
 }
