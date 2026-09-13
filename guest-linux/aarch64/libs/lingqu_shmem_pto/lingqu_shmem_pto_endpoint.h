@@ -57,6 +57,24 @@ int lingqu_shmem_pto_endpoint_submit_cancel_after(
     uint64_t cancel_after_ms,
     struct lingqu_shmem_pto_completion *completion);
 
+/* Wait for the original submission after a timeout; never enqueue it again.
+ * Keep metadata and memrefs alive until this returns a valid completion.
+ * All endpoint operations require external serialization.
+ */
+int lingqu_shmem_pto_endpoint_wait(
+    struct lingqu_shmem_pto_endpoint *endpoint,
+    uint64_t op_id,
+    uint64_t timeout_ms,
+    struct lingqu_shmem_pto_completion *completion);
+
+uint64_t lingqu_shmem_pto_endpoint_pending_op(
+    const struct lingqu_shmem_pto_endpoint *endpoint);
+
+/* Returns -EBUSY without changing queues while an operation is pending. */
+int lingqu_shmem_pto_endpoint_close_checked(
+    struct lingqu_shmem_pto_endpoint *endpoint);
+
+/* Compatibility wrapper: a pending endpoint remains owned by the caller. */
 void lingqu_shmem_pto_endpoint_close(
     struct lingqu_shmem_pto_endpoint *endpoint);
 

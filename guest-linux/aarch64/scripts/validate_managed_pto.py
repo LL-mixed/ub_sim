@@ -46,7 +46,7 @@ def oracle_checksum(vector):
     return f"{checksum:016x}"
 
 
-def validate(guests, qemu):
+def validate(guests, qemu, require_timeout_recovery=False):
     # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
     guests = [text.replace("\r\n", "\n") for text in guests]
     maps, dispatches = [], []
@@ -103,10 +103,42 @@ def validate(guests, qemu):
     require("live_objects=0" in guests[0], "home object not reclaimed")
     requests = [r["op_id"] for r in dispatches]
     require(len(set(requests)) == 2, "reused PTO operation identity")
+    require(not records(guests[0], "MANAGED_PTO_WAIT"), "unexpected home PTO wait")
+    waits = records(guests[1], "MANAGED_PTO_WAIT")
+    require(len(waits) == (4 if require_timeout_recovery else 0),
+            "missing or unexpected timeout recovery evidence")
+    for index, row in enumerate(waits):
+        request = requests[index // 2]
+        require(row["node"] == "1" and number(row, "dispatch") == index // 2 + 1 and
+                row["op_id"] == request, "timeout recovery operation mismatch")
+        if index % 2 == 0:
+            require(row["state"] == "timeout" and row["retained_leases"] == "3" and
+                    row["close_guard"] == row["release_guard"] == "pass",
+                    "timeout did not retain the original resources")
+        else:
+            require(row["state"] == "recovered" and row["completion_op"] == request and
+                    row["pending_op"] == "0", "original completion was not recovered")
+    events = []
+    for line in guests[1].splitlines():
+        if line.startswith("MANAGED_PTO_WAIT "):
+            row = records(line, "MANAGED_PTO_WAIT")[0]
+            events.append((row["state"], row["dispatch"], row["op_id"]))
+        elif line.startswith("MANAGED_PTO "):
+            row = records(line, "MANAGED_PTO")[0]
+            if "retained_leases" in row:
+                events.append(("submit", row["dispatch"], row["op_id"]))
+            elif "completion_op" in row:
+                events.append(("completion", row["dispatch"], row["completion_op"]))
+    phases = ("submit", "timeout", "recovered", "completion") if require_timeout_recovery else (
+        "submit", "completion")
+    require(events == [(phase, str(index + 1), request)
+                       for index, request in enumerate(requests) for phase in phases],
+            "PTO submission, wait and completion order mismatch")
     validate_callbacks(qemu, maps[0], requests)
     return {"status": "pass", "nodes": 2, "objects": 1, "dispatches": 2,
             "load_callbacks": 4, "store_callbacks": 2, "fences": 2,
-            "scope": "single-thread-cross-page", "am2_complete": False}
+            "scope": "single-thread-cross-page", "timeout_recoveries": len(waits) // 2,
+            "am2_complete": False}
 
 
 def validate_callbacks(text, mapping, requests):
@@ -149,6 +181,13 @@ def validate_callbacks(text, mapping, requests):
                 write[0]["binding"] == fence[0]["binding"] == outs[0]["binding"] and
                 all(number(r, "length") == 256 for r in read + write + fence),
                 "callback permissions, range or binding mismatch")
+        authorizations = {row["binding"]: row for row in auth}
+        for row in read + write + fence:
+            require(number(row, "addr") == number(authorizations[row["binding"]], "local"),
+                    "callback address differs from the authorized object range")
+        for row in read + write:
+            require(all(number(row, field) == number(authorizations[row["binding"]], field)
+                        for field in ("map", "generation")), "callback mapping identity mismatch")
         registered, unbound = registers[index], unbinds[index]
         require(registered["op"] == unbound["op"] == request and
                 registered["bindings"] == "3" and unbound["bindings"] == "3" and
@@ -167,12 +206,13 @@ def main():
     parser.add_argument("--node-b", required=True, type=Path)
     parser.add_argument("--qemu-b", required=True, type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--require-timeout-recovery", action="store_true")
     args = parser.parse_args()
     paths = [args.node_a, args.node_b, args.qemu_b]
     try:
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
-        result = validate(text[:2], text[2])
+        result = validate(text[:2], text[2], args.require_timeout_recovery)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

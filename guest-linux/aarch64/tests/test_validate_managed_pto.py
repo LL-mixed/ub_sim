@@ -56,13 +56,49 @@ def fixture():
                     "bindings=3 requester_cna=0xf002")
         for kind, binding in (("LOAD", 1), ("LOAD", 2), ("STORE", 3), ("FENCE", 3)):
             qemu.append(f"QEMU_UB_GM_{kind} request={request} binding={binding} "
-                        "addr=0x10000000 length=256 map=8 generation=9")
+                        f"addr={0x80000000+offsets[binding-1]:#x} length=256 map=8 generation=9")
         qemu.append(f"QEMU_UB_GM_UNBIND op={request} request={request} reason=completion_success "
                     "bindings=3 load_bytes=512 store_bytes=256 fences=1 segment_payload_staging_bytes=0")
     return guests, "\n".join(qemu)
 
 
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_timeout_requires_original_completion_and_retained_resources(self):
+        guests, qemu = fixture()
+        with self.assertRaisesRegex(ValueError, "timeout recovery evidence"):
+            validator.validate(guests, qemu, True)
+        rows = []
+        for round_ in (1, 2):
+            rows += [f"MANAGED_PTO_WAIT node=1 dispatch={round_} op_id={100+round_} "
+                     "state=timeout retained_leases=3 close_guard=pass release_guard=pass",
+                     f"MANAGED_PTO_WAIT node=1 dispatch={round_} op_id={100+round_} "
+                     f"state=recovered completion_op={100+round_} pending_op=0"]
+        for round_ in (1, 2):
+            marker = f"MANAGED_PTO node=1 dispatch={round_} completion_op="
+            insert = "\n".join(rows[(round_-1)*2:round_*2]) + "\n"
+            guests[1] = guests[1].replace(marker, insert + marker)
+        self.assertEqual(validator.validate(guests, qemu, True)["timeout_recoveries"], 2)
+        late = guests[1].replace(rows[0] + "\n", "") + "\n" + rows[0]
+        with self.assertRaises(ValueError):
+            validator.validate([guests[0], late], qemu, True)
+        late = guests[1]
+        for row in rows:
+            late = late.replace(row + "\n", "")
+        late += "\n" + "\n".join(rows)
+        with self.assertRaisesRegex(ValueError, "order mismatch"):
+            validator.validate([guests[0], late], qemu, True)
+        with self.assertRaises(ValueError):
+            validator.validate(guests, qemu)
+        for before, after in (("state=timeout", "state=recovered"),
+                              ("retained_leases=3", "retained_leases=0"),
+                              ("close_guard=pass", "close_guard=fail"),
+                              ("release_guard=pass", "release_guard=fail"),
+                              ("pending_op=0", "pending_op=101"),
+                              ("completion_op=102 pending", "completion_op=101 pending")):
+            changed = [guests[0], guests[1].replace(before, after)]
+            with self.subTest(field=before), self.assertRaises((ValueError, KeyError)):
+                validator.validate(changed, qemu, True)
+
     def test_complete_parser_fixture(self):
         guests, qemu = fixture()
         result = validator.validate(guests, qemu)
@@ -91,6 +127,8 @@ class ManagedPtoValidatorTest(unittest.TestCase):
             (2, "backing_token=9", "backing_token=10"),
             (2, "home_va=0x700000000000", "home_va=0x700000010000"),
             (2, "local=0x80002f80", "local=0x80003f80"),
+            (2, "addr=0x80000f80", "addr=0x90000f80"),
+            (2, "addr=0x80001f80 length=256 map=8", "addr=0x80001f80 length=256 map=9"),
             (2, "QEMU_UB_GM_LOAD request=102 binding=1", "MISSING_LOAD request=102 binding=1"),
             (2, "QEMU_UB_GM_FENCE request=102", "MISSING_FENCE request=102"),
             (2, "segment_payload_staging_bytes=0", "segment_payload_staging_bytes=256"),

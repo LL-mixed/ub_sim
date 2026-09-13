@@ -244,7 +244,16 @@ user/AP 权限。当前子集只接纳页粒度 O_SYNC import，避免注册后 
 旧注册 command 继续服务 legacy mapping，对严格 GSVA 返回 unsupported。
 TLOAD/TSTORE 使用与严格 CPU window 相同的实际 backing I/O；旧异步 read 队列
 暂不接纳 GSVA register，返回明确 unsupported，不改变 tokenless CPU replay 协议。
+严格 backing I/O 同时承接 CPU 标量及 PTO 张量分片。发送与接收采用同一分片上限，
+从现有消息 payload 上限扣除请求/响应中较大的头部；每片完整检查长度和地址溢出。
+失败不得改走裸地址或旧 route，跨页和最大合法分片须由实际读写及负例验证。
 此约定仅定义实现边界，完成还需下述统一 holder 和实际四种读写组合的验证。
+
+超时恢复先补单 endpoint 的 pending operation 归属：超时保留原 CQ cursor、队列、
+metadata 与 compute leases，只等待原 op ID，不再次提交 slot。待完成时拒绝新 submit
+及 checked close；错误身份或畸形 completion 保留资源并报告协议错误。现有 CLI
+用独立的短 submit 等待和总恢复时限验证迟到 completion，继续保留实际数据及清理
+判据。这一增量仍采用外部串行化，多线程 shared owner 单独实现和验收。
 
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
@@ -396,7 +405,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
-| AM2 | 未完成 | CPU/PTO 四种组合共用实际 backing | 待填写 A07-A11 对应结果 |
+| AM2 | 进行中：r139/r142 单线程四种读写组合、r141 原 completion 超时恢复通过；完整阶段未完成 | 并发 owner、PTO 权限/范围负例及 home 互换 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：同一 backing、两次 dispatch、4 LOAD/2 STORE/2 fence、零 staging、资源回到基线；r143 旧入口兼容通过，A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
 

@@ -23,6 +23,28 @@ multiple in-flight dispatches remain part of the P4 concurrency gate. The
 caller must keep the underlying mapping and OBMM registration active until
 all in-flight objects have been finished and every memref has been destroyed.
 
+### Endpoint timeout recovery contract
+
+The endpoint retains one submitted operation until
+its own valid CQ completion is consumed. A wait timeout keeps the queue pages,
+metadata and memref leases alive. Recovery waits for that operation without
+resubmitting its slot. A second submit and checked close return `-EBUSY` while
+it is pending. An unexpected or malformed completion retains the operation
+and reports a protocol error; it cannot authorize release. Callers continue
+to serialize endpoint access; this increment does not establish the separate
+multi-thread owner contract.
+
+The existing managed-config CLI accepts an optional `submit_timeout_ms`
+shorter than `timeout_ms`. Its timeout case must observe retained leases and
+rejected close, then consume the original completion, validate both tensor
+results and return the actual resources to baseline. Native endpoint tests
+use queue/MMIO boundary fixtures; the guest case uses the existing QEMU
+authorization-delay setting to exercise a real delayed completion. Neither
+a timeout nor a cancellation request counts as completion.
+The legacy direct consumer also checks endpoint close before releasing any
+metadata or mapping; an unresolved operation keeps that guest process parked
+with an explicit failure marker until the owning headless runner stops it.
+
 The P3 two-node acceptance workload contract is documented under
 `apps/lingqu_shmem_pto_direct/`. Its implementation consumes the public memref
 API and keeps simulator identities inside `lingqu_shmem_sim_region_desc`.
@@ -53,8 +75,8 @@ materializes the temporary data-plane view.
 的 release；已销毁的 memref 不可再次使用。acquire 的失败路径也遵守该约定：
 若回滚未完成，返回非零错误和非空 `lease_out`，仅用于继续清理，不交付 memref
 或本地输出 buffer。backend 在失败返回时通过 `backend_lease` 交回已有资源，
-release 失败不得销毁该句柄。本约定保持当前单线程使用边界，多线程 owner 和
-超时 completion 恢复仍需单独实现及验证。
+release 失败不得销毁该句柄。本约定保持当前单线程使用边界；endpoint 的原操作
+超时恢复遵循上节契约，多线程 owner 仍须独立实现及验证。
 
 受管理对象使用 `lingqu_shmem_mem_service_acquire_managed()`，输入为同一 SDK
 返回并持有的 object mapping 与 active mapping lifecycle，保留现有 key/generation
@@ -64,8 +86,9 @@ OBMM provider；未启用的构建返回 `-EOPNOTSUPP`，旧 W5 acquire 接口�
 平台 adapter 先 pin 原 SDK mapping，再调用严格 V2 PTO 注册，只使用 driver
 返回的真实 PA。注销失败保留 registration 和 provider pin；注销成功后才释放 pin。
 调用方保留同一 holder/lifecycle，并串行化 mapping、compute 和清理操作。
-这是同一映射的接入契约；四种实际数据组合、统一并发 owner 和可恢复超时仍须
-由 AM2 后续验证完成，现有单线程约定不因此改变。
+AM2 的单线程双节点用例已验证四种实际数据组合和原 completion 超时恢复，详见
+`docs/2026-09-11-gva-managed-service-implementation-progress.md` 的 r139–r142。
+统一并发 owner、完整权限/范围矩阵及 home 互换仍待验收，单线程约定保持不变。
 
 无模型的受管理客户端通过 `lingqu_shmem_mem_service_open_managed()` 打开仅支持
 managed mapping 的 compute context。该 context 不依赖旧 payload arena 或模型

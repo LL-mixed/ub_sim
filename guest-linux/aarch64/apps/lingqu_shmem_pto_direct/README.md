@@ -81,6 +81,14 @@ fault=none，以及已有 PTO manifest/fingerprint/CNA 配置。它校验 cross-
 工件的真实几何和两个 dispatch 的 callback、backing 身份及 CPU 结果，不复用
 旧独立 PTO 用例的通过标记。所有测试失败和未知 completion 都保留原始日志。
 
+可选 `submit_timeout_ms` 启用超时恢复用例，须在 `1..timeout_ms-1` 范围内。
+每次 dispatch 必须先超时并保持三条 lease、拒绝 endpoint close，再等待原 op ID
+的 completion；不重复提交 slot。缺少预期超时同样判为失败。host 配置通过
+`LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS` 传递，默认 0 表示不启用；配合现有
+`LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS` 制造迟到完成，authorization timeout
+须大于该延迟。校验器的 `--require-timeout-recovery` 要求两次恢复及原有全部数据、
+backing、callback 和资源清理证据。该用例仍为单线程，不关闭 AM2 并发验收。
+
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
 the mapping provider supports it. Linux device/PFN mappings can return

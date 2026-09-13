@@ -2204,7 +2204,13 @@ static int run_consumer(const struct pto_direct_config *config,
     rc = 0;
 
 out:
-    lingqu_shmem_pto_endpoint_close(endpoint);
+    if (lingqu_shmem_pto_endpoint_close_checked(endpoint) != 0) {
+        fprintf(stderr, "LINGQU_SHMEM_PTO_RESULT role=consumer status=fail "
+                "reason=pending_completion pending_op=%" PRIu64
+                " resources_retained=1\n",
+                lingqu_shmem_pto_endpoint_pending_op(endpoint));
+        for (;;) pause();
+    }
     lingqu_shmem_pto_dispatch_finish(inflight);
     for (index = 0; index < 3; index++) {
         if (memrefs[index]) {

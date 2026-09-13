@@ -26,8 +26,9 @@
 
 struct managed_config {
     char connect[128], key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
-    uint64_t generation, fingerprint, timeout_ms;
+    uint64_t generation, fingerprint, timeout_ms, submit_timeout_ms;
     uint32_t node, requester;
+    bool recovery_expected;
 };
 
 struct managed_state {
@@ -90,7 +91,7 @@ static bool valid_connect(const char *spec)
 static int read_config(const char *path, struct managed_config *config)
 {
     const char *names[] = {"connect", "key", "node_id", "generation",
-        "requester_cna", "artifact_fingerprint", "timeout_ms"};
+        "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -132,12 +133,20 @@ static int read_config(const char *path, struct managed_config *config)
             case 5: if (!number) goto out; config->fingerprint = number; break;
             case 6: if (!number || number > 600000) goto out;
                     config->timeout_ms = number; break;
+            case 7: if (!number || number > 600000) goto out;
+                    config->submit_timeout_ms = number; break;
             default: goto out;
             }
         }
     }
-    if (ferror(file) || seen != 127) goto out;
+    if (ferror(file) || (seen & 127) != 127) goto out;
     if (!valid_connect(config->connect)) goto out;
+    config->recovery_expected = (seen & 128) != 0;
+    if (config->recovery_expected) {
+        if (config->submit_timeout_ms >= config->timeout_ms) goto out;
+    } else {
+        config->submit_timeout_ms = config->timeout_ms;
+    }
     rc = 0;
 out:
     free(line);
@@ -391,9 +400,36 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
         vector_offset(vectors[1]), vector_offset(vectors[2]), (size_t)VECTOR_BYTES);
     state->completion_unknown = true;
     rc = lingqu_shmem_pto_endpoint_submit(state->endpoint, &slot,
-                                          state->config.timeout_ms, &completion);
+                                          state->config.submit_timeout_ms, &completion);
+    bool recovered = false;
+    if (rc == -ETIMEDOUT && state->config.recovery_expected) {
+        if (lingqu_shmem_pto_endpoint_pending_op(state->endpoint) != request.op_id ||
+            lingqu_shmem_pto_endpoint_close_checked(state->endpoint) != -EBUSY ||
+            release_compute(state) != -EBUSY) return -EPROTO;
+        for (unsigned i = 0; i < 3; ++i) {
+            rc = lingqu_shmem_mem_service_release(state->leases[i]);
+            if (rc != -EBUSY) {
+                if (!rc) state->leases[i] = NULL;
+                return -EPROTO;
+            }
+        }
+        if (lingqu_shmem_mem_service_active_leases(state->compute) != 3) return -EPROTO;
+        printf("MANAGED_PTO_WAIT node=1 dispatch=%u op_id=%" PRIu64
+            " state=timeout retained_leases=3 close_guard=pass release_guard=pass\n",
+            round, request.op_id);
+        rc = lingqu_shmem_pto_endpoint_wait(state->endpoint, request.op_id,
+                                            state->config.timeout_ms, &completion);
+        if (!rc) {
+            if (lingqu_shmem_pto_endpoint_pending_op(state->endpoint)) return -EPROTO;
+            recovered = true;
+            printf("MANAGED_PTO_WAIT node=1 dispatch=%u op_id=%" PRIu64
+                " state=recovered completion_op=%" PRIu64 " pending_op=0\n",
+                round, request.op_id, completion.op_id);
+        }
+    }
     if (rc) return rc;
     state->completion_unknown = false;
+    if (state->config.recovery_expected && !recovered) return -EPROTO;
     printf("MANAGED_PTO node=1 dispatch=%u completion_op=%" PRIu64
         " status=%u error=%s\n", round, completion.op_id, completion.status,
         completion.error_code[0] ? completion.error_code : "none");
@@ -442,8 +478,9 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     }
     if (validate_only) {
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=cross-page "
-            "elements=%u callable=1 network_operations=0\n",
-            config.node, MANAGED_BYTES, VECTOR_ELEMENTS);
+            "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
+            " recovery_expected=%u\n", config.node, MANAGED_BYTES, VECTOR_ELEMENTS,
+            config.submit_timeout_ms, config.recovery_expected ? 1 : 0);
         return 0;
     }
     state = calloc(1, sizeof(*state));
@@ -480,7 +517,8 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
         if (rc) goto failed;
         state->compute = NULL;
     }
-    lingqu_shmem_pto_endpoint_close(state->endpoint);
+    rc = lingqu_shmem_pto_endpoint_close_checked(state->endpoint);
+    if (rc) goto failed;
     state->endpoint = NULL;
     if (state->metadata) {
         if (munmap(state->metadata, METADATA_BYTES)) { rc = -errno; goto failed; }

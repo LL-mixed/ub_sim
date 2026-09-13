@@ -78,6 +78,15 @@ class ManagedPtoCliTest(unittest.TestCase):
         self.assertNotIn("mem_service_cluster_runtime_current", symbols)
         self.assertNotIn("mem_service_model_kv_state_alloc", symbols)
 
+    def test_optional_submit_timeout_requires_bounded_recovery(self):
+        result = self.run_config({**CONFIG, "submit_timeout_ms": "5"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("submit_timeout_ms=5 recovery_expected=1", result.stdout)
+        for value in ("0", "1000", "1001", "600001", "-1", "5x"):
+            with self.subTest(value=value):
+                self.assertEqual(self.run_config({**CONFIG, "submit_timeout_ms": value}).returncode, 2)
+        self.assertEqual(self.run_config(extra="submit_timeout_ms=5\nsubmit_timeout_ms=6\n").returncode, 2)
+
 
 class ManagedPtoContractTest(unittest.TestCase):
     def test_same_mapping_two_dispatches_and_fail_closed_lifetime(self):
@@ -94,6 +103,9 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn("if (state->completion_unknown) return -EBUSY", source)
         self.assertIn("resources_retained=1", source)
         self.assertIn("for (;;) pause()", source)
+        self.assertIn("lingqu_shmem_pto_endpoint_wait(state->endpoint, request.op_id", source)
+        self.assertIn("lingqu_shmem_pto_endpoint_close_checked(state->endpoint) != -EBUSY", source)
+        self.assertIn("state->config.recovery_expected && !recovered", source)
 
     def test_initramfs_and_dual_node_runner_expose_managed_mode(self):
         build = (ROOT / "guest-linux/aarch64/scripts/build_initramfs.sh").read_text()
@@ -108,6 +120,8 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn("managed_pto_selected()", runner)
         self.assertIn('"${SCRIPT_DIR}/validate_managed_pto.py"', runner)
         self.assertIn("MANAGED_PTO_RESULT .*status=fail", runner)
+        self.assertIn("lingqu_shmem_pto_submit_timeout_ms", run_app)
+        self.assertIn("--require-timeout-recovery", runner)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
     def test_runner_rejects_unsupported_access_before_guest_launch(self):

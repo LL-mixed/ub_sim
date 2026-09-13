@@ -46,8 +46,8 @@ class LingquShmemPtoEndpointTest(unittest.TestCase):
         doorbell_write = source.index("LINGQU_REG_CANCEL_DOORBELL, 1")
         self.assertLess(op_write, doorbell_write)
         self.assertIn("cancel_after_ms >= timeout_ms", source)
-        self.assertIn("bool cancel_requested = false", source)
-        self.assertIn("cancel_requested = true", source)
+        self.assertIn("endpoint->cancel_requested = false", source)
+        self.assertIn("endpoint->cancel_requested = true", source)
 
     def test_completion_decoder_golden(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -55,6 +55,18 @@ class LingquShmemPtoEndpointTest(unittest.TestCase):
             _compile("cc", binary)
             output = subprocess.check_output([str(binary)], text=True)
         self.assertEqual(output.strip(), "lingqu_shmem_pto_endpoint_golden=pass")
+
+    def test_timeout_retains_original_operation_and_queues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "endpoint-recovery"
+            subprocess.run([
+                "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-I", str(LIB_DIR), "-I", str(ABI_DIR),
+                str(GUEST_ROOT / "tests" / "lingqu_shmem_pto_endpoint_recovery_golden.c"),
+                "-o", str(binary),
+            ], check=True)
+            output = subprocess.check_output([str(binary)], text=True, timeout=5)
+        self.assertEqual(output.strip(), "lingqu_shmem_pto_endpoint_recovery=pass")
 
     def test_cross_compiles_for_aarch64_without_warnings(self):
         compiler = shutil.which("aarch64-linux-gnu-gcc")

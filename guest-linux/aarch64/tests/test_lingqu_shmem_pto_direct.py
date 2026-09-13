@@ -126,6 +126,11 @@ class LingquShmemPtoDirectTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_pto_dispatch_prepare", source)
         self.assertIn("lingqu_shmem_pto_endpoint_submit", source)
         self.assertIn("lingqu_shmem_pto_endpoint_submit_cancel_after", source)
+        cleanup = source[source.index("out:\n    if (lingqu_shmem_pto_endpoint_close_checked"):]
+        self.assertLess(cleanup.index("for (;;) pause()"),
+                        cleanup.index("lingqu_shmem_pto_dispatch_finish(inflight)"))
+        self.assertIn("reason=pending_completion pending_op=", cleanup)
+        self.assertIn("resources_retained=1", cleanup)
         self.assertIn("obmm_async_map_register", source)
         self.assertIn("producer_verify=pass", source)
         self.assertIn("(sum + 1.0f) * (sum + 2.0f)", source)

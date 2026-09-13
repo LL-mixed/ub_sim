@@ -1787,3 +1787,69 @@ QEMU 修复提交为 `280082d7b7c71a8ac802767a39974e4fd5781805`。
 归档包含三次失败及 r139 成功的原始 guest 日志、源码增量、配置、完整测试、
 driver/rootfs/QEMU 和不可变 callable 工件；原始证据继续保留。共用 kernel、
 daemon、worker、manager 的来源仍引用前批已核验归档。未 push 或改变父仓库 pin。
+
+## 2026-09-14 续作：原 PTO completion 的超时恢复（r140 子集通过）
+
+endpoint 保存 pending op ID 和原 CQ cursor。超时后 `wait()` 只等待同一操作，
+新 submit 与 checked close 返回 EBUSY，队列保持；错误 op/source、畸形或多条
+completion 进入保留资源的协议错误状态，不推进 CQ。取消请求只发送一次，
+只有有效原 completion 才解除 pending。时间溢出与取时失败在提交前拒绝。
+此实现仍要求调用方串行化 endpoint，尚未建立多线程 shared owner。
+
+managed-config 增加可选 `submit_timeout_ms`，短等待超时后核对三条实际 compute
+lease 均拒绝 release、endpoint 拒绝 close，再调用原 op ID 的 wait。原有 callable
+及数据判据不变。r140 使用 5 ms submit 等待、100 ms authorization delay 和
+120000 ms 恢复等待，两次操作 `20260914151` / `20260914152` 均真实超时，
+随后恢复对应成功 completion。两次 C/D CPU 校验通过，runner/container exit 0；
+两端 holder/mapping/compute lease 和 kernel region 均完成清理，独立查询无 QEMU。
+本次复用 r139 QEMU、r138 driver；仅更新 CLI 与 run_app，未运行模型。
+
+16 项远端定向测试为 15 通过、1 项交叉编译器环境跳过，4.732 秒；完整 root 为
+483 项，464 通过、5 跳过、5 失败、9 错误，51.138 秒，14 个失败 ID 与 r139b
+相同。layout 仍为 72/74 通过，1.23 秒。原生 CLI 构建通过，SHA-256 为
+`a8cdafc24de785b977085c26417853f427c0bf62ef6796b9f7c32adda38a5e35`，
+rootfs 为 `cc3f260d10b29fc591627a514d68e889f63b5bf5356afa9d7f50222e38f44889`。
+边界 fixture 覆盖 repeated wait、错误身份/来源/格式、重复 CQ、取消后等待及取时
+错误保留归属；fixture 的 completion 来自本地测试替身，实际证据引用上述 guest。
+
+后续 review 发现旧 direct consumer 的失败出口仍无条件 finish/unmap，r141 已将
+checked close 提前到 metadata/memref 释放之前；pending 时保留资源并报告失败，
+不进入旧清理路径。日志校验同时核对 callback 地址、map/generation 及每次
+submit/timeout/recover/completion 的严格顺序。r140 仅证明此前源码，最终结果如下。
+
+### 最终源码复验与旧入口兼容（r141–r143）
+
+r141 最终 CLI 构建通过，SHA-256 为
+`7cdd26ec381b92c10ea9c991008ebf0b7695482c06a5f6bf60e696032c43cf3d`；
+最终 rootfs 为 `52e1f76665c4ae234c597804e679dca2ec2f372812c86535eacca5f4be6e1602`。
+17 项远端定向测试为 16 通过、1 项交叉编译器环境跳过，4.646 秒；完整 root 为
+483 项，464 通过、5 跳过、5 失败、9 错误，51.085 秒。14 个失败 ID 与 r140
+排序比较一致；layout 为 72 通过、2 个既有失败，1.24 秒。完整套件仍未全绿。
+轻量 endpoint 原生 fixture 的 ASan/UBSan 检查通过，无诊断；它使用替身 completion，
+不充当真实设备证据。更严格的最终 parser 重新检查 r139/r140 原始日志均通过。
+
+- r141 延迟路径：5 ms 初次等待、100 ms authorization delay；原操作
+  `20260914161` / `20260914162` 各超时一次，3 条 compute lease 和 endpoint
+  均拒绝提前释放，再等待同一 op ID 得到成功 completion，没有再次 submit。
+- r142 普通路径：相同最终二进制与工件，不设置短等待或授权延迟；操作
+  `20260914171` / `20260914172` 直接成功，没有 timeout/recovery 记录。
+- 两轮 managed 运行各自通过同 backing、四种 CPU/PTO 读写组合、C/D 独立 oracle、
+  原生指令/completion、零 staging、holder/mapping/compute lease 清理和 kernel
+  region 回到基线的全部现有判据，runner/container 均 exit 0。
+- r143 使用相同最终 rootfs 运行既有 `lingqu_shmem_pto_direct` 入口，producer 的
+  `lanes_verified=1 completion_acks=1`，consumer 的 `status=pass elements=64`；
+  runner/container 均 exit 0。该结果只证明旧入口正常路径兼容。
+
+三轮结束后均独立查询确认无 QEMU 遗留，运行后重新核对输入、最终 16 个源码文件、
+九个 callable 工件 SHA 全部一致。一次 rootfs 启动请求遭遇 SSH banner timeout，
+只读核对确认远端作业未启动后才重试；所有尝试分别进入网络审计，原失败记录保留。
+本批未修改服务、kernel 或 QEMU，没有运行模型。当前 endpoint 仍要求外部串行化；
+并发 owner、home 互换及真实 PTO 权限/范围负例尚未完成，AM2 完整出口保持未完成。
+
+最终归档 `verified-r139b-r143-pto-recovery-evidence.tar.gz` 已取回本地，89 个
+精确成员、26890352 bytes、权限 0600；gzip、完整成员顺序、大小及 SHA 与远端
+一致。SHA-256 为
+`2820250a83dddb4013aab4c5b609cbe43a4914df25817c5d1feee9c1abd39457`。
+归档包含 r139b/r140/r141 完整测试、最终源码、两版 CLI/rootfs、r140–r143 原始
+guest 日志及配置、容器配置和前后校验记录。原始材料继续保留，不包含整份网络
+审计日志。共用 kernel/QEMU/driver/callable 的来源引用前批已核验归档。
