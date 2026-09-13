@@ -26,6 +26,9 @@ struct fake_backend {
     uint32_t acquire_local_kv_count;
     int kv_error;
     uint32_t release_count;
+    int release_error;
+    int acquire_error;
+    bool invalid_binding;
 };
 
 static int fake_acquire(
@@ -50,7 +53,8 @@ static int fake_acquire(
         .object_byte_offset = view->backing_offset,
         .backend_lease = backend,
     };
-    return 0;
+    if (backend->invalid_binding) binding_out->region.ub_gm_addr = 0;
+    return backend->acquire_error;
 }
 
 static int fake_release(void *backend_context, void *backend_lease)
@@ -61,7 +65,7 @@ static int fake_release(void *backend_context, void *backend_lease)
         return -EINVAL;
     }
     backend->release_count++;
-    return 0;
+    return backend->release_error;
 }
 
 static int fake_acquire_local(
@@ -100,7 +104,8 @@ static int fake_acquire_local(
         .backing_offset = offset,
         .owner_node = 2,
     };
-    return 0;
+    if (backend->invalid_binding) binding_out->region.ub_gm_addr = 0;
+    return backend->acquire_error;
 }
 
 static int fake_acquire_local_kv(
@@ -239,6 +244,52 @@ int main(void)
               context, &spec, &memref, &local_buffer, &lease) == -EOPNOTSUPP);
     CHECK(!memref && !lease && !local_buffer.data);
     CHECK(backend.acquire_local_count == 1);
+    CHECK(lingqu_shmem_mem_service_close(context) == 0);
+
+    /* Failed release keeps the owner even after memref/region destruction. */
+    CHECK(lingqu_shmem_mem_service_context_create_for_backend(
+              &fake_ops, &backend, false, &context) == 0);
+    CHECK(lingqu_shmem_mem_service_acquire(
+              context, &view, &spec, &memref, &lease) == 0);
+    backend.release_error = -EIO;
+    CHECK(lingqu_shmem_mem_service_release(lease) == -EIO);
+    memref = NULL;
+    CHECK(lingqu_shmem_mem_service_active_leases(context) == 1);
+    CHECK(lingqu_shmem_mem_service_close(context) == -EBUSY);
+    backend.release_error = -EBUSY;
+    CHECK(lingqu_shmem_mem_service_release(lease) == -EBUSY);
+    CHECK(lingqu_shmem_mem_service_active_leases(context) == 1);
+    backend.release_error = 0;
+    CHECK(lingqu_shmem_mem_service_release(lease) == 0);
+    lease = NULL;
+    CHECK(lingqu_shmem_mem_service_active_leases(context) == 0);
+
+    /* Failed acquire and failed rollback must return the cleanup-only lease.
+     * Exercise remote, local, and local-KV entry points independently. */
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        for (unsigned failure = 0; failure < 3; ++failure) {
+            backend.acquire_error = failure == 0 ? -EIO : 0;
+            backend.invalid_binding = failure == 1;
+            spec.rank = failure == 2 ? 0 : 1;
+            backend.release_error = -EAGAIN;
+            memset(&local_buffer, 0, sizeof(local_buffer));
+            int rc = mode == 0 ? lingqu_shmem_mem_service_acquire(
+                context, &view, &spec, &memref, &lease) : mode == 1 ?
+                lingqu_shmem_mem_service_acquire_local(
+                    context, &spec, &memref, &local_buffer, &lease) :
+                lingqu_shmem_mem_service_acquire_local_kv(
+                    context, &spec, &memref, &local_buffer, &lease);
+            CHECK(rc != 0 && lease != NULL && memref == NULL);
+            CHECK(local_buffer.data == NULL && local_buffer.len == 0);
+            CHECK(lingqu_shmem_mem_service_active_leases(context) == 1);
+            CHECK(lingqu_shmem_mem_service_close(context) == -EBUSY);
+            CHECK(lingqu_shmem_mem_service_release(lease) == -EAGAIN);
+            backend.release_error = 0;
+            CHECK(lingqu_shmem_mem_service_release(lease) == 0);
+            lease = NULL;
+            CHECK(lingqu_shmem_mem_service_active_leases(context) == 0);
+        }
+    }
     CHECK(lingqu_shmem_mem_service_close(context) == 0);
 
     puts("lingqu_shmem_mem_service_golden=pass");

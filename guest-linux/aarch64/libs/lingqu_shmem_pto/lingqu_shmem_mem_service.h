@@ -30,6 +30,9 @@ int lingqu_shmem_mem_service_open(
 /*
  * Acquire a dispatch-bound memref for one committed Memory Service object.
  * spec->byte_offset is relative to the beginning of the object payload.
+ * All acquire variants may return an error with a non-NULL lease_out if
+ * cleanup is pending. Retain that lease and retry release; no memref or
+ * local buffer is usable after an unsuccessful acquire.
  */
 int lingqu_shmem_mem_service_acquire(
     struct lingqu_shmem_mem_service_context *context,
@@ -61,7 +64,11 @@ int lingqu_shmem_mem_service_acquire_local_kv(
     struct lingqu_shmem_mem_service_local_buffer *buffer_out,
     struct lingqu_shmem_mem_service_lease **lease_out);
 
-/* Release after the PTO completion for every dispatch using the memref. */
+/* Release after the PTO completion for every dispatch using the memref.
+ * Failure retains the lease and active count for another release attempt.
+ * A partially released memref must not be used again. Externally serialize
+ * acquire/release/close with dispatch preparation and completion.
+ */
 int lingqu_shmem_mem_service_release(
     struct lingqu_shmem_mem_service_lease *lease);
 

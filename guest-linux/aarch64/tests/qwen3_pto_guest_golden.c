@@ -81,6 +81,33 @@ int main(void)
     CHECK(qwen3_pto_guest_prepare(&g, NULL, NULL, tokens, 1, 2, 3, &op) == -ENOSPC);
     CHECK(!op && backend.acquire_local_kv_count == 1);
     CHECK(backend.acquire_local_count == 4 && backend.release_count == 4);
+
+    memset(&backend, 0, sizeof(backend));
+    backend.kv_error = -ENOSPC;
+    backend.release_error = -EIO;
+    CHECK(qwen3_pto_guest_prepare(&g, NULL, NULL, tokens, 1, 2, 3, &op) == -ENOSPC);
+    CHECK(op && lingqu_shmem_mem_service_active_leases(op->context) == 4);
+    CHECK(qwen3_pto_guest_submit(op, 100, &output, &completion) == -EINVAL);
+    CHECK(qwen3_pto_guest_release(op) == -EIO);
+    backend.release_error = 0;
+    CHECK(qwen3_pto_guest_release(op) == 0);
+    op = NULL;
+
+    memset(&backend, 0, sizeof(backend));
+    endpoint_closed = 0;
+    CHECK(qwen3_pto_guest_prepare(&g, NULL, NULL, tokens, 1, 2, 3, &op) == 0);
+    backend.release_error = -EIO;
+    CHECK(qwen3_pto_guest_release(op) == -EIO);
+    CHECK(endpoint_closed == 1 && !op->endpoint && !op->inflight);
+    CHECK(qwen3_pto_guest_submit(op, 100, &output, &completion) == -EINVAL);
+    CHECK(lingqu_shmem_mem_service_active_leases(op->context) == 6);
+    CHECK(qwen3_pto_guest_release(op) == -EIO);
+    CHECK(endpoint_closed == 1);
+    backend.release_error = 0;
+    CHECK(qwen3_pto_guest_release(op) == 0);
+    CHECK(endpoint_closed == 1);
+    op = NULL;
+
     for (uint32_t end = 1; end <= 2; ++end) {
         memset(&backend, 0, sizeof(backend));
         g.end = end;

@@ -48,6 +48,14 @@ lease is active. Model code keeps passing Memory Service ObjectRefs for
 identity, placement, version, and commit semantics; the compute adapter only
 materializes the temporary data-plane view.
 
+清理失败时，lease 保留尚未释放的 region、registration 和 backend 归属，
+`active_leases` 不减少，context close 继续返回 `-EBUSY`。调用方重试原 lease
+的 release；已销毁的 memref 不可再次使用。acquire 的失败路径也遵守该约定：
+若回滚未完成，返回非零错误和非空 `lease_out`，仅用于继续清理，不交付 memref
+或本地输出 buffer。backend 在失败返回时通过 `backend_lease` 交回已有资源，
+release 失败不得销毁该句柄。本约定保持当前单线程使用边界，多线程 owner 和
+超时 completion 恢复仍需单独实现及验证。
+
 Local output follows a two-address rule. `lingqu_shmem_memref` carries the
 self-import alias address registered for Simpler/PTO `TSTORE`. The returned
 `lingqu_shmem_mem_service_local_buffer.data` points at the original local

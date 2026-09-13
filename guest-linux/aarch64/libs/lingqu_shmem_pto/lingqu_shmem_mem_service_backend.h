@@ -16,6 +16,10 @@ struct lingqu_shmem_mem_service_region_binding {
     void *backend_lease;
 };
 
+/* On acquire failure, a non-NULL binding.backend_lease transfers pending
+ * cleanup ownership to the bridge. release failure must retain that handle.
+ * The bridge allocates its owner before calling a backend acquire operation.
+ */
 struct lingqu_shmem_mem_service_backend_ops {
     int (*acquire)(
         void *backend_context,

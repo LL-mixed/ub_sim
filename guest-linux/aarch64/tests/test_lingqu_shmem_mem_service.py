@@ -1,4 +1,5 @@
 import pathlib
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -50,6 +51,27 @@ def _compile(compiler, output):
 
 
 class LingquShmemMemServiceTest(unittest.TestCase):
+    @unittest.skipUnless(platform.system() == "Linux", "Linux OBMM backend fixture")
+    def test_obmm_release_retains_registration_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "obmm-cleanup-golden"
+            subprocess.run([
+                "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-D_GNU_SOURCE", "-D__EXPORTED_HEADERS__", "-ffunction-sections",
+                "-fdata-sections", "-Wl,--gc-sections",
+                "-I", str(ROOT), "-I", str(ROOT / "mem_service"),
+                "-I", str(GUEST_ROOT), "-I", str(LIB_DIR), "-I", str(ABI_DIR),
+                "-I", str(ROOT / "vendor/obmm/src/libobmm"),
+                "-idirafter", str(ROOT / "guest-linux/kernel_ub/include/uapi"),
+                "-idirafter", str(ROOT / "guest-linux/kernel_ub/include"),
+                str(GUEST_ROOT / "tests/lingqu_shmem_mem_service_obmm_cleanup_golden.c"),
+                "-o", str(binary),
+            ], check=True)
+            result = subprocess.run([str(binary)], check=True, capture_output=True,
+                                    text=True)
+            self.assertEqual(result.stdout.strip(),
+                             "lingqu_shmem_mem_service_obmm_cleanup=pass attempts=3")
+
     def test_fake_backend_golden_covers_lease_and_wire_offset(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "mem-service-golden"

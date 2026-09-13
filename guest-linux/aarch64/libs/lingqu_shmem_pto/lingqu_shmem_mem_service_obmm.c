@@ -128,18 +128,21 @@ static int obmm_compute_bind_slot(
     if (!lease) {
         return -ENOMEM;
     }
+    memset(binding_out, 0, sizeof(*binding_out));
+    binding_out->backend_lease = lease;
     rc = obmm_async_map_register(
         context->async_runtime, runtime->obmm_fd, mapped_mem_id,
         mapped_addr, mapped_length, &lease->map);
     if (rc != 0) {
-        free(lease);
+        if (!lease->map.id) {
+            free(lease);
+            binding_out->backend_lease = NULL;
+        }
         return rc;
     }
     rc = lingqu_shmem_pto_obmm_mapping_ref(
         lease->map.id, lease->map.generation, &mapping_ref);
     if (rc != 0) {
-        (void)obmm_async_map_unregister(context->async_runtime, &lease->map);
-        free(lease);
         return rc;
     }
     ub_gm_addr = lease->map.local_pa;
@@ -153,12 +156,8 @@ static int obmm_compute_bind_slot(
         rc = 0;
     }
     if (rc != 0 || ub_gm_addr == 0) {
-        (void)obmm_async_map_unregister(
-            context->async_runtime, &lease->map);
-        free(lease);
         return rc != 0 ? rc : -EFAULT;
     }
-    memset(binding_out, 0, sizeof(*binding_out));
     binding_out->region = (struct lingqu_shmem_sim_region_desc) {
         .mapped_addr = mapped_addr,
         .mapped_length = mapped_length,
@@ -270,13 +269,18 @@ static int obmm_compute_release(void *backend_context, void *backend_lease)
     struct lingqu_shmem_mem_service_obmm_lease *lease = backend_lease;
     int rc;
 
-    if (!context || !context->async_runtime || !lease || lease->map.id == 0) {
+    if (!context || !context->async_runtime || !lease) {
         return -EINVAL;
     }
-    rc = obmm_async_map_unregister(context->async_runtime, &lease->map);
+    if (lease->map.id) {
+        rc = obmm_async_map_unregister(context->async_runtime, &lease->map);
+        if (rc != 0) {
+            return rc;
+        }
+    }
     memset(lease, 0, sizeof(*lease));
     free(lease);
-    return rc;
+    return 0;
 }
 
 static void obmm_compute_destroy(void *backend_context)

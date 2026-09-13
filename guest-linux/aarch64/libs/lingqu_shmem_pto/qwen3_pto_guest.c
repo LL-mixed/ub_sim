@@ -35,7 +35,7 @@ struct qwen3_pto_guest_operation {
     struct lingqu_shmem_pto_endpoint *endpoint;
     void *metadata;
     LingquPtoDispatchSlotV2 slot;
-    int submitted, pending;
+    int prepared, submitted, pending;
 };
 
 int qwen3_pto_guest_release(struct qwen3_pto_guest_operation *op)
@@ -43,19 +43,33 @@ int qwen3_pto_guest_release(struct qwen3_pto_guest_operation *op)
     int result = 0;
     if (!op) return 0;
     if (op->pending) return -EBUSY;
-    if (op->endpoint) lingqu_shmem_pto_endpoint_close(op->endpoint);
-    if (op->inflight) lingqu_shmem_pto_dispatch_finish(op->inflight);
+    op->prepared = 0;
+    if (op->endpoint) {
+        lingqu_shmem_pto_endpoint_close(op->endpoint);
+        op->endpoint = NULL;
+    }
+    if (op->inflight) {
+        lingqu_shmem_pto_dispatch_finish(op->inflight);
+        op->inflight = NULL;
+    }
     for (unsigned int i = 0; i < 6; ++i) {
         if (op->leases[i]) {
             int rc = lingqu_shmem_mem_service_release(op->leases[i]);
             if (rc && !result) result = rc;
+            if (!rc) op->leases[i] = NULL;
+            op->memrefs[i] = NULL;
         }
     }
+    if (result) return result;
     if (op->context) {
         int rc = lingqu_shmem_mem_service_close(op->context);
-        if (rc && !result) result = rc;
+        if (rc) return rc;
+        op->context = NULL;
     }
-    if (op->metadata) munmap(op->metadata, QWEN3_PTO_METADATA_BYTES);
+    if (op->metadata) {
+        if (munmap(op->metadata, QWEN3_PTO_METADATA_BYTES) != 0) return -errno;
+        op->metadata = NULL;
+    }
     free(op);
     return result;
 }
@@ -179,10 +193,11 @@ int qwen3_pto_guest_prepare(
     if (rc) goto fail;
     rc = lingqu_shmem_pto_endpoint_open(&op->endpoint, &endpoint_info);
     if (rc) goto fail;
+    op->prepared = 1;
     *operation = op;
     return 0;
 fail:
-    qwen3_pto_guest_release(op);
+    if (qwen3_pto_guest_release(op) != 0) *operation = op;
     return rc;
 }
 
@@ -191,7 +206,8 @@ int qwen3_pto_guest_submit(struct qwen3_pto_guest_operation *op,
     struct lingqu_shmem_pto_completion *completion)
 {
     int rc;
-    if (!op || !output || !completion || !timeout_ms || op->submitted) return -EINVAL;
+    if (!op || !op->prepared || !output || !completion || !timeout_ms ||
+        op->submitted) return -EINVAL;
     memset(output, 0, sizeof(*output));
     memset(completion, 0, sizeof(*completion));
     op->submitted = 1;

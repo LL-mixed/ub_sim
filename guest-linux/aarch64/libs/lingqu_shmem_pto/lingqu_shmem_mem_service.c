@@ -23,6 +23,7 @@ struct lingqu_shmem_mem_service_lease {
     struct lingqu_shmem_region *region;
     struct lingqu_shmem_memref *memref;
     void *backend_lease;
+    bool backend_acquired;
 };
 
 static bool object_view_valid(
@@ -68,6 +69,28 @@ int lingqu_shmem_mem_service_context_create_for_backend(
     return 0;
 }
 
+static struct lingqu_shmem_mem_service_lease *create_lease(
+    struct lingqu_shmem_mem_service_context *context)
+{
+    struct lingqu_shmem_mem_service_lease *lease = calloc(1, sizeof(*lease));
+
+    if (lease) {
+        lease->context = context;
+        atomic_fetch_add_explicit(&context->active_leases, 1, memory_order_acq_rel);
+    }
+    return lease;
+}
+
+static int rollback_lease(struct lingqu_shmem_mem_service_lease *lease,
+                         struct lingqu_shmem_mem_service_lease **lease_out,
+                         int error)
+{
+    if (lingqu_shmem_mem_service_release(lease) != 0) {
+        *lease_out = lease;
+    }
+    return error;
+}
+
 int lingqu_shmem_mem_service_acquire(
     struct lingqu_shmem_mem_service_context *context,
     const struct mem_service_object_payload_view *view,
@@ -88,10 +111,16 @@ int lingqu_shmem_mem_service_acquire(
     }
     *memref_out = NULL;
     *lease_out = NULL;
+    lease = create_lease(context);
+    if (!lease) {
+        return -ENOMEM;
+    }
     memset(&binding, 0, sizeof(binding));
     rc = context->ops->acquire(context->backend_context, view, &binding);
+    lease->backend_lease = binding.backend_lease;
+    lease->backend_acquired = rc == 0 || binding.backend_lease != NULL;
     if (rc != 0) {
-        return rc;
+        return rollback_lease(lease, lease_out, rc);
     }
     if (!binding.region.mapped_addr || binding.region.mapped_length == 0 ||
         binding.region.ub_gm_addr == 0 ||
@@ -100,40 +129,25 @@ int lingqu_shmem_mem_service_acquire(
         view->len > binding.region.mapped_length - binding.object_byte_offset ||
         binding.object_byte_offset > UINT64_MAX - spec->byte_offset) {
         rc = -EINVAL;
-        goto release_backend;
+        goto release_lease;
     }
     adjusted_spec = *spec;
     adjusted_spec.byte_offset = binding.object_byte_offset + spec->byte_offset;
-    lease = calloc(1, sizeof(*lease));
-    if (!lease) {
-        rc = -ENOMEM;
-        goto release_backend;
-    }
     rc = lingqu_shmem_sim_region_create(&binding.region, &lease->region);
     if (rc != 0) {
-        goto free_lease;
+        goto release_lease;
     }
     rc = lingqu_shmem_memref_create(
         lease->region, &adjusted_spec, &lease->memref);
     if (rc != 0) {
-        goto destroy_region;
+        goto release_lease;
     }
-    lease->context = context;
-    lease->backend_lease = binding.backend_lease;
-    atomic_fetch_add_explicit(
-        &context->active_leases, 1, memory_order_acq_rel);
     *memref_out = lease->memref;
     *lease_out = lease;
     return 0;
 
-destroy_region:
-    (void)lingqu_shmem_sim_region_destroy(lease->region);
-free_lease:
-    free(lease);
-release_backend:
-    (void)context->ops->release(
-        context->backend_context, binding.backend_lease);
-    return rc;
+release_lease:
+    return rollback_lease(lease, lease_out, rc);
 }
 
 static int acquire_local_buffer(
@@ -161,6 +175,10 @@ static int acquire_local_buffer(
     if (model_kv ? !context->ops->acquire_local_kv : !context->ops->acquire_local) {
         return -EOPNOTSUPP;
     }
+    lease = create_lease(context);
+    if (!lease) {
+        return -ENOMEM;
+    }
     memset(&binding, 0, sizeof(binding));
     memset(&buffer, 0, sizeof(buffer));
     rc = (model_kv ? context->ops->acquire_local_kv : context->ops->acquire_local)(
@@ -169,8 +187,10 @@ static int acquire_local_buffer(
                                      64,
                                      &binding,
                                      &buffer);
+    lease->backend_lease = binding.backend_lease;
+    lease->backend_acquired = rc == 0 || binding.backend_lease != NULL;
     if (rc != 0) {
-        return rc;
+        return rollback_lease(lease, lease_out, rc);
     }
     if (!binding.region.mapped_addr || binding.region.mapped_length == 0 ||
         binding.region.ub_gm_addr == 0 ||
@@ -180,41 +200,26 @@ static int acquire_local_buffer(
         buffer.backing_offset > binding.region.mapped_length ||
         buffer.len > binding.region.mapped_length - buffer.backing_offset) {
         rc = -EINVAL;
-        goto release_backend;
+        goto release_lease;
     }
     adjusted_spec = *spec;
     adjusted_spec.byte_offset = binding.object_byte_offset;
-    lease = calloc(1, sizeof(*lease));
-    if (!lease) {
-        rc = -ENOMEM;
-        goto release_backend;
-    }
     rc = lingqu_shmem_sim_region_create(&binding.region, &lease->region);
     if (rc != 0) {
-        goto free_lease;
+        goto release_lease;
     }
     rc = lingqu_shmem_memref_create(
         lease->region, &adjusted_spec, &lease->memref);
     if (rc != 0) {
-        goto destroy_region;
+        goto release_lease;
     }
-    lease->context = context;
-    lease->backend_lease = binding.backend_lease;
-    atomic_fetch_add_explicit(
-        &context->active_leases, 1, memory_order_acq_rel);
     *memref_out = lease->memref;
     *buffer_out = buffer;
     *lease_out = lease;
     return 0;
 
-destroy_region:
-    (void)lingqu_shmem_sim_region_destroy(lease->region);
-free_lease:
-    free(lease);
-release_backend:
-    (void)context->ops->release(
-        context->backend_context, binding.backend_lease);
-    return rc;
+release_lease:
+    return rollback_lease(lease, lease_out, rc);
 }
 
 int lingqu_shmem_mem_service_acquire_local(
@@ -244,28 +249,38 @@ int lingqu_shmem_mem_service_release(
     int backend_rc;
     int rc;
 
-    if (!lease || !lease->context || !lease->memref || !lease->region) {
+    if (!lease || !lease->context) {
         return -EINVAL;
     }
     context = lease->context;
-    rc = lingqu_shmem_memref_destroy(lease->memref);
-    if (rc != 0) {
-        return rc;
+    if (lease->memref) {
+        rc = lingqu_shmem_memref_destroy(lease->memref);
+        if (rc != 0) {
+            return rc;
+        }
+        lease->memref = NULL;
     }
-    lease->memref = NULL;
-    rc = lingqu_shmem_sim_region_destroy(lease->region);
-    if (rc != 0) {
-        return rc;
+    if (lease->region) {
+        rc = lingqu_shmem_sim_region_destroy(lease->region);
+        if (rc != 0) {
+            return rc;
+        }
+        lease->region = NULL;
     }
-    lease->region = NULL;
-    backend_rc = context->ops->release(
-        context->backend_context, lease->backend_lease);
-    lease->backend_lease = NULL;
+    if (lease->backend_acquired) {
+        backend_rc = context->ops->release(
+            context->backend_context, lease->backend_lease);
+        if (backend_rc != 0) {
+            return backend_rc;
+        }
+        lease->backend_acquired = false;
+        lease->backend_lease = NULL;
+    }
     atomic_fetch_sub_explicit(
         &context->active_leases, 1, memory_order_acq_rel);
     memset(lease, 0, sizeof(*lease));
     free(lease);
-    return backend_rc;
+    return 0;
 }
 
 int lingqu_shmem_mem_service_close(

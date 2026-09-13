@@ -1621,6 +1621,32 @@ QEMU 提交为 `175d95a405b4681078579b4119b6ed30eb542d8e`，kernel UAPI 提交�
 本批仍需接通 managed mapping 的统一 CPU/PTO lease，并取得真实 TLOAD/TSTORE
 与 CPU 四种交叉读写证据；本节未关闭 AM2 或任何完整阶段。
 
+## 2026-09-13 续作：PTO lease 的失败清理归属（局部单测通过）
+
+Memory Service/PTO bridge 在调用 backend acquire 前建立 owner，三个 acquire
+入口的失败回滚都使用同一 release 状态机。注销失败保留 backend lease 和活动
+计数，已清理的 memref/region 不重复销毁；失败 acquire 返回的非空 lease 仅可用于
+重试清理。OBMM backend 的实际注销 callback 同样在失败时保留 registration。
+Qwen3 操作保留清理失败的 operation，逐项清空已释放指针，避免重试造成重复释放；
+准备失败或开始清理后的 operation 拒绝 submit。该修改保持原单线程使用约定，
+没有声称完成并发 owner、PTO 超时 completion 恢复或 managed mapping 接入。
+
+r132 以生产 bridge/region/memref 实现覆盖正常 release 失败、三个 acquire 入口
+的 backend 部分失败、无效 binding、memref 创建失败和回滚重试。独立 Linux fixture
+调用生产 OBMM release callback，EIO/EBUSY 后核对 registration 原样保留，第三次
+成功才释放。Qwen3 fixture 验证 prepare/release 重试及清理后拒绝 submit；实际
+设备/MMIO 由替身承接，结果属于生命周期单测，未执行模型或真实 PTO dispatch。
+
+本地 10 项轻量检查，9 通过、1 项 Linux 环境跳过，1.306 秒。远端完整 root 为
+468 项，449 通过、5 项环境跳过、5 失败、9 错误，46.367 秒；14 个失败编号与
+r130b 排序比较相同。layout 72/74 通过，1.23 秒。实际 OBMM callback fixture
+和 Qwen3 保留清理归属的用例均通过；12 个源码/测试文件与执行快照逐项一致。
+本批没有修改服务、kernel、QEMU 或原 guest rootfs；不沿用 CPU 回归声称 PTO
+联合路径已通过。下一步将 managed mapping 接到 provider pin 和 compute lease。
+最终归档 `verified-r132-pto-cleanup-evidence.tar.gz` 已取回本地，7 个精确成员、
+43374 bytes、权限 0600；gzip、列表、大小和 SHA 与远端一致，SHA-256 为
+`652c7997ba1abf5430735a6ad9a1302ec1fbd6da45e368088eb7794963f37e31`。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时

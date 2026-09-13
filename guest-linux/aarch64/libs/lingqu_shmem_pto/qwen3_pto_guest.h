@@ -21,6 +21,8 @@ struct qwen3_pto_guest_output {
     struct lingqu_shmem_mem_service_local_buffer hidden, kv, logits;
 };
 
+/* Failed prepare may return a cleanup-only operation. Retry release until
+ * it succeeds; such an operation must not be submitted or published. */
 int qwen3_pto_guest_prepare(
     const struct qwen3_pto_guest_geometry *geometry,
     const struct mem_service_object_payload_view *hidden,
@@ -32,6 +34,7 @@ int qwen3_pto_guest_submit(struct qwen3_pto_guest_operation *operation,
     uint64_t timeout_ms, struct qwen3_pto_guest_output *output,
     struct lingqu_shmem_pto_completion *completion);
 
-/* Returns -EBUSY if submit returned without a terminal completion. */
+/* Returns -EBUSY if submit returned without a terminal completion.
+ * Other cleanup errors also retain the operation for a release retry. */
 int qwen3_pto_guest_release(struct qwen3_pto_guest_operation *operation);
 #endif
