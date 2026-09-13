@@ -18,6 +18,9 @@
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
 #include "lingqu_shmem_sim.h"
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+#include "lingqu_shmem_pto_managed.h"
+#endif
 
 #define PTO_DIRECT_EXPORT_BYTES (2u * 1024u * 1024u)
 #define PTO_DIRECT_HOST_VECTOR_ROWS 128u
@@ -315,6 +318,7 @@ static void usage(FILE *stream)
     fprintf(stream,
             "usage: lingqu_shmem_pto_direct --role producer|consumer "
             "--node-id N --node-count N [options]\n"
+            "       lingqu_shmem_pto_direct --managed-config FILE [--validate-only]\n"
             "\n"
             "options:\n"
             "  --layout LAYOUT           nd, tail, cross-page, unaligned, "
@@ -2240,6 +2244,19 @@ int main(int argc, char **argv)
     struct pto_direct_layout layout;
     uint32_t fragment_index;
     uint32_t local_cna = 0;
+
+    if (argc >= 2 && !strcmp(argv[1], "--managed-config")) {
+        if (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "--validate-only"))) {
+            usage(stderr);
+            return 2;
+        }
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+        return lingqu_shmem_pto_managed_main(argv[2], argc == 4);
+#else
+        fprintf(stderr, "managed mapping support requires the MANAGED=1 build\n");
+        return 2;
+#endif
+    }
 
     if (parse_args(argc, argv, &config) != 0 ||
         build_layout(&config, &layout) != 0 ||

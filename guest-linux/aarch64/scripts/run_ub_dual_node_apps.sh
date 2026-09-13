@@ -52,6 +52,7 @@ COH_TEST_GENERATION="${COH_TEST_GENERATION:-1}"
 COH_TEST_VERBOSE="${COH_TEST_VERBOSE:-1}"
 MEM_SERVICE_OBMM_PROVIDER_GENERATION="${MEM_SERVICE_OBMM_PROVIDER_GENERATION:-101}"
 MEM_SERVICE_OBJECT_SHARE_BACKEND="${MEM_SERVICE_OBJECT_SHARE_BACKEND:-loopback}"
+MEM_SERVICE_OBJECT_SHARE_ACCESS="${MEM_SERVICE_OBJECT_SHARE_ACCESS:-cpu}"
 MEM_SERVICE_OBJECT_SHARE_SIZE="${MEM_SERVICE_OBJECT_SHARE_SIZE:-4096}"
 MEM_SERVICE_OBJECT_SHARE_FAULT="${MEM_SERVICE_OBJECT_SHARE_FAULT:-none}"
 MEM_SERVICE_OBJECT_SHARE_ITERATIONS="${MEM_SERVICE_OBJECT_SHARE_ITERATIONS:-1}"
@@ -430,6 +431,11 @@ if expected_layout in ("nd-strided", "dn", "nz"):
             f"expected={p4i_expected!r} actual={p4i_actual!r}"
         )
 PY
+}
+
+managed_pto_selected() {
+  [[ "$APPEND_EXTRA" == *"linqu_mem_service_object_share=1"* &&
+     "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-pto" ]]
 }
 
 validate_lingqu_shmem_pto_config() {
@@ -996,7 +1002,23 @@ SERIAL_DIR="$SERIAL_RUNTIME_DIR/serial"
 SERIAL_ENV_FILE="$OUT_DIR/dual_node_serial_env.${RUN_ID}.sh"
 
 apply_app_selection "$APP_SELECTION"
-if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
+      "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-pto" ]]; then
+  echo "unsupported Memory Service access mode: $MEM_SERVICE_OBJECT_SHARE_ACCESS" >&2
+  exit 2
+fi
+if managed_pto_selected; then
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
+        "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
+        "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ||
+        "$LINGQU_SHMEM_PTO_LAYOUT" != "cross-page" ||
+        "$LINGQU_SHMEM_PTO_ELEMENTS" != "64" ]]; then
+    echo "cpu-pto requires OBMM, 64 KiB, one round, no fault and cross-page 64 elements" >&2
+    exit 2
+  fi
+fi
+if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] || managed_pto_selected; then
   validate_lingqu_shmem_pto_config
 fi
 if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
@@ -2327,7 +2349,7 @@ start_node() {
       -global "ubc.source-void-response-policy=$SOURCE_VOID_RESPONSE_POLICY"
     )
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] || managed_pto_selected; then
     if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
       pto_duplicate_completion="on"
     fi
@@ -2851,6 +2873,8 @@ run_iteration() {
     append_cmdline_if_missing \
       "mem_service_object_share_backend=${MEM_SERVICE_OBJECT_SHARE_BACKEND}"
     append_cmdline_if_missing \
+      "mem_service_object_share_access=${MEM_SERVICE_OBJECT_SHARE_ACCESS}"
+    append_cmdline_if_missing \
       "mem_service_object_share_size=${MEM_SERVICE_OBJECT_SHARE_SIZE}"
     append_cmdline_if_missing \
       "mem_service_object_share_fault=${MEM_SERVICE_OBJECT_SHARE_FAULT}"
@@ -2894,7 +2918,7 @@ run_iteration() {
     nodea_w4_guest_append="linqu_w4_role=nodeA linqu_w4_local_ip=10.0.0.1"
     nodeb_w4_guest_append="linqu_w4_role=nodeB linqu_w4_local_ip=10.0.0.2"
   fi
-  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
+  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]] || managed_pto_selected; then
     nodea_lingqu_shmem_pto_append="linqu_node_idx=0 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEA_CNA"
     nodeb_lingqu_shmem_pto_append="linqu_node_idx=1 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA"
   fi
@@ -3392,7 +3416,7 @@ run_iteration() {
   if [[ "$mem_service_object_share_enabled" -eq 1 ]]; then
     wait_for_log_pass_or_fail "$nodea_guest_log" \
       "mem_service object-share: status=ok node=0" \
-      "mem_service object-share: status=fail" "$RUN_SECS"
+      "mem_service object-share: status=fail|MANAGED_PTO_RESULT .*status=fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -3407,7 +3431,7 @@ run_iteration() {
 
     wait_for_log_pass_or_fail "$nodeb_guest_log" \
       "mem_service object-share: status=ok node=1" \
-      "mem_service object-share: status=fail" "$RUN_SECS"
+      "mem_service object-share: status=fail|MANAGED_PTO_RESULT .*status=fail" "$RUN_SECS"
     case "$?" in
       0) ;;
       1)
@@ -3731,10 +3755,17 @@ run_iteration() {
       "nodeB" "$nodeb_qemu_log" || return 1
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_mem_service_object_share=1"* ]]; then
+    if managed_pto_selected; then
+      python3 "${SCRIPT_DIR}/validate_managed_pto.py" \
+        --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
+        --qemu-b "$nodeb_qemu_log" \
+        --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1
+    else
     validate_mem_service_object_share_log \
       "nodeA" "$nodea_guest_log" || return 1
     validate_mem_service_object_share_log \
       "nodeB" "$nodeb_guest_log" || return 1
+    fi
   fi
   if [[ "$APPEND_EXTRA" == *"linqu_gva_direct=1"* ]]; then
     validate_gva_direct_log "nodeA" "$nodea_guest_log" || return 1

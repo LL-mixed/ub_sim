@@ -54,7 +54,7 @@ int lingqu_shmem_mem_service_context_create_for_backend(
 {
     struct lingqu_shmem_mem_service_context *context;
 
-    if (!ops || !ops->acquire || !ops->release || !context_out) {
+    if (!ops || (!ops->acquire && !ops->acquire_managed) || !ops->release || !context_out) {
         return -EINVAL;
     }
     *context_out = NULL;
@@ -112,6 +112,7 @@ int lingqu_shmem_mem_service_acquire(
     }
     *memref_out = NULL;
     *lease_out = NULL;
+    if (!context->ops->acquire) return -EOPNOTSUPP;
     lease = create_lease(context);
     if (!lease) {
         return -ENOMEM;

@@ -87,6 +87,8 @@ OBMM_COROUTINE_SCHEDULER_ASM_SRC="$ROOT_DIR/libs/obmm_coroutine_scheduler/obmm_c
 OBMM_ASYNC_COROUTINE_BIN="$OUT_DIR/obmm_async_coroutine/obmm_async_coroutine"
 OBMM_ASYNC_COROUTINE_BUILD_DIR="${OBMM_ASYNC_COROUTINE_BIN:h}"
 LINGQU_SHMEM_PTO_DIRECT_SRC="$ROOT_DIR/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_direct.c"
+LINGQU_SHMEM_PTO_MANAGED_SRC="$ROOT_DIR/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_managed.c"
+LINGQU_SHMEM_PTO_MANAGED_HDR="$ROOT_DIR/apps/lingqu_shmem_pto_direct/lingqu_shmem_pto_managed.h"
 LINGQU_SHMEM_PTO_DIRECT_LIB_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem.c"
 LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem_pto_guest.c"
 LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.c"
@@ -286,6 +288,8 @@ current_initramfs_signature() {
   write_signature_line \
     "lingqu_shmem_pto_direct_src" \
     "$LINGQU_SHMEM_PTO_DIRECT_SRC"
+  write_signature_line "lingqu_shmem_pto_managed_src" "$LINGQU_SHMEM_PTO_MANAGED_SRC"
+  write_signature_line "lingqu_shmem_pto_managed_hdr" "$LINGQU_SHMEM_PTO_MANAGED_HDR"
   write_signature_line \
     "lingqu_shmem_pto_direct_lib_src" \
     "$LINGQU_SHMEM_PTO_DIRECT_LIB_SRC"
@@ -730,6 +734,8 @@ mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
   "$OBMM_ASYNC_COROUTINE_UFFD_WRAPPER_SRC" ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} \
   -o "$OBMM_ASYNC_COROUTINE_BIN"
 "$AARCH64_LINUX_CC" -static -O2 -Wall -Wextra -Werror -std=gnu11 \
+  -DLINGQU_SHMEM_MANAGED_MAPPING -ffunction-sections -fdata-sections \
+  -Wl,--gc-sections -I"$ROOT_DIR" -I"$MEM_SERVICE_ROOT" \
   -I"$ROOT_DIR/common" \
   -I"$ROOT_DIR/libs/lingqu_shmem_pto" \
   -I"$ROOT_DIR/libs/obmm_async" \
@@ -739,6 +745,10 @@ mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
   "$LINGQU_SHMEM_PTO_DIRECT_LIB_SRC" \
   "$LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC" \
   "$LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC" \
+  "$LINGQU_SHMEM_PTO_MANAGED_SRC" \
+  "$LINGQU_SHMEM_MEM_SERVICE_SRC" "$LINGQU_SHMEM_MEM_SERVICE_OBMM_SRC" \
+  "$MEM_SERVICE_CLIENT_SRC" "$MEM_SERVICE_WIRE_CLIENT_SRC" \
+  "$MEM_SERVICE_PROVIDER_SRC" "$MEM_SERVICE_PROVIDER_OBMM_SRC" \
   "$OBMM_ASYNC_COROUTINE_LIB_SRC" \
   "$OBMM_ASYNC_COROUTINE_ASM_SRC" \
   ${=LIBOBMM_SRCS} ${=LIBOBMM_LDLIBS} \

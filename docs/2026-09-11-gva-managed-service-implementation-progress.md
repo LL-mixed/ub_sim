@@ -1679,6 +1679,36 @@ AM2 全部出口仍未完成。未 push、未更新父仓库 gitlink/lock。
 
 ## 下一批的前置条件与未完成项
 
+r133/r134 最终归档 `verified-r133-r134-managed-attachment-evidence.tar.gz`
+已取回本地，29 个精确成员、145584 bytes、权限 0600；gzip、完整列表、长度和 SHA
+均与远端一致。SHA-256 为
+`6702bbf26ea1b0e2c15ba4bc7ad8adb56bc48a382147b76555d161e7bf577d5c`。
+服务 pin 提交为 `e9c7d3db8d51cff6b79cbeec76d26eb8d0aa7f60`，root 接入层提交为
+`cc71de12751e4885532260f2d18b838973579f1c`。
+
+r135/r136 新增无模型 managed CLI、仅依赖 managed mapping 的 compute context，
+并接入已有双节点 runner 的 `MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-pto`。
+初始子集固定 64 KiB、cross-page 1x64 工件、两次顺序 dispatch。日志校验器核对
+两端 CPU 同址、六个严格 GSVA binding、四次 LOAD/两次 STORE/两次 fence、
+同一 backing 及前次输出为后次输入、原生 completion 和 kernel 资源回归；
+缺失/重复/错误身份、校验和、清理及 staging 计数均由 parser 负例覆盖。
+
+无模型 CLI 在远端原生构建通过，SHA-256 为
+`f4fbf76d10f7d921b39124ceef8c7f26560d72ed20229d78f11a88417ff21a77`。
+r135 相关 15 项为 14 通过、1 项交叉编译环境跳过，5.976 秒；完整 root 为
+473 项，454 通过、5 跳过及原 14 项失败，50.762 秒。r136 相关 20 项为
+19 通过、1 跳过，6.065 秒；完整 root 为 478 项，459 通过、5 跳过及原
+14 项失败，50.710 秒。两轮终态失败 ID 与 r134c 排序核对相同；layout 均为
+72/74 通过，1.23 秒。新的测试覆盖配置只读验证、无模型链接、同映射接入及
+日志判据；这些结果还不能证明真实 guest 数据访问通过。
+
+r136 rootfs 仅替换 r130 的 direct CLI 和 run_app，现有 daemon、worker、manager、
+driver 指纹不变；SHA-256 为
+`4e77276a6669348f5244a5c39a3c0e7d8fd9a33207c38ff4d5614c7d5dfe4628`。
+现有 cross-page callable 的九个文件已核对历史 SHA，并用项目 snapshot 工具
+复制为独立工件集；指纹 CLI 确认 callable=1，fingerprint=`0xc8bd48ef54c247e5`。
+真实联合 guest 验证待执行，AM2 保持未完成；本条不引用旧 legacy PTO 结果。
+
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
 更新父仓库 gitlink/lock；当前尚无 push 授权。历史 r19 校验器明确拒绝 dirty
 mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必须拒绝。

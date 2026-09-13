@@ -29,6 +29,10 @@ struct lingqu_shmem_mem_service_local_buffer {
 int lingqu_shmem_mem_service_open(
     struct lingqu_shmem_mem_service_context **context_out);
 
+/* Model-free context for existing managed mappings; no legacy arena support. */
+int lingqu_shmem_mem_service_open_managed(
+    struct lingqu_shmem_mem_service_context **context_out);
+
 /*
  * Acquire a dispatch-bound memref for one committed Memory Service object.
  * spec->byte_offset is relative to the beginning of the object payload.

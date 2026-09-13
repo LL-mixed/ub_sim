@@ -67,6 +67,11 @@ OBMM provider；未启用的构建返回 `-EOPNOTSUPP`，旧 W5 acquire 接口�
 这是同一映射的接入契约；四种实际数据组合、统一并发 owner 和可恢复超时仍须
 由 AM2 后续验证完成，现有单线程约定不因此改变。
 
+无模型的受管理客户端通过 `lingqu_shmem_mem_service_open_managed()` 打开仅支持
+managed mapping 的 compute context。该 context 不依赖旧 payload arena 或模型
+runtime；legacy acquire 返回 `-EOPNOTSUPP`。部署构建链接启用 managed 功能的
+平台 adapter，保留旧 `open()` 的行为，调用方无须选择传输。
+
 Local output follows a two-address rule. `lingqu_shmem_memref` carries the
 self-import alias address registered for Simpler/PTO `TSTORE`. The returned
 `lingqu_shmem_mem_service_local_buffer.data` points at the original local

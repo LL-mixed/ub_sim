@@ -368,7 +368,8 @@ static const struct lingqu_shmem_mem_service_backend_ops obmm_compute_ops = {
 #endif
 };
 
-int lingqu_shmem_mem_service_open(
+static int obmm_compute_open(
+    const struct lingqu_shmem_mem_service_backend_ops *ops,
     struct lingqu_shmem_mem_service_context **context_out)
 {
     struct lingqu_shmem_mem_service_obmm_context *backend_context;
@@ -393,9 +394,31 @@ int lingqu_shmem_mem_service_open(
         return rc;
     }
     rc = lingqu_shmem_mem_service_context_create_for_backend(
-        &obmm_compute_ops, backend_context, true, context_out);
+        ops, backend_context, true, context_out);
     if (rc != 0) {
         obmm_compute_destroy(backend_context);
     }
     return rc;
+}
+
+int lingqu_shmem_mem_service_open(
+    struct lingqu_shmem_mem_service_context **context_out)
+{
+    return obmm_compute_open(&obmm_compute_ops, context_out);
+}
+
+int lingqu_shmem_mem_service_open_managed(
+    struct lingqu_shmem_mem_service_context **context_out)
+{
+#ifdef LINGQU_SHMEM_MANAGED_MAPPING
+    static const struct lingqu_shmem_mem_service_backend_ops managed_ops = {
+        .acquire_managed = obmm_compute_acquire_managed,
+        .release = obmm_compute_release, .destroy = obmm_compute_destroy,
+    };
+    return obmm_compute_open(&managed_ops, context_out);
+#else
+    if (!context_out) return -EINVAL;
+    *context_out = NULL;
+    return -EOPNOTSUPP;
+#endif
 }

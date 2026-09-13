@@ -50,6 +50,37 @@ The artifact fingerprint and PTO requester CNA are required command-line
 inputs. The host runner derives them from the selected artifact manifest and
 QEMU device configuration; the guest does not guess either identity.
 
+## 受管理对象联合访问模式
+
+新增实现放在本目录的 `lingqu_shmem_pto_managed.c/.h`，沿用本应用与现有
+双节点 managed-share 启动基础设施；不增加独立对象服务或模型依赖。
+`--managed-config FILE` 选择该模式，`--validate-only` 只检查配置，不打开设备
+或建立连接。配置逐行使用 `key=value`，明确指定 `connect`、`key`、`node_id`、
+`generation`、`requester_cna`、`artifact_fingerprint` 和 `timeout_ms`；拒绝未知、
+重复或缺失字段。第一批固定两节点、单 home、64 KiB 对象及 cross-page 的
+`1x64 / 1x64` callable-1 工件，不能把此子集记为完整 AM2 验收。
+
+producer 通过 SDK 分配、acquire 和 managed map，CPU 在原映射初始化 A/B。
+consumer 通过同一 key/generation 获取映射，用 provider publish/wait-visible
+完成可见性检查，CPU 逐字节核对输入。两次真实 PTO dispatch 分别计算
+`C = (A+B+1)*(A+B+2)` 与 `D = (C+B+1)*(C+B+2)`；第二次直接 TLOAD 第一次
+TSTORE 的 C，四个视图始终落在同一 backing。CPU 只初始化输入及核对结果，
+不向 C/D 写入期望值。控制服务仅收取分配、引用及映射元数据。
+
+成功 completion 后才结束 in-flight 并释放 compute lease；所有 lease 注销后
+才 managed unmap、release holder。producer 等待 consumer holder 退出后退役对象。
+未知 completion 或清理失败保留所有尚未释放的进程资源并明确报错，测试环境由
+上层 runner 终止；不得返回成功或提前把持有者标记为已释放。生成配置、二进制、
+完整 guest/QEMU 日志和校验结果放在 campaign 的 `out/`，不进入本源码目录。
+
+构建使用本目录的 `make MANAGED=1`；常规 initramfs 同时启用该模式。
+现有 `run_ub_dual_node_apps.sh --app mem_service_object_share --config FILE`
+通过配置 `MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-pto` 选择联合用例，默认 `cpu`
+保持原有 SDK 检查。联合模式要求 backend=obmm、size=65536、iterations=1、
+fault=none，以及已有 PTO manifest/fingerprint/CNA 配置。它校验 cross-page
+工件的真实几何和两个 dispatch 的 callback、backing 身份及 CPU 结果，不复用
+旧独立 PTO 用例的通过标记。所有测试失败和未知 completion 都保留原始日志。
+
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
 the mapping provider supports it. Linux device/PFN mappings can return

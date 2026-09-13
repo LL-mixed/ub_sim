@@ -204,6 +204,15 @@ static int test_managed_view_attachment(void)
           &spec, &memref, &lease) == -EOPNOTSUPP);
     CHECK(!lease && !memref);
     CHECK(!lingqu_shmem_mem_service_close(context));
+    struct lingqu_shmem_mem_service_backend_ops managed_only = fake_ops;
+    managed_only.acquire = NULL;
+    backend.invalid_binding = false;
+    CHECK(!lingqu_shmem_mem_service_context_create_for_backend(&managed_only, &backend, false, &context));
+    CHECK(!lingqu_shmem_mem_service_acquire_managed(context, &mapping, &lifecycle,
+          &spec, &memref, &lease));
+    CHECK(lease && memref);
+    CHECK(!lingqu_shmem_mem_service_release(lease));
+    CHECK(!lingqu_shmem_mem_service_close(context));
     return 0;
 }
 
