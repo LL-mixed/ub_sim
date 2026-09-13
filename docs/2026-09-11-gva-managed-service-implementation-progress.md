@@ -28,6 +28,9 @@ r57 双 guest 未再报告这两处释放后访问，但在 60 秒回写屏障�
 r61 的 64-byte ASan/UBSan 生命周期回归也完成两轮和关机，没有新的错误报告。
 这些结果支持检查开销影响等待预算的解释；不据此认定 r48 堆损坏的唯一根因。
 详见本记录末尾，M1/AM1 仍未完成。
+r71 补齐双方实际固定 VA 冲突拒绝、原映射保留和后续完整读写/回收；r72 用同一
+镜像通过 36 次 SDK 预期拒绝与八次幂等重放。畸形 descriptor、容量耗尽等阶段
+出口仍缺实际证据，不能将这两个通过场景计为 M1/AM1 全部完成。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
 release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
@@ -931,6 +934,85 @@ home 两轮分别执行 38 项操作，耗时 45434/44177 ms；peer 各 30 项�
 
 此范围不包含畸形 GSVA descriptor、实际固定地址冲突或 backing 耗尽；不把 SDK
 字节检查解释为 CPU 子页保护。M1/AM1 保持未完成。
+
+## 2026-09-13 续作：固定地址冲突验收
+
+`probe_conflict` 的 r65 初版尝试在目标 VA 创建匿名页。远端定向 3/3 通过，
+完整服务 227 个唯一 test ID 中 222 通过、5 跳过、0 失败；r65c 在 bridge 容器
+补跑独立 listener 用例通过（9.129 秒），合并为 223 通过、4 原有环境跳过。
+四个完整分片耗时 468.301/476.893/448.996/455.019 秒。root r66 全量为
+452 项：433 通过、5 跳过、5 failures、9 errors（59.244 秒）；layout r66b
+72 通过、2 失败（1.26 秒）。首次 r65 容器入口和 r66 layout 路径错误分别
+返回 126/4，未执行对应测试；修正启动命令后保存了上述实际测试结果。
+
+真实 r67 失败于 nodeA 的 `probe_conflict` 预占阶段，输出
+`status=internal note=conflict_reservation_failed`；第二次 SDK 映射尚未调用。
+检查 kernel `mm/mmap.c:get_unmapped_area()` 确认：非 GSVA 映射与已注册 aperture
+重叠时返回 EEXIST；匿名 MAP_GSVA 也被拒绝。随后 PID 1 的 run_app 退出导致
+`Attempted to kill init`，peer 的控制连接失效；此运行未取得完整回收证据。
+runner 0/1，QEMU 已退出。内核按既定契约拒绝了初版探针，不修改该保护规则。
+
+第二版场景保留已成功建立的可读 GSVA 映射，再经原 managed mapping SDK 请求同一
+对象、同一 VA 的第二个视图；两份 SDK 生命周期分别保存。要求第二次请求拒绝、
+已确认清理，且原映射首个逻辑页 checksum 不变；继续完整双向读写和最终资源检查。
+OBMM provider 记录实际 mmap 失败位置及 errno，runner 要求匹配的 EEXIST 与原
+映射/随后重映射同址。服务检查点为 `e7f6a66`，不改变业务 SDK/wire，不接受手工
+地址或 descriptor。r68 远端完整服务 227 个唯一 test ID 合并 listener 补跑后，
+223 通过、4 原有环境跳过、0 失败。八个分片均退出 0，定向 3/3 通过（41.204 秒），
+listener 1/1 通过（17.935 秒）。root 全量 452 项：433 通过、5 跳过、5 failures、
+9 errors（113.800 秒）；layout 72 通过、2 失败（1.26 秒），完整根仓库仍未通过。
+
+r69 两 guest 各完成两轮双向读写和回收，home 的实际 mmap EEXIST、首逻辑页保留、
+后续同址映射、endpoint 与 kernel 资源检查通过。peer 的第二次 import 在 GSVA
+路由注册阶段返回 EIO，尚未执行 mmap；CLI 仅根据 INTERNAL 和 checksum 输出的
+成功标记不足以证明 VA 冲突。严格校验器拒绝缺少 mmap EEXIST 的 peer 证据，
+runner 0/1，容器退出 1。home session 为 45075/44879 ms、peer 为 45144/44811 ms；
+结束后未发现遗留 QEMU guest。此失败保留，不改为接受任意 INTERNAL/EIO。
+
+第三版诊断复用当前映射持有的 OBMM 设备句柄，调用相同的严格映射实现验证
+MAP_FIXED_NOREPLACE，无重复 import 或路由注册。只有实际 EEXIST 才通过；
+意外创建的 VMA 由独立 probe view 跟踪，清理失败时保留 fd/import、停止接收新工作，
+并纳入 endpoint 资源统计。原映射解除前先清理 probe view。新增无效 handle、
+其他 errno 拒绝、重复探测、原数据保留、无重复 import、回滚失败保留资源的定向
+测试。root 校验器继续要求每轮实际 EEXIST，另核对 `source=retained_handle`。
+第三版 r70 远端定向 3/3 通过（19.260 秒），原生静态服务编译成功。完整服务
+八个分片均退出 0：227 个唯一 test ID 中 222 通过、5 跳过；listener 单独补跑
+1/1 通过（16.493 秒），合并为 223 通过、4 原有环境跳过、0 失败。分片耗时依次
+为 291.731、289.204、289.317、296.777、281.079、284.154、269.039、269.187 秒。
+四项剩余跳过分别依赖 arm64 deb 工具链，以及独立服务仓库未包含的三处 ub_sim
+集成文件；跳过保持显式记录，不计为通过。
+root 全量 452 项：433 通过、5 跳过、5 failures、9 errors（107.017 秒）；
+layout 为 72 通过、2 失败（1.24 秒）。已逐项比较 root 失败名称，与 r68 相同。
+本地只执行 10 项轻量测试（0.466 秒）及静态语法/空白检查，均通过。
+
+- r70 冻结源码归档 SHA-256：`aa803e31ec8687e92c5b56a807619270ab05bfd9bb3845100f0a6984586f16bd`。
+- r70 服务二进制 SHA-256：`236f36efaf8de0863896542003923d9fbb0c135061cc89b0828c2b68095bbbd3`。
+- r71 开发 initramfs SHA-256：`ade339d69b17608b94c9bb35e49cb60e287bab8397b16cda41a014d530cd6422`。
+- r71 冲突配置 SHA-256：`d32cd529ff8929d1f5c51b3d5d1dd41ab0ea18d4518f8da817ee41c728838f50`。
+- r72 SDK 配置 SHA-256：`6fb8fcfd4b75466093abfe97f85fb8a49e4bdb0231ec7a1e3e43c0e73df06e74`。
+
+r71/r72 使用同一开发镜像，只替换已验证 r62 镜像中的 service 和 run_app，manager
+未改变；不能作为正式源码锁或独立发布通过证据。
+
+r71 实际两 guest、64 KiB、两轮通过：runner 1/1 PASS、容器退出 0。双方各两次
+实际 mmap EEXIST，与原映射地址、首逻辑页 checksum 保留及后续同址映射逐项匹配；
+`map_conflict`、`mapping_resources`、`kernel_regions` 均通过。完整双向 payload
+读写校验及资源回收通过；运行后没有遗留 QEMU guest。home 两轮 28 项操作耗时
+44654/44739 ms，peer 两轮 20 项操作耗时 44541/44674 ms，不据此宣称性能收益。
+r72 同镜像 SDK 负例回归通过：runner 1/1 PASS、容器退出 0，双方
+`sdk_contract`、`mapping_resources`、`kernel_regions` 均通过。共 36 次预期拒绝
+与八次幂等重放，双方两轮完整双向数据校验和回收通过，运行后无遗留 QEMU guest。
+home 两轮 38 项操作为 44365/44376 ms，peer 两轮 30 项操作为 44282/44499 ms。
+两场景双方 QEMU 的 read_timeouts/read_errors/write_errors 均为 0。
+服务修订已保存为本地提交 `0ccd397`，其工作区干净；未推送或更新父仓库 pin。
+此验收不覆盖畸形描述符或容量耗尽，AM1 仍未关闭。
+
+r65 至 r72 的源快照、完整回归日志、启动错误、r67/r69 失败、r71/r72 通过日志及
+输入指纹保存在私有归档
+`out/gva-manager-integration/verified-r65-r72-conflict-evidence.tar.gz`。
+本地与远端 SHA-256 一致：
+`41fcb6150bcdb580cf96fce98ee27e82f47194f8a8044149b084e1ac4535b9ff`，
+大小 11321305 bytes，权限 0600。原失败记录未删除或改写成通过。
 
 ## 下一批的前置条件与未完成项
 

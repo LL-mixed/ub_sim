@@ -53,6 +53,52 @@ class ManagedGuestContractTests(unittest.TestCase):
                 self.assertEqual(managed.count(f'contract_ops "$fault" {stage} '), 2)
                 self.assertEqual(self.generated("sdk_contract", stage), (0, lines))
 
+    def test_conflict_config_only_probes_with_readonly_mapping(self):
+        self.assertEqual(self.generated("map_conflict", "readonly"),
+                         (0, ["op=probe_conflict key=obj-share-1"]))
+        for stage in ("acquired", "writable", "written", "released"):
+            self.assertEqual(self.generated("map_conflict", stage), (0, []))
+        self.assertEqual(self.generated("map_conflict", "unknown"), (2, []))
+
+    def conflict_evidence(self, node):
+        lines = []
+        for iteration in (1, 2):
+            key = f"obj-share-{iteration}"
+            base = hex(0x700000000000 + iteration * 0x200000)
+            prefix = f"mem_service object-session: session=client-{node}"
+            lines += [
+                f"{prefix} op=5 action=map key={key} status=ok base={base} len=65536",
+                f"mem_service obmm-map: result=failed stage=mmap fixed_va={base} len=65536 errno=17",
+                f"{prefix} cpu_conflict_probe=pass key={key} base={base} len=4096 preserved=1 cleanup_pending=0 source=retained_handle",
+                f"{prefix} op=3 action=probe_conflict key={key} status=ok",
+                f"{prefix} op=9 action=map key={key} status=ok base={base} len=65536",
+                f"{prefix} result=ok ops=28",
+            ]
+        return "\n".join(lines)
+
+    def test_conflict_validator_requires_actual_errno_and_preserved_address(self):
+        for node in (0, 1):
+            text = self.conflict_evidence(node)
+            validator.validate_map_conflict(text, node, 2)
+            for bad in (text.replace("errno=17", "errno=12", 1),
+                        text.replace("source=retained_handle", "source=sdk_duplicate", 1),
+                        text.replace(" source=retained_handle", "", 1),
+                        "\n".join(line for line in text.splitlines()
+                                  if not line.startswith("mem_service obmm-map:")),
+                        text.replace("preserved=1", "preserved=0", 1),
+                        text.replace("cleanup_pending=0", "cleanup_pending=1", 1),
+                        text.replace("result=ok", "result=failed", 1),
+                        text.replace("len=4096", "len=0", 1),
+                        text.replace("base=0x700000200000", "base=0x700000300000", 1),
+                        text.replace("status=ok base=0x700000200000",
+                                     "status=ok base=0x700000300000", 1),
+                        text.replace("action=probe_conflict", "action=inspect", 1),
+                        "\n".join(text.splitlines()[1:]),
+                        text + "\n" + text.splitlines()[0],
+                        text.replace("errno=17", "errno=17 errno=17", 1)):
+                with self.assertRaises(ValueError):
+                    validator.validate_map_conflict(bad, node, 2)
+
     def evidence(self, node):
         lines = []
         for iteration in (1, 2):
@@ -101,15 +147,19 @@ class ManagedGuestContractTests(unittest.TestCase):
             for node, sequence in ((0, [0, 1, 1, 0, 0]), (1, [0, 1, 1, 0])):
                 resources = "".join(fixture.sample(live, node) for live in sequence * 2)
                 resources += fixture.kernel_samples()
-                for evidence, code in ((self.evidence(node), 0), ("", 1)):
+                for flag, evidence, code in (("--sdk-contract", self.evidence(node), 0),
+                                             ("--sdk-contract", "", 1),
+                                             ("--map-conflict", self.conflict_evidence(node), 0),
+                                             ("--map-conflict", "", 1)):
                     log.write_text(resources + evidence)
                     result = subprocess.run(
                         ["python3", str(SCRIPT), "--log", str(log), "--node", str(node),
-                         "--iterations", "2", "--size", "65536", "--sdk-contract"],
+                         "--iterations", "2", "--size", "65536", flag],
                         capture_output=True, text=True, timeout=5,
                     )
                     self.assertEqual(result.returncode, code, result.stdout + result.stderr)
-                    self.assertEqual(f"sdk_contract=pass node={node}" in result.stdout,
+                    marker = flag[2:].replace("-", "_")
+                    self.assertEqual(f"{marker}=pass node={node}" in result.stdout,
                                      code == 0)
 
 

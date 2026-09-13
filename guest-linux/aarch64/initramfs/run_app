@@ -811,6 +811,14 @@ mem_service_object_share_run_consumer() {
 }
 
 mem_service_object_share_contract_ops() (
+  if [ "$1" = "map_conflict" ]; then
+    case "$2" in
+      readonly) echo "op=probe_conflict key=$3" ;;
+      acquired|writable|written|released) ;;
+      *) exit 2 ;;
+    esac
+    exit 0
+  fi
   [ "$1" = "sdk_contract" ] || exit 0
   stage="$2"
   key="$3"
@@ -1042,7 +1050,8 @@ run_mem_service_object_share() {
   fi
   if [ "$backend" = "obmm" ]; then
     if [ -n "$descriptor_hex" ] ||
-        { [ "$fault" != "none" ] && [ "$fault" != "sdk_contract" ]; }; then
+        { [ "$fault" != "none" ] && [ "$fault" != "sdk_contract" ] &&
+          [ "$fault" != "map_conflict" ]; }; then
       log "mem_service object-share: status=fail node=$node_idx backend=obmm reason=unsupported_config"
       return 2
     fi

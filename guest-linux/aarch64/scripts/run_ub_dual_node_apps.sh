@@ -2127,6 +2127,8 @@ validate_mem_service_object_share_log() {
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" == "obmm" ]]; then
     if [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "sdk_contract" ]]; then
       contract_args+=(--sdk-contract)
+    elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "map_conflict" ]]; then
+      contract_args+=(--map-conflict)
     fi
     python3 "${SCRIPT_DIR}/validate_mem_service_mapping_resources.py" \
       --log "$log_file" --node "$node_idx" \

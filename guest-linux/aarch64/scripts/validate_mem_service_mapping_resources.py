@@ -126,13 +126,73 @@ def validate_sdk_contract(text, node, iterations):
         raise ValueError("managed SDK contract evidence differs from expected rounds")
 
 
+def validate_map_conflict(text, node, iterations):
+    """Require real EEXIST with a retained original mapping and exact remapping."""
+    expected = {f"obj-share-{i}" for i in range(1, iterations + 1)}
+    probes, mappings, results = Counter(), Counter(), Counter()
+    addresses = {}
+    pending = None
+    completions = 0
+    for line in text.splitlines():
+        provider = line.startswith("mem_service obmm-map:")
+        if not provider and not line.startswith("mem_service object-session:"):
+            continue
+        fields = {}
+        for item in line.split()[2:]:
+            key, value = item.split("=", 1)
+            if key in fields:
+                raise ValueError("duplicate conflict evidence field")
+            fields[key] = value
+        if provider:
+            if (pending is not None or fields["result"] != "failed" or
+                    fields["stage"] != "mmap" or int(fields["errno"]) != 17):
+                raise ValueError("expected exactly one actual mmap EEXIST per probe")
+            pending = (int(fields["fixed_va"], 0), int(fields["len"]))
+            continue
+        if fields.get("session") != f"client-{node}":
+            continue
+        if (fields.get("result") == "failed" or "mismatch" in fields or
+                fields.get("status", "ok") != "ok"):
+            raise ValueError("conflict session failed")
+        completions += fields.get("result") == "ok"
+        key = fields.get("key")
+        if "cpu_conflict_probe" in fields:
+            base, page = int(fields["base"], 0), int(fields["len"])
+            if (fields["cpu_conflict_probe"] != "pass" or key not in expected or
+                    fields["preserved"] != "1" or fields["cleanup_pending"] != "0" or
+                    fields.get("source") != "retained_handle" or
+                    page not in (4096, 16384, 65536) or not base or base % page or
+                    mappings[key] != 1 or addresses.get(key) != base or
+                    pending is None or pending[0] != base or pending[1] < page):
+                raise ValueError("conflict probe lacks matching preserved-page evidence")
+            probes[key] += 1
+            pending = None
+        if fields.get("action") == "probe_conflict":
+            results[key] += 1
+        if fields.get("action") == "map":
+            base = int(fields["base"], 0)
+            if key not in expected or pending is not None:
+                raise ValueError("unexpected mapping during conflict probe")
+            if mappings[key] == 0:
+                addresses[key] = base
+            elif addresses[key] != base or probes[key] != 1:
+                raise ValueError("remapping changed address or preceded conflict probe")
+            mappings[key] += 1
+    if (pending is not None or completions != iterations or
+            probes != Counter({key: 1 for key in expected}) or results != probes or
+            mappings != Counter({key: 2 for key in expected})):
+        raise ValueError("missing or extra conflict probe/remapping evidence")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--node", type=int, choices=(0, 1), required=True)
     parser.add_argument("--iterations", type=int, required=True)
     parser.add_argument("--size", type=int, required=True)
-    parser.add_argument("--sdk-contract", action="store_true")
+    faults = parser.add_mutually_exclusive_group()
+    faults.add_argument("--sdk-contract", action="store_true")
+    faults.add_argument("--map-conflict", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -142,12 +202,16 @@ def main():
         validate_kernel_regions(text)
         if args.sdk_contract:
             validate_sdk_contract(text, args.node, args.iterations)
+        if args.map_conflict:
+            validate_map_conflict(text, args.node, args.iterations)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
     print(f"kernel_regions=pass node={args.node} consistency=non_atomic")
     if args.sdk_contract:
         print(f"sdk_contract=pass node={args.node} iterations={args.iterations}")
+    if args.map_conflict:
+        print(f"map_conflict=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":
