@@ -2088,6 +2088,7 @@ validate_mem_service_object_share_log() {
   local log_file="$2"
   local node_idx="0"
   local role="provider"
+  local -a contract_args=()
   if [[ "$node_name" == "nodeB" ]]; then
     node_idx="1"
     role="consumer"
@@ -2124,10 +2125,13 @@ validate_mem_service_object_share_log() {
       "${node_name} mem_service object share read evidence" || return 1
   fi
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" == "obmm" ]]; then
+    if [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "sdk_contract" ]]; then
+      contract_args+=(--sdk-contract)
+    fi
     python3 "${SCRIPT_DIR}/validate_mem_service_mapping_resources.py" \
       --log "$log_file" --node "$node_idx" \
       --iterations "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" \
-      --size "$MEM_SERVICE_OBJECT_SHARE_SIZE" || return 1
+      --size "$MEM_SERVICE_OBJECT_SHARE_SIZE" "${contract_args[@]}" || return 1
     assert_log_has "$log_file" "action=read key=obj-share-.*status=ok" \
       "${node_name} cross-client payload read" || return 1
     assert_log_has "$log_file" "action=publish_data key=obj-share-.*status=ok" \

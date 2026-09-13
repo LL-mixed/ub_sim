@@ -23,8 +23,10 @@ r46/r48 续作增加已注册 OBMM region 的 sysfs 枚举命令与基线比较�
 基线。优化版内存检查构建 r51 已成功；r53 在真实双 guest 路径捕获 GSVA route
 释放后被 RCU 清理线程访问的完整 ASan 调用栈。r55 另定位关机阶段访问已释放
 MigrationState 的缺陷，两处修复已进入 r56 构建并通过 35 项相关 QEMU 单测。
-r57 双 guest 未再报告这两处释放后访问，但在 60 秒回写屏障超时，未完成双方资源
-验收。r59 正在用同源正常优化构建核对检查开销影响；不据此关闭 r48 的原始堆损坏。
+r57 双 guest 未再报告这两处释放后访问，但在 60 秒回写屏障超时。r59 同源正常
+优化构建完成后，r60 保持 64 KiB/两轮/原预算通过，双方实际资源检查回到基线；
+r61 的 64-byte ASan/UBSan 生命周期回归也完成两轮和关机，没有新的错误报告。
+这些结果支持检查开销影响等待预算的解释；不据此认定 r48 堆损坏的唯一根因。
 详见本记录末尾，M1/AM1 仍未完成。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
@@ -855,6 +857,80 @@ r59 正常优化构建使用同一份冻结源码和独立缓存副本，通过�
 sanitizers，保留调试符号。构建容器禁网、禁止拉取镜像，Cargo 使用离线缓存。
 源码 6 项 SHA-256 已与本地逐一核对一致。后续双 guest 对照保持 r57 的对象大小、
 迭代数和全部等待预算，完成前不把性能开销假设写成根因或通过结论。
+
+### r59/r60 正常构建及 r61 sanitizer 生命周期结果
+
+r59 完成 1743 个构建步骤，构建与单测容器均退出 0；6 组相关 QEMU 单测 35/35
+通过。配置输出 `sanitizers=false`，动态依赖中无 ASan/UBSan 运行库。新 QEMU
+SHA-256 为 `2ea3357cd3e46794f659dd54f09772dc302436dd0a90c9c112096eefeaede904`。
+
+r60 先验证 kernel、QEMU、initramfs、runner、资源校验器的全部 5 个指纹，再执行
+原 64 KiB/两轮共享，保持 60000 ms 屏障、30000 ms 请求、480/650 秒 runner 预算。
+runner 1/1 PASS、容器退出 0。home 两轮 session 为 44306/44155 ms，peer 为
+44419/44210 ms。双方均完成只读、guard、同代重新映射和双向 payload 校验；
+18 个 endpoint 快照及双方 sysfs baseline/drained 比较通过，已注册 export/import
+的最终数量与字节数均为 0。QEMU 统计 read_timeouts/read_errors/write_errors
+均为 0；运行结束后没有遗留 QEMU guest 进程。
+
+r61 复用 r56 ASan/UBSan QEMU，仅将逻辑对象改为 64 bytes，继续执行两轮全部映射、
+页保护、双向读写、回收和关机。它用于生命周期诊断，不能替代 r60 的 64 KiB 结果。
+runner 1/1 PASS、容器退出 0；home 两轮为 2083/1817 ms，peer 为 2200/1755 ms。
+资源序列与 kernel 基线比较均通过。三份 ASan 日志各 123 bytes，只有既有
+makecontext/swapcontext 警告；没有独立 UBSan 日志或新的 sanitizer 错误报告。
+结束后没有遗留 QEMU guest 进程。LeakSanitizer 仍按原诊断配置关闭，资源回收结论
+来自显式 endpoint/sysfs 检查，不能宣称已检查所有宿主堆泄漏。
+
+正常构建的完整正例和小对象内存检查为两处生命周期修复补上实际 guest 证据。
+r57 的 64 KiB sanitizer 用例仍记录为超时；未覆盖失败样本，也未放宽默认等待预算。
+根仓库检查点 `bf08108` 已保存构建指纹修订、shutdown 回归及此前失败证据。
+
+## 2026-09-13 续作：SDK 合同负例与 r64 双 guest 验证
+
+新增配置场景 `MEM_SERVICE_OBJECT_SHARE_FAULT=sdk_contract`，复用
+`run_ub_dual_node_apps.sh --config <path> --app mem_service_object_share`。
+该场景在同一真实 managed session 中加入无效对象/generation、acquire/release
+重放、SDK 读写与可见性范围检查、只读写入拒绝和映射存活时 release 拒绝；随后
+继续原有双向校验和完整资源回收。默认 `none` 保持原操作序列。结果校验器增加
+`--sdk-contract`，按节点、对象及轮次要求全部九类预期拒绝和两类成功重放，仍同时
+要求 endpoint 与 kernel 资源校验通过。新增四项测试实际执行配置生成 helper 和
+校验器 CLI，覆盖缺失、重复、错误状态及缺少资源证据的拒绝。
+
+本地轻量定向测试 8/8 通过，0.270 秒；`sh -n`、`zsh -n` 与空白检查通过。
+远端 r62 全量 unittest 为 450 项：431 通过、5 跳过、5 failures、9 errors，
+57.634 秒，新增四项通过。r62 layout 为 71 通过、3 失败，其中新增的解码失败来自
+macOS tar 产生的 AppleDouble 元数据文件。保留该失败产物，使用
+`tar --no-mac-metadata --no-xattrs` 重建仅含四份源文件的 r63 输入后重新完整运行：
+
+| r63 完整回归 | 实际结果 |
+| --- | --- |
+| guest unittest | 450 项：431 通过、5 跳过、5 failures、9 errors，59.482 秒；新增四项通过 |
+| guest layout pytest | 72 通过、2 失败，1.27 秒；新增元数据解码失败已消除 |
+
+剩余失败仍涉及源码归档缺少 Git 元数据、源码锁及依赖该门槛的 W5 入口和原有包校验。
+完整套件未通过；没有改测试期望、伪造 Git 状态或跳过发布门槛。测试容器禁止联网，
+使用已有镜像与离线依赖。
+
+真实 `managed-share-20260913-r64` 使用同源正常 QEMU r59、kernel r16 和新开发
+initramfs r62；保持 64 KiB、两轮、60000 ms session 等待和 30000 ms 请求预算。
+新 initramfs 由已验证 r48 镜像只替换 `/bin/run_app` 得到，服务和 manager 二进制
+未改变；该开发产物组合不作为独立发布包或源码锁通过证据。容器退出 0，runner
+1/1 PASS；两个节点的 `sdk_contract`、`mapping_resources`、`kernel_regions`
+均通过。每节点每轮九次预期拒绝、acquire/release 各一次额外重放，合计 36 次拒绝
+和八次重放。双方两轮完整数据校验与回收通过，所有 read/write error 和 timeout
+计数为 0，运行后未发现遗留 QEMU guest。
+
+home 两轮分别执行 38 项操作，耗时 45434/44177 ms；peer 各 30 项，耗时
+45309/44059 ms。此处记录实际耗时，不据此宣称性能收益。
+
+- r63 四文件源码归档 SHA-256：`d5e53cf8bf7042cc71bbbc471c855e2ed6607f293d7dac40f4de7141e6d4a84e`。
+- r62 开发 initramfs SHA-256：`2fe9ee9dbd10cbff096f5d77387059a6a3cd7c1a5fc65b15c9c547b758685b43`。
+- r64 配置 SHA-256：`2fd57e86c77fe9bce37d1c5b9d69e77bcf430429ffca94eff4f1b01df3b2e67b`。
+- r59 至 r64 的构建、回归、guest 日志及指纹保存在私有归档
+  `out/gva-manager-integration/verified-r59-r64-evidence.tar.gz`，本地/远端
+  SHA-256 一致：`dd0f3fe9cb9b2ac8c9abecab97f38ae00f301ac2c58e2b1ec810d3108d34d157`。
+
+此范围不包含畸形 GSVA descriptor、实际固定地址冲突或 backing 耗尽；不把 SDK
+字节检查解释为 CPU 子页保护。M1/AM1 保持未完成。
 
 ## 下一批的前置条件与未完成项
 

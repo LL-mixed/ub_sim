@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate endpoint resource baselines and live mappings in managed guest logs."""
 import argparse
+from collections import Counter
 from pathlib import Path
 
 
@@ -83,12 +84,55 @@ def validate_kernel_regions(text):
         raise ValueError("kernel regions did not return to observed baseline")
 
 
+def validate_sdk_contract(text, node, iterations):
+    """Require per-object SDK rejections and actual holder-op replay results."""
+    failures, successes = Counter(), Counter()
+    completions = 0
+    for line in text.splitlines():
+        if not line.startswith("mem_service object-session:"):
+            continue
+        fields = {}
+        for item in line.split()[2:]:
+            key, value = item.split("=", 1)
+            if key in fields:
+                raise ValueError("duplicate session result field")
+            fields[key] = value
+        if fields.get("session") != f"client-{node}":
+            continue
+        if fields.get("result") == "failed" or "mismatch" in fields:
+            raise ValueError("managed SDK contract session failed")
+        completions += fields.get("result") == "ok"
+        if "action" not in fields:
+            continue
+        key, action, status = fields.get("key", "-"), fields["action"], fields["status"]
+        if status == "ok":
+            successes[key, action] += 1
+        else:
+            failures[key, action, status, fields.get("note", "")] += 1
+    expected = Counter()
+    for iteration in range(1, iterations + 1):
+        key = f"obj-share-{iteration}"
+        expected["absent-" + key, "acquire", "not_found", ""] = 1
+        expected[key, "acquire", "stale_ref", ""] = 1
+        expected[key, "write", "unsupported", "not_writable"] = 1
+        expected[key, "release", "internal", "mapping_active"] = 1
+        expected[key, "read", "checksum_mismatch", "pattern_mismatch"] = 1
+        for action in ("read", "write", "publish_data", "wait_visible"):
+            expected[key, action, "capacity_exceeded", "out_of_bounds"] = 1
+        for action in ("acquire", "release"):
+            if successes[key, action] != 2:
+                raise ValueError("missing or extra holder operation replay")
+    if failures != expected or completions != iterations:
+        raise ValueError("managed SDK contract evidence differs from expected rounds")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--node", type=int, choices=(0, 1), required=True)
     parser.add_argument("--iterations", type=int, required=True)
     parser.add_argument("--size", type=int, required=True)
+    parser.add_argument("--sdk-contract", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -96,10 +140,14 @@ def main():
         text = args.log.read_text()
         validate(text, args.node, args.iterations, args.size)
         validate_kernel_regions(text)
+        if args.sdk_contract:
+            validate_sdk_contract(text, args.node, args.iterations)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
     print(f"kernel_regions=pass node={args.node} consistency=non_atomic")
+    if args.sdk_contract:
+        print(f"sdk_contract=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":
