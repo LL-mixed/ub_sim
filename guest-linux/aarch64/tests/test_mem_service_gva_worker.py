@@ -87,7 +87,7 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                                    capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             golden = pathlib.Path(directory) / "worker-golden"
-            wrapped = ["gva_manager_allocate_segment", "gva_manager_export_segment",
+            wrapped = ["gva_manager_allocate_segment", "gva_manager_export_segment_checked",
                        "mem_service_client_publish_allocation", "gva_manager_unexport_segment",
                        "gva_manager_retire_segment", "mem_service_client_reclaim_allocation",
                        "mem_service_client_retire_object",
@@ -111,6 +111,8 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                     f"state_file={state}\nincarnation=1\nreadiness_generation=1\n"
                     "allocation_granularity_bytes=2097152\n")
             for content in ["", good + "unknown=1\n", good + "node_id=duplicate\n",
+                            good + "fast_allocation=2\n", good + "fast_allocation=-1\n",
+                            good + "fast_allocation=0\nfast_allocation=1\n",
                             good.replace("incarnation=1", "incarnation=-1"),
                             good.replace("allocation_granularity_bytes=2097152\n", ""),
                             good.replace("allocation_granularity_bytes=2097152", "allocation_granularity_bytes=3")]:
@@ -119,13 +121,14 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertFalse(state.exists())
-            config.write_text(good)
             state.write_text("unreconciled reservation\n")
-            result = subprocess.run([str(binary), "serve-allocations", "--config", str(config)],
-                                    capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn("reconciliation required", result.stderr)
-            self.assertEqual(state.read_text(), "unreconciled reservation\n")
+            for optional in ("", "fast_allocation=0\n", "fast_allocation=1\n"):
+                config.write_text(good + optional)
+                result = subprocess.run([str(binary), "serve-allocations", "--config", str(config)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("reconciliation required", result.stderr)
+                self.assertEqual(state.read_text(), "unreconciled reservation\n")
 
 
 if __name__ == "__main__":

@@ -281,6 +281,25 @@ def validate_descriptor_contract(text, node, iterations):
         raise ValueError("missing or extra descriptor binding evidence")
 
 
+def pressure_snapshots(block, label, terminal):
+    result = []
+    for payload in block.split(f"mem_service {label}: status=ok\n")[1:]:
+        fields = {}
+        for line in payload.splitlines():
+            key, sep, value = line.partition("=")
+            if not sep or not key.replace("_", "").isalnum():
+                continue
+            if key in fields:
+                raise ValueError("duplicate pressure field")
+            fields[key] = value
+            if key == terminal:
+                result.append(fields)
+                break
+        else:
+            raise ValueError("incomplete pressure snapshot")
+    return result
+
+
 def validate_address_capacity(text, node, iterations, size):
     """Check real reservations and refusal before/after non-reusable retirement."""
     if iterations != 1:
@@ -299,26 +318,8 @@ def validate_address_capacity(text, node, iterations, size):
     filled = text[positions[0]:positions[1]]
     rejected = text[positions[1]:positions[2]]
 
-    def snapshots(block, label, terminal):
-        result = []
-        for payload in block.split(f"mem_service {label}: status=ok\n")[1:]:
-            fields = {}
-            for line in payload.splitlines():
-                key, sep, value = line.partition("=")
-                if not sep or not key.replace("_", "").isalnum():
-                    continue
-                if key in fields:
-                    raise ValueError("duplicate address pressure field")
-                fields[key] = value
-                if key == terminal:
-                    result.append(fields)
-                    break
-            else:
-                raise ValueError("incomplete address pressure snapshot")
-        return result
-
     def objects(block, expected):
-        views = snapshots(block, "inspect-allocation", "descriptor_hex")
+        views = pressure_snapshots(block, "inspect-allocation", "descriptor_hex")
         if len(views) != len(expected) or {v["key"] for v in views} != set(expected):
             raise ValueError("missing or extra allocation evidence")
         return {view["key"]: view for view in views}
@@ -365,7 +366,7 @@ def validate_address_capacity(text, node, iterations, size):
         if f"obmm-worker generation={generation} phase=reserve-intent " in text:
             raise ValueError("capacity cancellation followed a resource-creating attempt")
     for block, backing, live in ((filled, 14680064, 4), (rejected, 6291456, 3)):
-        stats = snapshots(block, "allocation-stats", "idempotency_reservation_deficit")
+        stats = pressure_snapshots(block, "allocation-stats", "idempotency_reservation_deficit")
         if len(stats) != 1:
             raise ValueError("missing pressure resource counters")
         expected = {"backing_allocated_bytes": backing, "address_reserved_bytes": backing,
@@ -374,6 +375,87 @@ def validate_address_capacity(text, node, iterations, size):
                     "quarantined_bytes": 0, "idempotency_reservation_deficit": 0}
         if any(int(stats[0][key]) != value for key, value in expected.items()):
             raise ValueError("existing mappings or reservation accounting changed under pressure")
+
+
+def validate_backing_capacity(text, node, iterations):
+    """Require checked pool failure, pinned live mappings, and subsequent allocation."""
+    if iterations != 1:
+        raise ValueError("backing capacity profile requires one lifecycle")
+    if node:
+        if "action=wait_state key=obj-returned-1 status=ok state=retired" not in text:
+            raise ValueError("peer did not observe backing pressure barrier")
+        return
+    phases = ("before", "rejected", "recovered", "drained", "complete")
+    markers = [f"mem_service backing-pressure: phase={phase}" for phase in phases]
+    if any(text.count(marker) != 1 for marker in markers):
+        raise ValueError("backing pressure did not complete exactly once")
+    positions = [text.index(marker) for marker in markers]
+    if positions != sorted(positions):
+        raise ValueError("out-of-order backing pressure")
+    blocks = [text[start:end] for start, end in zip(positions, positions[1:])]
+    pools = []
+    for phase, block, live in zip(phases, blocks, (3, 3, 4, 3)):
+        stats = pressure_snapshots(block, "allocation-stats", "idempotency_reservation_deficit")
+        expected = {"backing_allocated_bytes": live * 2097152,
+                    "address_reserved_bytes": live * 2097152, "live_objects": live,
+                    "export_mappings": live, "import_mappings": 2, "live_refs": 2,
+                    "in_flight": 0, "quarantined_objects": 0, "quarantined_bytes": 0,
+                    "idempotency_reservation_deficit": 0}
+        if len(stats) != 1 or any(int(stats[0][key]) != value for key, value in expected.items()):
+            raise ValueError("existing mappings or service resources changed under backing pressure")
+        pool_lines = [line for line in block.splitlines()
+                      if line.startswith("mem_service backing-pool:")]
+        if len(pool_lines) != 1:
+            raise ValueError("missing or duplicate physical pool observation")
+        pool = dict(item.split("=", 1) for item in pool_lines[0].split()[2:])
+        if (pool["phase"] != phase or pool["consistency"] != "non_atomic" or
+                not 0 <= int(pool["ready"]) <= int(pool["total"]) < 2147483648 or
+                not 0 < int(pool["used"]) < 2147483648):
+            raise ValueError("invalid physical pool observation")
+        pools.append(int(pool["used"]))
+    if pools != [pools[0], pools[0], pools[0] + 2097152, pools[0]]:
+        raise ValueError("physical pool usage did not roll back exactly")
+    views = []
+    for block, key in zip(blocks[1:3], ("backing-empty", "backing-recovered")):
+        found = pressure_snapshots(block, "inspect-allocation", "descriptor_hex")
+        if len(found) != 1 or found[0]["key"] != key:
+            raise ValueError("missing backing allocation identity")
+        views.append(found[0])
+    empty, recovered = views
+    if (empty["state"] != "retired" or int(empty["size_bytes"]) != 2147483648 or
+            empty["descriptor_hex"] or any(int(empty[key]) for key in
+            ("address", "address_len", "descriptor_len", "provider_backed", "live_refs"))):
+        raise ValueError("failed backing allocation retained resources")
+    address = int(recovered["address"])
+    if (recovered["state"] != "active" or recovered["provider_backed"] != "1" or
+            recovered["generation"] == empty["generation"] or
+            int(recovered["size_bytes"]) != 65536 or int(recovered["address_len"]) != 2097152 or
+            int(recovered["descriptor_len"]) != 96 or len(recovered["descriptor_hex"]) != 192 or
+            address % 2097152 or not 0x700080600000 <= address <= 0x7000ffe00000):
+        raise ValueError("subsequent allocation missing or reused the retired address")
+    records = [dict(item.split("=", 1) for item in line.split()[1:])
+               for line in text.splitlines() if line.startswith("obmm-worker generation=")]
+    failed = [record for record in records if record["generation"] == empty["generation"]]
+    sequence = [record["phase"] for record in failed if "phase" in record]
+    if sequence != ["reserve-intent", "reserved", "export-no-backing", "unbacked-retire-intent",
+                    "unbacked-retired", "capacity-reject-intent", "cancel-empty", "cancel-confirmed"]:
+        raise ValueError("missing explicit no-backing receipt or ordered confirmed rollback")
+    reservations = [record for record in failed if record.get("phase") in
+                    ("reserved", "export-no-backing", "unbacked-retire-intent", "unbacked-retired")]
+    if (len({record["segment"] for record in reservations}) != 1 or
+            int(reservations[0]["segment"]) <= 0 or
+            any(int(record["export"]) for record in reservations) or
+            len([r for r in failed if r.get("reason") == "backing_allocation" and
+                 r.get("state") == "retired"]) != 1):
+        raise ValueError("rollback used inconsistent kernel identity")
+    pins = [line for line in text.splitlines() if line.startswith("mem_service backing-pin:")]
+    if len(pins) != 1:
+        raise ValueError("missing live segment retirement refusal")
+    pin = dict(item.split("=", 1) for item in pins[0].split()[2:])
+    if (pin["errno"] != "16" or int(pin["epoch"], 0) <= 0 or
+            not any(record.get("phase") == "published" and int(record["export"]) > 0 and
+                    int(record["segment"]) == int(pin["segment"], 0) for record in records)):
+        raise ValueError("retirement refusal did not refer to a published live segment")
 
 
 def main():
@@ -388,6 +470,7 @@ def main():
     faults.add_argument("--descriptor-contract", action="store_true")
     faults.add_argument("--capacity", action="store_true")
     faults.add_argument("--address-capacity", action="store_true")
+    faults.add_argument("--backing-capacity", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -405,6 +488,8 @@ def main():
             validate_capacity(text, args.node, args.iterations)
         if args.address_capacity:
             validate_address_capacity(text, args.node, args.iterations, args.size)
+        if args.backing_capacity:
+            validate_backing_capacity(text, args.node, args.iterations)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
@@ -419,6 +504,8 @@ def main():
         print(f"capacity_cleanup=pass node={args.node} iterations={args.iterations}")
     if args.address_capacity:
         print(f"address_capacity=pass node={args.node} iterations={args.iterations}")
+    if args.backing_capacity:
+        print(f"backing_capacity=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":

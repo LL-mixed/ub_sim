@@ -11,7 +11,8 @@
   `../../tests/test_gva_manager_library.py`。
 - 构建产物放在调用方的 `out/` 或临时测试目录；本目录不保存二进制。
 
-API 返回 `0` 或 `-1` 并设置 `errno`。分配失败时保留 command 中的 kernel
+除下文 checked export 的确认无 backing 结果返回 `1` 外，API 返回 `0` 或 `-1`，
+失败时设置 `errno`。分配失败时保留 command 中的 kernel
 返回信息：调用方必须核对可能已创建的 reservation，不能因结果校验失败
 就推断资源不存在。retire 成功仅证明 kernel registry 确认，跨 holder drain、
 映射撤销和实际 backing 回收仍由 provider 的生命周期管理负责。
@@ -29,6 +30,20 @@ API 返回 `0` 或 `-1` 并设置 `errno`。分配失败时保留 command 中的
 失败时输出仍保留用于资源核对；禁止仅凭函数失败就退役 segment 或假定 backing
 不存在。查询与 export 是两个 ioctl，调用方仍须串行化本 segment 的生命周期，
 此 API 不提供跨进程原子绑定或跨 holder drain 保证。
+
+## 可确认的 backing 分配结果
+
+`gva_manager_export_segment_checked` 使用独立的、固定宽度 GSVA export v1
+ioctl，携带完整 segment 身份。返回 0 表示成功，返回 1 表示内核显式确认
+backing 未建立，返回 -1 表示结果无法确认；后两种结果同时设置 errno。
+普通 export 的 errno 不参与“无 backing”推断，旧内核拒绝新 ioctl 后不回退。
+输出丢失、未知版本、身份或结果矛盾均保留 reservation 等待核对。
+
+内核仅在物理池/sgtable 分配失败且其临时内存已归还、尚未建立设备映射时报告
+NO_BACKING。export 执行中及已建立的受管理 export 会阻止 segment retire；
+unexport 成功后解除绑定，worker 才能退役 segment。未知的 export 结果继续
+阻止重用。本接口的实际验收需要匹配的新 guest kernel 与 worker；当前开发改动
+通过前不得宣称物理池耗尽或崩溃恢复验收完成。
 
 ## 内核分配检查
 

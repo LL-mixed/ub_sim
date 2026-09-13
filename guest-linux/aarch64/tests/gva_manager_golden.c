@@ -12,7 +12,9 @@ enum response_mode {
     VALID, IO_ERROR, APERTURE_NODE, APERTURE_GENERATION, BAD_TOKEN,
     BAD_ALIGNMENT, BAD_SIZE, BAD_OWNER, BAD_ID, RETIRED, RETIRE_PENDING,
     RETIRE_EPOCH, RETIRE_ERROR, STALE_TOKEN, EXPORT_ADDRESS, EXPORT_ERROR,
-    UNEXPORT_ERROR
+    UNEXPORT_ERROR, CHECKED_EMPTY, CHECKED_MISSING_ERROR, CHECKED_CONTRADICTION,
+    CHECKED_UNKNOWN, CHECKED_VERSION, CHECKED_IDENTITY, CHECKED_FLAGS,
+    CHECKED_RESERVED, CHECKED_SIZE, CHECKED_OLD_KERNEL, CHECKED_COPY_LOST
 };
 static enum response_mode mode;
 static unsigned calls;
@@ -56,6 +58,41 @@ int ioctl(int fd, unsigned long op, ...)
     argument = va_arg(args, void *);
     va_end(args);
     switch (op) {
+    case OBMM_CMD_GSVA_EXPORT_SEGMENT: {
+        struct obmm_cmd_gsva_export_segment_v1 *command = argument;
+        assert(command->version == 1 && !command->reserved);
+        assert(!(command->flags & ~OBMM_GSVA_EXPORT_F_FAST));
+        assert(command->segment.segment_id == 73 && command->segment.token_value == 53);
+        assert(command->segment.home_va == 0x700000000000ULL && command->segment.size == 65536);
+        command->outcome = OBMM_GSVA_EXPORT_CREATED;
+        command->export_mem_id = 91;
+        command->export_token_id = 97;
+        command->export_uba = command->segment.home_va;
+        command->export_size = command->segment.size;
+        if (mode == CHECKED_EMPTY || mode == CHECKED_MISSING_ERROR ||
+            mode == CHECKED_CONTRADICTION) {
+            command->outcome = OBMM_GSVA_EXPORT_NO_BACKING;
+            command->error = mode == CHECKED_MISSING_ERROR ? 0 : ENOMEM;
+            command->export_mem_id = mode == CHECKED_CONTRADICTION ? 91 : 0;
+            command->export_token_id = 0;
+            command->export_uba = 0;
+            command->export_size = 0;
+        }
+        if (mode == CHECKED_UNKNOWN) {
+            command->outcome = OBMM_GSVA_EXPORT_UNKNOWN;
+            command->error = ENOMEM;
+        }
+        if (mode == CHECKED_VERSION) command->version++;
+        if (mode == CHECKED_IDENTITY) command->segment.token_value++;
+        if (mode == CHECKED_FLAGS) command->flags ^= OBMM_GSVA_EXPORT_F_FAST;
+        if (mode == CHECKED_RESERVED) command->reserved++;
+        if (mode == CHECKED_SIZE) command->export_size++;
+        if (mode == CHECKED_OLD_KERNEL || mode == CHECKED_COPY_LOST) {
+            errno = mode == CHECKED_OLD_KERNEL ? ENOTTY : EFAULT;
+            return -1;
+        }
+        break;
+    }
     case OBMM_CMD_UNEXPORT: {
         const struct obmm_cmd_unexport *command = argument;
         assert(command->mem_id == 91 && command->flags == 0);
@@ -190,6 +227,25 @@ int main(void)
     assert(gva_manager_export_segment(42, &segment, NULL) == -1);
     assert(calls == before);
 
+    _Static_assert(sizeof(struct obmm_cmd_gsva_export_segment_v1) == 120,
+                   "checked GSVA export has a fixed-width ABI");
+    for (int fast = 0; fast <= 1; fast++) {
+        mode = VALID;
+        before = calls;
+        assert(!gva_manager_export_segment_checked(42, &segment, fast != 0, &exported));
+        assert(calls == before + 1 && exported.mem_id == 91 && exported.tokenid == 97);
+        for (mode = CHECKED_EMPTY; mode <= CHECKED_COPY_LOST; mode++) {
+            before = calls;
+            int result = gva_manager_export_segment_checked(42, &segment, fast != 0, &exported);
+            assert(calls == before + 1); /* Never retry the legacy opcode. */
+            assert(result == (mode == CHECKED_EMPTY ? 1 : -1));
+            if (mode == CHECKED_EMPTY || mode == CHECKED_UNKNOWN) assert(errno == ENOMEM);
+            else if (mode == CHECKED_OLD_KERNEL) assert(errno == ENOTTY);
+            else if (mode == CHECKED_COPY_LOST) assert(errno == EFAULT && exported.mem_id == 91);
+            else assert(errno == EPROTO);
+        }
+    }
+    mode = VALID;
     before = calls;
     request.node_id = request.node_count;
     assert(gva_manager_register_aperture(42, &request, &observed) == -1);

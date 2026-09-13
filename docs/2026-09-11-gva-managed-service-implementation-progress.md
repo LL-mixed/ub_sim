@@ -1271,6 +1271,162 @@ backing/address 字节、export/import、holder、in-flight 和 quarantine 均�
 已取回本地并核验 gzip、成员数量、长度与 SHA-256，均与远端一致；本地权限
 同为 0600。不包含原始网络操作审计日志。
 
+## 2026-09-13 续作：checked backing 分配结果与 segment pin（局部实测通过）
+
+本批补齐物理 backing 分配失败的确认边界。新增固定宽度、120-byte 的
+`OBMM_CMD_GSVA_EXPORT_SEGMENT` v1 ioctl；原 export opcode 与中立服务 wire
+保持不变。新调用携带完整 segment 身份，内核校验后在物理池分配前 pin segment。
+成功建立 export 后记录实际 export ID；执行中、已绑定及结果未知的 segment
+均拒绝直接 retire。正常 unexport 成功后才解除该绑定。
+
+结果分为 CREATED、NO_BACKING、UNKNOWN。只有池/sgtable 分配失败且临时内存已
+归还、设备映射尚未开始的路径可以返回 NO_BACKING。普通 ioctl errno、回包丢失、
+未知版本、结果字段矛盾和后续映射阶段错误均不能授权释放 reservation。
+平台库返回 0、1、-1 分别表示这三类结果；旧内核拒绝新 ioctl 后不回退普通 export。
+
+worker 收到确认无 backing 的结果后，先记录结果，再退役对应的实际 segment，
+最后调用原有 generation-bound retire/reclaim，取消未发布的服务对象。任一步无法
+确认则停止并保留状态文件；成功后继续服务，地址游标不回退。该实现未提供崩溃后
+自动 reconciliation、未知映射的强制撤销或地址安全重用。
+
+CLI 新增可选配置 `fast_allocation=0|1`，默认 0。值为 1 时只使用已清零的缓存池页，
+不走同步清零或扩容慢路径。已编写 `MEM_SERVICE_OBJECT_SHARE_FAULT=backing_capacity`
+的单轮双 guest 用例：保留双方真实映射，验证 live segment 的提前 retire 被拒绝，
+申请 2 GiB backing 并等待明确拒绝，再成功申请/释放小对象，最后继续跨节点读写。
+压力用例使用 4 GiB 虚拟 aperture，使 backing 申请可以到达内核物理池；虚拟地址
+保留本身不分配对应大小的 payload。它验证已清零缓存不足，不代表整机 RAM 耗尽。
+
+验证器要求同时具备服务账本、内核 pool used 值、实际对象身份、worker 有序回滚
+和现有映射保留证据。池统计按 `consistency=non_atomic` 记录，不宣称原子快照。
+实际运行结果和中间失败见本节后文；通过范围限定为 r118 backing 与 r119 SDK 用例。
+
+已取得结果：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| r92 GVA library / worker 定向回归 | 11 项通过，19.469 秒 |
+| r92 worker AArch64 静态构建 | `-O2 -Wall -Wextra -Werror -static` 通过 |
+| 本地网络审计及资源验证器轻量测试 | 17 项通过，0.703 秒 |
+| r93 root 全量 unittest | 459 项，438 通过、5 跳过、5 失败、11 错误，292.689 秒 |
+| r98 编译诊断 | 确认 r93 额外两个错误来自测试镜像缺少 libasan/libubsan；原始链接器错误已保存 |
+| r98 root 全量 unittest，既有 sanitizer 镜像 | 459 项，440 通过、5 跳过、5 失败、9 错误，272.330 秒；失败集合回到既有 14 项 |
+| r93 layout | 74 项，72 通过、原有 2 项失败，1.27 秒 |
+| r93 非 loopback listener | 1 项通过，25.320 秒；仅容器自身 IPv4，无公开端口 |
+| r100 服务完整回归 | 8 个分片全部结束，共执行 236 项；vendored 校验测试的两个头文件子断言失败，其余分片无失败；保留 5 项环境跳过 |
+| 本地 vendored 清单定向检查 | 更新真实头文件哈希与对应固定测试值后，1 项通过，0.001 秒；未放宽校验断言 |
+| r110 layout | 74 项，72 通过、同样 2 项既有失败，1.24 秒 |
+| r110 服务完整回归 | 236 个唯一测试编号，8 个分片全部 exit 0；231 通过、5 项环境跳过，无失败；分片耗时 187.011–205.422 秒 |
+| r109 内核与匹配驱动构建 | Image、所有配置模块、`linqu_ub_drv.ko` 构建完成，容器 exit 0，304.348 秒；最终 config 与输入 SHA-256 相同 |
+| r114 非 loopback listener 补验 | 1 项通过，7.880 秒；合并 r110 后为 232 通过、4 项环境跳过 |
+| r104b root 完整 unittest | 459 项，433 通过、5 跳过、5 失败、16 错误，609.274 秒；新增 7 个错误均为原有 10 秒限时内 C 编译未结束 |
+| r116 root 完整 unittest | 459 项，440 通过、5 跳过、5 失败、9 错误，43.636 秒；七个编译超时消失，失败编号集合与 r98 的既有 14 项相同 |
+
+最初内核构建在 n4-910c1 的隔离容器执行。保留原源码/构建缓存，在新目录叠加本批
+源文件；基础 obmm_core.c、obmm_import.c、ub_sim_decoder_main.c 的 SHA-256 与
+本地基线一致。r92 磁盘构建出现大量 I/O 等待，保留日志和构建目录后主动停止重复
+作业（exit 137）。r95 临时目录带 noexec，无法执行内核构建脚本；r95b 的前置检查
+误用了不存在的脚本名，exit 127。两次失败日志均保留。r95c 改为实际执行复制的
+shell 探针，使用显式 exec 的 32 GiB 临时工作区及 `make -j32 Image modules`，
+曾继续构建，最终在 r109 同源构建完成后停止。没有修改主机挂载设置或删除原缓存。
+
+后续验证转到另一授权目标 n4-910c 的独立临时目录。跨目标的源码归档排除 `.git`，
+五项输入哈希均与 n4-910c1 一致；源码不写入该目标已有工程。r99 构建发现其现有
+镜像缺少 OpenSSL 开发头文件。r101 检查发现原完整构建镜像达到 94421607363 字节，
+已中止该镜像的整体导出，未将它跨目标传输。导出管道最终返回 0，但仅生成
+20-byte 空 gzip；该文件明确记录为无效产物，未执行 image load。
+改用独立容器补齐开发依赖；
+`deps-r102/` 专门保存 DNF 事务、仓库请求日志及安装后包版本，不保存用户输入或
+模型数据，在证据归档前不清理。该安装只访问已核对的现有 HTTPS 软件仓库镜像
+（TUNA、华为云、USTC），保留 GPG 包验证；不修改主机软件包和全局挂载配置。
+命令级网络操作与重试继续由原审计工具记录，DNS/重定向等连接级行为不宣称已抓包。
+依赖事务退出 0，实际下载 7.5 MB，安装 OpenSSL、libelf、zstd 开发包；包版本及
+请求日志已保留。新镜像仅保存在该目标本地，随后 r103 在 `network=none` 的容器
+中先构建 OBMM 目录，再构建 Image/modules。该作业因下面定位的 CPU 信息读取
+问题继续缓慢执行，最终由同源码、同 config 的 r109 成功构建替代并停止。
+
+r93 与 r98 的服务完整回归均触发 600 秒外层超时，八个分片均未完成，不能计作通过。
+原始日志保留；n4-910c 上的 r100 使用同源快照和 1500 秒外层限时完成执行，暴露
+本批 UAPI 头文件更新后未同步 vendored 校验清单的问题。r104 已更新清单和精确
+哈希测试值，并开始重新执行完整服务与 guest 契约套件。源码 revision 暂时保留
+扩展前基线并明确注明开发差量；待内核测试和提交后填写实际新 revision。
+上述内核、服务和真实 guest 的本批最终验收仍未完成。
+
+后续定位到构建环境的独立瓶颈：r107b 的空 C 编译耗时 19.081 秒，实际 user/sys
+分别为 0.013/0.298 秒；三个本任务 GCC 进程均停在宿主 `/proc/cpuinfo` 的
+`c_show` 读取路径。cgroup v1 无 CPU quota 且没有 throttling。r108 保存同一宿主
+未经修改的 CPU 信息，核对 320 个 processor 条目与在线处理器数相同，然后仅在
+新容器中只读绑定该原始快照；同一空编译降至 0.022 秒。快照 SHA-256 为
+`3b6adba1371c7de6b47568ca19a650784394e10f0faf1743dc3419d6f104e7b8`。
+该调整不改变宿主 `/proc`、CPU 特性、源码、编译选项或断言，不属于运行性能数据。
+两个空编译对象的 SHA-256 完全相同；r109 完整构建随后实测使用约 32 个 CPU 核心。
+新 r109 构建采用相同源码/config 与本地依赖镜像，使用该只读快照消除重复读取等待。
+此前所有慢作业和失败证据仍保留，最终结果按实际终态记录。
+
+r104 root 容器曾因重复传入 shell 入口退出 126，没有执行测试；启动日志已保留，
+r104b 显式指定入口后开始完整 unittest。r104b 的独立 layout 容器缺少 pytest，
+同样未执行对应测试；随后 r110 使用原有含 pytest 的 r14 镜像完成 74 项验证。
+没有为这些环境故障修改测试内容或安装新的宿主依赖。
+r116 沿用完全相同的源码、断言与限时，改用 n4-910c1 自己的原始 CPU 信息快照，
+重新执行完整 unittest；七个对应测试实际通过，原超时运行仍保留为失败记录。
+r109/r110 成功后，精确停止了本任务的 r95c/r103 慢构建及 r104 八个慢分片；
+均记录 exit 137，保留容器、日志、config 和可重建的源码快照，未删除用户源码。
+
+r111 首次实际双 guest 验证失败：新内核完成 bootstrap、provider conformance、
+两端同址 mapping；B 逐字节读取 A 发布的 64 KiB 数据，并写回、发布。
+随后压力辅助流程因 guest 没有 `awk` 命令退出，尚未执行大额 backing 分配及
+live segment retire 检查；A 等待压力屏障超时，整个用例判为 FAIL，runner exit 1。
+未将部分成功计作完整验收。日志和报告保留，退出后独立查询没有遗留 QEMU。
+r117 将三处字段提取改为既有 guest 流程使用的 `/bin/busybox sed`，未安装新依赖。
+新增定向测试从真实脚本读取表达式，验证 64-bit segment/地址/epoch 提取及无匹配
+输出；本地资源验证器与网络审计合计 18 项通过，0.713 秒。后续重跑完整套件和
+r118 backing/r119 SDK 真实用例，仍使用相同 r109 内核和 r92 worker。
+
+r118 backing 用例已实际通过，两个 guest 的 `mapping_resources`、`kernel_regions`
+和 `backing_capacity` 校验均 PASS，runner exit 0。活跃 segment 的直接 retire
+返回 errno 16。2 GiB 请求取得 NO_BACKING，真实 segment 退役及服务取消确认完成；
+小对象随后分配成功并回收，A 再次逐字节读到 B 发布的 64 KiB 写回数据。
+内核 pool used 在 before/rejected/recovered/drained 四个时点分别为
+8388608/8388608/10485760/8388608 bytes；失败时 ready 为 0，后台补充缓存后恢复。
+pool total 会随缓存归还和补充变化，未将它描述为固定容量或原子快照。
+结束时双方真实 export/import 计数回到基线，独立 `pgrep` 检查没有遗留 QEMU。
+
+r117 最新完整回归：root 460 项，441 通过、5 跳过、5 失败、9 错误，44.051 秒；
+失败集合仍为既有 14 项。layout 72/74 通过，1.23 秒，失败同前。
+服务 8 分片全部 exit 0，236 项、231 通过、5 跳过，184.180–200.882 秒；
+结合相同服务源码的 r114 独立 listener 补验为 232 通过、4 项环境跳过。
+两次 SSH banner 超时发生在启动前；恢复后先确认相应容器不存在，再重试。
+所有尝试及重新核对分别记录到网络审计，未因超时启动重叠作业。
+
+r119 使用完全相同内核、worker 和 rootfs 完成两轮 SDK 合同及双向 CPU 读写；
+双方 `sdk_contract`、`mapping_resources`、`kernel_regions` 均 PASS，runner exit 0，
+101.286 秒。r118 用时 62.078 秒。两轮运行后的独立 QEMU 残留查询均无结果。
+构建源基线为 `f3f7aa992495da7c2d129629779ce60e227bc3cf`；基线已有八文件开发
+差量，本批叠加后共十三个差量文件。r120 对这十三个文件逐一核对实际构建源与
+本地工作区 SHA-256，全部一致，包含未在 r92 中重复打包的 `obmm_async_load.h`。
+
+证据归档约定：`build-tests-r120.tar.gz` 保存第二目标的完整测试、构建和依赖事务
+记录；最终 `verified-r111-r120-backing-evidence.tar.gz` 根层保存该嵌套归档、源码
+增量、输入清单、config、镜像及专属报告，guest 日志按各自 run ID 目录保存。
+不归档 `.git`、模型文件、FM payload 目录或完整容器镜像。归档需校验 gzip、成员
+清单、远端与本地 SHA-256，权限设为 0600；验证前不清理已有日志和容器。
+本节未关闭 AM1 全部出口，更未关闭 AM2/AM3/AM4 或正式发布验收。
+
+本批本地提交：kernel `d7898f5e0b682d5af7ff76de9a8592c717f544b7`，
+mem_service `3c60206d9ac0387c0d487461aa9e308744cb5013`。
+VENDORED 来源记录已更新到该实际内核提交，两个头文件 SHA 保持与构建源相同。
+随后 r120 完整服务套件及独立 listener 再次得到 232 通过、4 项环境跳过；
+root 460 项，441 通过、5 跳过及同样 14 项既有失败，43.617 秒；
+layout 72/74 通过，1.25 秒。没有执行 push，父仓库 gitlink/lock 均未更新。
+
+第二目标的 `build-tests-r120.tar.gz` 已归档 70 个精确成员，1171724 bytes，
+SHA-256 为 `18b51dc7a2d91e7dc37ee8b5683ac4e6fdf4a79931f80de2959a82d4e018eb67`。
+最终 `verified-r111-r120-backing-evidence.tar.gz` 包含该嵌套归档，共 83 个归档
+成员，91165071 bytes，SHA-256 为
+`8000bf14c0b747099f663b0138054ac8e6d9c8e9f23fc620137496bb3b792f07`。
+其中保留失败的 r111 rootfs/日志和通过的 r118/r119、实际 QEMU 二进制、kernel、
+匹配模块、配置及源码增量；未清理中间失败证据。归档已取回本地，gzip、成员数、
+长度及 SHA-256 均与远端一致，权限为 0600。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -1278,9 +1434,10 @@ backing/address 字节、export/import、holder、in-flight 和 quarantine 均�
 mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必须拒绝。
 本轮未增加绕过开关，未修改父仓库 pin，也未把已知失败计作通过。
 
-幂等容量耗尽后的正常清理保证，以及单 home 的真实地址耗尽/拒绝后继续访问均已有
-通过证据。下一批继续处理物理 backing 池耗尽后的资源核对、并发及更广的
-size/alignment 压力、provider/kernel 独立身份负例，以及长期运行所需的幂等历史
+幂等容量耗尽后的正常清理保证、单 home 的真实地址耗尽/拒绝后继续访问，以及已清零
+backing 缓存不足后的确认回滚、资源核对和恢复分配均已有通过证据。
+下一批继续处理并发及更广的 size/alignment 压力、provider/kernel 独立身份负例，
+以及长期运行所需的幂等历史
 回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把这些
 容量子集当作 100 次循环或无限请求的验收。
 已有 endpoint 计量和 registered-region 基线核对覆盖正常清理，崩溃、失联和未知资源

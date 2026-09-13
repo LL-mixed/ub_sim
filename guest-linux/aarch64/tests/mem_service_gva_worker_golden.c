@@ -6,13 +6,15 @@
 enum failure_mode {
     GOOD, ALLOC_FAIL, EXPORT_FAIL, PUBLISH_FAIL, BAD_REPLY,
     UNEXPORT_FAIL, RETIRE_FAIL, RECLAIM_FAIL, BAD_RECLAIM_REPLY,
-    CANCEL_FAIL, BAD_CANCEL_REPLY, BAD_CANCEL_BINDING, BACKED_CANCEL_REPLY
+    CANCEL_FAIL, BAD_CANCEL_REPLY, BAD_CANCEL_BINDING, BACKED_CANCEL_REPLY,
+    BACKING_EMPTY
 };
 static enum failure_mode mode;
 static unsigned allocated, exports, publishes;
 static unsigned unexports, retires, reclaims;
 static bool publish_cancelled, empty_cancel;
 static bool drive_worker_loop;
+static bool rollback_empty;
 static unsigned cancellations, loop_polls;
 
 int __real_open(const char *path, int flags, ...);
@@ -102,18 +104,24 @@ int __wrap_gva_manager_allocate_segment(int fd, struct obmm_cmd_gsva_alloc_segme
     return mode == ALLOC_FAIL ? -1 : 0;
 }
 
-int __wrap_gva_manager_export_segment(int fd,
-    const struct obmm_gsva_segment_desc_v1 *segment, struct obmm_cmd_export *out)
+int __wrap_gva_manager_export_segment_checked(int fd,
+    const struct obmm_gsva_segment_desc_v1 *segment, bool fast, struct obmm_cmd_export *out)
 {
+    (void)fast;
     assert(fd == 42);
     exports++;
     memset(out, 0, sizeof(*out));
+    if (mode == BACKING_EMPTY) {
+        errno = ENOMEM;
+        return 1;
+    }
     out->length = 1;
     out->size[0] = segment->size;
     out->uba = segment->home_va;
     out->flags = OBMM_EXPORT_FLAG_GSVA_FIXED_UBA | OBMM_EXPORT_FLAG_ALLOW_MMAP;
     out->mem_id = 17;
     out->tokenid = 97;
+    if (mode == EXPORT_FAIL) errno = ENOMEM; /* errno alone is not a receipt. */
     return mode == EXPORT_FAIL ? -1 : 0;
 }
 
@@ -154,7 +162,7 @@ int __wrap_gva_manager_unexport_segment(int fd,
 int __wrap_gva_manager_retire_segment(int fd, struct obmm_cmd_gsva_retire_segment_v1 *retire)
 {
     assert(fd == 42 && retire->segment_id == 9 && retire->epoch == 1);
-    assert(unexports == retires + 1);
+    assert(rollback_empty ? unexports == 0 : unexports == retires + 1);
     retires++;
     return mode == RETIRE_FAIL ? -1 : 0;
 }
@@ -368,6 +376,41 @@ int main(void)
         work.provider_backed = false;
         assert(!cancel_unreserved_work(fileno(journal), &config, &client, &work));
         assert(allocated == before + 1);
+    }
+    {
+        const enum failure_mode failures[] = {GOOD, RETIRE_FAIL, CANCEL_FAIL,
+            BAD_CANCEL_REPLY, BAD_CANCEL_BINDING, BACKED_CANCEL_REPLY,
+            RECLAIM_FAIL, BAD_RECLAIM_REPLY};
+        rollback_empty = empty_cancel = true;
+        for (size_t i = 0; i < sizeof(failures) / sizeof(failures[0]); i++) {
+            unsigned before_publish = publishes;
+            uint64_t previous_address = next_address;
+            memset(&reservation, 0, sizeof(reservation));
+            strcpy(work.state, "allocating");
+            mode = BACKING_EMPTY;
+            assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
+                                 &reservation, &next_address) == WORKER_ALLOCATE_BACKING_EMPTY);
+            assert(reservation.occupied && reservation.export_no_backing);
+            assert(next_address > previous_address && publishes == before_publish);
+            unexports = retires = reclaims = 0;
+            reservation.exported.mem_id = 17;
+            assert(rollback_unbacked_work(42, fileno(journal), &config, &client, &work,
+                                          &reservation));
+            reservation.exported.mem_id = 0;
+            work.provider_incarnation++;
+            assert(rollback_unbacked_work(42, fileno(journal), &config, &client, &work,
+                                          &reservation));
+            work.provider_incarnation--;
+            assert(rollback_unbacked_work(42, -1, &config, &client, &work, &reservation));
+            assert(retires == 0 && reclaims == 0);
+            mode = failures[i];
+            int rc = rollback_unbacked_work(42, fileno(journal), &config, &client, &work,
+                                           &reservation);
+            assert((rc == 0) == (mode == GOOD));
+            assert(reservation.occupied == (mode != GOOD));
+            assert(retires == 1 && unexports == 0 && publishes == before_publish);
+        }
+        rollback_empty = false;
     }
     {
         char directory[] = "/tmp/gva-worker-loop-XXXXXX";

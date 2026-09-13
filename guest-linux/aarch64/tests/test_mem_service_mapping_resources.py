@@ -34,6 +34,84 @@ def kernel_samples():
 
 
 class MappingResourceValidationTests(unittest.TestCase):
+    def test_backing_query_parser_uses_bundled_busybox(self):
+        runner = SCRIPT.parents[1] / "initramfs/run_app"
+        helper = runner.read_text().split(
+            "mem_service_object_share_backing_pressure() (", 1)[1].split(
+                "\nmem_service_object_share_managed() (", 1)[0]
+        self.assertNotIn("awk", helper)
+        query = ("gva_manager: result=done action=gsva-segment-query "
+                 "segment_id=0xc4c2000000000001 home_va=0x700000000000 epoch=0x1\n")
+        for field, source, expected in (
+                ("address", "key=obj-share-1\naddress=0x700000000000\n", "0x700000000000\n"),
+                ("segment", query, "0xc4c2000000000001\n"),
+                ("epoch", query, "0x1\n")):
+            marker = f"{field}=$(/bin/busybox sed -n '"
+            self.assertIn(marker, helper)
+            expression = helper.split(marker, 1)[1].split("'", 1)[0]
+            for text, wanted in ((source, expected), ("unrelated diagnostic\n", "")):
+                with self.subTest(field=field, text=text):
+                    result = subprocess.run(["sed", "-n", expression], input=text,
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, wanted)
+
+    def test_backing_capacity_requires_kernel_receipt_and_unchanged_pool_usage(self):
+        text = "obmm-worker generation=1 phase=published segment=73 export=91\n"
+        text += "mem_service backing-pin: segment=0x49 epoch=0x1 errno=16\n"
+        for phase, live in (("before", 3), ("rejected", 3), ("recovered", 4), ("drained", 3)):
+            text += f"mem_service backing-pressure: phase={phase}\n"
+            fields = {"backing_allocated_bytes": live * 2097152,
+                      "address_reserved_bytes": live * 2097152, "live_objects": live,
+                      "export_mappings": live, "import_mappings": 2, "live_refs": 2,
+                      "in_flight": 0, "quarantined_objects": 0, "quarantined_bytes": 0,
+                      "idempotency_reservation_deficit": 0}
+            text += "mem_service allocation-stats: status=ok\n" + "".join(
+                f"{key}={value}\n" for key, value in fields.items())
+            text += (f"mem_service backing-pool: phase={phase} total=1073741824 "
+                     f"used={live * 2097152 + 4194304} ready=1048576000 consistency=non_atomic\n")
+            if phase in ("rejected", "recovered"):
+                active = phase == "recovered"
+                fields = {"key": "backing-recovered" if active else "backing-empty",
+                          "generation": 5 if active else 4, "state": "active" if active else "retired",
+                          "size_bytes": 65536 if active else 2147483648,
+                          "address": 0x700080600000 if active else 0,
+                          "address_len": 2097152 if active else 0,
+                          "provider_backed": int(active), "live_refs": 0,
+                          "descriptor_len": 96 if active else 0,
+                          "descriptor_hex": "ab" * 96 if active else ""}
+                text += "mem_service inspect-allocation: status=ok\n" + "".join(
+                    f"{key}={value}\n" for key, value in fields.items())
+        text += "mem_service backing-pressure: phase=complete\n"
+        for phase in ("reserve-intent", "reserved", "export-no-backing", "unbacked-retire-intent",
+                      "unbacked-retired", "capacity-reject-intent", "cancel-empty", "cancel-confirmed"):
+            segment = 74 if phase in ("reserved", "export-no-backing", "unbacked-retire-intent",
+                                      "unbacked-retired") else 0
+            text += f"obmm-worker generation=4 phase={phase} segment={segment} export=0\n"
+        text += "obmm-worker generation=4 state=retired reason=backing_allocation size=2147483648 alignment=0\n"
+        module.validate_backing_capacity(text, 0, 1)
+        for bad in ("", text + text, text.replace("errno=16", "errno=22"),
+                    text.replace("segment=0x49", "segment=0x50"),
+                    text.replace("phase=export-no-backing", "phase=export-unknown"),
+                    text.replace("phase=unbacked-retired", "phase=retire-unknown"),
+                    text.replace("segment=74", "segment=75", 1),
+                    text.replace("segment=74 export=0", "segment=74 export=91", 1),
+                    text.replace("reason=backing_allocation", "reason=address_capacity"),
+                    text.replace("used=10485760", "used=12582912", 1),
+                    text.replace("total=1073741824", "total=2147483648"),
+                    text.replace("consistency=non_atomic", "consistency=atomic"),
+                    text.replace("import_mappings=2", "import_mappings=1"),
+                    text.replace("state=retired", "state=allocating"),
+                    text.replace(str(0x700080600000), str(0x700000600000)),
+                    text.replace("generation=5", "generation=4"),
+                    text.replace("phase=complete", "phase=drained")):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, KeyError)):
+                module.validate_backing_capacity(bad, 0, 1)
+        with self.assertRaises(ValueError):
+            module.validate_backing_capacity(text, 0, 2)
+        module.validate_backing_capacity(
+            "action=wait_state key=obj-returned-1 status=ok state=retired", 1, 1)
+
     def test_address_capacity_requires_actual_geometry_and_preserved_mappings(self):
         def view(key, generation, size, alignment=0, address=0, length=0):
             fields = {"key": key, "generation": generation, "size_bytes": size,

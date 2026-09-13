@@ -941,6 +941,82 @@ mem_service_object_share_address_pressure() (
   echo "mem_service address-pressure: phase=released"
 )
 
+mem_service_object_share_backing_snapshot() (
+  echo "mem_service backing-pressure: phase=$2"
+  /bin/linqu_mem_service allocation-stats --connect "$1" || exit 1
+  pool=/sys/kernel/obmm_mempool/obmm-0
+  read -r total <"$pool/total" || exit 1
+  read -r used <"$pool/used" || exit 1
+  read -r ready <"$pool/available_cleared" || exit 1
+  echo "mem_service backing-pool: phase=$2 total=$((total)) used=$((used)) ready=$((ready)) consistency=non_atomic"
+)
+
+mem_service_object_share_backing_pressure() (
+  connect="$1"
+  {
+    echo "session_id=backing-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=obj-returned-1 state=active timeout_ms=60000 poll_ms=50"
+  } >/tmp/backing-pressure-begin.conf
+  /bin/linqu_mem_service object-session --config /tmp/backing-pressure-begin.conf || exit 1
+  /bin/linqu_mem_service inspect-allocation --connect "$connect" --key obj-share-1 \
+    >/tmp/backing-pressure-active.log || exit 1
+  address=$(/bin/busybox sed -n 's/^address=//p' /tmp/backing-pressure-active.log)
+  /bin/linqu_gva_manager --query --home-va "$address" >/tmp/backing-pressure-query.log 2>&1 || exit 1
+  segment=$(/bin/busybox sed -n 's/.*result=done action=gsva-segment-query segment_id=\([^ ]*\).*/\1/p' /tmp/backing-pressure-query.log)
+  epoch=$(/bin/busybox sed -n 's/.*result=done action=gsva-segment-query .* epoch=\([^ ]*\).*/\1/p' /tmp/backing-pressure-query.log)
+  if /bin/linqu_gva_manager --retire --segment-id "$segment" --epoch "$epoch" \
+      >/tmp/backing-pressure-retire.log 2>&1; then
+    exit 1
+  fi
+  grep -q 'result=fail action=gsva-segment-retire errno=16' /tmp/backing-pressure-retire.log || exit 1
+  /bin/linqu_gva_manager --query --segment-id "$segment" || exit 1
+  echo "mem_service backing-pin: segment=$segment epoch=$epoch errno=16"
+  mem_service_object_share_backing_snapshot "$connect" before || exit 1
+  {
+    echo "session_id=backing-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=allocate key=backing-empty idempotency_key=backing-empty size_bytes=2147483648 capabilities=map"
+    echo "op=wait_state key=backing-empty state=retired timeout_ms=60000 poll_ms=50"
+  } >/tmp/backing-pressure-empty.conf
+  /bin/linqu_mem_service object-session --config /tmp/backing-pressure-empty.conf || exit 1
+  mem_service_object_share_backing_snapshot "$connect" rejected || exit 1
+  /bin/linqu_mem_service inspect-allocation --connect "$connect" --key backing-empty || exit 1
+  # FAST uses cleared cached pages only. Wait for background clearing after rollback.
+  attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    read -r ready </sys/kernel/obmm_mempool/obmm-0/available_cleared || exit 1
+    [ "$((ready))" -lt 2097152 ] || break
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  [ "$attempt" -lt 30 ] || exit 1
+  {
+    echo "session_id=backing-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=allocate key=backing-recovered idempotency_key=backing-recovered size_bytes=65536 capabilities=map"
+    echo "op=wait_state key=backing-recovered state=active timeout_ms=60000 poll_ms=50"
+  } >/tmp/backing-pressure-recover.conf
+  /bin/linqu_mem_service object-session --config /tmp/backing-pressure-recover.conf || exit 1
+  mem_service_object_share_backing_snapshot "$connect" recovered || exit 1
+  /bin/linqu_mem_service inspect-allocation --connect "$connect" --key backing-recovered || exit 1
+  {
+    echo "session_id=backing-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=retire key=backing-recovered idempotency_key=backing-recovered-retire"
+    echo "op=wait_state key=backing-recovered state=retired timeout_ms=60000 poll_ms=50"
+  } >/tmp/backing-pressure-drain.conf
+  /bin/linqu_mem_service object-session --config /tmp/backing-pressure-drain.conf || exit 1
+  mem_service_object_share_backing_snapshot "$connect" drained || exit 1
+  /bin/linqu_mem_service retire-object --connect "$connect" --key obj-returned-1 \
+    --idempotency-key backing-barrier-release || exit 1
+  echo "mem_service backing-pressure: phase=complete"
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -953,6 +1029,12 @@ mem_service_object_share_managed() (
   daemon_pid=""
   worker_pid=""
   capacity_pid=""
+  pressure_barrier=0
+  aperture_size=0x1000000
+  case "$fault" in
+    capacity|address_capacity|backing_capacity) pressure_barrier=1 ;;
+  esac
+  [ "$fault" != "backing_capacity" ] || aperture_size=0x100000000
   cleanup_managed_share() {
     if [ -n "$capacity_pid" ]; then
       kill "$capacity_pid" 2>/dev/null || true
@@ -990,7 +1072,7 @@ mem_service_object_share_managed() (
   fi
   /bin/linqu_gva_manager --bootstrap --node-id "$node" --node-count 2 \
     --generation "$incarnation" --aperture-base 0x700000000000 \
-    --aperture-size 0x1000000 || exit 1
+    --aperture-size "$aperture_size" || exit 1
   /bin/linqu_mem_service_obmm_provider_conformance --node-id "$node" \
     --node-count 2 --generation "$incarnation" || exit 1
   echo "mem_service kernel-regions: phase=baseline"
@@ -1006,6 +1088,7 @@ mem_service_object_share_managed() (
     echo "readiness_generation=$incarnation"
     echo "state_file=/tmp/managed-share.worker.state"
     echo "allocation_granularity_bytes=2097152"
+    [ "$fault" != "backing_capacity" ] || echo "fast_allocation=1"
   } >/tmp/managed-share.worker.conf
   /bin/linqu_mem_service_provider_obmm serve-allocations \
     --config /tmp/managed-share.worker.conf &
@@ -1016,6 +1099,10 @@ mem_service_object_share_managed() (
   fi
   if [ "$node" = "0" ] && [ "$fault" = "address_capacity" ]; then
     mem_service_object_share_address_pressure "$connect" &
+    capacity_pid=$!
+  fi
+  if [ "$node" = "0" ] && [ "$fault" = "backing_capacity" ]; then
+    mem_service_object_share_backing_pressure "$connect" &
     capacity_pid=$!
   fi
   i=1
@@ -1057,7 +1144,7 @@ mem_service_object_share_managed() (
         mem_service_object_share_contract_ops "$fault" written "$key" "$size" "$seed" "acq-a-$i"
         echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
         echo "op=allocate key=$sent idempotency_key=sent-$i size_bytes=65536 capabilities=map"
-        if [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ]; then
+        if [ "$pressure_barrier" = "1" ]; then
           echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
         else
           echo "op=wait_state key=$returned state=active timeout_ms=60000 poll_ms=50"
@@ -1072,7 +1159,7 @@ mem_service_object_share_managed() (
         echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
         echo "op=retire key=$sent idempotency_key=retire-sent-$i"
         echo "op=wait_state key=$sent state=retired timeout_ms=60000 poll_ms=50"
-        if [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ]; then
+        if [ "$pressure_barrier" = "0" ]; then
           echo "op=retire key=$returned idempotency_key=retire-returned-$i"
         fi
         echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
@@ -1098,7 +1185,7 @@ mem_service_object_share_managed() (
         echo "op=write key=$key offset=0 len=$size seed=$((seed + 1))"
         mem_service_object_share_contract_ops "$fault" written "$key" "$size" "$((seed + 1))" "acq-b-$i"
         echo "op=publish_data key=$key offset=0 len=$size seed=$((seed + 1))"
-        if [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ]; then
+        if [ "$pressure_barrier" = "1" ]; then
           echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
           echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
         fi
@@ -1106,7 +1193,7 @@ mem_service_object_share_managed() (
         echo "op=stats"
         echo "op=release key=$key idempotency_key=rel-b-$i"
         mem_service_object_share_contract_ops "$fault" released "$key" "$size" "$((seed + 1))" "rel-b-$i"
-        if [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ]; then
+        if [ "$pressure_barrier" = "0" ]; then
           echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
         fi
         echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
@@ -1174,8 +1261,10 @@ run_mem_service_object_share() {
     if [ -n "$descriptor_hex" ] ||
         { [ "$fault" != "none" ] && [ "$fault" != "sdk_contract" ] &&
           [ "$fault" != "map_conflict" ] && [ "$fault" != "descriptor_contract" ] &&
-          [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ]; } ||
-        { { [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ]; } &&
+          [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ] &&
+          [ "$fault" != "backing_capacity" ]; } ||
+        { { [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ] ||
+            [ "$fault" = "backing_capacity" ]; } &&
           [ "$iterations" != "1" ]; }; then
       log "mem_service object-share: status=fail node=$node_idx backend=obmm reason=unsupported_config"
       return 2

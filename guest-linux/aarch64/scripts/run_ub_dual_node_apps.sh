@@ -2135,6 +2135,8 @@ validate_mem_service_object_share_log() {
       contract_args+=(--capacity)
     elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "address_capacity" ]]; then
       contract_args+=(--address-capacity)
+    elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "backing_capacity" ]]; then
+      contract_args+=(--backing-capacity)
     fi
     python3 "${SCRIPT_DIR}/validate_mem_service_mapping_resources.py" \
       --log "$log_file" --node "$node_idx" \

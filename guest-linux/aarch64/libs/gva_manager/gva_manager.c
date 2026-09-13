@@ -158,6 +158,56 @@ int gva_manager_export_segment(
     return 0;
 }
 
+int gva_manager_export_segment_checked(
+    int fd, const struct obmm_gsva_segment_desc_v1 *segment, bool fast,
+    struct obmm_cmd_export *export_out)
+{
+    struct obmm_cmd_gsva_export_segment_v1 command = {0};
+    int result, saved_errno;
+
+    if (!export_out)
+        return fail(EINVAL);
+    memset(export_out, 0, sizeof(*export_out));
+    if (!segment || !valid_descriptor(segment))
+        return fail(EINVAL);
+    command.version = OBMM_GSVA_ABI_VERSION;
+    command.flags = fast ? OBMM_GSVA_EXPORT_F_FAST : 0;
+    command.segment = *segment;
+    result = ioctl(fd, OBMM_CMD_GSVA_EXPORT_SEGMENT, &command);
+    saved_errno = errno;
+    /* Preserve even partial or contradictory kernel outputs for reconciliation. */
+    export_out->length = 1;
+    export_out->flags = OBMM_EXPORT_FLAG_ALLOW_MMAP | OBMM_EXPORT_FLAG_GSVA_FIXED_UBA |
+                        (fast ? OBMM_EXPORT_FLAG_FAST : 0);
+    export_out->mem_id = command.export_mem_id;
+    export_out->tokenid = command.export_token_id;
+    export_out->uba = command.export_uba;
+    export_out->size[0] = command.export_size;
+    if (result)
+        return fail(saved_errno);
+    if (command.version != OBMM_GSVA_ABI_VERSION || command.reserved ||
+        command.flags != (fast ? OBMM_GSVA_EXPORT_F_FAST : 0) ||
+        memcmp(&command.segment, segment, sizeof(*segment)))
+        return fail(EPROTO);
+    if (command.outcome == OBMM_GSVA_EXPORT_CREATED) {
+        if (command.error || !command.export_mem_id || !command.export_token_id ||
+            command.export_uba != segment->home_va || command.export_size != segment->size)
+            return fail(EPROTO);
+        return 0;
+    }
+    if (command.outcome == OBMM_GSVA_EXPORT_NO_BACKING) {
+        if (command.error <= 0 || command.error > 4095 || command.export_mem_id ||
+            command.export_token_id || command.export_uba || command.export_size)
+            return fail(EPROTO);
+        errno = command.error;
+        return 1;
+    }
+    if (command.outcome != OBMM_GSVA_EXPORT_UNKNOWN ||
+        command.error <= 0 || command.error > 4095)
+        return fail(EPROTO);
+    return fail(command.error);
+}
+
 int gva_manager_unexport_segment(
     int fd, const struct obmm_gsva_segment_desc_v1 *segment,
     const struct obmm_cmd_export *exported)
