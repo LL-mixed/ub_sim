@@ -1480,6 +1480,39 @@ gzip、成员数、长度和 SHA 均与远端一致；归档包含两次源码�
 日志、实际 guest 证据和明确的来源清单。四个执行/测试源文件在 r121/r121b
 归档之间逐个 `cmp` 相同；r120 与 r121b 的 14 个失败编号排序比较无差异。
 
+## 2026-09-13 续作：home kernel export 身份检查（局部实测通过）
+
+现有 manager CLI 新增 `--check-export-identity --segment-id ID`。实际 query
+取得原始 segment 后，分别改变副本的 14 个 descriptor 字段及三个 ioctl 外层字段，
+直接执行 checked-export ioctl；descriptor 不匹配须得到 ESTALE，外层格式错误须
+得到 EINVAL。每次随后 query 并核对原始 descriptor 完全不变，日志不打印 token value。
+所有 export 请求都包含一个不匹配字段，不发送可能分配 backing 的有效 export 请求。
+有效重复 export 的拒绝、consumer 导入以及动态轮换仍需独立证据。
+
+诊断接入既有 `backing_capacity` profile，在两端 CPU mapping 保持期间执行。
+最终仍需完成原对象读写、实际 backing 分配失败后的恢复和完整资源清单归零。
+新增 CLI 定向测试覆盖 17 组调用、非预期 errno、非预期成功、query 失败及身份变化；
+它使用边界替身，不作为实际 kernel 验收。轻量资源验证器/网络审计 20 项通过，
+0.751 秒；远端 manager 8 项定向测试通过，3.109 秒，静态 AArch64 编译通过。
+r123 完整 unittest 为 463 项，444 通过、5 跳过、5 失败、9 错误，45.212 秒；
+14 个失败 ID 与 r121b 排序比较无差异。layout 72/74 通过，1.23 秒，失败同前。
+
+r123 实际双节点 `backing_capacity` 用例已通过，runner exit 0，62.042 秒。
+真实 home kernel 的 17 组检查全部取得预期 errno，每次 query 的原始身份均不变；
+两个 guest 的 `backing_capacity`、`mapping_resources`、`kernel_regions` 均 PASS。
+检查期间保持原有 CPU mapping，最后 A 读回 B 发布的 65536 bytes，checksum 为
+`0xbaadacabd8bb0383`；独立进程查询确认无 QEMU 遗留。
+本批 kernel、worker、服务和 QEMU 源码未变；服务套件沿用 r120 相同提交的
+232 通过、4 项环境跳过结果。新增 manager SHA-256 为
+`abc22c1aad80fed082f4a4c0cccd1caa6044bc90a7081ac3950cf7283a7f3915`，
+rootfs 为 `1df35865eaf355b892cf299cd7051dd009826526a3c454cf4bd6a5998a0e3e84`。
+本批证据约定保存为 `verified-r123-export-identity-evidence.tar.gz`，包括实际
+rootfs、manager、八文件源码增量、输入/终态清单、完整测试及双 guest 原始日志。
+共用 kernel/QEMU/服务的二进制来源仍引用已核验的 r111–r120 归档。
+最终归档已取回本地，20 个成员、14900876 bytes、权限 0600，SHA-256 为
+`424ca0c9d2134208c1a235bb4163468ea11c7c5544f5481ed9d41e3dd0dd6738`。
+本地与远端的 gzip、成员清单、大小及 SHA 核对一致，未清理原始日志或容器。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -1490,7 +1523,8 @@ mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必�
 幂等容量耗尽后的正常清理保证、单 home 的真实地址耗尽/拒绝后继续访问，以及已清零
 backing 缓存不足后的确认回滚、资源核对和恢复分配均已有通过证据。
 三个并发客户端、不同 size/alignment、交错释放及保持原映射的 r121 子集已通过。
-下一批继续处理 provider/kernel 独立身份负例，以及更长分配循环所需的幂等历史
+home kernel checked-export 的 17 组独立身份/格式负例已通过；下一批继续处理
+consumer provider 独立身份负例，以及更长分配循环所需的幂等历史
 回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把这些
 容量子集当作 100 次循环或无限请求的验收。
 已有 endpoint 计量和 registered-region 基线核对覆盖正常清理，崩溃、失联和未知资源

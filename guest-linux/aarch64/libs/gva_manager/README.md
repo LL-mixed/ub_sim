@@ -55,3 +55,17 @@ aperture 上执行此诊断。
 两节点 segment CLI 验证入口已包含该检查，并等待两个节点的全部检查结束。
 预期成功标记为 `result=done action=gsva-allocator-check checks=11`。
 此入口需要实际运行修订后的 guest kernel；编译或 ioctl mock 单测不能替代它。
+
+## 实际 export 身份检查
+
+`linqu_gva_manager --check-export-identity --segment-id ID` 复用现有 CLI，
+先 query 实际活动 segment，再逐项改变请求副本的 14 个 descriptor 字段及三个
+ioctl 外层字段。负例直接调用 checked-export ioctl，必须分别得到 ESTALE 或
+EINVAL，随后重新 query 并核对原 segment 完全不变。日志只打印字段名、errno 和
+原 segment ID，不打印 token value。
+
+有效 export 请求会尝试分配 backing，因此本诊断不发送完整匹配的 export 请求。
+它不会主动 retire、unexport 或修改原 descriptor；任何非预期结果都会停止诊断，
+保留返回的资源标识供核对。只在本任务持有并暂停生命周期变化的 segment 上执行；
+实际用例同时保留两个客户端的 CPU 映射，结束后继续数据校验并核对资源基线。
+这只覆盖 home kernel 的请求校验，consumer 导入、动态轮换和恢复需另行验证。

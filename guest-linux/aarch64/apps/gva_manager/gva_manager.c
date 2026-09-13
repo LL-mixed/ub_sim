@@ -109,6 +109,7 @@ struct gva_mgr_config {
     bool desc_query;
     bool desc_retire;
     bool check_allocator;
+    bool check_export_identity;
     int node_id;
     int node_count;
     uint64_t generation;
@@ -550,6 +551,9 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         } else if (strcmp(argv[i], "--check-allocator") == 0) {
             cfg->bootstrap = false;
             cfg->check_allocator = true;
+        } else if (strcmp(argv[i], "--check-export-identity") == 0) {
+            cfg->bootstrap = false;
+            cfg->check_export_identity = true;
         } else if (strcmp(argv[i], "--bootstrap") == 0) {
             cfg->bootstrap = true;
         } else if (strcmp(argv[i], "--alloc") == 0) {
@@ -673,12 +677,17 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "[--coh-recovery] "
                     "[--retire-segment] [--reuse-segment]\n"
                     "       gva_manager --check-allocator --node-id N --node-count C\n"
+                    "       gva_manager --check-export-identity --segment-id ID\n"
                     "       gva_manager --dump-routes\n"
                     "       gva_manager --dump-obmm-regions\n");
             return -EINVAL;
         }
     }
 
+    if (cfg->check_export_identity)
+        return argc == 4 && cfg->segment_id &&
+               (!strcmp(argv[1], "--segment-id") || !strcmp(argv[2], "--segment-id"))
+                   ? 0 : -EINVAL;
     if (cfg->dump_obmm_regions)
         return argc == 2 ? 0 : -EINVAL;
     if (cfg->dump_routes)
@@ -2365,6 +2374,78 @@ out:
     return result;
 }
 
+static int check_export_identity_case(int fd,
+    const struct obmm_gsva_segment_desc_v1 *original,
+    struct obmm_cmd_gsva_export_segment_v1 *request, const char *field, int expected)
+{
+    struct obmm_cmd_gsva_query_segment_v1 query = {
+        .version = OBMM_GSVA_ABI_VERSION, .segment_id = original->segment_id,
+    };
+    int result, error;
+
+    errno = 0;
+    result = ioctl(fd, OBMM_CMD_GSVA_EXPORT_SEGMENT, request);
+    error = errno;
+    if (result != -1 || error != expected) {
+        log_msg("result=fail action=gsva-export-identity-check field=%s"
+                " rc=%d errno=%d expected_errno=%d outcome=%u export_id=%" PRIu64,
+                field, result, error, expected, request->outcome,
+                (uint64_t)request->export_mem_id);
+        return -1;
+    }
+    if (gva_manager_query_segment(fd, &query) ||
+        !segment_desc_equal(original, &query.desc)) {
+        log_msg("result=fail action=gsva-export-identity-check field=%s reason=segment_changed", field);
+        return -1;
+    }
+    log_msg("export_identity field=%s errno=%d preserved=1 segment=%#" PRIx64,
+            field, error, original->segment_id);
+    return 0;
+}
+
+static int check_kernel_export_identity(int fd, uint64_t segment_id)
+{
+    struct obmm_cmd_gsva_query_segment_v1 query = {
+        .version = OBMM_GSVA_ABI_VERSION, .segment_id = segment_id,
+    };
+    struct obmm_cmd_gsva_export_segment_v1 request;
+    unsigned checks = 0;
+
+    if (gva_manager_query_segment(fd, &query)) return -1;
+#define CHECK_IDENTITY(member, value, expected) do { \
+    memset(&request, 0, sizeof(request)); \
+    request.version = OBMM_GSVA_ABI_VERSION; \
+    request.segment = query.desc; \
+    request.member = (value); \
+    if (check_export_identity_case(fd, &query.desc, &request, #member, expected)) return -1; \
+    ++checks; \
+} while (0)
+    /* Every export request differs from the queried identity before ioctl. */
+    CHECK_IDENTITY(version, 0, EINVAL);
+    CHECK_IDENTITY(flags, OBMM_GSVA_EXPORT_F_FAST << 1, EINVAL);
+    CHECK_IDENTITY(reserved, 1, EINVAL);
+#define CHECK_SEGMENT(member) CHECK_IDENTITY(segment.member, query.desc.member ^ 1U, ESTALE)
+    CHECK_SEGMENT(version);
+    CHECK_SEGMENT(flags);
+    CHECK_SEGMENT(segment_id);
+    CHECK_SEGMENT(home_va);
+    CHECK_SEGMENT(size);
+    CHECK_SEGMENT(epoch);
+    CHECK_SEGMENT(home_cna);
+    CHECK_SEGMENT(owner_node_id);
+    CHECK_SEGMENT(node_count);
+    CHECK_SEGMENT(cache_policy);
+    CHECK_SEGMENT(p_tag);
+    CHECK_SEGMENT(access_flags);
+    CHECK_SEGMENT(token_id);
+    CHECK_SEGMENT(token_value);
+#undef CHECK_SEGMENT
+#undef CHECK_IDENTITY
+    log_msg("result=done action=gsva-export-identity-check checks=%u segment=%#" PRIx64,
+            checks, segment_id);
+    return 0;
+}
+
 static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
                                      int obmm_fd)
 {
@@ -2372,6 +2453,8 @@ static int run_descriptor_cli_action(const struct gva_mgr_config *cfg,
 
     if (cfg->check_allocator)
         return check_kernel_allocator(obmm_fd, cfg);
+    if (cfg->check_export_identity)
+        return check_kernel_export_identity(obmm_fd, cfg->segment_id);
 
     if (cfg->desc_alloc) {
         struct obmm_cmd_gsva_alloc_segment_v1 cmd = {0};
@@ -2726,7 +2809,8 @@ int main(int argc, char **argv)
     local_cna = (uint32_t)local_cna_u64;
     local_meta.export_cna = local_cna;
 
-    if (cfg.desc_alloc || cfg.desc_query || cfg.desc_retire || cfg.check_allocator) {
+    if (cfg.desc_alloc || cfg.desc_query || cfg.desc_retire || cfg.check_allocator ||
+        cfg.check_export_identity) {
         if (run_descriptor_cli_action(&cfg, obmm_fd) == 0)
             rc = 0;
         goto out;

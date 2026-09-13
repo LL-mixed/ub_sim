@@ -456,6 +456,23 @@ def validate_backing_capacity(text, node, iterations):
             not any(record.get("phase") == "published" and int(record["export"]) > 0 and
                     int(record["segment"]) == int(pin["segment"], 0) for record in records)):
         raise ValueError("retirement refusal did not refer to a published live segment")
+    expected_fields = {"version", "flags", "reserved"} | {
+        "segment." + field for field in ("version", "flags", "segment_id", "home_va", "size",
+            "epoch", "home_cna", "owner_node_id", "node_count", "cache_policy", "p_tag",
+            "access_flags", "token_id", "token_value")}
+    checked = []
+    for line in text.splitlines():
+        if not line.startswith("[gva_manager] export_identity "):
+            continue
+        fields = dict(item.split("=", 1) for item in line.split()[2:])
+        expected_errno = 116 if fields["field"].startswith("segment.") else 22
+        if (int(fields["errno"]) != expected_errno or fields["preserved"] != "1" or
+                int(fields["segment"], 0) != int(pin["segment"], 0)):
+            raise ValueError("kernel identity rejection did not preserve the held segment")
+        checked.append(fields["field"])
+    if (len(checked) != 17 or set(checked) != expected_fields or
+            text.count("result=done action=gsva-export-identity-check checks=17 ") != 1):
+        raise ValueError("missing independent kernel export identity checks")
 
 
 def pressure_records(block, label):

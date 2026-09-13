@@ -193,6 +193,14 @@ class MappingResourceValidationTests(unittest.TestCase):
     def test_backing_capacity_requires_kernel_receipt_and_unchanged_pool_usage(self):
         text = "obmm-worker generation=1 phase=published segment=73 export=91\n"
         text += "mem_service backing-pin: segment=0x49 epoch=0x1 errno=16\n"
+        fields = ("version", "flags", "reserved") + tuple("segment." + name for name in
+            ("version", "flags", "segment_id", "home_va", "size", "epoch", "home_cna",
+             "owner_node_id", "node_count", "cache_policy", "p_tag", "access_flags",
+             "token_id", "token_value"))
+        for field in fields:
+            error = 116 if field.startswith("segment.") else 22
+            text += f"[gva_manager] export_identity field={field} errno={error} preserved=1 segment=0x49\n"
+        text += "[gva_manager] result=done action=gsva-export-identity-check checks=17 segment=0x49\n"
         for phase, live in (("before", 3), ("rejected", 3), ("recovered", 4), ("drained", 3)):
             text += f"mem_service backing-pressure: phase={phase}\n"
             fields = {"backing_allocated_bytes": live * 2097152,
@@ -225,6 +233,10 @@ class MappingResourceValidationTests(unittest.TestCase):
         text += "obmm-worker generation=4 state=retired reason=backing_allocation size=2147483648 alignment=0\n"
         module.validate_backing_capacity(text, 0, 1)
         for bad in ("", text + text, text.replace("errno=16", "errno=22"),
+                    text.replace("field=segment.epoch", "field=segment.size"),
+                    text.replace("errno=116", "errno=22", 1),
+                    text.replace("preserved=1", "preserved=0", 1),
+                    text.replace("checks=17", "checks=16"),
                     text.replace("segment=0x49", "segment=0x50"),
                     text.replace("phase=export-no-backing", "phase=export-unknown"),
                     text.replace("phase=unbacked-retired", "phase=retire-unknown"),

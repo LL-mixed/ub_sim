@@ -971,6 +971,7 @@ mem_service_object_share_backing_pressure() (
     exit 1
   fi
   grep -q 'result=fail action=gsva-segment-retire errno=16' /tmp/backing-pressure-retire.log || exit 1
+  /bin/linqu_gva_manager --check-export-identity --segment-id "$segment" || exit 1
   /bin/linqu_gva_manager --query --segment-id "$segment" || exit 1
   echo "mem_service backing-pin: segment=$segment epoch=$epoch errno=16"
   mem_service_object_share_backing_snapshot "$connect" before || exit 1

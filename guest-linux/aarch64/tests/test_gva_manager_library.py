@@ -32,6 +32,30 @@ def compile_golden(compiler, output):
 
 
 class GvaManagerLibraryTest(unittest.TestCase):
+    @unittest.skipUnless(platform.system() == "Linux", "native Linux CLI diagnostic test")
+    def test_export_identity_cli_never_issues_a_valid_export(self):
+        kernel = ROOT / "guest-linux" / "kernel_ub"
+        vendor = ROOT / "vendor" / "obmm" / "src" / "libobmm"
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "export-identity-golden"
+            include = stage_uapi(binary.parent)
+            built = subprocess.run(
+                ["cc", "-O2", "-Wall", "-Wextra", "-D__EXPORTED_HEADERS__", "-pthread",
+                 "-I", str(include), "-I", str(GUEST / "common"),
+                 "-I", str(GUEST / "libs" / "obmm_queue"), "-I", str(vendor),
+                 "-idirafter", str(kernel / "include" / "uapi"),
+                 "-idirafter", str(kernel / "include"),
+                 str(GUEST / "tests/gva_manager_export_identity_golden.c"),
+                 str(LIB / "gva_manager.c"), str(vendor / "libobmm.c"),
+                 str(GUEST / "common/obmm_vendor_adaptor_sim.c"),
+                 "-Wl,--wrap=ioctl", "-o", str(binary)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("gva_manager_export_identity=pass checks=17 no_valid_export=1", result.stdout)
+
     @unittest.skipUnless(shutil.which("zsh"), "requires zsh")
     def test_bootstrap_runner_rejects_invalid_config(self):
         runner = GUEST / "scripts" / "run_ub_dual_node_gsva_manager_bootstrap.sh"
