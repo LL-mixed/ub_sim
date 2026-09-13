@@ -34,6 +34,63 @@ def kernel_samples():
 
 
 class MappingResourceValidationTests(unittest.TestCase):
+    def test_address_capacity_requires_actual_geometry_and_preserved_mappings(self):
+        def view(key, generation, size, alignment=0, address=0, length=0):
+            fields = {"key": key, "generation": generation, "size_bytes": size,
+                      "alignment_bytes": alignment, "address": address, "address_len": length,
+                      "provider_backed": int(bool(address)), "live_refs": 0,
+                      "state": "active" if address else "retired",
+                      "descriptor_len": 96 if address else 0,
+                      "descriptor_hex": "ab" * 96 if address else ""}
+            return "mem_service inspect-allocation: status=ok\n" + "".join(
+                f"{key}={value}\n" for key, value in fields.items())
+
+        def stats(backing, live):
+            fields = {"backing_allocated_bytes": backing, "address_reserved_bytes": backing,
+                      "live_objects": live, "export_mappings": live, "import_mappings": 2,
+                      "live_refs": 2, "in_flight": 0, "quarantined_objects": 0,
+                      "quarantined_bytes": 0, "idempotency_reservation_deficit": 0}
+            return "mem_service allocation-stats: status=ok\n" + "".join(
+                f"{key}={value}\n" for key, value in fields.items())
+
+        base = 0x700000000000
+        text = "mem_service address-pressure: phase=filled\n"
+        for key, generation, size, alignment, offset, length in (
+                ("obj-share-1", 1, 65537, 4194304, 0, 2097152),
+                ("obj-sent-1", 2, 65536, 0, 2097152, 2097152),
+                ("obj-returned-1", 3, 65536, 0, 4194304, 2097152),
+                ("address-fill", 6, 8388608, 8388608, 8388608, 8388608)):
+            text += view(key, generation, size, alignment, base + offset, length)
+        text += view("address-overflow", 4, 2**64 - 1)
+        text += view("address-alignment", 5, 1, 2**63)
+        text += stats(14680064, 4)
+        text += "mem_service address-pressure: phase=rejected\n"
+        text += view("address-fill", 6, 8388608, 8388608)
+        text += view("address-exhausted", 7, 1)
+        text += view("address-no-reuse", 8, 1)
+        text += stats(6291456, 3)
+        text += "mem_service address-pressure: phase=released\n"
+        for generation in (4, 5, 7, 8):
+            text += f"obmm-worker generation={generation} state=retired reason=address_capacity\n"
+        module.validate_address_capacity(text, 0, 1, 65537)
+        for bad in ("", text + text,
+                    text.replace("phase=released", "phase=filled"),
+                    text.replace("address_len=8388608", "address_len=4194304"),
+                    text.replace(f"address={base + 8388608}", f"address={base}"),
+                    text.replace("alignment_bytes=4194304", "alignment_bytes=2097152"),
+                    text.replace("state=retired", "state=allocating", 1),
+                    text.replace("import_mappings=2", "import_mappings=1"),
+                    text.replace("backing_allocated_bytes=6291456", "backing_allocated_bytes=14680064"),
+                    text.replace("reason=address_capacity", "reason=unknown", 1),
+                    text + "obmm-worker generation=4 phase=reserve-intent segment=0 export=0\n",
+                    text.replace("key=address-exhausted", "key=address-no-reuse")):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, KeyError)):
+                module.validate_address_capacity(bad, 0, 1, 65537)
+        with self.assertRaises(ValueError):
+            module.validate_address_capacity(text, 0, 2, 65537)
+        module.validate_address_capacity(
+            "action=wait_state key=obj-returned-1 status=ok state=retired", 1, 1, 65537)
+
     def test_capacity_requires_saturation_then_complete_resource_drain(self):
         def capacity_stats(drained):
             fields = {

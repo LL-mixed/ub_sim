@@ -1178,6 +1178,99 @@ admin schema 为 7411 bytes / `0x5272af77`，upgrade policy 为
 实际服务/guest 镜像、输入指纹及 31 个测试容器终态；权限 0600，未包含网络操作
 审计原始日志。SSH 握手超时及重试已逐项审计，重试前核对原句柄，未重复启动 guest。
 
+## 2026-09-13：地址容量拒绝保留 worker 可用性（r88-r91）
+
+本批完成 AM1/M1.4 的单 home 地址容量子集。修复前，home worker 在 size 向上
+取整溢出、alignment 无法落入 aperture 或地址空间不足时直接退出并注销 provider，
+已有对象的后续处理也随之中断。r88 的可执行 worker 定向测试复现了此行为。
+
+mem_service 提交 `3e4ccb4951524ecccadf49849840f6dae10adf9f` 将“确定未创建
+资源的容量拒绝”和结果不确定的内核操作分开处理：
+
+- 仅在调用任何资源创建 ioctl 之前返回容量结果；reservation 与 next_address
+  均不改变。无效的已有身份、aperture 或 provider 绑定仍中止处理。
+- 先持久记录 `capacity-reject-intent`，再通过已有 SDK 发出携带 generation 的
+  retire，以及绑定 home/incarnation 的空资源 reclaim 确认。请求最终为 RETIRED，
+  无 address/descriptor；worker 记录 `reason=address_capacity` 并继续服务。
+- 取消回包身份不符、回包已有 backing、RPC/日志持久化失败时保留状态并停止；
+  kernel/export 执行失败继续要求 reconciliation，不能仅凭 errno 确认资源不存在。
+- 沿用既有 wire/CLI 与幂等清理保留额度，无 opcode、manifest 或公开结构布局变化。
+  此异步取消的原因保存在 worker 日志，现有 inspect 返回 terminal state；尚无
+  单独的持久化分配失败原因字段。
+
+### 实际双 guest 地址容量用例
+
+现有 headless 入口使用 `MEM_SERVICE_OBJECT_SHARE_FAULT=address_capacity`，
+只接受一轮生命周期。r90 的逻辑对象大小为 65537 字节、请求 alignment 为 4 MiB；
+worker 保留 2 MiB backing。两个客户端都持有该对象的读写映射时，辅助客户端执行：
+
+1. `UINT64_MAX` size 与 `2^63` alignment 请求，均在内核资源创建前取消。
+2. 分配一个 8 MiB、8 MiB 对齐的真实对象，其末端抵达 16 MiB aperture 边界。
+   此时 4 个活对象实际保留 14 MiB，另有 2 MiB 对齐间隙；不存在区间重叠。
+3. 申请一个字节，确认因地址耗尽进入 RETIRED；释放 8 MiB 对象后再申请一个字节，
+   仍被取消，符合当前 `address_reuse=disabled` 契约。
+4. 两个原客户端继续执行逐字节双向读写、可见性校验和正常 unmap/release/retire；
+   独立 endpoint 计量和 kernel 已登记 region 的非原子静态快照回到基线。
+
+校验器的 `--address-capacity` 同时检查实际几何范围、取消 generation、无
+reserve-intent、空 descriptor、压力前后 backing/ref/import 计数；缺失、重复、
+区间重叠、错误对齐、已有映射丢失或未知拒绝原因均令验证失败。
+该结果覆盖地址容量；物理 backing 池耗尽及失败后的资源核对仍需单独完成。
+
+### 验证结果
+
+| 入口/运行 | 结果 |
+| --- | --- |
+| r88 修复前 worker 定向回归 | 4 项：3 PASS、1 FAIL；15.716 秒，失败日志保留 |
+| r89 worker/资源校验/SDK 入口定向回归 | 20 PASS；16.412 秒；静态 worker 的 `-Werror` 构建 PASS |
+| r89 完整 mem_service 八分片 | 236 个不同测试 ID，无重复；231 PASS、5 SKIP、0 FAIL；最长分片 302.986 秒 |
+| r89 独立监听补跑 | 1 PASS，11.551 秒；与完整套件合并为 232 PASS、4 项环境 SKIP |
+| r89 父仓库完整测试发现 | 458 项：439 PASS、5 SKIP、5 FAIL、9 ERROR；103.137 秒 |
+| r89 layout 门禁 | 74 项：72 PASS、2 FAIL；1.25 秒 |
+| r90 真实地址容量双 guest | PASS 1/1，容器退出码 0；59.059831 秒 |
+| r91 原有 SDK 两轮双 guest | PASS 1/1，容器退出码 0；100.652821 秒 |
+| 本地轻量检查 | 16 PASS，0.987 秒；run_app/sh、runner/zsh 语法与 diff 检查 PASS |
+
+完整服务套件余下 SKIP 仍为一项发行包工具链和三项独立仓库缺失的父仓库路径。
+父仓库的 14 个失败/错误 ID 以及 layout 的两个失败 ID 与 r85/r83 一致；未将
+缺少 Git 元数据、源码锁及环境路径的失败算作通过，也未修改锁或伪造元数据。
+
+r90 两客户端分别完成 26/20 个操作，耗时 46582/46173 ms。nodeA 的 QEMU
+remote_reads/remote_writes 为 162/45，nodeB 为 524511/65557；两节点
+read_timeouts/read_errors/write_errors 均为 0。r91 复用同一 worker/guest 镜像，
+原有 SDK 拒绝、重复请求、双向共享、页保护及资源基线校验均通过。运行后单独
+查询进程列表，确认无遗留 QEMU；进程查询与包含二进制路径的命令分开执行。
+r90 最终服务统计为 8 个分配意图、4 次实际 publish、8 次 reclaim；活对象、
+backing/address 字节、export/import、holder、in-flight 和 quarantine 均为 0。
+幂等结果已用 36 条、可用 28 条、清理保留额度与 deficit 均为 0。
+
+### 冻结输入与证据
+
+| 输入 | SHA-256 |
+| --- | --- |
+| r88 失败复现源码增量 | `140dd3db02271c302b8deb5799641a1a0d8ab0bc36c90fcf5b29f531fd9cd006` |
+| r89 修复与测试源码增量 | `5d99f3cb672bad096eba4e7c9d2a810e88b27b57a00d9cff44d51f7760923d1a` |
+| worker 源码 | `76170b2689f0e05def095ac9a7c968fa17baceee3bdec22a11536f1a53679e73` |
+| 静态 worker | `339c6ca382ee6f98e04d17a9362a7c07e742887bb5918802aa0ae48c76d3ee4e` |
+| run_app | `a28c43e11e3a53c83f725524b74a8b4f722ad679b662b4b9aad73e5d37ce362c` |
+| runner | `3c8d4db9bdd4df45557bb93fdd3ad3fbf5cddf6424e185dea354288e37ec8bfc` |
+| 资源/容量校验器 | `b3c007d71be317274a2c0a3ec477cd08e2070e0469b470a6cf466e3d9bb5984d` |
+| r90/r91 guest 镜像 | `2222e37d253de64c59dd891baac0d04f1e19fac66eb2f0cae9441ef247aa930d` |
+| r90 配置 | `88ab6b6d6edfe2d3264dff8b171a428f3c762ae74b2e2ca5fed1c54c1849093d` |
+| r91 配置 | `ab92d3200127324c9ae7045d08c4a05f339fdcad374cb5d661b326fa4d66a28a` |
+
+服务主二进制、manager、kernel 与 QEMU 延用前述 r83/r85 的已记录基线；镜像内
+文件哈希、六项启动输入清单和实际命令均保留。源代码增量与此前证据包共同构成
+开发快照证据，正式源码锁/发布验收尚未通过。
+
+证据包 `out/gva-manager-integration/verified-r88-r91-address-capacity-evidence.tar.gz`
+包含失败复现、完整回归日志、源码增量、静态 worker、guest 镜像、两个运行的原始
+双节点日志与报告，以及 16 个测试容器终态和缓存镜像身份。远端封存为 0600，
+18456978 字节、37 个成员，SHA-256 为
+`17d591ab6b004dff234438f32632ea157ee5b7b97a54924575331554ee5a8310`。
+已取回本地并核验 gzip、成员数量、长度与 SHA-256，均与远端一致；本地权限
+同为 0600。不包含原始网络操作审计日志。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -1185,10 +1278,11 @@ admin schema 为 7411 bytes / `0x5272af77`，upgrade policy 为
 mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必须拒绝。
 本轮未增加绕过开关，未修改父仓库 pin，也未把已知失败计作通过。
 
-本批已验证幂等容量耗尽后的正常清理保证。下一批继续处理真实 backing 耗尽、
-不同 size/alignment 压力、provider/kernel 独立身份负例，以及长期运行所需的幂等
-历史回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把
-这项接纳保护当作 100 次循环或无限请求的容量验收。
+幂等容量耗尽后的正常清理保证，以及单 home 的真实地址耗尽/拒绝后继续访问均已有
+通过证据。下一批继续处理物理 backing 池耗尽后的资源核对、并发及更广的
+size/alignment 压力、provider/kernel 独立身份负例，以及长期运行所需的幂等历史
+回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把这些
+容量子集当作 100 次循环或无限请求的验收。
 已有 endpoint 计量和 registered-region 基线核对覆盖正常清理，崩溃、失联和未知资源
 仍需独立验收。后续还包括 AM2 CPU/PTO 联合访问、AM3 恢复/重用、AM4 多 home/W5/
 独立发布，以及 n4-910c 的独立复现。总计划 M2-M5 的动态身份、恢复、压力与 replay

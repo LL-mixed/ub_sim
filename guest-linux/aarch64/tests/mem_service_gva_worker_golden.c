@@ -5,13 +5,15 @@
 
 enum failure_mode {
     GOOD, ALLOC_FAIL, EXPORT_FAIL, PUBLISH_FAIL, BAD_REPLY,
-    UNEXPORT_FAIL, RETIRE_FAIL, RECLAIM_FAIL, BAD_RECLAIM_REPLY
+    UNEXPORT_FAIL, RETIRE_FAIL, RECLAIM_FAIL, BAD_RECLAIM_REPLY,
+    CANCEL_FAIL, BAD_CANCEL_REPLY, BAD_CANCEL_BINDING, BACKED_CANCEL_REPLY
 };
 static enum failure_mode mode;
 static unsigned allocated, exports, publishes;
 static unsigned unexports, retires, reclaims;
 static bool publish_cancelled, empty_cancel;
 static bool drive_worker_loop;
+static unsigned cancellations, loop_polls;
 
 int __real_open(const char *path, int flags, ...);
 int __real_close(int fd);
@@ -68,6 +70,10 @@ int __wrap_mem_service_client_poll_allocation(const struct mem_service_client *c
     *work = (struct mem_service_client_allocation){.key = "object", .state = "allocating",
         .home_node = "nodeA", .provider_incarnation = 7, .generation = 99,
         .size_bytes = 17, .capabilities = 1};
+    if (loop_polls++ == 0) {
+        work->generation = 98;
+        work->size_bytes = UINT64_MAX;
+    }
     *status = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
 }
@@ -169,6 +175,25 @@ int __wrap_mem_service_client_reclaim_allocation(
     return mode == RECLAIM_FAIL ? -1 : 0;
 }
 
+int __wrap_mem_service_client_retire_object(
+    const struct mem_service_client *client, const char *key, const char *operation,
+    bool has_generation, uint64_t generation, struct mem_service_client_allocation *out,
+    enum mem_service_wire_status *status)
+{
+    (void)client;
+    char expected[96];
+    snprintf(expected, sizeof(expected), "obmm-capacity-7-%" PRIu64, generation);
+    assert(!strcmp(key, "object") && !strcmp(operation, expected) && has_generation);
+    cancellations++;
+    *out = (struct mem_service_client_allocation){.key = "object", .state = "retiring",
+        .home_node = "nodeA", .provider_incarnation = 7,
+        .generation = generation + (mode == BAD_CANCEL_REPLY)};
+    if (mode == BAD_CANCEL_BINDING) out->provider_incarnation++;
+    if (mode == BACKED_CANCEL_REPLY) out->provider_backed = true;
+    *status = MEM_SERVICE_WIRE_STATUS_OK;
+    return mode == CANCEL_FAIL ? -1 : 0;
+}
+
 int main(void)
 {
     struct worker_config config = {.node = "nodeA", .incarnation = 7,
@@ -256,12 +281,72 @@ int main(void)
         mode = GOOD;
         memset(&reservation, 0, sizeof(reservation));
         work.size_bytes = UINT64_MAX;
+        uint64_t before_address = next_address;
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address));
+                             &reservation, &next_address) == 1);
+        assert(!reservation.occupied && next_address == before_address);
+        assert(allocated == before);
+        work.size_bytes = aperture.size + 1;
+        assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
+                             &reservation, &next_address) == 1);
+        assert(!reservation.occupied && next_address == before_address);
+        assert(allocated == before);
         work.size_bytes = 2097153;
         assert(!allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
                               &reservation, &next_address));
         assert(allocated == before + 1 && reservation.segment.size == 4194304);
+    }
+    {
+        /* Empty cancellation must remain generation-bound and must not
+         * accept a reply containing a concurrently published reservation. */
+        unsigned before = allocated, old_exports = exports, old_publishes = publishes;
+        empty_cancel = true;
+        mode = GOOD;
+        unsigned old_cancel = cancellations, old_reclaim = reclaims;
+        assert(reject_capacity_work(-1, &config, &client, &work));
+        assert(cancellations == old_cancel && reclaims == old_reclaim);
+        for (int failure = GOOD; failure <= BACKED_CANCEL_REPLY; failure++) {
+            mode = failure;
+            old_cancel = cancellations;
+            old_reclaim = reclaims;
+            bool failed = failure == RECLAIM_FAIL || failure == BAD_RECLAIM_REPLY ||
+                          failure >= CANCEL_FAIL;
+            assert((reject_capacity_work(fileno(journal), &config, &client, &work) != 0) == failed);
+            assert(cancellations == old_cancel + 1);
+            assert(reclaims == old_reclaim + (failure < CANCEL_FAIL));
+        }
+        assert(allocated == before && exports == old_exports && publishes == old_publishes);
+        mode = GOOD;
+        empty_cancel = false;
+    }
+    {
+        const uint64_t sizes[] = {1, 4096, 65537, 2097152, 2097153};
+        const uint64_t alignments[] = {0, 4096, 65536, 2097152, 8388608};
+        for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+            for (size_t j = 0; j < sizeof(alignments) / sizeof(alignments[0]); j++) {
+                uint64_t previous = next_address;
+                uint64_t alignment = alignments[j] < 2097152 ? 2097152 : alignments[j];
+                memset(&reservation, 0, sizeof(reservation));
+                work.size_bytes = sizes[i];
+                work.alignment_bytes = alignments[j];
+                assert(!allocate_work(42, fileno(journal), &config, &client, &aperture,
+                                      &work, &reservation, &next_address));
+                assert(reservation.segment.home_va >= previous);
+                assert(!(reservation.segment.home_va & (alignment - 1)));
+                assert(reservation.segment.size == ((sizes[i] + 2097151) & ~2097151ULL));
+                assert(next_address == reservation.segment.home_va + reservation.segment.size);
+            }
+        }
+        unsigned before = allocated;
+        memset(&reservation, 0, sizeof(reservation));
+        work.alignment_bytes = 3;
+        assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
+                             &reservation, &next_address) == WORKER_ALLOCATE_ERROR);
+        work.alignment_bytes = 1ULL << 63;
+        assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
+                             &reservation, &next_address) == WORKER_ALLOCATE_CAPACITY);
+        assert(allocated == before && !reservation.occupied);
+        work.alignment_bytes = 65536;
     }
     {
         unsigned before = allocated;

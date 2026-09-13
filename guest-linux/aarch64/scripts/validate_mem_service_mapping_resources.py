@@ -281,6 +281,101 @@ def validate_descriptor_contract(text, node, iterations):
         raise ValueError("missing or extra descriptor binding evidence")
 
 
+def validate_address_capacity(text, node, iterations, size):
+    """Check real reservations and refusal before/after non-reusable retirement."""
+    if iterations != 1:
+        raise ValueError("address capacity profile requires one lifecycle")
+    if node:
+        if "action=wait_state key=obj-returned-1 status=ok state=retired" not in text:
+            raise ValueError("peer did not observe address pressure barrier")
+        return
+    markers = [f"mem_service address-pressure: phase={phase}" for phase in
+               ("filled", "rejected", "released")]
+    if any(text.count(marker) != 1 for marker in markers):
+        raise ValueError("address pressure did not complete exactly once")
+    positions = [text.index(marker) for marker in markers]
+    if positions != sorted(positions):
+        raise ValueError("out-of-order address pressure")
+    filled = text[positions[0]:positions[1]]
+    rejected = text[positions[1]:positions[2]]
+
+    def snapshots(block, label, terminal):
+        result = []
+        for payload in block.split(f"mem_service {label}: status=ok\n")[1:]:
+            fields = {}
+            for line in payload.splitlines():
+                key, sep, value = line.partition("=")
+                if not sep or not key.replace("_", "").isalnum():
+                    continue
+                if key in fields:
+                    raise ValueError("duplicate address pressure field")
+                fields[key] = value
+                if key == terminal:
+                    result.append(fields)
+                    break
+            else:
+                raise ValueError("incomplete address pressure snapshot")
+        return result
+
+    def objects(block, expected):
+        views = snapshots(block, "inspect-allocation", "descriptor_hex")
+        if len(views) != len(expected) or {v["key"] for v in views} != set(expected):
+            raise ValueError("missing or extra allocation evidence")
+        return {view["key"]: view for view in views}
+
+    active = ("obj-share-1", "obj-sent-1", "obj-returned-1", "address-fill")
+    early = ("address-overflow", "address-alignment")
+    late = ("address-exhausted", "address-no-reuse")
+    initial = objects(filled, active + early)
+    final = objects(rejected, ("address-fill",) + late)
+    ranges = []
+    for key, logical, alignment in zip(active, (size, 65536, 65536, 8388608),
+                                       (4194304, 0, 0, 8388608)):
+        view = initial[key]
+        address, length = int(view["address"]), int(view["address_len"])
+        if (view["state"] != "active" or view["provider_backed"] != "1" or
+                int(view["size_bytes"]) != logical or int(view["alignment_bytes"]) != alignment or
+                length != (logical + 2097151) // 2097152 * 2097152 or
+                address % max(alignment, 2097152) or
+                address < 0x700000000000 or address + length > 0x700001000000 or
+                int(view["descriptor_len"]) != 96 or len(view["descriptor_hex"]) != 192):
+            raise ValueError("invalid actual allocation geometry")
+        ranges.append((address, address + length))
+    ordered = sorted(ranges)
+    if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])) or \
+            ranges[-1][1] != 0x700001000000:
+        raise ValueError("overlapping reservations or aperture not exhausted")
+    for view in [initial[key] for key in early] + list(final.values()):
+        if (view["state"] != "retired" or view["descriptor_hex"] or
+                any(int(view[field]) for field in
+                    ("address", "address_len", "descriptor_len", "provider_backed", "live_refs"))):
+            raise ValueError("rejected or retired allocation retained accessible resources")
+    if initial["address-fill"]["generation"] != final["address-fill"]["generation"]:
+        raise ValueError("filler identity changed during reclaim")
+    expected_rejected = {initial[key]["generation"] for key in early} | \
+                        {final[key]["generation"] for key in late}
+    observed_rejected = []
+    for line in text.splitlines():
+        if line.startswith("obmm-worker ") and "reason=address_capacity" in line:
+            fields = dict(item.split("=", 1) for item in line.split()[1:])
+            observed_rejected.append(fields["generation"])
+    if len(observed_rejected) != 4 or set(observed_rejected) != expected_rejected:
+        raise ValueError("missing worker capacity cancellations")
+    for generation in expected_rejected:
+        if f"obmm-worker generation={generation} phase=reserve-intent " in text:
+            raise ValueError("capacity cancellation followed a resource-creating attempt")
+    for block, backing, live in ((filled, 14680064, 4), (rejected, 6291456, 3)):
+        stats = snapshots(block, "allocation-stats", "idempotency_reservation_deficit")
+        if len(stats) != 1:
+            raise ValueError("missing pressure resource counters")
+        expected = {"backing_allocated_bytes": backing, "address_reserved_bytes": backing,
+                    "live_objects": live, "export_mappings": live, "import_mappings": 2,
+                    "live_refs": 2, "in_flight": 0, "quarantined_objects": 0,
+                    "quarantined_bytes": 0, "idempotency_reservation_deficit": 0}
+        if any(int(stats[0][key]) != value for key, value in expected.items()):
+            raise ValueError("existing mappings or reservation accounting changed under pressure")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
@@ -292,6 +387,7 @@ def main():
     faults.add_argument("--map-conflict", action="store_true")
     faults.add_argument("--descriptor-contract", action="store_true")
     faults.add_argument("--capacity", action="store_true")
+    faults.add_argument("--address-capacity", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -307,6 +403,8 @@ def main():
             validate_descriptor_contract(text, args.node, args.iterations)
         if args.capacity:
             validate_capacity(text, args.node, args.iterations)
+        if args.address_capacity:
+            validate_address_capacity(text, args.node, args.iterations, args.size)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
@@ -319,6 +417,8 @@ def main():
         print(f"descriptor_contract=pass node={args.node} iterations={args.iterations}")
     if args.capacity:
         print(f"capacity_cleanup=pass node={args.node} iterations={args.iterations}")
+    if args.address_capacity:
+        print(f"address_capacity=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":
