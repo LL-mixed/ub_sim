@@ -146,9 +146,11 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
     if access_threads is not None:
         validate_owners(guests, maps, requests, require_timeout_recovery, access_threads)
     return {"status": "pass", "nodes": 2, "objects": 1,
-            "dispatches": 6 if require_negative_checks else 2, "successful_dispatches": 2,
-            "expected_rejections": 4 if require_negative_checks else 0,
-            "load_callbacks": 4, "store_callbacks": 2, "fences": 2,
+            "dispatches": 8 if require_negative_checks else 2, "successful_dispatches": 2,
+            "expected_rejections": 6 if require_negative_checks else 0,
+            "execution_rejections": 2 if require_negative_checks else 0,
+            "load_callbacks": 8 if require_negative_checks else 4,
+            "store_callbacks": 2, "fences": 2,
             "scope": "multi-thread-cross-page" if access_threads else "single-thread-cross-page",
             "owner_verified": access_threads is not None, "access_threads": access_threads,
             "timeout_recoveries": len(waits) // 2,
@@ -163,11 +165,12 @@ def validate_negatives(guests, qemu, mapping, requests, required):
     if not required:
         require(not probes and not data, "unexpected negative probe evidence")
         return qemu
-    names = ("bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch")
-    require(len(probes) == 8 and len(data) == 16, "negative probe evidence incomplete")
-    operations = [str(int(requests[0]) + 2 + index) for index in range(4)]
-    errors = ["pto_ub_gm_access_denied" if index == 1 else "pto_ub_gm_bad_memref"
-              for index in range(4)]
+    names = ("bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch",
+             "tstore-on-read", "tload-on-write")
+    require(len(probes) == 12 and len(data) == 24, "negative probe evidence incomplete")
+    operations = [str(int(requests[0]) + 2 + index) for index in range(6)]
+    errors = ["pto_ub_gm_access_denied" if index in (1, 4, 5) else "pto_ub_gm_bad_memref"
+              for index in range(6)]
     expected_events = []
     for index, (name, operation, error) in enumerate(zip(names, operations, errors)):
         submitted, rejected = probes[2*index:2*index+2]
@@ -207,14 +210,79 @@ def validate_negatives(guests, qemu, mapping, requests, required):
     failure_prefixes = ("QEMU_UB_GM_FAILURE_COMPLETION", "QEMU_UB_GM_DISPATCH_REJECT")
     for prefix in failure_prefixes:
         rows = records(qemu, prefix)
-        require([row["op"] for row in rows] == operations and
-                [row["code"] for row in rows] == errors and
+        require([row["op"] for row in rows] == operations[:4] and
+                [row["code"] for row in rows] == errors[:4] and
                 (prefix != failure_prefixes[0] or all(row["status"] == "3" for row in rows)),
                 "QEMU negative completion evidence mismatch")
-    # Remove only the eight validated rejection records. All bindings, callbacks,
-    # unexpected failures and CRC errors remain subject to the ordinary gate.
-    return "\n".join(line for line in qemu.splitlines()
-                     if not any(line.startswith(prefix + " ") for prefix in failure_prefixes))
+    filtered = "\n".join(line for line in qemu.splitlines()
+                         if not any(line.startswith(prefix + " ") for prefix in failure_prefixes))
+    return validate_execution_negatives(filtered, mapping, operations[4:], requests[0])
+
+
+def validate_execution_negatives(text, mapping, operations, positive_request):
+    # Remove only fully validated execution records from this parsing copy.
+    # Raw logs stay unchanged; all other callbacks/errors reach the normal gate.
+    prefixes = ("QEMU_UB_GM_INPUT_AUTHORIZE", "QEMU_UB_GM_OUTPUT_AUTHORIZE",
+                "QEMU_UB_GM_GSVA_BIND", "SIM_QEMU_UB_GM_BIND_REGISTER",
+                "QEMU_UB_GM_LOAD", "QEMU_UB_GM_STORE", "QEMU_UB_GM_FENCE",
+                "QEMU_UB_GM_UNBIND")
+    bound = records(text, prefixes[2])
+    identity_fields = ("segment", "home_va", "epoch", "lease_epoch", "backing_token")
+    identities = {tuple(number(row, key) for key in identity_fields) for row in bound}
+    require(len(identities) == 1 and all(next(iter(identities))) and
+            number(bound[0], "home_va") == number(mapping, "cpu_base"),
+            "negative execution changed the original backing")
+    positive = [row for row in records(text, prefixes[0])
+                if row["request"] == positive_request]
+    require(len(positive) == 2, "missing recovery input authorizations")
+    base = number(positive[0], "local") - 3968
+    lines, consumed, ordered_positions = text.splitlines(), set(), []
+    for operation in operations:
+        selected = []
+        for position, line in enumerate(lines):
+            for prefix in prefixes:
+                rows = records(line, prefix)
+                if rows and rows[0]["request"] == operation:
+                    selected.append((prefix, rows[0]))
+                    consumed.add(position)
+                    ordered_positions.append(position)
+        roles = ("INPUT", "INPUT", "OUTPUT")
+        expected = []
+        for role in roles:
+            expected += [f"QEMU_UB_GM_{role}_AUTHORIZE", prefixes[2]]
+        expected += [prefixes[3]] + [prefixes[4]] * 2 + [prefixes[7]]
+        require([prefix for prefix, _ in selected] == expected,
+                "negative execution stage or callback sequence mismatch")
+        auth = [selected[2*i][1] for i in range(3)]
+        for binding, (row, offset) in enumerate(zip(auth, (3968, 8064, 12160)), 1):
+            require(row["op"] == operation and number(row, "binding") == binding and
+                    number(row, "local") == base + offset and number(row, "length") == 256 and
+                    row["requester_cna"] == positive[0]["requester_cna"] and
+                    number(row, "map") > 0 and number(row, "generation") > 0 and
+                    selected[2*binding-1][1]["binding"] == row["binding"],
+                    "negative execution authorization or geometry mismatch")
+        registered, unbound = selected[6][1], selected[-1][1]
+        require(registered["op"] == unbound["op"] == operation and
+                registered["bindings"] == unbound["bindings"] == "3" and
+                registered["requester_cna"] == positive[0]["requester_cna"] and
+                unbound["reason"] == "completion_failure" and
+                (unbound["load_bytes"], unbound["store_bytes"], unbound["fences"],
+                 unbound["segment_payload_staging_bytes"]) ==
+                ("512", "0", "0", "0"),
+                "negative execution completion accounting mismatch")
+        for binding, (_, row) in enumerate(selected[7:-1], 1):
+            authorization = auth[binding-1]
+            require(number(row, "binding") == binding and number(row, "length") == 256 and
+                    number(row, "addr") == number(authorization, "local") and
+                    all(row[key] == authorization[key] for key in ("map", "generation")),
+                    "negative execution input callback mismatch")
+    positive_position = next(position for position, line in enumerate(lines)
+                             if line.startswith(prefixes[0] + " ") and
+                             records(line, prefixes[0])[0]["request"] == positive_request)
+    require(ordered_positions == sorted(ordered_positions) and
+            ordered_positions[-1] < positive_position,
+            "negative execution must drain before recovery compute")
+    return "\n".join(line for position, line in enumerate(lines) if position not in consumed)
 
 
 def validate_owners(guests, maps, requests, recovery, threads):

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -424,6 +425,63 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
                 producer.write_vector_kernel_source(
                     Path(temp_dir), 0, 32, 32, "unknown"
                 )
+
+    def test_managed_access_fault_kernels_bind_exact_requests_and_keep_normal_path(self):
+        producer = load_producer()
+        self.assertIsNone(producer.managed_access_fault_contract(0))
+        self.assertEqual(producer.managed_access_fault_contract(277),
+                         {"tstore_request": 277, "tload_request": 278})
+        for invalid in (-1, (1 << 64) - 1, 1 << 64, True):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                producer.managed_access_fault_contract(invalid)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for func_id, request, fault in ((0, 277, "TSTORE(src0Global, dstTile);"),
+                                            (2, 278, "TLOAD(dstTile, dstGlobal);")):
+                source = producer.write_vector_kernel_source(root, func_id, 1, 64,
+                    managed_fault_request_id=277).read_text()
+                self.assertIn(f"access_context->request_id == {request}ULL", source)
+                self.assertIn("pto::cpu::ub_gm::currentRunContext()", source)
+                self.assertIn(fault, source)
+                self.assertIn("TSTORE(dstGlobal, dstTile);", source)
+                self.assertNotIn("static uint", source)
+            normal = producer.write_vector_kernel_source(root, 0, 1, 64).read_text()
+            self.assertNotIn("access_context", normal)
+            with self.assertRaises(ValueError):
+                producer.write_vector_kernel_source(root, 0, 1, 64, "tstore-on-read",
+                                                   managed_fault_request_id=277)
+
+    def test_managed_access_fault_cli_rejects_invalid_id_or_program_before_build(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "must-not-build"
+            command = [sys.executable, str(PRODUCER), "--profile", "host_vector",
+                       "--output-dir", str(output), "--describe"]
+            for args in (("--managed-access-fault-request-id", "-1"),
+                         ("--managed-access-fault-request-id", str((1 << 64) - 1)),
+                         ("--managed-access-fault-request-id", "277", "--host-vector-program", "pipeline_double"),
+                         ("--managed-access-fault-request-id", "277", "--ub-gm-access-fault", "tstore-on-read")):
+                with self.subTest(args=args):
+                    result = subprocess.run(command + list(args), capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("managed access fault", result.stderr)
+            self.assertFalse(output.exists())
+            spec = producer.PROFILE_SPECS["host_vector"]
+            simpler = Path(directory) / "simpler"
+            source = simpler / "examples/a2a3/host_build_graph" / spec.example / spec.orch_source
+            source.parent.mkdir(parents=True)
+            source.write_text("// describe-only fixture\n")
+            pto = Path(directory) / "pto-isa"
+            header = pto / "include/pto/pto-inst.hpp"
+            header.parent.mkdir(parents=True)
+            header.write_text("// describe-only fixture\n")
+            result = subprocess.run(command + ["--managed-access-fault-request-id", "277",
+                "--simpler-root", str(simpler), "--pto-isa-root", str(pto)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["managed_access_fault"],
+                             {"tstore_request": 277, "tload_request": 278})
+            self.assertFalse(output.exists())
 
     def test_generated_vector_kernels_cover_strided_dn_and_nz_layouts(self):
         producer = load_producer()

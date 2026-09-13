@@ -540,6 +540,32 @@ struct SharedSimplerDeviceContext {
     executor_fingerprint: Option<SimplerExecutorFingerprint>,
 }
 
+fn run_registered_simpler_callable(
+    callable_ids: &mut HashMap<String, i32>,
+    next_callable_id: &mut i32,
+    artifact_key: &str,
+    signature: &[simpler_capi::ArgDirection],
+    register: impl FnOnce(i32) -> Result<(), String>,
+    execute: impl FnOnce(i32) -> Result<(), String>,
+) -> Result<(), String> {
+    let key = format!("{artifact_key}|signature={signature:?}");
+    let callable_id = match callable_ids.get(&key) {
+        Some(id) => *id,
+        None => {
+            if *next_callable_id >= 64 {
+                return Err("simpler_capi_callable_cache_full".to_string());
+            }
+            let id = *next_callable_id;
+            register(id)?;
+            // A completed execution error preserves the registered callable.
+            callable_ids.insert(key, id);
+            *next_callable_id += 1;
+            id
+        }
+    };
+    execute(callable_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SimplerExecutorFingerprint {
     aicpu_bytes: usize,
@@ -2519,38 +2545,35 @@ impl LocalRuntimeEngine {
                     .expect("runtime buffer")
                     .handle();
                 detail_runtime_alloc_ms = runtime_started.elapsed().as_millis();
-                let (callable_id, prepare) = match worker.callable_ids.get(&callable_key) {
-                    Some(callable_id) => (*callable_id, false),
-                    None => {
-                        if worker.next_callable_id >= 64 {
-                            return Err("simpler_capi_callable_cache_full".to_string());
-                        }
-                        (worker.next_callable_id, true)
-                    }
-                };
-                api.run_prepared_callable(
-                    &worker.context,
-                    runtime_handle,
-                    &callable,
-                    &prepared.task_args,
-                    callable_id,
-                    prepare,
-                    runtime_artifacts.launch.block_dim as i32,
-                    runtime_artifacts.launch.aicpu_thread_num as i32,
-                    pto_ub_gm_run_context.as_ref(),
+                let context = &worker.context;
+                run_registered_simpler_callable(
+                    &mut worker.callable_ids,
+                    &mut worker.next_callable_id,
+                    &callable_key,
+                    &prepared.signature,
+                    |callable_id| {
+                        api.register_prepared_callable(context, &callable, callable_id)
+                            .map_err(|err| format!("simpler_capi_register_callable_failed:{err}"))
+                    },
+                    |callable_id| {
+                        api.run_prepared_callable(
+                            context,
+                            runtime_handle,
+                            &callable,
+                            &prepared.task_args,
+                            callable_id,
+                            false,
+                            runtime_artifacts.launch.block_dim as i32,
+                            runtime_artifacts.launch.aicpu_thread_num as i32,
+                            pto_ub_gm_run_context.as_ref(),
+                        )
+                        .map_err(|err| {
+                            err.pto_ub_gm_code().map(str::to_string).unwrap_or_else(|| {
+                                format!("simpler_capi_run_callable_failed:{err}")
+                            })
+                        })
+                    },
                 )
-                .map_err(|err| {
-                    err.pto_ub_gm_code()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("simpler_capi_run_callable_failed:{err}"))
-                })?;
-                if prepare {
-                    worker
-                        .callable_ids
-                        .insert(callable_key.clone(), callable_id);
-                    worker.next_callable_id += 1;
-                }
-                Ok(())
             })?;
             detail_run_runtime_ms = detail_started.elapsed().as_millis();
 
@@ -3100,10 +3123,10 @@ impl SimBlockStore for InMemoryBlockStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_simpler_capi_args, simpler_binary_fingerprint, ContextState, EvictionPlan,
-        HostPayloadRegistry, InMemoryBlockStore, LocalRuntimeEngine, PromotionPlan,
-        RecursiveRoutePlanner, RoutePlanner, RouteRequest, RuntimeCompletionTracker, RuntimeOpKind,
-        RuntimeOpState, SharedRuntimeQueue, SimBlockStore, VecEventSink,
+        prepare_simpler_capi_args, run_registered_simpler_callable, simpler_binary_fingerprint,
+        ContextState, EvictionPlan, HostPayloadRegistry, InMemoryBlockStore, LocalRuntimeEngine,
+        PromotionPlan, RecursiveRoutePlanner, RoutePlanner, RouteRequest, RuntimeCompletionTracker,
+        RuntimeOpKind, RuntimeOpState, SharedRuntimeQueue, SimBlockStore, VecEventSink,
     };
     use sim_chipbackend_simpler::{AddressSpace, ArgDirection};
     use sim_config::ScenarioConfig;
@@ -3117,6 +3140,118 @@ mod tests {
         TensorDType, TensorLayout,
     };
     use sim_topology::SimTopology;
+
+    #[test]
+    fn callable_registration_survives_execution_errors_and_tracks_signature() {
+        let mut ids = std::collections::HashMap::new();
+        let mut next_id = 0;
+        let signature = [ArgDirection::In, ArgDirection::Out];
+        let error = run_registered_simpler_callable(
+            &mut ids,
+            &mut next_id,
+            "artifact",
+            &signature,
+            |id| {
+                assert_eq!(id, 0);
+                Ok(())
+            },
+            |id| {
+                assert_eq!(id, 0);
+                Err("pto_ub_gm_access_denied".to_string())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "pto_ub_gm_access_denied");
+        assert_eq!((ids.len(), next_id), (1, 1));
+        for _ in 0..2 {
+            run_registered_simpler_callable(
+                &mut ids,
+                &mut next_id,
+                "artifact",
+                &signature,
+                |_| panic!("already registered callable must be reused"),
+                |id| {
+                    assert_eq!(id, 0);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+        run_registered_simpler_callable(
+            &mut ids,
+            &mut next_id,
+            "artifact",
+            &[ArgDirection::Out, ArgDirection::In],
+            |id| {
+                assert_eq!(id, 1);
+                Ok(())
+            },
+            |id| {
+                assert_eq!(id, 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!((ids.len(), next_id), (2, 2));
+    }
+
+    #[test]
+    fn failed_registration_keeps_id_available_and_capacity_preserves_cached_runs() {
+        let mut ids = std::collections::HashMap::new();
+        let mut next_id = 0;
+        let error = run_registered_simpler_callable(
+            &mut ids,
+            &mut next_id,
+            "artifact",
+            &[],
+            |id| {
+                assert_eq!(id, 0);
+                Err("registration_failed".to_string())
+            },
+            |_| panic!("unregistered callable cannot execute"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "registration_failed");
+        assert_eq!((ids.len(), next_id), (0, 0));
+        for expected in 0..64 {
+            let error = run_registered_simpler_callable(
+                &mut ids,
+                &mut next_id,
+                &format!("artifact-{expected}"),
+                &[],
+                |id| {
+                    assert_eq!(id, expected);
+                    Ok(())
+                },
+                |_| Err("execution_failed".to_string()),
+            )
+            .unwrap_err();
+            assert_eq!(error, "execution_failed");
+        }
+        let error = run_registered_simpler_callable(
+            &mut ids,
+            &mut next_id,
+            "overflow",
+            &[],
+            |_| panic!("cache capacity must be checked before registration"),
+            |_| panic!("cache overflow cannot execute"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "simpler_capi_callable_cache_full");
+        run_registered_simpler_callable(
+            &mut ids,
+            &mut next_id,
+            "artifact-0",
+            &[],
+            |_| panic!("full cache must still reuse registered callables"),
+            |id| {
+                assert_eq!(id, 0);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!((ids.len(), next_id), (64, 64));
+    }
 
     const VALID_YAML: &str = r#"
 scenario:

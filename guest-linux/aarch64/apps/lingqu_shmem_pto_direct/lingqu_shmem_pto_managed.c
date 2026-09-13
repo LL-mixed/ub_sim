@@ -26,10 +26,11 @@
 #define VECTOR_BYTES (VECTOR_ELEMENTS * sizeof(float))
 #define METADATA_BYTES 4096U
 #define MAX_ACCESS_THREADS 8U
-#define NEGATIVE_CASES 4U
+#define NEGATIVE_CASES 6U
 
 static const char *const negative_names[NEGATIVE_CASES] = {
-    "bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch"
+    "bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch",
+    "tstore-on-read", "tload-on-write"
 };
 
 struct managed_config {
@@ -589,6 +590,8 @@ static int inject_negative(struct managed_state *state, unsigned fault,
     case 2: control->requester_cna = state->config.requester == 1 ? 2 : 1; break;
     case 3: refs[2].byte_offset = MANAGED_BYTES - VECTOR_BYTES + 1; break;
     case 4: refs[2].access = LINGQU_PTO_UB_GM_READ; break;
+    /* Execution probes use explicitly marked kernels and ordinary metadata. */
+    case 5: case 6: break;
     default: return -EINVAL;
     }
     return lingqu_shmem_pto_refresh_fault_metadata_crc(state->metadata,
@@ -645,8 +648,8 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         rc = lingqu_shmem_mem_service_lease_begin(state->leases[i], request.op_id);
         if (rc) return rc;
     }
-    const char *expected_error = fault == 2 ? LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED :
-                                            LINGQU_PTO_UB_GM_CODE_BAD_MEMREF;
+    const char *expected_error = fault == 2 || fault >= 5 ?
+        LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED : LINGQU_PTO_UB_GM_CODE_BAD_MEMREF;
     if (fault) {
         printf("MANAGED_PTO_NEGATIVE node=1 case=%s state=submitted op_id=%" PRIu64
             " mapping_id=%" PRIu64 " expected=%s metadata_crc=0x%08x retained_leases=3\n",

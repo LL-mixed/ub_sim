@@ -339,15 +339,28 @@ validate_pto_layout_manifest() {
   local manifest="$1"
   local expected_layout="$2"
   local expected_elements="$3"
+  local managed_negative_checks="${4:-0}"
+  local managed_generation="${5:-0}"
 
-  python3 - "$manifest" "$expected_layout" "$expected_elements" <<'PY'
+  python3 - "$manifest" "$expected_layout" "$expected_elements" \
+    "$managed_negative_checks" "$managed_generation" <<'PY'
 import json
 import sys
 
-manifest_path, expected_layout, expected_elements_text = sys.argv[1:]
+manifest_path, expected_layout, expected_elements_text, negative_checks, generation = sys.argv[1:]
 expected_elements = int(expected_elements_text)
 with open(manifest_path, "r", encoding="utf-8") as stream:
     manifest = json.load(stream)
+managed_fault = manifest.get("managed_access_fault")
+if negative_checks == "1":
+    first = int(generation, 0) + 7
+    if (not 1 <= first < (1 << 64) - 1 or
+            managed_fault != {"tstore_request": first, "tload_request": first + 1} or
+            manifest.get("ub_gm_access_fault", "none") != "none" or
+            manifest.get("host_vector_program") != "quadratic"):
+        raise SystemExit("managed PTO negative checks require matching request-scoped access-fault artifacts")
+elif managed_fault is not None:
+    raise SystemExit("managed access-fault artifacts require managed PTO negative checks")
 layout = manifest.get("ub_gm_layout")
 if not isinstance(layout, dict):
     raise SystemExit("PTO manifest has no ub_gm_layout contract")
@@ -665,10 +678,14 @@ validate_lingqu_shmem_pto_config() {
     echo "PTO device CNA must be in 1..0x00ffffff" >&2
     exit 2
   fi
+  local managed_negative_checks=0
+  if managed_pto_selected; then
+    managed_negative_checks="$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS"
+  fi
   validate_pto_layout_manifest \
     "$SIMPLER_HOST_VECTOR_MANIFEST" \
     "$LINGQU_SHMEM_PTO_LAYOUT" \
-    "$LINGQU_SHMEM_PTO_ELEMENTS"
+    "$LINGQU_SHMEM_PTO_ELEMENTS" "$managed_negative_checks" "$LINGQU_SHMEM_PTO_GENERATION"
 
   LINGQU_SHMEM_PTO_ELEMENTS=$((LINGQU_SHMEM_PTO_ELEMENTS))
   LINGQU_SHMEM_PTO_GENERATION=$((LINGQU_SHMEM_PTO_GENERATION))

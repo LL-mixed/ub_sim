@@ -1999,3 +1999,90 @@ runner/container exit 0，独立检查无 QEMU 遗留，原始源码、运行输
 `01ee26f767f85679d1136d86a85754cb4efa39d280a36395da70ea87d74a5f76`。
 包含源码、完整测试、CLI/rootfs、三轮原始 guest/QEMU 日志及配置、8 个结束
 容器的状态和前后指纹。原始材料保留；整份网络审计日志未纳入或上传。
+
+## 2026-09-14 续作：执行权限拒绝后的同映射恢复（r157-r159 子集通过）
+
+`negative_checks=1` 扩展为四个预检负例、两个执行负例，然后继续原来的两次
+正常计算。执行负例保持正常 memref metadata/signature，通过工件生成 CLI
+`--managed-access-fault-request-id N` 在准确的 request N/N+1 中分别执行
+TSTORE 只读输入、TLOAD 只写输出；其他 request 使用正常 quadratic kernel。
+manifest 记录两个 request ID，runner 要求它们与 generation+7/+8 对应。
+没有全局故障计数器，未改变生产权限检查，也未把 CPU 只读页表纳入本次结论。
+
+### 实际失败定位与修复
+
+- r154 最初同时修改 role/access，实际得到 `pto_ub_gm_bad_memref`，数据回调
+  为 0，不满足执行阶段 access-denied 判据。该尝试判定失败并保留原始材料。
+- r155 改用 request-scoped kernel，第一个执行负例按预期读取 512 bytes、
+  零写入并返回 access-denied；第二个操作暴露
+  `record_host_orch_callable: callable_id=0 already registered`。
+  Rust 只在整次执行成功后保存注册状态，底层注册已成功、执行已确认失败时，
+  下一次请求重复注册相同 ID。r155 整轮仍判失败，没有把部分成功计入验收。
+- r156 将注册与执行分别管理：底层注册成功即保存 callable ID，已确认的执行
+  错误保留注册；注册失败不占用 ID。参数 signature 纳入缓存键，64 项容量
+  达到上限后仍允许复用已有项。新增单测覆盖错误后复用、签名分离、注册失败
+  和容量边界。用户可继续用同一工件处理后续请求，无需因已完成的计算错误
+  重启 runtime。未改变未知 completion 的资源保留规则。
+
+### 真实双 guest 结果
+
+| 运行 | 实际结果 |
+| --- | --- |
+| r157 六负例及恢复 | 原 op `20260914273..20260914278` 六次精确拒绝；后两次为执行阶段 access-denied，各注册 3 binding、读取 512 bytes、零写入/零 fence、失败完成后注销。24 次原数据不变检查通过。随后同映射 `20260914271/20260914272` 正常计算成功 |
+| r158 普通工件延迟恢复 | 5 ms 首次等待、100 ms authorization delay；原 op `20260914281/20260914282` 各超时并恢复一次，没有重复提交。4 线程完成 263 次校验，原数据、owner 和资源判据通过 |
+| r159 旧 direct 入口 | 相同最终 CLI/rootfs/桥接，普通工件；consumer 原 op `1327819278909441` 成功，producer `lanes_verified=1 completion_acks=1` |
+
+r157 四个 CPU 线程完成 1174 次只读校验，停止接纳后各线程仍读取原映射。
+报告为 8 dispatch、2 successful dispatch、6 expected rejection、2 execution
+rejection、8 LOAD、2 STORE、2 fence。全部 payload staging 为 0，C/D 独立
+oracle 正确，两端 CPU/compute/in-flight/mapping/holder 归零，kernel region
+回到基线。三轮 runner/container 均 exit 0，独立检查无 QEMU 遗留；源码、
+运行输入和 callable 的后验 SHA 不变。r154/r155 失败现场由各自隔离 runner
+终止，日志及输入继续保留，后续运行使用全新的 run ID、incarnation 和 FM 目录。
+
+本轮仍为一个 home、一个 64 KiB managed 对象、cross-page 256-byte 视图、
+四 CPU 线程与两次顺序正常计算，明确 `am2_complete=false`。只读 mapping、
+home 互换、更多分片及多请求计算并发仍未完成，A07-A11 整项未关闭。
+
+### 验证与源码组合
+
+r156 通过项目 wrapper 重建 QEMU，六个底层测试程序合计 40 项通过。
+Python 定向 34 项为 32 通过、2 环境跳过，7.421 秒；完整根 494 项为
+475 通过、5 跳过、5 失败、9 错误，53.557 秒，14 个失败 ID 与 r153 精确
+一致。layout 为 72 通过、原 2 失败，1.24 秒。完整根套件仍未全绿。
+
+Rust 完整工作区使用 `cargo test --offline --locked --workspace --no-fail-fast
+--jobs 8`，75 个依赖包均来自现有缓存，并逐个核对 Cargo.lock checksum；
+测试容器断网。r156e 的 43 个顶层测试目标共 931 通过、32 失败、16 ignored，
+没有重复累加隔离子进程的测试结果。两项新增注册回归通过。失败涉及缺失
+PTO-ISA 工件准备环境，以及无 Git 元数据的 mem_service 冻结源码。它们继续
+作为未通过项保留，没有改为 skip 或弱化检查。
+
+r156g 以父提交 `27ec9dea6e81fcec2d4cdc5d59ffbe06601c2b6b` 的同一批文件覆盖
+相同环境，并在独立 build cache 清除两个受影响 crate 的产物后重新编译。
+父版本为 929 通过、同 32 失败、16 ignored；当前版本增加的两个通过项恰好
+是新增注册回归，32 个失败 ID 完全相同。首次 r156f 复用了当前版本的旧缓存，
+仍执行了新增测试，该轮不能作为父版本基线；错误对比与修正后的结果都保留。
+Cargo 路径、离线缓存缺包等前置失败同样留档；75 个完整缓存包校验完成后才
+形成上述全套测试结果。
+
+CLI SHA-256 为 `88858bfd88af7a16e87e85f97837695827b5408987664ccb1b686761ea1558d1`，
+rootfs 为 `e36ca2f5902f20520c5aa46454c0190596e26d7d0ea4de8c03a4bf7e31758c62`。
+r156 QEMU 为 `2f13da08412bc75b106f041320779fb162ebe63b6f97c5b13ce67d97bd16e7e2`，
+Rust staticlib 为 `b587ffa5fe5dccbdf3b17e8397b66142a883255a8eb5cedc1bf63300a4cf767a`。
+r155 专用工件 manifest 为
+`ab212c11705b43c9424ba1e667e841382837f1a33b5e4ade82527afad91cdd0b`，
+fingerprint 为 `0x5a1f3644ea189c93`，两个故障 request 为 20260914277/20260914278。
+普通回归复用 r136 工件。kernel r109、driver r138、服务提交
+`6f090162536f0a92235587b13519306f28f3eaec` 保持不变；没有运行真实模型权重。
+本批未 push、未更新父仓库 gitlink/lock；冻结增量组合保持开发验证属性，
+不能宣称 fresh clone 或发布验收已经通过。
+
+归档 `verified-r154-r159-runtime-recovery-evidence.tar.gz` 已取回本地，192 个
+精确成员、112252470 bytes、权限 0600；gzip、成员顺序、大小及 SHA 均与
+远端一致。SHA-256 为
+`1ef58c83a1bed774e551e2d42f2e4b17c12c9df519a3b1c63bfcf8bebf4ac099`。
+其中包含五轮成功/失败的完整 guest/QEMU 日志、两版 CLI/rootfs、新桥接及
+staticlib、专用 callable 与生成源码、完整测试、父版本对比和 26 个结束容器
+的配置/状态。原始材料继续保留；整份网络审计日志未上传或纳入归档。
+下一项为真实只读 managed mapping 的 CPU/PTO 权限与寿命验证。

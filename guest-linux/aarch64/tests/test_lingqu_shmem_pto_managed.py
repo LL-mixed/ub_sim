@@ -1,7 +1,9 @@
 import pathlib
+import json
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -109,10 +111,38 @@ class ManagedPtoCliTest(unittest.TestCase):
                                          "submit_timeout_ms": "5"}).returncode, 2)
         self.assertEqual(self.run_config({**CONFIG, "negative_checks": "1",
                                          "generation": str((1 << 64) - 5)}).returncode, 2)
+        self.assertEqual(self.run_config({**CONFIG, "negative_checks": "1",
+                                         "generation": str((1 << 64) - 9)}).returncode, 0)
+        self.assertEqual(self.run_config({**CONFIG, "negative_checks": "1",
+                                         "generation": str((1 << 64) - 8)}).returncode, 2)
         self.assertEqual(self.run_config(extra="negative_checks=1\nnegative_checks=1\n").returncode, 2)
 
 
 class ManagedPtoContractTest(unittest.TestCase):
+    def test_runner_requires_exact_request_scoped_fault_manifest(self):
+        runner = (ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh").read_text()
+        function = runner.split("validate_pto_layout_manifest() {", 1)[1].split("\nPY", 1)[0]
+        script = function.split("<<'PY'\n", 1)[1]
+        manifest = {"ub_gm_layout": {"profile": "cross-page", "global_rows": 1,
+            "global_cols": 64, "tile_rows": 1, "tile_cols": 64, "logical_elements": 64},
+            "host_vector_program": "quadratic", "ub_gm_access_fault": "none"}
+        marker = {"tstore_request": 142, "tload_request": 143}
+        cases = [(manifest, "0", 0), (manifest, "1", 1),
+                 ({**manifest, "managed_access_fault": marker}, "1", 0),
+                 ({**manifest, "managed_access_fault": marker}, "0", 1),
+                 ({**manifest, "managed_access_fault": {**marker, "tstore_request": 141}}, "1", 1),
+                 ({**manifest, "managed_access_fault": {**marker, "tload_request": 142}}, "1", 1),
+                 ({**manifest, "managed_access_fault": marker, "ub_gm_access_fault": "tstore-on-read"}, "1", 1),
+                 ({**manifest, "managed_access_fault": marker, "host_vector_program": "pipeline_double"}, "1", 1)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            for contents, enabled, expected in cases:
+                path.write_text(json.dumps(contents))
+                with self.subTest(contents=contents, enabled=enabled):
+                    result = subprocess.run([sys.executable, "-c", script, str(path),
+                        "cross-page", "64", enabled, "135"], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
     def test_same_mapping_two_dispatches_and_fail_closed_lifetime(self):
         source = (APP / "lingqu_shmem_pto_managed.c").read_text()
         self.assertIn("mem_service_client_map_managed_allocation", source)

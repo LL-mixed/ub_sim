@@ -778,6 +778,14 @@ def vector_layout_contract(
     }
 
 
+def managed_access_fault_contract(request_id: int) -> dict | None:
+    if type(request_id) is not int or not 0 <= request_id < (1 << 64) - 1:
+        raise ValueError("managed access fault request ID must be in 0..UINT64_MAX-1")
+    if request_id == 0:
+        return None
+    return {"tstore_request": request_id, "tload_request": request_id + 1}
+
+
 def write_vector_kernel_source(
     build_dir: Path,
     func_id: int,
@@ -788,7 +796,11 @@ def write_vector_kernel_source(
     global_rows: int | None = None,
     global_cols: int | None = None,
     layout_profile: str = "nd",
+    managed_fault_request_id: int = 0,
 ) -> Path | None:
+    managed_fault = managed_access_fault_contract(managed_fault_request_id)
+    if managed_fault and ub_gm_access_fault != "none":
+        raise ValueError("managed access faults cannot combine with unconditional access faults")
     if global_rows is None:
         global_rows = tile_rows
     if global_cols is None:
@@ -848,6 +860,8 @@ def write_vector_kernel_source(
     scalar_input = ""
     load_second = ""
     fault_load = ""
+    fault_store = ""
+    fault_include = ""
     store_target = "dstGlobal"
     if func_id in (0, 2):
         second_input = """\
@@ -887,12 +901,24 @@ def write_vector_kernel_source(
         store_target = "src0Global"
     if ub_gm_access_fault == "tload-on-write" and func_id == 2:
         fault_load = "    TLOAD(dstTile, dstGlobal);\n"
+    if managed_fault and func_id in (0, 2):
+        fault_include = '#include <pto/cpu/ub_gm_access.hpp>\n'
+        request = managed_fault["tstore_request" if func_id == 0 else "tload_request"]
+        guard = (
+            "    if (const auto *access_context = pto::cpu::ub_gm::currentRunContext();\n"
+            f"        access_context && access_context->request_id == {request}ULL) {{\n"
+        )
+        if func_id == 0:
+            fault_store = guard + "        TSTORE(src0Global, dstTile);\n    }\n"
+        else:
+            fault_load = guard + "        TLOAD(dstTile, dstGlobal);\n    }\n"
 
     source = build_dir / f"vector_kernel_func_{func_id}.cpp"
     source.write_text(
         f"""\
 #include <cstdint>
 #include <pto/pto-inst.hpp>
+{fault_include}\
 
 #include "tensor.h"
 
@@ -939,6 +965,7 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     {op_name}
     set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
     wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+{fault_store}\
     TSTORE({store_target}, dstTile);
 
     pipe_sync();
@@ -2929,6 +2956,8 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
         "orchestration": orchestration,
         "sim_kernel_libgcc": args.sim_kernel_libgcc,
         "ub_gm_access_fault": args.ub_gm_access_fault,
+        "managed_access_fault": managed_access_fault_contract(
+            getattr(args, "managed_access_fault_request_id", 0)),
         "tile_batch": args.tile_batch if args.profile == "host_matmul" else None,
         "kernels": [
             {
@@ -3148,6 +3177,7 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
                 global_rows=vector_global_rows,
                 global_cols=vector_global_cols,
                 layout_profile=args.ub_gm_layout_profile,
+                managed_fault_request_id=getattr(args, "managed_access_fault_request_id", 0),
             )
             if args.profile == "host_vector"
             else None
@@ -3328,6 +3358,9 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     }
     if args.profile == "host_vector":
         manifest["ub_gm_access_fault"] = args.ub_gm_access_fault
+        managed_fault = managed_access_fault_contract(getattr(args, "managed_access_fault_request_id", 0))
+        if managed_fault:
+            manifest["managed_access_fault"] = managed_fault
         manifest["ub_gm_layout"] = vector_layout
         manifest["host_vector_program"] = args.host_vector_program
     if args.profile == "host_qwen3_operator":
@@ -3448,6 +3481,10 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--managed-access-fault-request-id", type=int, default=0,
+        help="test-only quadratic kernel faults: TSTORE at request N, TLOAD at N+1; 0 disables",
+    )
+    parser.add_argument(
         "--sim-kernel-libgcc",
         choices=("static", "shared"),
         default="static",
@@ -3455,6 +3492,14 @@ def main() -> int:
     )
     parser.add_argument("--describe", action="store_true")
     args = parser.parse_args()
+    try:
+        managed_fault = managed_access_fault_contract(args.managed_access_fault_request_id)
+    except ValueError as error:
+        parser.error(str(error))
+    if managed_fault and (args.profile != "host_vector" or
+                          args.host_vector_program != "quadratic" or
+                          args.ub_gm_access_fault != "none"):
+        parser.error("managed access faults require quadratic host_vector without other access faults")
     if args.profile != "host_vector" and args.host_vector_program != "quadratic":
         raise SystemExit(
             "--host-vector-program is only supported for --profile host_vector"

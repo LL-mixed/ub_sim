@@ -101,15 +101,42 @@ r146/r147 已在双 guest 验证 4 个 CPU 线程与两次顺序 PTO dispatch：
 视图；多请求计算并发、home 互换及 PTO 权限/范围完整矩阵仍待验收，AM2 未完成。
 
 测试专用 `negative_checks=1`（host: `LINGQU_SHMEM_PTO_NEGATIVE_CHECKS=1`）
-在两次正常计算前，按顺序验证 bad-mapping-ref、wrong-requester、oob 和
-role-access-mismatch。只改变已生成的测试 metadata，复用旧入口的有界 CRC
+在两次正常计算前，先验证 bad-mapping-ref、wrong-requester、oob 和
+role-access-mismatch 四个预检负例，再运行下面的两个执行负例。预检负例只改变
+已生成的测试 metadata，复用旧入口的有界 CRC
 重算实现；不更改实际 mapping、backing 或生产 memref API。每次必须获得原
 operation 的精确失败 completion，确认所有四个视图保持原值、释放计算 pin，
 随后用同一 owner 继续正常计算。该选项暂不与短等待恢复用例组合；默认 0。
 校验器必须确认四次预期拒绝没有注册 binding 或执行数据回调，保留全部失败
 记录，再核对原有正常计算与资源判据。r150 双 guest 已通过四次精确拒绝、
 16 次数据不变检查及同映射的后续两次正常计算；r151 关闭负例开关后通过原
-completion 延迟恢复。只读页表与执行阶段 TLOAD/TSTORE 权限矩阵保持独立待办。
+completion 延迟恢复；执行阶段的后续结果见下文，只读页表矩阵仍待验收。
+
+执行阶段扩展的 r154 尝试修改 role/access，真实运行得到 bad_memref，读取字节
+为 0，未满足 access-denied 判据。该失败的源码、工件和原始日志保留。
+
+后续扩展沿用专用错误 kernel 的生成路径并保持正常 metadata/signature。工件生成
+CLI `--managed-access-fault-request-id N` 将两次错误限定到原 request N 与 N+1：
+分别 TSTORE 只读输入和 TLOAD 只写输出。其余 request 执行正常 quadratic kernel；
+不使用全局计数器，不改变生产权限检查。manifest 明确记录两个 request，runner
+要求它们等于本次 `generation+7/+8`；未开启 negative_checks 时拒绝此类工件。
+六个负例之后继续原有两次正常计算，CPU owner 与 backing 始终相同。两个执行
+负例均须注册三个 binding、读取 512 bytes、access-denied 完成并注销，写入、
+fence 和 staging 均为 0，四视图保持原值。这一扩展不覆盖只读页表。
+
+r155 的第一个执行负例已得到 access-denied、512-byte 读取与零写入；第二个
+负例被 Simpler 的重复 callable 注册拒绝。运行时只在整次执行成功后记录已注册
+callable，导致前次已确认错误完成后的注册状态丢失。修订将注册成功与执行结果
+分别管理，并把参数 signature 纳入缓存键；注册失败仍不占用 ID，完成错误后的
+下一次执行复用已注册 callable。
+
+r157 使用重建后的桥接通过完整顺序：六次精确拒绝、24 次数据不变检查、同一
+映射的两次正常计算。四个 CPU 线程完成 1174 次校验，停止接纳后各自继续读取，
+最终两端资源归零。报告为 8 dispatch、6 rejection（其中 2 次 execution）、
+8 LOAD、2 STORE、2 fence，staging 为 0。r158 使用普通工件恢复两次迟到的原
+completion；r159 的旧 direct 入口通过。三轮 runner/container 均 exit 0，
+独立检查无 QEMU 遗留。当前验收仍限于单 home、单对象和两次顺序正常计算，
+`am2_complete=false`。
 
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when

@@ -1056,6 +1056,20 @@ impl RuntimeLibrary {
         }
     }
 
+    pub fn register_prepared_callable(
+        &self,
+        ctx: &DeviceContext<'_>,
+        callable: &CallableBuffer,
+        callable_id: i32,
+    ) -> Result<(), SimplerApiError> {
+        unsafe {
+            SimplerApiError::from_code(
+                "simpler_register_callable",
+                (self.register_callable)(ctx.as_raw(), callable_id, callable.as_ptr()),
+            )
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn run_prepared_callable(
         &self,
@@ -1073,10 +1087,7 @@ impl RuntimeLibrary {
         let descriptor = next_native_run_descriptor();
         unsafe {
             if prepare {
-                SimplerApiError::from_code(
-                    "simpler_register_callable",
-                    (self.register_callable)(ctx.as_raw(), callable_id, callable.as_ptr()),
-                )?;
+                self.register_prepared_callable(ctx, callable, callable_id)?;
             }
             SimplerApiError::from_code(
                 "simpler_prepare_run",

@@ -96,9 +96,10 @@ def owned_fixture(recovery=False, threads=4):
 def negative_fixture():
     guests, qemu = owned_fixture()
     rows, failures = [], []
-    for index, name in enumerate(("bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch")):
+    for index, name in enumerate(("bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch",
+                                  "tstore-on-read", "tload-on-write")):
         operation = 103 + index
-        error = "pto_ub_gm_access_denied" if index == 1 else "pto_ub_gm_bad_memref"
+        error = "pto_ub_gm_access_denied" if index in (1, 4, 5) else "pto_ub_gm_bad_memref"
         rows += [f"MANAGED_PTO_NEGATIVE node=1 case={name} state=submitted op_id={operation} "
                  f"mapping_id=9 expected={error} metadata_crc=0x12345678 retained_leases=3",
                  f"MANAGED_PTO_NEGATIVE node=1 case={name} state=rejected op_id={operation} "
@@ -107,20 +108,65 @@ def negative_fixture():
             checksum = validator.oracle_checksum(vector) if vector < 2 else "3625c1e461d4b383"
             rows.append(f"MANAGED_PTO_NEGATIVE_DATA node=1 case={name} op_id={operation} "
                         f"vector={vector} checksum={checksum} bytes=256 unchanged=pass")
-        failures += [f"QEMU_UB_GM_FAILURE_COMPLETION op={operation} cq_slot={index} "
-                     f"cq_tail={index+1} status=3 code={error}",
-                     f"QEMU_UB_GM_DISPATCH_REJECT op={operation} error=3 code={error}"]
+        if index < 4:
+            failures += [f"QEMU_UB_GM_FAILURE_COMPLETION op={operation} cq_slot={index} "
+                         f"cq_tail={index+1} status=3 code={error}",
+                         f"QEMU_UB_GM_DISPATCH_REJECT op={operation} error=3 code={error}"]
+        else:
+            execution = qemu.split("QEMU_UB_GM_INPUT_AUTHORIZE op=102")[0]
+            execution = execution.replace("op=101", f"op={operation}").replace(
+                "request=101", f"request={operation}")
+            execution = execution.replace("completion_success", "completion_failure").replace(
+                "store_bytes=256 fences=1", "store_bytes=0 fences=0")
+            excluded = ("QEMU_UB_GM_STORE ", "QEMU_UB_GM_FENCE ")
+            failures += [line for line in execution.splitlines() if not line.startswith(excluded)]
     marker = "MANAGED_PTO node=1 dispatch=1 op_id="
     guests[1] = guests[1].replace(marker, "\n".join(rows) + "\n" + marker)
     return guests, "\n".join(failures) + "\n" + qemu
 
 
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_execution_negatives_require_runtime_registration_and_zero_writes(self):
+        guests, qemu = negative_fixture()
+        mutations = (
+            ("OUTPUT_AUTHORIZE op=107 request=107 binding=3", "INPUT_AUTHORIZE op=107 request=107 binding=3"),
+            ("INPUT_AUTHORIZE op=108 request=108 binding=1", "OUTPUT_AUTHORIZE op=108 request=108 binding=1"),
+            ("op=107 request=107 reason=completion_failure", "op=107 request=107 reason=bridge_submit_failed"),
+            ("load_bytes=512 store_bytes=0", "load_bytes=256 store_bytes=0"),
+            ("load_bytes=512 store_bytes=0", "load_bytes=0 store_bytes=0"),
+            ("store_bytes=0 fences=0", "store_bytes=256 fences=1"),
+            ("fences=0 segment_payload_staging_bytes=0", "fences=0 segment_payload_staging_bytes=256"),
+            ("GSVA_BIND request=107 binding=1 segment=0x6", "GSVA_BIND request=107 binding=1 segment=0x7"),
+            ("LOAD request=107 binding=1 addr=0x80000f80", "LOAD request=107 binding=1 addr=0x80000f81"),
+        )
+        for before, after in mutations:
+            self.assertIn(before, qemu)
+            with self.subTest(before=before), self.assertRaises(ValueError):
+                validator.validate(guests, qemu.replace(before, after),
+                                   access_threads=4, require_negative_checks=True)
+        lines = qemu.splitlines()
+        for prefix in ("SIM_QEMU_UB_GM_BIND_REGISTER op=107 ", "QEMU_UB_GM_UNBIND op=108 "):
+            line = next(row for row in lines if row.startswith(prefix))
+            for changed in (qemu.replace(line, ""), qemu + "\n" + line):
+                with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                    validator.validate(guests, changed, access_threads=4, require_negative_checks=True)
+        for extra in ("QEMU_UB_GM_STORE request=107 binding=3 addr=0x80002f80 length=256 map=8 generation=9",
+                      "QEMU_UB_GM_LOAD request=108 binding=1 addr=0x80000f80 length=256 map=8 generation=9",
+                      "QEMU_UB_GM_FAILURE_COMPLETION op=107 status=3 code=pto_ub_gm_access_denied"):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                validator.validate(guests, qemu + "\n" + extra,
+                                   access_threads=4, require_negative_checks=True)
+        late = [row for row in lines if "request=107 " in row]
+        changed = [row for row in lines if row not in late] + late
+        with self.assertRaises(ValueError):
+            validator.validate(guests, "\n".join(changed), access_threads=4, require_negative_checks=True)
+
     def test_negative_probes_require_exact_failures_unchanged_data_and_recovery(self):
         guests, qemu = negative_fixture()
         result = validator.validate(guests, qemu, access_threads=4, require_negative_checks=True)
         self.assertEqual((result["dispatches"], result["successful_dispatches"],
-                          result["expected_rejections"]), (6, 2, 4))
+                          result["expected_rejections"]), (8, 2, 6))
+        self.assertEqual((result["execution_rejections"], result["load_callbacks"]), (2, 8))
         self.assertFalse(result["am2_complete"])
         with self.assertRaises(ValueError):
             validator.validate(guests, qemu, access_threads=4)
@@ -163,7 +209,7 @@ class ManagedPtoValidatorTest(unittest.TestCase):
             result = subprocess.run(command + ["--require-negative-checks"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(report["expected_rejections"], 4)
+            self.assertEqual(report["expected_rejections"], 6)
             self.assertEqual([row["sha256"] for row in report["sources"]],
                              [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths])
 
