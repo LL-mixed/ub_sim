@@ -47,6 +47,8 @@ def oracle_checksum(vector):
 
 
 def validate(guests, qemu):
+    # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
+    guests = [text.replace("\r\n", "\n") for text in guests]
     maps, dispatches = [], []
     for node, text in enumerate(guests):
         require("status=fail" not in text and "resources_retained=1" not in text,

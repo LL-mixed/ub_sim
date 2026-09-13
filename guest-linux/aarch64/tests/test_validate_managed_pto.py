@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -69,6 +70,14 @@ class ManagedPtoValidatorTest(unittest.TestCase):
         self.assertFalse(result["am2_complete"])
         self.assertEqual(result["dispatches"], 2)
 
+    def test_serial_crlf_retains_the_same_validation_rules(self):
+        guests, qemu = fixture()
+        guests = [text.replace("\n", "\r\n") for text in guests]
+        self.assertEqual(validator.validate(guests, qemu)["status"], "pass")
+        guests[0] = guests[0].replace("put_object_count=0", "put_object_count=1")
+        with self.assertRaisesRegex(ValueError, "control-plane data operation"):
+            validator.validate(guests, qemu)
+
     def test_rejects_missing_mismatched_and_duplicate_evidence(self):
         mutations = [
             (0, "cpu_base=0x700000000000", "cpu_base=0x700000010000"),
@@ -103,13 +112,17 @@ class ManagedPtoValidatorTest(unittest.TestCase):
             paths = [pathlib.Path(directory) / name for name in ("a.log", "b.log", "q.log")]
             guests, qemu = fixture()
             for path, contents in zip(paths, guests + [qemu]):
-                path.write_text(contents)
+                path.write_bytes(contents.replace("\n", "\r\n").encode("utf-8"))
             output = pathlib.Path(directory) / "report.json"
             command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]),
                        "--node-b", str(paths[1]), "--qemu-b", str(paths[2]), "--output", str(output)]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(len(json.loads(output.read_text())["sources"]), 3)
+            self.assertEqual([row["sha256"] for row in
+                              json.loads(output.read_text())["sources"]],
+                             [hashlib.sha256(path.read_bytes()).hexdigest()
+                              for path in paths])
             paths[2].write_text("")
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
