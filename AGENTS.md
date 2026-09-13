@@ -56,6 +56,21 @@ Git history uses short imperative subjects such as `Add TCP transport benchmark 
 
 ## Security & Configuration Tips
 
+### Task Network Audit
+
+For this task, record every agent-initiated network operation before execution
+and append its outcome afterwards. Follow
+`docs/2026-09-13-codex-network-audit-policy.md`. Use
+`guest-linux/aarch64/scripts/codex_network_audit.py run` for network commands
+and `begin`/`finish`
+for browser, web, and connector calls. Include SSH/SCP, remote Git operations,
+downloads, dependency resolution, remote job networking, and retries. Never
+record credentials or payload contents. Logs belong in `out/` and must not be
+committed or uploaded wholesale. Review any recurring restriction against the
+recorded operations and report unsupported restrictions through the existing
+official issue with a redacted evidence summary. Unobservable client/backend
+traffic and incomplete historical coverage must remain explicitly unknown.
+
 Do not commit model weights, kernel artifacts, SSH targets, secrets, or local absolute paths except documented examples. Use environment variables such as `AARCH64_LINUX_CC`, `BUSYBOX`, and `SIM_QWEN3_0_6B_WEIGHTS_PATH` for machine-specific configuration. Compiled guest apps and submodules are gitignored (e.g. `guest-linux/aarch64/apps/obmm_*/obmm_*`, `apps/llm_infer/linqu_llm_infer`); build them rather than expecting them in-tree. `vendor/qemu_8.2.0_ub`, `guest-linux/kernel_ub`, and the nested `mem_service/vendor/obmm` are git submodules — initialize with `git submodule update --init --recursive` on a fresh clone.
 
 ## Memory Service Architecture Law
