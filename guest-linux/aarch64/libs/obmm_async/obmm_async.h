@@ -92,6 +92,12 @@ void obmm_async_close(struct obmm_async *runtime);
 int obmm_async_map_register(struct obmm_async *runtime, int obmm_fd,
                             uint64_t mem_id, void *mapped_addr,
                             uint64_t length, struct obmm_async_map *map);
+/* Zero-initialize map. No legacy fallback. If failure leaves map->id nonzero,
+ * registration is owned and must be unregistered before releasing its VMA.
+ */
+int obmm_async_map_register_strict_pto(
+    struct obmm_async *runtime, int obmm_fd, uint64_t mem_id,
+    void *mapped_addr, uint64_t length, struct obmm_async_map *map);
 int obmm_async_map_unregister(struct obmm_async *runtime,
                               struct obmm_async_map *map);
 int obmm_async_buffer_alloc(struct obmm_async *runtime, uint64_t length,

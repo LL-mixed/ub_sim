@@ -424,6 +424,38 @@ int obmm_async_map_register(struct obmm_async *runtime, int obmm_fd,
     return 0;
 }
 
+int obmm_async_map_register_strict_pto(
+    struct obmm_async *runtime, int obmm_fd, uint64_t mem_id,
+    void *mapped_addr, uint64_t length, struct obmm_async_map *map)
+{
+    struct obmm_async_map_register_v2 request = {
+        .mem_id = mem_id,
+        .mapped_addr = (uintptr_t)mapped_addr,
+        .length = length,
+        .flags = OBMM_ASYNC_MAP_STRICT_PTO,
+    };
+
+    if (!obmm_runtime_valid(runtime) || obmm_fd < 0 || !mem_id ||
+        !mapped_addr || !length || !map || map->id || map->generation ||
+        map->length || map->local_pa || (uintptr_t)mapped_addr > UINT64_MAX - length) {
+        return -EINVAL;
+    }
+    if (ioctl(runtime->fd, OBMM_ASYNC_IOCTL_MAP_REGISTER_V2, &request) != 0) {
+        return -errno;
+    }
+    *map = (struct obmm_async_map) {
+        .id = request.map_id,
+        .generation = request.map_generation,
+        .length = length,
+        .local_pa = request.local_pa,
+    };
+    if (!map->id || !map->generation || !map->local_pa ||
+        map->local_pa > UINT64_MAX - length) {
+        return -EPROTO;
+    }
+    return 0;
+}
+
 int obmm_async_map_unregister(struct obmm_async *runtime,
                               struct obmm_async_map *map)
 {

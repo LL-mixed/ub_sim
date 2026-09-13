@@ -438,6 +438,34 @@ int main(void)
         ):
             self.assertIn(code, source)
 
+    def test_strict_gsva_pto_preserves_lease_and_backing_identity(self):
+        source = QEMU_UBC_SOURCE.read_text()
+        header = QEMU_UBC_HEADER.read_text()
+        async_source = (QEMU_UBC_SOURCE.parent / "ub_obmm_async.c").read_text()
+        self.assertIn("GsvaRouteAccess gsva", header)
+        self.assertIn("gsva_route_access_equal(&a->gsva, &b->gsva)", header)
+        self.assertIn("gsva_route_resolve_pto(&g_gsva_routes", source)
+        self.assertIn("gsva_rc != GSVA_ERR_ROUTE_MISSING", source)
+        self.assertIn("ubc_obmm_map_identity_equal(&current, &map->resolved)",
+                      async_source)
+        for name in ("linqu_ub_gm_read", "linqu_ub_gm_write"):
+            start = source.index(f"static int {name}")
+            callback = source[start:source.index("\n}\n", start)]
+            self.assertIn("if (resolved.strict_gsva)", callback)
+            self.assertIn("ubc_sim_dec_remote_io", callback)
+            self.assertIn("resolved.gsva.backing_token_id", callback)
+        self.assertIn("ubc_obmm_map_identity_equal(resolved, &binding->identity)",
+                      source)
+        self.assertIn("ubc_obmm_map_identity_equal(&current, &resolved)", source)
+        self.assertIn("memref->access & ~resolved.pto_access", source)
+        self.assertIn("ubc_obmm_strict_pto_access(&map->resolved, state->map_access",
+                      async_source)
+        self.assertIn("resolved->pto_access &= map->pto_access", async_source)
+        queue_start = async_source.index("if (map->resolved.strict_gsva)")
+        rejection = async_source[queue_start:async_source.index("\n    }", queue_start)]
+        self.assertIn("OBMM_REMOTE_STATUS_UNSUPPORTED", rejection)
+        self.assertIn("return false", rejection)
+
     def test_qemu_releases_bql_while_waiting_for_pto_worker_callbacks(self):
         source = QEMU_UBC_SOURCE.read_text()
         poll_start = source.index("static int linqu_uapi_poll_completion")

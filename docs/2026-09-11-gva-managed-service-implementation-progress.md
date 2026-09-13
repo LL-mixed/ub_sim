@@ -1565,6 +1565,62 @@ SHA 均与远端核对一致。未 push，父仓库 gitlink/lock 继续保持原
 managed holder/mapping 的 CPU/PTO pins。当前 PTO lease 在 backend release 失败
 后仍丢弃归属，相关清理路径也须补齐；本段属于源码发现，尚无 AM2 实测通过结论。
 
+## 2026-09-13 续作：严格 GSVA 的 PTO 映射解析（开发验证中）
+
+新增值类型 route 快照及实际 PA 范围解析，保留完整 GSVA key、route ID、lease
+epoch、权限、home/owner 和独立 backing token。PTO 延迟授权及逐次访问重新查询
+真实 route，身份变化后拒绝旧绑定；严格数据访问复用 CPU window 的 backing I/O。
+正常旧映射仍走原路径；异步 read 队列拒绝严格 GSVA，避免使用错误凭证。
+
+r127 原型已通过项目入口构建，6 组 QEMU 原生测试共 39 项通过，包含新增四组
+route 行为测试。root 首次因只读 unit 目录缺少挂载文件而未启动，原容器保留。
+r127b 修正挂载后完整运行 465 项：445 通过、5 跳过、6 失败、9 错误，45.252 秒。
+较 r124b 新增一项旧源码断言失败：generation 比较已移到公共身份函数。修订断言
+同时检查调用关系、generation、映射类型及完整 GSVA 比较；尚待最终完整复验。
+layout 仍为 72/74 通过。r128 配置已上传，但失败集合比较拦住了 guest 启动；
+不能把该配置文件当作已完成的实际运行。首次远端比较因缺少 rg 未执行，随后用
+grep 和 pipefail 重做，确实检测到上述新增失败，所有尝试保留审计记录。
+
+guest 接入还暴露出旧注册接口没有传播 VMA 权限。正在补齐 V2 ioctl 的
+`OBMM_ASYNC_MAP_STRICT_PTO` opt-in 和 MMIO command 3：driver 从实际 VMA
+提取读写权限，QEMU 与 route 权限取交集；旧 command 1 对严格映射拒绝。
+EL0 新注册函数不重试旧接口，异常回包仍保留可识别的 registration 清理归属。
+r129 已通过新 QEMU 构建及 40 项原生测试；完整 root 为 467 项，448 通过、
+5 跳过及原有 14 项失败，45.776 秒；layout 72/74 通过，1.22 秒。EL0 边界替身
+实际调用生产注册函数，核对四种错误均只发一次 ioctl、没有 legacy 重试，异常
+回包可识别的 registration 可继续注销；该测试未访问真实设备。guest 模块在
+第二目标通过构建，使用原 r109 config/Module.symvers，vermagic 同为
+`6.6.0 SMP mod_unload modversions aarch64`。随后补充 V1 ioctl 继续拒绝非零
+flags 的兼容检查，r130 最终模块构建通过，10.065 秒，vermagic 与 r109 一致。
+r130 首次 layout 命令使用错误路径，未执行测试；首次 root 使用另一测试镜像，
+保留结果但不作为最终基线。r130b 复用 r129 的镜像及完整挂载后运行 467 项，
+448 通过、5 跳过、5 失败、9 错误，45.734 秒。终态后对 14 个失败 ID 排序，
+与 r124b 完全一致；layout 72/74 通过，1.23 秒。首次在测试进行中取得的部分
+失败集合不作为最终比较证据，最终使用 `failures-r124b-r130b-final.diff`。
+r127 原型不作为最终部署物。
+
+最终 QEMU SHA-256 为
+`75e551eff25b87874d9e6cb911b9c650c89b22193412a11869ee481cc2c6d6f9`，
+r130 驱动为 `474def353211aa40c003ae55d3f59d929b608e58143fcffb48367f4e641c8ada`。
+新 rootfs 仅替换 r124 的驱动，服务、worker、manager 和 run_app 指纹保持不变；
+SHA-256 为 `6148f3d8f032775a6065857e2fb6cbce68d8c222b46166891dbec52a9c7aea60`。
+每次 SSH/SCP 和重试均经过审计 CLI；未改变远端系统网络配置或上传模型。
+r131 使用最终 QEMU/driver/rootfs 执行双节点普通 SDK 两轮回归，runner exit 0，
+101.102 秒；两端 `sdk_contract`、`mapping_resources`、`kernel_regions` 均 PASS，
+末尾 read/write errors 和 timeouts 为 0。本次确认 CPU/SDK 兼容性；未提交 PTO
+dispatch，不能将结果记作 A07/A08 或统一寿命验收。
+独立查询确认无 QEMU 遗留。最终归档
+`verified-r127-r131-strict-pto-platform-evidence.tar.gz` 已取回本地，38 个精确
+成员、61516733 bytes、权限 0600，本地与远端的 gzip、成员列表、长度及 SHA
+核对一致；SHA-256 为
+`36aff6396a4342326bc461798d8a6f42a2e677981a3f8a237e927585ce0f8885`。
+归档保留 r127/r130 首次失败、r128 未运行配置、最终二进制、源码和原始 guest 日志。
+14 个最终平台源码/测试文件与远端快照逐项核对相同。
+QEMU 提交为 `175d95a405b4681078579b4119b6ed30eb542d8e`，kernel UAPI 提交为
+`1bd7af7ffc92c8aaad161bf04d0d0cefe045ca0f`；未 push、未更新父仓库 gitlink/lock。
+本批仍需接通 managed mapping 的统一 CPU/PTO lease，并取得真实 TLOAD/TSTORE
+与 CPU 四种交叉读写证据；本节未关闭 AM2 或任何完整阶段。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时

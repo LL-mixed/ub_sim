@@ -56,6 +56,7 @@
 #define OBMM_ASYNC_REG_MAP_ID 0x110
 #define OBMM_ASYNC_REG_MAP_GENERATION 0x118
 #define OBMM_ASYNC_REG_MAP_CMD 0x120
+#define OBMM_ASYNC_REG_MAP_ACCESS 0x168
 #define OBMM_ASYNC_REG_BUFFER_BASE 0x128
 #define OBMM_ASYNC_REG_BUFFER_LENGTH 0x130
 #define OBMM_ASYNC_REG_BUFFER_ID 0x138
@@ -564,10 +565,12 @@ static long linqu_obmm_async_map_register_common(
 	struct vm_area_struct *vma;
 	unsigned long pfn;
 	u64 local_pa;
+	u64 pto_access = 0;
 	u32 index;
 	int ret;
 
-	if (!mem_id || !length || mapped_addr > U64_MAX - length || flags ||
+	if (!mem_id || !length || mapped_addr > U64_MAX - length ||
+	    (flags & ~OBMM_ASYNC_MAP_STRICT_PTO) ||
 	    reserved || !map_id || !map_generation || !local_pa_out)
 		return -EINVAL;
 	mmap_read_lock(current->mm);
@@ -576,6 +579,16 @@ static long linqu_obmm_async_map_register_common(
 	    mapped_addr + length > vma->vm_end) {
 		ret = -EFAULT;
 		goto out_unlock;
+	}
+	if (flags & OBMM_ASYNC_MAP_STRICT_PTO) {
+		if (vma->vm_flags & VM_READ)
+			pto_access |= 1;
+		if (vma->vm_flags & VM_WRITE)
+			pto_access |= 2;
+		if (!pto_access || !(vma->vm_flags & VM_PFNMAP)) {
+			ret = -EACCES;
+			goto out_unlock;
+		}
 	}
 	ret = follow_pfn(vma, mapped_addr, &pfn);
 	if (ret)
@@ -608,9 +621,12 @@ out_unlock:
 	       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_ID);
 	writeq(*map_generation,
 	       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_GENERATION);
+	if (flags & OBMM_ASYNC_MAP_STRICT_PTO)
+		writeq(pto_access, drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_ACCESS);
 	/* Publish all map descriptor fields before the registration command. */
 	wmb();
-	writeq(1, drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_CMD);
+	writeq((flags & OBMM_ASYNC_MAP_STRICT_PTO) ? 3 : 1,
+	       drv->obmm_async_mmio + OBMM_ASYNC_REG_MAP_CMD);
 	if (readq(drv->obmm_async_mmio + OBMM_ASYNC_REG_LAST_ERROR)) {
 		ctx->maps[index].allocated = false;
 		return -EIO;
@@ -627,6 +643,9 @@ static long linqu_obmm_async_map_register(struct linqu_ub_file *ctx,
 
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
 		return -EFAULT;
+	/* The strict-PTO opt-in requires the authoritative-PA V2 response. */
+	if (request.flags)
+		return -EINVAL;
 	ret = linqu_obmm_async_map_register_common(
 		ctx, request.mem_id, request.mapped_addr, request.length,
 		request.flags, request.reserved, &request.map_id,

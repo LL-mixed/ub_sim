@@ -1,4 +1,5 @@
 import shutil
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -200,7 +201,13 @@ def test_qemu_endpoint_is_routed_and_uses_registered_buffers():
     assert "ub_obmm_async_resolve_mapping_ref(" in endpoint
     assert "lingqu_pto_obmm_mapping_ref_map_id(mapping_ref)" in endpoint
     assert "lingqu_pto_obmm_mapping_ref_generation(mapping_ref)" in endpoint
-    assert "current.map_generation != map->resolved.map_generation" in endpoint
+    assert "ubc_obmm_map_identity_equal(&current, &map->resolved)" in endpoint
+    identity_header = (QEMU_ROOT / "include/hw/ub/ub_ubc.h").read_text()
+    identity_start = identity_header.index("static inline bool ubc_obmm_map_identity_equal")
+    identity = identity_header[identity_start:identity_header.index("\n}", identity_start)]
+    assert "a->map_generation == b->map_generation" in identity
+    assert "a->strict_gsva == b->strict_gsva" in identity
+    assert "gsva_route_access_equal(&a->gsva, &b->gsva)" in identity
     assert "QemuMutex tx_lock;" in link_header
     assert '#include "qemu/lockable.h"' in link
     assert "qemu_mutex_init(&s->tx_lock);" in link
@@ -470,6 +477,42 @@ def test_eval_runner_fails_closed_before_launch():
 
 
 class ObmmAsyncContractTests(unittest.TestCase):
+    @unittest.skipUnless(platform.system() == "Linux", "Linux ioctl boundary fixture")
+    def test_strict_pto_registration_no_downgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "strict-pto-golden"
+            sources = [str(ROOT / "tests/obmm_async_strict_pto_golden.c")]
+            if platform.machine().lower() in ("aarch64", "arm64"):
+                sources.append(str(LIB_DIR / "obmm_async_aarch64.S"))
+            subprocess.run([
+                "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-D__EXPORTED_HEADERS__", "-I", str(ROOT),
+                "-idirafter", str(KERNEL_ROOT / "include/uapi"),
+                "-idirafter", str(KERNEL_ROOT / "include"),
+                *sources, "-o", str(binary),
+            ], check=True)
+            output = subprocess.check_output([str(binary)], text=True)
+            self.assertEqual(output.strip(),
+                             "obmm_async_strict_pto_golden=pass calls=8 legacy_retries=0")
+
+    def test_strict_pto_registration_uses_actual_vma_rights(self):
+        driver = (ROOT / "driver/linqu_ub_drv.c").read_text()
+        start = driver.index("static long linqu_obmm_async_map_register_common")
+        body = driver[start:driver.index("\n}\n", start)]
+        for expected in ("vma->vm_flags & VM_READ", "vma->vm_flags & VM_WRITE",
+                         "vma->vm_flags & VM_PFNMAP", "if (!pto_access",
+                         "writeq(pto_access", "OBMM_ASYNC_REG_MAP_ACCESS",
+                         "OBMM_ASYNC_MAP_STRICT_PTO) ? 3 : 1"):
+            self.assertIn(expected, body)
+        self.assertLess(body.index("writeq(pto_access"), body.index("wmb()"))
+        legacy_start = driver.index("static long linqu_obmm_async_map_register(")
+        legacy = driver[legacy_start:driver.index("\n}\n", legacy_start)]
+        self.assertIn("if (request.flags)", legacy)
+        self.assertLess(legacy.index("if (request.flags)"),
+                        legacy.index("linqu_obmm_async_map_register_common("))
+        self.assertIn("OBMM_ASYNC_MAP_STRICT_PTO", (KERNEL_ROOT /
+                      "include/uapi/ub/obmm_async.h").read_text())
+
     def test_uapi_layout(self):
         test_uapi_layout_compiles_for_aarch64()
 

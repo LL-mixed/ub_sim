@@ -231,6 +231,17 @@ guard page、无效引用与畸形 descriptor。没有虚构 backing、人工抄
 
 **补齐 G2/G5/G6/G10 的 CPU/PTO 联合路径。**
 
+QEMU 接入约定：现有 mapping register 接纳已安装 CPU window 的严格 GSVA V2
+route，按实际 guest PA 查询，不从数值相同的旧 SIM_DEC map ID 推测身份。
+保留完整 key、route ID、lease epoch/权限、home/owner 及独立 backing token；
+PTO 绑定、延迟授权复查及逐次访问均比较同一身份快照，退役或轮换后拒绝旧绑定。
+严格 PTO 注册要求显式 opt-in 的 V2 ioctl 标志及新 MMIO command；driver 从真实
+VMA 提取读写权限，与 route 权限取交集。旧 driver/QEMU 拒绝新请求，SDK 不降级；
+旧注册 command 继续服务 legacy mapping，对严格 GSVA 返回 unsupported。
+TLOAD/TSTORE 使用与严格 CPU window 相同的实际 backing I/O；旧异步 read 队列
+暂不接纳 GSVA register，返回明确 unsupported，不改变 tokenless CPU replay 协议。
+此约定仅定义实现边界，完成还需下述统一 holder 和实际四种读写组合的验证。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。
