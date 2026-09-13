@@ -1427,6 +1427,59 @@ SHA-256 为 `18b51dc7a2d91e7dc37ee8b5683ac4e6fdf4a79931f80de2959a82d4e018eb67`�
 匹配模块、配置及源码增量；未清理中间失败证据。归档已取回本地，gzip、成员数、
 长度及 SHA-256 均与远端一致，权限为 0600。
 
+## 2026-09-13 续作：并发分配压力契约（局部实测通过）
+
+新增配置场景 `MEM_SERVICE_OBJECT_SHARE_FAULT=allocation_pressure`，仍复用现有
+双节点入口，仅执行一轮；使用 64 MiB aperture。三个独立 `object-session` 进程
+通过 SDK 请求 1、2097153、4194305 bytes，alignment 分别为 2、4、8 MiB。
+它们各自重放同一幂等分配请求，并等待自身对象退役；协调流程确认三个进程仍
+存活、两次分配结果均已输出后，查询全部对象、真实 kernel segment 和资源统计。
+验证不依赖分配先后顺序，也不把进程同时存活等同于服务器并行执行 RPC。
+
+原有两个客户端保持同一对象的 CPU mapping。新增对象按交错顺序退役，先释放
+中间大小的对象，再分配一个 3 MiB/4 MiB-aligned 对象，核对未提前重用地址。
+压力结束后，服务和物理池 used 计数回到压力前状态，原对象继续双向校验，最后
+完整 kernel export/import 清单回到启动基线。并发子进程输出先分别保存，结束后
+按客户端输出并保留退出码；异常退出时回收本流程持有的精确子进程 PID。
+
+此用例验证并发服务请求、真实 backing 和区间几何；新分配对象未逐一执行 payload
+访问，CPU 数据验证由持续持有的原对象提供。它不承担多 home、100 次循环、跨线程
+SDK mapping 或 AM3 地址重用验收。
+
+r121 已完成真实双 guest 运行，runner exit 0，59.834 秒。双方的
+`mapping_resources`、`kernel_regions`、`allocation_pressure` 均 PASS；三个实际
+客户端进程同时存活并最终全部 exit 0。新增对象的实际起始 VA 分别为
+`0x700000600000`、`0x700000800000`、`0x700001000000`，backing 为 2/4/6 MiB。
+释放第二个对象后，再次分配得到 `0x700001800000`、4 MiB backing；没有复用孔洞。
+五个检查点的物理池 used 为 8/20/16/20/8 MiB，服务账本保持两份 CPU mapping
+及两个 live refs；原对象最终 65537-byte 读回 checksum 为 `0xf020110145c7382b`。
+新增四个对象各只有一次真实 reserve/export 和一次完整 reclaim 序列。
+
+本地轻量验证 20 项通过，0.763 秒。r121 完整 unittest 为 462 项，443 通过、
+5 跳过及同样 14 项既有失败，43.802 秒；layout 首次新增一个 UTF-8 读取错误：
+macOS 默认 tar 夹带 AppleDouble 元数据文件，扫描脚本目录时读到了二进制边车文件。
+保留该失败归档/日志，使用 `tar --no-mac-metadata --no-xattrs` 重新打包相同五个文件。
+r121b 完整 unittest 再次为 443 通过、5 跳过和相同 14 项失败，43.872 秒；
+layout 恢复为 72/74 通过，1.22 秒。源码及测试断言未为打包问题修改。
+后续传输源码增量统一禁用这两类 macOS 元数据。
+
+本批运行沿用 kernel `d7898f5e0b68`、服务 `3c60206d9ac0` 和 r109/r92 二进制；
+根仓库变更基于 `aa656aca72b9`。r121 rootfs SHA-256 为
+`72e503627c6091c6e52034ecd13e548661300701f8a0ecdffce9d33d86d7336f`。
+证据归档采用 `verified-r121-r122-allocation-pressure-evidence.tar.gz`，保存本批
+rootfs、源码增量、配置、输入清单、完整套件及实际 guest 日志；kernel/QEMU/服务
+二进制的共同来源引用上一批已核验的 `verified-r111-r120-backing-evidence.tar.gz`。
+r122 普通 SDK 两轮 64 KiB 回归已通过，101.035 秒，runner exit 0；双方
+`sdk_contract`、`mapping_resources`、`kernel_regions` 均 PASS，QEMU 末尾
+read/write error 与 timeout 计数为 0。本批未改变 kernel、服务或 QEMU 源码，
+服务完整套件沿用相同 `3c60206d9ac0` 源码的 r120 结果：232 通过、4 项环境跳过。
+两轮结束后的独立进程查询均无 QEMU 遗留。最终归档已取回本地，共 31 个成员，
+18221563 bytes，权限 0600，SHA-256 为
+`786592712f6a1799abaf8a421e2422e3cc9b7a5f6f4a399be65e2ddc182669c1`。
+gzip、成员数、长度和 SHA 均与远端一致；归档包含两次源码打包、原始失败与复验
+日志、实际 guest 证据和明确的来源清单。四个执行/测试源文件在 r121/r121b
+归档之间逐个 `cmp` 相同；r120 与 r121b 的 14 个失败编号排序比较无差异。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -1436,8 +1489,8 @@ mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必�
 
 幂等容量耗尽后的正常清理保证、单 home 的真实地址耗尽/拒绝后继续访问，以及已清零
 backing 缓存不足后的确认回滚、资源核对和恢复分配均已有通过证据。
-下一批继续处理并发及更广的 size/alignment 压力、provider/kernel 独立身份负例，
-以及长期运行所需的幂等历史
+三个并发客户端、不同 size/alignment、交错释放及保持原映射的 r121 子集已通过。
+下一批继续处理 provider/kernel 独立身份负例，以及更长分配循环所需的幂等历史
 回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把这些
 容量子集当作 100 次循环或无限请求的验收。
 已有 endpoint 计量和 registered-region 基线核对覆盖正常清理，崩溃、失联和未知资源

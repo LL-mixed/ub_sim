@@ -33,7 +33,141 @@ def kernel_samples():
     )
 
 
+def allocation_pressure_sample(size=65536):
+    # Deliberately allocate clients 3, 2, 1 in that order.
+    geometry = {
+        "obj-share-1": (1, size, 0, 0), "obj-sent-1": (2, 65536, 0, 2),
+        "obj-returned-1": (3, 65536, 0, 4),
+        "allocation-1": (6, 1, 2097152, 20),
+        "allocation-2": (5, 2097153, 4194304, 16),
+        "allocation-3": (4, 4194305, 8388608, 8),
+        "allocation-4": (7, 3145728, 4194304, 24),
+    }
+
+    def view(key, active):
+        generation, logical, alignment, offset = geometry[key]
+        address = 0x700000000000 + offset * 1048576
+        length = (logical + 2097151) // 2097152 * 2097152
+        segment, epoch, export = 0xc4c2000000000000 + generation, 1, generation + 90
+        descriptor = bytearray(96)
+        for position, value in ((16, export), (24, address), (32, length),
+                                (48, segment), (56, epoch)):
+            descriptor[position:position + 8] = value.to_bytes(8, "big")
+        fields = {"key": key, "generation": generation, "size_bytes": logical,
+                  "alignment_bytes": alignment, "home_node": "guest-node-0",
+                  "provider_incarnation": 7, "address": address if active else 0,
+                  "address_len": length if active else 0, "provider_backed": int(active),
+                  "live_refs": 0, "state": "active" if active else "retired",
+                  "descriptor_len": 96 if active else 0,
+                  "descriptor_hex": descriptor.hex() if active else ""}
+        result = "mem_service inspect-allocation: status=ok\n" + "".join(
+            f"{name}={value}\n" for name, value in fields.items())
+        if active:
+            result += (f"mem_service allocation-segment: key={key} segment={segment:#x} "
+                       f"address={address:#x} size={length:#x} epoch={epoch:#x}\n")
+        return result
+
+    original = tuple(geometry)[:3]
+    added = tuple(geometry)[3:]
+    text = ""
+    for phase, live, backing, keys, active in (
+            ("before", 3, 6, original, True), ("live", 6, 18, added[:3], True),
+            ("hole", 5, 14, (added[1],), False), ("replaced", 6, 18, (added[3],), True),
+            ("drained", 3, 6, added, False)):
+        text += f"mem_service allocation-pressure: phase={phase}\n"
+        stats = {"backing_allocated_bytes": backing * 1048576,
+                 "address_reserved_bytes": backing * 1048576, "live_objects": live,
+                 "export_mappings": live, "import_mappings": 2, "live_refs": 2,
+                 "in_flight": 0, "quarantined_objects": 0, "quarantined_bytes": 0,
+                 "idempotency_reservation_deficit": 0}
+        text += "mem_service allocation-stats: status=ok\n" + "".join(
+            f"{key}={value}\n" for key, value in stats.items())
+        text += (f"mem_service allocation-pool: phase={phase} used={(backing + 2) * 1048576} "
+                 "consistency=non_atomic\n")
+        text += "".join(view(key, active) for key in keys)
+        if phase == "live":
+            for index in range(1, 4):
+                text += f"mem_service allocation-client: index={index} pid={100 + index} phase=waiting\n"
+        if phase == "drained":
+            for index, key in enumerate(added[:3], 1):
+                generation = geometry[key][0]
+                for op, (action, state) in enumerate((("allocate", "allocating"),
+                        ("wait_state", "active"), ("allocate", "allocating"), ("wait_state", "retired")), 1):
+                    text += (f"mem_service object-session: session=allocation-client-{index} "
+                             f"op={op} action={action} key={key} status=ok state={state} generation={generation}\n")
+                text += f"mem_service object-session: session=allocation-client-{index} result=ok ops=4\n"
+                text += f"mem_service allocation-client: index={index} pid={100 + index} phase=exited code=0\n"
+    text += "mem_service allocation-pressure: phase=complete\n"
+    for key in added:
+        generation = geometry[key][0]
+        for phase in ("reserve-intent", "reserved", "exported", "published",
+                      "release-intent", "unexported", "retired", "reclaimed"):
+            segment = 0 if phase == "reserve-intent" else 0xc4c2000000000000 + generation
+            export = generation + 90 if phase in ("exported", "published", "release-intent", "unexported") else 0
+            text += f"obmm-worker generation={generation} phase={phase} segment={segment} export={export}\n"
+    return text
+
+
 class MappingResourceValidationTests(unittest.TestCase):
+    def test_allocation_pressure_checks_geometry_identity_replay_and_drain(self):
+        text = allocation_pressure_sample()
+        module.validate_allocation_pressure(text, 0, 1, 65536)
+        for bad in ("", text + text,
+                    text.replace("phase=live", "phase=hole", 1),
+                    text.replace("import_mappings=2", "import_mappings=1"),
+                    text.replace("used=20971520", "used=16777216", 1),
+                    text.replace("alignment_bytes=8388608", "alignment_bytes=2097152", 1),
+                    text.replace("address_len=6291456", "address_len=4194304", 1),
+                    text.replace("home_node=guest-node-0", "home_node=guest-node-1", 1),
+                    text.replace("segment=0xc4c2000000000006", "segment=0xc4c2000000000005", 1),
+                    text.replace("epoch=0x1", "epoch=0x2", 1),
+                    text.replace("phase=unexported", "phase=release-unknown", 1),
+                    text.replace("phase=reserved", "phase=reserve-intent", 1),
+                    text.replace("export=96", "export=95", 1),
+                    text.replace("phase=waiting", "phase=exited", 1),
+                    text.replace("pid=102", "pid=101"),
+                    text.replace("code=0", "code=1", 1),
+                    text.replace("result=ok ops=4", "result=ok ops=3", 1),
+                    text.replace("op=3 action=allocate", "op=3 action=inspect", 1),
+                    text.replace("state=allocating generation=6", "state=allocating generation=7", 1),
+                    text.replace("consistency=non_atomic", "consistency=non_atomic used=1", 1),
+                    text.replace("provider_backed=0", "provider_backed=1", 1)):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, KeyError)):
+                module.validate_allocation_pressure(bad, 0, 1, 65536)
+        with self.assertRaises(ValueError):
+            module.validate_allocation_pressure(text, 0, 2, 65536)
+        module.validate_allocation_pressure(
+            "action=wait_state key=obj-returned-1 status=ok state=retired", 1, 1, 65536)
+
+    def test_allocation_pressure_cli_and_guest_parser(self):
+        runner = (SCRIPT.parents[1] / "initramfs/run_app").read_text()
+        helper = runner.split("mem_service_object_share_allocation_snapshot() (", 1)[1].split(
+            "\nmem_service_object_share_allocation_pressure() (", 1)[0]
+        expression = helper.split('/bin/busybox sed -n "', 1)[1].split('"', 1)[0]
+        expression = expression.replace("\\\\", "\\").replace("$key", "allocation-2")
+        query = ("[gva_manager] gsva descriptor action=query version=1 flags=0 "
+                 "segment_id=0xc4c2000000000005 home_va=0x700001000000 size=0x400000 "
+                 "epoch=0x1 home_cna=42 token_id=9 token_value=12345\n")
+        parsed = subprocess.run(["sed", "-n", expression], input=query,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        self.assertEqual(parsed.stdout, "mem_service allocation-segment: key=allocation-2 "
+                         "segment=0xc4c2000000000005 address=0x700001000000 size=0x400000 epoch=0x1\n")
+        pressure = runner.split("mem_service_object_share_allocation_pressure() (", 1)[1].split(
+            "\nmem_service_object_share_managed() (", 1)[0]
+        for required in ("trap cleanup_allocation_pressure EXIT", "kill -0", 'wait "$pid"',
+                         "allocation-pressure-hole.conf", "alignment_bytes=4194304"):
+            self.assertIn(required, pressure)
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "guest.log"
+            log.write_text("".join(sample(x, 0) for x in (0, 1, 1, 0, 0)) +
+                           kernel_samples() + allocation_pressure_sample())
+            result = subprocess.run(["python3", str(SCRIPT), "--log", str(log), "--node", "0",
+                                     "--iterations", "1", "--size", "65536", "--allocation-pressure"],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("allocation_pressure=pass node=0", result.stdout)
+
     def test_backing_query_parser_uses_bundled_busybox(self):
         runner = SCRIPT.parents[1] / "initramfs/run_app"
         helper = runner.read_text().split(

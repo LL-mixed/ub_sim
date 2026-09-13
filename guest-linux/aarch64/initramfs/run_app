@@ -1017,6 +1017,136 @@ mem_service_object_share_backing_pressure() (
   echo "mem_service backing-pressure: phase=complete"
 )
 
+mem_service_object_share_allocation_snapshot() (
+  connect="$1"
+  phase="$2"
+  shift 2
+  echo "mem_service allocation-pressure: phase=$phase"
+  /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
+  read -r used </sys/kernel/obmm_mempool/obmm-0/used || exit 1
+  echo "mem_service allocation-pool: phase=$phase used=$((used)) consistency=non_atomic"
+  for key in "$@"; do
+    view="/tmp/allocation-view-$key.log"
+    /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" >"$view" || exit 1
+    cat "$view"
+    address=$(/bin/busybox sed -n 's/^address=//p' "$view")
+    [ -n "$address" ] || exit 1
+    [ "$address" != "0" ] || continue
+    /bin/linqu_gva_manager --query --home-va "$address" >/tmp/allocation-query.log 2>&1 || exit 1
+    # Retain identity/geometry without printing the query's token value.
+    /bin/busybox sed -n "s/.*gsva descriptor action=query version=1 flags=[^ ]* segment_id=\\([^ ]*\\) home_va=\\([^ ]*\\) size=\\([^ ]*\\) epoch=\\([^ ]*\\) .*/mem_service allocation-segment: key=$key segment=\\1 address=\\2 size=\\3 epoch=\\4/p" /tmp/allocation-query.log
+  done
+)
+
+mem_service_object_share_allocation_pressure() (
+  connect="$1"
+  pids=""
+  cleanup_allocation_pressure() {
+    [ -n "$pids" ] || return 0
+    for pid in $pids; do kill "$pid" 2>/dev/null || true; done
+    for pid in $pids; do wait "$pid" 2>/dev/null || true; done
+    for index in 1 2 3; do
+      [ ! -f "/tmp/allocation-client-$index.log" ] || cat "/tmp/allocation-client-$index.log"
+    done
+  }
+  trap cleanup_allocation_pressure EXIT
+  trap 'exit 1' INT TERM
+  {
+    echo "session_id=allocation-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=obj-returned-1 state=active timeout_ms=60000 poll_ms=50"
+  } >/tmp/allocation-pressure-begin.conf
+  /bin/linqu_mem_service object-session --config /tmp/allocation-pressure-begin.conf || exit 1
+  mem_service_object_share_allocation_snapshot "$connect" before \
+    obj-share-1 obj-sent-1 obj-returned-1 || exit 1
+  for index in 1 2 3; do
+    case "$index" in
+      1) bytes=1; alignment=2097152 ;;
+      2) bytes=2097153; alignment=4194304 ;;
+      3) bytes=4194305; alignment=8388608 ;;
+    esac
+    {
+      echo "session_id=allocation-client-$index"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "op=allocate key=allocation-$index idempotency_key=allocation-$index size_bytes=$bytes alignment_bytes=$alignment capabilities=map"
+      echo "op=wait_state key=allocation-$index state=active timeout_ms=60000 poll_ms=50"
+      echo "op=allocate key=allocation-$index idempotency_key=allocation-$index size_bytes=$bytes alignment_bytes=$alignment capabilities=map"
+      echo "op=wait_state key=allocation-$index state=retired timeout_ms=60000 poll_ms=50"
+    } >"/tmp/allocation-client-$index.conf"
+    /bin/linqu_mem_service object-session --config "/tmp/allocation-client-$index.conf" \
+      >"/tmp/allocation-client-$index.log" 2>&1 &
+    pids="${pids:+$pids }$!"
+  done
+  attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    complete=0
+    for index in 1 2 3; do
+      count=$(grep -c "action=allocate key=allocation-$index status=ok " "/tmp/allocation-client-$index.log")
+      [ "$count" != "2" ] || complete=$((complete + 1))
+    done
+    [ "$complete" != "3" ] || break
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null || exit 1; done
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  [ "$complete" = "3" ] || exit 1
+  mem_service_object_share_allocation_snapshot "$connect" live \
+    allocation-1 allocation-2 allocation-3 || exit 1
+  index=1
+  for pid in $pids; do
+    kill -0 "$pid" 2>/dev/null || exit 1
+    echo "mem_service allocation-client: index=$index pid=$pid phase=waiting"
+    index=$((index + 1))
+  done
+  /bin/linqu_mem_service retire-object --connect "$connect" --key allocation-2 \
+    --idempotency-key allocation-retire-2 || exit 1
+  {
+    echo "session_id=allocation-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=allocation-2 state=retired timeout_ms=60000 poll_ms=50"
+  } >/tmp/allocation-pressure-hole.conf
+  /bin/linqu_mem_service object-session --config /tmp/allocation-pressure-hole.conf || exit 1
+  mem_service_object_share_allocation_snapshot "$connect" hole allocation-2 || exit 1
+  {
+    echo "session_id=allocation-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=allocate key=allocation-4 idempotency_key=allocation-4 size_bytes=3145728 alignment_bytes=4194304 capabilities=map"
+    echo "op=wait_state key=allocation-4 state=active timeout_ms=60000 poll_ms=50"
+  } >/tmp/allocation-pressure-replace.conf
+  /bin/linqu_mem_service object-session --config /tmp/allocation-pressure-replace.conf || exit 1
+  mem_service_object_share_allocation_snapshot "$connect" replaced allocation-4 || exit 1
+  {
+    echo "session_id=allocation-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    for index in 1 3 4; do
+      echo "op=retire key=allocation-$index idempotency_key=allocation-retire-$index"
+      echo "op=wait_state key=allocation-$index state=retired timeout_ms=60000 poll_ms=50"
+    done
+  } >/tmp/allocation-pressure-drain.conf
+  /bin/linqu_mem_service object-session --config /tmp/allocation-pressure-drain.conf || exit 1
+  mem_service_object_share_allocation_snapshot "$connect" drained \
+    allocation-1 allocation-2 allocation-3 allocation-4 || exit 1
+  index=1
+  for pid in $pids; do
+    wait "$pid"
+    code=$?
+    pids=${pids#"$pid"}
+    pids=${pids# }
+    cat "/tmp/allocation-client-$index.log"
+    echo "mem_service allocation-client: index=$index pid=$pid phase=exited code=$code"
+    [ "$code" = "0" ] || exit 1
+    index=$((index + 1))
+  done
+  /bin/linqu_mem_service retire-object --connect "$connect" --key obj-returned-1 \
+    --idempotency-key allocation-barrier-release || exit 1
+  echo "mem_service allocation-pressure: phase=complete"
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -1032,9 +1162,10 @@ mem_service_object_share_managed() (
   pressure_barrier=0
   aperture_size=0x1000000
   case "$fault" in
-    capacity|address_capacity|backing_capacity) pressure_barrier=1 ;;
+    capacity|address_capacity|backing_capacity|allocation_pressure) pressure_barrier=1 ;;
   esac
   [ "$fault" != "backing_capacity" ] || aperture_size=0x100000000
+  [ "$fault" != "allocation_pressure" ] || aperture_size=0x4000000
   cleanup_managed_share() {
     if [ -n "$capacity_pid" ]; then
       kill "$capacity_pid" 2>/dev/null || true
@@ -1103,6 +1234,10 @@ mem_service_object_share_managed() (
   fi
   if [ "$node" = "0" ] && [ "$fault" = "backing_capacity" ]; then
     mem_service_object_share_backing_pressure "$connect" &
+    capacity_pid=$!
+  fi
+  if [ "$node" = "0" ] && [ "$fault" = "allocation_pressure" ]; then
+    mem_service_object_share_allocation_pressure "$connect" &
     capacity_pid=$!
   fi
   i=1
@@ -1262,9 +1397,9 @@ run_mem_service_object_share() {
         { [ "$fault" != "none" ] && [ "$fault" != "sdk_contract" ] &&
           [ "$fault" != "map_conflict" ] && [ "$fault" != "descriptor_contract" ] &&
           [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ] &&
-          [ "$fault" != "backing_capacity" ]; } ||
+          [ "$fault" != "backing_capacity" ] && [ "$fault" != "allocation_pressure" ]; } ||
         { { [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ] ||
-            [ "$fault" = "backing_capacity" ]; } &&
+            [ "$fault" = "backing_capacity" ] || [ "$fault" = "allocation_pressure" ]; } &&
           [ "$iterations" != "1" ]; }; then
       log "mem_service object-share: status=fail node=$node_idx backend=obmm reason=unsupported_config"
       return 2

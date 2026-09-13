@@ -458,6 +458,146 @@ def validate_backing_capacity(text, node, iterations):
         raise ValueError("retirement refusal did not refer to a published live segment")
 
 
+def pressure_records(block, label):
+    records = []
+    for line in block.splitlines():
+        if not line.startswith(f"mem_service {label}:"):
+            continue
+        fields = {}
+        for item in line.split()[2:]:
+            key, value = item.split("=", 1)
+            if key in fields:
+                raise ValueError("duplicate allocation pressure record field")
+            fields[key] = value
+        records.append(fields)
+    return records
+
+
+def validate_allocation_pressure(text, node, iterations, size):
+    """Check overlapping client lifetimes, real interval identities, and reclaim."""
+    if iterations != 1:
+        raise ValueError("allocation pressure requires one lifecycle")
+    if node:
+        if "action=wait_state key=obj-returned-1 status=ok state=retired" not in text:
+            raise ValueError("peer did not observe allocation pressure barrier")
+        return
+    phases = ("before", "live", "hole", "replaced", "drained", "complete")
+    markers = [f"mem_service allocation-pressure: phase={phase}" for phase in phases]
+    if any(text.count(marker) != 1 for marker in markers):
+        raise ValueError("allocation pressure did not complete exactly once")
+    positions = [text.index(marker) for marker in markers]
+    if positions != sorted(positions):
+        raise ValueError("out-of-order allocation pressure")
+    blocks = [text[start:end] for start, end in zip(positions, positions[1:])]
+    pools = []
+    for phase, block, live, backing in zip(phases, blocks, (3, 6, 5, 6, 3),
+                                           (6, 18, 14, 18, 6)):
+        stats = pressure_snapshots(block, "allocation-stats", "idempotency_reservation_deficit")
+        expected = {"backing_allocated_bytes": backing * 1048576,
+                    "address_reserved_bytes": backing * 1048576,
+                    "live_objects": live, "export_mappings": live, "import_mappings": 2,
+                    "live_refs": 2, "in_flight": 0, "quarantined_objects": 0,
+                    "quarantined_bytes": 0, "idempotency_reservation_deficit": 0}
+        if len(stats) != 1 or any(int(stats[0][key]) != value for key, value in expected.items()):
+            raise ValueError("allocation pressure changed held mappings or service accounting")
+        pool = pressure_records(block, "allocation-pool")
+        if (len(pool) != 1 or pool[0]["phase"] != phase or
+                pool[0]["consistency"] != "non_atomic" or int(pool[0]["used"]) <= 0):
+            raise ValueError("invalid allocation pool observation")
+        pools.append(int(pool[0]["used"]))
+    if [used - pools[0] for used in pools] != [0, 12582912, 8388608, 12582912, 0]:
+        raise ValueError("physical backing usage did not follow actual allocations")
+
+    original = ("obj-share-1", "obj-sent-1", "obj-returned-1")
+    added = tuple(f"allocation-{i}" for i in range(1, 5))
+    expected_keys = (original, added[:3], (added[1],), (added[3],), added)
+    snapshots = []
+    for block, keys in zip(blocks, expected_keys):
+        found = pressure_snapshots(block, "inspect-allocation", "descriptor_hex")
+        if len(found) != len(keys) or {view["key"] for view in found} != set(keys):
+            raise ValueError("missing or extra allocation pressure object")
+        snapshots.append({view["key"]: view for view in found})
+    active = {**snapshots[0], **snapshots[1], **snapshots[3]}
+    geometry = dict(zip(original + added,
+                        ((size, 0), (65536, 0), (65536, 0), (1, 2097152),
+                         (2097153, 4194304), (4194305, 8388608), (3145728, 4194304))))
+    ranges, bindings = {}, {}
+    for key, view in active.items():
+        logical, alignment = geometry[key]
+        address, length = int(view["address"]), int(view["address_len"])
+        descriptor = bytes.fromhex(view["descriptor_hex"])
+        if (view["state"] != "active" or view["provider_backed"] != "1" or
+                view["home_node"] != "guest-node-0" or int(view["provider_incarnation"]) <= 0 or
+                int(view["size_bytes"]) != logical or int(view["alignment_bytes"]) != alignment or
+                length != (logical + 2097151) // 2097152 * 2097152 or
+                address % max(alignment, 2097152) or address < 0x700000000000 or
+                address + length > 0x700004000000 or int(view["generation"]) <= 0 or
+                int(view["descriptor_len"]) != 96 or len(descriptor) != 96):
+            raise ValueError("invalid allocation pressure geometry or identity")
+        export, uba, backing = (int.from_bytes(descriptor[n:n + 8], "big") for n in (16, 24, 32))
+        segment, epoch = (int.from_bytes(descriptor[n:n + 8], "big") for n in (48, 56))
+        if min(export, segment, epoch) <= 0 or (uba, backing) != (address, length):
+            raise ValueError("descriptor differs from allocation geometry")
+        bindings[key] = (segment, epoch, export)
+        ranges[key] = (address, address + length)
+    if len({view["generation"] for view in active.values()}) != len(active) or \
+            len({binding[0] for binding in bindings.values()}) != len(active):
+        raise ValueError("distinct allocations share generation or segment identity")
+    ordered = sorted(ranges.values())
+    if (any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])) or
+            ranges[added[3]][0] < max(ranges[key][1] for key in original + added[:3])):
+        raise ValueError("overlapping ranges or premature retired-address reuse")
+    for block, keys in ((blocks[0], original), (blocks[1], added[:3]), (blocks[3], added[3:])):
+        queried = pressure_records(block, "allocation-segment")
+        if len(queried) != len(keys) or {record["key"] for record in queried} != set(keys):
+            raise ValueError("missing independent kernel segment query")
+        for record in queried:
+            key = record["key"]
+            actual = tuple(int(record[field], 0) for field in ("segment", "epoch", "address", "size"))
+            expected = bindings[key][:2] + (ranges[key][0], ranges[key][1] - ranges[key][0])
+            if actual != expected:
+                raise ValueError("kernel query differs from published segment")
+    for view in list(snapshots[2].values()) + list(snapshots[4].values()):
+        if (view["state"] != "retired" or view["descriptor_hex"] or
+                view["generation"] != active[view["key"]]["generation"] or
+                any(int(view[field]) for field in
+                    ("address", "address_len", "descriptor_len", "provider_backed", "live_refs"))):
+            raise ValueError("retired pressure allocation retained resources or changed identity")
+    journals = [dict(item.split("=", 1) for item in line.split()[1:])
+                for line in text.splitlines() if line.startswith("obmm-worker generation=")]
+    for key in added:
+        records = [r for r in journals if r["generation"] == active[key]["generation"] and "phase" in r]
+        if [r["phase"] for r in records] != ["reserve-intent", "reserved", "exported", "published",
+                                            "release-intent", "unexported", "retired", "reclaimed"]:
+            raise ValueError("allocation did not reserve and reclaim exactly once")
+        segment, _, export = bindings[key]
+        if any(int(r["segment"]) != segment for r in records[1:]) or \
+                any(int(r["export"]) != export for r in records[2:6]):
+            raise ValueError("worker reclaimed a different backing or segment")
+    waiting = pressure_records(blocks[1], "allocation-client")
+    exited = pressure_records(blocks[4], "allocation-client")
+    if (len(waiting) != 3 or len(exited) != 3 or
+            {r["index"] for r in waiting} != {"1", "2", "3"} or
+            len({r["pid"] for r in waiting}) != 3 or
+            any(r["phase"] != "waiting" or int(r["pid"]) <= 1 for r in waiting) or
+            any(r["phase"] != "exited" or r["code"] != "0" for r in exited) or
+            {(r["index"], r["pid"]) for r in waiting} !=
+            {(r["index"], r["pid"]) for r in exited}):
+        raise ValueError("missing concurrent client lifetimes or successful exits")
+    sessions = pressure_records(blocks[4], "object-session")
+    for index, key in enumerate(added[:3], 1):
+        records = [r for r in sessions if r.get("session") == f"allocation-client-{index}"]
+        operations = [r for r in records if "action" in r]
+        finished = [r for r in records if "result" in r]
+        if ([r["action"] for r in operations] != ["allocate", "wait_state", "allocate", "wait_state"] or
+                len(finished) != 1 or finished[0]["result"] != "ok" or finished[0]["ops"] != "4" or
+                any(r["status"] != "ok" or r["key"] != key or "mismatch" in r or
+                    r["generation"] != active[key]["generation"] for r in operations) or
+                operations[0]["state"] != operations[2]["state"] or
+                operations[1]["state"] != "active" or operations[3]["state"] != "retired"):
+            raise ValueError("concurrent allocation replay changed identity or lifecycle")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
@@ -471,6 +611,7 @@ def main():
     faults.add_argument("--capacity", action="store_true")
     faults.add_argument("--address-capacity", action="store_true")
     faults.add_argument("--backing-capacity", action="store_true")
+    faults.add_argument("--allocation-pressure", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -490,6 +631,8 @@ def main():
             validate_address_capacity(text, args.node, args.iterations, args.size)
         if args.backing_capacity:
             validate_backing_capacity(text, args.node, args.iterations)
+        if args.allocation_pressure:
+            validate_allocation_pressure(text, args.node, args.iterations, args.size)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
@@ -506,6 +649,8 @@ def main():
         print(f"address_capacity=pass node={args.node} iterations={args.iterations}")
     if args.backing_capacity:
         print(f"backing_capacity=pass node={args.node} iterations={args.iterations}")
+    if args.allocation_pressure:
+        print(f"allocation_pressure=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":
