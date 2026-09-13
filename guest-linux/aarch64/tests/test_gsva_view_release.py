@@ -108,7 +108,6 @@ static int gsva_coh_object_remove(int *table, Key *key)
 static int gsva_coh_retire(int *table, Key *key, int cna)
 { (void)table; (void)key; (void)cna; retired++; return 0; }
 static void ubc_cpu_window_detach(int *window) { (void)window; detached++; }
-static void object_unparent(int *window) { (void)window; }
 static int gsva_route_unmap(void *table, uint64_t id, bool keep)
 { (void)table; assert(id == 42); unmapped++; tombstone = keep; return 0; }
 static void gsva_stats_unmap(int *stats, bool ok) { (void)stats; (void)ok; }

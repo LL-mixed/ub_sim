@@ -20,8 +20,12 @@ r45 已增加 OBMM endpoint 资源快照与双 guest 存活期采样，核对本
 export/import、VMA、逻辑视图及清理残留；该诊断不提供 kernel 全局资源枚举。
 r46/r48 续作增加已注册 OBMM region 的 sysfs 枚举命令与基线比较。r48 双 guest
 失败于 nodeB QEMU 堆损坏退出；r52 挂接调试器后完整运行通过，双方最终枚举回到
-基线，但未复现并定位 r48 崩溃。独立发现的 CMDQ 日志越界已修复并提交，优化版
-内存检查构建继续进行；详见本记录末尾。M1/AM1 仍未完成。
+基线。优化版内存检查构建 r51 已成功；r53 在真实双 guest 路径捕获 GSVA route
+释放后被 RCU 清理线程访问的完整 ASan 调用栈。r55 另定位关机阶段访问已释放
+MigrationState 的缺陷，两处修复已进入 r56 构建并通过 35 项相关 QEMU 单测。
+r57 双 guest 未再报告这两处释放后访问，但在 60 秒回写屏障超时，未完成双方资源
+验收。r59 正在用同源正常优化构建核对检查开销影响；不据此关闭 r48 的原始堆损坏。
+详见本记录末尾，M1/AM1 仍未完成。
 object-session 已补齐按 key/generation/session 跟踪本进程确认的 holder，跨 key
 查询不再隐藏未释放引用；正常结束和操作失败退出均报告已知 holder。旧 acquire/
 release 应答重放不重复改变本地持有状态。该记录仅用于 CLI 操作约束和泄漏诊断，
@@ -745,6 +749,112 @@ r52 仍使用修复前的 QEMU，不能作为提交 334fea06b2 的集成验收�
 配置、容器状态及冻结源码。进行中的 r51 构建日志未作为终态证据归档。
 远端诊断目录为 `/home/ll/gva-manager-integration/asan-20260911.Z8ORls`；完整 QEMU
 trace 和二进制留在远端，未覆盖旧版本。
+
+## 2026-09-12 续作：r53 捕获 route 释放后访问
+
+r51 优化版 ASan/UBSan 构建已完成全部 2066 步，容器退出 0；产物 SHA-256 为
+`b84cae533f2e50a1c3fcd1050a92803066b79eadca426daf5208a0f908080a1c`。
+r53 实际执行这份二进制的 5 组单测，31/31 通过。双 guest 继续使用 kernel r16
+和 initramfs r48，5 项 artifact/harness 指纹全部通过后启动。FM 与 entity ready
+通过，nodeB 第一轮 managed view unmap 返回成功后，QEMU 的 ASan 检查终止进程。
+runner 0/1、容器退出 1（内部 iteration exit code 31），未完成双方资源验收。
+
+`asan-r53.58` 给出的确定调用链：
+
+- 分配：`gsva_route_map()` 分配 496-byte `GsvaRouteEntry`。
+- 释放：vCPU 线程执行 `sim_dec_handle_gsva_unmap()` → `gsva_route_unmap()`，
+  直接 `g_free(entry)`，其中包含 `MemoryRegion cpu_window`。
+- 后续访问：RCU 线程执行 `flatview_destroy()` → `address_space_dispatch_free()`
+  → `phys_section_destroy()`，读取该已释放对象内部第 234 字节，报告
+  `heap-use-after-free`。
+
+真实地址空间的 region 引用保留了 UBC device owner，却没有保留独立分配的 route。
+从地址空间移除窗口不能证明旧 FlatView 已销毁；立即 unparent/free 导致上述时序。
+该报告包含完整的分配、释放和错误栈，独立于日志开头的 swapcontext 支持范围警告。
+它确认了当前 managed unmap 的生命周期缺陷；r48 原始 core 已截断，尚无法证明
+其堆元数据损坏全部由这一缺陷导致。
+
+修复将 route 转为 QOM 对象，由 route 本身持有 CPU 窗口；表移除只释放表的引用。
+窗口在最后一个 owner 引用释放时销毁，延迟 FlatView/DMA 清理期间 route 仍有效。
+解除映射将 route 标记为 RETIRED，现有 token 校验拒绝该 route 的后续访问。
+tombstone 替换、表销毁和无窗口 route 也使用一致的引用释放规则。该修改不改变
+guest wire/UAPI，不给服务增加新的传输依赖，也不证明跨 holder fencing/地址重用完成。
+
+新增 `tests/unit/test-gsva-route-lifetime`，通过项目
+`build_qemu_binary.sh --with-obmm-tests` 构建。测试使用真实 QOM 和生产 route 代码，
+用最小 memory API 模型控制两个延迟引用，覆盖释放、tombstone 替换、表销毁与无
+窗口对象；该单测不能代替真实 MemoryRegion/RCU 集成，后续仍需双 guest 验证。
+
+本地 6 项定向回归通过，2.305 秒；shell 语法与 whitespace 检查通过。远端 root
+r54 全量为 434 项：415 通过、5 跳过、5 failures、9 errors，40.315 秒；layout
+72 通过、2 失败，1.25 秒。失败集合与 r51 相同，仍不宣称 root 全量通过。
+服务代码未变化，沿用 b05334b 的 r44 全量结果。
+
+r53 失败证据包 `out/gva-manager-integration/verified-r53-failure-evidence.tar.gz`，
+本地/远端 SHA-256 均为
+`398882c483c2e6b074ed37339401ce03148665f9694c7237cae4a0c94476a6c7`。
+保存完整 ASan 报告、两端 guest 日志、runner 结果、配置与产物清单、31 项单测和
+r51 完成构建记录；原二进制和完整 QEMU trace 保留在远端诊断目录。
+
+修复构建 r54 使用独立缓存副本，未覆盖 r51 产物。首个容器因只读源码目录缺少
+新增测试的挂载目标而未能启动；改为挂载完整隔离 unit 目录。第二次构建停在
+Cargo 索引更新，主动停止并留档；从 r51 成功容器提取依赖缓存，r54c 使用显式
+离线配置继续走项目构建入口。后续构建和 guest 结果见下一节。
+
+## 2026-09-13 续作：关机生命周期修复与同源构建对照
+
+r54 route 修复构建随后完成；r55 双 guest 使用该版本时，ASan 给出第二个确定的
+释放后访问：`migration_shutdown()` 已在 `qemu_cleanup()` 中释放 MigrationState，
+后续 `vm_shutdown()` 调用 `do_vm_stop()`，仍通过 `migration_downtime_start()`
+和迁移耗时统计访问该对象。该错误发生于关机清理，不足以解释关机前的共享超时。
+
+修复令普通 `vm_stop()` 显式传入有效 MigrationState，关机入口传入空值；仅跳过
+已失效的迁移统计访问，保留暂停 vCPU、状态通知、block drain/flush 与错误返回。
+没有调整迁移清理顺序。新增 root 回归提取实际生产函数，使用 ASan/UBSan 验证
+运行中/已暂停的普通停止、运行中/已暂停的关机，以及 vCPU 线程请求转交共 5 个
+子场景。旧实现的两个关机场景触发 ASan；修复后 5 个场景通过。
+构建 wrapper 同时将 `system/cpus.c`、route 生命周期单测及 unit Meson 文件加入
+源码指纹，防止错误复用旧构建。
+两处 QEMU 修复已分别提交为 `b415c516ee` 和 `e198611bb2`，未推送；父仓库
+gitlink 保持原值。本地源码与远端 r56 冻结修复文件的指纹相同。
+
+| 验证 | 结果与边界 |
+| --- | --- |
+| r56 ASan/UBSan QEMU 构建 | 容器退出 0，完成项目 wrapper 构建 |
+| r56 相关 QEMU 单测 | 6 组 35/35 通过，其中 route 生命周期 4 项 |
+| r56 root unittest | 436 项：417 通过、5 跳过、5 failures、9 errors，74.835 秒 |
+| r56 layout | 72 通过、2 失败，1.27 秒 |
+| r58 root unittest（增加网络审计测试） | 446 项：427 通过、5 跳过、5 failures、9 errors，57.989 秒 |
+| r58 layout | 72 通过、2 失败，1.24 秒 |
+| 本机最新定向回归 | shutdown、CMDQ、view-release 共 5 项通过，2.050 秒；无 QEMU guest 或模型执行 |
+| r57 双 guest | runner 0/1，容器退出 1，内部 iteration exit code 31；未完成验收 |
+
+root 完整测试仍失败于归档缺少 Git metadata 的源码锁/依赖入口，以及旧锁定 package
+checksum 预期；集合与 r56 相同。新增网络审计 10 项和 shutdown 回归均通过。
+未伪造 Git metadata、放宽门槛或把条件失败记为通过。r58 测试容器禁网，未加载模型。
+mem_service 源码未变化，仍沿用 b05334b 的 r44 全量证据。
+
+r57 保持 kernel r16、initramfs r48、64 KiB、两轮、session 等待 60000 ms、请求
+超时 30000 ms，runner 预算 480 秒/最大 650 秒。home 完成写入与发布后，等待
+`obj-returned` 的调用在 60509 ms 超时。peer 已完成同代重新映射、只读/guard page
+探针、读回校验及反向写入，随后 publish 的控制连接被拒绝；home 此时已经退出。
+当前没有证据把 peer 延迟唯一归因于某个数据操作。
+
+逐一检查 `asan-r57.26`、`.49`、`.58`，三份日志均只有 123-byte 的
+makecontext/swapcontext 支持范围警告，没有新的 ASan 错误报告；未发现独立 UBSan
+日志。结束后没有遗留 QEMU guest 进程。此观察不能代替成功完成共享及资源回收，
+也不能证明所有潜在内存缺陷已经消除。
+
+| 冻结输入及产物 | SHA-256 |
+| --- | --- |
+| r56 变更包 gsva-shutdown-r56-changes.tar.gz | `ce72489a5602a1f0946dfeacff81d091b29028c0b98e1dc628e8598558628820` |
+| r56 QEMU | `b7dd9cca0d82176f2cf4c440e4fedf36640a07764f9a4e044eab9e6b5d285f3d` |
+| r55 失败证据包 verified-r55-failure-evidence.tar.gz | `230cef6ee678ca015618534daf4daf777417a340b83b6b1cdf3dde417e0be688` |
+
+r59 正常优化构建使用同一份冻结源码和独立缓存副本，通过项目 wrapper 显式关闭
+sanitizers，保留调试符号。构建容器禁网、禁止拉取镜像，Cargo 使用离线缓存。
+源码 6 项 SHA-256 已与本地逐一核对一致。后续双 guest 对照保持 r57 的对象大小、
+迭代数和全部等待预算，完成前不把性能开销假设写成根因或通过结论。
 
 ## 下一批的前置条件与未完成项
 
