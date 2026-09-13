@@ -12,6 +12,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/hugetlb.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/limits.h>
@@ -556,6 +557,56 @@ static long linqu_obmm_async_buffer_free(struct linqu_ub_file *ctx,
 	return 0;
 }
 
+/* The caller holds mmap_read_lock. OBMM deliberately clears VMA access flags;
+ * the installed PTEs carry the actual permissions. O_SYNC mappings cannot
+ * undergo OBMM ownership updates while the provider retains this view. */
+static int linqu_obmm_strict_pto_view(struct vm_area_struct *vma, u64 mem_id,
+				    u64 address, u64 length, u64 *local_pa,
+				    u64 *access)
+{
+	unsigned long page, first_pfn = 0;
+	u64 rights = 3;
+
+	if (!length || address > U64_MAX - length ||
+	    address < vma->vm_start || address + length > vma->vm_end ||
+	    !(vma->vm_flags & VM_PFNMAP) ||
+	    !obmm_file_matches_region(vma->vm_file, mem_id))
+		return -EFAULT;
+	if ((vma->vm_file->f_flags & O_SYNC) != O_SYNC ||
+	    vma_kernel_pagesize(vma) != PAGE_SIZE)
+		return -EOPNOTSUPP;
+	for (page = address & PAGE_MASK; page < address + length;) {
+		spinlock_t *ptl;
+		pte_t *ptep, entry;
+		unsigned long pfn;
+		u64 page_rights = 0;
+		int ret = follow_pte(vma->vm_mm, page, &ptep, &ptl);
+
+		if (ret)
+			return ret;
+		entry = ptep_get(ptep);
+		pfn = pte_pfn(entry);
+		if (pte_access_permitted(entry, false))
+			page_rights |= 1;
+		if (pte_access_permitted(entry, true))
+			page_rights |= 2;
+		pte_unmap_unlock(ptep, ptl);
+		if (page == (address & PAGE_MASK))
+			first_pfn = pfn;
+		else if (pfn != first_pfn + ((page - (address & PAGE_MASK)) >> PAGE_SHIFT))
+			return -EINVAL;
+		rights &= page_rights;
+		if (!rights)
+			return -EACCES;
+		if (address + length - page <= PAGE_SIZE)
+			break;
+		page += PAGE_SIZE;
+	}
+	*local_pa = PFN_PHYS(first_pfn) + offset_in_page(address);
+	*access = rights;
+	return 0;
+}
+
 static long linqu_obmm_async_map_register_common(
 	struct linqu_ub_file *ctx, u64 mem_id, u64 mapped_addr, u64 length,
 	u32 flags, u32 reserved, u64 *map_id, u64 *map_generation,
@@ -581,14 +632,9 @@ static long linqu_obmm_async_map_register_common(
 		goto out_unlock;
 	}
 	if (flags & OBMM_ASYNC_MAP_STRICT_PTO) {
-		if (vma->vm_flags & VM_READ)
-			pto_access |= 1;
-		if (vma->vm_flags & VM_WRITE)
-			pto_access |= 2;
-		if (!pto_access || !(vma->vm_flags & VM_PFNMAP)) {
-			ret = -EACCES;
-			goto out_unlock;
-		}
+		ret = linqu_obmm_strict_pto_view(vma, mem_id, mapped_addr, length,
+					      &local_pa, &pto_access);
+		goto out_unlock;
 	}
 	ret = follow_pfn(vma, mapped_addr, &pfn);
 	if (ret)

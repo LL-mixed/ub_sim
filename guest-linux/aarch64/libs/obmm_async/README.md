@@ -11,8 +11,15 @@ The UAPI source of truth is `kernel_ub/include/uapi/ub/obmm_async.h`. Public
 tokens are `(generation, queue_id, slot)` values, never pointers.
 
 `obmm_async_map_register_strict_pto()` uses V2 with an explicit strict-PTO
-flag. It requires a retained mapped view, derives access rights from the
-kernel VMA, and fails on older driver/device implementations without retrying
+flag. It requires a retained mapped view and derives access rights from every
+page table entry in the requested range. OBMM clears VMA read/write flags after
+installing its page protections, so those flags cannot supply the rights.
+Strict registration checks the OBMM region identity and contiguous physical
+pages, and intersects the per-page permissions with the device route rights.
+It currently accepts only page-granular O_SYNC mappings, whose permissions
+cannot change through OBMM ownership updates. Huge mappings and cacheable
+ownership-managed views return unsupported. Registration fails on older
+driver/device implementations without retrying
 legacy registration. The returned registration only supports PTO; submitting
 it to the legacy async read queue returns unsupported. The caller keeps the
 original mapping and registration until all PTO work has completed.

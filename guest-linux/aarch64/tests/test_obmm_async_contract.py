@@ -495,15 +495,25 @@ class ObmmAsyncContractTests(unittest.TestCase):
             self.assertEqual(output.strip(),
                              "obmm_async_strict_pto_golden=pass calls=8 legacy_retries=0")
 
-    def test_strict_pto_registration_uses_actual_vma_rights(self):
+    def test_strict_pto_registration_uses_actual_page_rights(self):
         driver = (ROOT / "driver/linqu_ub_drv.c").read_text()
         start = driver.index("static long linqu_obmm_async_map_register_common")
         body = driver[start:driver.index("\n}\n", start)]
-        for expected in ("vma->vm_flags & VM_READ", "vma->vm_flags & VM_WRITE",
-                         "vma->vm_flags & VM_PFNMAP", "if (!pto_access",
+        for expected in ("linqu_obmm_strict_pto_view(vma, mem_id",
                          "writeq(pto_access", "OBMM_ASYNC_REG_MAP_ACCESS",
                          "OBMM_ASYNC_MAP_STRICT_PTO) ? 3 : 1"):
             self.assertIn(expected, body)
+        self.assertNotIn("vma->vm_flags & VM_READ", body)
+        self.assertNotIn("vma->vm_flags & VM_WRITE", body)
+        start = driver.index("static int linqu_obmm_strict_pto_view(")
+        view = driver[start:driver.index("\n}\n", start)]
+        for expected in ("obmm_file_matches_region", "VM_PFNMAP", "O_SYNC",
+                         "vma_kernel_pagesize", "follow_pte", "ptep_get",
+                         "pte_access_permitted(entry, false)",
+                         "pte_access_permitted(entry, true)",
+                         "pte_unmap_unlock", "rights &= page_rights",
+                         "return -EACCES", "pfn != first_pfn"):
+            self.assertIn(expected, view)
         self.assertLess(body.index("writeq(pto_access"), body.index("wmb()"))
         legacy_start = driver.index("static long linqu_obmm_async_map_register(")
         legacy = driver[legacy_start:driver.index("\n}\n", legacy_start)]
@@ -512,6 +522,27 @@ class ObmmAsyncContractTests(unittest.TestCase):
                         legacy.index("linqu_obmm_async_map_register_common("))
         self.assertIn("OBMM_ASYNC_MAP_STRICT_PTO", (KERNEL_ROOT /
                       "include/uapi/ub/obmm_async.h").read_text())
+
+    def test_strict_pto_page_rights_and_identity_boundary(self):
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("native C compiler unavailable")
+        driver = (ROOT / "driver/linqu_ub_drv.c").read_text()
+        start = driver.index("static int linqu_obmm_strict_pto_view(")
+        body = driver[start:driver.index("\n}\n", start) + 3]
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            (directory / "strict_pto_view.inc").write_text(body)
+            binary = directory / "strict-pto-view-golden"
+            subprocess.run([
+                compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-I", str(directory),
+                str(ROOT / "tests/obmm_async_strict_pto_view_golden.c"),
+                "-o", str(binary),
+            ], check=True)
+            output = subprocess.check_output([str(binary)], text=True)
+            self.assertEqual(output.strip(),
+                             "strict_pto_view_golden=pass cases=13")
 
     def test_uapi_layout(self):
         test_uapi_layout_compiles_for_aarch64()
