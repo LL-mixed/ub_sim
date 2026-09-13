@@ -60,6 +60,56 @@ class ManagedGuestContractTests(unittest.TestCase):
             self.assertEqual(self.generated("map_conflict", stage), (0, []))
         self.assertEqual(self.generated("map_conflict", "unknown"), (2, []))
 
+    def descriptor_faults(self):
+        return [("descriptor", str(byte)) for byte in
+                (0, 4, 8, 12, 16, 24, 32, 40, 44, 48, 56, 64, 68, 72,
+                 76, 80, 84, 88, 92, 95)] + [(name, "") for name in
+                ("descriptor_length", "descriptor_oversize", "address", "address_len",
+                 "size", "alignment", "capabilities", "home", "incarnation")]
+
+    def test_descriptor_config_mutates_acquired_view_before_mapping(self):
+        expected = [f"op=map key=obj-share-1 flags=read fault={fault}"
+                    + (f" fault_byte={byte}" if byte else "")
+                    + " expect_status=stale_ref" for fault, byte in self.descriptor_faults()]
+        self.assertEqual(self.generated("descriptor_contract", "acquired"), (0, expected))
+        self.assertEqual(len(expected), 29)
+        self.assertLessEqual(27 + len(expected), 64)
+        for stage in ("readonly", "writable", "written", "released"):
+            self.assertEqual(self.generated("descriptor_contract", stage), (0, []))
+        self.assertEqual(self.generated("descriptor_contract", "unknown"), (2, []))
+
+    def descriptor_evidence(self, node):
+        lines = []
+        prefix = f"mem_service object-session: session=client-{node}"
+        for iteration in (1, 2):
+            key = f"obj-share-{iteration}"
+            for index, (fault, byte) in enumerate(self.descriptor_faults(), 1):
+                lines.append(f"{prefix} op={index} action=map key={key} status=stale_ref "
+                             f"note=map_failed fault={fault}"
+                             + (f" fault_byte={byte}" if byte else ""))
+            for index in (31, 35):
+                lines.append(f"{prefix} op={index} action=map key={key} status=ok "
+                             "base=0x700000000000 len=65536")
+            lines.append(f"{prefix} result=ok ops=56")
+        return "\n".join(lines)
+
+    def test_descriptor_validator_rejects_missing_wrong_or_provider_failures(self):
+        for node in (0, 1):
+            text = self.descriptor_evidence(node)
+            validator.validate_descriptor_contract(text, node, 2)
+            for bad in (text.replace("status=stale_ref", "status=internal", 1),
+                        text.replace("fault_byte=95", "fault_byte=94", 1),
+                        text.replace("fault=home", "fault=incarnation", 1),
+                        text.replace("note=map_failed", "note=map_cleanup_required", 1),
+                        text.replace("result=ok", "result=failed", 1),
+                        text.replace("fault_byte=0", "fault_byte=0 fault_byte=0", 1),
+                        "\n".join(text.splitlines()[1:]),
+                        text + "\n" + text.splitlines()[0],
+                        text.replace("action=map", "action=inspect", 1),
+                        "mem_service obmm-map: result=failed stage=mmap errno=17\n" + text):
+                with self.assertRaises(ValueError):
+                    validator.validate_descriptor_contract(bad, node, 2)
+
     def conflict_evidence(self, node):
         lines = []
         for iteration in (1, 2):
@@ -150,7 +200,9 @@ class ManagedGuestContractTests(unittest.TestCase):
                 for flag, evidence, code in (("--sdk-contract", self.evidence(node), 0),
                                              ("--sdk-contract", "", 1),
                                              ("--map-conflict", self.conflict_evidence(node), 0),
-                                             ("--map-conflict", "", 1)):
+                                             ("--map-conflict", "", 1),
+                                             ("--descriptor-contract", self.descriptor_evidence(node), 0),
+                                             ("--descriptor-contract", "", 1)):
                     log.write_text(resources + evidence)
                     result = subprocess.run(
                         ["python3", str(SCRIPT), "--log", str(log), "--node", str(node),

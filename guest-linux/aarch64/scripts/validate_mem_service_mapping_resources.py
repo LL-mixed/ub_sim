@@ -184,6 +184,49 @@ def validate_map_conflict(text, node, iterations):
         raise ValueError("missing or extra conflict probe/remapping evidence")
 
 
+def validate_descriptor_contract(text, node, iterations):
+    """Require each binding mutation to fail before the original view maps."""
+    expected, failures, mappings = Counter(), Counter(), Counter()
+    completions = 0
+    for iteration in range(1, iterations + 1):
+        key = f"obj-share-{iteration}"
+        for byte in (0, 4, 8, 12, 16, 24, 32, 40, 44, 48, 56, 64, 68, 72,
+                     76, 80, 84, 88, 92, 95):
+            expected[key, "descriptor", str(byte)] = 1
+        for fault in ("descriptor_length", "descriptor_oversize", "address", "address_len",
+                      "size", "alignment", "capabilities", "home", "incarnation"):
+            expected[key, fault, ""] = 1
+    for line in text.splitlines():
+        if line.startswith("mem_service obmm-map:"):
+            raise ValueError("binding rejection unexpectedly reached provider mmap failure")
+        if not line.startswith("mem_service object-session:"):
+            continue
+        fields = {}
+        for item in line.split()[2:]:
+            key, value = item.split("=", 1)
+            if key in fields:
+                raise ValueError("duplicate binding evidence field")
+            fields[key] = value
+        if fields.get("session") != f"client-{node}":
+            continue
+        if fields.get("result") == "failed" or "mismatch" in fields:
+            raise ValueError("descriptor contract session failed")
+        completions += fields.get("result") == "ok"
+        if "fault" in fields:
+            key = fields.get("key", "")
+            if (fields.get("action") != "map" or fields.get("status") != "stale_ref" or
+                    fields.get("note") != "map_failed" or mappings[key]):
+                raise ValueError("binding mutation did not fail before ordinary mapping")
+            failures[key, fields["fault"], fields.get("fault_byte", "")] += 1
+        elif fields.get("status", "ok") != "ok":
+            raise ValueError("unexpected descriptor contract rejection")
+        elif fields.get("action") == "map":
+            mappings[fields.get("key", "")] += 1
+    if (failures != expected or completions != iterations or
+            mappings != Counter({f"obj-share-{i}": 2 for i in range(1, iterations + 1)})):
+        raise ValueError("missing or extra descriptor binding evidence")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
@@ -193,6 +236,7 @@ def main():
     faults = parser.add_mutually_exclusive_group()
     faults.add_argument("--sdk-contract", action="store_true")
     faults.add_argument("--map-conflict", action="store_true")
+    faults.add_argument("--descriptor-contract", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -204,6 +248,8 @@ def main():
             validate_sdk_contract(text, args.node, args.iterations)
         if args.map_conflict:
             validate_map_conflict(text, args.node, args.iterations)
+        if args.descriptor_contract:
+            validate_descriptor_contract(text, args.node, args.iterations)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
@@ -212,6 +258,8 @@ def main():
         print(f"sdk_contract=pass node={args.node} iterations={args.iterations}")
     if args.map_conflict:
         print(f"map_conflict=pass node={args.node} iterations={args.iterations}")
+    if args.descriptor_contract:
+        print(f"descriptor_contract=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":
