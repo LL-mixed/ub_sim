@@ -109,6 +109,29 @@ def allocation_pressure_sample(size=65536):
 
 
 class MappingResourceValidationTests(unittest.TestCase):
+    def test_provider_descriptor_checks_are_complete_and_preserve_mapping(self):
+        fields = ("magic version length reserved export_id uba size export_token home_cna "
+                  "segment epoch segment_flags owner nodes cache access_empty access_unknown "
+                  "segment_token_id segment_token_value short_descriptor long_descriptor "
+                  "unaligned_uba unaligned_size range_overflow").split()
+        checks = "".join(f"obmm-descriptor-probe: field={field} rejected=1 preserved=1\n"
+                         for field in fields)
+        done = "obmm-descriptor-probe: result=pass checks=24 source=retained_handle\n"
+        session = ("mem_service object-session: session=client-1 descriptor_probe=pass "
+                   "key=obj-share-1 checks=24 preserved=1 cleanup_pending=0\n")
+        good = checks + done + session
+        module.validate_provider_descriptor(good, 1, 1)
+        for bad in (good.replace("field=epoch", "field=segment"),
+                    good.replace("checks=24", "checks=23", 1),
+                    good.replace("rejected=1", "rejected=0", 1),
+                    good.replace("cleanup_pending=0", "cleanup_pending=1"),
+                    good.replace("session=client-1", "session=client-0"),
+                    good.replace("field=epoch", "field=epoch field=epoch"),
+                    good.replace("cleanup_pending=0", "cleanup_pending=0 cleanup_pending=0"),
+                    good.replace(done, ""), good + session, checks + session + done):
+            with self.assertRaises(ValueError):
+                module.validate_provider_descriptor(bad, 1, 1)
+
     def test_allocation_pressure_checks_geometry_identity_replay_and_drain(self):
         text = allocation_pressure_sample()
         module.validate_allocation_pressure(text, 0, 1, 65536)

@@ -380,7 +380,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
-| AM1 | 进行中：双节点 CPU/SDK、页保护、SDK 描述符负例、实际资源统计、地址/backing 容量及三客户端分配压力子集已通过；完整阶段未完成 | 补齐 provider/kernel 独立身份负例及长期循环所需的幂等历史回收 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，最新为 r121 并发分配与 r122 两轮 SDK 实测；A01-A06/A09 整项仍未关闭 |
+| AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
 | AM2 | 未完成 | CPU/PTO 四种组合共用实际 backing | 待填写 A07-A11 对应结果 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |

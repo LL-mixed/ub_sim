@@ -821,7 +821,8 @@ mem_service_object_share_contract_ops() (
           echo "op=map key=$3 flags=read fault=$field expect_status=stale_ref"
         done
         ;;
-      readonly|writable|written|released) ;;
+      readonly) echo "op=probe_descriptor key=$3" ;;
+      writable|written|released) ;;
       *) exit 2 ;;
     esac
     exit 0

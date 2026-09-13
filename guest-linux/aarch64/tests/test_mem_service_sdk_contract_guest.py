@@ -120,8 +120,10 @@ class ManagedGuestContractTests(unittest.TestCase):
                     + " expect_status=stale_ref" for fault, byte in self.descriptor_faults()]
         self.assertEqual(self.generated("descriptor_contract", "acquired"), (0, expected))
         self.assertEqual(len(expected), 29)
-        self.assertLessEqual(27 + len(expected), 64)
-        for stage in ("readonly", "writable", "written", "released"):
+        self.assertLessEqual(28 + len(expected), 64)
+        self.assertEqual(self.generated("descriptor_contract", "readonly"),
+                         (0, ["op=probe_descriptor key=obj-share-1"]))
+        for stage in ("writable", "written", "released"):
             self.assertEqual(self.generated("descriptor_contract", stage), (0, []))
         self.assertEqual(self.generated("descriptor_contract", "unknown"), (2, []))
 
@@ -137,7 +139,17 @@ class ManagedGuestContractTests(unittest.TestCase):
             for index in (31, 35):
                 lines.append(f"{prefix} op={index} action=map key={key} status=ok "
                              "base=0x700000000000 len=65536")
-            lines.append(f"{prefix} result=ok ops=56")
+                if index == 31:
+                    fields = ("magic version length reserved export_id uba size export_token "
+                              "home_cna segment epoch segment_flags owner nodes cache access_empty "
+                              "access_unknown segment_token_id segment_token_value short_descriptor "
+                              "long_descriptor unaligned_uba unaligned_size range_overflow").split()
+                    lines.extend(f"obmm-descriptor-probe: field={field} rejected=1 preserved=1"
+                                 for field in fields)
+                    lines += ["obmm-descriptor-probe: result=pass checks=24 source=retained_handle",
+                              f"{prefix} descriptor_probe=pass key={key} checks=24 preserved=1 cleanup_pending=0",
+                              f"{prefix} op=33 action=probe_descriptor key={key} status=ok"]
+            lines.append(f"{prefix} result=ok ops=57")
         return "\n".join(lines)
 
     def test_descriptor_validator_rejects_missing_wrong_or_provider_failures(self):
@@ -153,6 +165,9 @@ class ManagedGuestContractTests(unittest.TestCase):
                         "\n".join(text.splitlines()[1:]),
                         text + "\n" + text.splitlines()[0],
                         text.replace("action=map", "action=inspect", 1),
+                        text.replace("action=probe_descriptor", "action=inspect", 1),
+                        text.replace("rejected=1", "rejected=0", 1),
+                        text.replace("checks=24", "checks=23", 1),
                         "mem_service obmm-map: result=failed stage=mmap errno=17\n" + text):
                 with self.assertRaises(ValueError):
                     validator.validate_descriptor_contract(bad, node, 2)

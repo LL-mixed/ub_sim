@@ -1513,6 +1513,58 @@ rootfs、manager、八文件源码增量、输入/终态清单、完整测试及
 `424ca0c9d2134208c1a235bb4163468ea11c7c5544f5481ed9d41e3dd0dd6738`。
 本地与远端的 gzip、成员清单、大小及 SHA 核对一致，未清理原始日志或容器。
 
+## 2026-09-13 续作：consumer provider descriptor 检查（局部实测通过）
+
+现有 object-session 增加 `op=probe_descriptor key=<key>`，在已 acquire 的可读
+映射上调用 provider 专属诊断。源 descriptor 来自同一 endpoint 持有的真实 handle，
+24 组格式、必填身份、对齐与溢出负例直接进入生产 map callback，不走 SDK 绑定
+预检查；不提交有效 map 请求。先要求 endpoint 正常、有空闲 slot 和 handle 容量，
+每次拒绝后核对 handle 计数和实际资源账本，意外变化保留清理归属并关闭新接纳。
+CLI 核对原映射首个逻辑页 checksum；既有 `descriptor_contract` profile 随后继续
+全对象双向 CPU 读写和最终 kernel 清单核对。有效格式的旧身份及动态轮换仍属
+独立验收范围，不由本诊断关闭。
+
+本地 31 项轻量测试通过，1.809 秒；远端三个 provider/CLI 定向测试通过，
+17.332 秒，静态 AArch64 服务二进制构建通过。r124 实际双节点运行 exit 0，
+57.678 秒，两端各 24 条 provider 拒绝记录及 session 原映射保留记录齐全。
+双方 descriptor/resource/kernel census 校验均 PASS；A 最后读回 65536 bytes，
+checksum 为 `0xbaadacabd8bb0383`，独立查询无 QEMU 遗留。
+
+首轮 root 完整回归出现 3 项新增失败：既有 `test_mem_service_sdk_contract_guest`
+的样例没有包含新增探针，且配置测试仍要求 readonly 阶段没有操作。补齐完整
+provider 记录及对应阶段预期，同时新增缺失/错误探针的拒绝断言；未放宽校验。
+r124b 完整 unittest 为 464 项，445 通过、5 跳过、5 失败、9 错误，45.496 秒，
+失败 ID 与 r123 排序比较无差异；layout 72/74 通过，1.23 秒，失败仍为原有两项。
+原失败日志和 source-r124 保留，修订样例及验证器使用 source-r124b。
+八个完整服务分片全部 exit 0，共 237 项，232 通过、5 跳过，最长分片 828.432 秒。
+结合独立 listener 补验后为 233 通过、4 项环境跳过；listener 用时 7.904 秒。首次 listener
+命令误写类名单复数而未执行测试，保留原错误后用正确类名完成，源码和断言不变。
+
+r125 同一 rootfs 的普通 SDK 两轮回归通过，100.856 秒，两端 SDK/resources/kernel
+校验均 PASS；read/write errors 和 timeouts 为 0，独立查询无 QEMU 遗留。
+r126 固定地址冲突回归通过，57.203 秒，两端实际 mmap 均返回 EEXIST，原映射
+checksum 保持不变，后续完整读写与资源清理全部通过；独立查询无 QEMU 遗留。
+新服务二进制 SHA-256 为
+`6bc7f12e6c4fb2d5cbefc230c39a2bf9209bddb1ba6b275023f6130c2ed4f3c3`，
+rootfs 为 `d11c0a2c81a5f521a723ee26ade516e2561bd8d5f7a38c9f26d63d6c15ec0782`。
+服务提交为 `9d8245da9557e918a7cd2877a151fe6e6fdec1d6`，工作区干净。
+九个服务文件和 run_app 在 r124/r124b 间逐个 cmp 一致，13 个最终源码/测试文件
+SHA 均与远端核对一致。未 push，父仓库 gitlink/lock 继续保持原固定值。
+本批归档约定为 `verified-r124-r126-provider-descriptor-evidence.tar.gz`，保存
+新服务/rootfs、两次源码增量、配置、输入/终态清单、完整测试和三次 guest 原始日志；
+也保留首轮 root 与错误 listener 命令的失败日志。共同 kernel/QEMU/worker 来源
+引用 r111–r120 归档，manager 来源引用 r123 归档，不重复归档完整容器镜像。
+最终归档已取回本地，51 个精确成员、20872367 bytes、权限 0600，SHA-256 为
+`4c82838030445f1c880633017592eda8b5aaa601faed6f67d8b273c3b1bbeb20`。
+本地与远端的 gzip、完整成员列表、长度及 SHA 核对一致，原始证据继续保留。
+
+下一数据能力为 AM2 的 CPU/PTO 联合访问。源码检查发现 QEMU 的
+`ubc_obmm_resolve_async_map()` 仅查询旧 `SimDecMapEntry`，PTO 的 preflight 和
+逐次访问均依赖此结果；严格 GSVA CPU window 使用独立的 route 和 backing token。
+因此，PTO 接入必须补全 GSVA-aware 的实际映射解析及完整身份保持，再连接同一
+managed holder/mapping 的 CPU/PTO pins。当前 PTO lease 在 backend release 失败
+后仍丢弃归属，相关清理路径也须补齐；本段属于源码发现，尚无 AM2 实测通过结论。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -1523,9 +1575,9 @@ mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必�
 幂等容量耗尽后的正常清理保证、单 home 的真实地址耗尽/拒绝后继续访问，以及已清零
 backing 缓存不足后的确认回滚、资源核对和恢复分配均已有通过证据。
 三个并发客户端、不同 size/alignment、交错释放及保持原映射的 r121 子集已通过。
-home kernel checked-export 的 17 组独立身份/格式负例已通过；下一批继续处理
-consumer provider 独立身份负例，以及更长分配循环所需的幂等历史
-回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把这些
+home kernel checked-export 的 17 组身份/格式负例、consumer provider 的 24 组
+格式/必填身份负例已通过；有效格式的过期身份检查及更长分配循环所需的幂等历史
+回收协议仍待实现验证。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把这些
 容量子集当作 100 次循环或无限请求的验收。
 已有 endpoint 计量和 registered-region 基线核对覆盖正常清理，崩溃、失联和未知资源
 仍需独立验收。后续还包括 AM2 CPU/PTO 联合访问、AM3 恢复/重用、AM4 多 home/W5/

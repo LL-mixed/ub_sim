@@ -238,9 +238,47 @@ def validate_map_conflict(text, node, iterations):
         raise ValueError("missing or extra conflict probe/remapping evidence")
 
 
+def validate_provider_descriptor(text, node, iterations):
+    expected_fields = set(("magic version length reserved export_id uba size export_token "
+        "home_cna segment epoch segment_flags owner nodes cache access_empty access_unknown "
+        "segment_token_id segment_token_value short_descriptor long_descriptor unaligned_uba "
+        "unaligned_size range_overflow").split())
+    checked, ready, probes = [], False, Counter()
+    for line in text.splitlines():
+        if line.startswith("obmm-descriptor-probe:"):
+            items = [item.split("=", 1) for item in line.split()[1:]]
+            fields = dict(items)
+            if len(items) != len(fields):
+                raise ValueError("duplicate provider descriptor evidence field")
+            if ready:
+                raise ValueError("provider descriptor checks lack a session result")
+            if "field" in fields:
+                if fields != {"field": fields["field"], "rejected": "1", "preserved": "1"}:
+                    raise ValueError("provider descriptor rejection did not preserve resources")
+                checked.append(fields["field"])
+            elif (fields == {"result": "pass", "checks": "24", "source": "retained_handle"}
+                  and len(checked) == 24 and set(checked) == expected_fields):
+                ready = True
+            else:
+                raise ValueError("missing or failed provider descriptor check")
+        elif line.startswith("mem_service object-session:") and "descriptor_probe=" in line:
+            items = [item.split("=", 1) for item in line.split()[2:]]
+            fields = dict(items)
+            if len(items) != len(fields):
+                raise ValueError("duplicate provider descriptor session field")
+            if (not ready or fields.get("session") != f"client-{node}" or
+                    fields.get("descriptor_probe") != "pass" or fields.get("checks") != "24" or
+                    fields.get("preserved") != "1" or fields.get("cleanup_pending") != "0"):
+                raise ValueError("provider probe did not preserve its session mapping")
+            probes[fields.get("key", "")] += 1
+            checked, ready = [], False
+    if checked or ready or probes != Counter({f"obj-share-{i}": 1 for i in range(1, iterations + 1)}):
+        raise ValueError("missing or extra provider descriptor probes")
+
+
 def validate_descriptor_contract(text, node, iterations):
     """Require each binding mutation to fail before the original view maps."""
-    expected, failures, mappings = Counter(), Counter(), Counter()
+    expected, failures, mappings, probes = Counter(), Counter(), Counter(), Counter()
     completions = 0
     for iteration in range(1, iterations + 1):
         key = f"obj-share-{iteration}"
@@ -276,9 +314,16 @@ def validate_descriptor_contract(text, node, iterations):
             raise ValueError("unexpected descriptor contract rejection")
         elif fields.get("action") == "map":
             mappings[fields.get("key", "")] += 1
+        elif fields.get("action") == "probe_descriptor":
+            key = fields.get("key", "")
+            if mappings[key] != 1:
+                raise ValueError("provider descriptor probe lacks the original mapping")
+            probes[key] += 1
     if (failures != expected or completions != iterations or
-            mappings != Counter({f"obj-share-{i}": 2 for i in range(1, iterations + 1)})):
+            mappings != Counter({f"obj-share-{i}": 2 for i in range(1, iterations + 1)}) or
+            probes != Counter({f"obj-share-{i}": 1 for i in range(1, iterations + 1)})):
         raise ValueError("missing or extra descriptor binding evidence")
+    validate_provider_descriptor(text, node, iterations)
 
 
 def pressure_snapshots(block, label, terminal):
