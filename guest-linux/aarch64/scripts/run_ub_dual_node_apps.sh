@@ -2131,6 +2131,8 @@ validate_mem_service_object_share_log() {
       contract_args+=(--map-conflict)
     elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "descriptor_contract" ]]; then
       contract_args+=(--descriptor-contract)
+    elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "capacity" ]]; then
+      contract_args+=(--capacity)
     fi
     python3 "${SCRIPT_DIR}/validate_mem_service_mapping_resources.py" \
       --log "$log_file" --node "$node_idx" \

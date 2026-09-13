@@ -1101,6 +1101,83 @@ kernel r16、QEMU r59 和 manager 与 r71/r72 保持相同指纹；每次 guest 
 源码快照、服务/guest 镜像、输入指纹及 34 个测试容器终态；gzip 完整性检查通过。
 归档权限为 0600，未包含或公开整份网络操作审计日志。
 
+## 2026-09-13 续作：清理容量接纳保护
+
+先在远端冻结旧代码并复现故障，再实施派生清理预留。r80 三个用例均失败于
+CANCEL/CLOSE/FINISH 的 CAPACITY_EXCEEDED（26.307 s）；r81 修复后这三项及
+独立 SDK 映射进程的满容量退出，共 4 项通过（36.197 s）。这只是定向结果，
+后续增加了满容量 CONFIRM、快照恢复、通用记录保留和旧请求重放测试；不能据此
+关闭 M1.4 或 AM1。
+
+新增 OBMM guest profile `MEM_SERVICE_OBJECT_SHARE_FAULT=capacity`，限定单轮：
+双方完成真实共享写读且都保留 RW 映射后，通过已有 CLI 填满非预留幂等空间。
+返回 barrier 的 allocation 提前接纳；压力达到容量后，通过其 retire/reclaim
+释放 barrier，双方才解除映射和 holder。整个过程保留历史幂等结果，校验 saturated
+时的两条 live mapping、零非预留容量、无预留缺口及最终 backing/kernel 基线。
+该 profile 仅验证已接纳资源的清理，单轮限制明确暴露尚未实现的历史回收边界。
+
+r82 扩展测试曾因测试配置使用内部字段 `max_retained_records` 而出现 13 项
+启动失败；改为实际 CLI 支持的 `record_retention=latest:1` 后继续验证。
+r83 完整服务 236 项中仅旧 `test_idempotency_store_exhaustion` 失败：旧测试要求
+64 个 allocation 全部接纳，随后 RETIRE 也返回容量错误。这与清理预留契约冲突。
+更新后的测试接纳 32 个 allocation（32 条应答加 32 条 retire 预留），验证第 33 个
+拒绝、全部取消/回收成功，以及全部退役后旧 ALLOCATE 重放不会创建新代际。
+这项用例覆盖尚未 publish 的分配意图，home 取消确认由 fixture 发送；真实 backing
+释放的证据来自下述 r85 guest，真实 backing 耗尽仍待独立验收。
+最终完整回归使用 r86 冻结快照：236 项，231 PASS、5 SKIP、0 FAIL；最长分片
+289.278 s。相同实现的独立 listener 测试在 bridge 容器通过（16.696 s），对应
+合计 232 PASS、4 环境 SKIP，236 个 test ID 无重复、无遗漏。剩余跳过为缺少
+arm64 deb 构建工具链，以及 3 项依赖 standalone 仓库不包含的 ub_sim 文件。
+具体条件与完整日志保留在证据包中。
+
+首次 guest r84 在 session 配置阶段失败：`timeout_ms=120000` 超出 CLI 的
+60000 上限，双方均未进入应用映射流程；入口退出导致 guest PID 1 panic。
+修复生成器并增加超时上限契约检查，未改变服务、kernel、QEMU 或 manager。
+r85 真实双 guest 容量场景通过（runner 1/1，容器退出 0）：
+
+- 39 次压力请求触及接纳边界；饱和时 `idempotency_used=55`、清理预留 9、
+  非预留可用量 0、预留缺口 0；3 个真实对象保留 6291456 字节 backing/address。
+- 此时双方持有 2 个 mapping、2 个 holder，`in_flight=0`；随后 barrier 的
+  retire/reclaim 放行双方清理，最终幂等表保留 64 条历史记录，清理预留归零。
+- 主对象双向 CPU 写读、publish/wait-visible、只读及 guard page 探针通过，
+  服务、endpoint 与 kernel region 回到基线；read/write error 和 timeout 为 0。
+- nodeA 26 操作用时 46828 ms，nodeB 20 操作用时 46753 ms；整个容器运行
+  59.522610 s。nodeB 的 QEMU 统计 remote_reads=524503、remote_writes=65556；
+  nodeA 对应 162/45；双方 read_timeouts/read_errors/write_errors 均为 0。
+
+父仓库 r85 全套为 457 项：438 PASS、5 SKIP、5 FAIL、9 ERROR（57.534 s）；
+14 个失败/错误 ID 与 r77b/r83 基线一致，仍涉及 Git metadata、source-lock 和
+冻结依赖环境，未修改或绕过这些门禁。r83 布局检查 72 PASS、2 FAIL（1.24 s），
+与原基线相同。轻量生成器/校验器 15 项通过（0.957 s）。
+
+同一服务/镜像的 r87 原 SDK 双轮场景通过（runner 1/1，容器退出 0），双方的
+两轮共享、36 次预期拒绝、8 次 holder 幂等重放及最终资源/kernel 基线通过。
+nodeA 每轮 38 操作用时 44167/44182 ms，nodeB 每轮 30 操作为 44263/44067 ms。
+本批 mem_service 已提交 `36292e473a3e5016a934e88d43fae9cfc14ebc70`，工作树
+干净，未推送；父仓库 gitlink/lock 保持原值。
+
+本批输出 manifest 均由远端当前 CLI 的 `print-*` 目标生成并取回同步，未手工编辑。
+admin schema 为 7411 bytes / `0x5272af77`，upgrade policy 为
+2144 bytes / `0x06a074b3`，package manifest 为 9703 bytes / `0x375851a6`；
+对应运行时 fixtures 全部通过。wire opcode、版本及公开 client record 布局未改动。
+
+| 冻结输入/产物 | SHA-256 |
+| --- | --- |
+| r80 旧实现复现测试 | `d8fa92128ae1ddc8978a202c594995181d86d14ee3d9b645bfc1a4463f2aa9cd` |
+| r83 源码 | `141529dd1d4fdeeac62fcb9b88166e12724ff69d5e2a906060b905f5d65e848a` |
+| r83 服务二进制 | `ef130499c1582cfa55c0f45a327367c3bfcb0aae7a60f61c1207522a9d635662` |
+| r84 失败 guest 镜像 | `5448d5df1bdede189bc7b15c5648428f2746b7c978f2c31749de8d6b7db48ed2` |
+| r85 入口修正 | `8b3eb9d0fc6475ab26c30939542e3d1dc67126d3f1278a339b2365df96271069` |
+| r85 通过的 guest 镜像 | `58dc20ef02ed4717cb84ac6821b8924217885c41fe2084b453abe1579627ac7a` |
+| r86 容量测试修订 | `e1b482ce2f464186af31365912f3357d3432963254024d3e2ef6d935feb79cc6` |
+
+完整证据包 `out/gva-manager-integration/verified-r80-r87-capacity-evidence.tar.gz`
+已取回并核验：33006628 字节，91 个成员，gzip 检查通过，本地与远端 SHA-256
+均为 `dc369349c5a5c8659f6b6b9149bfd94513349d580727691874bbbf795d93bd59`。
+其中保留全部失败复现、成功运行、完整回归日志、冻结源码、生成的 manifest、
+实际服务/guest 镜像、输入指纹及 31 个测试容器终态；权限 0600，未包含网络操作
+审计原始日志。SSH 握手超时及重试已逐项审计，重试前核对原句柄，未重复启动 guest。
+
 ## 下一批的前置条件与未完成项
 
 本地提交已获授权并完成。正式源码锁验收仍需子仓库提交可从远端获取，再同时
@@ -1108,9 +1185,10 @@ kernel r16、QEMU r59 和 manager 与 r71/r72 保持相同指纹；每次 guest 
 mem_service；提交后旧 lock 与新 checkout 的 revision 不一致同样必须拒绝。
 本轮未增加绕过开关，未修改父仓库 pin，也未把已知失败计作通过。
 
-下一批先处理 M1.4 的幂等容量耗尽与清理保证、实际 backing 耗尽、不同 size/alignment
-压力及 provider/kernel 独立身份负例。当前 64 条幂等记录的限制仍在；无效绑定的
-前置拒绝只消除本批不必要的记录占用，不能证明长运行请求或耗尽后的解除/释放能力。
+本批已验证幂等容量耗尽后的正常清理保证。下一批继续处理真实 backing 耗尽、
+不同 size/alignment 压力、provider/kernel 独立身份负例，以及长期运行所需的幂等
+历史回收协议。当前仍保留最多 64 条结果；完成清理后不会自动抹去历史，不能把
+这项接纳保护当作 100 次循环或无限请求的容量验收。
 已有 endpoint 计量和 registered-region 基线核对覆盖正常清理，崩溃、失联和未知资源
 仍需独立验收。后续还包括 AM2 CPU/PTO 联合访问、AM3 恢复/重用、AM4 多 home/W5/
 独立发布，以及 n4-910c 的独立复现。总计划 M2-M5 的动态身份、恢复、压力与 replay

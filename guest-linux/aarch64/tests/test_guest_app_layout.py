@@ -1943,7 +1943,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^payload_provider_roce_libs=-lrdmacm -libverbs$" in verifier
     assert "^metrics_export_format=prometheus-text$$" in app_makefile
     assert "^admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt$$" in app_makefile
-    assert "^admin_output_schema_checksum=0x4f63a749$$" in app_makefile
+    assert "^admin_output_schema_checksum=0x5272af77$$" in app_makefile
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
@@ -2194,8 +2194,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x5905d107U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 1025U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5e460a87U" in app_source
-    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 7055U" in app_source
-    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x4f63a749U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 7411U" in app_source
+    assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_CHECKSUM 0x5272af77U" in app_source
     assert "render_admin_output_schema" in app_source
     assert "run_admin_output_fixture_check" in app_source
     assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2144U" in app_source
@@ -2433,7 +2433,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     ) in release_manifest
     assert "wire_schema_manifest=share/lingqu/mem_service/wire-schema.txt" in release_manifest
     assert "admin_output_schema=share/lingqu/mem_service/admin-output-schema.txt" in release_manifest
-    assert "admin_output_schema_checksum=0x4f63a749" in release_manifest
+    assert "admin_output_schema_checksum=0x5272af77" in release_manifest
     assert "admin_output_format=text-kv" in release_manifest
     assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt" in release_manifest
@@ -2520,8 +2520,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "certification_limit=none" in compat_old_new
     assert "wire_schema_manifest_len=16300" in release_manifest
     assert "wire_schema_manifest_checksum=0x5905d107" in release_manifest
-    assert "admin_output_schema_len=7055" in release_manifest
-    assert "admin_output_schema_checksum=0x4f63a749" in release_manifest
+    assert "admin_output_schema_len=7411" in release_manifest
+    assert "admin_output_schema_checksum=0x5272af77" in release_manifest
     assert "upgrade_rollback_policy_len=2144" in release_manifest
     assert "upgrade_rollback_policy_checksum=0xf4139152" in release_manifest
     assert "package_manifest_len=9703" in release_manifest

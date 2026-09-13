@@ -34,6 +34,44 @@ def kernel_samples():
 
 
 class MappingResourceValidationTests(unittest.TestCase):
+    def test_capacity_requires_saturation_then_complete_resource_drain(self):
+        def capacity_stats(drained):
+            fields = {
+                "import_mappings": 0 if drained else 2,
+                "live_refs": 0 if drained else 2,
+                "live_objects": 0 if drained else 3,
+                "in_flight": 0,
+                "backing_allocated_bytes": 0 if drained else 6291456,
+                "address_reserved_bytes": 0 if drained else 6291456,
+                "idempotency_capacity": 64,
+                "idempotency_used": 64 if drained else 55,
+                "idempotency_cleanup_reserved": 0 if drained else 9,
+                "idempotency_available": 0,
+                "idempotency_reservation_deficit": 0,
+            }
+            return "mem_service allocation-stats: status=ok\n" + "".join(
+                f"{key}={value}\n" for key, value in fields.items())
+        valid = ("mem_service capacity-pressure: phase=saturated attempts=40\n" +
+                 capacity_stats(False) +
+                 "mem_service capacity-pressure: phase=released status=ok\n" +
+                 capacity_stats(True))
+        module.validate_capacity(valid, 0, 1)
+        for text in ("", valid + valid,
+                     valid.replace("import_mappings=2", "import_mappings=1"),
+                     valid.replace("idempotency_used=55", "idempotency_used=54"),
+                     valid.replace("idempotency_available=0", "idempotency_available=1"),
+                     valid.replace("idempotency_reservation_deficit=0", "idempotency_reservation_deficit=1"),
+                     valid.replace("backing_allocated_bytes=0", "backing_allocated_bytes=4096"),
+                     valid.replace("idempotency_used=64", "idempotency_used=63"),
+                     valid.replace("idempotency_cleanup_reserved=9", "idempotency_cleanup_reserved=8")):
+            with self.subTest(text=text), self.assertRaises((ValueError, KeyError)):
+                module.validate_capacity(text, 0, 1)
+        peer = "action=wait_state key=obj-returned-1 status=ok state=retired"
+        module.validate_capacity(peer, 1, 1)
+        for text, iterations in (("", 1), (peer, 2)):
+            with self.assertRaises(ValueError):
+                module.validate_capacity(text, 1, iterations)
+
     def test_both_nodes_have_baseline_live_and_drained_resources(self):
         for node, sequence in ((0, [0, 1, 1, 0, 0]), (1, [0, 1, 1, 0])):
             module.validate("".join(sample(live, node) for live in sequence * 2), node, 2, 65536)

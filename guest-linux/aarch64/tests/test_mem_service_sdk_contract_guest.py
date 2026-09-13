@@ -1,6 +1,7 @@
 """Exercise guest contract-op generation and reject incomplete run evidence."""
 import importlib.util
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,52 @@ spec.loader.exec_module(validator)
 
 
 class ManagedGuestContractTests(unittest.TestCase):
+    def test_managed_session_timeouts_fit_cli_contract(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        managed = source.split("mem_service_object_share_managed() (", 1)[1].split(
+            "\nrun_mem_service_object_share()", 1)[0]
+        cli = (ROOT / "mem_service/apps/mem_service/mem_service.c").read_text()
+        limit = int(re.search(r"#define MEM_SERVICE_OBJECT_SESSION_MAX_WAIT_MS (\d+)U", cli)[1])
+        timeouts = [int(value) for value in re.findall(r"timeout_ms=(\d+)", managed)]
+        self.assertTrue(timeouts)
+        self.assertTrue(all(0 < value <= limit for value in timeouts), timeouts)
+
+    def test_capacity_driver_requires_real_exhaustion_before_releasing_barrier(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        helper = "mem_service_object_share_capacity_pressure() (" + source.split(
+            "mem_service_object_share_capacity_pressure() (", 1
+        )[1].split("\nmem_service_object_share_managed()", 1)[0]
+        mock = '''test_cli() {
+          case "$1" in
+            inspect-allocation) echo state=active ;;
+            allocation-stats) echo idempotency_available=0 ;;
+            retire-object)
+              case "$*" in
+                *capacity-barrier-release*) echo barrier_released ;;
+                *capacity-pressure-3*) echo "status=$fault_status"; return 1 ;;
+                *) echo status=not_found; return 1 ;;
+              esac ;;
+            *) return 2 ;;
+          esac
+        }
+        '''
+        with tempfile.TemporaryDirectory() as directory:
+            helper = helper.replace("/bin/linqu_mem_service", "test_cli").replace(
+                "/tmp/capacity-", directory + "/capacity-")
+            for status, expected in (("capacity_exceeded", 0), ("internal", 1),
+                                     ("not_found", 1)):
+                result = subprocess.run(
+                    ["sh", "-s", "--", status],
+                    input='fault_status="$1"\n' + mock + helper +
+                          '\nmem_service_object_share_capacity_pressure fixture\n',
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual("barrier_released" in result.stdout, expected == 0)
+                if expected == 0:
+                    self.assertIn("phase=saturated attempts=3", result.stdout)
+                    self.assertIn("phase=released status=ok", result.stdout)
+
     def generated(self, fault, stage, identity="acq-a-1"):
         source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
         helper = "mem_service_object_share_contract_ops() (" + source.split(

@@ -865,6 +865,40 @@ mem_service_object_share_contract_ops() (
   esac
 )
 
+mem_service_object_share_capacity_pressure() (
+  connect="$1"
+  attempt=0
+  while [ "$attempt" -lt 120 ]; do
+    if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
+        --key obj-returned-1 --timeout-ms 2000 >/tmp/capacity-barrier.log 2>&1 &&
+        grep -q '^state=active$' /tmp/capacity-barrier.log; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  [ "$attempt" -lt 120 ] || exit 1
+  attempt=0
+  while [ "$attempt" -lt 80 ]; do
+    attempt=$((attempt + 1))
+    if /bin/linqu_mem_service retire-object --connect "$connect" \
+        --key capacity-probe-missing --idempotency-key "capacity-pressure-$attempt" \
+        --timeout-ms 2000 >/tmp/capacity-pressure.log 2>&1; then
+      exit 1
+    fi
+    if grep -q '^status=capacity_exceeded$' /tmp/capacity-pressure.log; then
+      echo "mem_service capacity-pressure: phase=saturated attempts=$attempt"
+      /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
+      /bin/linqu_mem_service retire-object --connect "$connect" \
+        --key obj-returned-1 --idempotency-key capacity-barrier-release || exit 1
+      echo "mem_service capacity-pressure: phase=released status=ok"
+      exit 0
+    fi
+    grep -q '^status=not_found$' /tmp/capacity-pressure.log || exit 1
+  done
+  exit 1
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -876,7 +910,12 @@ mem_service_object_share_managed() (
   connect="tcp:10.0.0.1:$port"
   daemon_pid=""
   worker_pid=""
+  capacity_pid=""
   cleanup_managed_share() {
+    if [ -n "$capacity_pid" ]; then
+      kill "$capacity_pid" 2>/dev/null || true
+      wait "$capacity_pid" 2>/dev/null || true
+    fi
     if [ -n "$worker_pid" ]; then
       kill "$worker_pid" 2>/dev/null || true
       wait "$worker_pid" 2>/dev/null || true
@@ -929,6 +968,10 @@ mem_service_object_share_managed() (
   /bin/linqu_mem_service_provider_obmm serve-allocations \
     --config /tmp/managed-share.worker.conf &
   worker_pid=$!
+  if [ "$node" = "0" ] && [ "$fault" = "capacity" ]; then
+    mem_service_object_share_capacity_pressure "$connect" &
+    capacity_pid=$!
+  fi
   i=1
   while [ "$i" -le "$iterations" ]; do
     config="/tmp/managed-share.session.$i.conf"
@@ -966,7 +1009,11 @@ mem_service_object_share_managed() (
         mem_service_object_share_contract_ops "$fault" written "$key" "$size" "$seed" "acq-a-$i"
         echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
         echo "op=allocate key=$sent idempotency_key=sent-$i size_bytes=65536 capabilities=map"
-        echo "op=wait_state key=$returned state=active timeout_ms=60000 poll_ms=50"
+        if [ "$fault" = "capacity" ]; then
+          echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
+        else
+          echo "op=wait_state key=$returned state=active timeout_ms=60000 poll_ms=50"
+        fi
         echo "op=wait_visible key=$key offset=0 len=$size seed=$((seed + 1))"
         echo "op=read key=$key offset=0 len=$size seed=$((seed + 1))"
         echo "op=unmap key=$key"
@@ -977,7 +1024,9 @@ mem_service_object_share_managed() (
         echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
         echo "op=retire key=$sent idempotency_key=retire-sent-$i"
         echo "op=wait_state key=$sent state=retired timeout_ms=60000 poll_ms=50"
-        echo "op=retire key=$returned idempotency_key=retire-returned-$i"
+        if [ "$fault" != "capacity" ]; then
+          echo "op=retire key=$returned idempotency_key=retire-returned-$i"
+        fi
         echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
         echo "op=stats"
       else
@@ -1001,17 +1050,27 @@ mem_service_object_share_managed() (
         echo "op=write key=$key offset=0 len=$size seed=$((seed + 1))"
         mem_service_object_share_contract_ops "$fault" written "$key" "$size" "$((seed + 1))" "acq-b-$i"
         echo "op=publish_data key=$key offset=0 len=$size seed=$((seed + 1))"
+        if [ "$fault" = "capacity" ]; then
+          echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
+          echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
+        fi
         echo "op=unmap key=$key"
         echo "op=stats"
         echo "op=release key=$key idempotency_key=rel-b-$i"
         mem_service_object_share_contract_ops "$fault" released "$key" "$size" "$((seed + 1))" "rel-b-$i"
-        echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
+        if [ "$fault" != "capacity" ]; then
+          echo "op=allocate key=$returned idempotency_key=returned-$i size_bytes=65536 capabilities=map"
+        fi
         echo "op=wait_state key=$returned state=retired timeout_ms=60000 poll_ms=50"
       fi
     } >"$config"
     /bin/linqu_mem_service object-session --config "$config" || exit 1
     i=$((i + 1))
   done
+  if [ -n "$capacity_pid" ]; then
+    wait "$capacity_pid" || exit 1
+    capacity_pid=""
+  fi
   /bin/linqu_mem_service health --connect "$connect" || exit 1
   /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
   echo "mem_service kernel-regions: phase=drained"
@@ -1066,7 +1125,9 @@ run_mem_service_object_share() {
   if [ "$backend" = "obmm" ]; then
     if [ -n "$descriptor_hex" ] ||
         { [ "$fault" != "none" ] && [ "$fault" != "sdk_contract" ] &&
-          [ "$fault" != "map_conflict" ] && [ "$fault" != "descriptor_contract" ]; }; then
+          [ "$fault" != "map_conflict" ] && [ "$fault" != "descriptor_contract" ] &&
+          [ "$fault" != "capacity" ]; } ||
+        { [ "$fault" = "capacity" ] && [ "$iterations" != "1" ]; }; then
       log "mem_service object-share: status=fail node=$node_idx backend=obmm reason=unsupported_config"
       return 2
     fi

@@ -84,6 +84,60 @@ def validate_kernel_regions(text):
         raise ValueError("kernel regions did not return to observed baseline")
 
 
+def validate_capacity(text, node, iterations):
+    """Require saturation with two real mapping lifetimes and a drained ledger."""
+    if iterations != 1:
+        raise ValueError("capacity profile requires one lifecycle")
+    if node != 0:
+        marker = ("action=wait_state key=obj-returned-1 status=ok "
+                  "state=retired")
+        if marker not in text:
+            raise ValueError("peer did not observe released capacity barrier")
+        return
+    if text.count("mem_service capacity-pressure: phase=saturated ") != 1 or \
+            text.count("mem_service capacity-pressure: phase=released status=ok") != 1:
+        raise ValueError("capacity pressure did not complete exactly once")
+    saturated_text, drained_text = text.split(
+        "mem_service capacity-pressure: phase=saturated ", 1)[1].split(
+        "mem_service capacity-pressure: phase=released status=ok", 1)
+
+    def stats(block, last=False):
+        snapshots = block.split("mem_service allocation-stats: status=ok\n")[1:]
+        if not snapshots:
+            raise ValueError("missing allocation capacity snapshot")
+        fields = {}
+        for line in (snapshots[-1] if last else snapshots[0]).splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name in (
+                "idempotency_capacity", "idempotency_used", "idempotency_cleanup_reserved",
+                "idempotency_available", "idempotency_reservation_deficit",
+                "import_mappings", "live_refs", "live_objects", "in_flight",
+                "backing_allocated_bytes", "address_reserved_bytes",
+            ):
+                if name in fields:
+                    raise ValueError("duplicate capacity field")
+                fields[name] = int(value)
+            if name == "idempotency_reservation_deficit":
+                return fields
+        raise ValueError("incomplete allocation capacity snapshot")
+
+    saturated, drained = stats(saturated_text), stats(drained_text, last=True)
+    if (saturated["import_mappings"] != 2 or saturated["live_refs"] != 2 or
+            saturated["idempotency_cleanup_reserved"] != 9 or
+            saturated["idempotency_used"] + saturated["idempotency_cleanup_reserved"] !=
+            saturated["idempotency_capacity"] or
+            saturated["idempotency_available"] != 0 or
+            saturated["idempotency_reservation_deficit"] != 0):
+        raise ValueError("capacity was not exhausted with both mappings protected")
+    if any(drained[field] != 0 for field in (
+            "import_mappings", "live_refs", "live_objects", "in_flight",
+            "backing_allocated_bytes", "address_reserved_bytes",
+            "idempotency_cleanup_reserved", "idempotency_available",
+            "idempotency_reservation_deficit")) or \
+            drained["idempotency_used"] != drained["idempotency_capacity"]:
+        raise ValueError("full-table cleanup did not drain all resources")
+
+
 def validate_sdk_contract(text, node, iterations):
     """Require per-object SDK rejections and actual holder-op replay results."""
     failures, successes = Counter(), Counter()
@@ -237,6 +291,7 @@ def main():
     faults.add_argument("--sdk-contract", action="store_true")
     faults.add_argument("--map-conflict", action="store_true")
     faults.add_argument("--descriptor-contract", action="store_true")
+    faults.add_argument("--capacity", action="store_true")
     args = parser.parse_args()
     if args.iterations < 1 or not 0 < args.size <= 2097152:
         parser.error("positive iterations and 1..2097152 logical bytes required")
@@ -250,6 +305,8 @@ def main():
             validate_map_conflict(text, args.node, args.iterations)
         if args.descriptor_contract:
             validate_descriptor_contract(text, args.node, args.iterations)
+        if args.capacity:
+            validate_capacity(text, args.node, args.iterations)
     except (OSError, KeyError, ValueError) as error:
         parser.exit(1, f"mapping resource validation failed: {error}\n")
     print(f"mapping_resources=pass node={args.node} iterations={args.iterations}")
@@ -260,6 +317,8 @@ def main():
         print(f"map_conflict=pass node={args.node} iterations={args.iterations}")
     if args.descriptor_contract:
         print(f"descriptor_contract=pass node={args.node} iterations={args.iterations}")
+    if args.capacity:
+        print(f"capacity_cleanup=pass node={args.node} iterations={args.iterations}")
 
 
 if __name__ == "__main__":
