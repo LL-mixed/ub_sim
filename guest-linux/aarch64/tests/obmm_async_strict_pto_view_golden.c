@@ -9,7 +9,11 @@
 #include <errno.h>
 
 typedef uint64_t u64;
-typedef struct { unsigned long pfn; unsigned rights; bool valid; } pte_t;
+typedef struct {
+    unsigned long pfn;
+    unsigned rights;
+    bool valid, software_write;
+} pte_t;
 typedef unsigned spinlock_t;
 #define PAGE_SHIFT 12
 #define PAGE_SIZE (1UL << PAGE_SHIFT)
@@ -59,8 +63,9 @@ static unsigned long pte_pfn(pte_t entry) { assert(lock); return entry.pfn; }
 static bool pte_access_permitted(pte_t entry, bool write)
 {
     assert(lock);
-    return entry.valid && (entry.rights & 1) && (!write || (entry.rights & 2));
+    return entry.valid && (entry.rights & 1) && (!write || entry.software_write);
 }
+static bool pte_rdonly(pte_t entry) { assert(lock); return !(entry.rights & 2); }
 static void pte_unmap_unlock(pte_t *entry, spinlock_t *ptl)
 {
     assert(entry >= entries && entry < entries + 4 && ptl == &lock && lock);
@@ -97,7 +102,7 @@ int main(void)
 {
     u64 pa, access;
     reset();
-    /* No VM_READ/VM_WRITE flags: all three installed PTEs remain writable. */
+    /* Neither VMA nor Linux's software-write flags carry OBMM RW rights. */
     assert(!linqu_obmm_strict_pto_view(&vma, 7, vma.vm_start + 128,
                                       2 * PAGE_SIZE, &pa, &access));
     assert(pa == PFN_PHYS(0x40000) + 128 && access == 3);
@@ -107,6 +112,12 @@ int main(void)
     assert(!linqu_obmm_strict_pto_view(&vma, 7, vma.vm_start,
                                       3 * PAGE_SIZE, &pa, &access));
     assert(access == 1 && follows == 3 && unlocks == 3);
+    reset();
+    entries[1].rights = 1;
+    entries[1].software_write = true;
+    assert(!linqu_obmm_strict_pto_view(&vma, 7, vma.vm_start,
+                                      2 * PAGE_SIZE, &pa, &access));
+    assert(access == 1 && follows == 2 && unlocks == 2);
     reset();
     entries[2].rights = 0;
     rejected(-EACCES, 7, vma.vm_start, 3 * PAGE_SIZE);
@@ -143,6 +154,6 @@ int main(void)
     rejected(-EFAULT, 7, vma.vm_end - 1, 2);
     rejected(-EFAULT, 7, U64_MAX - 1, 4);
     assert(!follows);
-    puts("strict_pto_view_golden=pass cases=13");
+    puts("strict_pto_view_golden=pass cases=14");
     return 0;
 }

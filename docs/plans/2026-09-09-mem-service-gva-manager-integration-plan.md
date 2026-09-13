@@ -235,8 +235,12 @@ QEMU 接入约定：现有 mapping register 接纳已安装 CPU window 的严格
 route，按实际 guest PA 查询，不从数值相同的旧 SIM_DEC map ID 推测身份。
 保留完整 key、route ID、lease epoch/权限、home/owner 及独立 backing token；
 PTO 绑定、延迟授权复查及逐次访问均比较同一身份快照，退役或轮换后拒绝旧绑定。
-严格 PTO 注册要求显式 opt-in 的 V2 ioctl 标志及新 MMIO command；driver 从真实
-VMA 提取读写权限，与 route 权限取交集。旧 driver/QEMU 拒绝新请求，SDK 不降级；
+严格 PTO 注册要求显式 opt-in 的 V2 ioctl 标志及新 MMIO command；driver 校验
+OBMM region 身份、逐页物理连续性及实际页表权限，与 route 权限取交集。OBMM
+会清空 VMA 读写标志；AArch64 可写页也不设置软件 PTE_WRITE 位，须检查实际
+user/AP 权限。当前子集只接纳页粒度 O_SYNC import，避免注册后 ownership 更新
+使权限快照过期；cacheable 和大页视图明确返回 unsupported。扩展这些视图前须
+补齐动态权限寿命协议。旧 driver/QEMU 拒绝新请求，SDK 不降级；
 旧注册 command 继续服务 legacy mapping，对严格 GSVA 返回 unsupported。
 TLOAD/TSTORE 使用与严格 CPU window 相同的实际 backing I/O；旧异步 read 队列
 暂不接纳 GSVA register，返回明确 unsupported，不改变 tokenless CPU replay 协议。

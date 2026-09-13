@@ -14,6 +14,9 @@ tokens are `(generation, queue_id, slot)` values, never pointers.
 flag. It requires a retained mapped view and derives access rights from every
 page table entry in the requested range. OBMM clears VMA read/write flags after
 installing its page protections, so those flags cannot supply the rights.
+On AArch64, OBMM also installs writable PTEs by clearing the hardware AP
+read-only bit without setting Linux's software-write/DBM bit. Registration
+therefore checks valid user access and the actual hardware read-only bit.
 Strict registration checks the OBMM region identity and contiguous physical
 pages, and intersects the per-page permissions with the device route rights.
 It currently accepts only page-granular O_SYNC mappings, whose permissions

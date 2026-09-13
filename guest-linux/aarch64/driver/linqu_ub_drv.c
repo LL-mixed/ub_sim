@@ -586,10 +586,13 @@ static int linqu_obmm_strict_pto_view(struct vm_area_struct *vma, u64 mem_id,
 			return ret;
 		entry = ptep_get(ptep);
 		pfn = pte_pfn(entry);
-		if (pte_access_permitted(entry, false))
+		if (pte_access_permitted(entry, false)) {
 			page_rights |= 1;
-		if (pte_access_permitted(entry, true))
-			page_rights |= 2;
+			/* OBMM installs _PAGE_READONLY & ~PTE_RDONLY for RW.
+			 * Its PTE_WRITE/DBM bit stays clear; hardware AP decides. */
+			if (!pte_rdonly(entry))
+				page_rights |= 2;
+		}
 		pte_unmap_unlock(ptep, ptl);
 		if (page == (address & PAGE_MASK))
 			first_pfn = pfn;

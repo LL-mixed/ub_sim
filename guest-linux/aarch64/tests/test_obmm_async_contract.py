@@ -510,10 +510,11 @@ class ObmmAsyncContractTests(unittest.TestCase):
         for expected in ("obmm_file_matches_region", "VM_PFNMAP", "O_SYNC",
                          "vma_kernel_pagesize", "follow_pte", "ptep_get",
                          "pte_access_permitted(entry, false)",
-                         "pte_access_permitted(entry, true)",
+                         "if (!pte_rdonly(entry))",
                          "pte_unmap_unlock", "rights &= page_rights",
                          "return -EACCES", "pfn != first_pfn"):
             self.assertIn(expected, view)
+        self.assertNotIn("pte_access_permitted(entry, true)", view)
         self.assertLess(body.index("writeq(pto_access"), body.index("wmb()"))
         legacy_start = driver.index("static long linqu_obmm_async_map_register(")
         legacy = driver[legacy_start:driver.index("\n}\n", legacy_start)]
@@ -542,7 +543,7 @@ class ObmmAsyncContractTests(unittest.TestCase):
             ], check=True)
             output = subprocess.check_output([str(binary)], text=True)
             self.assertEqual(output.strip(),
-                             "strict_pto_view_golden=pass cases=13")
+                             "strict_pto_view_golden=pass cases=14")
 
     def test_uapi_layout(self):
         test_uapi_layout_compiles_for_aarch64()
