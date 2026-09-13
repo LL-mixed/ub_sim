@@ -975,6 +975,93 @@ extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ in
     return source
 
 
+def write_quadratic_vector_orchestration(build_dir: Path, layout: dict) -> Path:
+    logical = layout["logical_elements"]
+    storage = layout["storage_elements"]
+    if (type(logical) is not int or type(storage) is not int or
+            not 0 < logical <= storage <= (1 << 32) - 1):
+        raise ValueError("quadratic logical/storage sizes must be positive and fit u32")
+    source = build_dir / "host_vector_quadratic_orch.cpp"
+    source.write_text(
+        f"""\
+#include <cstdint>
+
+#include "pto_orchestration_api.h"
+
+namespace {{
+constexpr uint32_t kLogicalElements = {logical};
+constexpr uint32_t kStorageElements = {storage};
+constexpr uint64_t kScalarOne = 0x3f800000ULL;
+constexpr uint64_t kScalarTwo = 0x40000000ULL;
+}}  // namespace
+
+extern "C" {{
+
+__attribute__((visibility("default"))) PTO2OrchestrationConfig
+aicpu_orchestration_config(const ChipTaskArgs& orch_args) {{
+    (void)orch_args;
+    return PTO2OrchestrationConfig{{.expected_arg_count = 3}};
+}}
+
+__attribute__((visibility("default"))) void
+aicpu_orchestration_entry(const ChipTaskArgs& orch_args) {{
+    if (orch_args.tensor_count() != 3 || orch_args.scalar_count() != 0) {{
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "quadratic expects 3 tensor args and no scalar args");
+        return;
+    }}
+    const ChipTensor& a = orch_args.tensor(0).ref();
+    const ChipTensor& b = orch_args.tensor(1).ref();
+    const ChipTensor& f = orch_args.tensor(2).ref();
+    if (a.numel() != kLogicalElements || b.numel() != kLogicalElements ||
+        f.numel() != kLogicalElements || a.dtype != DataType::FLOAT32 ||
+        b.dtype != DataType::FLOAT32 || f.dtype != DataType::FLOAT32) {{
+        rt_report_fatal(
+            PTO2_ERROR_INVALID_ARGS,
+            "quadratic tensor sizes and dtype must match the artifact");
+        return;
+    }}
+
+    // Kernels use the manifest's fixed geometry, including any stride gaps.
+    // Reserve its complete storage extent for every intermediate tensor.
+    uint32_t inter_shapes[1] = {{kStorageElements}};
+    TensorCreateInfo inter_ci(inter_shapes, 1, DataType::FLOAT32);
+    CoreTaskArgs p_add;
+    p_add.add_input(a);
+    p_add.add_input(b);
+    p_add.add_output(inter_ci);
+    TaskOutputTensors c_out = rt_submit_aiv_task(0, p_add);
+    ChipTensor c = c_out.get_ref(0);
+
+    CoreTaskArgs p_d;
+    p_d.add_input(c);
+    p_d.add_output(inter_ci);
+    p_d.add_scalar(kScalarOne);
+    TaskOutputTensors d_out = rt_submit_aiv_task(1, p_d);
+    ChipTensor d = d_out.get_ref(0);
+
+    CoreTaskArgs p_e;
+    p_e.add_input(c);
+    p_e.add_output(inter_ci);
+    p_e.add_scalar(kScalarTwo);
+    TaskOutputTensors e_out = rt_submit_aiv_task(1, p_e);
+    ChipTensor e = e_out.get_ref(0);
+
+    CoreTaskArgs p_mul;
+    p_mul.add_input(d);
+    p_mul.add_input(e);
+    p_mul.add_output(f);
+    rt_submit_aiv_task(2, p_mul);
+    LOG_INFO("[quadratic] Submitted 4 tasks for f = (a + b + 1) * (a + b + 2)");
+}}
+
+}}  // extern "C"
+"""
+    )
+    return source
+
+
 def write_pipeline_double_vector_orchestration(build_dir: Path) -> Path:
     source = build_dir / "host_vector_pipeline_double_orch.cpp"
     source.write_text(
@@ -2976,6 +3063,8 @@ def describe(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -
             payload["orchestration"] = (
                 "generated://host_vector_pipeline_double_orch.cpp"
             )
+        else:
+            payload["orchestration"] = "generated://host_vector_quadratic_orch.cpp"
     if args.profile in (
         "host_gemm",
         "host_fp32_gemm",
@@ -3121,11 +3210,11 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         builder, api_kind, runtime_name, build_dir, reuse_runtime
     )
     orch_source = example_root / spec.orch_source
-    if (
-        args.profile == "host_vector"
-        and args.host_vector_program == "pipeline_double"
-    ):
-        orch_source = write_pipeline_double_vector_orchestration(build_dir)
+    if args.profile == "host_vector":
+        if args.host_vector_program == "pipeline_double":
+            orch_source = write_pipeline_double_vector_orchestration(build_dir)
+        else:
+            orch_source = write_quadratic_vector_orchestration(build_dir, vector_layout)
     if args.profile == "host_gemm":
         orch_source = write_host_gemm_orchestration(
             build_dir, args.gemm_m, args.gemm_k, args.gemm_n

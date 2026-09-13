@@ -349,6 +349,75 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
         self.assertNotIn("FUNC_ADD_SCALAR", orchestration)
         self.assertNotIn("FUNC_MUL", orchestration)
 
+    def test_quadratic_orchestration_cli_uses_repository_owned_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            example = root / "tests/st/a2a3/host_build_graph/vector_example"
+            orch = example / load_producer().PROFILE_SPECS["host_vector"].orch_source
+            orch.parent.mkdir(parents=True)
+            orch.write_text("// Discovery fixture only; --describe performs no build.\n")
+            header = root / "include/pto/pto-inst.hpp"
+            header.parent.mkdir(parents=True)
+            header.write_text("// Discovery fixture only.\n")
+            completed = subprocess.run(
+                [sys.executable, str(PRODUCER), "--profile", "host_vector",
+                 "--simpler-root", str(root), "--pto-isa-root", str(root),
+                 "--output-dir", str(root / "unused-output"), "--describe"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse((root / "unused-output").exists())
+        self.assertEqual(json.loads(completed.stdout)["orchestration"],
+                         "generated://host_vector_quadratic_orch.cpp")
+        self.assertIn("write_quadratic_vector_orchestration(build_dir, vector_layout)",
+                      PRODUCER.read_text())
+
+    def test_quadratic_orchestration_rejects_invalid_storage_extent(self):
+        producer = load_producer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for logical, storage in ((0, 0), (16, 15), (1, 1 << 32), (True, 64)):
+                with self.subTest(logical=logical, storage=storage):
+                    with self.assertRaisesRegex(ValueError, "positive and fit u32"):
+                        producer.write_quadratic_vector_orchestration(
+                            Path(temp_dir), {"logical_elements": logical,
+                                             "storage_elements": storage})
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
+    def test_quadratic_orchestration_executes_full_extent_graph_contract(self):
+        compiler = shutil.which("c++")
+        if compiler is None:
+            self.skipTest("a native C++ compiler is required for the metadata-only fixture")
+        producer = load_producer()
+        fixture = Path(__file__).with_name("simpler_vector_orchestration_golden.h")
+        profiles = (("cross-page", 1, 64, 1, 64), ("nd", 128, 128, 128, 128),
+                    ("tail", 128, 127, 128, 128), ("nd-strided", 3, 5, 4, 8),
+                    ("dn", 3, 5, 8, 8), ("nz", 16, 8, 16, 8))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            shutil.copyfile(fixture, root / "pto_orchestration_api.h")
+            for profile, rows, cols, tile_rows, tile_cols in profiles:
+                with self.subTest(profile=profile):
+                    layout = producer.vector_layout_contract(
+                        profile, rows, cols, tile_rows, tile_cols)
+                    source = producer.write_quadratic_vector_orchestration(root, layout)
+                    binary = root / "quadratic-golden"
+                    command = [compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror",
+                               str(source), "-o", str(binary)]
+                    subprocess.run(command, capture_output=True, text=True, check=True)
+                    run_args = [str(binary), str(rows), str(cols),
+                                str(layout["storage_elements"])]
+                    result = subprocess.run(run_args, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("positive=3 negative=8", result.stdout)
+                    if profile == "nd":
+                        source.write_text(source.read_text().replace(
+                            "inter_shapes[1] = {kStorageElements}",
+                            "inter_shapes[1] = {a.shapes[0]}; (void)kStorageElements"))
+                        subprocess.run(command, capture_output=True, text=True, check=True)
+                        old = subprocess.run(run_args, cwd=root, capture_output=True, text=True)
+                        self.assertNotEqual(old.returncode, 0)
+                        self.assertIn("args.output.numel()", old.stderr)
+
     def test_pipeline_double_program_rejects_non_vector_profile(self):
         completed = subprocess.run(
             [
