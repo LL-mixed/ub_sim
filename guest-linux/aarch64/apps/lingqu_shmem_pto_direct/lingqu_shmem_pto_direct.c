@@ -18,9 +18,7 @@
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
 #include "lingqu_shmem_sim.h"
-#ifdef LINGQU_SHMEM_MANAGED_MAPPING
 #include "lingqu_shmem_pto_managed.h"
-#endif
 
 #define PTO_DIRECT_EXPORT_BYTES (2u * 1024u * 1024u)
 #define PTO_DIRECT_HOST_VECTOR_ROWS 128u
@@ -1531,7 +1529,7 @@ static bool metadata_span(uint64_t metadata_iova,
     return true;
 }
 
-static int refresh_fault_metadata_crc(
+int lingqu_shmem_pto_refresh_fault_metadata_crc(
     uint8_t *metadata,
     size_t metadata_capacity,
     uint64_t metadata_iova,
@@ -1796,7 +1794,7 @@ static int inject_fault_case(
     case PTO_DIRECT_FAULT_RETIRED_SEGMENT:
         return -EINVAL;
     }
-    rc = refresh_fault_metadata_crc(
+    rc = lingqu_shmem_pto_refresh_fault_metadata_crc(
         metadata, metadata_capacity, metadata_iova, wire_result);
     if (rc != 0) {
         return rc;

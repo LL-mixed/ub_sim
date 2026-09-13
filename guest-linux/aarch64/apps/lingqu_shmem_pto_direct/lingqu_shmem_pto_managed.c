@@ -26,12 +26,18 @@
 #define VECTOR_BYTES (VECTOR_ELEMENTS * sizeof(float))
 #define METADATA_BYTES 4096U
 #define MAX_ACCESS_THREADS 8U
+#define NEGATIVE_CASES 4U
+
+static const char *const negative_names[NEGATIVE_CASES] = {
+    "bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch"
+};
 
 struct managed_config {
     char connect[128], key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
     uint64_t generation, fingerprint, timeout_ms, submit_timeout_ms;
     uint32_t node, requester, access_threads;
     bool recovery_expected;
+    bool negative_checks;
 };
 
 struct managed_state {
@@ -105,7 +111,7 @@ static int read_config(const char *path, struct managed_config *config)
 {
     const char *names[] = {"connect", "key", "node_id", "generation",
         "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
-        "access_threads"};
+        "access_threads", "negative_checks"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -151,6 +157,8 @@ static int read_config(const char *path, struct managed_config *config)
                     config->submit_timeout_ms = number; break;
             case 8: if (number > MAX_ACCESS_THREADS) goto out;
                     config->access_threads = (uint32_t)number; break;
+            case 9: if (number > 1) goto out;
+                    config->negative_checks = number != 0; break;
             default: goto out;
             }
         }
@@ -158,6 +166,8 @@ static int read_config(const char *path, struct managed_config *config)
     if (ferror(file) || (seen & 127) != 127) goto out;
     if (!valid_connect(config->connect)) goto out;
     config->recovery_expected = (seen & 128) != 0;
+    if (config->negative_checks && (config->recovery_expected ||
+        config->generation > UINT64_MAX - 2 - NEGATIVE_CASES)) goto out;
     if (config->recovery_expected) {
         if (config->submit_timeout_ms >= config->timeout_ms) goto out;
     } else {
@@ -188,6 +198,7 @@ struct vector_check {
     struct managed_state *state;
     unsigned vector;
     const char *path;
+    uint64_t negative_operation;
 };
 
 static int verify_vector_callback(void *opaque,
@@ -202,8 +213,14 @@ static int verify_vector_callback(void *opaque,
     (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
     float expected[VECTOR_ELEMENTS];
-    for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i)
-        expected[i] = expected_value(vector, i);
+    for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i) {
+        if (check->negative_operation && vector >= 2) {
+            const uint32_t sentinel = 0x7fc00001;
+            memcpy(&expected[i], &sentinel, sizeof(sentinel));
+        } else {
+            expected[i] = expected_value(vector, i);
+        }
+    }
     uint64_t checksum = mem_service_provider_checksum64(expected, sizeof(expected));
     int rc = mem_service_provider_channel_wait_range_visible(channel,
         &mapping->binding, vector_offset(vector), VECTOR_BYTES, checksum,
@@ -211,7 +228,12 @@ static int verify_vector_callback(void *opaque,
     if (rc) return rc;
     const void *actual = (const uint8_t *)mapping->base + vector_offset(vector);
     if (memcmp(actual, expected, sizeof(expected))) return -EIO;
-    printf("MANAGED_PTO node=%u path=%s vector=%u version=%u checksum=%016" PRIx64
+    if (check->negative_operation) {
+        printf("MANAGED_PTO_NEGATIVE_DATA node=%u case=%s op_id=%" PRIu64
+            " vector=%u checksum=%016" PRIx64 " bytes=%zu unchanged=pass\n",
+            state->config.node, check->path, check->negative_operation, vector,
+            checksum, sizeof(expected));
+    } else printf("MANAGED_PTO node=%u path=%s vector=%u version=%u checksum=%016" PRIx64
            " bytes=%zu cpu_verify=pass\n", state->config.node, check->path, vector,
            vector < 2 ? 1 : vector, checksum, sizeof(expected));
     return 0;
@@ -219,7 +241,7 @@ static int verify_vector_callback(void *opaque,
 
 static int verify_vector(struct managed_state *state, unsigned vector, const char *path)
 {
-    struct vector_check check = {state, vector, path};
+    struct vector_check check = {state, vector, path, 0};
     return mem_service_mapping_lease_apply(state->cpu_pin, verify_vector_callback, &check);
 }
 
@@ -541,7 +563,39 @@ static int close_mapping(struct managed_state *state)
     return 0;
 }
 
-static int dispatch_vector(struct managed_state *state, unsigned round)
+static int inject_negative(struct managed_state *state, unsigned fault,
+                           uint64_t metadata_iova, struct lingqu_shmem_pto_wire_result *wire)
+{
+    LingquPtoDispatchControlV2 *control = state->metadata;
+    if (!fault || fault > NEGATIVE_CASES || control->memref_count != 3 ||
+        control->scalar_count || control->memref_table_iova < metadata_iova)
+        return -EINVAL;
+    uint64_t offset = control->memref_table_iova - metadata_iova;
+    if (offset > METADATA_BYTES || 3 * sizeof(LingquShmemMemrefV1) > METADATA_BYTES - offset)
+        return -EPROTO;
+    LingquShmemMemrefV1 *refs = (void *)((uint8_t *)state->metadata + offset);
+    switch (fault) {
+    case 1: {
+        uint64_t original = refs[0].opaque_mapping_ref;
+        uint64_t generation = lingqu_pto_obmm_mapping_ref_generation(original);
+        uint64_t changed = generation == LINGQU_PTO_OBMM_MAP_GENERATION_MAX ?
+                           generation - 1 : generation + 1;
+        refs[0].opaque_mapping_ref = lingqu_pto_obmm_mapping_ref_encode(
+            lingqu_pto_obmm_mapping_ref_map_id(original), changed);
+        if (!refs[0].opaque_mapping_ref || refs[0].opaque_mapping_ref == original)
+            return -ERANGE;
+        break;
+    }
+    case 2: control->requester_cna = state->config.requester == 1 ? 2 : 1; break;
+    case 3: refs[2].byte_offset = MANAGED_BYTES - VECTOR_BYTES + 1; break;
+    case 4: refs[2].access = LINGQU_PTO_UB_GM_READ; break;
+    default: return -EINVAL;
+    }
+    return lingqu_shmem_pto_refresh_fault_metadata_crc(state->metadata,
+        METADATA_BYTES, metadata_iova, wire);
+}
+
+static int dispatch_vector_checked(struct managed_state *state, unsigned round, unsigned fault)
 {
     struct lingqu_shmem_memref *memrefs[3] = {0};
     struct lingqu_shmem_pto_memref_arg args[3];
@@ -566,14 +620,18 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
     rc = lingqu_shmem_sim_phys_for_virt(state->metadata, &metadata_iova);
     if (rc) return rc;
     struct lingqu_shmem_pto_request request = {
-        .op_id = state->config.generation + round,
-        .request_id = state->config.generation + round, .callable_id = 1,
+        .op_id = state->config.generation + (fault ? 2 + fault : round),
+        .request_id = state->config.generation + (fault ? 2 + fault : round), .callable_id = 1,
         .artifact_fingerprint = state->config.fingerprint,
         .requester_cna = state->config.requester, .memrefs = args, .memref_count = 3,
     };
     rc = lingqu_shmem_pto_dispatch_prepare(&request, state->metadata, METADATA_BYTES,
         metadata_iova, &slot, &wire, &state->inflight);
     if (rc) return rc;
+    if (fault) {
+        rc = inject_negative(state, fault, metadata_iova, &wire);
+        if (rc) return rc;
+    }
     /* The public lifetime guard must retain every prepared memref. */
     for (unsigned i = 0; i < 3; ++i) {
         rc = lingqu_shmem_mem_service_release(state->leases[i]);
@@ -587,7 +645,14 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
         rc = lingqu_shmem_mem_service_lease_begin(state->leases[i], request.op_id);
         if (rc) return rc;
     }
-    printf("MANAGED_PTO node=1 dispatch=%u op_id=%" PRIu64 " generation=%" PRIu64
+    const char *expected_error = fault == 2 ? LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED :
+                                            LINGQU_PTO_UB_GM_CODE_BAD_MEMREF;
+    if (fault) {
+        printf("MANAGED_PTO_NEGATIVE node=1 case=%s state=submitted op_id=%" PRIu64
+            " mapping_id=%" PRIu64 " expected=%s metadata_crc=0x%08x retained_leases=3\n",
+            negative_names[fault - 1], request.op_id, state->mapping_id,
+            expected_error, wire.metadata_crc32);
+    } else printf("MANAGED_PTO node=1 dispatch=%u op_id=%" PRIu64 " generation=%" PRIu64
         " mapping_id=%" PRIu64 " offsets=%" PRIu64 ",%" PRIu64 ",%" PRIu64
         " tensor_bytes=%zu retained_leases=3 release_guard=pass\n",
         round, request.op_id, state->allocation.generation,
@@ -633,6 +698,20 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
         if (rc) return rc;
     }
     state->completion_unknown = false;
+    if (fault) {
+        if (completion.status != 3 || strcmp(completion.error_code, expected_error) ||
+            lingqu_shmem_pto_endpoint_pending_op(state->endpoint)) return -EPROTO;
+        printf("MANAGED_PTO_NEGATIVE node=1 case=%s state=rejected op_id=%" PRIu64
+            " completion_op=%" PRIu64 " status=%u error=%s pending_op=0\n",
+            negative_names[fault - 1], request.op_id, completion.op_id,
+            completion.status, completion.error_code);
+        rc = release_compute(state);
+        for (unsigned vector = 0; !rc && vector < 4; ++vector) {
+            struct vector_check check = {state, vector, negative_names[fault - 1], request.op_id};
+            rc = mem_service_mapping_lease_apply(state->cpu_pin, verify_vector_callback, &check);
+        }
+        return rc;
+    }
     if (state->config.recovery_expected && !recovered) return -EPROTO;
     printf("MANAGED_PTO node=1 dispatch=%u completion_op=%" PRIu64
         " status=%u error=%s\n", round, completion.op_id, completion.status,
@@ -641,6 +720,11 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
     rc = release_compute(state);
     if (rc) return rc;
     return verify_vector(state, vectors[2], round == 1 ? "tstore-cpu" : "tstore-tload-cpu");
+}
+
+static int dispatch_vector(struct managed_state *state, unsigned round)
+{
+    return dispatch_vector_checked(state, round, 0);
 }
 
 static int run_data(struct managed_state *state)
@@ -667,6 +751,8 @@ static int run_data(struct managed_state *state)
     memset(state->metadata, 0, METADATA_BYTES);
     if (mlock(state->metadata, METADATA_BYTES)) return -errno;
     rc = start_workers(state);
+    for (unsigned fault = 1; !rc && state->config.negative_checks && fault <= NEGATIVE_CASES; ++fault)
+        rc = dispatch_vector_checked(state, 1, fault);
     if (!rc) rc = dispatch_vector(state, 1);
     if (!rc) rc = dispatch_vector(state, 2);
     if (!rc && !state->owner_sealed) rc = probe_owner_close(state, false);
@@ -687,8 +773,9 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     if (validate_only) {
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=cross-page "
             "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
-            " recovery_expected=%u access_threads=%u\n", config.node, MANAGED_BYTES, VECTOR_ELEMENTS,
-            config.submit_timeout_ms, config.recovery_expected ? 1 : 0, config.access_threads);
+            " recovery_expected=%u access_threads=%u negative_checks=%u\n",
+            config.node, MANAGED_BYTES, VECTOR_ELEMENTS, config.submit_timeout_ms,
+            config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0);
         return 0;
     }
     state = calloc(1, sizeof(*state));

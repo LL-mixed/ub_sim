@@ -1936,3 +1936,66 @@ SHA-256 为 `e87a0b05dae7fc84f9930a76fde88d0e9416d4bc2c6c6daf4e4147ffe7ca7a1f`�
 原始材料继续保留，未上传或纳入整份网络审计日志；不可变共用工件引用前批归档。
 下一项为同一 managed backing 的实际 PTO 权限/范围负例，保持原数据路径和严格
 completion/资源判据。完整目标继续进行，尚未达到发布或阶段关闭条件。
+
+## 2026-09-14 续作：managed PTO 预检负例与失败后继续使用（r150 子集通过）
+
+现有 managed-config CLI 增加 `negative_checks=0/1`，默认关闭；host 配置为
+`LINGQU_SHMEM_PTO_NEGATIVE_CHECKS`。开启后在两次正常计算之前依次提交四个
+受控负例，只修改已准备好的测试 metadata，并复用旧 direct 入口的有界 CRC
+重算函数；实际 mapping、provider pin、holder 和 backing 不改变。负例暂不与
+短 submit 等待组合，未知或超时 completion 仍保留全部资源并使本次用例失败。
+
+| r150 负例 | 原 operation ID | 实际失败 completion |
+| --- | --- | --- |
+| 合法编码的错误 mapping generation | `20260914233` | `status=3 pto_ub_gm_bad_memref` |
+| 不匹配的有效 requester CNA | `20260914234` | `status=3 pto_ub_gm_access_denied` |
+| output 超出注册范围 1 byte | `20260914235` | `status=3 pto_ub_gm_bad_memref` |
+| OUTPUT role 配只读 access | `20260914236` | `status=3 pto_ub_gm_bad_memref` |
+
+每次消费原 completion 后才结束 in-flight、注销计算绑定，并核对四个原视图。
+共 16 次数据不变检查通过，A/B checksum 为 `388f57be05a10383` /
+`2da94366c70fbd83`，C/D 的 NaN sentinel checksum 均为 `3625c1e461d4b383`。
+四个负例均在预检阶段结束，没有 binding register、TLOAD/TSTORE 或 fence
+数据回调。随后原 owner、key/generation 和 mapping 上的两个正常操作
+`20260914231/20260914232` 成功，原 C/D oracle、4 LOAD/2 STORE/2 fence、
+零 staging 及两端真实资源回到基线的判据全部通过。
+
+同轮 4 个 CPU 线程执行 795 次只读核对，停止接纳后各线程仍完成原映射读取，
+最终 CPU/compute/in-flight pins、mapping、holder 均归零。runner/container
+exit 0，独立查询无 QEMU 遗留，运行后所有源码/输入及九个 callable 文件的
+SHA 不变。报告为 `dispatches=6 successful_dispatches=2 expected_rejections=4`，
+继续明确 `am2_complete=false`。这只覆盖一个 home、一个对象及预检负例；
+实际只读 mapping 的 PTO 保护、执行阶段权限、home 互换和多请求计算仍未验收。
+
+`--require-negative-checks` 要求完整四次提交/拒绝/数据核对顺序及同一 mapping，
+并交叉检查 QEMU 的八条精确拒绝记录。仅这八条已验证记录被排除出正常成功门禁；
+多余 failure、CRC 错误、binding 或数据回调继续使校验失败。保存和散列原始
+日志字节，解析过滤不会改写原始证据。配置及 parser 负例均有对应测试。
+
+本地轻量测试共 30 项，22 通过、8 项 Linux/设备边界环境跳过；两份应用 C 源码
+的 AArch64 `-Wall -Wextra -Werror -fsyntax-only` 通过。远端 r150 定向 30 项为
+28 通过、2 跳过，7.002 秒；完整根 490 项为 471 通过、5 跳过、5 失败、9 错误，
+52.451 秒。14 个失败 ID 与 r149 精确相同；layout 为 72 通过、原 2 失败，
+1.25 秒。根完整套件仍未全绿，未弱化源码锁或布局检查。
+
+原生 CLI SHA-256 为
+`d017c2233fabfa59442c75e710e46658ccee9e418ea368d9aaae8f10f013108a`，
+rootfs 为 `f990d96e3fcd8585f8e69ed9d50bccd2c1f33611489b4511477d514e72960e3f`。
+同一二进制的 r151 关闭负例开关，以 5 ms submit 等待及 100 ms authorization
+delay 恢复原操作 `20260914241/20260914242`，两次完成均未重复提交。第二次
+pending 时 pin 为 5/3/3，4 个 CPU 线程共 283 次校验，原数据和资源判据继续
+通过，runner/container exit 0、无 QEMU 遗留，源码和工件后验 SHA 不变。
+本批未修改服务 SDK、kernel 或 QEMU，也未运行模型、push 或更新父仓库 pin。
+
+r152 以相同最终 rootfs 运行旧 direct 入口。consumer 原 operation
+`1327819276288001` 成功，producer `lanes_verified=1 completion_acks=1`；
+runner/container exit 0，独立检查无 QEMU 遗留，原始源码、运行输入和 callable
+后验 SHA 均不变。该回归确认共享 CRC helper 后的旧正常入口兼容，不扩大 AM2
+验收范围。
+
+本批归档 `verified-r150-r152-managed-negative-evidence.tar.gz` 已取回本地：
+79 个精确成员、13713714 bytes、权限 0600，gzip、成员顺序、大小及 SHA 均
+核对一致。SHA-256 为
+`01ee26f767f85679d1136d86a85754cb4efa39d280a36395da70ea87d74a5f76`。
+包含源码、完整测试、CLI/rootfs、三轮原始 guest/QEMU 日志及配置、8 个结束
+容器的状态和前后指纹。原始材料保留；整份网络审计日志未纳入或上传。

@@ -100,6 +100,17 @@ r146/r147 已在双 guest 验证 4 个 CPU 线程与两次顺序 PTO dispatch：
 二进制的旧 direct 入口回归。当前仅覆盖单 home、单对象和 cross-page 256-byte
 视图；多请求计算并发、home 互换及 PTO 权限/范围完整矩阵仍待验收，AM2 未完成。
 
+测试专用 `negative_checks=1`（host: `LINGQU_SHMEM_PTO_NEGATIVE_CHECKS=1`）
+在两次正常计算前，按顺序验证 bad-mapping-ref、wrong-requester、oob 和
+role-access-mismatch。只改变已生成的测试 metadata，复用旧入口的有界 CRC
+重算实现；不更改实际 mapping、backing 或生产 memref API。每次必须获得原
+operation 的精确失败 completion，确认所有四个视图保持原值、释放计算 pin，
+随后用同一 owner 继续正常计算。该选项暂不与短等待恢复用例组合；默认 0。
+校验器必须确认四次预期拒绝没有注册 binding 或执行数据回调，保留全部失败
+记录，再核对原有正常计算与资源判据。r150 双 guest 已通过四次精确拒绝、
+16 次数据不变检查及同映射的后续两次正常计算；r151 关闭负例开关后通过原
+completion 延迟恢复。只读页表与执行阶段 TLOAD/TSTORE 权限矩阵保持独立待办。
+
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
 the mapping provider supports it. Linux device/PFN mappings can return

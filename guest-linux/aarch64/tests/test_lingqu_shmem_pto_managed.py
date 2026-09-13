@@ -97,6 +97,20 @@ class ManagedPtoCliTest(unittest.TestCase):
             self.assertEqual(self.run_config({**CONFIG, "access_threads": count}).returncode, 2)
         self.assertEqual(self.run_config(extra="access_threads=4\naccess_threads=4\n").returncode, 2)
 
+    def test_negative_checks_are_opt_in_and_separate_from_timeout_recovery(self):
+        for enabled in ("0", "1"):
+            result = self.run_config({**CONFIG, "negative_checks": enabled})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"negative_checks={enabled}", result.stdout)
+            self.assertIn("network_operations=0", result.stdout)
+        for value in ("2", "-1", "true", "4294967296"):
+            self.assertEqual(self.run_config({**CONFIG, "negative_checks": value}).returncode, 2)
+        self.assertEqual(self.run_config({**CONFIG, "negative_checks": "1",
+                                         "submit_timeout_ms": "5"}).returncode, 2)
+        self.assertEqual(self.run_config({**CONFIG, "negative_checks": "1",
+                                         "generation": str((1 << 64) - 5)}).returncode, 2)
+        self.assertEqual(self.run_config(extra="negative_checks=1\nnegative_checks=1\n").returncode, 2)
+
 
 class ManagedPtoContractTest(unittest.TestCase):
     def test_same_mapping_two_dispatches_and_fail_closed_lifetime(self):
@@ -141,6 +155,8 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_pto_access_threads", run_app)
         self.assertIn('--access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS"', runner)
         self.assertIn("--require-timeout-recovery", runner)
+        self.assertIn("lingqu_shmem_pto_negative_checks", run_app)
+        self.assertIn("--require-negative-checks", runner)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
     def test_runner_rejects_unsupported_access_before_guest_launch(self):

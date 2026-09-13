@@ -34,19 +34,24 @@ def number(row, key):
     return int(row[key], 0)
 
 
+def checksum64(data):
+    checksum = 1469598103934665603
+    for byte in data:
+        checksum = ((checksum ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    return f"{checksum:016x}"
+
+
 def oracle_checksum(vector):
     values = []
     for i in range(64):
         a, b = i % 8 + 1, i % 4 + 1
         c = (a + b + 1) * (a + b + 2)
         values.append((a, b, c, (c + b + 1) * (c + b + 2))[vector])
-    checksum = 1469598103934665603
-    for byte in struct.pack("<64f", *values):
-        checksum = ((checksum ^ byte) * 1099511628211) & ((1 << 64) - 1)
-    return f"{checksum:016x}"
+    return checksum64(struct.pack("<64f", *values))
 
 
-def validate(guests, qemu, require_timeout_recovery=False, access_threads=None):
+def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
+             require_negative_checks=False):
     # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
     guests = [text.replace("\r\n", "\n") for text in guests]
     maps, dispatches = [], []
@@ -134,15 +139,82 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None):
     require(events == [(phase, str(index + 1), request)
                        for index, request in enumerate(requests) for phase in phases],
             "PTO submission, wait and completion order mismatch")
-    validate_callbacks(qemu, maps[0], requests)
+    require(not (require_negative_checks and require_timeout_recovery),
+            "negative checks cannot use short-wait recovery")
+    filtered = validate_negatives(guests, qemu, maps[1], requests, require_negative_checks)
+    validate_callbacks(filtered, maps[0], requests)
     if access_threads is not None:
         validate_owners(guests, maps, requests, require_timeout_recovery, access_threads)
-    return {"status": "pass", "nodes": 2, "objects": 1, "dispatches": 2,
+    return {"status": "pass", "nodes": 2, "objects": 1,
+            "dispatches": 6 if require_negative_checks else 2, "successful_dispatches": 2,
+            "expected_rejections": 4 if require_negative_checks else 0,
             "load_callbacks": 4, "store_callbacks": 2, "fences": 2,
             "scope": "multi-thread-cross-page" if access_threads else "single-thread-cross-page",
             "owner_verified": access_threads is not None, "access_threads": access_threads,
             "timeout_recoveries": len(waits) // 2,
             "am2_complete": False}
+
+
+def validate_negatives(guests, qemu, mapping, requests, required):
+    prefixes = ("MANAGED_PTO_NEGATIVE", "MANAGED_PTO_NEGATIVE_DATA")
+    require(all(not records(guests[0], prefix) for prefix in prefixes),
+            "producer cannot submit negative probes")
+    probes, data = [records(guests[1], prefix) for prefix in prefixes]
+    if not required:
+        require(not probes and not data, "unexpected negative probe evidence")
+        return qemu
+    names = ("bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch")
+    require(len(probes) == 8 and len(data) == 16, "negative probe evidence incomplete")
+    operations = [str(int(requests[0]) + 2 + index) for index in range(4)]
+    errors = ["pto_ub_gm_access_denied" if index == 1 else "pto_ub_gm_bad_memref"
+              for index in range(4)]
+    expected_events = []
+    for index, (name, operation, error) in enumerate(zip(names, operations, errors)):
+        submitted, rejected = probes[2*index:2*index+2]
+        require(submitted["state"] == "submitted" and rejected["state"] == "rejected" and
+                all(row["case"] == name and row["op_id"] == operation and row["node"] == "1"
+                    for row in (submitted, rejected)), "negative probe identity/order mismatch")
+        require(submitted["mapping_id"] == mapping["mapping_id"] and
+                submitted["retained_leases"] == "3" and submitted["expected"] == error and
+                0 <= number(submitted, "metadata_crc") <= 0xffffffff and
+                rejected["completion_op"] == operation and rejected["status"] == "3" and
+                rejected["error"] == error and rejected["pending_op"] == "0",
+                "negative completion or retained mapping mismatch")
+        expected_events += [(name, "submitted", operation), (name, "rejected", operation)]
+        for vector, row in enumerate(data[4*index:4*index+4]):
+            expected = oracle_checksum(vector) if vector < 2 else checksum64(
+                struct.pack("<64I", *([0x7fc00001] * 64)))
+            require(row["node"] == "1" and row["case"] == name and row["op_id"] == operation and
+                    number(row, "vector") == vector and row["checksum"] == expected and
+                    row["bytes"] == "256" and row["unchanged"] == "pass",
+                    "negative probe changed original payload")
+            expected_events.append((name, str(vector), operation))
+    lines = guests[1].splitlines()
+    events, positions = [], []
+    for position, line in enumerate(lines):
+        for prefix in prefixes:
+            rows = records(line, prefix)
+            if rows:
+                row = rows[0]
+                events.append((row["case"], row.get("state", row.get("vector")), row["op_id"]))
+                positions.append(position)
+    first_positive = next(i for i, line in enumerate(lines)
+                          if line.startswith("MANAGED_PTO node=1 dispatch=1 op_id="))
+    mapping_position = next(i for i, line in enumerate(lines)
+                            if line.startswith("MANAGED_PTO ") and "cpu_base=" in line)
+    require(events == expected_events and mapping_position < positions[0] and
+            positions[-1] < first_positive, "negative probes must finish before normal compute")
+    failure_prefixes = ("QEMU_UB_GM_FAILURE_COMPLETION", "QEMU_UB_GM_DISPATCH_REJECT")
+    for prefix in failure_prefixes:
+        rows = records(qemu, prefix)
+        require([row["op"] for row in rows] == operations and
+                [row["code"] for row in rows] == errors and
+                (prefix != failure_prefixes[0] or all(row["status"] == "3" for row in rows)),
+                "QEMU negative completion evidence mismatch")
+    # Remove only the eight validated rejection records. All bindings, callbacks,
+    # unexpected failures and CRC errors remain subject to the ordinary gate.
+    return "\n".join(line for line in qemu.splitlines()
+                     if not any(line.startswith(prefix + " ") for prefix in failure_prefixes))
 
 
 def validate_owners(guests, maps, requests, recovery, threads):
@@ -196,7 +268,7 @@ def validate_owners(guests, maps, requests, recovery, threads):
 
 
 def validate_callbacks(text, mapping, requests):
-    require(not re.search(r"QEMU_UB_GM_.*(?: denied |REJECT |FAILURE_COMPLETION |TIMEOUT )", text),
+    require(not re.search(r"QEMU_UB_GM_.*(?: denied |REJECT |FAILURE_COMPLETION |TIMEOUT |METADATA_CRC_FAIL )", text),
             "QEMU rejected a managed dispatch or callback")
     bound = records(text, "QEMU_UB_GM_GSVA_BIND")
     require(len(bound) == 6, "strict GSVA binding evidence missing")
@@ -262,12 +334,14 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-timeout-recovery", action="store_true")
     parser.add_argument("--access-threads", type=int, choices=range(9))
+    parser.add_argument("--require-negative-checks", action="store_true")
     args = parser.parse_args()
     paths = [args.node_a, args.node_b, args.qemu_b]
     try:
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
-        result = validate(text[:2], text[2], args.require_timeout_recovery, args.access_threads)
+        result = validate(text[:2], text[2], args.require_timeout_recovery,
+                          args.access_threads, args.require_negative_checks)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

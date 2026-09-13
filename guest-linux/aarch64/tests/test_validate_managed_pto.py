@@ -93,7 +93,80 @@ def owned_fixture(recovery=False, threads=4):
     return guests, qemu
 
 
+def negative_fixture():
+    guests, qemu = owned_fixture()
+    rows, failures = [], []
+    for index, name in enumerate(("bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch")):
+        operation = 103 + index
+        error = "pto_ub_gm_access_denied" if index == 1 else "pto_ub_gm_bad_memref"
+        rows += [f"MANAGED_PTO_NEGATIVE node=1 case={name} state=submitted op_id={operation} "
+                 f"mapping_id=9 expected={error} metadata_crc=0x12345678 retained_leases=3",
+                 f"MANAGED_PTO_NEGATIVE node=1 case={name} state=rejected op_id={operation} "
+                 f"completion_op={operation} status=3 error={error} pending_op=0"]
+        for vector in range(4):
+            checksum = validator.oracle_checksum(vector) if vector < 2 else "3625c1e461d4b383"
+            rows.append(f"MANAGED_PTO_NEGATIVE_DATA node=1 case={name} op_id={operation} "
+                        f"vector={vector} checksum={checksum} bytes=256 unchanged=pass")
+        failures += [f"QEMU_UB_GM_FAILURE_COMPLETION op={operation} cq_slot={index} "
+                     f"cq_tail={index+1} status=3 code={error}",
+                     f"QEMU_UB_GM_DISPATCH_REJECT op={operation} error=3 code={error}"]
+    marker = "MANAGED_PTO node=1 dispatch=1 op_id="
+    guests[1] = guests[1].replace(marker, "\n".join(rows) + "\n" + marker)
+    return guests, "\n".join(failures) + "\n" + qemu
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_negative_probes_require_exact_failures_unchanged_data_and_recovery(self):
+        guests, qemu = negative_fixture()
+        result = validator.validate(guests, qemu, access_threads=4, require_negative_checks=True)
+        self.assertEqual((result["dispatches"], result["successful_dispatches"],
+                          result["expected_rejections"]), (6, 2, 4))
+        self.assertFalse(result["am2_complete"])
+        with self.assertRaises(ValueError):
+            validator.validate(guests, qemu, access_threads=4)
+        with self.assertRaises(ValueError):
+            validator.validate(*owned_fixture(), access_threads=4, require_negative_checks=True)
+        for before, after in (("completion_op=103 status=3", "completion_op=999 status=3"),
+                              ("pending_op=0", "pending_op=103"),
+                              ("3625c1e461d4b383", "0000000000000000"),
+                              ("unchanged=pass", "unchanged=fail"),
+                              ("case=oob state=submitted", "case=unknown state=submitted"),
+                              ("retained_leases=3", "retained_leases=0")):
+            with self.subTest(before=before), self.assertRaises(ValueError):
+                validator.validate([guests[0], guests[1].replace(before, after)], qemu,
+                                   access_threads=4, require_negative_checks=True)
+        extras = ("QEMU_UB_GM_METADATA_CRC_FAIL op=103 request=103 expected=0x1 actual=0x2",
+                  "QEMU_UB_GM_FAILURE_COMPLETION op=103 status=3 code=pto_ub_gm_bad_memref",
+                  "QEMU_UB_GM_LOAD request=103 binding=1 addr=0x80000f80 length=256 map=8 generation=9",
+                  "SIM_QEMU_UB_GM_BIND_REGISTER op=103 request=103 bindings=3 requester_cna=0xf002")
+        for extra in extras:
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                validator.validate(guests, qemu + "\n" + extra,
+                                   access_threads=4, require_negative_checks=True)
+        lines = guests[1].splitlines()
+        position = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_NEGATIVE_DATA "))
+        lines.insert(position - 1, lines.pop(position))
+        with self.assertRaises(ValueError):
+            validator.validate([guests[0], "\n".join(lines)], qemu,
+                               access_threads=4, require_negative_checks=True)
+
+    def test_negative_cli_requires_explicit_gate_and_preserves_raw_log_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [pathlib.Path(directory) / name for name in ("a.log", "b.log", "q.log")]
+            guests, qemu = negative_fixture()
+            for path, contents in zip(paths, guests + [qemu]):
+                path.write_bytes(contents.replace("\n", "\r\n").encode())
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]),
+                       "--node-b", str(paths[1]), "--qemu-b", str(paths[2]),
+                       "--access-threads", "4"]
+            self.assertEqual(subprocess.run(command, capture_output=True).returncode, 1)
+            result = subprocess.run(command + ["--require-negative-checks"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["expected_rejections"], 4)
+            self.assertEqual([row["sha256"] for row in report["sources"]],
+                             [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths])
+
     def test_owner_requires_identity_counts_post_seal_reads_and_original_completion(self):
         for recovery in (False, True):
             for threads in (0, 4, 8):
