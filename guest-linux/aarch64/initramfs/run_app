@@ -1240,6 +1240,7 @@ mem_service_object_share_managed() (
       [ "$submit_timeout_ms" = "0" ] || echo "submit_timeout_ms=$submit_timeout_ms"
       echo "access_threads=$(cmdline_value lingqu_shmem_pto_access_threads 0)"
       echo "negative_checks=$(cmdline_value lingqu_shmem_pto_negative_checks 0)"
+      echo "readonly_inputs=$(cmdline_value lingqu_shmem_pto_readonly_inputs 0)"
     } >/tmp/managed-share.pto.conf
     /bin/lingqu_shmem_pto_direct --managed-config /tmp/managed-share.pto.conf \
       --validate-only || exit 1

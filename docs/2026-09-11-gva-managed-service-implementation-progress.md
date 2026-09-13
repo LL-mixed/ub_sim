@@ -2086,3 +2086,82 @@ fingerprint 为 `0x5a1f3644ea189c93`，两个故障 request 为 20260914277/2026
 staticlib、专用 callable 与生成源码、完整测试、父版本对比和 26 个结束容器
 的配置/状态。原始材料继续保留；整份网络审计日志未上传或纳入归档。
 下一项为真实只读 managed mapping 的 CPU/PTO 权限与寿命验证。
+
+## 2026-09-14 续作：只读输入与独立输出的联合访问（r162c-r165 子集通过）
+
+managed CLI 新增 `readonly_inputs=0/1`，host 配置使用
+`LINGQU_SHMEM_PTO_READONLY_INPUTS`；默认仍为原单对象模式。开启后主 key
+保存输入，`<key>-output` 保存结果，两者通过现有 SDK 分别分配、acquire/map
+和接管 holder。consumer 输入只请求 READ，输出请求 READ|WRITE；两 owner
+共用同一 access domain，各自管理 CPU/compute/in-flight pins 和清理状态。
+调用方可保持输入只读，同时让 PTO 把结果写入独立对象，随后直接 TLOAD 原结果。
+没有新增 transport 接口，没有向输出复制 CPU oracle，没有加载模型权重。
+
+CPU fault probe 位于 `lingqu_shmem_pto_cpu_probe.h`，在映射所属进程、工作线程
+启动前执行；临时信号 handler 只接纳目标地址的同步 SIGSEGV/SIGBUS，并恢复
+原 handler。OBMM VMA 不支持 fork 继承或 mprotect，本用例直接创建只读映射。
+SDK CPU/compute WRITE borrow 同时要求 `-EACCES` 且不产生 pin。计算前后对
+整个 64 KiB 输入比较 checksum，包含未参与运算的区域。验收器使用
+`--require-readonly-inputs --access-threads 4`，分别核对输入/输出权限、对象
+generation、CPU 地址、每个 binding 的 backing 和每个 owner 的关闭顺序。
+
+### 实际失败与修复
+
+r162 已完成只读 CPU 故障、六个 PTO 负例及两次正常计算，但输出 owner 的
+关闭探针把预期新借用拒绝 `-ECANCELED` 继续作为函数错误返回。consumer 保留
+资源并报 `rc=-125`，producer 等待 holder drain 后超时；整轮 runner exit 1。
+失败场景的源码、二进制、完整 guest/QEMU 日志均保留，没有计入通过结论。
+
+修复在确认预期拒绝后清除该局部返回值，保留所有 close、pin、错误传播检查。
+新增原生 fixture 直接编译应用实现，内部覆盖普通/pending 的单 owner 与双 owner，
+以及错误 close、inspect、admission、异常 lease、pin 计数和工作线程错误。
+相同 fixture 对 r161 源码触发 `probe_owner_close(input, pending) == expected`
+断言，对修复后源码通过。fixture 初版未初始化替身的输出 view，被 `-Werror`
+拒绝；补齐初始化后通过，未禁用警告。首次旧源码验证任务的封装语法错误另行
+保留，真正的旧源码断言由 r162d 独立任务确认。
+
+### n4-910c1 实际双 guest 结果
+
+| 运行 | 实际结果 |
+| --- | --- |
+| r162c 只读双对象、六负例及恢复 | 输入/输出对象 generation 为 1/2，VA 分别为 `0x700000000000` / `0x700000200000`。CPU 写入在 `0x700000000f80` 收到 signal 11、code 2；CPU/compute 写借用均返回 -13。六次精确 PTO 拒绝、24 次数据不变检查后，原 op `20260914271/20260914272` 正常完成；4 线程完成 4922 次校验 |
+| r163 只读双对象、迟到 completion | 普通工件、5 ms 首次等待、100 ms authorization delay；原 op `20260914311/20260914312` 各恢复一次。第二次等待时输入 owner 保留 1 个 compute/in-flight pin，输出保留 2 个，均拒绝关闭及新借用；4 线程完成 4058 次校验 |
+| r164 默认单对象回归 | `readonly_inputs=0`，同一最终 CLI/rootfs/runner 通过六次预期拒绝及两次正常计算，4 线程完成 1185 次校验，旧单 owner 判据保留 |
+| r165 旧 direct 入口 | consumer 原 op `1327819281530881` 成功；producer `lanes_verified=1 completion_acks=1`，旧入口 runner exit 0 |
+
+r162c/r163 的完整输入 checksum 均保持 `d63638b5e3d6ed83`。各对象的 CPU/PTO
+使用对应的同一 backing，输出 C 的 TSTORE 地址等于下次输入 C 的 TLOAD 地址。
+r162c 为 8 dispatch、6 expected rejection、2 execution rejection、8 LOAD、
+2 STORE、2 fence；r163 为 2 dispatch、2 timeout recovery、4 LOAD、2 STORE、
+2 fence。payload staging 均为 0。输入/输出 owner 依次在已有访问结束后 drain，
+output 先释放、input 后释放，最后销毁共同 domain；两端 kernel region 回到基线。
+四轮成功 runner/container 均 exit 0，逐轮独立检查无 QEMU 遗留，运行输入、源码
+及工件后验 SHA 不变。r162 失败 runner 结束后同样确认无 QEMU 遗留。
+
+### 完整回归与交付边界
+
+r162d Python 定向 40 项：38 通过、2 环境跳过，8.202 秒；完整根 500 项：
+481 通过、5 跳过、5 失败、9 错误，53.667 秒，14 个失败 ID 与 r160 完全一致。
+layout 为 72 通过、原 2 失败，1.26 秒。Rust 完整工作区仍是 43 个顶层目标，
+931 通过、32 失败、16 ignored；失败集合与重新编译的父版本 r156g 精确一致。
+完整套件未全绿；原有源码锁、缺少 Git 元数据和 PTO 工件准备环境的失败继续保留。
+所有完整套件与实际 guest 运行均在远端，测试容器使用缓存镜像和离线依赖。
+
+最终 CLI SHA-256 为
+`444dbda3fd45145fd640bfab4609c8044492d66252e40bbeb89477ce4863c07e`，
+rootfs 为 `ee36cdddc98d3953ea4fc0674dfbb9a3d212b96be438f3f97109e40a16d7a278`。
+QEMU r156、kernel r109、driver r138、服务提交
+`6f090162536f0a92235587b13519306f28f3eaec` 与前一轮一致；专用 r155 和普通 r136
+工件保持各自原 SHA。未 push，未更新父仓库 gitlink/lock，不宣称发布或 fresh-clone
+验收完成。全部网络操作按任务规则登记；没有上传整份网络审计日志。
+
+本轮扩展 A09/A11 的只读权限与双 owner 子集。范围仍是两节点、一个 home、
+两个 64 KiB 对象、256-byte cross-page 视图及两次顺序正常计算，
+`am2_complete=false`。下一项是更大实际分片；home 互换、多请求计算并发、
+现有全局对象引用统一绑定，以及 AM1/AM3/AM4 的其余出口仍待完成。
+
+归档 `verified-r161-r165-readonly-evidence.tar.gz` 已取回本地，141 个精确成员、
+35302902 bytes、权限 0600；gzip、成员顺序、大小及 SHA 均与远端一致。
+SHA-256 为 `fe85145a5d9071eda8529e7a37bfb6ef9f6ffc9bf16d025ab251eb404bf01c62`。
+归档包含首轮失败与四轮成功的原始日志、两版 CLI/rootfs、源码快照、完整测试、
+修复前后的原生回归、23 个结束容器状态以及前后指纹。原始材料继续保留。

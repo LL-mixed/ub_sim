@@ -117,6 +117,58 @@ class ManagedPtoCliTest(unittest.TestCase):
                                          "generation": str((1 << 64) - 8)}).returncode, 2)
         self.assertEqual(self.run_config(extra="negative_checks=1\nnegative_checks=1\n").returncode, 2)
 
+    def test_readonly_inputs_preserve_negative_and_recovery_options(self):
+        for extra in ({}, {"negative_checks": "1"}, {"submit_timeout_ms": "5"},
+                      {"access_threads": "4"}):
+            for node in ("0", "1"):
+                result = self.run_config({**CONFIG, **extra, "node_id": node,
+                                          "readonly_inputs": "1"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("readonly_inputs=1", result.stdout)
+                self.assertIn("network_operations=0", result.stdout)
+        for value in ("2", "-1", "true", "18446744073709551616"):
+            self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": value}).returncode, 2)
+        self.assertEqual(self.run_config(extra="readonly_inputs=1\nreadonly_inputs=0\n").returncode, 2)
+        for length, expected in ((88, 0), (89, 2)):
+            self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": "1",
+                                             "key": "k" * length}).returncode, expected)
+
+
+@unittest.skipUnless(shutil.which("cc"), "native C compiler required for isolated CPU probe")
+class ManagedPtoCpuProbeTest(unittest.TestCase):
+    def test_probe_uses_real_page_protection_and_restores_signal_handlers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "cpu-probe"
+            source = ROOT / "guest-linux/aarch64/tests/lingqu_shmem_pto_cpu_probe_golden.c"
+            built = subprocess.run(["cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",
+                                    "-I", str(APP), str(source), "-o", str(binary)],
+                                   capture_output=True, text=True, timeout=30)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("pto cpu readonly probe golden: pass", result.stdout)
+
+
+@unittest.skipUnless(platform.system() == "Linux" and shutil.which("cc"),
+                     "Linux linker required for isolated managed owner guard fixture")
+class ManagedPtoOwnerGuardTest(unittest.TestCase):
+    def test_expected_admission_rejection_completes_both_owner_guards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "owner-guards"
+            source = ROOT / "guest-linux/aarch64/tests/lingqu_shmem_pto_managed_owner_golden.c"
+            built = subprocess.run([
+                "cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+                "-DLINGQU_SHMEM_MANAGED_MAPPING", "-ffunction-sections", "-fdata-sections",
+                "-Wl,--gc-sections", "-I", str(ROOT / "mem_service"),
+                "-I", str(ROOT / "crates/sim-qemu/include"),
+                "-I", str(ROOT / "guest-linux/aarch64/libs/lingqu_shmem_pto"),
+                str(source), "-o", str(binary),
+            ], capture_output=True, text=True, timeout=30)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("managed PTO owner guards: pass", result.stdout)
+
 
 class ManagedPtoContractTest(unittest.TestCase):
     def test_runner_requires_exact_request_scoped_fault_manifest(self):
@@ -187,6 +239,8 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn("--require-timeout-recovery", runner)
         self.assertIn("lingqu_shmem_pto_negative_checks", run_app)
         self.assertIn("--require-negative-checks", runner)
+        self.assertIn("lingqu_shmem_pto_readonly_inputs", run_app)
+        self.assertIn("--require-readonly-inputs", runner)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
     def test_runner_rejects_unsupported_access_before_guest_launch(self):

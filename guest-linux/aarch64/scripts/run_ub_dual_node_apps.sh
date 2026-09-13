@@ -78,6 +78,7 @@ LINGQU_SHMEM_PTO_TIMEOUT_MS="${LINGQU_SHMEM_PTO_TIMEOUT_MS:-120000}"
 LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS="${LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS:-0}"
 LINGQU_SHMEM_PTO_ACCESS_THREADS="${LINGQU_SHMEM_PTO_ACCESS_THREADS:-0}"
 LINGQU_SHMEM_PTO_NEGATIVE_CHECKS="${LINGQU_SHMEM_PTO_NEGATIVE_CHECKS:-0}"
+LINGQU_SHMEM_PTO_READONLY_INPUTS="${LINGQU_SHMEM_PTO_READONLY_INPUTS:-0}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
 LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
@@ -487,6 +488,7 @@ validate_lingqu_shmem_pto_config() {
     "submit-timeout-ms:$LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS" \
     "access-threads:$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
     "negative-checks:$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS" \
+    "readonly-inputs:$LINGQU_SHMEM_PTO_READONLY_INPUTS" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
     "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
     "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA" \
@@ -545,6 +547,11 @@ validate_lingqu_shmem_pto_config() {
   if (( LINGQU_SHMEM_PTO_ACCESS_THREADS > 8 )) ||
      { (( LINGQU_SHMEM_PTO_ACCESS_THREADS != 0 )) && ! managed_pto_selected; }; then
     echo "access threads require managed cpu-pto and a count in 0..8" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_READONLY_INPUTS > 1 )) ||
+     { (( LINGQU_SHMEM_PTO_READONLY_INPUTS != 0 )) && ! managed_pto_selected; }; then
+    echo "readonly inputs require managed cpu-pto and a value in 0..1" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS != 0 )); then
@@ -694,6 +701,7 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS))
   LINGQU_SHMEM_PTO_ACCESS_THREADS=$((LINGQU_SHMEM_PTO_ACCESS_THREADS))
   LINGQU_SHMEM_PTO_NEGATIVE_CHECKS=$((LINGQU_SHMEM_PTO_NEGATIVE_CHECKS))
+  LINGQU_SHMEM_PTO_READONLY_INPUTS=$((LINGQU_SHMEM_PTO_READONLY_INPUTS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS))
   LINGQU_SHMEM_PTO_CANCEL_AFTER_MS=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS))
@@ -714,6 +722,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_submit_timeout_ms=$LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_access_threads=$LINGQU_SHMEM_PTO_ACCESS_THREADS"
   append_cmdline_if_missing "lingqu_shmem_pto_negative_checks=$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS"
+  append_cmdline_if_missing "lingqu_shmem_pto_readonly_inputs=$LINGQU_SHMEM_PTO_READONLY_INPUTS"
   append_cmdline_if_missing "lingqu_shmem_pto_cancel_after_ms=$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
   append_cmdline_if_missing "lingqu_shmem_pto_fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE"
@@ -3810,6 +3819,9 @@ run_iteration() {
       fi
       if (( LINGQU_SHMEM_PTO_NEGATIVE_CHECKS > 0 )); then
         recovery_args+=(--require-negative-checks)
+      fi
+      if (( LINGQU_SHMEM_PTO_READONLY_INPUTS > 0 )); then
+        recovery_args+=(--require-readonly-inputs)
       fi
       python3 "${SCRIPT_DIR}/validate_managed_pto.py" \
         --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \

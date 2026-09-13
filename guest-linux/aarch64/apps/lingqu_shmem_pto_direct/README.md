@@ -60,7 +60,7 @@ QEMU device configuration; the guest does not guess either identity.
 重复或缺失字段。第一批固定两节点、单 home、64 KiB 对象及 cross-page 的
 `1x64 / 1x64` callable-1 工件，不能把此子集记为完整 AM2 验收。
 
-producer 通过 SDK 分配、acquire 和 managed map，CPU 在原映射初始化 A/B。
+默认单对象模式中，producer 通过 SDK 分配、acquire 和 managed map，CPU 在原映射初始化 A/B。
 consumer 通过同一 key/generation 获取映射，用 provider publish/wait-visible
 完成可见性检查，CPU 逐字节核对输入。两次真实 PTO dispatch 分别计算
 `C = (A+B+1)*(A+B+2)` 与 `D = (C+B+1)*(C+B+2)`；第二次直接 TLOAD 第一次
@@ -137,6 +137,29 @@ r157 使用重建后的桥接通过完整顺序：六次精确拒绝、24 次数
 completion；r159 的旧 direct 入口通过。三轮 runner/container 均 exit 0，
 独立检查无 QEMU 遗留。当前验收仍限于单 home、单对象和两次顺序正常计算，
 `am2_complete=false`。
+
+只读输入扩展（r162c/r163 实际子集已通过）：managed 配置增加
+`readonly_inputs=0/1`，host 使用 `LINGQU_SHMEM_PTO_READONLY_INPUTS`，默认关闭。
+开启时主 key 保存输入，`<key>-output` 保存结果；两对象各自通过 SDK 分配、
+acquire/map 和 owner 管理，consumer 的主对象只请求 READ。CPU 写保护 probe
+在映射所属进程执行，工作线程随后启动；CPU/compute 写借用也必须拒绝。
+probe 实现位于 `lingqu_shmem_pto_cpu_probe.h`，独立原生 fixture 放在既有 `tests/`。
+owner close 的独立 fixture 直接编译应用实现，覆盖两个 owner 的预期拒绝及错误传播。
+原有两次 quadratic dispatch 使用输入对象的 A/B 与输出对象的 C/D，第二次
+TLOAD 第一次原位 TSTORE 的 C。两个 owner 共用 access domain，各自完成
+in-flight/CPU pin、mapping 与 holder 的释放；未知 completion 保留两对象。
+原有负例、延迟恢复及 CPU 线程开关继续适用，逐 binding 校验其所属对象与真实
+backing。CPU/PTO 对同一输入或输出共用 backing；两个对象具有不同的分配身份。
+
+r162 首轮在完成数据计算后暴露输出 owner guard 返回值错误：预期的新借用拒绝
+`-ECANCELED` 被当作整轮错误返回。失败日志保留；修复后原生 fixture 在旧源码
+上复现断言失败、新源码上通过。r162c 完成真实 CPU 写保护、六个 PTO 负例、
+24 次数据不变检查及两次正常计算，4 线程完成 4922 次校验；r163 在两个 owner
+分别保留 1/2 个计算 pin 时恢复原 completion，4 线程完成 4058 次校验。
+两轮均验证完整 64 KiB 输入 checksum 不变、逐对象 backing、零 staging 和资源
+归零。r164 的默认单对象六负例及 r165 的旧 direct 入口回归通过。
+当前仍为单 home、两个 64 KiB 对象、
+256-byte 视图和两次顺序正常计算，`am2_complete=false`。
 
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when

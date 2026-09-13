@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "lingqu_shmem_pto_managed.h"
+#include "lingqu_shmem_pto_cpu_probe.h"
 #include "lingqu_shmem_mem_service.h"
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
@@ -39,6 +40,7 @@ struct managed_config {
     uint32_t node, requester, access_threads;
     bool recovery_expected;
     bool negative_checks;
+    bool readonly_inputs;
 };
 
 struct managed_state {
@@ -53,7 +55,9 @@ struct managed_state {
     struct mem_service_access_domain *domain;
     struct mem_service_mapping_owner *owner;
     struct mem_service_mapping_lease *cpu_pin;
-    uint64_t mapping_id;
+    struct managed_state *output;
+    bool is_output, owns_domain;
+    uint64_t mapping_id, readonly_checksum;
     struct lingqu_shmem_mem_service_context *compute;
     struct lingqu_shmem_mem_service_lease *leases[3];
     struct lingqu_shmem_pto_endpoint *endpoint;
@@ -112,7 +116,7 @@ static int read_config(const char *path, struct managed_config *config)
 {
     const char *names[] = {"connect", "key", "node_id", "generation",
         "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
-        "access_threads", "negative_checks"};
+        "access_threads", "negative_checks", "readonly_inputs"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -160,12 +164,16 @@ static int read_config(const char *path, struct managed_config *config)
                     config->access_threads = (uint32_t)number; break;
             case 9: if (number > 1) goto out;
                     config->negative_checks = number != 0; break;
+            case 10: if (number > 1) goto out;
+                     config->readonly_inputs = number != 0; break;
             default: goto out;
             }
         }
     }
     if (ferror(file) || (seen & 127) != 127) goto out;
     if (!valid_connect(config->connect)) goto out;
+    if (config->readonly_inputs && strlen(config->key) + strlen("-output") >=
+        sizeof(config->key)) goto out;
     config->recovery_expected = (seen & 128) != 0;
     if (config->negative_checks && (config->recovery_expected ||
         config->generation > UINT64_MAX - 2 - NEGATIVE_CASES)) goto out;
@@ -184,6 +192,24 @@ out:
 static uint64_t vector_offset(unsigned vector)
 {
     return (uint64_t)(vector + 1) * 4096 - VECTOR_BYTES / 2;
+}
+
+static const char *object_label(const struct managed_state *state)
+{
+    if (!state->config.readonly_inputs) return "shared";
+    return state->is_output ? "output" : "input";
+}
+
+static uint64_t mapping_access(const struct managed_state *state)
+{
+    return MEM_SERVICE_CLIENT_MAP_READ |
+        ((state->config.readonly_inputs && state->config.node && !state->is_output) ?
+         0 : MEM_SERVICE_CLIENT_MAP_WRITE);
+}
+
+static struct managed_state *vector_state(struct managed_state *state, unsigned vector)
+{
+    return state->output && vector >= 2 ? state->output : state;
 }
 
 static float expected_value(unsigned vector, unsigned element)
@@ -231,17 +257,18 @@ static int verify_vector_callback(void *opaque,
     if (memcmp(actual, expected, sizeof(expected))) return -EIO;
     if (check->negative_operation) {
         printf("MANAGED_PTO_NEGATIVE_DATA node=%u case=%s op_id=%" PRIu64
-            " vector=%u checksum=%016" PRIx64 " bytes=%zu unchanged=pass\n",
+            " vector=%u checksum=%016" PRIx64 " bytes=%zu unchanged=pass object=%s\n",
             state->config.node, check->path, check->negative_operation, vector,
-            checksum, sizeof(expected));
+            checksum, sizeof(expected), object_label(state));
     } else printf("MANAGED_PTO node=%u path=%s vector=%u version=%u checksum=%016" PRIx64
-           " bytes=%zu cpu_verify=pass\n", state->config.node, check->path, vector,
-           vector < 2 ? 1 : vector, checksum, sizeof(expected));
+           " bytes=%zu cpu_verify=pass object=%s\n", state->config.node, check->path, vector,
+           vector < 2 ? 1 : vector, checksum, sizeof(expected), object_label(state));
     return 0;
 }
 
 static int verify_vector(struct managed_state *state, unsigned vector, const char *path)
 {
+    state = vector_state(state, vector);
     struct vector_check check = {state, vector, path, 0};
     return mem_service_mapping_lease_apply(state->cpu_pin, verify_vector_callback, &check);
 }
@@ -252,7 +279,8 @@ static int seed_inputs_callback(void *opaque,
     const struct mem_service_client_mapping_lifecycle *lifecycle,
     const struct mem_service_mapping_access_view *view)
 {
-    (void)opaque; (void)lifecycle; (void)view;
+    struct managed_state *state = opaque;
+    (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
     for (unsigned vector = 0; vector < 4; ++vector) {
         uint8_t *base = (uint8_t *)mapping->base + vector_offset(vector);
@@ -269,8 +297,8 @@ static int seed_inputs_callback(void *opaque,
     uint64_t checksum = mem_service_provider_checksum64(mapping->base, mapping->len);
     int rc = mem_service_provider_channel_publish_range(channel,
         &mapping->binding, 0, mapping->len, checksum, &completion);
-    if (!rc) printf("MANAGED_PTO node=0 inputs_published=1 version=1 bytes=%u\n",
-                    MANAGED_BYTES);
+    if (!rc) printf("MANAGED_PTO node=0 inputs_published=1 version=1 bytes=%u object=%s\n",
+                    MANAGED_BYTES, object_label(state));
     return rc;
 }
 
@@ -279,7 +307,8 @@ static int open_provider(struct managed_state *state)
 {
     struct mem_service_provider_obmm_config config = {
         .instance = "managed-pto", .import_region_bytes = 2097152,
-        .max_remote_mappings = 2, .required_peer_mappings = 1,
+        .max_remote_mappings = state->config.readonly_inputs ? 3 : 2,
+        .required_peer_mappings = 1,
     };
     struct mem_service_provider_registration registration;
     struct mem_service_provider_remote_region local, peers[2];
@@ -334,7 +363,8 @@ static int map_object(struct managed_state *state)
     char idem[80], operation[80];
     int rc;
     if (!state->config.node) {
-        snprintf(idem, sizeof(idem), "pto-alloc-%" PRIu64, state->config.generation);
+        snprintf(idem, sizeof(idem), "pto-alloc-%" PRIu64 "-%u",
+                 state->config.generation, state->is_output ? 1 : 0);
         struct mem_service_client_allocate request = {
             .key = state->config.key, .idempotency_key = idem,
             .session_id = state->session, .size_bytes = MANAGED_BYTES,
@@ -364,15 +394,15 @@ static int map_object(struct managed_state *state)
         snprintf(operation + 8 + 2 * i, 3, "%02x", nonce[i]);
     rc = mem_service_client_map_managed_allocation(&state->client, &state->channel,
         &state->allocation, state->session, operation,
-        MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE,
+        mapping_access(state),
         &state->mapping, &state->lifecycle, &status);
     if (!rc) printf("MANAGED_PTO node=%u key=%s generation=%" PRIu64
         " cpu_base=0x%" PRIx64 " address=0x%" PRIx64 " logical_bytes=%" PRIu64
-        " mapping_id=%" PRIu64 " mapping_handle=%" PRIu64 "\n",
+        " mapping_id=%" PRIu64 " mapping_handle=%" PRIu64 " access=%" PRIu64 " object=%s\n",
         state->config.node, state->mapping.key, state->mapping.generation,
         (uint64_t)(uintptr_t)state->mapping.base, state->allocation.address,
         state->mapping.len, state->lifecycle.transaction.mapping_id,
-        state->mapping.binding.mapping.handle);
+        state->mapping.binding.mapping.handle, state->mapping.flags, object_label(state));
     return rc;
 }
 
@@ -398,18 +428,49 @@ static int adopt_mapping(struct managed_state *state)
     char release_operation[80];
     snprintf(release_operation, sizeof(release_operation), "pto-release-%s", state->session);
     state->mapping_id = state->lifecycle.transaction.mapping_id;
-    int rc = mem_service_access_domain_create(&state->client, &state->channel, &state->domain);
+    int rc = 0;
+    if (!state->domain) {
+        rc = mem_service_access_domain_create(&state->client, &state->channel, &state->domain);
+        if (!rc) state->owns_domain = true;
+    }
     if (!rc) rc = mem_service_mapping_owner_adopt(state->domain, &state->mapping,
         &state->lifecycle, release_operation, MAX_ACCESS_THREADS + 4, &state->owner, &status);
     if (rc) return rc;
     state->held = false; /* This exact holder now belongs to the SDK owner. */
     struct mem_service_mapping_access_view view;
     rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
-        0, MANAGED_BYTES, MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE,
+        0, MANAGED_BYTES, mapping_access(state),
         &state->cpu_pin, &view);
     if (!rc) printf("MANAGED_OWNER node=%u state=adopted generation=%" PRIu64
-        " mapping_id=%" PRIu64 " cpu_pins=1 holder_transferred=1\n",
-        state->config.node, state->allocation.generation, state->mapping_id);
+        " mapping_id=%" PRIu64 " cpu_pins=1 holder_transferred=1 object=%s\n",
+        state->config.node, state->allocation.generation, state->mapping_id, object_label(state));
+    return rc;
+}
+
+static int open_output_object(struct managed_state *state)
+{
+    struct managed_state *output = calloc(1, sizeof(*output));
+    if (!output) return -ENOMEM;
+    state->output = output;
+    output->config = state->config;
+    output->is_output = true;
+    output->client = state->client;
+    output->channel = state->channel;
+    output->domain = state->domain;
+    int length = snprintf(output->config.key, sizeof(output->config.key),
+                          "%s-output", state->config.key);
+    if (length < 0 || (size_t)length >= sizeof(output->config.key)) return -ENAMETOOLONG;
+    length = snprintf(output->session, sizeof(output->session),
+                      "managed-pto-out-%u-%" PRIu64, state->config.node, state->config.generation);
+    if (length < 0 || (size_t)length >= sizeof(output->session)) return -ENAMETOOLONG;
+    int rc = map_object(output);
+    if (!rc) rc = adopt_mapping(output);
+    if (!rc && (output->domain != state->domain || output->owns_domain ||
+        output->mapping_id == state->mapping_id ||
+        output->allocation.address == state->allocation.address)) rc = -EPROTO;
+    if (!rc) printf("MANAGED_OWNER_PAIR node=%u shared_domain=1 input_mapping_id=%" PRIu64
+        " output_mapping_id=%" PRIu64 "\n", state->config.node,
+        state->mapping_id, output->mapping_id);
     return rc;
 }
 
@@ -479,7 +540,8 @@ static int probe_owner_close(struct managed_state *state, bool in_flight)
     if (mem_service_mapping_owner_close(state->owner, &status) != -EBUSY) return -EPROTO;
     int rc = mem_service_mapping_owner_inspect(state->owner, &stats);
     if (rc) return rc;
-    unsigned expected_compute = in_flight ? 3 : 0;
+    unsigned expected_compute = !in_flight ? 0 : !state->config.readonly_inputs ? 3 :
+                                state->is_output ? 2 : 1;
     if (!stats.closing || !stats.mapping_pending || !stats.holder_pending ||
         stats.cpu_pins != 1 + state->workers_started ||
         stats.compute_pins != expected_compute || stats.in_flight_pins != expected_compute)
@@ -489,16 +551,23 @@ static int probe_owner_close(struct managed_state *state, bool in_flight)
     rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
         vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_READ, &blocked, &view);
     if (rc != -ECANCELED || blocked) return -EPROTO;
-    pthread_mutex_lock(&state->workers_lock);
-    state->owner_sealed = true;
-    while (state->workers_observed_seal < state->workers_started && !state->worker_error)
-        pthread_cond_wait(&state->workers_condition, &state->workers_lock);
-    rc = state->worker_error;
-    pthread_mutex_unlock(&state->workers_lock);
+    if (state->is_output) {
+        state->owner_sealed = true;
+        rc = 0;
+    } else {
+        pthread_mutex_lock(&state->workers_lock);
+        state->owner_sealed = true;
+        while (state->workers_observed_seal < state->workers_started && !state->worker_error)
+            pthread_cond_wait(&state->workers_condition, &state->workers_lock);
+        rc = state->worker_error;
+        pthread_mutex_unlock(&state->workers_lock);
+    }
     if (!rc) printf("MANAGED_OWNER node=1 state=closing cpu_pins=%u compute_pins=%u "
-        "in_flight_pins=%u close_guard=pass admission_guard=pass threads=%u operation_id=%" PRIu64 "\n",
+        "in_flight_pins=%u close_guard=pass admission_guard=pass threads=%u operation_id=%" PRIu64
+        " object=%s\n",
         stats.cpu_pins, stats.compute_pins, stats.in_flight_pins, state->workers_started,
-        in_flight ? state->config.generation + 2 : 0);
+        in_flight ? state->config.generation + 2 : 0, object_label(state));
+    if (!rc && state->output) rc = probe_owner_close(state->output, in_flight);
     return rc;
 }
 
@@ -513,8 +582,8 @@ static int stop_workers(struct managed_state *state)
     }
     if (state->worker_error) return state->worker_error;
     printf("MANAGED_OWNER node=1 state=workers-drained threads=%u checks=%u "
-        "after_seal_threads=%u cpu_verify=pass\n", state->workers_started,
-        state->worker_checks, state->workers_observed_seal);
+        "after_seal_threads=%u cpu_verify=pass object=%s\n", state->workers_started,
+        state->worker_checks, state->workers_observed_seal, object_label(state));
     state->workers_started = 0;
     return 0;
 }
@@ -526,6 +595,10 @@ static int close_mapping(struct managed_state *state)
     int rc = release_compute(state);
     if (rc) return rc;
     if (state->workers_started) return -EBUSY;
+    if (state->output) {
+        rc = close_mapping(state->output);
+        if (rc) return rc;
+    }
     if (state->cpu_pin) {
         rc = mem_service_mapping_lease_release(state->cpu_pin);
         if (rc) return rc;
@@ -542,11 +615,15 @@ static int close_mapping(struct managed_state *state)
         if (rc) return rc;
         state->owner = NULL;
         printf("MANAGED_OWNER node=%u state=drained cpu_pins=0 compute_pins=0 "
-               "in_flight_pins=0 mapping_pending=0 holder_pending=0\n", state->config.node);
+               "in_flight_pins=0 mapping_pending=0 holder_pending=0 object=%s\n",
+               state->config.node, object_label(state));
     }
     if (state->domain) {
-        rc = mem_service_access_domain_destroy(state->domain);
-        if (rc) return rc;
+        if (state->owns_domain) {
+            rc = mem_service_access_domain_destroy(state->domain);
+            if (rc) return rc;
+            state->owns_domain = false;
+        }
         state->domain = NULL;
     }
     if (state->lifecycle.pending || state->mapping.binding.mapped) {
@@ -615,7 +692,8 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             .strides = {VECTOR_ELEMENTS, 1},
             .access = i == 2 ? LINGQU_SHMEM_ACCESS_WRITE : LINGQU_SHMEM_ACCESS_READ,
         };
-        rc = lingqu_shmem_mem_service_acquire_owned(state->compute, state->owner,
+        rc = lingqu_shmem_mem_service_acquire_owned(state->compute,
+            vector_state(state, vectors[i])->owner,
             &spec, &memrefs[i], &state->leases[i]);
         if (rc) return rc;
         args[i] = (struct lingqu_shmem_pto_memref_arg) {.memref = memrefs[i], .arg_index = i};
@@ -657,10 +735,14 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             expected_error, wire.metadata_crc32);
     } else printf("MANAGED_PTO node=1 dispatch=%u op_id=%" PRIu64 " generation=%" PRIu64
         " mapping_id=%" PRIu64 " offsets=%" PRIu64 ",%" PRIu64 ",%" PRIu64
-        " tensor_bytes=%zu retained_leases=3 release_guard=pass\n",
+        " tensor_bytes=%zu retained_leases=3 release_guard=pass object_maps=%" PRIu64
+        ",%" PRIu64 ",%" PRIu64 "\n",
         round, request.op_id, state->allocation.generation,
         state->mapping_id, vector_offset(vectors[0]),
-        vector_offset(vectors[1]), vector_offset(vectors[2]), (size_t)VECTOR_BYTES);
+        vector_offset(vectors[1]), vector_offset(vectors[2]), (size_t)VECTOR_BYTES,
+        vector_state(state, vectors[0])->mapping_id,
+        vector_state(state, vectors[1])->mapping_id,
+        vector_state(state, vectors[2])->mapping_id);
     state->completion_unknown = true;
     rc = lingqu_shmem_pto_endpoint_submit(state->endpoint, &slot,
                                           state->config.submit_timeout_ms, &completion);
@@ -710,8 +792,9 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             completion.status, completion.error_code);
         rc = release_compute(state);
         for (unsigned vector = 0; !rc && vector < 4; ++vector) {
-            struct vector_check check = {state, vector, negative_names[fault - 1], request.op_id};
-            rc = mem_service_mapping_lease_apply(state->cpu_pin, verify_vector_callback, &check);
+            struct managed_state *object = vector_state(state, vector);
+            struct vector_check check = {object, vector, negative_names[fault - 1], request.op_id};
+            rc = mem_service_mapping_lease_apply(object->cpu_pin, verify_vector_callback, &check);
         }
         return rc;
     }
@@ -730,20 +813,86 @@ static int dispatch_vector(struct managed_state *state, unsigned round)
     return dispatch_vector_checked(state, round, 0);
 }
 
+static int readonly_cpu_probe(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    struct managed_state *state = opaque;
+    struct lingqu_shmem_pto_cpu_fault fault;
+    (void)channel; (void)lifecycle;
+    if (mapping->flags != MEM_SERVICE_CLIENT_MAP_READ ||
+        view->flags != MEM_SERVICE_CLIENT_MAP_READ) return -EPROTO;
+    uint8_t *target = (uint8_t *)mapping->base + vector_offset(0);
+    int rc = lingqu_shmem_pto_probe_readonly(target, &fault);
+    if (rc) return rc;
+    const volatile float *input = (const volatile float *)target;
+    for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i)
+        if (input[i] != expected_value(0, i)) return -EIO;
+    state->readonly_checksum = mem_service_provider_checksum64(mapping->base, mapping->len);
+    printf("MANAGED_PTO_READONLY node=%u object=input probe=cpu-write-denied "
+        "address=0x%" PRIxPTR " signal=%d code=%d unchanged=pass checksum=%016" PRIx64 "\n",
+        state->config.node, fault.address, fault.signal, fault.code, state->readonly_checksum);
+    return 0;
+}
+
+static int readonly_input_unchanged(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    struct managed_state *state = opaque;
+    (void)channel; (void)lifecycle; (void)view;
+    uint64_t checksum = mem_service_provider_checksum64(mapping->base, mapping->len);
+    if (checksum != state->readonly_checksum) return -EIO;
+    printf("MANAGED_PTO_READONLY node=1 object=input probe=input-unchanged "
+        "bytes=%" PRIu64 " checksum=%016" PRIx64 " unchanged=pass\n", mapping->len, checksum);
+    return 0;
+}
+
+static int probe_readonly_input(struct managed_state *state)
+{
+    const enum mem_service_mapping_access_kind kinds[] = {
+        MEM_SERVICE_MAPPING_ACCESS_CPU, MEM_SERVICE_MAPPING_ACCESS_COMPUTE,
+    };
+    for (unsigned i = 0; i < 2; ++i) {
+        struct mem_service_mapping_lease *blocked = NULL;
+        struct mem_service_mapping_access_view view;
+        int rc = mem_service_mapping_owner_acquire(state->owner, kinds[i],
+            vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_WRITE, &blocked, &view);
+        if (rc != -EACCES || blocked) return -EPROTO;
+    }
+    struct mem_service_mapping_owner_stats stats;
+    int rc = mem_service_mapping_owner_inspect(state->owner, &stats);
+    if (rc || stats.cpu_pins != 1 || stats.compute_pins || stats.in_flight_pins ||
+        stats.closing || !stats.mapping_pending || !stats.holder_pending) return -EPROTO;
+    printf("MANAGED_PTO_READONLY node=1 object=input probe=sdk-write-denied "
+           "cpu_rc=%d compute_rc=%d cpu_pins=1 compute_pins=0 in_flight_pins=0\n",
+           -EACCES, -EACCES);
+    return mem_service_mapping_lease_apply(state->cpu_pin, readonly_cpu_probe, state);
+}
+
 static int run_data(struct managed_state *state)
 {
     int rc = map_object(state);
     if (!rc) rc = adopt_mapping(state);
+    if (!rc && state->config.readonly_inputs) rc = open_output_object(state);
     if (rc) return rc;
     if (!state->config.node) {
-        rc = mem_service_mapping_lease_apply(state->cpu_pin, seed_inputs_callback, NULL);
+        rc = mem_service_mapping_lease_apply(state->cpu_pin, seed_inputs_callback, state);
+        if (!rc && state->output) rc = mem_service_mapping_lease_apply(
+            state->output->cpu_pin, seed_inputs_callback, state->output);
         if (!rc) rc = verify_vector(state, 2, "remote-tstore-cpu");
         if (!rc) rc = verify_vector(state, 3, "remote-tstore-tload-cpu");
         if (!rc) rc = wait_allocation(state, "active", true);
+        if (!rc && state->output) rc = wait_allocation(state->output, "active", true);
         return rc;
     }
     rc = verify_vector(state, 0, "cpu-cpu");
     if (!rc) rc = verify_vector(state, 1, "cpu-cpu");
+    if (!rc && state->config.readonly_inputs) rc = probe_readonly_input(state);
     if (!rc) rc = lingqu_shmem_mem_service_open_managed(&state->compute);
     struct lingqu_shmem_pto_endpoint_info endpoint_info;
     if (!rc) rc = lingqu_shmem_pto_endpoint_open(&state->endpoint, &endpoint_info);
@@ -758,8 +907,22 @@ static int run_data(struct managed_state *state)
         rc = dispatch_vector_checked(state, 1, fault);
     if (!rc) rc = dispatch_vector(state, 1);
     if (!rc) rc = dispatch_vector(state, 2);
+    if (!rc && state->config.readonly_inputs) rc = mem_service_mapping_lease_apply(
+        state->cpu_pin, readonly_input_unchanged, state);
     if (!rc && !state->owner_sealed) rc = probe_owner_close(state, false);
     if (!rc) rc = stop_workers(state);
+    return rc;
+}
+
+static int retire_object(struct managed_state *state)
+{
+    enum mem_service_wire_status status;
+    char idem[80];
+    snprintf(idem, sizeof(idem), "pto-retire-%" PRIu64 "-%u",
+             state->config.generation, state->is_output ? 1 : 0);
+    int rc = mem_service_client_retire_object(&state->client, state->config.key, idem, true,
+        state->allocation.generation, &state->allocation, &status);
+    if (!rc) rc = wait_allocation(state, "retired", false);
     return rc;
 }
 
@@ -776,9 +939,10 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     if (validate_only) {
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=cross-page "
             "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
-            " recovery_expected=%u access_threads=%u negative_checks=%u\n",
+            " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u\n",
             config.node, MANAGED_BYTES, VECTOR_ELEMENTS, config.submit_timeout_ms,
-            config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0);
+            config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0,
+            config.readonly_inputs ? 1 : 0);
         return 0;
     }
     state = calloc(1, sizeof(*state));
@@ -804,13 +968,9 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     rc = close_mapping(state);
     if (rc) goto failed;
     if (!config.node) {
-        enum mem_service_wire_status status;
-        char idem[80];
         stage = "retire";
-        snprintf(idem, sizeof(idem), "pto-retire-%" PRIu64, config.generation);
-        rc = mem_service_client_retire_object(&state->client, config.key, idem, true,
-            state->allocation.generation, &state->allocation, &status);
-        if (!rc) rc = wait_allocation(state, "retired", false);
+        if (state->output) rc = retire_object(state->output);
+        if (!rc) rc = retire_object(state);
         if (rc) goto failed;
     }
     stage = "compute-close";
@@ -830,10 +990,12 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     rc = mem_service_provider_obmm_endpoint_close_checked(&state->provider);
     if (rc) goto failed;
     printf("MANAGED_PTO_RESULT node=%u status=pass key=%s generation=%" PRIu64
-        " mapping_closed=1 holder_released=1 compute_leases=0\n",
-        config.node, config.key, state->allocation.generation);
+        " mapping_closed=1 holder_released=1 compute_leases=0 objects=%u readonly_inputs=%u\n",
+        config.node, config.key, state->allocation.generation,
+        state->output ? 2 : 1, config.readonly_inputs ? 1 : 0);
     pthread_cond_destroy(&state->workers_condition);
     pthread_mutex_destroy(&state->workers_lock);
+    free(state->output);
     free(state);
     return 0;
 failed:

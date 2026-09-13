@@ -125,7 +125,158 @@ def negative_fixture():
     return guests, "\n".join(failures) + "\n" + qemu
 
 
+def readonly_fixture(recovery=False, negative=False, threads=4):
+    """Two synthetic object traces; never a substitute for actual guest evidence."""
+    guests, qemu = negative_fixture() if negative else owned_fixture(recovery, threads)
+    output_home, output_base = "0x700000200000", 0x80200000
+    for node, text in enumerate(guests):
+        converted, deferred = [], {}
+        for line in text.splitlines():
+            if line.startswith("MANAGED_PTO "):
+                row = validator.records(line, "MANAGED_PTO")[0]
+                if "cpu_base" in row:
+                    converted.append(line + f" access={1 if node else 3} object=input")
+                    output_map = line.replace("key=k ", "key=k-output ").replace(
+                        "0x700000000000", output_home).replace("generation=7", "generation=8").replace(
+                        "mapping_id=9", "mapping_id=10").replace("mapping_handle=8", "mapping_handle=18")
+                    continue
+                if "cpu_verify" in row:
+                    vector = int(row["vector"])
+                    line += " object=" + ("input" if vector < 2 else "output")
+                    if node == 1 and vector >= 2:
+                        deferred[vector-1] = line
+                        continue
+                if "op_id" in row:
+                    line += " object_maps=" + ("9,9,10" if row["dispatch"] == "1" else "10,9,10")
+            if line.startswith("MANAGED_OWNER "):
+                row = validator.records(line, "MANAGED_OWNER")[0]
+                if row["state"] == "adopted":
+                    converted += [line + " object=input", output_map + " access=3 object=output",
+                        line.replace("generation=7", "generation=8").replace("mapping_id=9", "mapping_id=10") +
+                        " object=output", f"MANAGED_OWNER_PAIR node={node} shared_domain=1 "
+                        "input_mapping_id=9 output_mapping_id=10"]
+                    if node == 0:
+                        converted += [f"MANAGED_PTO node=0 inputs_published=1 version=1 bytes=65536 object={obj}"
+                                      for obj in ("input", "output")]
+                    continue
+                if row["state"] == "closing":
+                    converted += [line.replace("compute_pins=3", "compute_pins=1").replace(
+                        "in_flight_pins=3", "in_flight_pins=1") + " object=input",
+                        line.replace(f"threads={threads}", "threads=0").replace(
+                        f"cpu_pins={threads+1}", "cpu_pins=1").replace("compute_pins=3", "compute_pins=2").replace(
+                        "in_flight_pins=3", "in_flight_pins=2") + " object=output"]
+                    continue
+                if row["state"] == "drained":
+                    converted.append(line + " object=output")
+                line += " object=input"
+            if line.startswith("MANAGED_PTO_NEGATIVE_DATA "):
+                vector = int(validator.records(line, "MANAGED_PTO_NEGATIVE_DATA")[0]["vector"])
+                line += " object=" + ("input" if vector < 2 else "output")
+            if line.startswith("MANAGED_PTO_RESULT "):
+                line += " objects=2 readonly_inputs=1"
+            converted.append(line)
+            if node == 1 and "cpu_verify=" in line and "vector=1 " in line:
+                converted += ["MANAGED_PTO_READONLY node=1 object=input probe=sdk-write-denied "
+                    "cpu_rc=-13 compute_rc=-13 cpu_pins=1 compute_pins=0 in_flight_pins=0",
+                    "MANAGED_PTO_READONLY node=1 object=input probe=cpu-write-denied "
+                    "address=0x700000000f80 signal=11 code=2 unchanged=pass checksum=0123456789abcdef"]
+            if node == 1 and line.startswith("MANAGED_PTO ") and "completion_op=" in line:
+                round_ = int(validator.records(line, "MANAGED_PTO")[0]["dispatch"])
+                converted.append(deferred[round_])
+                if round_ == 2:
+                    converted.append("MANAGED_PTO_READONLY node=1 object=input probe=input-unchanged "
+                                     "bytes=65536 checksum=0123456789abcdef unchanged=pass")
+        guests[node] = "\n".join(converted)
+    converted = []
+    for line in qemu.splitlines():
+        parts = line.split()
+        row = dict(part.split("=", 1) for part in parts[1:])
+        output_binding = row.get("binding") == "3" or (row.get("request") == "102" and row.get("binding") == "1")
+        if output_binding:
+            if parts[0] == "QEMU_UB_GM_GSVA_BIND":
+                row.update(segment="0x7", home_va=output_home, epoch="8", lease_epoch="9", backing_token="10")
+            for key in ("addr", "local"):
+                if key in row:
+                    row[key] = hex(int(row[key], 0) - 0x80000000 + output_base)
+            if "map" in row:
+                row.update(map="18", generation="19")
+        converted.append(parts[0] + " " + " ".join(f"{key}={value}" for key, value in row.items()))
+    return guests, "\n".join(converted)
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_readonly_objects_preserve_all_compute_negative_and_recovery_gates(self):
+        for recovery, negative, threads in ((False, False, 0), (False, False, 4),
+                                            (True, False, 4), (False, True, 4)):
+            guests, qemu = readonly_fixture(recovery, negative, threads)
+            with self.subTest(recovery=recovery, negative=negative, threads=threads):
+                result = validator.validate(guests, qemu, recovery, threads, negative, True)
+                self.assertEqual(result["objects"], 2)
+                self.assertTrue(result["readonly_inputs_verified"])
+                self.assertTrue(result["owner_verified"])
+                self.assertFalse(result["am2_complete"])
+                with self.assertRaises(ValueError):
+                    validator.validate(guests, qemu, recovery, threads, negative)
+
+    def test_readonly_gate_rejects_unproved_permissions_backing_and_owner_lifetime(self):
+        guests, qemu = readonly_fixture(negative=True)
+        for before, after in (("access=1 object=input", "access=3 object=input"),
+                              ("cpu_rc=-13", "cpu_rc=0"),
+                              ("compute_rc=-13", "compute_rc=0"),
+                              ("signal=11 code=2", "signal=11 code=0"),
+                              ("address=0x700000000f80", "address=0x700000200f80"),
+                              ("bytes=65536 checksum=0123456789abcdef", "bytes=65536 checksum=0000000000000000"),
+                              ("object_maps=9,9,10", "object_maps=9,9,9"),
+                              ("shared_domain=1", "shared_domain=0"),
+                              ("cpu_pins=1 holder_transferred=1 object=output",
+                               "cpu_pins=0 holder_transferred=1 object=output"),
+                              ("objects=2", "objects=1")):
+            self.assertIn(before, guests[1])
+            with self.subTest(before=before), self.assertRaises(ValueError):
+                validator.validate([guests[0], guests[1].replace(before, after)], qemu,
+                                   access_threads=4, require_negative_checks=True, require_readonly_inputs=True)
+        for before, after in (("GSVA_BIND request=107 binding=3 segment=0x7", "GSVA_BIND request=107 binding=3 segment=0x6"),
+                              ("LOAD request=102 binding=1 addr=0x80202f80", "LOAD request=102 binding=1 addr=0x80002f80"),
+                              ("STORE request=101 binding=3 addr=0x80202f80", "STORE request=101 binding=3 addr=0x80002f80"),
+                              ("home_va=0x700000200000", "home_va=0x700000000000")):
+            self.assertIn(before, qemu)
+            with self.subTest(before=before), self.assertRaises(ValueError):
+                validator.validate(guests, qemu.replace(before, after), access_threads=4,
+                                   require_negative_checks=True, require_readonly_inputs=True)
+        lines = guests[1].splitlines()
+        for prefix in ("MANAGED_PTO_READONLY ", "MANAGED_OWNER_PAIR "):
+            line = next(row for row in lines if row.startswith(prefix))
+            for changed in (guests[1].replace(line, ""), guests[1] + "\n" + line):
+                with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                    validator.validate([guests[0], changed], qemu, access_threads=4,
+                                       require_negative_checks=True, require_readonly_inputs=True)
+        line = next(row for row in lines if "probe=input-unchanged" in row)
+        with self.assertRaises(ValueError):
+            validator.validate([guests[0], guests[1].replace(line, "") + "\n" + line], qemu,
+                               access_threads=4, require_negative_checks=True, require_readonly_inputs=True)
+        delayed, delayed_qemu = readonly_fixture(recovery=True)
+        for before, after in (("compute_pins=1 in_flight_pins=1", "compute_pins=3 in_flight_pins=3"),
+                              ("compute_pins=2 in_flight_pins=2", "compute_pins=3 in_flight_pins=3")):
+            with self.subTest(before=before), self.assertRaises(ValueError):
+                validator.validate([delayed[0], delayed[1].replace(before, after)], delayed_qemu,
+                                   True, 4, False, True)
+
+    def test_readonly_cli_keeps_raw_source_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [pathlib.Path(directory) / name for name in ("a.log", "b.log", "q.log")]
+            guests, qemu = readonly_fixture(negative=True)
+            for path, data in zip(paths, guests + [qemu]):
+                path.write_bytes(data.replace("\n", "\r\n").encode())
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]),
+                       "--node-b", str(paths[1]), "--qemu-b", str(paths[2]),
+                       "--require-readonly-inputs", "--require-negative-checks", "--access-threads", "4"]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertTrue(report["readonly_inputs_verified"])
+            for row, path in zip(report["sources"], paths):
+                self.assertEqual(row["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
     def test_execution_negatives_require_runtime_registration_and_zero_writes(self):
         guests, qemu = negative_fixture()
         mutations = (

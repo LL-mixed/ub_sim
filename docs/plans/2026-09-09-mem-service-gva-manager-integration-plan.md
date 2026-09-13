@@ -264,6 +264,21 @@ in-flight。close 先停止新接纳，已有访问退出后才 unmap/release；
 撤销仍需各自的可见性与恢复协议。实现出口同时要求原生并发 fixture 和真实
 双节点 CLI 验证，现有单线程结果不能覆盖它。
 
+只读联合验收沿用 managed CLI，增加显式 `readonly_inputs=0/1`，默认关闭。
+开启时输入与输出使用两个真实 managed 对象，各节点分别 acquire/map；consumer
+对输入请求 READ，对输出请求 READ|WRITE。OBMM 不支持 mprotect 或 VMA 拆分，
+直接创建只读映射；CPU fault probe 在映射所属进程、工作线程启动前完成，核对
+实际 fault 地址、同步信号及原数据不变，不用 fork 子进程替代页保护证据。
+两个 owner 共用同一 access domain，但 holder、CPU/compute/in-flight pins 和
+清理状态各自计数。A/B 从输入对象 TLOAD，C/D 在输出对象 TSTORE，第二次计算
+直接 TLOAD 原 C；逐 binding 核对 CPU/PTO 对应对象及 backing，不要求两个
+不同对象具有相同 backing。只读输入的 CPU/compute 写借用必须拒绝，既有执行
+权限负例及迟到 completion 恢复仍按独立开关验证，两对象全部 drain 后才退役。
+r162c 已通过上述只读页表、六次 PTO 拒绝及后续两次正常计算；r163 已通过
+双 owner 各自保留 1/2 个计算 pin 的原 completion 恢复与资源归零。r162 的
+guard 返回值失败及修复前后原生回归均保留。此子集不关闭多 home、多请求并发
+及更大分片的阶段出口，详细来源和边界见实施记录。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。
@@ -414,7 +429,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
-| AM2 | 进行中：四种读写组合、原 completion 恢复、四线程 CPU/shared owner，以及 r157 的四个预检/两个执行权限负例子集通过；完整阶段未完成 | 只读 mapping、home 互换、多请求计算并发及更大分片矩阵 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：六次精确拒绝及 24 次数据不变检查之后，同一 backing 两次正常计算成功；修复完成错误后的 callable 重复注册，r158 延迟恢复、r159 旧入口回归通过，零 staging、owner drain 和资源判据保留；A07-A11 整项仍未关闭 |
+| AM2 | 进行中：四种读写组合、原 completion 恢复、四线程 shared owner，以及 r162c/r163 的只读输入与独立可写输出子集通过；完整阶段未完成 | home 互换、多请求计算并发、更大分片及现有全局对象引用绑定 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：CPU 页保护与 SDK 写借用拒绝通过；六次 PTO 精确拒绝、24 次数据不变检查后两次正常计算成功，双 owner 分别计量 pending pin 并恢复原 completion；r164 单对象回归、零 staging 和资源判据保留；A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
 

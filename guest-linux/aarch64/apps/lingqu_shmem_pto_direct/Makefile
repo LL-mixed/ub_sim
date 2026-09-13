@@ -26,6 +26,7 @@ CPPFLAGS += \
 
 ifeq ($(MANAGED),1)
 MEM_SERVICE_COMPONENT := $(MEM_SERVICE_ROOT)/components/mem_service
+HEADERS += lingqu_shmem_pto_managed.h lingqu_shmem_pto_cpu_probe.h
 SOURCES += \
 	lingqu_shmem_pto_managed.c \
 	$(LIB_DIR)/lingqu_shmem_mem_service.c \
@@ -43,7 +44,7 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES)
+$(TARGET): $(SOURCES) $(HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(OBMM_CFLAGS) \
 		$(SOURCES) $(OBMM_SRCS) $(LDFLAGS) $(OBMM_LDLIBS) -o $@
 
