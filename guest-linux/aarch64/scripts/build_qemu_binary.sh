@@ -107,6 +107,7 @@ qemu_source_signature() {
         "$SRC_DIR/tests/unit/test-ub-async-load.c" \
         "$SRC_DIR/tests/unit/test-linqu-bridge-lock.c" \
         "$SRC_DIR/tests/unit/test-gsva-route-lifetime.c" \
+        "$SRC_DIR/tests/unit/test-gsva-retire.c" \
         "$SRC_DIR/tests/unit/meson.build" \
         "$SRC_DIR/include/hw/ub/linqu_bridge_lock.h"
     } |
@@ -509,7 +510,8 @@ obmm_tests_ready() {
      -x "$BUILD_DIR/tests/unit/test-ub-void-response-policy" &&
      -x "$BUILD_DIR/tests/unit/test-ub-async-load" &&
      -x "$BUILD_DIR/tests/unit/test-linqu-bridge-lock" &&
-     -x "$BUILD_DIR/tests/unit/test-gsva-route-lifetime" ]]
+     -x "$BUILD_DIR/tests/unit/test-gsva-route-lifetime" &&
+     -x "$BUILD_DIR/tests/unit/test-gsva-retire" ]]
 }
 
 TEST_TARGETS_READY=1
@@ -561,6 +563,7 @@ if (( BUILD_OBMM_TESTS == 1 )); then
     tests/unit/test-ub-async-load
     tests/unit/test-linqu-bridge-lock
     tests/unit/test-gsva-route-lifetime
+    tests/unit/test-gsva-retire
   )
 fi
 echo "[build_qemu_binary] building ${BUILD_TARGETS[*]}" >&2

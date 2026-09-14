@@ -16,7 +16,10 @@ class VmShutdownLifetimeTests(unittest.TestCase):
         )[0]
         self.assertIn('"$SRC_DIR/system/cpus.c"', signature)
         self.assertIn('"$SRC_DIR/tests/unit/test-gsva-route-lifetime.c"', signature)
+        self.assertIn('"$SRC_DIR/tests/unit/test-gsva-retire.c"', signature)
         self.assertIn('"$SRC_DIR/tests/unit/meson.build"', signature)
+        self.assertIn('-x "$BUILD_DIR/tests/unit/test-gsva-retire"', builder)
+        self.assertIn('\n    tests/unit/test-gsva-retire\n', builder)
 
     def test_shutdown_and_normal_stop_lifetimes(self):
         compiler = shutil.which("cc")

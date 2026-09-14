@@ -3436,3 +3436,61 @@ guest 的 init 随失败退出产生相应 panic，原始失败保留，未过�
 SHA-256：`6f3888583385bdad527d5ef1cbb4703ddf0f6ec04d710259f96057619f07e28e`。
 原作业结束后未发现遗留 QEMU。首个幂等历史限制已被实际越过，地址重用、
 完整恢复及全部后续验收仍需继续实现；不扩大 aperture 或改低百轮要求。
+
+### r274 起：退役协调端 ACK 与超时隔离
+
+源码检查确认 QEMU `gsva_coh_retire_tx` 原来在未配置 hold-pending 时，发送
+RETIRE 后立即清空待确认 holder；TIMEOUT 也可以经再次 retire 转为 RETIRED。
+这是地址复用完成证明的缺口。当前修订要求逐 holder 确认，发送失败或未启用
+传输均保持 pending；超时后禁止 retire 和普通 object-remove 清除隔离状态。
+
+五类事务 ACK 共用校验入口，核对版本、消息类型、目标节点、事务类型及成功状态。
+完成计数前再核对完整 key（包含 epoch、size、flags）、sequence 和待确认 holder。
+旧 epoch、错误事务类型、重复 ACK 或超时后的迟到 ACK 均不能完成退役。
+ACK 到达时独立检查超时，不依赖定时查询先触发。该改动通过现有 GSVA event/
+query CLI 路径消费，没有增加服务 core 的传输依赖。
+
+r274 首次构建因新增测试桩缺少 access 参数失败；r276 修正签名后通过项目
+`build_qemu_binary.sh --with-obmm-tests` 重建生产 QEMU，七个底层测试程序共
+44 项全部通过，包括新增四项退役事务测试。测试直接链接生产 coherence 源码，
+模拟传输投递，覆盖 16 种错误应答、两个 holder（含 CNA=100）、重复 ACK、
+发送失败、禁用传输、ACK 缺失及迟到应答；无远端 holder 的退役仍可完成。
+容器 13:51:17 至 13:51:34 UTC，exit 0、无 OOM。单测日志 SHA-256：
+`f822ad03478b0c0f3c7115fb6c0c886ad0d8a01d51f18bd5c7c38b96f94c9ce8`。
+QEMU binary SHA-256：
+`ce6ade3b339b58a4bdd2aeae7752a25f27752d668ab2d8e4570dad58758e2c6d`。
+
+r275/r277 的全量 Python 作业在准备阶段因只读 QEMU 子模块目录解包失败，
+未执行到完整测试集，失败记录保留。已按真实挂载布局将 QEMU 修改作为只读
+文件挂载，并只解包父仓库文件；后续回归结果单独记录，不覆盖失败轮次。
+
+以上测试只证明协调端接受完成回执的规则。接收端 RETIRE 仍需接入真实的
+CPU/PTO 排空、映射撤销、fence/TLB 完成，再与 worker 的持久化清理和 kernel
+retire 绑定；worker 仍禁用地址复用。不能据此关闭 AM3 或宣称百轮通过。
+
+r279 的父仓库 guest Python 全集已执行：543 个唯一用例，538 通过、5 项
+交叉编译器环境跳过、零失败/错误/加载错误，容器 exit 0、无 OOM。
+执行结果清单与 r270 相同，SHA-256：
+`8acc08c79dfc9470ad2073eb388acf723174bef0cc4751724fa379652c76c23a`。
+QEMU 文件通过只读挂载使用本轮源码，父仓库两份构建/测试文件使用 r276 overlay。
+
+r278 在该 QEMU binary 上完成真实两 guest、64 KiB、两轮 `cpu-reference`
+回归；保持 16 MiB aperture、64 项幂等表、seed=41、独立服务 `3e5b35b`、
+kernel r109 与 r272 initramfs。验证器确认四个 V2 视图（offset=128/4224）、
+generation=1/4、完整 checksum、真实 route 和六个退役 allocation；原容器
+13:54:45 至 13:55:00 UTC，exit 0、无 OOM，结束后未发现遗留 QEMU。
+原日志归档 `gsva-retire-evidence-r278.tar.gz` SHA-256：
+`eba943b1fb2638853c81d9c719bf38f2db90bdfc84d147a5048fb5d7f1505c16`。
+这是已有两轮正常流程在新 QEMU 上的回归，不代替 r273 的三轮失败、真实
+跨 holder retire 排空或百轮地址复用验收。
+
+r280 完整 Rust workspace 原作业 13:54:48 至 14:03:37 UTC，exit 0、无 OOM。
+逐个核对 43 个外层 harness 的最终结果：963 通过、16 ignored、零失败、零
+filtered，清单与 r271 完全一致；未计入内嵌测试进程的重复结果。日志 SHA-256：
+`2c39efc6f5300dcdda3e762db535d9732820583d8ec9057ebab099ba2b66cb08`。
+ignored 和 Python 的环境跳过均不算通过。
+
+QEMU 三个源码/测试文件已本地提交为 `924148cf5c`，未推送；父仓库未更新
+QEMU gitlink。上述运行使用明确分层挂载的任务源码和构建产物，不能当作
+当前已发布平台 pins 的 fresh-clone 验收。`mem_service` 保持已发布并锁定的
+`3e5b35b`，本批没有新增独立服务改动或任何仓库推送。

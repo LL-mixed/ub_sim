@@ -163,6 +163,15 @@ used=59、cleanup_reserved=4、available=1，无法接纳需要四条应答空�
 缓存回收/重放接入、地址重用及真实百轮仍待完成。子仓库尚未推送，父仓库
 gitlink/lock 仍固定 `d9b60ef`，不消费该未发布候选；详见实施记录 r260-r262。
 
+最新状态（r263-r280；上文各轮状态保留为历史）：历史存储已接入 daemon，
+独立服务 `3e5b35b` 已按授权发布，父仓库 gitlink/lock 已一致锁定。r273 已
+越过幂等表限制，第三轮仍因地址容量失败。QEMU 退役协调端现等待精确的逐
+holder 成功 ACK，并保留超时隔离，本地提交 `924148cf5c`；44 项底层测试、
+r278 真实双 guest 两轮正常回归通过。r279 的 Python 全集为 538 通过、5 跳过；
+r280 的 Rust 全集为 963 通过、16 ignored，均零失败。QEMU 未推送、平台
+gitlink 未更新；接收端排空、地址复用、百轮压力及所有后续阶段仍未完成。
+详细来源、失败记录和验证边界见实施记录的 r274-r280 小节。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
@@ -488,6 +497,10 @@ W5 用新分配/访问链路完成连续 decode。
   SDK 及模型运行时只消费中立描述符，不新增 model-specific GSVA 管理。
 - 先实现不依赖重启的 rotate、revoke、retire、reuse；保持地址清理与 epoch
   更新的顺序。确认对未知状态拒绝访问，禁止静默兼容旧身份。
+- retire 协调端有远端 holder 时必须等待逐节点、同 key/epoch/sequence 的成功
+  ACK；发送成功、缺 ACK、失败 ACK 和超时均不能提交退役。TIMEOUT 保留为
+  隔离状态，禁止通过再次 retire 将其转换为可复用状态。接收端 ACK 还须关联
+  实际映射撤销、CPU/PTO 排空和 fence/TLB 完成；协调端单测不证明接收端完成。
 - 将 W5 prefix/KV/hidden 对象绑定到同一对象生命周期；保留 terminal reader
   发布序列、metadata refresh、payload refresh 和 checksum 检查。
 - 显式声明支持的节点数；移除本次路径中新出现的 8-node 假设。已有 helper
