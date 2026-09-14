@@ -2709,3 +2709,60 @@ bytes，包含前后源码、完整分片日志、安装/契约/sanitizer 输出
 写入或 checksum 正确。V2 reader mapping、provider 发布/可见性闭环、W5、
 AM3 重启身份域及回收仍待实现与实际验证，AM2/AM3/总目标保持未完成。
 未 push，父仓库 gitlink/lock 未更新，本批源码未用于根仓库 guest 构建。
+
+## 2026-09-14 续作：严格 provider 固定地址子区间
+
+reader mapping 接入核对发现：生产 OBMM 已能建立子区间的保护视图，但 map
+入口拒绝固定地址请求的非零 offset。中立 channel 又要求返回 base 精确等于
+requested_address，两者使 V2 allocation 中间视图无法接入。
+
+本批将严格 descriptor 的固定地址检查改为
+`requested_address == remote_uba + offset`。完整 descriptor 校验与范围检查
+先于加法和资源分配；非严格 descriptor 的固定地址非零 offset 继续拒绝。
+映射仍保留完整 backing 地址 reservation，仅开放覆盖视图的页，返回精确的
+view base/len；同页内额外字节依赖 SDK 范围检查，不宣称子页 CPU 隔离。
+
+新增 `--fixed-subrange` 定向 fixture，经生产中立 channel 和生产 provider
+执行四类视图：页对齐中间区间、非页对齐中间区间、末页尾部和旧全区间。
+设备边界由文件 backing 替身承接，使用真实共享 VMA；原 backing 写入后，视图
+立即观察到对应字节更新。只读写入和视图外整页读取产生预期同步信号，10 组
+无效地址、范围、权限和 legacy 请求在 import/open/mmap/handle 分配前拒绝。
+原有部分映射失败、解除失败、endpoint 清理和 compute pin 用例也改用固定地址
+非零 offset 请求，继续核对资源归属与最终回收。
+
+验证在指定远端的缓存 AArch64 容器执行，`--network none --pull never`；
+本地仅做一次轻量交叉编译、diff 检查与源码/证据指纹核对。
+
+| 验证 | 结果与范围 |
+| --- | --- |
+| 原生 OBMM provider 完整及定向 fixture | 通过；文件共享视图、页保护、10 组提前拒绝、清理和 pin 生命周期均执行 |
+| UBSan 与 host artifact | 通过；无 UBSan runtime error，完整 CLI 夹具通过 |
+| 九份 CLI 生成契约清单 | 与提交中的 manifest 逐字一致，未改 wire/SDK 布局 |
+| r225 完整 Python 回归首轮 | 选中 257 项，执行 255 项：250 通过、5 跳过；两个 setUpClass 编译超过既有 30 秒期限，另两项未执行 |
+| 同源码定向补跑 | C++ header 无链接依赖用例、线程化 mapping owner 用例均通过；源码、断言和超时设置不变 |
+| 合并执行清单 | 精确覆盖 257 个唯一 test ID，252 通过、5 环境跳过，无未解决失败/错误；首轮两次 setup error 保留 |
+
+跳过项沿用三个 ub_sim 专属源码契约、缺交叉工具链的 arm64 deb 门禁及隔离
+容器缺少 non-loopback IPv4 的监听策略用例，均不计为通过。18 个作业全部终止：
+首轮两个 setup-error 分片 exit 1，其余 14 个分片、artifact 与补跑作业 exit 0。
+汇总校验明确排除首轮未执行的两个 ID，再接入对应补跑结果，不重复计数或隐藏错误。
+
+服务提交为 `41886ad5a8ad2bd51a0409d1b0edd2a0ca1ffe1f`，tree 为
+`9dd9dc9109c82c3400a2108a1f422f357d72d8d7`；提交前 213 项本地文件 SHA
+与远端冻结源码清单逐项相同，子仓库工作区干净。源码归档 SHA-256 为
+`24a0e6040c37ed06bb05c31f5e5a94d83926ed78f4bd68e6eb675a6f508ef706`；
+源码清单 SHA-256 为
+`6efbff9825a055e79ec2db63f84ac5a2463fa496b90185c0c2769a2f734b18e1`。
+
+归档 `out/verified-r225-fixed-subrange-evidence.tar.gz` 已回收本地，大小
+1,000,294 bytes；37 个 regular members 无重名，36 个 payload SHA 逐项核对。
+归档 SHA-256 为
+`188880d92c4625bdfdb55a5354489ea4d28e923d1627c9dd38ab375747c01c08`；
+合并回归摘要 `out/ref-results-r225-reconciled.json` 的 SHA-256 为
+`95e0e76d51703839251de3cf5cc4c1903993cc77e16a041556ed7b95b8197ebc`。
+
+**边界：** 文件替身不构成真实 OBMM guest 的 V2 共享可见性证明。已封存对象的
+raw mapping BEGIN 继续被拒绝；下一步须接通完整登记引用、当前 content version、
+实际 holder 和活动 home 的 reader mapping 准入，以及 SDK 的精确视图与失败清理。
+V2 provider 发布/可见性闭环、W5、AM3 与总目标均未完成。未 push，父仓库
+gitlink/lock 未更新，本批源码未用于根仓库 guest 构建。

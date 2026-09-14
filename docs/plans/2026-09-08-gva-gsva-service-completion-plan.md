@@ -70,6 +70,14 @@ release 的结果容量，拒绝旧 metadata 写入覆盖受管理引用。r224 
 V2 reader mapping、provider 发布/可见性闭环、W5 及重启恢复仍待完成；本轮
 控制协议验收不关闭 AM2、AM3 或总目标。未 push，父仓库 gitlink/lock 未更新。
 
+同日 reader mapping 前置续作：严格 OBMM provider 已允许固定地址的非零
+allocation-relative offset，按 backing 基址加 offset 核对视图地址，保留完整
+reservation、只读权限和视图外整页保护。服务提交 `41886ad`。r225 的文件共享
+映射夹具、UBSan、完整 CLI 夹具和九份契约清单比对通过。完整回归首轮两项
+fixture 编译超时；同源码、同断言与同超时设置补跑通过，合并执行清单精确覆盖
+257 项，252 通过、5 项环境跳过，原超时记录保留。该结果仅证明 provider 边界，
+V2 reader 的完整引用/版本/holder 映射准入仍待接通，未关闭 AM2 或总目标。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
