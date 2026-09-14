@@ -3228,3 +3228,46 @@ r250 原容器运行区间为 11:23:38 至 11:28:22 UTC；r251 为 11:28:59 至
 多请求设备并行、故障恢复矩阵或真实模型执行。最终八文件与受测 r246b overlay
 逐字节一致，提交范围仅包含该八文件及本计划/实施记录；父仓库不推送。
 完整 AM2、W5、故障矩阵及总目标仍未完成。
+
+### r252：反向 tail 的 V2 双请求实际验收
+
+代码已提交 `62b40450dc27db34405754aa80afd5b7b7ebe8df`，本轮使用同一受测
+源码和 r244 initramfs，只把现有配置设为 `concurrent_requests=2`，不新增代码。
+原容器从 11:39:26 UTC 运行至 11:45:29 UTC，exit 0、无 OOM；之后检查没有
+遗留 QEMU。home 1 / compute 0、四 CPU reader、tail 65,024-byte 张量，两次
+独立请求共享同一只读 V2 输入并写入独立 C/D。两个原 op ID 为
+202609152521/202609152522，均成功完成；线程 join、队列、六条 compute lease
+与最终 mapping/holder 清理均通过。输入 generation=1、version=2、
+incarnation=20260915252，view offset=0、bytes=130048、checksum=
+`ae0db774e0986343`。4 LOAD、2 STORE、2 fence，实际分片为 68 LOAD/34 STORE，
+分片请求/应答和完整 CPU 数据核对通过。
+
+结构化报告明确 `concurrent_requests=2`、`queued_overlap_verified=true`，同时
+`device_parallel_execution_verified=false`、`am2_complete=false`。本轮补齐
+V2 反向 tail 双请求子集，未扩大为多请求故障或设备并行执行结论。
+三个原始输入日志已在远端独立重算 SHA，与报告一致。报告 SHA-256：
+`3f4a42e7e0d9859f7bf948fb2cb34071713cabb49b95cab6ca54b726c04c4921`。
+原始证据归档 `pto-reference-guest-evidence-r252.tar.gz` 为 59,037,858 bytes，
+SHA-256：`bc4386b51d27f3826660d26b57dd35b5d79b92e49912864984b5939db4511255`。
+原观察连接返回较慢期间，通过独立只读连接核对相同容器，未重启 guest；原观察
+最终也返回 exit 0。所有网络操作继续单列审计，日志不提交。
+
+### W5 接入前的文件与源码检查（r252，未执行模型）
+
+已在指定验证目标找到 Qwen3-0.6B 的 `model.safetensors`，大小为
+1,503,300,328 bytes；配置声明 28 层、hidden=1024、vocab=151936、bfloat16。
+config、tokenizer 和 tokenizer_config 的 SHA-256 已记录于本地
+`out/w5-model-readiness-r252.json`，权重完整 SHA 尚未计算。
+同时找到计划指定的
+`DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf`，
+大小为 86,720,111,488 bytes。仅文件名和 stat 已核对，GGUF 元数据、tokenizer、
+完整权重 SHA 与当前 Rust/Simpler profile 尚未验收。没有下载或替换量化版本。
+本地准备记录保留目标路径和不可变身份候选，不将这些机器配置提交到源码。
+
+源码检查确认 W5 仍有待迁移的实际接入点：`llm_infer.c` 的 hidden/previous-KV
+解析结果为旧 payload view；`qwen3_pto_guest_prepare()` 输入使用 legacy acquire，
+输出使用 local arena 和 local KV reservation。必须统一输入引用、输出 allocation、
+原 completion、就地发布和后续读取的生命周期；仅替换 acquire 函数无法完成 M2。
+Rust 的 `model_runtime_object_payload_view()` 也仍消费旧引用并具有 snapshot/
+registry 路径，需按受管理对象身份检查相应模型执行接入。上述为源码缺口定位，
+没有声明 W5 接入、模型正确性或多节点矩阵通过。
