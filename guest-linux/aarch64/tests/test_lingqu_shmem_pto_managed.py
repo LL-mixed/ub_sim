@@ -164,6 +164,23 @@ class ManagedPtoCliTest(unittest.TestCase):
             self.assertEqual(self.run_config({**CONFIG, "home_node": invalid}).returncode, 2)
         self.assertEqual(self.run_config(extra="home_node=0\nhome_node=1\n").returncode, 2)
 
+    def test_reference_inputs_require_readonly_and_accept_every_geometry_and_home(self):
+        self.assertIn("reference_inputs=0", self.run_config().stdout)
+        for home in ("0", "1"):
+            for node in ("0", "1"):
+                for layout in ("cross-page", "nd", "tail"):
+                    result = self.run_config({**CONFIG, "home_node": home, "node_id": node,
+                        "layout": layout, "readonly_inputs": "1", "reference_inputs": "1"})
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("reference_inputs=1", result.stdout)
+                    self.assertIn("network_operations=0", result.stdout)
+        self.assertEqual(self.run_config({**CONFIG, "reference_inputs": "1"}).returncode, 2)
+        for value in ("2", "-1", "true", "18446744073709551616"):
+            self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": "1",
+                                             "reference_inputs": value}).returncode, 2)
+        self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": "1"},
+            extra="reference_inputs=1\nreference_inputs=1\n").returncode, 2)
+
     def test_layout_profiles_derive_bounded_geometry_before_any_connection(self):
         profiles = (("cross-page", 64, 65536), ("nd", 16384, 262144),
                     ("tail", 16256, 262144))
@@ -206,6 +223,23 @@ class ManagedPtoCpuProbeTest(unittest.TestCase):
 @unittest.skipUnless(platform.system() == "Linux" and shutil.which("cc"),
                      "Linux linker required for isolated managed owner guard fixture")
 class ManagedPtoOwnerGuardTest(unittest.TestCase):
+    def test_reference_subview_identity_and_uncertain_mapping_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "reference"
+            source = ROOT / "guest-linux/aarch64/tests/lingqu_shmem_pto_reference_golden.c"
+            built = subprocess.run([
+                "cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+                "-DLINGQU_SHMEM_MANAGED_MAPPING", "-ffunction-sections", "-fdata-sections",
+                "-Wl,--gc-sections", "-I", str(ROOT / "mem_service"),
+                "-I", str(ROOT / "crates/sim-qemu/include"),
+                "-I", str(ROOT / "guest-linux/aarch64/libs/lingqu_shmem_pto"),
+                str(source), "-o", str(binary),
+            ], capture_output=True, text=True, timeout=30)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("managed PTO reference orchestration: pass", result.stdout)
+
     def test_expected_admission_rejection_completes_both_owner_guards(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "owner-guards"
@@ -286,7 +320,8 @@ int main(int argc, char **argv) {
                                    capture_output=True, text=True, timeout=30)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             for key, expected in ((option, 0), ("lingqu_shmem_pto_home_node", 1),
-                                  ("lingqu_shmem_pto.concurrent_requests", 0)):
+                                  ("lingqu_shmem_pto.concurrent_requests", 0),
+                                  ("lingqu_shmem_pto.reference_inputs", 0)):
                 checked = subprocess.run([str(binary), key], capture_output=True, text=True, timeout=5)
                 self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
 
@@ -399,6 +434,9 @@ int main(int argc, char **argv) {
         self.assertIn("--require-negative-checks", runner)
         self.assertIn("lingqu_shmem_pto_readonly_inputs", run_app)
         self.assertIn("--require-readonly-inputs", runner)
+        self.assertIn("--require-reference-inputs", runner)
+        self.assertIn('lingqu_shmem_pto.reference_inputs=$LINGQU_SHMEM_PTO_REFERENCE_INPUTS', runner)
+        self.assertIn('echo "reference_inputs=$(cmdline_value lingqu_shmem_pto.reference_inputs 0)"', run_app)
         self.assertIn('--layout "$LINGQU_SHMEM_PTO_LAYOUT"', runner)
         self.assertIn('echo "size_bytes=$size"', run_app)
         self.assertIn('echo "home_node=$home_node"', run_app)

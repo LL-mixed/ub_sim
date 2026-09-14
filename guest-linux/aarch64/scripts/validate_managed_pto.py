@@ -9,6 +9,7 @@ import struct
 from pathlib import Path
 
 from validate_mem_service_mapping_resources import validate_kernel_regions
+from validate_mem_service_reference_guest import decode_reference
 
 
 GEOMETRIES = {
@@ -63,7 +64,9 @@ def oracle_checksum(vector, elements=64):
 
 def validate_backing_identities(bound, mappings):
     fields = ("segment", "home_va", "epoch", "lease_epoch", "backing_token")
-    expected = {number(mapping, "cpu_base") for mapping in mappings}
+    # QEMU logs the allocation's exported backing base. A V2 CPU view can
+    # start inside that allocation; its exact offset is checked separately.
+    expected = {number(mapping, "address") for mapping in mappings}
     identities = {}
     for row in bound:
         identity = tuple(number(row, key) for key in fields)
@@ -85,14 +88,16 @@ def validate_home_exports(text, mappings, qemu):
         owned = [row for row in exports if row["generation"] == mapping["generation"]]
         require(len(owned) == 1 and number(owned[0], "segment") > 0 and
                 number(owned[0], "export") > 0, "selected home has no unique exported allocation")
-        backed = [row for row in bindings if number(row, "home_va") == number(mapping, "cpu_base")]
+        backed = [row for row in bindings if number(row, "home_va") == number(mapping, "address")]
         require(backed and all(number(row, "segment") == number(owned[0], "segment") for row in backed),
                 "compute binding does not reference the selected home export")
 
 
 def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
              require_negative_checks=False, require_readonly_inputs=False, layout="cross-page",
-             home_node=None, concurrent_requests=1):
+             home_node=None, concurrent_requests=1, require_reference_inputs=False):
+    require(not require_reference_inputs or require_readonly_inputs,
+            "V2 inputs require separate read-only input objects")
     require(concurrent_requests in (1, 2), "unsupported concurrent request count")
     require(concurrent_requests == 1 or not (require_negative_checks or require_timeout_recovery),
             "queued requests cannot use negative or short-wait recovery mode")
@@ -103,6 +108,10 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
     require(layout in GEOMETRIES, "unsupported managed geometry")
     elements, object_bytes, offsets = GEOMETRIES[layout]
     tensor_bytes = elements * 4
+    reference_offset = offsets[0] if require_reference_inputs else 0
+    reference_bytes = offsets[1] + tensor_bytes - offsets[0] if require_reference_inputs else object_bytes
+    offsets = tuple(offset - reference_offset if index < 2 else offset
+                    for index, offset in enumerate(offsets))
     # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
     guests = [text.replace("\r\n", "\n") for text in guests]
     guests = [guests[home], guests[consumer]]
@@ -112,7 +121,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
         for prefix in ("MANAGED_PTO", "MANAGED_PTO_RESULT", "MANAGED_PTO_CONFIG",
                        "MANAGED_PTO_WAIT", "MANAGED_PTO_NEGATIVE", "MANAGED_PTO_NEGATIVE_DATA",
                        "MANAGED_PTO_READONLY", "MANAGED_OWNER", "MANAGED_OWNER_PAIR",
-                       "MANAGED_PTO_QUEUE", "MANAGED_PTO_BATCH"):
+                       "MANAGED_PTO_QUEUE", "MANAGED_PTO_BATCH", "MANAGED_PTO_REFERENCE"):
             require(all(number(row, "node") == node for row in records(text, prefix)),
                     "actual node identity differs from its guest log")
         require("status=fail" not in text and "resources_retained=1" not in text,
@@ -126,16 +135,20 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                     f"node {node}: missing input/output mapping identities")
         mapping, output = mappings[0], mappings[-1]
         for index, record in enumerate(mappings):
+            view_offset = reference_offset if index == 0 else 0
+            view_bytes = reference_bytes if index == 0 else object_bytes
             require(number(record, "node") == node and
-                    number(record, "cpu_base") == number(record, "address") > 0 and
-                    number(record, "logical_bytes") == object_bytes and
+                    number(record, "address") > 0 and
+                    number(record, "cpu_base") == number(record, "address") + view_offset and
+                    number(record, "logical_bytes") == view_bytes and
                     number(record, "generation") > 0 and number(record, "mapping_id") > 0,
                     f"node {node}: invalid managed identity")
             if home_node is not None:
                 require(number(record, "home_node") == home and
                         record["home_provider"] == f"guest-node-{home}",
                         "managed mapping has the wrong home provider")
-            expected_access = 1 if require_readonly_inputs and role == 1 and index == 0 else 3
+            expected_access = 1 if require_readonly_inputs and index == 0 and (
+                role == 1 or require_reference_inputs) else 3
             require(int(record.get("access", "3"), 0) == expected_access,
                     f"node {node}: incorrect mapping permissions")
         if require_readonly_inputs:
@@ -157,6 +170,8 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                 "missing or unexpected read-only object mode")
         require(int(done[0].get("concurrent_requests", "1")) == concurrent_requests,
                 "guest result used a different compute mode")
+        require(done[0].get("reference_inputs", "0") == str(int(require_reference_inputs)),
+                "missing or unexpected V2 input mode")
         verified = [r for r in rows if "cpu_verify" in r]
         expected_vectors = [2, 3] if role == 0 else [0, 1, 2, 3]
         require([number(r, "vector") for r in verified] == expected_vectors,
@@ -247,7 +262,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
     require(not (require_negative_checks and require_timeout_recovery),
             "negative checks cannot use short-wait recovery")
     output = output_maps[1] if require_readonly_inputs else None
-    geometry = GEOMETRIES[layout]
+    geometry = (elements, object_bytes, offsets)
     filtered = validate_negatives(guests, qemu, maps[1], requests, require_negative_checks, output, geometry)
     validate_callbacks(filtered, maps[0], requests, output, geometry, concurrent_requests)
     if home_node is not None:
@@ -260,12 +275,15 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                        "QEMU_UB_GM_OUTPUT_AUTHORIZE"):
             require(all(number(row, "requester_cna") == requester for row in records(qemu, prefix)),
                     "QEMU evidence belongs to another compute requester")
-    validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs, geometry)
+    validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs, geometry,
+                             reference_bytes)
+    reference = validate_reference_inputs(guests, maps, require_reference_inputs, GEOMETRIES[layout])
     transport = validate_transport_chunks(qemu, requests, geometry, concurrent_requests) if layout != "cross-page" else None
     if access_threads is not None:
         if require_readonly_inputs:
             validate_readonly_owners(guests, maps, output_maps, requests,
-                                     require_timeout_recovery, access_threads, concurrent_requests)
+                                     require_timeout_recovery, access_threads, concurrent_requests,
+                                     require_reference_inputs)
         else:
             validate_owners(guests, maps, requests, require_timeout_recovery, access_threads,
                             concurrent_requests)
@@ -280,6 +298,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             "store_callbacks": 2, "fences": 2,
             "scope": scope + ("-readonly-inputs" if require_readonly_inputs else ""),
             "readonly_inputs_verified": require_readonly_inputs,
+            "reference_inputs_verified": require_reference_inputs, "reference": reference,
             "owner_verified": access_threads is not None, "access_threads": access_threads,
             "timeout_recoveries": len(waits) // 2,
             "layout": layout, "elements": elements, "tensor_bytes": tensor_bytes,
@@ -441,7 +460,7 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
     require(len(positive_output) == 1, "missing recovery output authorization")
     bases = [number(row, "local") - offset for row, offset in
              zip(positive + positive_output, offsets[:3])]
-    homes = [number(row, "cpu_base") for row in (mapping, mapping, output_mapping or mapping)]
+    homes = [number(row, "address") for row in (mapping, mapping, output_mapping or mapping)]
     lines, consumed, ordered_positions = text.splitlines(), set(), []
     for operation in operations:
         selected = []
@@ -496,7 +515,7 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
 
 
 def validate_readonly_inputs(guests, maps, output_maps, requests, required,
-                             geometry=GEOMETRIES["cross-page"]):
+                             geometry=GEOMETRIES["cross-page"], input_bytes=None):
     consumer = maps[1]["node"]
     _, object_bytes, offsets = geometry
     probes = [records(text, "MANAGED_PTO_READONLY") for text in guests]
@@ -517,7 +536,8 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required,
             number(cpu, "signal") in (7, 11) and number(cpu, "code") > 0 and
             cpu["unchanged"] == "pass" and re.fullmatch(r"[0-9a-f]{16}", cpu["checksum"]),
             "missing original-process CPU write protection")
-    require(number(unchanged, "bytes") == object_bytes and unchanged["unchanged"] == "pass" and
+    require(number(unchanged, "bytes") == (object_bytes if input_bytes is None else input_bytes) and
+            unchanged["unchanged"] == "pass" and
             unchanged["checksum"] == cpu["checksum"], "read-only input object changed during PTO")
     lines = guests[1].splitlines()
     probe_positions = [i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_READONLY ")]
@@ -545,7 +565,68 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required,
                 for row in published), "both objects must be initialized and published")
 
 
-def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads, concurrent_requests=1):
+def validate_reference_inputs(guests, maps, required, geometry):
+    traces = [records(text, "MANAGED_PTO_REFERENCE") for text in guests]
+    if not required:
+        require(not any(traces), "unexpected V2 reference evidence")
+        return None
+    elements, allocation_bytes, offsets = geometry
+    expected_actions = (("1", "2", "3", "4", "mapped"), ("4", "5", "mapped"))
+    references = []
+    for role, (text, rows, mapping, actions) in enumerate(zip(guests, traces, maps, expected_actions)):
+        require(tuple(row["action"] for row in rows) == actions,
+                "V2 publication or acquisition sequence incomplete")
+        require(all(row["node"] == mapping["node"] for row in rows), "wrong V2 node")
+        encoded = rows[-1]["reference"]
+        ref = decode_reference(encoded)
+        require(ref["magic"] == 0x514f424d4d524546 and ref["layout"] == 2 and
+                ref["kind"] == 1 and ref["state"] == 2 and ref["flags"] == 0 and
+                ref["wire_bytes"] == 256 and ref["access"] == 1 and ref["version"] > 1 and
+                ref["incarnation"] > 0, "invalid sealed read-only V2 contract")
+        require(ref["key"] == mapping["key"] and ref["generation"] == number(mapping, "generation") and
+                ref["home"] == f"guest-node-{maps[0]['node']}" and
+                ref["owner"] == ref["producer"] == number(maps[0], "node") and
+                ref["size"] == allocation_bytes and ref["offset"] == offsets[0] and
+                ref["length"] == offsets[1] + elements * 4 - offsets[0],
+                "V2 allocation identity or view range differs")
+        require(number(mapping, "cpu_base") == number(mapping, "address") + ref["offset"] and
+                number(mapping, "logical_bytes") == ref["length"], "V2 mapping range differs")
+        require(all(row["status"] == "ok" and number(row, "generation") == ref["generation"] and
+                    number(row, "version") == ref["version"] for row in rows[:-1]),
+                "V2 transition version or generation differs")
+        payload = bytearray(ref["length"])
+        for vector in (0, 1):
+            values = [(i % 8 + 1 if vector == 0 else i % 4 + 1) if i < 64 else
+                      (i // 8 + 1 if vector == 0 else i % 8 + 1) for i in range(elements)]
+            start = offsets[vector] - offsets[0]
+            payload[start:start + elements * 4] = struct.pack(f"<{elements}f", *values)
+        require(ref["checksum"] == int(checksum64(payload), 16), "V2 payload checksum differs")
+        if role == 1:
+            checks = [row for row in records(text, "MANAGED_PTO_READONLY") if "checksum" in row]
+            require(len(checks) == 2 and all(int(row["checksum"], 16) == ref["checksum"] for row in checks),
+                    "CPU mapping checksum differs from published V2 payload")
+        mapped_position = next(i for i, line in enumerate(text.splitlines()) if
+                               line.startswith("MANAGED_PTO_REFERENCE ") and "action=mapped " in line)
+        owner_position = next(i for i, line in enumerate(text.splitlines()) if
+                              line.startswith("MANAGED_OWNER ") and "state=adopted " in line)
+        require(mapped_position < owner_position, "owner adopted before V2 mapping")
+        if role == 0:
+            lines = text.splitlines()
+            events = [i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_REFERENCE ")]
+            writes = [i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
+                      "inputs_published=" in line and "object=input" in line]
+            require(len(writes) == 1 and events[0] < writes[0] < events[1] < events[2] <
+                    events[3] < events[4] < owner_position,
+                    "V2 writer publication must precede seal and read-only owner adoption")
+        references.append(encoded)
+    require(references[0] == references[1], "writer and consumer used different complete V2 references")
+    return {"layout": 2, "offset": offsets[0], "bytes": len(payload),
+            "generation": ref["generation"], "version": ref["version"],
+            "incarnation": ref["incarnation"], "checksum": f"{ref['checksum']:016x}"}
+
+
+def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads, concurrent_requests=1,
+                             reference_inputs=False):
     require(0 <= threads <= 8, "invalid access thread count")
     for node, text in enumerate(guests):
         lines = text.splitlines()
@@ -570,11 +651,17 @@ def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads,
                         "mapping_pending", "holder_pending")), "owner resources not drained")
             positions = [i for i, line in enumerate(lines) if line.startswith("MANAGED_OWNER ") and
                          records(line, "MANAGED_OWNER")[0]["object"] == label]
-            first_access = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
-                records(line, "MANAGED_PTO")[0].get("object") == label and
-                ("inputs_published=" in line or "cpu_verify=" in line))
-            require(positions[0] < first_access and positions[-1] < result,
-                    "owner lifetime does not bracket CPU access")
+            if reference_inputs and node == 0 and label == "input":
+                # The writer mapping has already been unmapped and sealed;
+                # this owner holds the subsequent read-only reference mapping.
+                # validate_reference_inputs checks the complete writer order.
+                require(positions[0] < positions[-1] < result, "V2 home owner lifetime is incomplete")
+            else:
+                first_access = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
+                    records(line, "MANAGED_PTO")[0].get("object") == label and
+                    ("inputs_published=" in line or "cpu_verify=" in line))
+                require(positions[0] < first_access and positions[-1] < result,
+                        "owner lifetime does not bracket CPU access")
             drained_positions.append(positions[-1])
             if node == 0:
                 continue
@@ -693,7 +780,7 @@ def validate_callbacks(text, mapping, requests, output_mapping=None,
         offsets = [vector_offsets[v] for v in ((0, 1, 2) if index == 0 else
                                              (0 if concurrent_requests == 2 else 2, 1, 3))]
         output = output_mapping or mapping
-        homes = [number(row, "cpu_base") for row in
+        homes = [number(row, "address") for row in
                  ((mapping if index == 0 or concurrent_requests == 2 else output), mapping, output)]
         gsva_by_binding = {row["binding"]: row for row in gsva}
         for row, offset, home in zip(auth, offsets, homes):
@@ -861,6 +948,7 @@ def main():
     parser.add_argument("--concurrent-requests", type=int, choices=(1, 2), default=1)
     parser.add_argument("--require-negative-checks", action="store_true")
     parser.add_argument("--require-readonly-inputs", action="store_true")
+    parser.add_argument("--require-reference-inputs", action="store_true")
     parser.add_argument("--layout", choices=GEOMETRIES, default="cross-page")
     args = parser.parse_args()
     qemu_path = args.qemu_a if args.home_node == 1 else args.qemu_b
@@ -873,7 +961,7 @@ def main():
         result = validate(text[:2], text[2], args.require_timeout_recovery,
                           args.access_threads, args.require_negative_checks,
                           args.require_readonly_inputs, args.layout, args.home_node,
-                          args.concurrent_requests)
+                          args.concurrent_requests, args.require_reference_inputs)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

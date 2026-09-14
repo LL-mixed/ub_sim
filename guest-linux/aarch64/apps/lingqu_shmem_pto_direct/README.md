@@ -256,6 +256,48 @@ r210 的 home 0 只读双对象四 CPU reader tail 双请求也整轮通过，�
 `queued_overlap_verified` 仅表示请求同时被持有，设备并行性由独立判据记录；
 当前 `device_parallel_execution_verified=false`，完整 AM2 保持未完成。
 
+### V2 引用输入
+
+managed 配置增加 `reference_inputs=0|1`，默认 0。开启时同时要求
+`readonly_inputs=1`；已有 `--managed-config FILE --validate-only` 会在连接前
+检查该约束。host runner 的对应配置为：
+
+```text
+MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-pto
+LINGQU_SHMEM_PTO_READONLY_INPUTS=1
+LINGQU_SHMEM_PTO_REFERENCE_INPUTS=1
+```
+
+这些字段补充到已有的双节点配置文件中，工件、布局、CNA 和超时仍须按前文
+设置。沿用 `run_ub_dual_node_apps.sh --config FILE --app mem_service_object_share`
+入口；新增 boot 参数采用 `lingqu_shmem_pto.reference_inputs`，不占用 init 环境槽。
+
+home 分配输入对象并取得 holder，BEGIN 后在完整可写映射中初始化实际数据，
+通过 SDK prepare/STAGE 将 A 到 B 末尾的子区间发布到 `<key>/input`，完全 unmap
+后 SEAL。随后两端都解析完整 V2，consumer 使用引用 ACQUIRE；home 保留其已有
+holder。两端均通过 `map_managed_reference` 取得只读视图，由现有 mapping owner
+管理。程序无需用户手工构造或传递引用。输出 `<key>-output` 继续使用独立的
+可写 managed allocation；C/D 由真实 PTO 写入并由 CPU 核对。
+
+| Profile | V2 allocation offset | V2 view bytes | 视图内 A / B offset |
+| --- | ---: | ---: | --- |
+| cross-page | 3968 | 4352 | 0 / 4096 |
+| nd | 0 | 131072 | 0 / 65536 |
+| tail | 0 | 130048 | 0 / 65024 |
+
+PTO 输入 offset 相对引用视图，输出 offset 相对独立输出对象。CPU pin 覆盖实际
+视图长度。映射结果不确定时保留完整 reference lifecycle；只有确认 active 的
+映射才转交 owner。元数据变更不自动生成新请求重试，失败路径保留最后的完整
+请求及尚未释放资源。只读 RESOLVE 在限定时间内等待发布完成。
+
+runner 自动启用验收器 `--require-reference-inputs`，核对完整 256-byte V2、
+generation/version/incarnation、视图范围和实际 CPU checksum，并保留原有 PTO
+callback、completion、backing、权限及回收门槛。QEMU `GSVA_BIND.home_va`
+对应 allocation 的 backing 起点；CPU 起点须另满足 `address + payload_offset`。
+不能把两种地址直接作相等比较。真实运行覆盖范围和未完成矩阵以
+[实施记录](../../../../docs/2026-09-11-gva-managed-service-implementation-progress.md)
+为准；此模式不自动表示完整 AM2 或 W5 推理验收通过。
+
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
 the mapping provider supports it. Linux device/PFN mappings can return

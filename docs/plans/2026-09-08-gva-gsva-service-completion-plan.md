@@ -112,11 +112,26 @@ begin_reference/publish_reference/seal_reference，保留完整登记请求供�
 对齐锁定 SDK 的完整清单，并分别检查旧共享流程与 V2 引用流程，r238 全部
 74 项通过。W5 现从 Cargo 的 compiler-artifact 消息读取实际可执行文件路径，
 保留显式 SIM_CLI_BIN；r240 先通过 7 项隔离测试与原失败配置用例，再完成
-536 个唯一测试的完整 Python 回归：531 通过、5 项交叉编译器环境跳过、
+guest 目录 unittest 回归共 536 项：531 通过、5 项交叉编译器环境跳过、
 零失败/错误。r241 补齐精确原生依赖和真实 GCC 15 后，完整 Rust workspace
 的 43 个测试目标执行 963 通过、16 个既有 ignored、零失败，容器 exit 0。
 本批根仓库回归已执行完成，ignored 不算通过；该结果不关闭 AM2、W5 实际
 推理或总目标。代码提交范围及完整证据见实施记录。
+
+V2/PTO 接入续作已形成候选：`reference_inputs=1` 通过现有 managed CLI 发布、
+解析并只读映射完整 V2，输出保留独立 RW allocation。r243 的 guest 目录
+unittest 为 535 通过、5 跳过、零失败/错误，r244 layout 74/74 通过。r244 实际
+双 guest 的两次计算和 CPU 检查完成，但整轮因校验器混淆 backing 起点与视图
+起点失败；r246 复核进一步暴露旧 owner 内初始化判据不适用于 V2 writer。
+两项校验已按实际 SDK/QEMU 语义修订并添加拒绝测试，原始失败记录保留。
+随后 r246b 原日志独立复核及 guest 目录 unittest 通过，r247/r249 分别在两个
+home 方向完成实际 cross-page V2/PTO 整轮验收，runner/container 均 exit 0。
+r245 Rust 963 通过、16 ignored、零失败；最终 r246b 源码的 r248 Rust 回归独立
+完成相同计数，exit 0、无 OOM。r250 的 home 0 ND 与 r251 的 home 1 tail
+大视图实际双 guest 整轮均 exit 0，各自核对完整 V2、四线程 owner、两次依赖
+dispatch、102 个实际分片和最终资源归零。该批代码与最终受测八文件一致，
+按限定范围本地提交；证据详见实施记录。多请求设备并行、W5 实际模型及完整
+故障矩阵仍待完成，完整 AM2/W5/总目标仍未完成。
 
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；

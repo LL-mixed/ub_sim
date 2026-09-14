@@ -3131,3 +3131,100 @@ V2/PTO 后续接入检查修正了一项早期推断：managed SDK 的 binding �
 仍调用 raw acquire/map，需要接通 V2 发布、resolve/acquire/map 流程后，以
 实际 PTO 数据、身份、权限和原 completion 验证现有 owner/provider 路径。
 完整 AM2、V2 CPU/PTO 联合绑定、W5、故障矩阵和总目标仍未完成。
+
+### V2 引用输入接入 managed PTO：r242-r251 验证
+
+现有 managed CLI 增加 `reference_inputs=1`，同时要求 `readonly_inputs=1`。
+home 使用实际 allocation generation/version 执行 BEGIN，在完整 RW 映射写入
+A/B 并由 SDK prepare/STAGE 发布精确子区间，unmap 后 SEAL。两端解析同一完整
+V2；consumer 通过引用 ACQUIRE，两端都 map_reference 为 RO，再交给既有 owner。
+输出继续使用独立 RW allocation。跨页输入为 allocation offset=3968、len=4352，
+输入 memref offset=0/4096；输出 C/D 保留其独立对象 offset=12160/16256。
+CPU pin 使用映射实际长度，多请求状态传递输入 view offset。未知引用映射保留
+完整 reference lifecycle；失败路径不提前 release，也不自动重发元数据变更。
+
+CLI、runner、initramfs、校验器及测试形成同一候选；未修改独立服务 d9b60ef，
+没有推送父仓库。新增 C 隔离测试只验证应用编排与失败保留，使用明确 SDK 替身；
+它不能充当真实服务/provider/guest 验收。具体配置见应用 README 的 V2 引用输入节。
+
+| 批次 | 已核实结果 | 范围 |
+| --- | --- | --- |
+| r242 | managed CLI 原生编译及 20 项定向测试通过；guest 目录 unittest 538 项，533 通过、5 跳过、零失败/错误 | 首版 CLI 与隔离编排，尚未接完 runner/验收器 |
+| r243 | guest 目录 unittest 540 项，535 通过、5 跳过、零失败/错误/加载错误；容器 exit 0 | 加入 runner 和 V2 日志校验的候选 |
+| r244 build | 默认镜像缺少 pytest，exit 1，尚未编译 | 保留失败日志，未下载依赖 |
+| r244 layout / r244b build | 使用既有 pytest 镜像 74/74 通过；原编译镜像生成静态 AArch64 CLI 与 initramfs，exit 0 | 两个缓存容器均 network-none、无 OOM |
+| r244 guest | 两端应用 status=pass；整轮 runner/container exit 1，校验器报 backing/CPU 对象不匹配 | 真实双 guest，不能计整轮通过 |
+| r246 | 原日志复核推进到 owner 生命周期检查后失败，完整 unittest 尚未执行 | 第二个校验器旧路径假设被实际日志暴露 |
+
+r244 的实际数据：引用 generation=1、version=2、view offset=3968、len=4352，
+两端完整引用相同；CPU 输入视图 checksum=`9e0d6647b66b7183`。两次原 PTO
+completion 为 `202609152441/202609152442`，均 status=1；C/D CPU checksum
+分别为 `d602274b27b2bb23`、`c90bc7e9a551a6b3`。四个 reader 合计 444 次校验，
+停止接纳后四线程均继续完成检查；两对象 owner 最终各项 pin/mapping/holder 归零。
+QEMU 两次 unbind 均 completion_success，每次 load=512/store=256/fence=1，
+segment_payload_staging_bytes=0。这些为原始日志中的局部事实，整轮失败仍保留。
+
+校验修正有两点：QEMU GSVA_BIND.home_va 是完整 backing 起点，必须与 allocation
+address 比较；CPU view 另核对 address+offset。V2 home 的 writer 在 owner 接管
+只读视图前已完成写入、unmap 和 seal；校验器分别约束 writer 发布顺序及后续
+reader owner 生命周期，旧路径的 owner 内初始化判据保持原样。新增拒绝测试
+要求混淆 backing/view、损坏 V2 字段、错误计算偏移或完成身份均失败，并将 CPU
+视图 checksum 与 V2 payload checksum 直接关联。
+
+r246b 候选的 8 文件 overlay SHA-256：
+`385b162537ac7e8965ad65e51b661cfd243da987fcf68d2b6b205c84154cc8c7`。
+本地日志解析定向测试 29/29 通过。r246b 原日志复核通过，原失败报告未覆盖；
+guest 目录 unittest 完整发现 540 个唯一 ID，535 通过、5 跳过、零失败/错误。
+r245 Rust workspace 原作业退出 0：43 个 harness、963 通过、16 ignored、零失败。
+r245 使用 r243 源码，后续变更仅在验收器、相应测试与 README；最终 r246b 源码
+由 r248 独立完成 Rust workspace 回归：43 个 harness、963 通过、16 ignored、
+零失败、零 filtered。原容器于 11:20:31 UTC 开始、11:29:26 UTC 结束，exit 0、
+无 OOM。仍逐 target 取最后汇总，排除嵌套子测试的重复输出；ignored 不计通过。
+完整日志 SHA-256 为
+`f88c857bbb9d8e8de2560b67e136f7b2cb1252bbf63dbcb763359fe4ebc4e268`，
+结构化结果 SHA-256 为
+`e9224ec33aa563ee50923075d05d8ed28e48cf9397d736db94cfd927f5193103`。
+两文件已取回本地并核对哈希，不能将 r245 与 r248 的源码身份混用。
+
+r247 和 r249 使用同一静态 CLI/initramfs，分别完成 home 0 / compute 1 与
+home 1 / compute 0 的实际 cross-page V2/PTO 验收，runner/container 均 exit 0，
+无 OOM。r247 的原始三份输入日志 SHA 已取回并独立核验，本地复核相同完整门槛
+通过；结构化结果为两个对象、两次成功 dispatch、4 LOAD、2 STORE、2 fence，
+完整 V2 及四线程 owner 验证通过，`am2_complete=false`。未执行真实模型权重。
+
+| 证据 | SHA-256 |
+| --- | --- |
+| r244 原失败 campaign 归档 | `780ff01af526c8de9661e854da944390afe7497d9707413e660d6c4353693a6e` |
+| r247 成功 campaign 归档 | `35ad75e5fe1067f5e98450a3dfc22f2e2268e43d772eec92be7ef699af2b22a0` |
+| r246b guest unittest JSON | `e1a67d8cdee23cc3f6c6ecb097705455dc946d24efecbd59c5c3cde4e58e7580` |
+| r246b 回归日志 | `bd841e26b68098aafa1cbabdd4101e2c96e8f2686ef129482934cacffb1c75e5` |
+| 实际 guest initramfs | `e7925884fc78271dbbc6174e11685ca5bd1ede1526f7ef6a47158df43ba471bd` |
+
+r250/r251 使用同一最终源码、静态 CLI 和 initramfs 完成大视图实际双 guest
+验收，两个原容器均 exit 0、无 OOM；11:34:50 UTC 后检查无遗留 QEMU 进程。
+每轮均为四个 CPU reader、两个依赖 dispatch，核对完整 V2、真实 home export、
+4 LOAD、2 STORE、2 fence、原 completion 及最终 owner 资源归零。
+
+| 批次 | home / compute | 输入 V2 offset / bytes | 单张量 bytes | V2 与 CPU 输入 checksum | 实际 LOAD / STORE 分片 |
+| --- | --- | --- | --- | --- | --- |
+| r250 ND | 0 / 1 | 0 / 131072 | 65536 | `197bb70c638bee83` | 68 / 34 |
+| r251 tail | 1 / 0 | 0 / 130048 | 65024 | `ae0db774e0986343` | 68 / 34 |
+
+r250 原容器运行区间为 11:23:38 至 11:28:22 UTC；r251 为 11:28:59 至
+11:34:50 UTC。两个输入引用均 generation=1、version=2，incarnation 分别为
+20260915250/20260915251。ND 的 LOAD/STORE 字节数为 262144/131072，tail 为
+260096/130048，逐分片请求/应答核对通过，分片上限为 4055 bytes。
+三个 r249-r251 报告的各原始输入日志已在远端重新逐字节散列，与报告记录一致。
+大尺寸 QEMU 日志保留远端，未在本地执行大日志回归。证据归档如下：
+
+| 归档 | SHA-256 |
+| --- | --- |
+| `pto-reference-guest-evidence-r249.tar.gz` | `cc12400aff688548fa0779ca4425f01d87d06bfa00973875813a4f21ff2e1fd2` |
+| `pto-reference-guest-evidence-r250.tar.gz` | `1e011ef35b9708e4d97ebda397f7ae6f8bc45d307a1b41d1a30a89431ddb17fe` |
+| `pto-reference-guest-evidence-r251.tar.gz` | `df1c9c2af86039b8fdb39707769cc982788986af62b340c238aefdf3bd67086e` |
+
+两轮均为单请求序列，`queued_overlap_verified=false`、
+`device_parallel_execution_verified=false`、`am2_complete=false`。它们不证明
+多请求设备并行、故障恢复矩阵或真实模型执行。最终八文件与受测 r246b overlay
+逐字节一致，提交范围仅包含该八文件及本计划/实施记录；父仓库不推送。
+完整 AM2、W5、故障矩阵及总目标仍未完成。

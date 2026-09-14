@@ -1352,6 +1352,7 @@ mem_service_object_share_managed() (
       echo "access_threads=$(cmdline_value lingqu_shmem_pto_access_threads 0)"
       echo "negative_checks=$(cmdline_value lingqu_shmem_pto_negative_checks 0)"
       echo "readonly_inputs=$(cmdline_value lingqu_shmem_pto_readonly_inputs 0)"
+      echo "reference_inputs=$(cmdline_value lingqu_shmem_pto.reference_inputs 0)"
       echo "layout=$(cmdline_value lingqu_shmem_pto_layout cross-page)"
       echo "elements=$(cmdline_value lingqu_shmem_pto_elements 64)"
       echo "size_bytes=$size"

@@ -4,6 +4,7 @@ import json
 import pathlib
 import re
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -206,6 +207,42 @@ def readonly_fixture(recovery=False, negative=False, threads=4):
     return guests, "\n".join(converted)
 
 
+def reference_fixture():
+    """Synthetic V2 parser fixture; does not claim a real guest execution."""
+    guests, qemu = readonly_fixture()
+    payload = bytearray(4352)
+    for vector, start in ((0, 0), (1, 4096)):
+        payload[start:start + 256] = struct.pack("<64f", *(
+            i % (8 if vector == 0 else 4) + 1 for i in range(64)))
+    checksum = int(validator.checksum64(payload), 16)
+    reference = struct.pack("<QHHHHIIQQQQQIIQQQ96s64s", 0x514f424d4d524546,
+        2, 1, 2, 0, 0, 0, 2, int(validator.checksum64(b"k"), 16), 3968, 4352,
+        checksum, 256, 1, 7, 9, 65536, b"k", b"guest-node-0").hex()
+    for node, text in enumerate(guests):
+        actions = (1, 2, 3, 4) if node == 0 else (4, 5)
+        rows = [f"MANAGED_PTO_REFERENCE node={node} action={action} generation=7 version=2 status=ok"
+                for action in actions]
+        if node == 0:
+            rows.insert(1, "MANAGED_PTO node=0 inputs_published=1 version=1 bytes=65536 object=input")
+        rows.append(f"MANAGED_PTO_REFERENCE node={node} action=mapped reference={reference}")
+        for line in text.splitlines():
+            if node == 0 and "inputs_published=" in line and "object=input" in line:
+                continue
+            if "cpu_base=" in line and "object=input" in line:
+                line = line.replace("cpu_base=0x700000000000", "cpu_base=0x700000000f80").replace(
+                    "logical_bytes=65536", "logical_bytes=4352").replace("access=3", "access=1")
+            if line.startswith("MANAGED_PTO_RESULT "):
+                line += " reference_inputs=1"
+            line = line.replace("offsets=3968,8064,12160", "offsets=0,4096,12160").replace(
+                "offsets=12160,8064,16256", "offsets=12160,4096,16256")
+            if "probe=input-unchanged" in line:
+                line = line.replace("bytes=65536", "bytes=4352")
+            line = line.replace("checksum=0123456789abcdef", f"checksum={checksum:016x}")
+            rows.append(line)
+        guests[node] = "\n".join(rows)
+    return guests, qemu
+
+
 def queued_fixture(readonly=True, threads=4):
     """Synthetic two-caller evidence; no device execution is represented."""
     guests, qemu = readonly_fixture(threads=threads) if readonly else owned_fixture(threads=threads)
@@ -373,6 +410,46 @@ def home_fixture(home, layout="cross-page", recovery=False, negative=False,
 
 
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_reference_mode_preserves_compute_and_ownership_gates(self):
+        guests, qemu = reference_fixture()
+        result = validator.validate(guests, qemu, access_threads=4,
+            require_readonly_inputs=True, require_reference_inputs=True)
+        self.assertTrue(result["reference_inputs_verified"])
+        self.assertEqual((result["reference"]["offset"], result["reference"]["bytes"]), (3968, 4352))
+        self.assertFalse(result["am2_complete"])
+        with self.assertRaises(ValueError):
+            validator.validate(guests, qemu.replace("home_va=0x700000000000", "home_va=0x700000000f80"),
+                access_threads=4, require_readonly_inputs=True, require_reference_inputs=True)
+        with self.assertRaises(ValueError):
+            validator.validate(guests, qemu, access_threads=4, require_readonly_inputs=True)
+        with self.assertRaises(ValueError):
+            validator.validate(*readonly_fixture(), access_threads=4,
+                require_readonly_inputs=True, require_reference_inputs=True)
+
+    def test_reference_mode_rejects_identity_range_sequence_and_compute_corruption(self):
+        guests, qemu = reference_fixture()
+        mutations = (
+            ("action=3 ", "action=2 "),
+            ("generation=7 version=2", "generation=7 version=3"),
+            ("logical_bytes=4352", "logical_bytes=65536"),
+            ("cpu_base=0x700000000f80", "cpu_base=0x700000000000"),
+            ("offsets=0,4096,12160", "offsets=3968,8064,12160"),
+            ("completion_op=102", "completion_op=103"),
+            ("reference_inputs=1", "reference_inputs=0"),
+        )
+        for old, new in mutations:
+            changed = [text.replace(old, new) for text in guests]
+            with self.subTest(field=old), self.assertRaises(ValueError):
+                validator.validate(changed, qemu, access_threads=4,
+                    require_readonly_inputs=True, require_reference_inputs=True)
+        encoded = validator.records(guests[1], "MANAGED_PTO_REFERENCE")[-1]["reference"]
+        for byte in (0, 8, 12, 16, 24, 40, 48, 56, 68, 72, 80, 88, 96, 192):
+            altered = bytearray.fromhex(encoded)
+            altered[byte] ^= 1
+            with self.subTest(byte=byte), self.assertRaises((ValueError, UnicodeError)):
+                validator.validate([guests[0], guests[1].replace(encoded, altered.hex())], qemu,
+                    access_threads=4, require_readonly_inputs=True, require_reference_inputs=True)
+
     def test_queued_requests_verify_independent_outputs_both_homes_and_full_geometry(self):
         for home in (0, 1):
             for layout in ("cross-page", "nd", "tail"):

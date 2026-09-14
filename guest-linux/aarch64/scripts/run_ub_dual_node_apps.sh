@@ -79,6 +79,7 @@ LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS="${LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS:-0}"
 LINGQU_SHMEM_PTO_ACCESS_THREADS="${LINGQU_SHMEM_PTO_ACCESS_THREADS:-0}"
 LINGQU_SHMEM_PTO_NEGATIVE_CHECKS="${LINGQU_SHMEM_PTO_NEGATIVE_CHECKS:-0}"
 LINGQU_SHMEM_PTO_READONLY_INPUTS="${LINGQU_SHMEM_PTO_READONLY_INPUTS:-0}"
+LINGQU_SHMEM_PTO_REFERENCE_INPUTS="${LINGQU_SHMEM_PTO_REFERENCE_INPUTS:-0}"
 LINGQU_SHMEM_PTO_HOME_NODE="${LINGQU_SHMEM_PTO_HOME_NODE:-0}"
 LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS="${LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS:-1}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
@@ -491,6 +492,7 @@ validate_lingqu_shmem_pto_config() {
     "access-threads:$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
     "negative-checks:$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS" \
     "readonly-inputs:$LINGQU_SHMEM_PTO_READONLY_INPUTS" \
+    "reference-inputs:$LINGQU_SHMEM_PTO_REFERENCE_INPUTS" \
     "home-node:$LINGQU_SHMEM_PTO_HOME_NODE" \
     "concurrent-requests:$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
@@ -563,6 +565,12 @@ validate_lingqu_shmem_pto_config() {
   if (( LINGQU_SHMEM_PTO_READONLY_INPUTS > 1 )) ||
      { (( LINGQU_SHMEM_PTO_READONLY_INPUTS != 0 )) && ! managed_pto_selected; }; then
     echo "readonly inputs require managed cpu-pto and a value in 0..1" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_REFERENCE_INPUTS > 1 )) ||
+     { (( LINGQU_SHMEM_PTO_REFERENCE_INPUTS != 0 )) &&
+       { ! managed_pto_selected || (( LINGQU_SHMEM_PTO_READONLY_INPUTS != 1 )); }; }; then
+    echo "reference inputs require managed cpu-pto, readonly inputs, and a value in 0..1" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS != 0 )); then
@@ -720,6 +728,7 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS=$((LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS))
   LINGQU_SHMEM_PTO_NEGATIVE_CHECKS=$((LINGQU_SHMEM_PTO_NEGATIVE_CHECKS))
   LINGQU_SHMEM_PTO_READONLY_INPUTS=$((LINGQU_SHMEM_PTO_READONLY_INPUTS))
+  LINGQU_SHMEM_PTO_REFERENCE_INPUTS=$((LINGQU_SHMEM_PTO_REFERENCE_INPUTS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS))
   LINGQU_SHMEM_PTO_CANCEL_AFTER_MS=$((LINGQU_SHMEM_PTO_CANCEL_AFTER_MS))
@@ -741,6 +750,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_access_threads=$LINGQU_SHMEM_PTO_ACCESS_THREADS"
   append_cmdline_if_missing "lingqu_shmem_pto_negative_checks=$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS"
   append_cmdline_if_missing "lingqu_shmem_pto_readonly_inputs=$LINGQU_SHMEM_PTO_READONLY_INPUTS"
+  append_cmdline_if_missing "lingqu_shmem_pto.reference_inputs=$LINGQU_SHMEM_PTO_REFERENCE_INPUTS"
   # This userspace-only option must not consume a kernel init environment slot.
   append_cmdline_if_missing "lingqu_shmem_pto.home_node=$LINGQU_SHMEM_PTO_HOME_NODE"
   append_cmdline_if_missing "lingqu_shmem_pto.concurrent_requests=$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS"
@@ -3862,6 +3872,9 @@ run_iteration() {
       fi
       if (( LINGQU_SHMEM_PTO_READONLY_INPUTS > 0 )); then
         recovery_args+=(--require-readonly-inputs)
+      fi
+      if (( LINGQU_SHMEM_PTO_REFERENCE_INPUTS > 0 )); then
+        recovery_args+=(--require-reference-inputs)
       fi
       python3 "${SCRIPT_DIR}/validate_managed_pto.py" \
         --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
