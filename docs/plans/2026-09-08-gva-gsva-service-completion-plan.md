@@ -97,9 +97,16 @@ writer 续作已提交独立服务 `d9b60ef`：SDK 从当前 allocation 和完�
 begin_reference/publish_reference/seal_reference，保留完整登记请求供重试，
 已发布数据禁止继续写入。r231 定向 CLI 用两段不同非零数据核对完整引用，
 独立服务完整 261 项为 256 通过、5 环境跳过、零失败/错误，执行清单精确覆盖；
-安装态 SDK、ASan/UBSan 和九份契约清单通过。该批提交尚未发布，父仓库锁定
-保持 reader `b5fff0d`。loopback 进程内数据证据不替代实际 OBMM 双 guest
-V2 发布/读取，完整 AM2、W5 和总目标仍未完成。
+安装态 SDK、ASan/UBSan 和九份契约清单通过。用户授权分支发布后已推送
+`d9b60ef` 并核验远端 SHA，父仓库本地锁定提交为 `c675c9a`，父仓库未推送。
+
+实际 V2 guest 续作：r233 暴露新增脚本等待了错误的 readiness 字段；r234
+修正后配对数据验收通过，整轮因错误引用 bootstrap 路由标记而失败。修正为
+逐一核对严格受管理 GSVA route、reader 地址、map/unmap 身份及 CPU window
+清理后，r234 原始日志独立复核通过。r235 的一轮两视图、r236 的连续两轮四
+视图实际 OBMM 双 guest 用例均整轮 exit 0，未发现遗留 QEMU；当前 27 项相关
+远端测试通过。该结果仍不关闭完整 AM2、W5、后续故障矩阵或总目标。根仓库
+完整回归待执行，guest 接入代码保持开发修改，源码及证据边界见实施记录。
 
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；

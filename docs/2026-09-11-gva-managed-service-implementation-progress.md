@@ -2890,3 +2890,133 @@ provider publish 完成后才返回引用。失败保留原输出，不发送 st
 绑定，不能证明两个进程或两个 guest 共享该 payload。实际 OBMM guest V2
 发布/读取、W5、AM3/AM4、性能及总目标均未完成。子仓库已提交、尚未推送，
 父仓库 gitlink/lock 继续锁定已发布的 reader `b5fff0d`。
+
+### 下一批真实 V2 guest 接入约定
+
+沿用 `run_ub_dual_node_apps.sh --config <file> --app mem_service_object_share`，
+增加显式 `MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-reference`。该诊断组合选择 OBMM、
+home 0、64 KiB allocation、1 至 2 轮及 fault=none；既有 cpu/cpu-pto 行为保留。
+每轮在 offset=128/4224 写入两段不同的 512-byte 数据，先全部写入，再分别发布、
+解除写映射并 seal。peer 通过两个逻辑 key 分别 acquire_reference/map_reference，
+等待可见性后读校验，并检查只读 CPU 保护和逻辑边界。
+
+generation 从实际 allocation 回执读取，不从轮次猜测。服务对象充当有界的
+封存/消费完成屏障，屏障不传 payload。两端日志交叉核对 V2 编码、generation、
+home/incarnation、allocation-relative offset、实际基址、checksum 与操作顺序；
+provider 和 kernel 资源分别核对。该配置仅为阶段用例，完整多 home、2/3/8-node、
+长期回收与 CPU/PTO 联合验收保持原要求。代码接入与静态测试不计作 guest 通过。
+
+该接入已形成开发修改：run_app 生成上述两端命令序列，原 runner 显式选择
+新模式，新增 `validate_mem_service_reference_guest.py` 读取两份 guest 日志，
+输出带原日志 SHA 的 JSON 验收结果。实际分配回执、完整 V2、writer/reader
+地址和 checksum、只读探针、字节边界、provider 映射序列和 kernel census
+均参与核对。保留旧 cpu/cpu-pto 模式及原资源验收器。
+
+定向回归曾发现新回执解析引入了 guest 未保证提供的工具；已统一改用打包的
+BusyBox sed 与 shell 校验。缺失、重复、零值或非法版本字段均拒绝，不猜测
+generation。新增测试的坏回执替身最初因转义不一致未生效，也已修正；上述
+失败原因在此记录，最终重新执行全部相关轻量测试。
+
+本地新增 5 项、原 SDK guest 契约 10 项、原资源验收器 11 项全部通过；
+sh/zsh 语法与 diff 空白检查通过。r232 在指定远端缓存容器中执行新增及
+资源验收器共 16 个唯一 test ID，16 通过、无跳过/失败/错误，0.294 秒，
+容器退出 0 且无 OOM。该作业为 scripts-only，未编译或消费未锁定的服务 SDK，
+没有启动 QEMU 或模型。源码归档 SHA-256：
+`a30d662391a1ef72dd96fe8b1f29d48ee142a1cdc64318f4ef1e6742330b3a88`；
+七文件清单 SHA-256：
+`3e8f1cbe08fe90be04c680d093020ebdd615dfaf2931a25149402add520ef49f`。
+原日志与测试清单位于 `out/ref-guest-fixtures-r232.log` 和
+`out/ref-guest-results-r232.json`，SHA-256 分别为：
+`db18b62c15950901e9aecd3271cad4514835823196bf476de4e41b57c440e772`、
+`1d831cd30e4e9ada292b0e16d7db0c55f7ec7102ca7538cef96febf7e032e977`。
+
+此批根仓库代码尚未完成完整回归或真实 guest 验证，保持未提交。不以脚本
+替身通过替代实际双 guest V2 数据闭环。
+
+### 已授权分支发布与本地锁定（2026-09-14）
+
+重新核对用户的“允许该分支推送及本地锁定更新”授权，其范围为指定服务
+分支，未限定逐提交确认。此前额外等待 writer 授权的判断已纠正。普通推送
+将 `origin/codex/gva-managed-service-completion` 从 `b5fff0d` 推进至
+`d9b60efb2b4de5a4149264c61561cca33f570dce`，后续 `ls-remote` 完整 SHA
+核验一致。推送及核验均写入网络操作审计；没有 force push、标签推送、
+递归子模块推送或父仓库推送。本地 gitlink 与 lock 同步到该已验证、已发布
+writer 提交，以便开展实际双 guest 验证。
+
+本地锁定提交为 `c675c9a`（`Pin validated managed reference writer SDK`），
+只包含 gitlink 与 lock 两项更新。10 项轻量下游契约重新执行全部通过，
+暂存 diff 空白检查通过；未运行本地重型或完整测试。根仓库 guest 接入修改
+继续保持未提交，等待指定远端的真实 guest 验证及受影响回归。
+
+### r233 首次实际 V2 guest 接入与 readiness 修正
+
+以根提交 `c675c9a5ec5cbe74df77986c4a7d4f1fd8c81329` 的完整源码归档加
+四文件开发 overlay，消费已锁定的 `d9b60ef`。独立服务及 libobmm 用本地 Git
+bundle 同步到指定远端，在离线缓存容器内构建静态 AArch64 CLI 和常驻 worker。
+首个构建因容器用户与 checkout 所有者不同触发 Git dubious ownership，未进入
+编译；仅在临时容器内登记两个明确 checkout 为 trusted 后，r233b 构建退出 0，
+构建前后源码锁定检查通过。未改宿主 Git 配置或跳过检查。
+
+r233 实际双 guest 用例退出 1（runner iteration code 31）。双端 FM、entity、
+OBMM conformance 与 worker 注册通过；新脚本误等控制进程本地 registry 的
+`data_plane_ready`，未进入 V2 对象操作，在有界等待结束后退出。消费者随后有
+init 退出引发的 kernel panic，完整失败日志保留，不计作 guest 通过。
+
+新增流程实际需要等待所需远端 worker 的 `provider_directory_ready`。已修正
+字段选择，并补回归：本地 data plane 为 0、目录为 1 时可继续；本地为 1、
+目录为 0 时到期拒绝且不分配。实际数据面仍由双方 conformance、SDK peer
+canary、publish/read checksum 及最终资源核对验证。本地 26 项相关测试重新
+通过。该修正不改变服务全局 readiness 的现有定义，亦不关闭总计划的 readiness
+验收。r234 使用独立 overlay 重跑最小失败用例，结果待实测。
+
+### r234/r235/r236 严格 V2 双 guest 数据证据
+
+r234 修正 readiness 后，两个真实 guest 的对象操作及配对数据验收通过。
+整轮仍退出 1：新 runner 复用了 legacy bootstrap 路由的日志断言，而此用例
+实际通过带 `map_id/segment_id/home_va/epoch/source/profile` 的严格 GSVA_MAP
+路径建立读视图。原始失败日志保留，不把配对子项通过写成整轮通过。
+
+V2 验收器现要求 reader QEMU 原日志，对每个视图将 allocation 基址与严格
+route 对应，并核对 2 MiB backing route、地址 profile、正值身份、唯一 map ID、
+一致的解除映射身份及 CPU window 创建/清理。缺行、错地址、错 profile/source、
+错 epoch、错清理 ID、tombstone 或只有 bootstrap 标记的输入均拒绝。原 cpu
+与 cpu-pto 验收入口保持不变。r235 在指定远端执行全部三个相关测试模块，
+27 项通过，无失败/错误；r234 原始双 guest 与 QEMU 日志用当前检查独立复核
+通过，复核 JSON 单独保存，不覆盖其原失败报告。
+
+以下两次使用同一根代码开发快照和已锁定服务 SDK，未启动模型或 infer：
+
+| 实跑 | 操作范围 | 结果 |
+| --- | --- | --- |
+| r235 | 一轮 64 KiB allocation，offset=128/4224 两个 512-byte V2 视图 | 配对数据及 route 检查通过，runner/container exit 0 |
+| r236 | 连续两轮、共四个视图，每轮独立 allocation generation | 全部身份、数据、route 与回收检查通过，runner/container exit 0 |
+
+两次均核对 writer 实际写入 checksum、冻结后的写入拒绝、reader 的 acquire 与
+固定视图地址、可见性和实际读取、只读 CPU 探针、逻辑越界拒绝。最终 service
+活跃对象/引用/映射/在途计数与 backing/address/quarantine bytes 为零，provider
+资源归零，kernel census 回到基线；运行后进程检查未发现遗留 QEMU。容器均
+使用缓存镜像、`--network none --pull never`，未开放宿主端口或下载依赖。
+
+根源码基线为 `c675c9a5ec5cbe74df77986c4a7d4f1fd8c81329`，服务为
+`d9b60efb2b4de5a4149264c61561cca33f570dce`，libobmm 为
+`53011eed10716b422d2ac29199f68b55f7c5bdc5`。r235/r236 使用相同四文件
+overlay，SHA-256 为
+`fdb6b86ed1c9bf8c0da7ec857e44c351e8e623b7d0e60d9241e131e93f0608c4`；
+相同 initramfs SHA-256 为
+`89526ad90e221cae4eb746dc48561b64aa2b7971f1bb2112d5fedef73ca8384c`。
+kernel、QEMU、配置及 rootfs 各文件指纹保存在每轮 evidence 清单。
+
+远端证据归档 `verified-reference-guest-r233-r236.tar.gz` 为 16,082,140 bytes，
+含 50 项 payload 及逐文件 SHA 清单；归档 SHA-256：
+`a402f10e6c9445d24213fc3ee3f8492c39806f292aab9e35eb7463750b1b1b8c`。
+8 个原始构建/guest 作业均已终态且无 OOM，r233 构建失败、r233/r234 guest
+失败与后续成功记录全部保留。归档已回收到
+`out/verified-reference-guest-r233-r236.tar.gz`，本地核验 51 个 regular members
+无重名，50 项 payload SHA 与清单逐项一致；四个源码文件与当前工作区逐字节
+一致。overlay 另含 macOS tar 的四个 AppleDouble metadata sidecars，核验时
+显式区分，未作为源码。r236 两轮实际 generation 为 1、4，对应不同 segment，
+每轮两个视图共享同一个 home VA/segment/epoch，四个 map ID 均完成匹配 unmap。
+
+该证据关闭本次一轮/两轮 CPU V2 writer-to-reader 用例，未关闭多 home、
+2/3/8-node 全矩阵、CPU/PTO V2 联合绑定、W5、AM3/AM4 或总目标。根仓库完整
+回归仍待执行，代码保持未提交；本批轻量/定向回归不替代根仓库完整回归。
