@@ -99,6 +99,23 @@ class ManagedPtoCliTest(unittest.TestCase):
             self.assertEqual(self.run_config({**CONFIG, "access_threads": count}).returncode, 2)
         self.assertEqual(self.run_config(extra="access_threads=4\naccess_threads=4\n").returncode, 2)
 
+    def test_concurrent_requests_are_explicit_and_preserve_geometry_and_owner_modes(self):
+        self.assertIn("concurrent_requests=1", self.run_config().stdout)
+        for home in ("0", "1"):
+            for layout in ("cross-page", "nd", "tail"):
+                for readonly in ("0", "1"):
+                    values = {**CONFIG, "home_node": home, "layout": layout,
+                              "readonly_inputs": readonly, "concurrent_requests": "2", "access_threads": "8"}
+                    result = self.run_config(values)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("concurrent_requests=2", result.stdout)
+                    self.assertIn("network_operations=0", result.stdout)
+        for invalid in ("0", "3", "-1", "2x", "18446744073709551615"):
+            self.assertEqual(self.run_config({**CONFIG, "concurrent_requests": invalid}).returncode, 2)
+        for extra in ({"negative_checks": "1"}, {"submit_timeout_ms": "5"}):
+            self.assertEqual(self.run_config({**CONFIG, "concurrent_requests": "2", **extra}).returncode, 2)
+        self.assertEqual(self.run_config(extra="concurrent_requests=2\nconcurrent_requests=1\n").returncode, 2)
+
     def test_negative_checks_are_opt_in_and_separate_from_timeout_recovery(self):
         for enabled in ("0", "1"):
             result = self.run_config({**CONFIG, "negative_checks": enabled})
@@ -205,6 +222,7 @@ class ManagedPtoOwnerGuardTest(unittest.TestCase):
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("managed PTO owner guards: pass", result.stdout)
+            self.assertIn("managed PTO shared compute guards: pass", result.stdout)
 
 
 class ManagedPtoContractTest(unittest.TestCase):
@@ -267,7 +285,8 @@ int main(int argc, char **argv) {
                                     "-Wno-unused-parameter", str(source), "-o", str(binary)],
                                    capture_output=True, text=True, timeout=30)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-            for key, expected in ((option, 0), ("lingqu_shmem_pto_home_node", 1)):
+            for key, expected in ((option, 0), ("lingqu_shmem_pto_home_node", 1),
+                                  ("lingqu_shmem_pto.concurrent_requests", 0)):
                 checked = subprocess.run([str(binary), key], capture_output=True, text=True, timeout=5)
                 self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
 
@@ -332,7 +351,16 @@ int main(int argc, char **argv) {
         self.assertIn("pthread_join", source)
         self.assertIn("probe_owner_close(state, true)", source)
         self.assertIn("mem_service_mapping_lease_apply(state->cpu_pin", source)
-        self.assertIn("unsigned vectors[3] = {round == 1 ? 0 : 2, 1, round + 1}", source)
+        self.assertIn("unsigned vectors[3] = {round == 1 || state->config.concurrent_requests == 2 ? 0 : 2,", source)
+        self.assertIn("1, round + 1};", source)
+        self.assertIn("pthread_create(&batch->threads[i], NULL, compute_caller", source)
+        self.assertIn("batch->error = probe_batch(state)", source)
+        batch = source.split("static int dispatch_batch(", 1)[1].split("static int readonly_cpu_probe", 1)[0]
+        self.assertIn("request->compute = state->compute", batch)
+        self.assertIn("allocate_metadata(request)", batch)
+        self.assertNotIn("open_compute(request)", batch)
+        self.assertNotIn("lingqu_shmem_mem_service_close", batch)
+        self.assertLess(batch.index("pthread_join"), batch.index("free(request)"))
         self.assertIn("dispatch_vector(state, 1)", source)
         self.assertIn("dispatch_vector(state, 2)", source)
         self.assertNotIn("mem_service_client_put_object", source)
@@ -363,6 +391,9 @@ int main(int argc, char **argv) {
         self.assertIn("lingqu_shmem_pto_submit_timeout_ms", run_app)
         self.assertIn("lingqu_shmem_pto_access_threads", run_app)
         self.assertIn('--access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS"', runner)
+        self.assertIn('--concurrent-requests "$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS"', runner)
+        self.assertIn('lingqu_shmem_pto.concurrent_requests=$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS', runner)
+        self.assertIn('echo "concurrent_requests=$(cmdline_value lingqu_shmem_pto.concurrent_requests 1)"', run_app)
         self.assertIn("--require-timeout-recovery", runner)
         self.assertIn("lingqu_shmem_pto_negative_checks", run_app)
         self.assertIn("--require-negative-checks", runner)

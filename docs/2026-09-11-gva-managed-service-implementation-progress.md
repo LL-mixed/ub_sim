@@ -2423,3 +2423,110 @@ owner 的 CPU/compute/in-flight pin、mapping pending、holder pending 均归零
 计算请求的 metadata/lease 集合、提交门控及完成领取；真实多请求计算并发和
 设备并行性均未验收。下一步接入共享 A/B、分离 C/D 输出的两个独立 quadratic
 请求，保留原顺序依赖模式。`am2_complete=false`，总目标保持未完成。
+
+## 2026-09-14 续作：共享会话的双请求 managed 计算
+
+managed CLI 新增 `concurrent_requests=1|2`，默认 1 保留原 C→D 依赖链。
+模式 2 由两个 pthread 提交独立 quadratic 请求，共享 A/B 输入，在不重叠 C/D
+视图输出相同算子的结果。host 的 `LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS`
+经带点 guest boot 参数传递，验收器使用 `--concurrent-requests`。支持现有三种
+geometry、两种 home 和单对象/只读双对象；当前拒绝与六负例、短等待恢复组合。
+多请求故障恢复、设备并行性及完整 AM2 仍待独立验收。
+
+### r204 失败与会话修订
+
+首次实际运行 r204 在提交前返回 `rc=-16`，`completion_unknown=0`，没有队列
+提交或 dispatch 记录。原实现每请求调用一次 `open_managed`；驱动的
+`linqu_ub_open` 在存在 `active_file` 时返回 `-EBUSY`，第二个 backend 打开
+与真实独占合同冲突。该轮 runner/container exit 1，原 guest/QEMU 日志、配置、
+源码和工件摘要保留，未计为通过。
+
+修订后主线程仅打开一个 compute/backend context，两个请求借用同一会话，
+分别持有 metadata 页、三份 lease、inflight 和原 operation ID。此路径的 strict
+mapping 注册/注销经共享 access domain 串行化；不宣称通用 async SQ/CQ 和
+future API 支持无锁并发。两个提交完成前禁止领取 CQ，主线程检查六份 lease、
+两个 metadata 物理页及全部 owner pins，验证 close/release/admission 拒绝后
+允许两调用线程领取各自原 completion。所有线程 join、lease 归零后释放请求
+状态，共享会话由主线程统一关闭。未能确认完成时保留资源。
+
+原生 owner fixture 增加驱动独占打开替身、共享会话六 lease 检查，并拒绝错误
+会话绑定、0..5/7 个 lease 和重复 metadata 页。验收器增加独立 D oracle、
+队列记录/关闭保护/完成/CPU 校验的时序检查，以及多请求 callback 关联；
+mutation 测试删除事件、改变 ID、复用 metadata、破坏计数、提前释放和使用
+原 C→D 输入都必须失败。软件请求重叠与设备并行执行使用独立字段。
+
+### r205 完整回归与 r206 原生工件
+
+本地轻量测试 45 项：34 通过、11 环境跳过；AArch64 `-Wall -Wextra -Werror`
+语法检查和 shell 解析通过。远端 r205 结果：
+
+| 套件 | 实际结果 | 基线核对 |
+| --- | --- | --- |
+| 相关 Python | 102 项：100 通过、2 跳过，17.537 秒 | 共享会话 fixture 与新增队列验收用例通过 |
+| 根 Python | 523 项：504 通过、5 跳过、5 失败、9 错误，62.500 秒 | 14 个失败 ID 与既有基线完全一致 |
+| layout | 72 通过、2 失败，1.26 秒 | 两个失败 ID 与既有基线一致 |
+| Rust workspace | 43 个目标：931 通过、32 失败、16 ignored | 与重编译父版本的失败集合完全一致 |
+
+完整套件仍未全绿。r205 的 18 文件源码包 SHA 为
+`e2d6eebf9a4daef2e747e59389502d8b7b9112c9f4c991e423b022b773d32e6b`，
+manifest SHA 为 `f040767adfd9d2af7ae994100feb2245e7e147eca3bba01f0b4afea7b6941197`。
+r206 原生 AArch64 CLI SHA 为
+`0b6acc148d8668952a3da6ba8dc93508ee2c7823ac5a0c64390471fa8cec40c2`，
+rootfs SHA 为 `3e6f85c34a445cbd02c340a7ae08744402e14c3c9d04f46adb167a8d3c13e9e9`。
+原 kernel、QEMU、driver、service、worker、manager 和 quadratic 工件 SHA 保持不变。
+r211 在同一原生环境以 `-fsanitize=address,undefined` 运行 owner/shared-context
+fixture，容器 exit 0，owner 和 shared compute guards 全部通过，无 sanitizer
+错误。该夹具只证明局部守卫行为，不替代下面的实际设备数据验收。
+
+### 真实 cross-page 双请求结果
+
+r207：home 1 / compute 0、只读双对象、四 CPU reader；r208：home 0 / compute 1、
+单对象、无 CPU reader。两轮 runner/container 均 exit 0，每轮均有两条同时被
+持有的请求、两份 metadata、六份 lease，4 LOAD / 2 STORE / 2 fence，独立 C/D
+结果及两端 owner 回收全部通过。r207 原 ID 为 `20260914771/20260914772`，
+r208 为 `20260914781/20260914782`。每轮 C/D 均为 `d602274b27b2bb23`，
+与默认依赖链的 D oracle 明确分离。
+
+r207 四线程完成 3,984 次输入校验，全部在 owner sealed 后继续校验并退出；
+只读输入 64 KiB 的前后 checksum 保持 `d63638b5e3d6ed83`。其输入/输出 owner
+重叠时分别保留 4/2 个 compute 和 in-flight pin；r208 的共享 owner 保留六个。
+完成后两端 CPU/compute/in-flight pin、mapping pending、holder pending 均归零。
+原日志 SHA、输入/源码/工件后验摘要通过，无 QEMU 遗留。
+
+报告明确 `queued_overlap_verified=true`、`device_parallel_execution_verified=false`、
+`am2_complete=false`。上述结果不关闭多请求故障恢复、全局对象引用绑定、
+同时多 home 或 AM3/AM4，也不将两请求的软件寿命重叠计为设备并行性能结果。
+
+### r209 反向 home 的 ND 双请求
+
+r209 使用同一 r206 CLI/rootfs，home 1 / compute 0、只读双对象、四 CPU reader，
+每个对象逻辑长度 256 KiB，张量 128×128、64 KiB。两个请求原 ID 为
+`20260914791/20260914792`，双端 C/D checksum 均为 `5ea1f9e7e38ac0b5`。
+runner/container exit 0，102 个真实分片逐一通过：68 LOAD / 34 STORE，
+分别传输 262,144 / 131,072 bytes，覆盖六个 callback 的请求、响应和边界。
+17 个非 PTO bulk send 单独记录，不并入请求分片统计。
+
+四 CPU reader 完成 146 次完整输入校验，全部观察 sealed 后继续读取并退出。
+两个请求完成前的六份 lease 与 4/2 个输入/输出 owner pins 保留，原 completion
+后均释放，两个 guest 的 mapping/holder/pin 归零。完整只读输入及双端结果通过；
+原始三日志 SHA、输入/源码/工件后验 SHA 验证一致，无 QEMU 遗留。
+中途一次 SSH 状态查询在 banner exchange 超时，已独立登记重试并读取原作业；
+未因此重复启动 guest。CPU 逐元素校验耗时不作为算子并行性能数据。
+
+### r210 tail 双请求与本轮边界
+
+r210 使用 home 0 / compute 1、只读双对象、四 CPU reader，张量 128×127、
+65,024 bytes。原 ID 为 `20260914801/20260914802`，双端 C/D checksum 均为
+`8c89fd43a4864ee0`；完整 256 KiB 输入前后 checksum 为 `29a268eceafb0343`。
+68 LOAD / 34 STORE 分片共传输 260,096 / 130,048 bytes，六个 callback 的
+实际请求、响应及每个视图末尾 144-byte 分片通过；15 个非 PTO bulk send
+单独记录。四线程完成 147 次完整输入校验，全部在 sealed 后继续读取并退出。
+
+runner/container exit 0，六份 lease、原 ID 完成关联、两端 CPU 结果、只读输入
+和资源归零全部通过。原日志 SHA 与输入/源码/工件后验摘要一致，无 QEMU 遗留。
+首次归档检查发生在 runner 尚未退出时，终态守卫拒绝执行；等待原作业终结后
+重新复核，没有重启 guest 或将中间态计为通过。
+
+本轮实际矩阵为 r207/r208 的两方向 cross-page、r209 的反向 ND、r210 的原方向
+tail；这些用例均持有两个独立计算请求。tail 反向 home、多请求故障恢复、现有
+全局对象引用的 generation 绑定、设备并行性与 AM3/AM4 仍待完成。

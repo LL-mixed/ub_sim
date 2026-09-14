@@ -235,7 +235,26 @@ python3 -m unittest discover -s guest-linux/aarch64/tests -p test_lingqu_shmem_p
 其中 `endpoint-queue --case` 原生 fixture 覆盖 `completion`、`capacity`、
 `protocol`、`legacy`、`replay`、`arguments`、`threads`；双线程夹具连续执行
 100 轮，并在首次领取完成前检查两条请求均被保留。这些属于队列合同测试。
-managed CLI 仍使用两次顺序计算，多请求计算入口及实际设备并发验收尚未接入。
+managed CLI 默认 `concurrent_requests=1`，保留 C→D 顺序计算；设置为 `2` 时，
+两个调用线程共享 A/B、分别写入不重叠 C/D，独立执行相同 quadratic 算子。
+两次结果都按 `(A+B+1)*(A+B+2)` 核对，禁止将原有依赖链作为独立并发请求。
+host 配置使用 `LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS=2`，guest boot 参数为
+`lingqu_shmem_pto.concurrent_requests=2`，独立验收器接受 `--concurrent-requests 2`。
+单对象、只读双对象、两种 home 和三种 geometry 均保留；当前模式 2 拒绝与
+六负例或短等待恢复选项组合，这些故障验收继续由顺序模式承担。
+
+两个请求共用一个 SDK/backend 会话，分别持有 metadata 页、三份 lease 和原
+op ID。驱动禁止打开第二个活动会话；r204 的原失败记录保留，修订后 r207 的
+home 1、只读双对象、四 CPU reader、cross-page 双请求运行整轮通过。
+r208 的 home 0 单对象双请求、r209 的 home 1 只读双对象四 CPU reader ND
+双请求均整轮通过；ND 验收包含 102 个实际传输分片及完整输入/输出校验。
+r210 的 home 0 只读双对象四 CPU reader tail 双请求也整轮通过，包括 102 个
+实际分片和 144-byte 末尾分片；tail 反向 home 仍待实际验证。
+主线程在领取完成前核对两条队列记录、六个 compute/in-flight pin、两页 metadata
+及 close/release 拒绝。两线程完成并 join 后才释放请求状态，主线程统一关闭
+共享会话。错误路径保留无法确认完成的资源，输出 `resources_retained=1`。
+`queued_overlap_verified` 仅表示请求同时被持有，设备并行性由独立判据记录；
+当前 `device_parallel_execution_verified=false`，完整 AM2 保持未完成。
 
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when

@@ -92,7 +92,10 @@ def validate_home_exports(text, mappings, qemu):
 
 def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
              require_negative_checks=False, require_readonly_inputs=False, layout="cross-page",
-             home_node=None):
+             home_node=None, concurrent_requests=1):
+    require(concurrent_requests in (1, 2), "unsupported concurrent request count")
+    require(concurrent_requests == 1 or not (require_negative_checks or require_timeout_recovery),
+            "queued requests cannot use negative or short-wait recovery mode")
     require(home_node in (None, 0, 1), "unsupported home node")
     home = 0 if home_node is None else home_node
     consumer = 1 - home
@@ -108,7 +111,8 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
         node = (home, consumer)[role]
         for prefix in ("MANAGED_PTO", "MANAGED_PTO_RESULT", "MANAGED_PTO_CONFIG",
                        "MANAGED_PTO_WAIT", "MANAGED_PTO_NEGATIVE", "MANAGED_PTO_NEGATIVE_DATA",
-                       "MANAGED_PTO_READONLY", "MANAGED_OWNER", "MANAGED_OWNER_PAIR"):
+                       "MANAGED_PTO_READONLY", "MANAGED_OWNER", "MANAGED_OWNER_PAIR",
+                       "MANAGED_PTO_QUEUE", "MANAGED_PTO_BATCH"):
             require(all(number(row, "node") == node for row in records(text, prefix)),
                     "actual node identity differs from its guest log")
         require("status=fail" not in text and "resources_retained=1" not in text,
@@ -151,15 +155,21 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
         require(done[0].get("objects", "1") == ("2" if require_readonly_inputs else "1") and
                 done[0].get("readonly_inputs", "0") == ("1" if require_readonly_inputs else "0"),
                 "missing or unexpected read-only object mode")
+        require(int(done[0].get("concurrent_requests", "1")) == concurrent_requests,
+                "guest result used a different compute mode")
         verified = [r for r in rows if "cpu_verify" in r]
         expected_vectors = [2, 3] if role == 0 else [0, 1, 2, 3]
         require([number(r, "vector") for r in verified] == expected_vectors,
                 f"node {node}: missing or repeated CPU checks")
         for row, vector in zip(verified, expected_vectors):
             require(row["cpu_verify"] == "pass" and number(row, "bytes") == tensor_bytes and
-                    row["checksum"] == oracle_checksum(vector, elements) and
+                    row["checksum"] == oracle_checksum(
+                        2 if vector == 3 and concurrent_requests == 2 else vector, elements) and
                     number(row, "version") == (1 if vector < 2 else vector),
                     f"node {node}: CPU oracle mismatch")
+            if vector == 3 and concurrent_requests == 2:
+                require(row["path"] == ("remote-" if role == 0 else "") + "tstore-cpu-independent",
+                        "independent output was reported as a dependent computation")
             if require_readonly_inputs:
                 require(row.get("object") == ("input" if vector < 2 else "output"),
                         "CPU verified the wrong object")
@@ -171,10 +181,12 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             dispatches = [r for r in rows if "retained_leases" in r]
             completions = [r for r in rows if "completion_op" in r]
             require([number(r, "dispatch") for r in dispatches] == [1, 2] and
-                    [number(r, "dispatch") for r in completions] == [1, 2],
-                    "expected two ordered dispatches and completions")
+                    (sorted(number(r, "dispatch") for r in completions) if concurrent_requests == 2 else
+                     [number(r, "dispatch") for r in completions]) == [1, 2],
+                    "expected two distinct dispatches and completions")
+            completions = sorted(completions, key=lambda row: number(row, "dispatch"))
             for request, completion, views in zip(dispatches, completions,
-                    ((0, 1, 2), (2, 1, 3))):
+                    ((0, 1, 2), (0 if concurrent_requests == 2 else 2, 1, 3))):
                 require(request["op_id"] == completion["completion_op"] and
                         request["generation"] == mapping["generation"] and
                         request["mapping_id"] == mapping["mapping_id"] and
@@ -184,7 +196,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                         completion["status"] == "1" and completion["error"] == "none",
                         "dispatch identity, geometry, lifetime or completion mismatch")
                 if require_readonly_inputs:
-                    first = mapping if request["dispatch"] == "1" else output
+                    first = mapping if request["dispatch"] == "1" or concurrent_requests == 2 else output
                     expected_ids = ",".join(r["mapping_id"] for r in (first, mapping, output))
                     require(request.get("object_maps") == expected_ids,
                             "dispatch did not borrow the expected object mappings")
@@ -222,15 +234,22 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                 events.append(("completion", row["dispatch"], row["completion_op"]))
     phases = ("submit", "timeout", "recovered", "completion") if require_timeout_recovery else (
         "submit", "completion")
-    require(events == [(phase, str(index + 1), request)
-                       for index, request in enumerate(requests) for phase in phases],
-            "PTO submission, wait and completion order mismatch")
+    if concurrent_requests == 2:
+        require(events[:2] == [("submit", str(i + 1), request) for i, request in enumerate(requests)] and
+                sorted(events[2:]) == [("completion", str(i + 1), request)
+                                       for i, request in enumerate(requests)],
+                "queued submissions did not precede both original completions")
+    else:
+        require(events == [(phase, str(index + 1), request)
+                           for index, request in enumerate(requests) for phase in phases],
+                "PTO submission, wait and completion order mismatch")
+    validate_batch(guests, requests, concurrent_requests)
     require(not (require_negative_checks and require_timeout_recovery),
             "negative checks cannot use short-wait recovery")
     output = output_maps[1] if require_readonly_inputs else None
     geometry = GEOMETRIES[layout]
     filtered = validate_negatives(guests, qemu, maps[1], requests, require_negative_checks, output, geometry)
-    validate_callbacks(filtered, maps[0], requests, output, geometry)
+    validate_callbacks(filtered, maps[0], requests, output, geometry, concurrent_requests)
     if home_node is not None:
         validate_home_exports(guests[0], [maps[0], output_maps[0]] if require_readonly_inputs else
                               [maps[0]], qemu)
@@ -242,13 +261,14 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             require(all(number(row, "requester_cna") == requester for row in records(qemu, prefix)),
                     "QEMU evidence belongs to another compute requester")
     validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs, geometry)
-    transport = validate_transport_chunks(qemu, requests, geometry) if layout != "cross-page" else None
+    transport = validate_transport_chunks(qemu, requests, geometry, concurrent_requests) if layout != "cross-page" else None
     if access_threads is not None:
         if require_readonly_inputs:
             validate_readonly_owners(guests, maps, output_maps, requests,
-                                     require_timeout_recovery, access_threads)
+                                     require_timeout_recovery, access_threads, concurrent_requests)
         else:
-            validate_owners(guests, maps, requests, require_timeout_recovery, access_threads)
+            validate_owners(guests, maps, requests, require_timeout_recovery, access_threads,
+                            concurrent_requests)
     require(not require_readonly_inputs or access_threads is not None,
             "read-only inputs require an explicit owner/thread gate")
     scope = ("multi-thread-" if access_threads else "single-thread-") + layout
@@ -265,8 +285,70 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             "layout": layout, "elements": elements, "tensor_bytes": tensor_bytes,
             "object_bytes": object_bytes, "transport_chunks": transport,
             "am2_complete": False,
+            "concurrent_requests": concurrent_requests,
+            "queued_overlap_verified": concurrent_requests == 2,
+            "device_parallel_execution_verified": False,
             **({"home_node": home, "compute_node": consumer, "home_export_verified": True}
                if home_node is not None else {})}
+
+
+def validate_batch(guests, requests, count):
+    prefixes = ("MANAGED_PTO_QUEUE", "MANAGED_PTO_BATCH")
+    require(not any(records(guests[0], prefix) for prefix in prefixes),
+            "home unexpectedly submitted a batch")
+    events = [(i, prefix, records(line, prefix)[0])
+              for i, line in enumerate(guests[1].splitlines())
+              for prefix in prefixes if line.startswith(prefix + " ")]
+    if count == 1:
+        require(not events, "unexpected queued computation evidence")
+        return
+    require(len(events) == 6 and [row["state"] for _, _, row in events] ==
+            ["queued", "queued", "overlap", "completed", "completed", "drained"],
+            "missing or reordered batch lifetime events")
+    require([prefix for _, prefix, _ in events] ==
+            [prefixes[0], prefixes[0], prefixes[1], prefixes[0], prefixes[0], prefixes[1]],
+            "incorrect queue/batch event type")
+    queued = [events[0][2], events[1][2]]
+    overlap, drained = events[2][2], events[5][2]
+    completed = [events[3][2], events[4][2]]
+    for index, row in enumerate(queued):
+        require(row["op_id"] == requests[index] and number(row, "dispatch") == index + 1 and
+                number(row, "queued_requests") == index + 1 and row["retained_leases"] == "3",
+                "queued request identity, ownership or capacity mismatch")
+    addresses = [number(row, "metadata_iova") for row in queued]
+    require(all(address > 0 and address % 4096 == 0 for address in addresses) and
+            addresses[0] != addresses[1], "concurrent requests reused metadata storage")
+    require(overlap["callers"] == overlap["queued_requests"] == "2" and
+            overlap["retained_leases"] == "6" and overlap["metadata_distinct"] == "1" and
+            overlap["close_guard"] == overlap["release_guard"] == "pass" and
+            overlap["op_ids"] == ",".join(requests), "batch did not retain both original operations")
+    require([row["queued_requests"] for row in completed] == ["1", "0"] and
+            sorted((number(row, "dispatch"), row["op_id"]) for row in completed) ==
+            list(enumerate(requests, 1)), "queued completions were duplicated, lost or misattributed")
+    require(drained["joined_callers"] == "2" and
+            drained["queued_requests"] == drained["compute_leases"] == "0",
+            "batch callers or leases were not drained")
+    lines = guests[1].splitlines()
+    for index, op_id in enumerate(requests):
+        submit = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
+                      f"op_id={op_id}" in line.split())
+        completion = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
+                          f"completion_op={op_id}" in line.split())
+        collected = next(i for i, _, row in events if row["state"] == "completed" and row["op_id"] == op_id)
+        require(submit < events[index][0] < events[2][0] < collected < completion < events[5][0],
+                "batch released a request before its original completion")
+    closing = [i for i, line in enumerate(lines) if line.startswith("MANAGED_OWNER ") and
+               "state=closing" in line.split()]
+    require(closing and all(events[1][0] < i < events[2][0] for i in closing),
+            "owner guards did not protect both queued requests")
+    cpu_outputs = [i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
+                   "cpu_verify=pass" in line.split() and
+                   records(line, "MANAGED_PTO")[0]["vector"] in ("2", "3")]
+    workers = [i for i, line in enumerate(lines) if line.startswith("MANAGED_OWNER ") and
+               "state=workers-drained" in line.split()]
+    require(len(cpu_outputs) == 2 and len(workers) == 1 and
+            events[5][0] < min(cpu_outputs) <= max(cpu_outputs) < workers[0],
+            "batch outputs or CPU workers were released before both callers joined")
 
 
 def validate_negatives(guests, qemu, mapping, requests, required, output_mapping=None,
@@ -463,7 +545,7 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required,
                 for row in published), "both objects must be initialized and published")
 
 
-def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads):
+def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads, concurrent_requests=1):
     require(0 <= threads <= 8, "invalid access thread count")
     for node, text in enumerate(guests):
         lines = text.splitlines()
@@ -499,14 +581,18 @@ def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads)
             closing = selected[1]
             count = threads if label == "input" else 0
             compute = (1 if label == "input" else 2) if recovery else 0
+            if concurrent_requests == 2:
+                compute = 4 if label == "input" else 2
             require(number(closing, "threads") == count and number(closing, "cpu_pins") == count + 1 and
                     number(closing, "compute_pins") == number(closing, "in_flight_pins") == compute and
                     closing["close_guard"] == closing["admission_guard"] == "pass" and
-                    closing["operation_id"] == (requests[1] if recovery else "0"),
+                    closing["operation_id"] == (requests[1] if recovery or concurrent_requests == 2 else "0"),
                     "read-only owner close/admission guard mismatch")
             completion = next(i for i, line in enumerate(lines) if
                 line.startswith(f"MANAGED_PTO node={mapping['node']} dispatch=2 completion_op="))
-            if recovery:
+            if concurrent_requests == 2:
+                require(positions[1] < completion, "queued owner guard occurred after completion")
+            elif recovery:
                 submit = next(i for i, line in enumerate(lines) if
                     line.startswith(f"MANAGED_PTO node={mapping['node']} dispatch=2 op_id="))
                 timeout = next(i for i, line in enumerate(lines) if
@@ -523,7 +609,7 @@ def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads)
         require(drained_positions[1] < drained_positions[0], "shared domain owner drained too early")
 
 
-def validate_owners(guests, maps, requests, recovery, threads):
+def validate_owners(guests, maps, requests, recovery, threads, concurrent_requests=1):
     require(0 <= threads <= 8, "invalid access thread count")
     for node, text in enumerate(guests):
         rows = records(text, "MANAGED_OWNER")
@@ -548,12 +634,12 @@ def validate_owners(guests, maps, requests, recovery, threads):
         if node == 0:
             continue
         closing, workers = rows[1:3]
-        compute = 3 if recovery else 0
+        compute = 6 if concurrent_requests == 2 else 3 if recovery else 0
         require(number(closing, "threads") == threads and
                 number(closing, "cpu_pins") == threads + 1 and
                 number(closing, "compute_pins") == number(closing, "in_flight_pins") == compute and
                 closing["close_guard"] == closing["admission_guard"] == "pass" and
-                closing["operation_id"] == (requests[1] if recovery else "0"),
+                closing["operation_id"] == (requests[1] if recovery or concurrent_requests == 2 else "0"),
                 "owner in-use close/admission guard mismatch")
         require(number(workers, "threads") == number(workers, "after_seal_threads") == threads and
                 number(workers, "checks") >= threads and workers["cpu_verify"] == "pass",
@@ -561,7 +647,9 @@ def validate_owners(guests, maps, requests, recovery, threads):
         completion_position = next(i for i, line in enumerate(lines)
                                    if line.startswith(f"MANAGED_PTO node={maps[node]['node']} dispatch=2 completion_op="))
         require(completion_position < owner_positions[2], "workers drained before original completion")
-        if recovery:
+        if concurrent_requests == 2:
+            require(owner_positions[1] < completion_position, "queued owner guard occurred after completion")
+        elif recovery:
             submit_position = next(i for i, line in enumerate(lines)
                                    if line.startswith(f"MANAGED_PTO node={maps[node]['node']} dispatch=2 op_id="))
             timeout_position = next(i for i, line in enumerate(lines)
@@ -574,7 +662,7 @@ def validate_owners(guests, maps, requests, recovery, threads):
 
 
 def validate_callbacks(text, mapping, requests, output_mapping=None,
-                       geometry=GEOMETRIES["cross-page"]):
+                       geometry=GEOMETRIES["cross-page"], concurrent_requests=1):
     elements, _, vector_offsets = geometry
     tensor_bytes = elements * 4
     require(not re.search(r"QEMU_UB_GM_.*(?: denied |REJECT |FAILURE_COMPLETION |TIMEOUT |METADATA_CRC_FAIL )", text),
@@ -585,7 +673,8 @@ def validate_callbacks(text, mapping, requests, output_mapping=None,
     registers = records(text, "SIM_QEMU_UB_GM_BIND_REGISTER")
     unbinds = records(text, "QEMU_UB_GM_UNBIND")
     require([r["request"] for r in registers] == requests and
-            [r["request"] for r in unbinds] == requests, "PTO completion sequence differs")
+            (sorted(r["request"] for r in unbinds) == sorted(requests) if concurrent_requests == 2 else
+             [r["request"] for r in unbinds] == requests), "PTO completion sequence differs")
     inputs = records(text, "QEMU_UB_GM_INPUT_AUTHORIZE")
     outputs = records(text, "QEMU_UB_GM_OUTPUT_AUTHORIZE")
     require(len(inputs) == 4 and len(outputs) == 2, "wrong PTO authorization count")
@@ -601,10 +690,11 @@ def validate_callbacks(text, mapping, requests, output_mapping=None,
         require(len({r["binding"] for r in auth}) == 3 and
                 {r["binding"] for r in auth} == {r["binding"] for r in gsva} and
                 all(number(r, "length") == tensor_bytes for r in auth), "binding identities differ")
-        offsets = [vector_offsets[v] for v in ((0, 1, 2) if index == 0 else (2, 1, 3))]
+        offsets = [vector_offsets[v] for v in ((0, 1, 2) if index == 0 else
+                                             (0 if concurrent_requests == 2 else 2, 1, 3))]
         output = output_mapping or mapping
         homes = [number(row, "cpu_base") for row in
-                 ((mapping if index == 0 else output), mapping, output)]
+                 ((mapping if index == 0 or concurrent_requests == 2 else output), mapping, output)]
         gsva_by_binding = {row["binding"]: row for row in gsva}
         for row, offset, home in zip(auth, offsets, homes):
             base = number(row, "local") - offset
@@ -624,7 +714,7 @@ def validate_callbacks(text, mapping, requests, output_mapping=None,
         for row in read + write:
             require(all(number(row, field) == number(authorizations[row["binding"]], field)
                         for field in ("map", "generation")), "callback mapping identity mismatch")
-        registered, unbound = registers[index], unbinds[index]
+        registered, unbound = select(registers)[0], select(unbinds)[0]
         require(registered["op"] == unbound["op"] == request and
                 registered["bindings"] == "3" and unbound["bindings"] == "3" and
                 unbound["reason"] == "completion_success" and
@@ -633,11 +723,16 @@ def validate_callbacks(text, mapping, requests, output_mapping=None,
                 (str(2 * tensor_bytes), str(tensor_bytes), "1", "0"),
                 "PTO completion accounting or zero-staging evidence mismatch")
     require(len(set(bases.values())) == len(bases), "distinct objects share a physical view")
-    require(number(outputs[0], "local") == number(inputs[2], "local"),
-            "TSTORE output is not the next TLOAD input")
+    if concurrent_requests == 2:
+        writes = [number(next(row for row in outputs if row["request"] == request), "local")
+                  for request in requests]
+        require(abs(writes[0] - writes[1]) >= tensor_bytes, "concurrent output ranges overlap")
+    else:
+        require(number(outputs[0], "local") == number(inputs[2], "local"),
+                "TSTORE output is not the next TLOAD input")
 
 
-def validate_transport_chunks(text, requests, geometry):
+def validate_transport_chunks(text, requests, geometry, concurrent_requests=1):
     """Match existing strict I/O trace pairs to the following completed callback.
 
     CPU MMIO traffic is at most eight bytes. Legacy bootstrap page reads also
@@ -656,7 +751,7 @@ def validate_transport_chunks(text, requests, geometry):
     strict_routes = {(number(row, "backing_token"), peers[(row["request"], row["binding"])])
                      for row in records(text, "QEMU_UB_GM_GSVA_BIND")}
     auth, backing, observed, seen = {}, {}, [], set()
-    pending, active = None, None
+    pending, active = None, set()
     non_pto_bulk_sends = 0
     counts = {"load": 0, "store": 0, "load_bytes": 0, "store_bytes": 0, "callbacks": 0}
     for line in text.splitlines():
@@ -665,14 +760,15 @@ def validate_transport_chunks(text, requests, geometry):
             continue
         rows = [] if io_line else records(line, "SIM_QEMU_UB_GM_BIND_REGISTER")
         if rows:
-            require(active is None and pending is None and not observed,
+            require(rows[0]["request"] not in active and len(active) < concurrent_requests and
+                    pending is None and not observed,
                     "overlapping PTO transport windows")
-            active = rows[0]["request"]
+            active.add(rows[0]["request"])
         rows = [] if io_line else records(line, "QEMU_UB_GM_UNBIND")
         if rows:
-            require(active == rows[0]["request"] and pending is None and not observed,
+            require(rows[0]["request"] in active and pending is None and not observed,
                     "PTO transport window closed with an incomplete transfer")
-            active = None
+            active.remove(rows[0]["request"])
         for prefix in ("QEMU_UB_GM_INPUT_AUTHORIZE", "QEMU_UB_GM_OUTPUT_AUTHORIZE"):
             rows = [] if io_line else records(line, prefix)
             if rows:
@@ -687,7 +783,7 @@ def validate_transport_chunks(text, requests, geometry):
             continue
         if rows and number(rows[0], "len") > 8:
             row = rows[0]
-            if active is None:
+            if not active:
                 require((number(row, "token"), number(row, "dcna")) not in strict_routes
                         and row["req"] not in seen,
                         "strict bulk transfer outside a registered PTO dispatch")
@@ -705,7 +801,7 @@ def validate_transport_chunks(text, requests, geometry):
         rows = records(line, "ubc sim_dec rx read_resp")
         if rows:
             row = rows[0]
-            if active is None:
+            if not active:
                 require(row["req"] not in seen, "replayed PTO transport response")
                 continue
             if pending is not None and row["req"] == pending["req"]:
@@ -726,14 +822,14 @@ def validate_transport_chunks(text, requests, geometry):
                 continue
             row = rows[0]
             key = row["request"], row["binding"]
-            require(active == row["request"] and key in auth and key in backing and
+            require(row["request"] in active and key in auth and key in backing and
                     pending is None and len(observed) > 1,
                     "multi-chunk callback has no complete transport evidence")
             length = number(row, "length")
             expected = [min(limit, length - done) for done in range(0, length, limit)]
             require([number(r, "len") for r in observed] == expected,
                     "callback transport chunks have gaps, duplication or truncation")
-            views = (2, 1, 3) if row["request"] == requests[1] else (0, 1, 2)
+            views = (0 if concurrent_requests == 2 else 2, 1, 3) if row["request"] == requests[1] else (0, 1, 2)
             offset = offsets[views[number(row, "binding") - 1]]
             identity = backing[key]
             for chunk in observed:
@@ -746,7 +842,7 @@ def validate_transport_chunks(text, requests, geometry):
             counts[kind.lower() + "_bytes"] += length
             counts["callbacks"] += 1
             observed = []
-    require(active is None and pending is None and not observed and counts["callbacks"] >= 6,
+    require(not active and pending is None and not observed and counts["callbacks"] >= 6,
             "unfinished or missing transport chunk sequence")
     return {**counts, "chunk_limit_bytes": limit, "request_response_verified": True,
             "scope": "registered-pto-dispatches", "non_pto_bulk_sends": non_pto_bulk_sends}
@@ -762,6 +858,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-timeout-recovery", action="store_true")
     parser.add_argument("--access-threads", type=int, choices=range(9))
+    parser.add_argument("--concurrent-requests", type=int, choices=(1, 2), default=1)
     parser.add_argument("--require-negative-checks", action="store_true")
     parser.add_argument("--require-readonly-inputs", action="store_true")
     parser.add_argument("--layout", choices=GEOMETRIES, default="cross-page")
@@ -775,7 +872,8 @@ def main():
         text = [data.decode("utf-8", errors="replace") for data in contents]
         result = validate(text[:2], text[2], args.require_timeout_recovery,
                           args.access_threads, args.require_negative_checks,
-                          args.require_readonly_inputs, args.layout, args.home_node)
+                          args.require_readonly_inputs, args.layout, args.home_node,
+                          args.concurrent_requests)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

@@ -1238,6 +1238,7 @@ mem_service_object_share_managed() (
       echo "key=managed-pto-$incarnation"
       echo "node_id=$node"
       echo "home_node=$home_node"
+      echo "concurrent_requests=$(cmdline_value lingqu_shmem_pto.concurrent_requests 1)"
       echo "generation=$(cmdline_value lingqu_shmem_pto_generation '')"
       echo "requester_cna=$(cmdline_value lingqu_shmem_pto_requester_cna '')"
       echo "artifact_fingerprint=$(cmdline_value lingqu_shmem_pto_artifact_fingerprint '')"

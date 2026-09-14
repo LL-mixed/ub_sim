@@ -206,9 +206,73 @@ def readonly_fixture(recovery=False, negative=False, threads=4):
     return guests, "\n".join(converted)
 
 
-def large_fixture(layout="nd", recovery=False, negative=False, readonly=True):
+def queued_fixture(readonly=True, threads=4):
+    """Synthetic two-caller evidence; no device execution is represented."""
+    guests, qemu = readonly_fixture(threads=threads) if readonly else owned_fixture(threads=threads)
+    lines = guests[1].splitlines()
+    submits = [line for line in lines if line.startswith("MANAGED_PTO ") and "retained_leases=" in line]
+    completes = [line for line in lines if line.startswith("MANAGED_PTO ") and "completion_op=" in line]
+    outputs = [line for line in lines if line.startswith("MANAGED_PTO ") and "cpu_verify=" in line
+               and validator.records(line, "MANAGED_PTO")[0]["vector"] in ("2", "3")]
+    closing = [line for line in lines if line.startswith("MANAGED_OWNER ") and "state=closing" in line]
+    unchanged = [line for line in lines if "probe=input-unchanged" in line]
+    removed = set(submits + completes + outputs + closing + unchanged)
+    batch = []
+    for index, line in enumerate(submits):
+        if index == 1:
+            line = line.replace("12160,8064,16256", "3968,8064,16256").replace(
+                "object_maps=10,9,10", "object_maps=9,9,10")
+        batch += [line, f"MANAGED_PTO_QUEUE node=1 state=queued dispatch={index+1} op_id={101+index} "
+                  f"queued_requests={index+1} retained_leases=3 metadata_iova={0x1000*(index+1):#x}"]
+    for line in closing:
+        count = (2 if "object=output" in line else 4) if readonly else 6
+        batch.append(line.replace("compute_pins=0", f"compute_pins={count}").replace(
+            "in_flight_pins=0", f"in_flight_pins={count}").replace("operation_id=0", "operation_id=102"))
+    batch.append("MANAGED_PTO_BATCH node=1 state=overlap callers=2 queued_requests=2 retained_leases=6 "
+                 "metadata_distinct=1 close_guard=pass release_guard=pass op_ids=101,102")
+    for count, index in enumerate((1, 0)):
+        batch += [f"MANAGED_PTO_QUEUE node=1 state=completed dispatch={index+1} op_id={101+index} "
+                  f"queued_requests={1-count}", completes[index]]
+    batch.append("MANAGED_PTO_BATCH node=1 state=drained joined_callers=2 queued_requests=0 compute_leases=0")
+    batch += outputs + unchanged
+    converted = []
+    for line in lines:
+        if line == submits[0]:
+            converted += batch
+        if line not in removed:
+            converted.append(line)
+    guests[1] = "\n".join(converted)
+    for node, text in enumerate(guests):
+        result = []
+        for line in text.splitlines():
+            if line.startswith("MANAGED_PTO ") and "cpu_verify=" in line and "vector=3 " in line:
+                line = re.sub(r"path=\S+", "path=" + ("remote-" if node == 0 else "") +
+                              "tstore-cpu-independent", line)
+                line = re.sub(r"checksum=\S+", "checksum=" + validator.oracle_checksum(2), line)
+            if line.startswith("MANAGED_PTO_RESULT "):
+                line += " concurrent_requests=2"
+            result.append(line)
+        guests[node] = "\n".join(result)
+    rows = [(line.split()[0], validator.records(line, line.split()[0])[0]) for line in qemu.splitlines()]
+    first_input = {prefix: row for prefix, row in rows if row.get("request") == "101" and
+                   row.get("binding") == "1"}
+    headers, bodies = [], {"101": [], "102": []}
+    for prefix, row in rows:
+        if row.get("request") == "102" and row.get("binding") == "1":
+            row = {key: ("102" if key in ("request", "op") else value)
+                   for key, value in first_input[prefix].items()}
+        line = prefix + " " + " ".join(f"{key}={value}" for key, value in row.items())
+        if prefix in ("QEMU_UB_GM_LOAD", "QEMU_UB_GM_STORE", "QEMU_UB_GM_FENCE", "QEMU_UB_GM_UNBIND"):
+            bodies[row["request"]].append(line)
+        else:
+            headers.append(line)
+    return guests, "\n".join(headers + bodies["102"] + bodies["101"])
+
+
+def large_fixture(layout="nd", recovery=False, negative=False, readonly=True, concurrent_requests=1):
     """Synthetic profile/chunk parser fixture; never actual transport evidence."""
-    guests, qemu = (readonly_fixture(recovery, negative) if readonly else
+    guests, qemu = (queued_fixture(readonly) if concurrent_requests == 2 else
+                    readonly_fixture(recovery, negative) if readonly else
                     negative_fixture() if negative else owned_fixture(recovery))
     elements, object_bytes, offsets = validator.GEOMETRIES[layout]
     tensor_bytes = elements * 4
@@ -229,13 +293,13 @@ def large_fixture(layout="nd", recovery=False, negative=False, readonly=True):
                 row["checksum"] = (validator.checksum64(validator.struct.pack(
                     f"<{elements}I", *([0x7fc00001] * elements)))
                     if prefix == "MANAGED_PTO_NEGATIVE_DATA" and vector >= 2 else
-                    validator.oracle_checksum(vector, elements))
+                    validator.oracle_checksum(2 if vector == 3 and concurrent_requests == 2 else vector, elements))
             if "inputs_published" in row or row.get("probe") == "input-unchanged":
                 row["bytes"] = str(object_bytes)
             if row.get("probe") == "cpu-write-denied":
                 row["address"] = hex(0x700000000000 + offsets[0])
             if "offsets" in row:
-                views = (0, 1, 2) if row["dispatch"] == "1" else (2, 1, 3)
+                views = (0, 1, 2) if row["dispatch"] == "1" else (0 if concurrent_requests == 2 else 2, 1, 3)
                 row.update(offsets=",".join(str(offsets[v]) for v in views),
                            tensor_bytes=str(tensor_bytes))
             lines.append(prefix + " " + " ".join(f"{k}={v}" for k, v in row.items()))
@@ -244,7 +308,7 @@ def large_fixture(layout="nd", recovery=False, negative=False, readonly=True):
     for line in qemu.splitlines():
         prefix = line.split()[0]
         row = validator.records(line, prefix)[0]
-        views = (2, 1, 3) if row.get("request") == "102" else (0, 1, 2)
+        views = (0 if concurrent_requests == 2 else 2, 1, 3) if row.get("request") == "102" else (0, 1, 2)
         if "binding" in row:
             vector = views[int(row["binding"]) - 1]
             for key in ("local", "addr"):
@@ -276,10 +340,15 @@ def large_fixture(layout="nd", recovery=False, negative=False, readonly=True):
     return guests, "\n".join(lines)
 
 
-def home_fixture(home, layout="cross-page", recovery=False, negative=False):
+def home_fixture(home, layout="cross-page", recovery=False, negative=False,
+                 concurrent_requests=1, readonly=True):
     """Synthetic physical-node/role fixture; never changes a runtime log."""
-    guests, qemu = (readonly_fixture(recovery=recovery, negative=negative) if layout == "cross-page"
-                   else large_fixture(layout=layout, readonly=True, recovery=recovery, negative=negative))
+    if concurrent_requests == 2:
+        guests, qemu = (queued_fixture(readonly) if layout == "cross-page" else
+                       large_fixture(layout, readonly=readonly, concurrent_requests=2))
+    else:
+        guests, qemu = (readonly_fixture(recovery=recovery, negative=negative) if layout == "cross-page"
+                       else large_fixture(layout=layout, readonly=True, recovery=recovery, negative=negative))
     if home == 1:
         qemu = qemu.replace("requester_cna=0xf002", "requester_cna=0xf001")
         qemu = qemu.replace("peer_cna=0x1", "peer_cna=0x2").replace("dcna=0x1", "dcna=0x2")
@@ -304,6 +373,89 @@ def home_fixture(home, layout="cross-page", recovery=False, negative=False):
 
 
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_queued_requests_verify_independent_outputs_both_homes_and_full_geometry(self):
+        for home in (0, 1):
+            for layout in ("cross-page", "nd", "tail"):
+                for readonly in (False, True):
+                    with self.subTest(home=home, layout=layout, readonly=readonly):
+                        guests, qemu = home_fixture(home, layout, concurrent_requests=2, readonly=readonly)
+                        result = validator.validate(guests, qemu, False, 4, False, readonly,
+                                                    layout, home, 2)
+                        self.assertEqual(result["concurrent_requests"], 2)
+                        self.assertTrue(result["queued_overlap_verified"])
+                        self.assertFalse(result["device_parallel_execution_verified"])
+                        self.assertFalse(result["am2_complete"])
+                        if layout != "cross-page":
+                            self.assertTrue(result["transport_chunks"]["request_response_verified"])
+                        with self.assertRaises(ValueError):
+                            validator.validate(guests, qemu, False, 4, False, readonly, layout, home, 1)
+
+    def test_queued_gate_rejects_lost_replayed_unpinned_or_early_released_requests(self):
+        guests, qemu = home_fixture(1, concurrent_requests=2)
+        mutations = (
+            ("metadata_iova=0x2000", "metadata_iova=0x1000"),
+            ("metadata_iova=0x2000", "metadata_iova=0x2001"),
+            ("retained_leases=6", "retained_leases=5"),
+            ("op_ids=101,102", "op_ids=101,101"),
+            ("state=overlap callers=2", "state=overlap callers=1"),
+            ("state=completed dispatch=1 op_id=101", "state=completed dispatch=1 op_id=102"),
+            ("state=completed dispatch=2 op_id=102 queued_requests=1",
+             "state=completed dispatch=2 op_id=102 queued_requests=0"),
+            ("joined_callers=2", "joined_callers=1"),
+            ("compute_pins=4", "compute_pins=3"),
+            ("in_flight_pins=4", "in_flight_pins=3"),
+            ("operation_id=102", "operation_id=101"),
+            ("metadata_distinct=1", "metadata_distinct=0"),
+            ("release_guard=pass", "release_guard=fail"),
+            ("concurrent_requests=2", "concurrent_requests=1"),
+        )
+        for old, new in mutations:
+            changed = list(guests)
+            self.assertIn(old, changed[0])
+            changed[0] = changed[0].replace(old, new, 1)
+            with self.subTest(mutation=old), self.assertRaises(ValueError):
+                validator.validate(changed, qemu, False, 4, False, True, "cross-page", 1, 2)
+        for state in ("queued", "completed", "overlap", "drained"):
+            changed = list(guests)
+            lines = changed[0].splitlines()
+            index = next(i for i, line in enumerate(lines) if line.startswith(
+                ("MANAGED_PTO_QUEUE ", "MANAGED_PTO_BATCH ")) and f"state={state}" in line.split())
+            lines.pop(index)
+            changed[0] = "\n".join(lines)
+            with self.subTest(missing=state), self.assertRaises(ValueError):
+                validator.validate(changed, qemu, False, 4, False, True, "cross-page", 1, 2)
+
+    def test_queued_oracle_and_callbacks_reject_dependent_input_and_overlapping_outputs(self):
+        guests, qemu = queued_fixture()
+        for changed in (qemu.replace("0x80203f80", "0x80202f80"), readonly_fixture()[1]):
+            self.assertNotEqual(changed, qemu)
+            with self.assertRaises(ValueError):
+                validator.validate(guests, changed, False, 4, False, True, concurrent_requests=2)
+        changed = [text.replace("path=" + ("remote-" if i == 0 else "") +
+                    "tstore-cpu-independent vector=3 version=3 checksum=" + validator.oracle_checksum(2),
+                    "path=" + ("remote-" if i == 0 else "") +
+                    "tstore-cpu-independent vector=3 version=3 checksum=" + validator.oracle_checksum(3))
+                   for i, text in enumerate(guests)]
+        self.assertNotEqual(changed, guests)
+        with self.assertRaises(ValueError):
+            validator.validate(changed, qemu, False, 4, False, True, concurrent_requests=2)
+
+    def test_queued_cli_requires_explicit_mode_and_keeps_original_log_hashes(self):
+        guests, qemu = home_fixture(1, concurrent_requests=2)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [pathlib.Path(directory)/name for name in ("a.log", "b.log", "qemu.log")]
+            for path, contents in zip(paths, [*guests, qemu]):
+                path.write_bytes(contents.encode())
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]), "--node-b", str(paths[1]),
+                       "--qemu-a", str(paths[2]), "--home-node", "1", "--require-readonly-inputs",
+                       "--access-threads", "4"]
+            self.assertEqual(subprocess.run(command, capture_output=True).returncode, 1)
+            result = subprocess.run(command + ["--concurrent-requests", "2"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual([row["sha256"] for row in report["sources"]],
+                             [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths])
+
     def test_home_export_contract_ignores_worker_prose_and_rejects_malformed_exports(self):
         for home in (0, 1):
             guests, qemu = home_fixture(home)

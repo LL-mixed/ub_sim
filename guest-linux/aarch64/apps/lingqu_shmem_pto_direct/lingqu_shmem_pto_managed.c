@@ -46,12 +46,14 @@ static const struct managed_geometry managed_geometries[] = {
 struct managed_config {
     char connect[128], key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
     uint64_t generation, fingerprint, timeout_ms, submit_timeout_ms;
-    uint32_t node, home_node, requester, access_threads;
+    uint32_t node, home_node, requester, access_threads, concurrent_requests;
     bool recovery_expected;
     bool negative_checks;
     bool readonly_inputs;
     struct managed_geometry geometry;
 };
+
+struct managed_batch;
 
 struct managed_state {
     struct managed_config config;
@@ -73,6 +75,9 @@ struct managed_state {
     struct lingqu_shmem_pto_endpoint *endpoint;
     struct lingqu_shmem_pto_inflight *inflight;
     void *metadata;
+    uint64_t metadata_iova;
+    struct managed_batch *batch;
+    unsigned request_round;
     char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
     bool held, completion_unknown;
     pthread_mutex_t workers_lock;
@@ -81,6 +86,16 @@ struct managed_state {
     unsigned workers_started, workers_ready, worker_checks, workers_observed_seal;
     bool workers_stop, owner_sealed;
     int worker_error;
+};
+
+struct managed_batch {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    struct managed_state *requests[2];
+    pthread_t threads[2];
+    unsigned started, submitted;
+    bool allow_poll;
+    int error;
 };
 
 static uint64_t now_ms(void)
@@ -127,7 +142,7 @@ static int read_config(const char *path, struct managed_config *config)
     const char *names[] = {"connect", "key", "node_id", "generation",
         "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
         "access_threads", "negative_checks", "readonly_inputs", "layout", "elements", "size_bytes",
-        "home_node"};
+        "home_node", "concurrent_requests"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -138,6 +153,7 @@ static int read_config(const char *path, struct managed_config *config)
     if (!file) return -errno;
     memset(config, 0, sizeof(*config));
     config->geometry = managed_geometries[0];
+    config->concurrent_requests = 1;
     while ((length = getline(&line, &capacity, file)) >= 0) {
         size_t n = (size_t)length;
         if (!n || n >= 512 || memchr(line, '\0', n)) goto out;
@@ -190,6 +206,8 @@ static int read_config(const char *path, struct managed_config *config)
             case 13: expected_bytes = number; break;
             case 14: if (number > 1) goto out;
                      config->home_node = (uint32_t)number; break;
+            case 15: if (number < 1 || number > 2) goto out;
+                     config->concurrent_requests = (uint32_t)number; break;
             default: goto out;
             }
         }
@@ -201,6 +219,8 @@ static int read_config(const char *path, struct managed_config *config)
     if (config->readonly_inputs && strlen(config->key) + strlen("-output") >=
         sizeof(config->key)) goto out;
     config->recovery_expected = (seen & 128) != 0;
+    if (config->concurrent_requests == 2 &&
+        (config->negative_checks || config->recovery_expected)) goto out;
     if (config->negative_checks && (config->recovery_expected ||
         config->generation > UINT64_MAX - 2 - NEGATIVE_CASES)) goto out;
     if (config->recovery_expected) {
@@ -277,7 +297,8 @@ static int verify_vector_callback(void *opaque,
             const uint32_t sentinel = 0x7fc00001;
             memcpy(&expected[i], &sentinel, sizeof(sentinel));
         } else {
-            expected[i] = expected_value(vector, i);
+            expected[i] = expected_value(vector == 3 && state->config.concurrent_requests == 2 ?
+                                         2 : vector, i);
         }
     }
     uint64_t checksum = mem_service_provider_checksum64(expected, bytes);
@@ -471,7 +492,8 @@ static int adopt_mapping(struct managed_state *state)
         if (!rc) state->owns_domain = true;
     }
     if (!rc) rc = mem_service_mapping_owner_adopt(state->domain, &state->mapping,
-        &state->lifecycle, release_operation, MAX_ACCESS_THREADS + 4, &state->owner, &status);
+        &state->lifecycle, release_operation, MAX_ACCESS_THREADS +
+        (state->config.concurrent_requests == 2 ? 7 : 4), &state->owner, &status);
     if (rc) return rc;
     state->held = false; /* This exact holder now belongs to the SDK owner. */
     struct mem_service_mapping_access_view view;
@@ -580,6 +602,8 @@ static int probe_owner_close(struct managed_state *state, bool in_flight)
     if (rc) return rc;
     unsigned expected_compute = !in_flight ? 0 : !state->config.readonly_inputs ? 3 :
                                 state->is_output ? 2 : 1;
+    if (in_flight && state->config.concurrent_requests == 2)
+        expected_compute = !state->config.readonly_inputs ? 6 : state->is_output ? 2 : 4;
     if (!stats.closing || !stats.mapping_pending || !stats.holder_pending ||
         stats.cpu_pins != 1 + state->workers_started ||
         stats.compute_pins != expected_compute || stats.in_flight_pins != expected_compute)
@@ -715,6 +739,60 @@ static int inject_negative(struct managed_state *state, unsigned fault,
         METADATA_BYTES, metadata_iova, wire);
 }
 
+/* Called with the batch lock held; always releases it before returning. */
+static int queued_wait_locked(struct managed_state *state, const LingquPtoDispatchSlotV2 *slot,
+                              uint64_t op_id, struct lingqu_shmem_pto_completion *completion)
+{
+    struct managed_batch *batch = state->batch;
+    int rc = lingqu_shmem_pto_endpoint_enqueue(state->endpoint, slot);
+    if (!rc) {
+        ++batch->submitted;
+        printf("MANAGED_PTO_QUEUE node=%u state=queued dispatch=%u op_id=%" PRIu64
+            " queued_requests=%u retained_leases=3 metadata_iova=0x%" PRIx64 "\n",
+            state->config.node, state->request_round, op_id,
+            lingqu_shmem_pto_endpoint_queued_count(state->endpoint), state->metadata_iova);
+        pthread_cond_broadcast(&batch->changed);
+        while (!batch->allow_poll && !batch->error)
+            pthread_cond_wait(&batch->changed, &batch->lock);
+        if (batch->error) rc = batch->error;
+    }
+    uint64_t started = now_ms();
+    if (!rc && !started) rc = -EIO;
+    while (!rc) {
+        rc = lingqu_shmem_pto_endpoint_poll(state->endpoint, op_id, completion);
+        if (!rc) {
+            printf("MANAGED_PTO_QUEUE node=%u state=completed dispatch=%u op_id=%" PRIu64
+                " queued_requests=%u\n", state->config.node, state->request_round, op_id,
+                lingqu_shmem_pto_endpoint_queued_count(state->endpoint));
+            break;
+        }
+        if (rc != -EAGAIN) break;
+        if (now_ms() - started >= state->config.timeout_ms) { rc = -ETIMEDOUT; break; }
+        pthread_mutex_unlock(&batch->lock);
+        usleep(1000);
+        pthread_mutex_lock(&batch->lock);
+        rc = batch->error;
+    }
+    pthread_mutex_unlock(&batch->lock);
+    return rc;
+}
+
+static int allocate_metadata(struct managed_state *state)
+{
+    state->metadata = mmap(NULL, METADATA_BYTES, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (state->metadata == MAP_FAILED) { state->metadata = NULL; return -errno; }
+    memset(state->metadata, 0, METADATA_BYTES);
+    return mlock(state->metadata, METADATA_BYTES) ? -errno : 0;
+}
+
+static int open_compute(struct managed_state *state)
+{
+    int rc = lingqu_shmem_mem_service_open_managed(&state->compute);
+    if (rc || state->config.concurrent_requests == 2) return rc;
+    return allocate_metadata(state);
+}
+
 static int dispatch_vector_checked(struct managed_state *state, unsigned round, unsigned fault)
 {
     struct lingqu_shmem_memref *memrefs[3] = {0};
@@ -723,7 +801,8 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     struct lingqu_shmem_pto_completion completion;
     LingquPtoDispatchSlotV2 slot;
     uint64_t metadata_iova;
-    unsigned vectors[3] = {round == 1 ? 0 : 2, 1, round + 1};
+    unsigned vectors[3] = {round == 1 || state->config.concurrent_requests == 2 ? 0 : 2,
+                          1, round + 1};
     int rc;
     for (unsigned i = 0; i < 3; ++i) {
         struct lingqu_shmem_memref_spec spec = {
@@ -742,6 +821,7 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     }
     rc = lingqu_shmem_sim_phys_for_virt(state->metadata, &metadata_iova);
     if (rc) return rc;
+    state->metadata_iova = metadata_iova;
     struct lingqu_shmem_pto_request request = {
         .op_id = state->config.generation + (fault ? 2 + fault : round),
         .request_id = state->config.generation + (fault ? 2 + fault : round), .callable_id = 1,
@@ -763,10 +843,21 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             return -EPROTO;
         }
     }
-    if (lingqu_shmem_mem_service_active_leases(state->compute) != 3) return -EPROTO;
+    if (!state->batch && lingqu_shmem_mem_service_active_leases(state->compute) != 3)
+        return -EPROTO;
     for (unsigned i = 0; i < 3; ++i) {
         rc = lingqu_shmem_mem_service_lease_begin(state->leases[i], request.op_id);
         if (rc) return rc;
+    }
+    if (state->batch) {
+        pthread_mutex_lock(&state->batch->lock);
+        while (state->batch->submitted != round - 1 && !state->batch->error)
+            pthread_cond_wait(&state->batch->changed, &state->batch->lock);
+        if (state->batch->error) {
+            rc = state->batch->error;
+            pthread_mutex_unlock(&state->batch->lock);
+            return rc;
+        }
     }
     const char *expected_error = fault == 2 || fault >= 5 ?
         LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED : LINGQU_PTO_UB_GM_CODE_BAD_MEMREF;
@@ -787,8 +878,9 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         vector_state(state, vectors[1])->mapping_id,
         vector_state(state, vectors[2])->mapping_id);
     state->completion_unknown = true;
-    rc = lingqu_shmem_pto_endpoint_submit(state->endpoint, &slot,
-                                          state->config.submit_timeout_ms, &completion);
+    rc = state->batch ? queued_wait_locked(state, &slot, request.op_id, &completion) :
+        lingqu_shmem_pto_endpoint_submit(state->endpoint, &slot,
+                                         state->config.submit_timeout_ms, &completion);
     bool recovered = false;
     if (rc == -ETIMEDOUT && state->config.recovery_expected) {
         if (lingqu_shmem_pto_endpoint_pending_op(state->endpoint) != request.op_id ||
@@ -848,12 +940,126 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     if (!lingqu_shmem_pto_completion_succeeded(&completion)) return -EIO;
     rc = release_compute(state);
     if (rc) return rc;
+    if (state->batch) return 0; /* Parent verifies C then D after both callers join. */
     return verify_vector(state, vectors[2], round == 1 ? "tstore-cpu" : "tstore-tload-cpu");
 }
 
 static int dispatch_vector(struct managed_state *state, unsigned round)
 {
     return dispatch_vector_checked(state, round, 0);
+}
+
+static void *compute_caller(void *opaque)
+{
+    struct managed_state *request = opaque;
+    int rc = dispatch_vector(request, request->request_round);
+    pthread_mutex_lock(&request->batch->lock);
+    if (rc && !request->batch->error) request->batch->error = rc;
+    pthread_cond_broadcast(&request->batch->changed);
+    pthread_mutex_unlock(&request->batch->lock);
+    return NULL;
+}
+
+/* Both submitted callers are gated here, so none can consume a completion. */
+static int probe_batch(struct managed_state *state)
+{
+    struct managed_batch *batch = state->batch;
+    if (batch->submitted != 2 || batch->started != 2 ||
+        lingqu_shmem_pto_endpoint_queued_count(state->endpoint) != 2 ||
+        lingqu_shmem_pto_endpoint_close_checked(state->endpoint) != -EBUSY)
+        return -EPROTO;
+    struct managed_state *first = batch->requests[0], *second = batch->requests[1];
+    if (!state->compute || first->compute != state->compute || second->compute != state->compute ||
+        lingqu_shmem_mem_service_active_leases(state->compute) != 6 ||
+        first->metadata == second->metadata ||
+        !first->metadata_iova || !second->metadata_iova ||
+        first->metadata_iova / METADATA_BYTES == second->metadata_iova / METADATA_BYTES)
+        return -EPROTO;
+    for (unsigned i = 0; i < 2; ++i) {
+        struct managed_state *request = batch->requests[i];
+        if (!request->completion_unknown ||
+            release_compute(request) != -EBUSY) return -EPROTO;
+        for (unsigned j = 0; j < 3; ++j) {
+            int rc = lingqu_shmem_mem_service_release(request->leases[j]);
+            if (rc != -EBUSY) {
+                if (!rc) request->leases[j] = NULL;
+                return -EPROTO;
+            }
+        }
+    }
+    int rc = probe_owner_close(state, true);
+    if (!rc) printf("MANAGED_PTO_BATCH node=%u state=overlap callers=2 queued_requests=2 "
+        "retained_leases=6 metadata_distinct=1 close_guard=pass release_guard=pass "
+        "op_ids=%" PRIu64 ",%" PRIu64 "\n", state->config.node,
+        state->config.generation + 1, state->config.generation + 2);
+    return rc;
+}
+
+static int dispatch_batch(struct managed_state *state)
+{
+    struct managed_batch *batch = calloc(1, sizeof(*batch));
+    if (!batch) return -ENOMEM;
+    state->batch = batch;
+    int rc = pthread_mutex_init(&batch->lock, NULL);
+    if (rc) return -rc;
+    rc = pthread_cond_init(&batch->changed, NULL);
+    if (rc) return -rc;
+    for (unsigned i = 0; i < 2; ++i) {
+        struct managed_state *request = calloc(1, sizeof(*request));
+        if (!request) return -ENOMEM;
+        batch->requests[i] = request;
+        request->config = state->config;
+        request->allocation = state->allocation;
+        request->mapping_id = state->mapping_id;
+        request->owner = state->owner;
+        request->output = state->output;
+        request->domain = state->domain;
+        request->endpoint = state->endpoint;
+        request->compute = state->compute; /* Borrowed until both callers join. */
+        request->batch = batch;
+        request->request_round = i + 1;
+        rc = allocate_metadata(request);
+        if (rc) return rc;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        rc = pthread_create(&batch->threads[i], NULL, compute_caller, batch->requests[i]);
+        if (rc) break;
+        ++batch->started;
+    }
+    pthread_mutex_lock(&batch->lock);
+    if (rc && !batch->error) batch->error = -rc;
+    while (batch->submitted < 2 && !batch->error)
+        pthread_cond_wait(&batch->changed, &batch->lock);
+    if (!batch->error) batch->error = probe_batch(state);
+    batch->allow_poll = true;
+    pthread_cond_broadcast(&batch->changed);
+    pthread_mutex_unlock(&batch->lock);
+    for (unsigned i = 0; i < batch->started; ++i) {
+        rc = pthread_join(batch->threads[i], NULL);
+        if (rc) return -rc;
+    }
+    state->completion_unknown = batch->requests[0]->completion_unknown ||
+                                batch->requests[1]->completion_unknown;
+    if (batch->error) return batch->error;
+    if (state->completion_unknown || lingqu_shmem_pto_endpoint_queued_count(state->endpoint))
+        return -EPROTO;
+    if (lingqu_shmem_mem_service_active_leases(state->compute)) return -EPROTO;
+    for (unsigned i = 0; i < 2; ++i) {
+        struct managed_state *request = batch->requests[i];
+        request->compute = NULL;
+        if (munmap(request->metadata, METADATA_BYTES)) return -errno;
+        free(request);
+        batch->requests[i] = NULL;
+    }
+    printf("MANAGED_PTO_BATCH node=%u state=drained joined_callers=2 queued_requests=0 "
+        "compute_leases=0\n", state->config.node);
+    pthread_cond_destroy(&batch->changed);
+    pthread_mutex_destroy(&batch->lock);
+    free(batch);
+    state->batch = NULL;
+    rc = verify_vector(state, 2, "tstore-cpu");
+    if (!rc) rc = verify_vector(state, 3, "tstore-cpu-independent");
+    return rc;
 }
 
 static int readonly_cpu_probe(void *opaque,
@@ -930,7 +1136,8 @@ static int run_data(struct managed_state *state)
         if (!rc && state->output) rc = mem_service_mapping_lease_apply(
             state->output->cpu_pin, seed_inputs_callback, state->output);
         if (!rc) rc = verify_vector(state, 2, "remote-tstore-cpu");
-        if (!rc) rc = verify_vector(state, 3, "remote-tstore-tload-cpu");
+        if (!rc) rc = verify_vector(state, 3, state->config.concurrent_requests == 2 ?
+                                    "remote-tstore-cpu-independent" : "remote-tstore-tload-cpu");
         if (!rc) rc = wait_allocation(state, "active", true);
         if (!rc && state->output) rc = wait_allocation(state->output, "active", true);
         return rc;
@@ -938,20 +1145,18 @@ static int run_data(struct managed_state *state)
     rc = verify_vector(state, 0, "cpu-cpu");
     if (!rc) rc = verify_vector(state, 1, "cpu-cpu");
     if (!rc && state->config.readonly_inputs) rc = probe_readonly_input(state);
-    if (!rc) rc = lingqu_shmem_mem_service_open_managed(&state->compute);
+    if (!rc) rc = open_compute(state);
     struct lingqu_shmem_pto_endpoint_info endpoint_info;
     if (!rc) rc = lingqu_shmem_pto_endpoint_open(&state->endpoint, &endpoint_info);
     if (rc) return rc;
-    state->metadata = mmap(NULL, METADATA_BYTES, PROT_READ | PROT_WRITE,
-                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (state->metadata == MAP_FAILED) { state->metadata = NULL; return -errno; }
-    memset(state->metadata, 0, METADATA_BYTES);
-    if (mlock(state->metadata, METADATA_BYTES)) return -errno;
     rc = start_workers(state);
     for (unsigned fault = 1; !rc && state->config.negative_checks && fault <= NEGATIVE_CASES; ++fault)
         rc = dispatch_vector_checked(state, 1, fault);
-    if (!rc) rc = dispatch_vector(state, 1);
-    if (!rc) rc = dispatch_vector(state, 2);
+    if (!rc && state->config.concurrent_requests == 2) rc = dispatch_batch(state);
+    else {
+        if (!rc) rc = dispatch_vector(state, 1);
+        if (!rc) rc = dispatch_vector(state, 2);
+    }
     if (!rc && state->config.readonly_inputs) rc = mem_service_mapping_lease_apply(
         state->cpu_pin, readonly_input_unchanged, state);
     if (!rc && !state->owner_sealed) rc = probe_owner_close(state, false);
@@ -984,11 +1189,12 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     if (validate_only) {
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=%s "
             "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
-            " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u home_node=%u\n",
+            " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u home_node=%u"
+            " concurrent_requests=%u\n",
             config.node, config.geometry.object_bytes, config.geometry.name,
             config.geometry.elements, config.submit_timeout_ms,
             config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0,
-            config.readonly_inputs ? 1 : 0, config.home_node);
+            config.readonly_inputs ? 1 : 0, config.home_node, config.concurrent_requests);
         return 0;
     }
     state = calloc(1, sizeof(*state));
@@ -1036,9 +1242,10 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     rc = mem_service_provider_obmm_endpoint_close_checked(&state->provider);
     if (rc) goto failed;
     printf("MANAGED_PTO_RESULT node=%u status=pass key=%s generation=%" PRIu64
-        " mapping_closed=1 holder_released=1 compute_leases=0 objects=%u readonly_inputs=%u\n",
+        " mapping_closed=1 holder_released=1 compute_leases=0 objects=%u readonly_inputs=%u"
+        " concurrent_requests=%u\n",
         config.node, config.key, state->allocation.generation,
-        state->output ? 2 : 1, config.readonly_inputs ? 1 : 0);
+        state->output ? 2 : 1, config.readonly_inputs ? 1 : 0, config.concurrent_requests);
     pthread_cond_destroy(&state->workers_condition);
     pthread_mutex_destroy(&state->workers_lock);
     free(state->output);

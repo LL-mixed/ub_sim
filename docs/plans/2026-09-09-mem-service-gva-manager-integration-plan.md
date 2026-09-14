@@ -327,6 +327,28 @@ CMDQ/CQ 可用深度及本地记录上限的最小值；CQ 可批量到达，按
 只读/负例、迟到恢复与两方向 home 验证继续保留。队列并发接纳和设备并行执行
 分别计量；接口单测或单一两请求子集不关闭完整 AM2 的多请求出口。
 
+本轮 CLI 配置新增 `concurrent_requests=1|2`，默认 1；host 使用
+`LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS`，guest 参数使用带点命名空间
+`lingqu_shmem_pto.concurrent_requests`。模式 2 同时适用于单对象及只读双对象，
+两个请求共用一个 compute/backend context，各自持有独立 metadata 页及三份 lease；
+owner 的容量预留六个计算借用
+与所有 CPU reader。两个请求完成全部借用及提交后，主线程检查六个在途 pin、
+两份不同 metadata、endpoint close 拒绝和 owner close/admission 拒绝，再允许
+两个调用线程领取完成。所有线程加入且共享 context 的六份 lease 全部释放后，
+才释放请求状态，随后执行原 owner drain；共享 context 由主线程统一关闭。
+准备、提交或完成失败须唤醒其余等待线程并保留未知完成请求的全部资源。
+现有六负例及短等待恢复仍用默认顺序模式；模式 2 与这两种选项组合暂时拒绝，
+相关多请求故障恢复出口继续保留。验收按原请求关联输出、回调和完成，允许跨请求
+乱序；必须检查独立模式的 D oracle、输出不重叠及真实数据 backing，不能只检查
+新增日志标记。设备是否并行执行保留独立判断，不由两个软件请求被持有推导。
+
+r204 的首次真实双请求运行在提交前返回 `-EBUSY`，未产生队列提交记录。
+驱动 `linqu_ub_open` 对 `active_file` 实施独占，原先每请求打开 backend 的设计
+与该限制冲突。修订为上述共享会话；本路径只使用 strict mapping 注册/注销，
+调用经共享 owner/access domain 串行化，runtime 的 fd 在所有请求退出前保持有效。
+不扩展此结论到会修改 SQ/CQ 或 future 状态的通用 async API。r204 保留为失败证据，
+修订后的运行须重新验证六份 lease、两页 metadata、完成关联及资源归零。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。
@@ -477,7 +499,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
-| AM2 | 进行中：四种读写组合、四线程 owner、只读双对象、ND/tail 大尺寸与 cross-page home 互换子集通过；完整阶段未完成 | 多请求计算并发、现有全局对象引用绑定及更大尺寸反向 home | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176/r177b/r178 的大尺寸数据、负例、恢复和分片证据保留；r186c 反向原日志独立复核，r191/r192 权限矩阵、r193/r194 两方向原 completion 恢复通过；启动及解析失败原记录保留；A07-A11 整项仍未关闭 |
+| AM2 | 进行中：四种读写组合、四线程 owner、只读双对象、大尺寸、home 互换及共享会话双请求子集通过；完整阶段未完成 | 多请求故障恢复、现有全局对象引用绑定、tail 反向 home 及设备并行性独立验收 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176/r177b/r178 与 r186c/r191-r194 的既有证据保留；r207/r208 的双方向 cross-page、r209 的反向 ND、r210 的原方向 tail 双请求整轮通过，大尺寸两轮各核对 102 个分片；r204 的重复打开会话失败及既有启动/解析失败原记录保留；A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
 

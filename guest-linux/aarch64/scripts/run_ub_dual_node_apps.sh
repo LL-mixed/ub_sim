@@ -80,6 +80,7 @@ LINGQU_SHMEM_PTO_ACCESS_THREADS="${LINGQU_SHMEM_PTO_ACCESS_THREADS:-0}"
 LINGQU_SHMEM_PTO_NEGATIVE_CHECKS="${LINGQU_SHMEM_PTO_NEGATIVE_CHECKS:-0}"
 LINGQU_SHMEM_PTO_READONLY_INPUTS="${LINGQU_SHMEM_PTO_READONLY_INPUTS:-0}"
 LINGQU_SHMEM_PTO_HOME_NODE="${LINGQU_SHMEM_PTO_HOME_NODE:-0}"
+LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS="${LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS:-1}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
 LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
@@ -491,6 +492,7 @@ validate_lingqu_shmem_pto_config() {
     "negative-checks:$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS" \
     "readonly-inputs:$LINGQU_SHMEM_PTO_READONLY_INPUTS" \
     "home-node:$LINGQU_SHMEM_PTO_HOME_NODE" \
+    "concurrent-requests:$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
     "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
     "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA" \
@@ -549,6 +551,13 @@ validate_lingqu_shmem_pto_config() {
   if (( LINGQU_SHMEM_PTO_ACCESS_THREADS > 8 )) ||
      { (( LINGQU_SHMEM_PTO_ACCESS_THREADS != 0 )) && ! managed_pto_selected; }; then
     echo "access threads require managed cpu-pto and a count in 0..8" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS < 1 || LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS > 2 )) ||
+     { (( LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS == 2 )) &&
+       { ! managed_pto_selected || (( LINGQU_SHMEM_PTO_NEGATIVE_CHECKS != 0 ||
+                                      LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS != 0 )); }; }; then
+    echo "concurrent requests require managed cpu-pto, count 1..2, and no negative/short-wait option" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_READONLY_INPUTS > 1 )) ||
@@ -708,6 +717,7 @@ validate_lingqu_shmem_pto_config() {
   LINGQU_SHMEM_PTO_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_TIMEOUT_MS))
   LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS=$((LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS))
   LINGQU_SHMEM_PTO_ACCESS_THREADS=$((LINGQU_SHMEM_PTO_ACCESS_THREADS))
+  LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS=$((LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS))
   LINGQU_SHMEM_PTO_NEGATIVE_CHECKS=$((LINGQU_SHMEM_PTO_NEGATIVE_CHECKS))
   LINGQU_SHMEM_PTO_READONLY_INPUTS=$((LINGQU_SHMEM_PTO_READONLY_INPUTS))
   LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS=$((LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS))
@@ -733,6 +743,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_readonly_inputs=$LINGQU_SHMEM_PTO_READONLY_INPUTS"
   # This userspace-only option must not consume a kernel init environment slot.
   append_cmdline_if_missing "lingqu_shmem_pto.home_node=$LINGQU_SHMEM_PTO_HOME_NODE"
+  append_cmdline_if_missing "lingqu_shmem_pto.concurrent_requests=$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS"
   append_cmdline_if_missing "lingqu_shmem_pto_cancel_after_ms=$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
   append_cmdline_if_missing "lingqu_shmem_pto_fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE"
@@ -3847,6 +3858,7 @@ run_iteration() {
         --home-node "$LINGQU_SHMEM_PTO_HOME_NODE" \
         --layout "$LINGQU_SHMEM_PTO_LAYOUT" \
         --access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
+        --concurrent-requests "$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
         "${recovery_args[@]}" \
         --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1
     else
@@ -3964,6 +3976,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_generation=${LINGQU_SHMEM_PTO_GENERATION}"
     echo "lingqu_shmem_pto_nodea_cna=${LINGQU_SHMEM_PTO_NODEA_CNA}"
     echo "lingqu_shmem_pto_home_node=${LINGQU_SHMEM_PTO_HOME_NODE}"
+    echo "lingqu_shmem_pto_concurrent_requests=${LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS}"
     echo "lingqu_shmem_pto_nodeb_cna=${LINGQU_SHMEM_PTO_NODEB_CNA}"
     echo "lingqu_shmem_pto_authorization_delay_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS}"
     echo "lingqu_shmem_pto_authorization_timeout_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS}"
