@@ -153,6 +153,14 @@ checksum、当前 content version 或 backing 归属。后续 SDK 必须通过�
 现有 managed mapping 生命周期；内容发布和重启后的身份域也须由服务端证明。
 编码夹具通过不能关闭全局引用绑定、W5 消费者接入、AM2 或 AM3。
 
+服务权威状态先复用现有 record table 保存逻辑 object key 与完整 V2 的显式绑定，
+不新增第二套对象目录。写入按 begin/stage/seal 组织：begin 要求 allocation owner
+是唯一 holder 且所有映射已解除，推进 content version 并立即拒绝旧引用；stage
+可登记多个视图，seal 在写入映射确认清理后发布这一版本。中途失败不恢复旧版本，
+放弃该轮写入通过既有退役与回收处理。resolve/acquire 必须同时核对登记视图及
+当前 allocation；V2 模式拒绝绕过版本检查的旧 raw acquire/map。core、RPC、SDK
+provider 发布/可见性与 W5 逐层接通，只有完整数据链路验证后才能关闭该项。
+
 私有 descriptor 从 home kernel alloc/query 结果生成；完整传播实际 epoch 与 token，
 不填固定 epoch，不以 token ID 推导 token value。现有 UAPI 未包含的上下文状态由
 provider/平台绑定显式维护；确需跨进程传递时再做版本化 UAPI 扩展。

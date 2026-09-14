@@ -54,6 +54,13 @@ r216 完整 Python 回归 244 项为 239 通过、5 项环境跳过、零失败/
 清单无遗漏或重复。权威内容版本与 allocation 绑定、SDK acquire/map、W5
 仍未接通，编码通过不关闭 AM2；详细源码指纹与验收边界见实施记录。
 
+随后已补上 service core 的显式 record/allocation 绑定与 begin/stage/seal、
+resolve/acquire：写入前推进版本，按登记的完整 V2 和当前 allocation 核对引用，
+拒绝旧 raw 入口绕过。r219 完整 247 项为 242 通过、5 项环境跳过、零失败/错误；
+原生、安装态 SDK 与 sanitizer 通过。本轮同时定位并修复 snapshot restore 的
+大栈帧溢出，原失败记录保留，新增 1 MiB 栈回归通过。wire、SDK reader mapping、
+provider 发布/可见性与 W5 仍未接通，core metadata 结果不代替实际数据闭环验收。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。

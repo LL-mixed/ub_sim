@@ -2577,3 +2577,69 @@ gitlink/lock 保持原状；完整 AM2、AM3 与总目标均未验收。
 分片日志、安装/契约验证、汇总及未完成串行尝试的停止前后状态，共 2,041,972
 bytes；SHA-256 为
 `49a8a6cbfe05f588bdb7fc2d265795afe53c09e83e3b8ed501d253b92b3f35dd`。
+
+## 2026-09-14 续作：V2 服务 core 的内容发布与显式绑定
+
+新增 core begin/stage/seal 与 resolve/acquire，使用同一个 managed allocation
+和现有 record table 的专用 managed-view kind。完整 V2 与逻辑 object key 显式
+登记；拒绝只按 hash、相同字符串或调用方自报版本取得 holder。V1 projection
+明确拒绝 managed-view，避免 allocation-relative offset 被当作旧 arena offset。
+
+begin 要求 ACTIVE provider backing、唯一 owner holder 和零遗留 mapping，
+推进 content version 并进入 writing；旧引用立即失效。stage 可登记同一版本
+的多个视图，同版本相同内容可重复登记，冲突被拒绝。seal 要求至少一份有效登记
+以及全部写入 mapping 完成清理；pending、active、closing 均阻止 seal。失败
+不恢复旧内容版本；放弃写入须沿既有退役/释放/回收路径处理。V2 模式拒绝旧 raw
+acquire；旧 mapping BEGIN 仅允许 writing 状态的唯一 owner，封存后拒绝。
+
+本地 6 项轻量测试通过，包括既有 codec 的 4 项和新增 catalog 的 2 项。
+core CLI 夹具覆盖双视图、12 种格式合法但未登记的身份/视图替换、100 轮内容
+版本更新、读 holder 阻止重写、record 容量、冲突、元数据损坏、版本溢出及同地址
+数值的新 generation/home/incarnation 替换。测试使用纯元数据 backing 描述，
+没有执行实际 kernel 地址重用或读取 payload。CLI 只在全部断言通过后打印 pass。
+
+r218 以该轮独立服务源码启动八个完整 Python 回归分片及 artifact/install/sanitizer
+门禁。源码归档 SHA-256 为
+`28dc5393d307cee8d013e9de0dbe57c649d666c5fa37e1967525c454faecd8aa`；
+208 项源码清单 SHA-256 为
+`0ed0d061251b225b23b9857a601813bea5a3614c1da0971c5e20ee4db1ebaa4c`。
+r217 仅为先前上传的候选快照，没有启动验证或计作通过；夹具将成功提示移到
+所有检查之后，该轮完整验证采用 r218。
+
+r218 artifact 门禁在 `restore-policy-fixtures` 段错误退出；独立 ASan 重建确认
+`mem_service_restore_snapshot()` 栈溢出，调用链同时包含夹具的三份完整 service
+与恢复函数的临时 service。新增 record 字段增大了这些有界表，引出了大栈帧问题。
+修复将生产恢复临时快照改为检查分配失败且所有出口释放的堆对象；单进程 CLI
+夹具使用每次显式初始化的静态 scratch。新增 1 MiB 栈下完整恢复夹具回归，没有
+提高环境栈限制或删减恢复断言。原失败日志及 ASan 调用栈保留。
+
+r218 原始完整回归共 246 项：240 通过、5 项环境跳过、1 项失败、零错误，
+唯一失败为 `test_restore_policy_fixtures_fail_closed_until_commit`；其余分片通过。
+
+修复后的 r219 再次启动完整八分片、artifact/install/core sanitizer，以及
+1 MiB 栈下的同一 ASan restore fixture。artifact 与独立 ASan 容器均 exit 0，
+完整 CLI、安装态 SDK runtime（包含服务重启）、V2 codec、catalog ASan/UBSan、
+五份生成清单比对及低栈恢复全部通过。完整八分片均 exit 0，247 项为 242 通过、
+5 项环境跳过、零失败、零错误；执行清单逐项核对，无遗漏或重复。五项跳过仍为
+三项独立仓库缺少 ub_sim 布局、一项 deb 交叉工具链、一项离线网卡条件。
+最终源码 SHA-256 为
+`0efb4a7b014ad7d1e8ce73832aa415d3d196a9dabede0c8f4bdb979ba055e4c0`，
+208 项源码清单 SHA-256 为
+`dc14d206ae079d8a642171e57b1186b09b07ac4ef5e461183491a5e721862a19`。
+
+**边界：** 以上 API 仅接通串行化 service core。wire 幂等/目录 readiness 门禁、
+SDK provider publish 与可见性、V2 reader mapping 和 W5 仍待接入；seal 接受
+可信 writer 的元数据，不提供实际 payload checksum 证明。core 内存结构变化
+不改变既有 client/provider SDK ABI。record/managed 的重启恢复、独立逻辑 key
+的回收以及完整并发/性能矩阵仍未验收，AM2/AM3/总目标保持未完成。
+
+本批服务已提交为 `49ad632b69d5c860656c2c78317f31ff57ee3919`，提交前
+208 项本地源码 SHA 与最终 r219 清单逐项一致，子仓库工作区干净。未 push，
+父仓库 gitlink/lock 未更新；本批源码未用于根仓库 guest 构建。
+
+`verified-r217-r219-reference-catalog-evidence.tar.gz` 归档保留失败与修复后
+源码、完整分片日志、安装/契约测试、ASan 前后诊断和 20 个已结束作业的状态，
+大小 2,198,934 bytes；SHA-256 为
+`54cb624cd9c156d1c9a6f3921dab3c5789f624a22e05a3a5db78a50e51be11a7`。
+最终 247 项完整回归摘要 SHA-256 为
+`423ebe4ca88bac76a6940bf60f38eb5da0913b084803b438449d26e3243b9316`。
