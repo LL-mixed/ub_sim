@@ -139,6 +139,20 @@ provider 必须自动取得分配/回收任务。首版在已有控制连接上�
 相同 key 猜测属于同一代对象，也不能让 W5 和独立客户端拥有互不相认的引用。
 确需扩展编码时使用明确的版本与长度检查，并测试旧端拒绝未知版本的行为。
 
+V2 引用接入先冻结中立编码：保留 V1 的 64-byte 字段顺序及版本 1 常量，
+新增 256-byte V2，在原字段后保存编码长度、访问权限、allocation generation、
+home provider incarnation、allocation 逻辑大小、完整 allocation key 和 home ID。
+V2 的 payload offset 相对该 allocation，明确区别于 V1 的 arena offset；V1
+引用不能通过修改版本号自动升级。key hash 延续既有算法，同时保留完整 key，
+禁止只靠 hash 判定身份。跨进程编码逐字段采用 little-endian，不直接发送 C 结构。
+未知版本、长度、权限位、非规范字符串和越界必须拒绝；失败不改写调用方输出。
+
+编码/解码仅验证结构和内部一致性，不发起 RPC，不授予 holder，不证明 payload
+checksum、当前 content version 或 backing 归属。后续 SDK 必须通过服务端权威
+记录核对对象/视图与 allocation 的绑定，再以原 generation 获取 holder 并进入
+现有 managed mapping 生命周期；内容发布和重启后的身份域也须由服务端证明。
+编码夹具通过不能关闭全局引用绑定、W5 消费者接入、AM2 或 AM3。
+
 私有 descriptor 从 home kernel alloc/query 结果生成；完整传播实际 epoch 与 token，
 不填固定 epoch，不以 token ID 推导 token value。现有 UAPI 未包含的上下文状态由
 provider/平台绑定显式维护；确需跨进程传递时再做版本化 UAPI 扩展。

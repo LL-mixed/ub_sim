@@ -2530,3 +2530,50 @@ runner/container exit 0，六份 lease、原 ID 完成关联、两端 CPU 结果
 本轮实际矩阵为 r207/r208 的两方向 cross-page、r209 的反向 ND、r210 的原方向
 tail；这些用例均持有两个独立计算请求。tail 反向 home、多请求故障恢复、现有
 全局对象引用的 generation 绑定、设备并行性与 AM3/AM4 仍待完成。
+
+## 2026-09-14 续作：全局对象引用 V2 编码基础
+
+独立 mem_service 在保留 V1 的 64-byte 布局与版本常量的前提下，新增固定
+256-byte、little-endian 的 V2 编码。新增完整 allocation key、generation、
+home/incarnation、逻辑大小与访问权限；offset 明确相对 allocation。header-only
+API 不增加 SDK 链接依赖，旧消费者保持 V1；禁止直接修改旧引用版本号升级。
+解码拒绝截断、尾随字节、未知版本、非法权限、非规范字符串和范围溢出，失败
+保留输出不变；支持未对齐输入及重叠输入/输出。
+
+本地仅运行 4 项轻量测试，全部通过。C 夹具使用冻结 golden bytes，覆盖所有
+256 种截断长度、16 个结构字段损坏、权限与溢出边界；CLI 的小写/大写 hex
+输入均核对完整身份数值。C++11 头文件编译通过。首次 home 字符替换仍为有效
+token，夹具错误地期望拒绝；已改用明确无效的空 home，并保留有效身份替换
+可通过结构校验的断言。编码校验不提供服务身份或 payload 内容的证明。
+
+r214 与最终 r215 的远端 artifact 容器均 exit 0，包含原生 codec smoke、完整
+`host-artifact-smoke`、实际安装后仅引用安装头的 codec smoke、ASan/UBSan，
+以及 CLI 生成的 api-abi-policy、wire-schema、admin-output-schema、release-manifest、
+package-manifest 与原清单逐字节比对。最终源码归档 SHA-256：
+`54c2c585baccc689d5423073ab3aee6a1051974e290c91d1169c5aebfd93197c`；
+206 项源码清单 SHA-256：
+`4a015beecd364c1563cfbdb78a00a83a08d90bdef045467aa8b10143ab4fba5c`；
+最终 codec 二进制 SHA-256：
+`88df99dcbc5833bd88f6cb0e95b885d6fb204bc6676d387403a0e82bd7d96b2e`。
+完整 Python 回归 r216 使用同一最终源码的八个隔离分片，全部容器 exit 0。
+全部 244 项无重复、无遗漏地覆盖原发现清单：239 通过、5 项环境跳过、零失败、
+零错误。跳过项为三项独立仓库缺少 ub_sim 布局、一项缺少 AArch64 deb 打包
+工具链、一项离线容器缺少非 loopback 网卡；本轮未将这些跳过项计作通过。
+汇总同时核对每分片实际运行数量、完整清单及退出码，摘要 SHA-256 为
+`05f7bca21f1bbcf15bd25529db731897f9d1da8dc2e61e58adf393458c64cec2`。
+早先串行 r214 current/parent 与 r215 current 在完整分片验证后停止，保留原始
+日志与停止前后容器状态；它们仅作为未完成的串行尝试，不计作完整回归通过。
+
+**接入边界：** 当前 allocation version 仍在分配时初始化为 1；既有数据发布
+没有同步推进服务端 content version。V2 目前仅冻结编码，未接通权威内容发布、
+绑定解析、holder acquire/map 或 W5。有效 generation/home/checksum 替换可以通过
+结构校验，必须在后续服务端绑定层拒绝不匹配引用。此批未用于根仓库 guest 构建，
+gitlink/lock 保持原状；完整 AM2、AM3 与总目标均未验收。
+
+服务改动已形成干净提交
+`503d6907aa299383761103531e9f73d5a0d8a224`，提交前本地 206 项源码 SHA
+与 r215 冻结验证清单逐项一致。未 push，父仓库不更新 gitlink/lock。
+证据归档 `verified-r214-r216-object-ref-evidence.tar.gz` 包含冻结源码、完整
+分片日志、安装/契约验证、汇总及未完成串行尝试的停止前后状态，共 2,041,972
+bytes；SHA-256 为
+`49a8a6cbfe05f588bdb7fc2d265795afe53c09e83e3b8ed501d253b92b3f35dd`。

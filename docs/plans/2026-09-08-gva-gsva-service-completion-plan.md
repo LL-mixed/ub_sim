@@ -47,6 +47,13 @@ r209 的反向 ND 64 KiB 双请求、r210 的原方向 tail 65,024-byte 双请�
 队列同时持有两个请求的证据不证明设备并行执行，后者仍未验收。
 完整相关回归及本轮运行边界见实施记录，AM2 与总目标保持未完成。
 
+同日全局引用续作：独立服务新增 opt-in 的 256-byte V2 编码，保留 V1，明确
+allocation-relative offset、完整 key、generation、home/incarnation 和访问权限。
+r215 原生/安装态 codec、完整 CLI 夹具、ASan/UBSan 与五份契约清单比对通过；
+r216 完整 Python 回归 244 项为 239 通过、5 项环境跳过、零失败/错误，执行
+清单无遗漏或重复。权威内容版本与 allocation 绑定、SDK acquire/map、W5
+仍未接通，编码通过不关闭 AM2；详细源码指纹与验收边界见实施记录。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
