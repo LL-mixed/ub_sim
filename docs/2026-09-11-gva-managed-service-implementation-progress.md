@@ -3494,3 +3494,62 @@ QEMU 三个源码/测试文件已本地提交为 `924148cf5c`，未推送；父�
 QEMU gitlink。上述运行使用明确分层挂载的任务源码和构建产物，不能当作
 当前已发布平台 pins 的 fresh-clone 验收。`mem_service` 保持已发布并锁定的
 `3e5b35b`，本批没有新增独立服务改动或任何仓库推送。
+
+### r281-r286：完整严格 I/O 寿命与 managed unmap 冻结
+
+严格 CPU/PTO 访问现在按整个同步调用计数，覆盖多个分片及 RX 重入；单个
+应答的 pending 清零不再允许提前解除映射。managed V2 unmap 先将 route
+冻结，保留 MMIO 所有权和地址区间；仍有完整调用时返回 pending。fence
+期间拒绝新严格访问和 V1/V2 重入 unmap，失败保留冻结状态，确认完成后
+才释放 route 并刷新 TLB。被冻结区间拒绝其他 segment 的重叠映射。
+
+r281 通过项目构建入口重建 QEMU，七个底层测试程序共 45 项通过；新增
+真实 route/QOM 测试验证冻结期间的 token/PTO 拒绝、区间占用及解除后的
+替换映射。Python 的生产函数提取夹具还覆盖完整调用与嵌套调用寿命、
+读写错误、计数溢出、fence 失败及重入清理。该夹具模拟 RX 回调，不能
+计为真实 guest 的在途撤销故障注入。构建容器 14:15:52 至 14:16:14 UTC，
+exit 0、无 OOM；已有 `ub_ubc.c` alias 初始化警告保留，未改无关路径。
+QEMU binary SHA-256：
+`3df8c9edb49152a2412b040b80a326f0a18e0bf94ca5589f74a8fa66bf1cd230`。
+七文件源码 overlay SHA-256：
+`0f8c28ff5cffcb62d905ae3a68c4b1fe3871725f4520feda6e467618a32afe87`。
+提交前逐字节核对本地七文件与该受测 overlay 一致。
+
+r282 远端 Python 脚本与接口全集为 544 个唯一用例：539 通过、5 项
+AArch64 交叉编译器环境跳过、零失败/错误/加载错误。结果 SHA-256：
+`1e9c444c269a0996fbf4d7b5db32fdc9a1e5e1f6ba11dd20a5df90def65fb6cb`。
+r283 原 Rust workspace 作业 14:16:52 至 14:25:39 UTC 完成，exit 0、
+无 OOM；43 个外层 harness 共 963 通过、16 ignored、零失败/filtered，
+清单与 r280 一致。日志 SHA-256：
+`80ceef68480857bb59e7336587baaf027404f8a06ab1af619774ad7065b97682`。
+跳过和 ignored 均不计为通过。
+
+r284 在新 QEMU、kernel r109、r272 initramfs 及服务 `3e5b35b` 上完成
+实际双 guest 的两轮 64 KiB V2 CPU 共享：四个非零偏移视图、generation
+1/4、真实 reader route、checksum 与六个 allocation 退役通过。容器
+14:19:13 至 14:19:28 UTC，exit 0、无 OOM。保持 16 MiB aperture 和
+64 项幂等表，未启用地址复用。报告 SHA-256：
+`47b99335680ec5ac0b40311b71a0043e99c7c43bab3eb47ac4eb2a185fa7fff7`。
+原始日志归档 `gsva-drain-evidence-r284.tar.gz` 为 92,491 bytes，SHA-256：
+`7f389b230a408e759b538363bd842c9a114ff12d3866163f43067f979adf4e26`。
+
+r285 从既有 PTO 镜像保留已编译 fixture/driver/provider worker，只换入
+r272 的服务 CLI 与 run_app；CLI SHA 已核对，对应已发布 `3e5b35b`。
+派生镜像 SHA-256：
+`eae4cc12c16028f3d993d795203f45d8ab94c5b33507b4cdba5659ce92c239aa`。
+r286 复用 r252 的 home 1 / compute 0、tail 65,024-byte 张量、四线程、
+只读 V2 输入双请求配置，在新 QEMU 上整轮通过；14:25:05 至 14:31:08 UTC，
+exit 0、无 OOM，结束后未发现遗留 QEMU。两请求同时持有、六条 lease、
+4 LOAD/2 STORE/2 fence、68 LOAD 和 34 STORE 实际分片、独立数据核对及
+最终清理通过。报告中的三个原始日志 SHA 已独立重算一致，报告 SHA-256：
+`780f2f757618ba164b1566b8433f48561272211918faf47327ced860ca617615`。
+原始日志归档 `gsva-drain-evidence-r286.tar.gz` 为 63,329,417 bytes，SHA-256：
+`d84f59712309f521aabdb5e4ac7627f9b2830e24780550b1643efcdd868afda2`。
+首次证据归档因目标 Python 缺少 `hashlib.file_digest` 失败，改用已有
+sha256sum 后完成；未重新启动 guest，失败观察记录保留。
+
+该批验证覆盖正常 managed CPU/PTO 清理和隔离的重入边界。远端 RETIRE
+接收端强制撤销、真实在途故障、地址复用及百轮压力仍未完成，r273 三轮
+容量失败仍有效。设备并行执行、W5 模型矩阵与全部后续阶段不计为通过。
+QEMU 已本地提交 `d48c2c7634`；父仓库另行提交对应测试和本记录。
+本批不推送、不更新未发布平台 gitlink。

@@ -172,6 +172,14 @@ r280 的 Rust 全集为 963 通过、16 ignored，均零失败。QEMU 未推送�
 gitlink 未更新；接收端排空、地址复用、百轮压力及所有后续阶段仍未完成。
 详细来源、失败记录和验证边界见实施记录的 r274-r280 小节。
 
+r281-r286 续作：managed V2 unmap 已冻结 route 和地址区间，完整严格 CPU/PTO
+调用退出后才允许 fence 与清理；失败保持冻结，拒绝重入 unmap。45 项 QEMU
+底层测试、539 项 Python 脚本/接口测试通过（另 5 项环境跳过）；完整 Rust
+为 963 通过、16 ignored、零失败。真实双 guest 的两轮 V2 CPU 共享及反向
+tail 四线程 V2 双请求 PTO 正常回归均通过。真实在途撤销故障、远端 RETIRE
+接收端、地址复用、百轮压力及后续阶段仍未完成；本批未推送平台子仓库。
+源码、运行时间、日志指纹及验收边界见实施记录 r281-r286。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
@@ -501,6 +509,9 @@ W5 用新分配/访问链路完成连续 decode。
   ACK；发送成功、缺 ACK、失败 ACK 和超时均不能提交退役。TIMEOUT 保留为
   隔离状态，禁止通过再次 retire 将其转换为可复用状态。接收端 ACK 还须关联
   实际映射撤销、CPU/PTO 排空和 fence/TLB 完成；协调端单测不证明接收端完成。
+- managed V2 unmap 先冻结 route 并保留区间占用，再等待完整严格 I/O 调用退出。
+  单次响应的 pending 清零不能替代整个分块调用返回。fence 期间拒绝重入 unmap
+  和新严格 I/O；任何未确认结果保留冻结状态，重试完成后才释放 route/地址。
 - 将 W5 prefix/KV/hidden 对象绑定到同一对象生命周期；保留 terminal reader
   发布序列、metadata refresh、payload refresh 和 checksum 检查。
 - 显式声明支持的节点数；移除本次路径中新出现的 8-node 假设。已有 helper
