@@ -44,6 +44,29 @@ int lingqu_shmem_pto_endpoint_open(
     struct lingqu_shmem_pto_endpoint **endpoint_out,
     struct lingqu_shmem_pto_endpoint_info *info_out);
 
+/* Nonblocking multi-request API. Serialize individual calls externally, but
+ * do not hold that serialization while waiting between polls. Each successful
+ * enqueue copies the dispatch slot only. The caller must retain its metadata,
+ * memrefs and leases until poll returns that request's valid completion.
+ * IDs must increase for this endpoint's lifetime; rejected enqueues consume no
+ * ID. Capacity includes completed requests not yet collected by their caller.
+ * Do not mix these calls with a pending synchronous submission.
+ */
+int lingqu_shmem_pto_endpoint_enqueue(
+    struct lingqu_shmem_pto_endpoint *endpoint,
+    const LingquPtoDispatchSlotV2 *slot);
+
+/* Return -EAGAIN while pending; -ENOENT if the ID is not owned. A protocol
+ * fault returns -EPROTO and retains all uncollected requests and queue storage.
+ */
+int lingqu_shmem_pto_endpoint_poll(
+    struct lingqu_shmem_pto_endpoint *endpoint,
+    uint64_t op_id,
+    struct lingqu_shmem_pto_completion *completion);
+
+uint32_t lingqu_shmem_pto_endpoint_queued_count(
+    const struct lingqu_shmem_pto_endpoint *endpoint);
+
 int lingqu_shmem_pto_endpoint_submit(
     struct lingqu_shmem_pto_endpoint *endpoint,
     const LingquPtoDispatchSlotV2 *slot,
@@ -70,7 +93,9 @@ int lingqu_shmem_pto_endpoint_wait(
 uint64_t lingqu_shmem_pto_endpoint_pending_op(
     const struct lingqu_shmem_pto_endpoint *endpoint);
 
-/* Returns -EBUSY without changing queues while an operation is pending. */
+/* Returns -EBUSY without changing queues while requests remain uncollected or
+ * a protocol fault is sticky. Join all calling threads before a final close.
+ */
 int lingqu_shmem_pto_endpoint_close_checked(
     struct lingqu_shmem_pto_endpoint *endpoint);
 

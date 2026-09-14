@@ -218,6 +218,25 @@ r192 的 home 1 只读双对象六负例，以及 r193/r194 的两方向四线�
 恢复均整轮通过。范围为 cross-page 256-byte 视图及两次顺序正常计算；
 ND/tail 反向 home、多请求计算并发与同时多 home 仍需独立验收。
 
+多请求队列接口已增加 `lingqu_shmem_pto_endpoint_enqueue()`、`poll()` 和
+`queued_count()`。enqueue 仅复制 dispatch slot；调用者保留 metadata、memrefs
+和 leases，直到领取该原请求的有效 completion。调用者串行化单次接口调用，
+等待期间释放锁。队列按原 op ID 匹配批量或乱序完成，容量包括已完成但尚未领取
+的记录；容量为 CMDQ 深度减一、CQ 深度减一和 63 的最小值。新 enqueue 要求
+ID 严格递增，拒绝不消耗 ID。同步请求未完成时不能混用，协议错误保持故障状态，
+有未领取请求或协议故障时 close 返回 `-EBUSY` 并保留队列。
+
+定向测试入口（只使用本地页及线程，不启动模型或 QEMU）：
+
+```text
+python3 -m unittest discover -s guest-linux/aarch64/tests -p test_lingqu_shmem_pto_endpoint.py
+```
+
+其中 `endpoint-queue --case` 原生 fixture 覆盖 `completion`、`capacity`、
+`protocol`、`legacy`、`replay`、`arguments`、`threads`；双线程夹具连续执行
+100 轮，并在首次领取完成前检查两条请求均被保留。这些属于队列合同测试。
+managed CLI 仍使用两次顺序计算，多请求计算入口及实际设备并发验收尚未接入。
+
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
 the mapping provider supports it. Linux device/PFN mappings can return

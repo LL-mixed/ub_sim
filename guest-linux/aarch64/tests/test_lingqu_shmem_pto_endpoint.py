@@ -35,6 +35,26 @@ def _compile(compiler, output):
 
 
 class LingquShmemPtoEndpointTest(unittest.TestCase):
+    def test_multiple_queued_requests_preserve_identity_capacity_and_legacy_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "endpoint-queue"
+            subprocess.run([
+                "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+                "-I", str(LIB_DIR), "-I", str(ABI_DIR),
+                str(GUEST_ROOT / "tests" / "lingqu_shmem_pto_endpoint_queue_golden.c"),
+                "-o", str(binary),
+            ], check=True)
+            for case in ("completion", "capacity", "protocol", "legacy", "replay",
+                         "arguments", "threads"):
+                with self.subTest(case=case):
+                    result = subprocess.run([str(binary), "--case", case],
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(result.stdout.strip(),
+                                     f"lingqu_shmem_pto_endpoint_queue=pass case={case}")
+            self.assertEqual(subprocess.run([str(binary), "--case", "unknown"],
+                                           capture_output=True, timeout=5).returncode, 2)
+
     def test_cancel_submission_uses_op_scoped_mmio_doorbell(self):
         header = (LIB_DIR / "lingqu_shmem_pto_endpoint.h").read_text()
         source = (LIB_DIR / "lingqu_shmem_pto_endpoint.c").read_text()

@@ -2352,3 +2352,74 @@ QEMU r156、kernel r109、driver r138、服务提交
 该结果推进 A07-A11 的 cross-page home 互换子集，`am2_complete=false`。
 ND/tail 反向 home、多请求计算并发、现有全局对象引用绑定、同时多 home 协调，
 以及 AM1/AM3/AM4 与原总计划剩余出口继续保留，不能由本轮双节点结果替代。
+
+## 2026-09-14 续作：有界多请求队列及同步恢复兼容回归
+
+endpoint 增加非阻塞 `enqueue/poll/queued_count`。一次成功提交保留原 op ID，
+可同时接纳多条请求；容量为 CMDQ 深度减一、CQ 深度减一和 63 的最小值，
+已经完成但未被调用者领取的记录仍占容量。完成按原 ID 关联，可批量及乱序到达。
+重复、未知、畸形及已领取请求的迟到回放触发持续协议故障；其余请求记录和
+队列页保留，close 返回 `-EBUSY`。新提交 ID 严格递增，容量等拒绝不消耗 ID。
+门铃通知整个尚占用的命令区间，使等待授权请求的恢复预算包含随后提交的请求。
+
+endpoint 只复制 dispatch slot，不接管 metadata、memref 或 SDK lease 寿命。
+调用者必须持续持有这些资源，直到领取对应的有效 completion，并串行化单次
+队列接口调用；等待期间释放该锁。同步请求和队列请求有未完成记录时不能混用。
+最终 close 前须等待调用线程退出。旧同步提交及按原请求继续等待的接口保留。
+
+### 队列合同及完整回归
+
+新增原生 `endpoint-queue --case` fixture 的七组场景：完成关联、容量、协议
+错误、旧同步恢复、迟到回放、参数边界和双调用线程。线程场景执行 100 轮，
+每轮首次领取完成前核对两条请求均被保留，随后由本地页夹具注入乱序完成，
+逐请求核对原 ID、两线程退出及记录归零；跨轮复用同一 endpoint 以覆盖回绕。
+容量覆盖 CMDQ/CQ 深度 2/4/64 的九种组合。ID 上限不允许绕回重用。
+这些夹具不运行设备、不产生真实算子结果，不替代 managed 计算并发验收。
+
+本地轻量 endpoint suite 为 5 项通过，包括 AArch64 编译检查。最初畸形错误长度
+负例仍使用成功状态，未进入错误信息解码分支；修正为错误状态后通过，生产解码
+判据没有放宽。远端 r197 的 ASan/UBSan 七组 fixture 全部通过，容器 exit 0。
+
+r197 的完整回归暴露源码包夹带 macOS AppleDouble `._` 文件：layout 的脚本
+遍历读取二进制元数据时出现 UnicodeDecodeError。r197b 打包显式禁用 macOS
+metadata 和 xattrs，18 个源码文件 SHA 完全不变；原失败包和日志保留。
+未修改测试过滤或忽略解码错误。r197b 完整结果如下：
+
+| 套件 | 实际结果 | 基线核对 |
+| --- | --- | --- |
+| 相关 Python | 97 项：95 通过、2 环境跳过，16.843 秒 | 新增队列测试通过 |
+| 根 Python | 518 项：499 通过、5 跳过、5 失败、9 错误，61.939 秒 | 14 个失败 ID 与原基线逐项一致 |
+| layout | 72 通过、2 失败，1.25 秒 | 恢复原 package checksum 与 Git 元数据两项失败 |
+| Rust workspace | 43 个目标：931 通过、32 失败、16 ignored | 失败集合与重新编译的父版本逐项一致 |
+
+完整套件仍未全绿。无平台元数据源码包 SHA 为
+`335429c7334e0071c1b03e2716cfb28ee90015de9c9da388e256a01d975d3d50`，
+18 文件 manifest SHA 为
+`4824395a9f4811686243a6a2be558de6e43c966dbf0a8560f71edc4a6c1b4d16`。
+
+### 重建程序的真实同步路径回归
+
+r198 使用该源码重建 native AArch64 CLI，并重新封装 rootfs；现有服务、worker、
+manager、driver、kernel、QEMU 和算子工件保持原 SHA。CLI SHA 为
+`c6b6719e58770afce481b58cd4fa7942fd9e5fffd10d830347a1a31c8c7b7639`，
+rootfs SHA 为
+`3c727233fb23e0af8f7c17fa1e5e59790304f873cc84aaedfc88ffc8962c674f`。
+
+r199 在指定远端运行 home 1 / compute 0、只读双对象、四 CPU reader、cross-page
+256-byte 视图和两次顺序正常计算，runner/container 均 exit 0。两次初始短等待
+超时后恢复原 completion；4 LOAD、2 STORE、2 fence、CPU 数据、只读输入及
+owner 判据均通过。四线程执行 4,068 次完整输入校验，全部在 owner sealed 后
+继续检查，再退出。输入、源码、算子工件后验 SHA 不变；报告引用的三份原日志
+SHA 逐一复核一致，无 QEMU 遗留。
+
+原请求 ID 为 `20260914691/20260914692`，两次恢复均领取相同 ID；第二次等待
+期间输入/输出 owner 分别保留 1/2 个 compute 及 in-flight pin，close 和新借用
+均拒绝。两端 C/D checksum 分别为 `d602274b27b2bb23` /
+`c90bc7e9a551a6b3`，完整只读输入前后保持 `d63638b5e3d6ed83`。最终两端两个
+owner 的 CPU/compute/in-flight pin、mapping pending、holder pending 均归零，
+两端 CLI 明确报告 mapping 已关闭、holder 已释放、compute leases 为零。
+
+本轮交付队列层基础实现和现有同步路径兼容证据。managed CLI 尚未接入两个独立
+计算请求的 metadata/lease 集合、提交门控及完成领取；真实多请求计算并发和
+设备并行性均未验收。下一步接入共享 A/B、分离 C/D 输出的两个独立 quadratic
+请求，保留原顺序依赖模式。`am2_complete=false`，总目标保持未完成。

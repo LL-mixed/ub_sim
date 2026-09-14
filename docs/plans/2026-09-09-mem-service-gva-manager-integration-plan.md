@@ -309,6 +309,24 @@ guest 启动参数中的 home 选项使用 `lingqu_shmem_pto.home_node` 命名�
 暴露原下划线写法超出 `CONFIG_INIT_ENV_ARG_LIMIT=32`，在服务启动前 panic；
 修复须覆盖 guest 解析与环境槽位回归，不调整 kernel 限额或放宽验收判据。
 
+多请求接入先补 endpoint 的有界 `enqueue/poll` 接口：一个 endpoint 独占一套
+CMDQ/CQ，多个请求各自保留原 op ID、metadata 和 compute leases。队列容量取
+CMDQ/CQ 可用深度及本地记录上限的最小值；CQ 可批量到达，按 op ID 分发，
+调用者可按任意顺序领取完成。重复、未知或畸形 completion 使 endpoint 保持
+协议故障并保留剩余上下文，不能确认或释放无法证明已完成的请求。新接口要求
+提交 ID 单调递增以拒绝 endpoint 寿命内重用；拒绝不消耗 ID。旧同步接口及其
+单 pending 超时恢复合同保持不变，两类接口有在途请求时不能混用。短队列操作
+仍由调用层串行化，等待期间不持有阻塞其他请求提交的锁；close 要求所有已提交
+请求的 completion 已被领取，并由调用层保证访问线程均退出。
+
+实际计算验收在 managed CLI 增加独立多请求模式，默认保留原 C→D 顺序依赖。
+多请求模式使用相同 A/B 及不重叠的 C/D 输出视图，两个请求分别执行原 quadratic
+算子，oracle 明确按独立请求计算；禁止在缺少依赖协议时并发提交原 C→D 链。
+两个提交线程共用 SDK owner/access domain，各有独立 metadata、lease 集合和
+原 operation；在允许领取完成前核对两个在途请求及全部 pins。原四种读写组合、
+只读/负例、迟到恢复与两方向 home 验证继续保留。队列并发接纳和设备并行执行
+分别计量；接口单测或单一两请求子集不关闭完整 AM2 的多请求出口。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。

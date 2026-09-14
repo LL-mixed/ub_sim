@@ -15,6 +15,7 @@
 #define LINGQU_SHMEM_PTO_PAGE_BYTES 4096u
 #define LINGQU_SHMEM_PTO_ENDPOINT_OFFSET 0x1000u
 #define LINGQU_SHMEM_PTO_SLOT_BYTES 64u
+#define LINGQU_SHMEM_PTO_QUEUED_LIMIT 63u
 
 #define LINGQU_REG_VERSION 0x000u
 #define LINGQU_REG_CMDQ_BASE 0x010u
@@ -32,6 +33,12 @@
 #define LINGQU_REG_CANCEL_OP_ID 0x0a0u
 #define LINGQU_REG_CANCEL_DOORBELL 0x0a8u
 
+struct lingqu_shmem_pto_queued_request {
+    uint64_t op_id;
+    bool ready;
+    struct lingqu_shmem_pto_completion completion;
+};
+
 struct lingqu_shmem_pto_endpoint {
     int resource_fd;
     volatile uint8_t *root_mmio;
@@ -47,6 +54,9 @@ struct lingqu_shmem_pto_endpoint {
     uint32_t pending_cq_head;
     bool cancel_requested;
     bool protocol_error;
+    uint32_t queued_count;
+    uint64_t queued_last_op_id;
+    struct lingqu_shmem_pto_queued_request queued[LINGQU_SHMEM_PTO_QUEUED_LIMIT];
 };
 
 static const char *const lingqu_resource_candidates[] = {
@@ -324,6 +334,110 @@ int lingqu_shmem_pto_endpoint_open(
     return 0;
 }
 
+static struct lingqu_shmem_pto_queued_request *queued_request(
+    struct lingqu_shmem_pto_endpoint *endpoint, uint64_t op_id)
+{
+    for (unsigned i = 0; i < LINGQU_SHMEM_PTO_QUEUED_LIMIT; ++i)
+        if (endpoint->queued[i].op_id == op_id) return &endpoint->queued[i];
+    return NULL;
+}
+
+static int queued_collect(struct lingqu_shmem_pto_endpoint *endpoint)
+{
+    if (endpoint->protocol_error) return -EPROTO;
+    uint64_t head = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CQ_HEAD);
+    uint64_t tail = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CQ_TAIL);
+    if (endpoint->cq_depth < 2 || endpoint->cq_depth > 64 ||
+        head >= endpoint->cq_depth || tail >= endpoint->cq_depth) goto invalid;
+    while (head != tail) {
+        uint8_t bytes[LINGQU_SHMEM_PTO_SLOT_BYTES];
+        struct lingqu_shmem_pto_completion decoded;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        memcpy(bytes, endpoint->cq + head * LINGQU_SHMEM_PTO_SLOT_BYTES, sizeof(bytes));
+        if (lingqu_shmem_pto_completion_decode(bytes, &decoded) || decoded.source != 1)
+            goto invalid;
+        struct lingqu_shmem_pto_queued_request *request = queued_request(endpoint, decoded.op_id);
+        if (!request || request->ready) goto invalid;
+        request->completion = decoded;
+        request->ready = true;
+        head = (head + 1) % endpoint->cq_depth;
+        mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CQ_HEAD, head);
+    }
+    mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_IRQ_ACK,
+                 mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_IRQ_STATUS));
+    return 0;
+invalid:
+    endpoint->protocol_error = true;
+    return -EPROTO;
+}
+
+int lingqu_shmem_pto_endpoint_enqueue(
+    struct lingqu_shmem_pto_endpoint *endpoint, const LingquPtoDispatchSlotV2 *slot)
+{
+    if (!endpoint || !slot || slot->descriptor_tag != LINGQU_PTO_DISPATCH_SLOT_TAG_V2)
+        return -EINVAL;
+    uint64_t op_id = load_u64_le(slot->op_id_le);
+    if (!op_id) return -EINVAL;
+    if (endpoint->pending_op_id) return -EBUSY;
+    if (endpoint->protocol_error) return -EPROTO;
+    if (op_id <= endpoint->queued_last_op_id) return -ESTALE;
+    if (endpoint->cmdq_depth < 2 || endpoint->cmdq_depth > 64 ||
+        endpoint->cq_depth < 2 || endpoint->cq_depth > 64) return -EINVAL;
+    uint32_t capacity = endpoint->cmdq_depth - 1;
+    if (capacity >= endpoint->cq_depth) capacity = endpoint->cq_depth - 1;
+    if (capacity > LINGQU_SHMEM_PTO_QUEUED_LIMIT) capacity = LINGQU_SHMEM_PTO_QUEUED_LIMIT;
+    if (endpoint->queued_count >= capacity) return -ENOSPC;
+    uint64_t head = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_HEAD);
+    uint64_t tail = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_TAIL);
+    if (head >= endpoint->cmdq_depth || tail >= endpoint->cmdq_depth) {
+        endpoint->protocol_error = true;
+        return -EPROTO;
+    }
+    uint32_t next = (tail + 1) % endpoint->cmdq_depth;
+    if (next == head) return -ENOSPC;
+    int rc = queued_collect(endpoint);
+    if (rc) return rc;
+    struct lingqu_shmem_pto_queued_request *request = queued_request(endpoint, 0);
+    if (!request) return -ENOSPC;
+    memcpy(endpoint->cmdq + tail * LINGQU_SHMEM_PTO_SLOT_BYTES, slot, sizeof(*slot));
+    memset(request, 0, sizeof(*request));
+    request->op_id = op_id;
+    ++endpoint->queued_count;
+    endpoint->queued_last_op_id = op_id;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_TAIL, next);
+    /* Announce the entire occupied ring: an earlier slot may still await
+     * authorization and its resume budget must include this new submission. */
+    mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_DOORBELL,
+                 (next + endpoint->cmdq_depth - head) % endpoint->cmdq_depth);
+    return 0;
+}
+
+int lingqu_shmem_pto_endpoint_poll(
+    struct lingqu_shmem_pto_endpoint *endpoint, uint64_t op_id,
+    struct lingqu_shmem_pto_completion *completion)
+{
+    if (!endpoint || !op_id || !completion) return -EINVAL;
+    memset(completion, 0, sizeof(*completion));
+    if (endpoint->pending_op_id) return -EBUSY;
+    if (endpoint->protocol_error) return -EPROTO;
+    struct lingqu_shmem_pto_queued_request *request = queued_request(endpoint, op_id);
+    if (!request) return -ENOENT;
+    int rc = queued_collect(endpoint);
+    if (rc) return rc;
+    if (!request->ready) return -EAGAIN;
+    *completion = request->completion;
+    memset(request, 0, sizeof(*request));
+    --endpoint->queued_count;
+    return 0;
+}
+
+uint32_t lingqu_shmem_pto_endpoint_queued_count(
+    const struct lingqu_shmem_pto_endpoint *endpoint)
+{
+    return endpoint ? endpoint->queued_count : 0;
+}
+
 static int endpoint_wait_until(
     struct lingqu_shmem_pto_endpoint *endpoint,
     uint64_t deadline,
@@ -423,7 +537,8 @@ static int endpoint_submit_internal(
         return -EINVAL;
     }
     memset(completion, 0, sizeof(*completion));
-    if (endpoint->pending_op_id) return -EBUSY;
+    if (endpoint->pending_op_id || endpoint->queued_count) return -EBUSY;
+    if (endpoint->protocol_error) return -EPROTO;
     int rc = monotonic_ms(&started_at);
     if (rc) return rc;
     if (started_at > UINT64_MAX - timeout_ms) return -EOVERFLOW;
@@ -453,6 +568,7 @@ static int endpoint_submit_internal(
     endpoint->pending_cq_head = cq_head;
     endpoint->cancel_at = cancel_at;
     endpoint->cancel_requested = false;
+    if (op_id > endpoint->queued_last_op_id) endpoint->queued_last_op_id = op_id;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_TAIL,
                  cmdq_next);
@@ -491,7 +607,8 @@ int lingqu_shmem_pto_endpoint_close_checked(
     if (!endpoint) {
         return 0;
     }
-    if (endpoint->pending_op_id) return -EBUSY;
+    if (endpoint->pending_op_id || endpoint->queued_count || endpoint->protocol_error)
+        return -EBUSY;
     if (endpoint->endpoint_mmio) {
         mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE, 0);
         mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE, 0);
