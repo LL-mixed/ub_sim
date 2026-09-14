@@ -2836,3 +2836,57 @@ non-loopback IPv4 的监听用例，均不计通过。sanitizer、安装态 SDK 
 `guest-linux/aarch64/mem_service.lock` 同时锁定此提交。10 项轻量下游契约
 测试通过，父仓库未推送。根仓库完整回归和真实 guest 数据验证没有被本轮
 契约检查替代；V2 writer/provider 发布闭环、W5、AM3/AM4 与总目标均未完成。
+
+## 2026-09-14 V2 writer 发布准备与命令序列（r231）
+
+独立服务候选新增 `mem_service_client_prepare_managed_reference()`：从 begin
+回执、已确认的完整读写映射与逻辑视图构造 V2。准备前核对当前 allocation
+绑定、内容版本与 active mapping；从真实映射字节计算 checksum，确认中立
+provider publish 完成后才返回引用。失败保留原输出，不发送 stage/seal。
+调用方须冻结 payload，保存完整引用用于 stage 的同一幂等请求重试，解除映射
+后才能 seal；该 API 不提供崩溃恢复或跨进程写入仲裁。
+
+`object-session` 新增 begin_reference、publish_reference、seal_reference，
+不要求使用者手填 reference_hex。CLI 按 publication ID 保留完整 stage 请求，
+重复请求改变视图参数会拒绝；已准备的同代同版本 payload 禁止继续 write。
+冻结记录与 allocation/version 绑定，切换最近查询对象或重放 begin 不解除冻结。
+未确认的 stage 阻止本地 seal，服务继续执行其自身的版本、holder 和映射准入。
+原 SDK 结构、V1/V2 编码、wire opcode 与九份契约清单保持不变。
+
+冻结源码归档为 `out/mem-service-ref-source-r231.tar.gz`，SHA-256：
+`96a0b3550738f8869a642e6c162c685433ab7b7e421edf9db26a8cf08622acd2`；
+逐文件清单 SHA-256：
+`8d743b7d41cc9a8b2815332b588afe6100278cfe52359cac24ef00831ec08a28`。
+远端使用既有 AArch64 验证目录与缓存镜像，每作业 4 CPU，
+`--network none --pull never`，未下载依赖或更改宿主配置。源码与清单已逐项校验。
+
+- 本地语法检查、diff 空白检查及两项轻量协议测试通过。
+- `gva-ref-targeted-r231`：3 项通过，13.030 秒，退出码 0。实际 CLI 写入
+  offset=128/4224 的两段不同非零数据，自动生成两个引用；输出及服务 resolve
+  与独立编码/checksum oracle 一致。发布重放、参数冲突与冻结后写入拒绝通过，
+  最终 live_refs/import_mappings/in_flight 均为 0。
+- SDK 夹具覆盖 10 个准备失败情形并核对输出不变；wire/provider 使用替身。
+- `gva-ref-artifacts-r231` 已退出 0：原生/安装态 SDK、完整 CLI 夹具、
+  九份契约清单逐字节比对、mapping/catalog/client ASan+UBSan 通过。
+- 完整 Python 回归的 16 个原始分片均退出 0；精确覆盖 261 个测试 ID，
+  256 通过、5 个环境相关跳过、零失败/错误，无遗漏或重复。跳过维度沿用
+  r230 的三项父仓库契约、缺少交叉编译器的 deb 构建及隔离网络监听限制，
+  未计为通过。
+
+独立服务提交为 `d9b60efb2b4de5a4149264c61561cca33f570dce`，tree 为
+`adeeb9126037f4c6380223fcb7a6c4de20d00f3c`，提交后工作区干净；本地
+213 项文件与远端冻结源码清单逐项一致。18 个定向、完整回归及产物作业
+全部正常结束，无 OOM 或非零退出。
+
+证据已回收至 `out/verified-r231-reference-writer-evidence.tar.gz`，大小
+1,146,883 bytes，SHA-256：
+`a4ccfb97f7e28ec8ed9a05ced51339d5d109ac583ed12e8e8339b1631f0d5beb`。
+本地核验 38 个 regular members 无重名，37 个 payload SHA 逐项一致；
+完整回归摘要 SHA-256：
+`3b826e45948565e393c13c1d0a326a0e638a66dfdfa34d1a120549ecba2818eb`。
+归档含冻结源码、原始测试日志、精确覆盖报告、作业状态与九份契约清单。
+
+本轮 CLI payload 来自 loopback 匿名映射；它证明 writer 服务流程与引用数据
+绑定，不能证明两个进程或两个 guest 共享该 payload。实际 OBMM guest V2
+发布/读取、W5、AM3/AM4、性能及总目标均未完成。子仓库已提交、尚未推送，
+父仓库 gitlink/lock 继续锁定已发布的 reader `b5fff0d`。

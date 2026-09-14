@@ -92,6 +92,15 @@ reader 已提交为 `b5fff0d`，用户再次授权后仅推送独立服务同一
 核验一致；父仓库 gitlink/lock 已在本地同时更新，10 项下游契约测试通过。
 父仓库未推送，真实 guest V2 发布/读取、W5 与完整后续阶段仍待完成。
 
+writer 续作已提交独立服务 `d9b60ef`：SDK 从当前 allocation 和完整活动映射
+生成只读 V2，确认 provider publish 后返回引用；object-session 接入
+begin_reference/publish_reference/seal_reference，保留完整登记请求供重试，
+已发布数据禁止继续写入。r231 定向 CLI 用两段不同非零数据核对完整引用，
+独立服务完整 261 项为 256 通过、5 环境跳过、零失败/错误，执行清单精确覆盖；
+安装态 SDK、ASan/UBSan 和九份契约清单通过。该批提交尚未发布，父仓库锁定
+保持 reader `b5fff0d`。loopback 进程内数据证据不替代实际 OBMM 双 guest
+V2 发布/读取，完整 AM2、W5 和总目标仍未完成。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
